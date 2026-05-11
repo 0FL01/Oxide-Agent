@@ -4,7 +4,7 @@ use crate::config::{
     OPENROUTER_AUDIO_TRANSCRIBE_PROMPT, OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE,
     OPENROUTER_CHAT_TEMPERATURE, OPENROUTER_IMAGE_TEMPERATURE,
 };
-use crate::llm::http_utils::{extract_text_content, send_json_request};
+use crate::llm::support::http::{extract_text_content, send_json_request};
 use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -13,11 +13,21 @@ use serde_json::json;
 
 use helpers::{parse_tool_calls, prepare_structured_messages, prepare_tools_json};
 
+/// Hardcoded OpenRouter app attribution headers
+const OPENROUTER_HEADERS: [(&str, &str); 3] = [
+    ("HTTP-Referer", "https://github.com/0FL01/Oxide-Agent"),
+    ("X-Title", "Oxide Agent"),
+    ("X-OpenRouter-Title", "Oxide Agent"),
+];
+
 /// LLM provider implementation for `OpenRouter`
 pub struct OpenRouterProvider {
     http_client: HttpClient,
     api_key: String,
+    // Deprecated: App attribution headers are now hardcoded
+    #[allow(dead_code)]
     site_url: String,
+    #[allow(dead_code)]
     site_name: String,
 }
 
@@ -26,7 +36,7 @@ impl OpenRouterProvider {
     #[must_use]
     pub fn new(api_key: String, site_url: String, site_name: String) -> Self {
         Self {
-            http_client: crate::llm::http_utils::create_http_client(),
+            http_client: crate::llm::support::http::create_http_client(),
             api_key,
             site_url,
             site_name,
@@ -50,6 +60,78 @@ impl OpenRouterProvider {
             site_url,
             site_name,
         }
+    }
+
+    fn data_url(mime_type: &str, bytes: &[u8]) -> String {
+        format!("data:{mime_type};base64,{}", BASE64.encode(bytes))
+    }
+
+    fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
+        if image_bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']) {
+            return "image/png";
+        }
+
+        if image_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return "image/jpeg";
+        }
+
+        if image_bytes.starts_with(b"GIF87a") || image_bytes.starts_with(b"GIF89a") {
+            return "image/gif";
+        }
+
+        if image_bytes.starts_with(b"RIFF") && image_bytes.get(8..12) == Some(b"WEBP") {
+            return "image/webp";
+        }
+
+        "image/jpeg"
+    }
+
+    fn audio_input_format(mime_type: &str) -> &'static str {
+        let normalized = mime_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+
+        match normalized.as_str() {
+            "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+            "audio/mpeg" | "audio/mp3" => "mp3",
+            "audio/ogg" | "audio/opus" | "audio/vorbis" => "ogg",
+            "audio/flac" => "flac",
+            "audio/mp4" | "audio/x-m4a" => "m4a",
+            "audio/webm" => "webm",
+            _ => "wav",
+        }
+    }
+
+    fn build_video_request_body(
+        model_id: &str,
+        video_bytes: &[u8],
+        mime_type: &str,
+        text_prompt: &str,
+        system_prompt: &str,
+    ) -> serde_json::Value {
+        let data_url = Self::data_url(mime_type, video_bytes);
+
+        json!({
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": text_prompt},
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": data_url}
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 4000,
+            "temperature": OPENROUTER_IMAGE_TEMPERATURE
+        })
     }
 }
 
@@ -120,11 +202,9 @@ impl LlmProvider for OpenRouterProvider {
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json");
 
-        if !self.site_url.is_empty() {
-            request = request.header("HTTP-Referer", &self.site_url);
-        }
-        if !self.site_name.is_empty() {
-            request = request.header("X-Title", &self.site_name);
+        // Hardcoded app attribution headers for OpenRouter identification
+        for (key, value) in &OPENROUTER_HEADERS {
+            request = request.header(*key, *value);
         }
 
         let response = request
@@ -166,11 +246,28 @@ impl LlmProvider for OpenRouterProvider {
     async fn transcribe_audio(
         &self,
         audio_bytes: Vec<u8>,
-        _mime_type: &str,
+        mime_type: &str,
+        model_id: &str,
+    ) -> Result<String, LlmError> {
+        self.transcribe_audio_with_prompt(
+            audio_bytes,
+            mime_type,
+            OPENROUTER_AUDIO_TRANSCRIBE_PROMPT,
+            model_id,
+        )
+        .await
+    }
+
+    async fn transcribe_audio_with_prompt(
+        &self,
+        audio_bytes: Vec<u8>,
+        mime_type: &str,
+        text_prompt: &str,
         model_id: &str,
     ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
         let audio_base64 = BASE64.encode(&audio_bytes);
+        let audio_format = Self::audio_input_format(mime_type);
 
         let body = json!({
             "model": model_id,
@@ -178,12 +275,12 @@ impl LlmProvider for OpenRouterProvider {
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": OPENROUTER_AUDIO_TRANSCRIBE_PROMPT},
+                        {"type": "text", "text": text_prompt},
                         {
                             "type": "input_audio",
                             "input_audio": {
                                 "data": audio_base64,
-                                "format": "wav"
+                                "format": audio_format
                             }
                         }
                     ]
@@ -194,7 +291,14 @@ impl LlmProvider for OpenRouterProvider {
         });
 
         let auth = format!("Bearer {}", self.api_key);
-        let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
+        let res_json = send_json_request(
+            &self.http_client,
+            url,
+            &body,
+            Some(&auth),
+            &OPENROUTER_HEADERS,
+        )
+        .await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -206,8 +310,7 @@ impl LlmProvider for OpenRouterProvider {
         model_id: &str,
     ) -> Result<String, LlmError> {
         let url = "https://openrouter.ai/api/v1/chat/completions";
-        let image_base64 = BASE64.encode(&image_bytes);
-        let data_url = format!("data:image/jpeg;base64,{image_base64}");
+        let data_url = Self::data_url(Self::infer_image_mime_type(&image_bytes), &image_bytes);
 
         let body = json!({
             "model": model_id,
@@ -229,7 +332,43 @@ impl LlmProvider for OpenRouterProvider {
         });
 
         let auth = format!("Bearer {}", self.api_key);
-        let res_json = send_json_request(&self.http_client, url, &body, Some(&auth), &[]).await?;
+        let res_json = send_json_request(
+            &self.http_client,
+            url,
+            &body,
+            Some(&auth),
+            &OPENROUTER_HEADERS,
+        )
+        .await?;
+        extract_text_content(&res_json, &["choices", "0", "message", "content"])
+    }
+
+    async fn analyze_video(
+        &self,
+        video_bytes: Vec<u8>,
+        mime_type: &str,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_id: &str,
+    ) -> Result<String, LlmError> {
+        let url = "https://openrouter.ai/api/v1/chat/completions";
+        let body = Self::build_video_request_body(
+            model_id,
+            &video_bytes,
+            mime_type,
+            text_prompt,
+            system_prompt,
+        );
+
+        let auth = format!("Bearer {}", self.api_key);
+        let res_json = send_json_request(
+            &self.http_client,
+            url,
+            &body,
+            Some(&auth),
+            &OPENROUTER_HEADERS,
+        )
+        .await?;
         extract_text_content(&res_json, &["choices", "0", "message", "content"])
     }
 
@@ -243,6 +382,7 @@ impl LlmProvider for OpenRouterProvider {
             tools,
             model_id,
             max_tokens,
+            temperature,
             json_mode: _,
         } = request;
         let url = "https://openrouter.ai/api/v1/chat/completions";
@@ -254,20 +394,15 @@ impl LlmProvider for OpenRouterProvider {
             "model": model_id,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": OPENROUTER_CHAT_TEMPERATURE
+            "temperature": temperature.unwrap_or(OPENROUTER_CHAT_TEMPERATURE)
         });
 
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);
         }
 
-        let mut extra_headers = Vec::new();
-        if !self.site_url.is_empty() {
-            extra_headers.push(("HTTP-Referer", self.site_url.as_str()));
-        }
-        if !self.site_name.is_empty() {
-            extra_headers.push(("X-Title", self.site_name.as_str()));
-        }
+        // Hardcoded app attribution headers for OpenRouter identification
+        let extra_headers: Vec<(&str, &str)> = OPENROUTER_HEADERS.to_vec();
 
         let auth = format!("Bearer {}", self.api_key);
         let res_json =
@@ -322,5 +457,101 @@ impl LlmProvider for OpenRouterProvider {
             reasoning_content: None,
             usage,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpenRouterProvider;
+    use base64::Engine;
+    use serde_json::json;
+
+    #[test]
+    fn build_video_request_body_uses_video_url_data_part() {
+        let body = OpenRouterProvider::build_video_request_body(
+            "google/gemini-3.1-flash-lite-preview",
+            b"video-bytes",
+            "video/mp4",
+            "Describe this clip",
+            "System",
+        );
+
+        assert_eq!(body["model"], json!("google/gemini-3.1-flash-lite-preview"));
+        assert_eq!(body["messages"][0]["role"], json!("system"));
+        assert_eq!(body["messages"][0]["content"], json!("System"));
+        assert_eq!(body["messages"][1]["content"][0]["type"], json!("text"));
+        assert_eq!(
+            body["messages"][1]["content"][1]["type"],
+            json!("video_url")
+        );
+        assert_eq!(
+            body["messages"][1]["content"][1]["video_url"]["url"],
+            json!("data:video/mp4;base64,dmlkZW8tYnl0ZXM=")
+        );
+    }
+
+    #[test]
+    fn audio_transcription_prompt_is_embedded_in_request() {
+        let audio_base64 = base64::prelude::BASE64_STANDARD.encode(b"audio-bytes");
+        let body = json!({
+            "model": "google/gemini-3.1-flash-lite-preview",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Extract timestamps and speakers"},
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": audio_base64,
+                                "format": "wav"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+
+        assert_eq!(
+            body["messages"][0]["content"][0]["text"],
+            json!("Extract timestamps and speakers")
+        );
+    }
+
+    #[test]
+    fn audio_input_format_tracks_common_mime_types() {
+        assert_eq!(OpenRouterProvider::audio_input_format("audio/wav"), "wav");
+        assert_eq!(OpenRouterProvider::audio_input_format("audio/mpeg"), "mp3");
+        assert_eq!(OpenRouterProvider::audio_input_format("audio/ogg"), "ogg");
+        assert_eq!(OpenRouterProvider::audio_input_format("audio/flac"), "flac");
+        assert_eq!(
+            OpenRouterProvider::audio_input_format("audio/wav; codecs=1"),
+            "wav"
+        );
+        assert_eq!(OpenRouterProvider::audio_input_format("unknown"), "wav");
+    }
+
+    #[test]
+    fn infer_image_mime_type_from_magic_bytes() {
+        let png = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n', 0x00];
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xDB];
+        let gif = *b"GIF89a";
+        let webp = [b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P'];
+        let unknown = [0x00, 0x11, 0x22, 0x33];
+
+        assert_eq!(OpenRouterProvider::infer_image_mime_type(&png), "image/png");
+        assert_eq!(
+            OpenRouterProvider::infer_image_mime_type(&jpeg),
+            "image/jpeg"
+        );
+        assert_eq!(OpenRouterProvider::infer_image_mime_type(&gif), "image/gif");
+        assert_eq!(
+            OpenRouterProvider::infer_image_mime_type(&webp),
+            "image/webp"
+        );
+        assert_eq!(
+            OpenRouterProvider::infer_image_mime_type(&unknown),
+            "image/jpeg"
+        );
     }
 }

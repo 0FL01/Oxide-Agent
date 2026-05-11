@@ -65,6 +65,35 @@ pub fn empty_unstructured_response() -> ChatResponse {
     }
 }
 
+/// Build a structured final-answer ChatResponse.
+pub fn structured_final_answer_response(final_answer: &str) -> ChatResponse {
+    unstructured_text_response(
+        &serde_json::json!({
+            "thought": "done",
+            "tool_call": null,
+            "final_answer": final_answer,
+            "awaiting_user_input": null,
+        })
+        .to_string(),
+    )
+}
+
+/// Build a structured awaiting-user-input ChatResponse.
+pub fn structured_awaiting_user_input_response(kind: &str, prompt: &str) -> ChatResponse {
+    unstructured_text_response(
+        &serde_json::json!({
+            "thought": "blocked_on_user",
+            "tool_call": null,
+            "final_answer": null,
+            "awaiting_user_input": {
+                "kind": kind,
+                "prompt": prompt,
+            },
+        })
+        .to_string(),
+    )
+}
+
 /// Wait until the narrator provider reaches at least `minimum_calls`.
 pub async fn wait_for_narrator_calls(
     narrator_provider: &super::providers::ControlledNarratorProvider,
@@ -207,9 +236,22 @@ pub async fn create_session_http_with_user(
     base_url: &str,
     user_id: i64,
 ) -> String {
+    create_session_http_with_user_and_context(client, base_url, user_id, None).await
+}
+
+/// Create a session via HTTP for a specific user and context.
+pub async fn create_session_http_with_user_and_context(
+    client: &reqwest::Client,
+    base_url: &str,
+    user_id: i64,
+    context_key: Option<&str>,
+) -> String {
     let response: serde_json::Value = client
         .post(format!("{base_url}/sessions"))
-        .json(&serde_json::json!({ "user_id": user_id }))
+        .json(&serde_json::json!({
+            "user_id": user_id,
+            "context_key": context_key,
+        }))
         .send()
         .await
         .expect("failed to create session")

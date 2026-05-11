@@ -39,6 +39,7 @@ const MENU_CALLBACK_EXTRA_FUNCTIONS: &str = "menu:extra";
 const MENU_CALLBACK_EDIT_PROMPT: &str = "menu:prompt";
 const MENU_CALLBACK_BACK: &str = "menu:back";
 const MENU_CALLBACK_MODEL_PREFIX: &str = "menu:model:";
+const MAX_INLINE_VIDEO_SIZE: u32 = crate::bot::agent::media::MAX_INLINE_MEDIA_SIZE;
 
 // Helper function to get user name from Message
 fn get_user_name(msg: &Message) -> String {
@@ -61,6 +62,41 @@ fn resolve_chat_model(settings: &BotSettings, stored_model: Option<String>) -> S
         }
     }
     settings.agent.get_default_chat_model_name()
+}
+
+fn ensure_inline_video_size(size: u32) -> Result<()> {
+    if size > MAX_INLINE_VIDEO_SIZE {
+        anyhow::bail!(
+            "Video too large: {:.1} MB (max 20 MB)",
+            f64::from(size) / 1024.0 / 1024.0
+        );
+    }
+
+    Ok(())
+}
+
+fn resolve_video_mime_type(video: &teloxide::types::Video) -> String {
+    video
+        .mime_type
+        .as_ref()
+        .map_or_else(|| "video/mp4".to_string(), ToString::to_string)
+}
+
+fn resolve_voice_mime_type(voice: &teloxide::types::Voice) -> String {
+    voice
+        .mime_type
+        .as_ref()
+        .map_or_else(|| "audio/ogg".to_string(), ToString::to_string)
+}
+
+async fn download_telegram_file(bot: &Bot, file_id: teloxide::types::FileId) -> Result<Vec<u8>> {
+    oxide_agent_core::utils::retry_transport_operation(|| async {
+        let file = bot.get_file(file_id.clone()).await?;
+        let mut buf = Vec::new();
+        bot.download_file(&file.path, &mut buf).await?;
+        Ok(buf)
+    })
+    .await
 }
 
 /// Safe extraction of user ID from a message.
@@ -119,6 +155,7 @@ async fn check_state_and_redirect(
     msg: &Message,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
+    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
     settings: &Arc<BotSettings>,
 ) -> Result<bool> {
@@ -141,6 +178,7 @@ async fn check_state_and_redirect(
                 storage.clone(),
                 llm.clone(),
                 dialogue.clone(),
+                persistent_memory_store.clone(),
                 settings.clone(),
             ))
             .await?;
@@ -482,7 +520,12 @@ async fn send_chat_flow_controls_in_thread(
     chat_id: ChatId,
     chat_uuid: &str,
     outbound_thread: OutboundThreadParams,
+    attach_detach_enabled: bool,
 ) -> Result<()> {
+    if !attach_detach_enabled {
+        return Ok(());
+    }
+
     let mut req = bot.send_message(chat_id, "Flow controls:");
     if let Some(thread_id) = outbound_thread.message_thread_id {
         req = req.message_thread_id(thread_id);
@@ -650,6 +693,7 @@ pub async fn handle_menu_callback(
     q: &CallbackQuery,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
+    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: &Arc<BotSettings>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
 ) -> Result<bool> {
@@ -688,6 +732,7 @@ pub async fn handle_menu_callback(
                     dialogue.clone(),
                     llm.clone(),
                     storage.clone(),
+                    persistent_memory_store.clone(),
                     settings.clone(),
                     user_id,
                 )
@@ -819,6 +864,7 @@ pub async fn handle_text(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let text = msg.text().unwrap_or("").to_string();
@@ -833,7 +879,13 @@ pub async fn handle_text(
     );
 
     if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue, &settings,
+        &bot,
+        &msg,
+        &storage,
+        &llm,
+        &persistent_memory_store,
+        &dialogue,
+        &settings,
     ))
     .await?
     {
@@ -850,7 +902,18 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    if handle_menu_commands(&bot, &msg, &storage, &llm, &dialogue, &settings, &text).await? {
+    if handle_menu_commands(
+        &bot,
+        &msg,
+        &storage,
+        &llm,
+        &persistent_memory_store,
+        &dialogue,
+        &settings,
+        &text,
+    )
+    .await?
+    {
         touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
@@ -901,11 +964,13 @@ pub async fn handle_text(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_menu_commands(
     bot: &Bot,
     msg: &Message,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
+    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
     settings: &Arc<BotSettings>,
     text: &str,
@@ -952,6 +1017,7 @@ async fn handle_menu_commands(
                     dialogue.clone(),
                     llm.clone(),
                     storage.clone(),
+                    persistent_memory_store.clone(),
                     settings.clone(),
                     user_id,
                 )
@@ -1047,10 +1113,13 @@ async fn send_multimodal_unavailable_message(
     bot: &Bot,
     msg: &Message,
     outbound_thread: OutboundThreadParams,
+    feature: &str,
 ) -> Result<()> {
     let mut req = bot.send_message(
         msg.chat.id,
-        "🚫 Feature unavailable.\nMedia processing is disabled because the Gemini or OpenRouter provider is not configured.",
+        format!(
+            "🚫 Feature unavailable.\nNo configured media route supports {feature}. Configure Gemini/OpenRouter for image+video or Mistral for audio STT."
+        ),
     );
     if let Some(thread_id) = outbound_thread.message_thread_id {
         req = req.message_thread_id(thread_id);
@@ -1261,6 +1330,7 @@ async fn process_llm_request(
                 msg.chat.id,
                 &chat_uuid,
                 options.outbound_thread,
+                settings.telegram.attach_detach_enabled,
             )
             .await?;
         }
@@ -1292,6 +1362,7 @@ pub async fn handle_voice(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
@@ -1307,7 +1378,13 @@ pub async fn handle_voice(
     }
 
     if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue, &settings,
+        &bot,
+        &msg,
+        &storage,
+        &llm,
+        &persistent_memory_store,
+        &dialogue,
+        &settings,
     ))
     .await?
     {
@@ -1325,17 +1402,16 @@ pub async fn handle_voice(
         return Ok(());
     }
 
-    if !llm.is_multimodal_available() {
-        send_multimodal_unavailable_message(&bot, &msg, outbound_thread).await?;
-        return Ok(());
-    }
-
     let voice = msg.voice().ok_or_else(|| anyhow!("No voice found"))?;
-    let saved_model = storage.get_user_model(user_id).await?;
-    let model = resolve_chat_model(&settings, saved_model);
-
-    let provider_info = settings.agent.get_model_info_by_name(&model);
-    let provider_name = provider_info.as_ref().map_or("unknown", |p| &p.provider);
+    let media_route = match llm.resolve_media_model_for_audio_stt() {
+        Ok(route) => route,
+        Err(_) => {
+            send_multimodal_unavailable_message(&bot, &msg, outbound_thread, "audio transcription")
+                .await?;
+            return Ok(());
+        }
+    };
+    let mime_type = resolve_voice_mime_type(voice);
 
     bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
         .await?;
@@ -1349,9 +1425,8 @@ pub async fn handle_voice(
     })
     .await?;
 
-    let model_id = provider_info.as_ref().map_or("unknown", |p| &p.id);
     match llm
-        .transcribe_audio_with_fallback(provider_name, buffer, "audio/wav", model_id)
+        .transcribe_audio_with_fallback(&media_route.provider, buffer, &mime_type, &media_route.id)
         .await
     {
         Ok(text) => {
@@ -1412,6 +1487,7 @@ pub async fn handle_photo(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
@@ -1428,7 +1504,13 @@ pub async fn handle_photo(
     }
 
     if Box::pin(check_state_and_redirect(
-        &bot, &msg, &storage, &llm, &dialogue, &settings,
+        &bot,
+        &msg,
+        &storage,
+        &llm,
+        &persistent_memory_store,
+        &dialogue,
+        &settings,
     ))
     .await?
     {
@@ -1446,18 +1528,19 @@ pub async fn handle_photo(
         return Ok(());
     }
 
-    if !llm.is_multimodal_available() {
-        send_multimodal_unavailable_message(&bot, &msg, outbound_thread).await?;
-        return Ok(());
-    }
-
     let photo = msg
         .photo()
         .and_then(|p| p.last())
         .ok_or_else(|| anyhow!("No photo found"))?;
     let caption = msg.caption().unwrap_or("Describe this image.");
-    let saved_model = storage.get_user_model(user_id).await?;
-    let model = resolve_chat_model(&settings, saved_model);
+    let model = match llm.resolve_media_model_name_for_image() {
+        Ok(name) => name,
+        Err(_) => {
+            send_multimodal_unavailable_message(&bot, &msg, outbound_thread, "image understanding")
+                .await?;
+            return Ok(());
+        }
+    };
     let system_prompt =
         resolve_system_prompt(&storage, user_id, route.system_prompt_override.as_deref()).await?;
 
@@ -1506,12 +1589,147 @@ pub async fn handle_photo(
                 outbound_thread.message_thread_id,
             )
             .await?;
-            send_chat_flow_controls_in_thread(&bot, msg.chat.id, &chat_uuid, outbound_thread)
-                .await?;
+            send_chat_flow_controls_in_thread(
+                &bot,
+                msg.chat.id,
+                &chat_uuid,
+                outbound_thread,
+                settings.telegram.attach_detach_enabled,
+            )
+            .await?;
             touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         }
         Err(e) => {
             let mut req = bot.send_message(msg.chat.id, format!("Image analysis error: {e}"));
+            if let Some(thread_id) = outbound_thread.message_thread_id {
+                req = req.message_thread_id(thread_id);
+            }
+
+            req.await?;
+        }
+    }
+    Ok(())
+}
+
+/// Video message handler
+///
+/// # Errors
+///
+/// Returns an error if the video cannot be processed.
+pub async fn handle_video(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<dyn StorageProvider>,
+    llm: Arc<LlmClient>,
+    dialogue: Dialogue<State, InMemStorage<State>>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
+    settings: Arc<BotSettings>,
+) -> Result<()> {
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
+    let user_id = get_user_id_safe(&msg);
+    let route = resolve_topic_route(&bot, storage.as_ref(), user_id, &settings, &msg).await;
+
+    if !route.allows_processing() {
+        info!(
+            "Skipping video message in topic route for user {user_id}. enabled={}, require_mention={}, mention_satisfied={}",
+            route.enabled, route.require_mention, route.mention_satisfied
+        );
+        return Ok(());
+    }
+
+    if Box::pin(check_state_and_redirect(
+        &bot,
+        &msg,
+        &storage,
+        &llm,
+        &persistent_memory_store,
+        &dialogue,
+        &settings,
+    ))
+    .await?
+    {
+        return Ok(());
+    }
+
+    let state = current_context_state(&storage, user_id, msg.chat.id, thread_spec).await?;
+    if state.as_deref() != Some("chat_mode") {
+        let mut req = bot.send_message(msg.chat.id, "Please select a mode:");
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.reply_markup(main_menu_markup(thread_spec)).await?;
+        return Ok(());
+    }
+
+    let video = msg.video().ok_or_else(|| anyhow!("No video found"))?;
+    ensure_inline_video_size(video.file.size)?;
+
+    let caption = msg.caption().unwrap_or("Describe this video in detail.");
+    let model = match llm.resolve_media_model_name_for_video() {
+        Ok(name) => name,
+        Err(_) => {
+            send_multimodal_unavailable_message(&bot, &msg, outbound_thread, "video understanding")
+                .await?;
+            return Ok(());
+        }
+    };
+    let system_prompt =
+        resolve_system_prompt(&storage, user_id, route.system_prompt_override.as_deref()).await?;
+
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::UploadVideo)
+        .await?;
+
+    let buffer = download_telegram_file(&bot, video.file.id.clone()).await?;
+    let mime_type = resolve_video_mime_type(video);
+
+    bot.send_chat_action(msg.chat.id, teloxide::types::ChatAction::Typing)
+        .await?;
+    match llm
+        .analyze_video(buffer, &mime_type, caption, &system_prompt, &model)
+        .await
+    {
+        Ok(response) => {
+            let context_key = storage_context_key(msg.chat.id, thread_spec);
+            let chat_uuid =
+                ensure_scoped_chat_uuid(&storage, user_id, msg.chat.id, thread_spec).await?;
+            let scoped_chat_id = scoped_chat_storage_id(&context_key, &chat_uuid);
+            storage
+                .save_message_for_chat(
+                    user_id,
+                    scoped_chat_id.clone(),
+                    "user".to_string(),
+                    format!("[Video] {caption}"),
+                )
+                .await?;
+            storage
+                .save_message_for_chat(
+                    user_id,
+                    scoped_chat_id.clone(),
+                    "assistant".to_string(),
+                    response.clone(),
+                )
+                .await?;
+            send_long_message_in_thread(
+                &bot,
+                msg.chat.id,
+                &response,
+                outbound_thread.message_thread_id,
+            )
+            .await?;
+            send_chat_flow_controls_in_thread(
+                &bot,
+                msg.chat.id,
+                &chat_uuid,
+                outbound_thread,
+                settings.telegram.attach_detach_enabled,
+            )
+            .await?;
+            touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
+        }
+        Err(e) => {
+            let mut req = bot.send_message(msg.chat.id, format!("Video analysis error: {e}"));
             if let Some(thread_id) = outbound_thread.message_thread_id {
                 req = req.message_thread_id(thread_id);
             }
@@ -1534,6 +1752,7 @@ pub async fn handle_document(
     dialogue: Dialogue<State, InMemStorage<State>>,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
@@ -1555,6 +1774,7 @@ pub async fn handle_document(
             storage.clone(),
             llm,
             dialogue,
+            persistent_memory_store,
             settings,
         ))
         .await;
@@ -1624,6 +1844,9 @@ mod tests {
                 manager_allowed_users_str: None,
                 manager_home_chat_id: None,
                 manager_home_thread_id: None,
+                attach_detach_enabled: true,
+                reminder_agent_progress_enabled: true,
+                reminder_silent_no_change_enabled: false,
                 manager_home_agent_id: None,
                 topic_configs: Vec::new(),
             },

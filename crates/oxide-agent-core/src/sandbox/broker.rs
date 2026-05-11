@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -15,7 +16,130 @@ use crate::config::get_sandboxd_socket;
 use super::manager::{DockerSandboxManager, ExecResult, SandboxContainerRecord};
 use super::scope::SandboxScope;
 
-#[derive(Debug, Serialize, Deserialize)]
+const fn default_stack_logs_max_entries() -> u32 {
+    200
+}
+
+const fn default_stack_logs_include_stderr() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsSelector {
+    #[serde(default)]
+    pub compose_project: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedStackLogsSelector {
+    pub compose_project: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsListSourcesRequest {
+    #[serde(default)]
+    pub selector: StackLogsSelector,
+    #[serde(default)]
+    pub services: Vec<String>,
+    #[serde(default)]
+    pub include_stopped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogSource {
+    pub service: String,
+    pub container_name: String,
+    pub container_id: String,
+    pub state: String,
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsListSourcesResponse {
+    pub stack_selector: ResolvedStackLogsSelector,
+    pub containers: Vec<StackLogSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogCursor {
+    pub ts: DateTime<Utc>,
+    pub service: String,
+    pub stream: String,
+    pub ordinal: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsFetchRequest {
+    #[serde(default)]
+    pub selector: StackLogsSelector,
+    #[serde(default)]
+    pub services: Vec<String>,
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub cursor: Option<StackLogCursor>,
+    #[serde(default = "default_stack_logs_max_entries")]
+    pub max_entries: u32,
+    #[serde(default)]
+    pub include_noise: bool,
+    #[serde(default = "default_stack_logs_include_stderr")]
+    pub include_stderr: bool,
+}
+
+impl Default for StackLogsFetchRequest {
+    fn default() -> Self {
+        Self {
+            selector: StackLogsSelector::default(),
+            services: Vec::new(),
+            since: None,
+            until: None,
+            cursor: None,
+            max_entries: default_stack_logs_max_entries(),
+            include_noise: false,
+            include_stderr: default_stack_logs_include_stderr(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogEntry {
+    pub ts: DateTime<Utc>,
+    pub service: String,
+    pub container_name: String,
+    pub stream: String,
+    pub ordinal: u64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogSuppression {
+    pub reason: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsWindow {
+    #[serde(default)]
+    pub since: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub until: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLogsFetchResponse {
+    pub window: StackLogsWindow,
+    pub entries: Vec<StackLogEntry>,
+    pub suppressed: Vec<StackLogSuppression>,
+    pub truncated: bool,
+    #[serde(default)]
+    pub next_cursor: Option<StackLogCursor>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxBrokerRequest {
     ListUserSandboxes {
         user_id: i64,
@@ -90,9 +214,15 @@ pub enum SandboxBrokerRequest {
         image_name: String,
         container_path: String,
     },
+    ListStackLogSources {
+        request: StackLogsListSourcesRequest,
+    },
+    FetchStackLogs {
+        request: StackLogsFetchRequest,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxBrokerResponse {
     Sandboxes(Vec<SandboxContainerRecord>),
     Sandbox(Option<SandboxContainerRecord>),
@@ -102,6 +232,8 @@ pub enum SandboxBrokerResponse {
     ExecResult(ExecResult),
     Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     U64(u64),
+    StackLogSources(StackLogsListSourcesResponse),
+    StackLogs(StackLogsFetchResponse),
     Unit,
     Error(String),
 }
@@ -421,6 +553,34 @@ impl SandboxBrokerClient {
             .await?
         {
             SandboxBrokerResponse::U64(size) => Ok(size),
+            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
+            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+        }
+    }
+
+    pub async fn list_stack_log_sources(
+        &self,
+        request: StackLogsListSourcesRequest,
+    ) -> Result<StackLogsListSourcesResponse> {
+        match self
+            .send_request(&SandboxBrokerRequest::ListStackLogSources { request })
+            .await?
+        {
+            SandboxBrokerResponse::StackLogSources(response) => Ok(response),
+            SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
+            response => Err(anyhow!("Unexpected broker response: {response:?}")),
+        }
+    }
+
+    pub async fn fetch_stack_logs(
+        &self,
+        request: StackLogsFetchRequest,
+    ) -> Result<StackLogsFetchResponse> {
+        match self
+            .send_request(&SandboxBrokerRequest::FetchStackLogs { request })
+            .await?
+        {
+            SandboxBrokerResponse::StackLogs(response) => Ok(response),
             SandboxBrokerResponse::Error(message) => Err(anyhow!(message)),
             response => Err(anyhow!("Unexpected broker response: {response:?}")),
         }
@@ -783,6 +943,14 @@ async fn handle_request(
             image_name,
             container_path,
         } => handle_file_size_bytes(scope, image_name, container_path).await,
+        SandboxBrokerRequest::ListStackLogSources { request } => response_from_result(
+            DockerSandboxManager::list_stack_log_sources(request).await,
+            SandboxBrokerResponse::StackLogSources,
+        ),
+        SandboxBrokerRequest::FetchStackLogs { request } => response_from_result(
+            DockerSandboxManager::fetch_stack_logs(request).await,
+            SandboxBrokerResponse::StackLogs,
+        ),
     };
 
     Ok(Some(response))
@@ -838,10 +1006,17 @@ async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SandboxBrokerClient, SandboxBrokerServer};
+    use super::{
+        ResolvedStackLogsSelector, SandboxBrokerClient, SandboxBrokerRequest,
+        SandboxBrokerResponse, SandboxBrokerServer, StackLogCursor, StackLogEntry, StackLogSource,
+        StackLogSuppression, StackLogsFetchRequest, StackLogsFetchResponse,
+        StackLogsListSourcesRequest, StackLogsListSourcesResponse, StackLogsSelector,
+        StackLogsWindow,
+    };
     use crate::config::get_sandbox_image;
     use crate::sandbox::scope::SandboxScope;
     use anyhow::{bail, Context, Result};
+    use chrono::{TimeZone, Utc};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -859,6 +1034,164 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         SandboxScope::new(991_337, format!("test:{test_name}:{nonce}"))
+    }
+
+    #[test]
+    fn stack_logs_fetch_request_defaults_match_stage_zero_contract() {
+        let request = StackLogsFetchRequest::default();
+
+        assert_eq!(request.max_entries, 200);
+        assert!(request.include_stderr);
+        assert!(!request.include_noise);
+        assert!(request.services.is_empty());
+        assert_eq!(request.selector, StackLogsSelector::default());
+        assert!(request.since.is_none());
+        assert!(request.until.is_none());
+        assert!(request.cursor.is_none());
+    }
+
+    #[test]
+    fn stack_logs_broker_payload_roundtrip_preserves_contract_types() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 3, 4).unwrap();
+        let request = SandboxBrokerRequest::FetchStackLogs {
+            request: StackLogsFetchRequest {
+                selector: StackLogsSelector {
+                    compose_project: Some("oxide-agent".to_string()),
+                },
+                services: vec!["oxide_agent".to_string(), "sandboxd".to_string()],
+                since: Some(ts),
+                until: Some(ts),
+                cursor: Some(StackLogCursor {
+                    ts,
+                    service: "oxide_agent".to_string(),
+                    stream: "stdout".to_string(),
+                    ordinal: 17,
+                }),
+                max_entries: 200,
+                include_noise: false,
+                include_stderr: true,
+            },
+        };
+        let request_bytes = bincode::serialize(&request).expect("serialize request");
+        let decoded_request: SandboxBrokerRequest =
+            bincode::deserialize(&request_bytes).expect("deserialize request");
+
+        assert_eq!(decoded_request, request);
+
+        let response = SandboxBrokerResponse::StackLogs(StackLogsFetchResponse {
+            window: StackLogsWindow {
+                since: Some(ts),
+                until: Some(ts),
+            },
+            entries: vec![StackLogEntry {
+                ts,
+                service: "oxide_agent".to_string(),
+                container_name: "oxide_agent".to_string(),
+                stream: "stdout".to_string(),
+                ordinal: 17,
+                message: "provider failover activated".to_string(),
+            }],
+            suppressed: vec![StackLogSuppression {
+                reason: "exact_duplicate_burst".to_string(),
+                count: 12,
+            }],
+            truncated: true,
+            next_cursor: Some(StackLogCursor {
+                ts,
+                service: "oxide_agent".to_string(),
+                stream: "stdout".to_string(),
+                ordinal: 18,
+            }),
+            warnings: vec!["truncated to max_entries".to_string()],
+        });
+        let response_bytes = bincode::serialize(&response).expect("serialize response");
+        let decoded_response: SandboxBrokerResponse =
+            bincode::deserialize(&response_bytes).expect("deserialize response");
+
+        assert_eq!(decoded_response, response);
+    }
+
+    #[test]
+    fn stack_logs_default_requests_roundtrip_with_bincode() {
+        let list_request = SandboxBrokerRequest::ListStackLogSources {
+            request: StackLogsListSourcesRequest::default(),
+        };
+        let list_bytes = bincode::serialize(&list_request).expect("serialize list request");
+        let decoded_list: SandboxBrokerRequest =
+            bincode::deserialize(&list_bytes).expect("deserialize list request");
+
+        assert_eq!(decoded_list, list_request);
+
+        let fetch_request = SandboxBrokerRequest::FetchStackLogs {
+            request: StackLogsFetchRequest::default(),
+        };
+        let fetch_bytes = bincode::serialize(&fetch_request).expect("serialize fetch request");
+        let decoded_fetch: SandboxBrokerRequest =
+            bincode::deserialize(&fetch_bytes).expect("deserialize fetch request");
+
+        assert_eq!(decoded_fetch, fetch_request);
+    }
+
+    #[test]
+    fn stack_logs_list_sources_payload_roundtrip_preserves_source_records() {
+        let started_at = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let response = SandboxBrokerResponse::StackLogSources(StackLogsListSourcesResponse {
+            stack_selector: ResolvedStackLogsSelector {
+                compose_project: "oxide-agent".to_string(),
+            },
+            containers: vec![StackLogSource {
+                service: "oxide_agent".to_string(),
+                container_name: "oxide_agent".to_string(),
+                container_id: "abc123def456".to_string(),
+                state: "running".to_string(),
+                started_at: Some(started_at),
+            }],
+        });
+        let bytes = bincode::serialize(&response).expect("serialize response");
+        let decoded: SandboxBrokerResponse =
+            bincode::deserialize(&bytes).expect("deserialize response");
+
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn stack_logs_optional_fields_roundtrip_with_bincode() {
+        let response = SandboxBrokerResponse::StackLogs(StackLogsFetchResponse {
+            window: StackLogsWindow {
+                since: None,
+                until: None,
+            },
+            entries: Vec::new(),
+            suppressed: Vec::new(),
+            truncated: false,
+            next_cursor: None,
+            warnings: Vec::new(),
+        });
+        let response_bytes = bincode::serialize(&response).expect("serialize optional response");
+        let decoded_response: SandboxBrokerResponse =
+            bincode::deserialize(&response_bytes).expect("deserialize optional response");
+
+        assert_eq!(decoded_response, response);
+
+        let sources_response =
+            SandboxBrokerResponse::StackLogSources(StackLogsListSourcesResponse {
+                stack_selector: ResolvedStackLogsSelector {
+                    compose_project: "oxide-agent".to_string(),
+                },
+                containers: vec![StackLogSource {
+                    service: "oxide_agent".to_string(),
+                    container_name: "oxide_agent".to_string(),
+                    container_id: "abc123def456".to_string(),
+                    state: "running".to_string(),
+                    started_at: None,
+                }],
+            });
+        let sources_bytes = bincode::serialize(&sources_response)
+            .expect("serialize list sources response with None started_at");
+        let decoded_sources: SandboxBrokerResponse = bincode::deserialize(&sources_bytes)
+            .expect("deserialize list sources response with None started_at");
+
+        assert_eq!(decoded_sources, sources_response);
     }
 
     #[tokio::test]

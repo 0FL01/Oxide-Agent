@@ -16,6 +16,7 @@ use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::header::CONTENT_TYPE;
+use reqwest::Url;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -141,6 +142,50 @@ impl Crawl4aiProvider {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
 
+    fn is_media_url(url: &str) -> bool {
+        let parsed = match Url::parse(url.trim()) {
+            Ok(url) => url,
+            Err(_) => return false,
+        };
+
+        let path = parsed.path().to_ascii_lowercase();
+        matches!(
+            path.rsplit('.').next(),
+            Some(
+                "gif"
+                    | "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "webp"
+                    | "bmp"
+                    | "svg"
+                    | "mp4"
+                    | "mov"
+                    | "webm"
+                    | "mkv"
+                    | "avi"
+            )
+        )
+    }
+
+    fn reject_media_url(url: &str, tool_name: &str) -> Result<()> {
+        if Self::is_media_url(url) {
+            return Err(anyhow!(
+                "{tool_name} is for web pages, not media URLs; use `describe_image_file` or `describe_video_file` instead"
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn reject_media_urls(urls: &[String], tool_name: &str) -> Result<()> {
+        for url in urls {
+            Self::reject_media_url(url, tool_name)?;
+        }
+
+        Ok(())
+    }
+
     async fn post(&self, path: &str, body: Value) -> Result<ResponsePayload> {
         let url = self.endpoint_url(path);
         let mut last_error = None;
@@ -162,17 +207,20 @@ impl Crawl4aiProvider {
             match self.do_post(&url, &body).await {
                 Ok(payload) => return Ok(payload),
                 Err(e) => {
+                    let retryable = is_retryable_error(&e.to_string());
                     last_error = Some(e);
                     // Only retry on transient errors
-                    if !is_retryable_error(&last_error.as_ref().unwrap().to_string()) {
+                    if !retryable {
                         break;
                     }
-                    warn!(
-                        url = %url,
-                        attempt = attempt,
-                        error = %last_error.as_ref().unwrap(),
-                        "Crawl4AI request failed, will retry",
-                    );
+                    if let Some(error) = last_error.as_ref() {
+                        warn!(
+                            url = %url,
+                            attempt = attempt,
+                            error = %error,
+                            "Crawl4AI request failed, will retry",
+                        );
+                    }
                 }
             }
         }
@@ -254,7 +302,7 @@ impl ToolProvider for Crawl4aiProvider {
         vec![
             ToolDefinition {
                 name: "deep_crawl".to_string(),
-                description: "Deep crawl website with JS rendering. Use for dynamic sites or multi-page discovery.".to_string(),
+                description: "Deep crawl website with JS rendering. Use for dynamic sites or multi-page discovery, not for direct media URLs.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -273,7 +321,7 @@ impl ToolProvider for Crawl4aiProvider {
             },
             ToolDefinition {
                 name: "web_markdown".to_string(),
-                description: "Extract markdown from a single URL. Use for fast page reading.".to_string(),
+                description: "Extract markdown from a single URL. Use for fast page reading, not for direct media URLs.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -287,7 +335,7 @@ impl ToolProvider for Crawl4aiProvider {
             },
             ToolDefinition {
                 name: "web_pdf".to_string(),
-                description: "Export webpage to PDF. Returns base64 PDF when possible.".to_string(),
+                description: "Export webpage to PDF. Returns base64 PDF when possible, not for direct media URLs.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -336,6 +384,8 @@ impl ToolProvider for Crawl4aiProvider {
                     return Err(anyhow!("deep_crawl requires at least one URL"));
                 }
 
+                Self::reject_media_urls(&args.urls, tool_name)?;
+
                 let body = build_crawl_body(args.urls, args.max_depth);
                 let payload = self.post("/crawl", body).await?;
                 Ok(format_crawl_output(payload))
@@ -345,6 +395,8 @@ impl ToolProvider for Crawl4aiProvider {
                 if args.url.trim().is_empty() {
                     return Err(anyhow!("web_markdown requires a URL"));
                 }
+
+                Self::reject_media_url(&args.url, tool_name)?;
 
                 let body = json!({
                     "url": args.url,
@@ -358,6 +410,8 @@ impl ToolProvider for Crawl4aiProvider {
                 if args.url.trim().is_empty() {
                     return Err(anyhow!("web_pdf requires a URL"));
                 }
+
+                Self::reject_media_url(&args.url, tool_name)?;
 
                 let body = json!({ "url": args.url });
                 let payload = self.post("/pdf", body).await?;

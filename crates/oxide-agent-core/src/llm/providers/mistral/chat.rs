@@ -10,10 +10,9 @@ use crate::llm::providers::mistral::{
     types::{MISTRAL_REASONING_EFFORT, MISTRAL_REASONING_MODEL_ID},
 };
 use crate::llm::{
-    http_utils::parse_retry_after, openai_compat, ChatResponse, ChatWithToolsRequest, LlmError,
-    Message, ToolDefinition,
+    support::http::{parse_retry_after, APP_USER_AGENT},
+    ChatResponse, ChatWithToolsRequest, LlmError, Message, ToolDefinition,
 };
-use async_openai::Client;
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -50,6 +49,7 @@ pub fn build_tool_chat_body(
     tools: &[ToolDefinition],
     model_id: &str,
     max_tokens: u32,
+    temperature: Option<f32>,
     id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
     let messages = prepare_structured_messages(system_prompt, history, id_mapper);
@@ -57,11 +57,13 @@ pub fn build_tool_chat_body(
         "model": model_id,
         "messages": messages,
         "max_tokens": max_tokens,
-        "temperature": if is_reasoning_model(model_id) {
-            MISTRAL_REASONING_TEMPERATURE
-        } else {
-            MISTRAL_TOOL_TEMPERATURE
-        },
+        "temperature": temperature.unwrap_or_else(|| {
+            if is_reasoning_model(model_id) {
+                MISTRAL_REASONING_TEMPERATURE
+            } else {
+                MISTRAL_TOOL_TEMPERATURE
+            }
+        }),
         "tool_choice": "auto",
         "parallel_tool_calls": true
     });
@@ -138,6 +140,7 @@ pub async fn send_chat_request_with_mapping(
     let response = http_client
         .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
+        .header("User-Agent", APP_USER_AGENT)
         .json(&body)
         .send()
         .await
@@ -169,39 +172,7 @@ pub async fn send_chat_request_with_mapping(
 
     // Take lock for parsing (maps Mistral IDs back to original)
     let mapper = id_mapper.lock().expect("ID mapper lock poisoned");
-    parse_chat_response(response_json, &*mapper)
-}
-
-/// Chat completion implementation
-pub async fn chat_completion(
-    client: &Client<async_openai::config::OpenAIConfig>,
-    http_client: &HttpClient,
-    api_key: &str,
-    system_prompt: &str,
-    history: &[Message],
-    user_message: &str,
-    model_id: &str,
-    max_tokens: u32,
-) -> Result<String, LlmError> {
-    if is_reasoning_model(model_id) {
-        let body =
-            build_chat_completion_body(system_prompt, history, user_message, model_id, max_tokens);
-        let response = send_chat_request(http_client, api_key, body).await?;
-        return response
-            .content
-            .ok_or_else(|| LlmError::ApiError("Empty response".to_string()));
-    }
-
-    openai_compat::chat_completion(
-        client,
-        system_prompt,
-        history,
-        user_message,
-        model_id,
-        max_tokens,
-        MISTRAL_CHAT_TEMPERATURE,
-    )
-    .await
+    parse_chat_response(response_json, &mapper)
 }
 
 /// Chat with tools implementation
@@ -219,6 +190,7 @@ pub async fn chat_with_tools(
         tools,
         model_id,
         max_tokens,
+        temperature,
         json_mode: _,
     } = request;
 
@@ -231,7 +203,8 @@ pub async fn chat_with_tools(
             tools,
             model_id,
             max_tokens,
-            &mut *mapper,
+            temperature,
+            &mut mapper,
         )
     };
 

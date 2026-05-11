@@ -53,6 +53,29 @@ pub struct ReminderContext {
     pub thread_id: Option<i64>,
     /// Delivery thread kind.
     pub thread_kind: ReminderThreadKind,
+    /// Optional notifier used by transports to maintain an in-memory due queue.
+    pub notifier: Option<Arc<dyn ReminderScheduleNotifier>>,
+}
+
+/// Reminder change event emitted after successful storage mutations.
+#[derive(Debug, Clone)]
+pub enum ReminderScheduleEvent {
+    /// Insert or replace the latest state for a reminder record.
+    Upsert(Box<ReminderJobRecord>),
+    /// Remove a reminder record from any in-memory due index.
+    Delete {
+        /// User owning the reminder.
+        user_id: i64,
+        /// Stable reminder identifier.
+        reminder_id: String,
+    },
+}
+
+/// Transport hook that tracks reminder mutations outside persistent storage.
+#[async_trait]
+pub trait ReminderScheduleNotifier: Send + Sync {
+    /// Consume a reminder mutation event.
+    async fn notify(&self, event: ReminderScheduleEvent);
 }
 
 /// Provider that allows the agent to schedule reminder jobs.
@@ -152,6 +175,12 @@ impl ReminderProvider {
         Self { context }
     }
 
+    async fn notify_schedule_event(&self, event: ReminderScheduleEvent) {
+        if let Some(notifier) = &self.context.notifier {
+            notifier.notify(event).await;
+        }
+    }
+
     async fn execute_schedule(&self, arguments: &str) -> Result<String> {
         let args: ReminderScheduleArgs = serde_json::from_str(arguments)?;
         let now = now_unix_secs();
@@ -180,6 +209,8 @@ impl ReminderProvider {
                 timezone: compiled.timezone.clone(),
             })
             .await?;
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(record.clone())))
+            .await;
 
         let _ = self
             .context
@@ -259,6 +290,8 @@ impl ReminderProvider {
             .await?
             .ok_or_else(|| anyhow!("reminder '{}' could not be cancelled", args.reminder_id))?;
         let cancelled_id = cancelled.reminder_id.clone();
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(cancelled.clone())))
+            .await;
 
         let _ = self
             .context
@@ -302,6 +335,8 @@ impl ReminderProvider {
             .pause_reminder_job(self.context.user_id, args.reminder_id.clone(), now)
             .await?
             .ok_or_else(|| anyhow!("reminder '{}' could not be paused", args.reminder_id))?;
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(paused.clone())))
+            .await;
 
         self.append_audit(
             "reminder_job_paused",
@@ -346,6 +381,8 @@ impl ReminderProvider {
             )
             .await?
             .ok_or_else(|| anyhow!("reminder '{}' could not be resumed", args.reminder_id))?;
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(resumed.clone())))
+            .await;
 
         self.append_audit(
             "reminder_job_resumed",
@@ -391,6 +428,8 @@ impl ReminderProvider {
             )
             .await?
             .ok_or_else(|| anyhow!("reminder '{}' could not be retried", args.reminder_id))?;
+        self.notify_schedule_event(ReminderScheduleEvent::Upsert(Box::new(retried.clone())))
+            .await;
 
         self.append_audit(
             "reminder_job_retried",
@@ -521,7 +560,7 @@ fn compile_interval_schedule(
     let second_run_at =
         next_run_at.saturating_add(i64::try_from(interval_secs).unwrap_or(i64::MAX));
     let preview = format!(
-        "Fixed-delay reminder every {} seconds. Next runs: unix {} ({}), then unix {} ({}). Use cron for wall-clock schedules like every day at 09:00.",
+        "Fixed-rate reminder every {} seconds. Next runs: unix {} ({}), then unix {} ({}). Use cron for wall-clock schedules like every day at 09:00.",
         interval_secs,
         next_run_at,
         format_display_time(next_run_at, timezone.as_deref())?,
@@ -711,14 +750,14 @@ fn format_display_time(unix: i64, timezone: Option<&str>) -> Result<String> {
 fn reminder_schedule_definition() -> ToolDefinition {
     ToolDefinition {
         name: TOOL_REMINDER_SCHEDULE.to_string(),
-        description: "Schedule a wake-up task. Prefer date + time for one-time reminders, interval only for fixed-delay repetition, and cron for wall-clock schedules like every day at 09:00 or weekdays at 18:30. The agent will wake up later, execute the task, and post a report in the same topic.".to_string(),
+        description: "Schedule a wake-up task. Prefer date + time for one-time reminders, interval only for fixed-rate repetition, and cron for wall-clock schedules like every day at 09:00 or weekdays at 18:30. The agent will wake up later, execute the task, and post a report in the same topic.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
                 "kind": {
                     "type": "string",
                     "enum": ["once", "interval", "cron"],
-                    "description": "Schedule type: one-time, fixed-delay interval, or wall-clock cron"
+                    "description": "Schedule type: one-time, fixed-rate interval, or wall-clock cron"
                 },
                 "task": {
                     "type": "string",
@@ -734,11 +773,11 @@ fn reminder_schedule_definition() -> ToolDefinition {
                 },
                 "every_minutes": {
                     "type": "integer",
-                    "description": "Fixed-delay reminder cadence in minutes. Use this only for repeat-after-N-minutes schedules, not for every day at 09:00."
+                    "description": "Fixed-rate reminder cadence in minutes. Use this only for repeat-every-N-minutes schedules, not for every day at 09:00."
                 },
                 "every_hours": {
                     "type": "integer",
-                    "description": "Fixed-delay reminder cadence in hours. Use this only for repeat-after-N-hours schedules, not for every day at 09:00."
+                    "description": "Fixed-rate reminder cadence in hours. Use this only for repeat-every-N-hours schedules, not for every day at 09:00."
                 },
                 "first_date": {
                     "type": "string",

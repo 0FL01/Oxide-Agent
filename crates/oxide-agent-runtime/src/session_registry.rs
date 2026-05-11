@@ -119,6 +119,22 @@ impl SessionRegistry {
         false
     }
 
+    /// Resume a paused session that is explicitly waiting for user input.
+    ///
+    /// Returns `Ok(true)` when pending input was consumed and queued,
+    /// `Ok(false)` when the session exists but is not waiting for user input,
+    /// and `Err` when the session is missing or currently busy.
+    pub async fn resume_with_user_input(
+        &self,
+        id: &SessionId,
+        content: String,
+    ) -> Result<bool, &'static str> {
+        self.with_executor_mut(id, |executor| {
+            Box::pin(async move { executor.resume_with_user_input(content) })
+        })
+        .await
+    }
+
     /// Check if a task is currently running for this session
     pub async fn is_running(&self, id: &SessionId) -> bool {
         let executor_arc = {
@@ -362,5 +378,61 @@ mod tests {
 
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].content, "extra context");
+    }
+
+    #[tokio::test]
+    async fn resume_with_user_input_clears_pending_request_and_queues_context() {
+        let registry = SessionRegistry::new();
+        let session_id = SessionId::from(404_i64);
+        registry
+            .insert(session_id, build_executor(session_id))
+            .await;
+
+        registry
+            .with_executor_mut(&session_id, |executor| {
+                Box::pin(async move {
+                    executor.session_mut().set_pending_user_input(
+                        oxide_agent_core::agent::PendingUserInput {
+                            kind: oxide_agent_core::agent::UserInputKind::Url,
+                            prompt: "Send a direct URL".to_string(),
+                        },
+                    );
+                })
+            })
+            .await
+            .expect("session must exist for pending user input test");
+
+        let resumed = registry
+            .resume_with_user_input(&session_id, "https://example.com/app.apk".to_string())
+            .await
+            .expect("resume should succeed for idle session");
+
+        assert!(resumed);
+
+        let executor_arc = registry
+            .get(&session_id)
+            .await
+            .expect("session must exist after resume");
+        let mut executor = executor_arc.write().await;
+        assert!(executor.session().pending_user_input().is_none());
+        let pending = executor.session_mut().drain_runtime_context();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].content, "https://example.com/app.apk");
+    }
+
+    #[tokio::test]
+    async fn resume_with_user_input_returns_false_without_pending_request() {
+        let registry = SessionRegistry::new();
+        let session_id = SessionId::from(505_i64);
+        registry
+            .insert(session_id, build_executor(session_id))
+            .await;
+
+        let resumed = registry
+            .resume_with_user_input(&session_id, "hello".to_string())
+            .await
+            .expect("resume should succeed for idle session");
+
+        assert!(!resumed);
     }
 }

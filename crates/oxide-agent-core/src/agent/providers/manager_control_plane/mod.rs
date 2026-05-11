@@ -152,6 +152,7 @@ fn default_infra_allowed_tool_modes() -> Vec<TopicInfraToolMode> {
         TopicInfraToolMode::ReadFile,
         TopicInfraToolMode::ApplyFileEdit,
         TopicInfraToolMode::CheckProcess,
+        TopicInfraToolMode::Transfer,
     ]
 }
 
@@ -181,6 +182,7 @@ const TOPIC_AGENT_SANDBOX_TOOLS: &[&str] = &[
     "recreate_sandbox",
 ];
 const TOPIC_AGENT_FILEHOSTER_TOOLS: &[&str] = &["upload_file"];
+const TOPIC_AGENT_STACK_LOGS_TOOLS: &[&str] = &["stack_logs_list_sources", "stack_logs_fetch"];
 const TOPIC_AGENT_YTDLP_TOOLS: &[&str] = &[
     "ytdlp_get_video_metadata",
     "ytdlp_download_transcript",
@@ -199,19 +201,33 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
 ];
 #[cfg(feature = "tavily")]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
+#[cfg(feature = "searxng")]
+const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
 #[cfg(feature = "crawl4ai")]
 const TOPIC_AGENT_CRAWL4AI_TOOLS: &[&str] = &["deep_crawl", "web_markdown", "web_pdf"];
+#[cfg(feature = "browser_use")]
+const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
+    "browser_use_run_task",
+    "browser_use_get_session",
+    "browser_use_close_session",
+    "browser_use_extract_content",
+    "browser_use_screenshot",
+];
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",
     "ssh_sudo_exec",
     "ssh_read_file",
     "ssh_apply_file_edit",
     "ssh_check_process",
+    "ssh_send_file_to_user",
 ];
 #[cfg(feature = "jira")]
 const TOPIC_AGENT_JIRA_TOOLS: &[&str] = &["jira_read", "jira_write", "jira_schema"];
 #[cfg(feature = "mattermost")]
 const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
+    "mattermost_list_teams",
+    "mattermost_get_team",
+    "mattermost_get_team_members",
     "mattermost_list_channels",
     "mattermost_get_channel",
     "mattermost_get_channel_by_name",
@@ -229,6 +245,13 @@ const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_search_users",
     "mattermost_upload_file",
 ];
+const TOPIC_AGENT_MEDIA_FILE_TOOLS: &[&str] = &[
+    "transcribe_audio_file",
+    "describe_image_file",
+    "describe_video_file",
+];
+const TOPIC_AGENT_TTS_EN_TOOLS: &[&str] = &["text_to_speech_en", "text_to_speech_en_file"];
+const TOPIC_AGENT_TTS_RU_TOOLS: &[&str] = &["text_to_speech_ru", "text_to_speech_ru_file"];
 
 /// Transport-agnostic request for forum topic creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

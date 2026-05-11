@@ -64,6 +64,36 @@ pub fn user_context_agent_flow_memory_key(
     format!("users/{user_id}/topics/{context_key}/flows/{flow_id}/memory.json")
 }
 
+/// Returns the R2 key for a persistent memory thread record.
+#[must_use]
+pub fn persistent_memory_thread_key(thread_id: &str) -> String {
+    format!("persistent_memory/threads/{thread_id}.json")
+}
+
+/// Returns the R2 key for a persistent memory episode record.
+#[must_use]
+pub fn persistent_memory_episode_key(thread_id: &str, episode_id: &str) -> String {
+    format!("persistent_memory/threads/{thread_id}/episodes/{episode_id}.json")
+}
+
+/// Returns the R2 key for a reusable memory record.
+#[must_use]
+pub fn persistent_memory_record_key(context_key: &str, memory_id: &str) -> String {
+    format!("persistent_memory/contexts/{context_key}/memories/{memory_id}.json")
+}
+
+/// Returns the R2 key for a persistent session-state record.
+#[must_use]
+pub fn persistent_memory_session_state_key(session_id: &str) -> String {
+    format!("persistent_memory/session_states/{session_id}.json")
+}
+
+/// Returns the R2 key for a persistent memory embedding record.
+#[must_use]
+pub fn persistent_memory_embedding_key(owner_type: &str, owner_id: &str) -> String {
+    format!("persistent_memory/embeddings/{owner_type}/{owner_id}.json")
+}
+
 /// Returns the R2 key for an agent profile record.
 #[must_use]
 pub fn agent_profile_key(user_id: i64, agent_id: &str) -> String {

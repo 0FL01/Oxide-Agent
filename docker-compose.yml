@@ -1,10 +1,38 @@
+name: ${COMPOSE_PROJECT_NAME:-oxide-agent}
+
 services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: oxide_agent_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-oxide_agent}
+      - POSTGRES_USER=${POSTGRES_USER:-oxide_agent}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_me}
+      - TZ=Europe/Moscow
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "export PGPASSWORD=${POSTGRES_PASSWORD:-change_me} && pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-oxide_agent} -d ${POSTGRES_DB:-oxide_agent} && psql -h 127.0.0.1 -U ${POSTGRES_USER:-oxide_agent} -d ${POSTGRES_DB:-oxide_agent} -Atqc 'SELECT 1'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
   sandbox_image:
-    profiles: ["build"]
     build:
       context: .
       dockerfile: sandbox/Dockerfile.sandbox
     image: ${SANDBOX_IMAGE:-agent-sandbox:latest}
+    command: ["true"]
+    restart: "no"
     environment:
       - TZ=Europe/Moscow
 
@@ -18,6 +46,14 @@ services:
       - .env
     environment:
       - CRAWL4AI_URL=http://127.0.0.1:11235
+      - SEARXNG_ENABLED=true
+      - SEARXNG_URL=http://127.0.0.1:8081
+      - MEMORY_DATABASE_URL=${MEMORY_DATABASE_URL:-postgres://oxide_agent:change_me@127.0.0.1:5432/oxide_agent}
+      - MEMORY_DATABASE_MAX_CONNECTIONS=${MEMORY_DATABASE_MAX_CONNECTIONS:-5}
+      - MEMORY_DATABASE_AUTO_MIGRATE=${MEMORY_DATABASE_AUTO_MIGRATE:-true}
+      - MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS=${MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS:-12}
+      - MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS=${MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS:-2000}
+      - MEMORY_DATABASE_STARTUP_TIMEOUT_SECS=${MEMORY_DATABASE_STARTUP_TIMEOUT_SECS:-10}
       - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
@@ -28,9 +64,15 @@ services:
       - ./config:/app/config
       - sandboxd-run:/run/sandboxd
     network_mode: host
-    # depends_on:
-    #   crawl4ai:
-    #     condition: service_healthy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sandboxd:
+        condition: service_healthy
+      crawl4ai:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
     logging:
       driver: json-file
       options:
@@ -50,10 +92,20 @@ services:
       - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+      - STACK_LOGS_PROJECT=${COMPOSE_PROJECT_NAME:-oxide-agent}
+    depends_on:
+      sandbox_image:
+        condition: service_completed_successfully
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - sandboxd-run:/run/sandboxd
     network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/sandboxd/sandboxd.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     logging:
       driver: json-file
       options:
@@ -65,8 +117,8 @@ services:
     container_name: crawl4ai
     restart: unless-stopped
     shm_size: '2gb'
-    #volumes:
-    #  - /dev/shm:/dev/shm
+    ports:
+      - "127.0.0.1:11235:11235"
     deploy:
       resources:
         limits:
@@ -84,6 +136,68 @@ services:
         max-size: "1m"
         max-file: "3"
 
-volumes:
-  sandboxd-run:
+#  browser_use:
+#    build:
+#      context: ./services/browser_use_bridge
+#    image: oxide-agent-browser-use:latest
+#    container_name: browser_use
+#    restart: unless-stopped
+#    environment:
+#     - TZ=Europe/Moscow
+#     - BROWSER_USE_BRIDGE_HOST=0.0.0.0
+#     - BROWSER_USE_BRIDGE_PORT=8000
+#      - BROWSER_USE_BRIDGE_DATA_DIR=/data
+#      - BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=${BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE:-3}
+#      - BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=${BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS:-604800}
+#      - BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=${BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES:-2}
+#      - BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=${BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS:-750}
+#      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+#      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+#      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+#      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+#    shm_size: '2gb'
+#    ports:
+#      - "127.0.0.1:8002:8000"
+#    volumes:
+#      - browser-use-data:/data
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 5
+#      start_period: 40s
+#    logging:
+#      driver: json-file
+#      options:
+#        max-size: "1m"
+#        max-file: "3"
 
+  searxng:
+    image: searxng/searxng:2026.3.24-054174a19
+    container_name: searxng
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+      - SEARXNG_BASE_URL=http://127.0.0.1:8081/
+      - GRANIAN_HOST=0.0.0.0
+      - GRANIAN_PORT=8080
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+volumes:
+  browser-use-data:
+  postgres-data:
+  sandboxd-run:

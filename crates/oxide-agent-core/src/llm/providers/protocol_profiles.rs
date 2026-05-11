@@ -2,11 +2,12 @@ use super::tool_call_adapter::ProviderToolCallAdapter;
 use super::tool_call_encoder::{
     EncodedAssistantToolCall, ProviderToolCallEncoder, ToolCallEncoder,
 };
+#[cfg(test)]
 use super::tool_correlation::ToolCorrelationNormalizer;
 use super::tool_result_encoder::{EncodedToolResult, ProviderToolResultEncoder, ToolResultEncoder};
-use crate::llm::{
-    InvocationId, Message, ToolCall, ToolCallCorrelation, ToolProtocol, ToolTransport,
-};
+#[cfg(test)]
+use crate::llm::ToolCallCorrelation;
+use crate::llm::{InvocationId, Message, ToolCall, ToolProtocol, ToolTransport};
 
 /// Unified tool protocol behavior profile for one provider wire family.
 #[derive(Debug, Clone, Copy)]
@@ -14,6 +15,7 @@ pub struct ToolProtocolProfile {
     adapter: ProviderToolCallAdapter,
     tool_call_encoder: ProviderToolCallEncoder,
     tool_result_encoder: ProviderToolResultEncoder,
+    #[cfg(test)]
     correlation_normalizer: ToolCorrelationNormalizer,
 }
 
@@ -24,10 +26,12 @@ impl ToolProtocolProfile {
             adapter: ProviderToolCallAdapter::new(protocol, transport),
             tool_call_encoder: ProviderToolCallEncoder::new(protocol, transport),
             tool_result_encoder: ProviderToolResultEncoder::new(protocol, transport),
+            #[cfg(test)]
             correlation_normalizer: ToolCorrelationNormalizer::new(protocol, transport),
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn normalize_correlation(self, correlation: ToolCallCorrelation) -> ToolCallCorrelation {
         self.correlation_normalizer.normalize(correlation)

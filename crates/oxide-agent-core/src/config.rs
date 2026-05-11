@@ -4,6 +4,7 @@
 //!
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 // LLM provider defaults
@@ -30,6 +31,8 @@ pub const GEMINI_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 pub const GEMINI_IMAGE_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for OpenRouter chat completions.
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
+/// Default temperature used for NVIDIA NIM chat completions.
+pub const NVIDIA_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for MiniMax chat completions.
 pub const MINIMAX_CHAT_TEMPERATURE: f32 = 1.0;
 /// Temperature used when MiniMax runs tool-enabled chat requests.
@@ -58,6 +61,8 @@ pub const OPENROUTER_AUDIO_TRANSCRIBE_PROMPT: &str = concat!(
 /// Agent settings loaded from environment variables.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AgentSettings {
+    /// ChatGPT OAuth auth file path.
+    pub chatgpt_auth_path: Option<String>,
     /// Groq API key
     pub groq_api_key: Option<String>,
     /// Mistral API key
@@ -73,18 +78,40 @@ pub struct AgentSettings {
     pub gemini_api_key: Option<String>,
     /// `OpenRouter` API key
     pub openrouter_api_key: Option<String>,
+    /// `NVIDIA NIM` API key
+    pub nvidia_api_key: Option<String>,
     /// Tavily API key
     pub tavily_api_key: Option<String>,
+    /// Enable Tavily tool provider registration.
+    pub tavily_enabled: Option<bool>,
+    /// SearXNG base URL.
+    pub searxng_url: Option<String>,
+    /// Enable SearXNG tool provider registration.
+    pub searxng_enabled: Option<bool>,
+    /// SearXNG request timeout (seconds).
+    pub searxng_timeout_secs: Option<u64>,
     /// Crawl4AI base URL
     pub crawl4ai_url: Option<String>,
+    /// Enable Crawl4AI tool provider registration.
+    pub crawl4ai_enabled: Option<bool>,
     /// Crawl4AI request timeout (seconds)
     pub crawl4ai_timeout_secs: Option<u64>,
+    /// Browser Use bridge base URL.
+    pub browser_use_url: Option<String>,
+    /// Browser Use request timeout (seconds).
+    pub browser_use_timeout_secs: Option<u64>,
+    /// Dedicated Browser Use model ID override.
+    pub browser_use_model_id: Option<String>,
+    /// Dedicated Browser Use model provider override.
+    pub browser_use_model_provider: Option<String>,
+    /// Dedicated Browser Use model max output tokens override.
+    #[serde(alias = "browser_use_model_max_tokens")]
+    pub browser_use_model_max_output_tokens: Option<u32>,
+    /// Dedicated Browser Use model context window tokens override.
+    pub browser_use_model_context_window_tokens: Option<u32>,
 
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
-
-    /// Web search provider: "tavily" or "crawl4ai"
-    pub search_provider: Option<String>,
 
     /// R2 Storage access key ID
     pub r2_access_key_id: Option<String>,
@@ -104,6 +131,9 @@ pub struct AgentSettings {
     /// Site name for `OpenRouter` identification
     #[serde(default = "default_openrouter_site_name")]
     pub openrouter_site_name: String,
+    /// `NVIDIA NIM` API base URL
+    #[serde(default = "default_nvidia_api_base")]
+    pub nvidia_api_base: String,
 
     /// Default system message
     pub system_message: Option<String>,
@@ -130,6 +160,8 @@ pub struct AgentSettings {
     pub agent_model_max_output_tokens: Option<u32>,
     /// Agent model context window tokens override
     pub agent_model_context_window_tokens: Option<u32>,
+    /// Agent model temperature override.
+    pub agent_model_temperature: Option<f32>,
     /// Optional weighted fallback routes for the main agent model.
     #[serde(default)]
     pub agent_model_routes: Option<Vec<ModelInfo>>,
@@ -167,10 +199,51 @@ pub struct AgentSettings {
     /// Compaction summary model timeout override in seconds
     pub compaction_model_timeout_secs: Option<u64>,
 
-    /// Embedding provider name (mistral, openrouter, openai)
+    /// Dedicated persistent-memory classifier model provider override.
+    pub memory_classifier_provider: Option<String>,
+    /// Dedicated persistent-memory classifier model override.
+    pub memory_classifier_model: Option<String>,
+
+    /// Soft warning threshold for hot-context growth.
+    pub soft_warning_tokens: Option<usize>,
+    /// Hard threshold that triggers immediate compaction.
+    pub hard_compaction_tokens: Option<usize>,
+
+    /// Embedding provider name (mistral, openrouter, openai, gemini)
     pub embedding_provider: Option<String>,
     /// Embedding model ID
     pub embedding_model_id: Option<String>,
+    /// Custom OpenAI-compatible embeddings base URL.
+    /// Used by the `openai-base` embedding provider.
+    pub embedding_openai_base_url: Option<String>,
+    /// Custom OpenAI-compatible embeddings API key.
+    /// Used by the `openai-base` embedding provider.
+    pub embedding_openai_api_key: Option<String>,
+    /// Output embedding dimensionality.
+    /// When set, the embedding provider will truncate vectors to this size via
+    /// `output_dimensionality` (Gemini) or equivalent. Must be in 128..=3072.
+    /// Recommended values: 1024, 1536, 3072. Defaults to 1024.
+    pub embedding_dimensions: Option<u32>,
+    /// Retrieval prompt style for embeddings sent to OpenAI-compatible endpoints.
+    #[serde(default)]
+    pub embedding_prompt_style: Option<EmbeddingPromptStyle>,
+    /// Custom prefix applied to retrieval queries when `embedding_prompt_style=custom`.
+    pub embedding_query_prefix: Option<String>,
+    /// Custom prefix applied to retrieval documents when `embedding_prompt_style=custom`.
+    pub embedding_document_prefix: Option<String>,
+
+    /// Postgres connection string for typed persistent memory.
+    pub memory_database_url: Option<String>,
+    /// Maximum SQL connections for the persistent-memory Postgres pool.
+    pub memory_database_max_connections: Option<u32>,
+    /// Run embedded persistent-memory migrations during startup.
+    pub memory_database_auto_migrate: Option<bool>,
+    /// Maximum number of startup attempts for Postgres persistent-memory init.
+    pub memory_database_startup_max_attempts: Option<u32>,
+    /// Delay between Postgres persistent-memory startup retries in milliseconds.
+    pub memory_database_startup_retry_delay_ms: Option<u64>,
+    /// Per-attempt timeout for Postgres persistent-memory startup in seconds.
+    pub memory_database_startup_timeout_secs: Option<u64>,
 
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
@@ -182,12 +255,44 @@ const fn default_openrouter_site_url() -> String {
     String::new()
 }
 
+/// Prompt adaptation style for retrieval-aware embedding models.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingPromptStyle {
+    /// Send the original text without any task prefix.
+    #[default]
+    None,
+    /// Prefix retrieval inputs for USER2-style asymmetric search models.
+    User2,
+    /// Prefix retrieval inputs for E5-style asymmetric search models.
+    E5,
+    /// Use explicit query/document prefixes from config.
+    Custom,
+}
+
+impl EmbeddingPromptStyle {
+    /// Return the canonical snake_case label used in env/config serialization.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::User2 => "user2",
+            Self::E5 => "e5",
+            Self::Custom => "custom",
+        }
+    }
+}
+
 fn default_r2_region() -> String {
     "auto".to_string()
 }
 
 fn default_zai_api_base() -> String {
     "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string()
+}
+
+fn default_nvidia_api_base() -> String {
+    "https://integrate.api.nvidia.com/v1".to_string()
 }
 
 fn default_openrouter_site_name() -> String {
@@ -276,29 +381,19 @@ impl AgentSettings {
             }
         }
 
-        if settings.search_provider.is_none() {
-            if let Ok(val) = std::env::var("SEARCH_PROVIDER") {
+        if settings.agent_model_temperature.is_none() {
+            settings.agent_model_temperature = parse_optional_env_f32("AGENT_MODEL_TEMPERATURE");
+        }
+
+        if settings.chatgpt_auth_path.is_none() {
+            if let Ok(val) = std::env::var("CHATGPT_AUTH_PATH") {
                 if !val.is_empty() {
-                    settings.search_provider = Some(val);
+                    settings.chatgpt_auth_path = Some(val);
                 }
             }
         }
 
-        if settings.tavily_api_key.is_none() {
-            if let Ok(val) = std::env::var("TAVILY_API_KEY") {
-                if !val.is_empty() {
-                    settings.tavily_api_key = Some(val);
-                }
-            }
-        }
-
-        if settings.crawl4ai_url.is_none() {
-            if let Ok(val) = std::env::var("CRAWL4AI_URL") {
-                if !val.is_empty() {
-                    settings.crawl4ai_url = Some(val);
-                }
-            }
-        }
+        settings.apply_tool_provider_env_fallbacks();
 
         if settings
             .zai_api_key
@@ -343,6 +438,77 @@ impl AgentSettings {
                 }
             }
         }
+        if settings.embedding_openai_base_url.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_OPENAI_BASE_URL") {
+                if !val.is_empty() {
+                    settings.embedding_openai_base_url = Some(val);
+                }
+            }
+        }
+        if settings.embedding_openai_api_key.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_OPENAI_API_KEY") {
+                if !val.is_empty() {
+                    settings.embedding_openai_api_key = Some(val);
+                }
+            }
+        }
+        if settings.embedding_dimensions.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_DIMENSIONS") {
+                if let Ok(parsed) = val.parse::<u32>() {
+                    settings.embedding_dimensions = Some(parsed);
+                }
+            }
+        }
+        if settings.embedding_prompt_style.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_PROMPT_STYLE") {
+                settings.embedding_prompt_style = parse_embedding_prompt_style(&val);
+            }
+        }
+        if settings.embedding_query_prefix.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_QUERY_PREFIX") {
+                if !val.is_empty() {
+                    settings.embedding_query_prefix = Some(val);
+                }
+            }
+        }
+        if settings.embedding_document_prefix.is_none() {
+            if let Ok(val) = std::env::var("EMBEDDING_DOCUMENT_PREFIX") {
+                if !val.is_empty() {
+                    settings.embedding_document_prefix = Some(val);
+                }
+            }
+        }
+
+        if settings.memory_database_url.is_none() {
+            if let Ok(val) = std::env::var("MEMORY_DATABASE_URL") {
+                if !val.is_empty() {
+                    settings.memory_database_url = Some(val);
+                }
+            }
+        }
+        if settings.memory_database_max_connections.is_none() {
+            if let Ok(val) = std::env::var("MEMORY_DATABASE_MAX_CONNECTIONS") {
+                if let Ok(parsed) = val.parse::<u32>() {
+                    settings.memory_database_max_connections = Some(parsed);
+                }
+            }
+        }
+        if settings.memory_database_auto_migrate.is_none() {
+            settings.memory_database_auto_migrate =
+                parse_optional_env_bool("MEMORY_DATABASE_AUTO_MIGRATE");
+        }
+        if settings.memory_database_startup_max_attempts.is_none() {
+            settings.memory_database_startup_max_attempts =
+                parse_optional_env_u32("MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS");
+        }
+        if settings.memory_database_startup_retry_delay_ms.is_none() {
+            settings.memory_database_startup_retry_delay_ms =
+                parse_optional_env_u64("MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS");
+        }
+        if settings.memory_database_startup_timeout_secs.is_none() {
+            settings.memory_database_startup_timeout_secs =
+                parse_optional_env_u64("MEMORY_DATABASE_STARTUP_TIMEOUT_SECS");
+        }
 
         Ok(settings)
     }
@@ -366,6 +532,52 @@ impl AgentSettings {
                 self.sub_agent_context_window_tokens = Some(primary.context_window_tokens);
             }
             self.sub_agent_model_routes = Some(routes);
+        }
+    }
+
+    fn apply_tool_provider_env_fallbacks(&mut self) {
+        if self.tavily_api_key.is_none() {
+            if let Ok(val) = std::env::var("TAVILY_API_KEY") {
+                if !val.is_empty() {
+                    self.tavily_api_key = Some(val);
+                }
+            }
+        }
+
+        if self.tavily_enabled.is_none() {
+            self.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
+        }
+
+        if self.searxng_url.is_none() {
+            if let Ok(val) = std::env::var("SEARXNG_URL") {
+                if !val.is_empty() {
+                    self.searxng_url = Some(val);
+                }
+            }
+        }
+
+        if self.searxng_enabled.is_none() {
+            self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
+        }
+
+        if self.crawl4ai_url.is_none() {
+            if let Ok(val) = std::env::var("CRAWL4AI_URL") {
+                if !val.is_empty() {
+                    self.crawl4ai_url = Some(val);
+                }
+            }
+        }
+
+        if self.crawl4ai_enabled.is_none() {
+            self.crawl4ai_enabled = parse_optional_env_bool("CRAWL4AI_ENABLED");
+        }
+
+        if self.browser_use_url.is_none() {
+            if let Ok(val) = std::env::var("BROWSER_USE_URL") {
+                if !val.is_empty() {
+                    self.browser_use_url = Some(val);
+                }
+            }
         }
     }
 
@@ -548,6 +760,24 @@ impl AgentSettings {
         ))
     }
 
+    fn memory_classifier_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.memory_classifier_model.as_ref()?;
+        let provider = self.memory_classifier_provider.as_ref()?;
+        let context_window_tokens = self
+            .chat_model_context_window_tokens
+            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
+
+        Some((
+            id.clone(),
+            Self::build_model_info(
+                id,
+                provider,
+                MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS,
+                context_window_tokens,
+            ),
+        ))
+    }
+
     fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
@@ -557,6 +787,22 @@ impl AgentSettings {
         let context_window_tokens = self
             .chat_model_context_window_tokens
             .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
+
+        Some((
+            id.clone(),
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
+        ))
+    }
+
+    fn browser_use_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.browser_use_model_id.as_ref()?;
+        let provider = self.browser_use_model_provider.as_ref()?;
+        let max_output_tokens = self
+            .browser_use_model_max_output_tokens
+            .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS);
+        let context_window_tokens = self
+            .browser_use_model_context_window_tokens
+            .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
@@ -604,6 +850,10 @@ impl AgentSettings {
             Self::upsert_model(&mut models, name, info);
         }
 
+        if let Some((name, info)) = self.memory_classifier_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
         if let Some((name, info)) = self.media_model_spec() {
             Self::upsert_model(&mut models, name, info);
         }
@@ -638,6 +888,11 @@ impl AgentSettings {
     pub fn get_configured_agent_model(&self) -> ModelInfo {
         self.configured_agent_route_primary()
             .unwrap_or_else(|| self.resolve_execution_model(false))
+    }
+
+    /// Returns the configured temperature for the main agent.
+    pub fn get_configured_agent_temperature(&self) -> Option<f32> {
+        self.agent_model_temperature
     }
 
     /// Returns the configured weighted routes for the main agent.
@@ -831,6 +1086,21 @@ impl AgentSettings {
             .collect()
     }
 
+    /// Returns the configured persistent-memory classifier model route.
+    pub fn get_configured_memory_classifier_model(&self) -> ModelInfo {
+        self.memory_classifier_model_spec()
+            .map(|(_, info)| info)
+            .unwrap_or_else(|| {
+                Self::build_model_info(
+                    DEFAULT_MEMORY_CLASSIFIER_MODEL,
+                    DEFAULT_MEMORY_CLASSIFIER_PROVIDER,
+                    MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS,
+                    self.chat_model_context_window_tokens
+                        .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS),
+                )
+            })
+    }
+
     /// Returns model info by its display name
     pub fn get_model_info_by_name(&self, name: &str) -> Option<ModelInfo> {
         self.get_chat_models()
@@ -844,11 +1114,55 @@ impl AgentSettings {
         self.agent_timeout_secs.unwrap_or(AGENT_TIMEOUT_SECS)
     }
 
+    /// Returns the dedicated Browser Use model when configured.
+    pub fn get_configured_browser_use_model(&self) -> Option<ModelInfo> {
+        self.browser_use_model_spec().map(|(_, info)| info)
+    }
+
     /// Returns the configured sub-agent timeout in seconds
     pub fn get_sub_agent_timeout_secs(&self) -> u64 {
         self.sub_agent_timeout_secs
             .unwrap_or(SUB_AGENT_TIMEOUT_SECS)
     }
+
+    /// Returns the configured hot-context warning and compaction thresholds.
+    pub fn get_hot_context_limits(&self) -> crate::agent::compaction::HotContextLimits {
+        crate::agent::compaction::HotContextLimits::new(
+            self.soft_warning_tokens
+                .unwrap_or(DEFAULT_HOT_CONTEXT_SOFT_WARNING_TOKENS),
+            self.hard_compaction_tokens
+                .unwrap_or(DEFAULT_HOT_CONTEXT_HARD_COMPACTION_TOKENS),
+        )
+    }
+
+    /// Returns a stable embedding profile identifier for cache/index isolation.
+    #[must_use]
+    pub fn get_embedding_profile_id(&self) -> Option<String> {
+        build_embedding_profile_id(
+            self.embedding_provider.as_deref(),
+            self.embedding_model_id.as_deref(),
+            self.embedding_dimensions,
+            self.embedding_prompt_style.as_ref(),
+            self.embedding_query_prefix.as_deref(),
+            self.embedding_document_prefix.as_deref(),
+        )
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
+    use std::sync::OnceLock;
+
+    static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(all(test, feature = "browser_use"))]
+pub(crate) fn test_env_async_mutex() -> &'static tokio::sync::Mutex<()> {
+    use std::sync::OnceLock;
+
+    static ENV_MUTEX: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    ENV_MUTEX.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 #[cfg(test)]
@@ -860,22 +1174,54 @@ mod tests {
     // Tests run sequentially to avoid environment variable race conditions
     #[test]
     fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         env::set_var("ZAI_API_KEY", "dummy_zai_key");
 
         // 1. Test standard loading
         env::set_var("R2_ENDPOINT_URL", "https://example.com");
         env::set_var("CHAT_MODEL_ID", "test-model");
         env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
+        env::set_var("SOFT_WARNING_TOKENS", "12345");
+        env::set_var("HARD_COMPACTION_TOKENS", "23456");
+        env::set_var("EMBEDDING_OPENAI_BASE_URL", "http://127.0.0.1:8002/v1");
+        env::set_var("EMBEDDING_OPENAI_API_KEY", "test-embedding-key");
+        env::set_var("EMBEDDING_PROMPT_STYLE", "user2");
 
         let settings = AgentSettings::new()?;
         assert_eq!(
             settings.r2_endpoint_url,
             Some("https://example.com".to_string())
         );
+        assert_eq!(settings.get_configured_agent_temperature(), Some(0.42));
+        let hot_context_limits = settings.get_hot_context_limits();
+        assert_eq!(hot_context_limits.soft_warning_tokens, 12_345);
+        assert_eq!(hot_context_limits.hard_compaction_tokens, 23_456);
+        assert_eq!(
+            settings.embedding_openai_base_url,
+            Some("http://127.0.0.1:8002/v1".to_string())
+        );
+        assert_eq!(
+            settings.embedding_openai_api_key,
+            Some("test-embedding-key".to_string())
+        );
+        assert_eq!(
+            settings.embedding_prompt_style,
+            Some(EmbeddingPromptStyle::User2)
+        );
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("CHAT_MODEL_ID");
         env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("AGENT_MODEL_TEMPERATURE");
+        env::remove_var("SOFT_WARNING_TOKENS");
+        env::remove_var("HARD_COMPACTION_TOKENS");
+        env::remove_var("EMBEDDING_OPENAI_BASE_URL");
+        env::remove_var("EMBEDDING_OPENAI_API_KEY");
+        env::remove_var("EMBEDDING_PROMPT_STYLE");
 
         // 2. Test empty env var
         env::set_var("R2_ENDPOINT_URL", "");
@@ -926,6 +1272,25 @@ mod tests {
     }
 
     #[test]
+    fn embedding_profile_id_changes_with_prompt_style() {
+        let base = AgentSettings {
+            embedding_provider: Some("openai-base".to_string()),
+            embedding_model_id: Some("user2-base".to_string()),
+            embedding_dimensions: Some(768),
+            ..AgentSettings::default()
+        };
+        let user2 = AgentSettings {
+            embedding_prompt_style: Some(EmbeddingPromptStyle::User2),
+            ..base.clone()
+        };
+
+        assert_ne!(
+            base.get_embedding_profile_id(),
+            user2.get_embedding_profile_id()
+        );
+    }
+
+    #[test]
     fn test_agent_internal_context_budget_clamps_model_window() {
         let settings = AgentSettings {
             agent_model_id: Some("agent-model".to_string()),
@@ -964,6 +1329,9 @@ mod tests {
     #[test]
     fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
         use std::env;
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         env::set_var("ZAI_API_KEY", "test-key");
         env::set_var("CHAT_MODEL_ID", "chat-model");
@@ -1079,6 +1447,139 @@ mod tests {
         assert_eq!(routes[1].id, "glm-4.7");
         assert!(routes.iter().all(|route| route.max_output_tokens == 512));
     }
+
+    #[test]
+    fn browser_use_model_returns_dedicated_route_when_configured() {
+        let settings = AgentSettings {
+            browser_use_model_id: Some("GLM-4.6V".to_string()),
+            browser_use_model_provider: Some("zai".to_string()),
+            browser_use_model_max_output_tokens: Some(16_384),
+            browser_use_model_context_window_tokens: Some(131_072),
+            ..AgentSettings::default()
+        };
+
+        let route = settings
+            .get_configured_browser_use_model()
+            .expect("browser-use route should be configured");
+
+        assert_eq!(route.id, "GLM-4.6V");
+        assert_eq!(route.provider, "zai");
+        assert_eq!(route.max_output_tokens, 16_384);
+        assert_eq!(route.context_window_tokens, 131_072);
+    }
+
+    #[test]
+    fn tavily_enabled_flag_overrides_api_key_fallback() {
+        env::set_var("TAVILY_API_KEY", "dummy-key");
+        env::set_var("TAVILY_ENABLED", "false");
+
+        assert!(!is_tavily_enabled());
+
+        env::remove_var("TAVILY_ENABLED");
+        env::remove_var("TAVILY_API_KEY");
+    }
+
+    #[test]
+    fn crawl4ai_enabled_falls_back_to_url_presence() {
+        env::remove_var("CRAWL4AI_ENABLED");
+        env::set_var("CRAWL4AI_URL", "http://crawl4ai:11235");
+
+        assert!(is_crawl4ai_enabled());
+
+        env::remove_var("CRAWL4AI_URL");
+    }
+
+    #[test]
+    fn browser_use_enabled_falls_back_to_url_presence() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+
+        assert!(is_browser_use_enabled());
+
+        env::remove_var("BROWSER_USE_URL");
+    }
+
+    #[test]
+    fn searxng_enabled_flag_falls_back_to_url_presence() {
+        env::remove_var("SEARXNG_ENABLED");
+        env::set_var("SEARXNG_URL", "http://searxng:8080");
+
+        assert!(is_searxng_enabled());
+
+        env::remove_var("SEARXNG_URL");
+    }
+
+    #[test]
+    fn searxng_rotation_engines_use_defaults_when_env_missing() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::remove_var("SEARXNG_ROTATION_ENGINES");
+
+        assert_eq!(
+            get_searxng_rotation_engines(),
+            vec![
+                "brave".to_string(),
+                "bing".to_string(),
+                "qwant".to_string(),
+                "mojeek".to_string(),
+                "yandex".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn searxng_rotation_engines_parse_csv() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::set_var("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
+
+        assert_eq!(
+            get_searxng_rotation_engines(),
+            vec![
+                "bing".to_string(),
+                "qwant".to_string(),
+                "yandex".to_string()
+            ]
+        );
+
+        env::remove_var("SEARXNG_ROTATION_ENGINES");
+    }
+
+    #[test]
+    fn memory_database_startup_env_loading() -> Result<(), Box<dyn std::error::Error>> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        env::set_var("ZAI_API_KEY", "dummy_zai_key");
+        env::set_var("CHAT_MODEL_ID", "test-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS", "9");
+        env::set_var("MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS", "1500");
+        env::set_var("MEMORY_DATABASE_STARTUP_TIMEOUT_SECS", "12");
+
+        let settings = AgentSettings::new()?;
+        assert_eq!(settings.memory_database_startup_max_attempts, Some(9));
+        assert_eq!(settings.memory_database_startup_retry_delay_ms, Some(1_500));
+        assert_eq!(settings.memory_database_startup_timeout_secs, Some(12));
+
+        for key in [
+            "ZAI_API_KEY",
+            "CHAT_MODEL_ID",
+            "CHAT_MODEL_PROVIDER",
+            "MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS",
+            "MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS",
+            "MEMORY_DATABASE_STARTUP_TIMEOUT_SECS",
+        ] {
+            env::remove_var(key);
+        }
+
+        Ok(())
+    }
 }
 
 /// Information about a supported LLM model.
@@ -1175,6 +1676,12 @@ pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
 pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
 /// Default sub-agent model context window tokens.
 pub const DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
+/// Default persistent-memory classifier provider.
+pub const DEFAULT_MEMORY_CLASSIFIER_PROVIDER: &str = "mistral";
+/// Default persistent-memory classifier model.
+pub const DEFAULT_MEMORY_CLASSIFIER_MODEL: &str = "mistral-small-2603";
+/// Reserved output budget for the persistent-memory classifier.
+pub const MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS: u32 = 512;
 /// Internal main-agent context budget cap.
 pub const AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
 /// Internal sub-agent context budget cap.
@@ -1264,6 +1771,72 @@ pub fn get_embedding_model_id() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Get custom OpenAI-compatible embeddings base URL from env.
+#[must_use]
+pub fn get_embedding_openai_base_url() -> Option<String> {
+    std::env::var("EMBEDDING_OPENAI_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Get custom OpenAI-compatible embeddings API key from env.
+#[must_use]
+pub fn get_embedding_openai_api_key() -> Option<String> {
+    std::env::var("EMBEDDING_OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Default embedding output dimensionality.
+pub const DEFAULT_EMBEDDING_DIMENSIONS: u32 = 1024;
+
+/// Get embedding output dimensionality from env or default.
+#[must_use]
+pub fn get_embedding_dimensions() -> u32 {
+    std::env::var("EMBEDDING_DIMENSIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_EMBEDDING_DIMENSIONS)
+}
+
+/// Get embedding prompt style from env or default.
+#[must_use]
+pub fn get_embedding_prompt_style() -> EmbeddingPromptStyle {
+    std::env::var("EMBEDDING_PROMPT_STYLE")
+        .ok()
+        .and_then(|value| parse_embedding_prompt_style(&value))
+        .unwrap_or_default()
+}
+
+/// Get embedding query prefix from env.
+#[must_use]
+pub fn get_embedding_query_prefix() -> Option<String> {
+    std::env::var("EMBEDDING_QUERY_PREFIX")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Get embedding document prefix from env.
+#[must_use]
+pub fn get_embedding_document_prefix() -> Option<String> {
+    std::env::var("EMBEDDING_DOCUMENT_PREFIX")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Get stable embedding profile identifier from env/config primitives.
+#[must_use]
+pub fn get_embedding_profile_id() -> Option<String> {
+    build_embedding_profile_id(
+        get_embedding_provider().as_deref(),
+        get_embedding_model_id().as_deref(),
+        Some(get_embedding_dimensions()),
+        Some(&get_embedding_prompt_style()),
+        get_embedding_query_prefix().as_deref(),
+        get_embedding_document_prefix().as_deref(),
+    )
+}
+
 /// Get embedding cache directory from env or default.
 /// Appends provider/model subdirectory for cache isolation.
 #[must_use]
@@ -1271,10 +1844,70 @@ pub fn get_embedding_cache_dir() -> String {
     let base =
         std::env::var("EMBEDDING_CACHE_DIR").unwrap_or_else(|_| EMBEDDING_CACHE_DIR.to_string());
 
-    match (get_embedding_provider(), get_embedding_model_id()) {
-        (Some(provider), Some(model)) => format!("{base}/{provider}/{model}"),
-        _ => base,
+    match get_embedding_profile_id() {
+        Some(profile_id) => format!("{base}/{}", sanitize_embedding_profile_segment(&profile_id)),
+        None => base,
     }
+}
+
+fn parse_embedding_prompt_style(value: &str) -> Option<EmbeddingPromptStyle> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" => None,
+        "none" => Some(EmbeddingPromptStyle::None),
+        "user2" => Some(EmbeddingPromptStyle::User2),
+        "e5" => Some(EmbeddingPromptStyle::E5),
+        "custom" => Some(EmbeddingPromptStyle::Custom),
+        _ => None,
+    }
+}
+
+fn build_embedding_profile_id(
+    provider: Option<&str>,
+    model_id: Option<&str>,
+    dimensions: Option<u32>,
+    prompt_style: Option<&EmbeddingPromptStyle>,
+    query_prefix: Option<&str>,
+    document_prefix: Option<&str>,
+) -> Option<String> {
+    let provider = provider?.trim();
+    let model_id = model_id?.trim();
+    if provider.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    let dimensions = dimensions.unwrap_or(DEFAULT_EMBEDDING_DIMENSIONS);
+    let prompt_style = prompt_style.cloned().unwrap_or_default();
+    let query_prefix = query_prefix.unwrap_or("");
+    let document_prefix = document_prefix.unwrap_or("");
+
+    let mut hasher = Sha256::new();
+    hasher.update(provider.as_bytes());
+    hasher.update([0]);
+    hasher.update(model_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(dimensions.to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(prompt_style.as_str().as_bytes());
+    hasher.update([0]);
+    hasher.update(query_prefix.as_bytes());
+    hasher.update([0]);
+    hasher.update(document_prefix.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+
+    Some(format!(
+        "{provider}:{model_id}:dim-{dimensions}:prompt-{}:{}",
+        prompt_style.as_str(),
+        &digest[..12]
+    ))
+}
+
+fn sanitize_embedding_profile_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' => ch,
+            _ => '_',
+        })
+        .collect()
 }
 
 /// Get agent search limit from env or default.
@@ -1355,6 +1988,16 @@ pub fn get_sandboxd_socket() -> String {
         .unwrap_or_else(|| SANDBOXD_SOCKET.to_string())
 }
 
+/// Get compose project override for stack log discovery.
+///
+/// Environment variable: `STACK_LOGS_PROJECT`
+#[must_use]
+pub fn get_stack_logs_project() -> Option<String> {
+    std::env::var("STACK_LOGS_PROJECT")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
+
 /// Transport API retry configuration for file operations.
 pub const TRANSPORT_API_MAX_RETRIES: usize = 3;
 /// Initial backoff delay in milliseconds for transport retries.
@@ -1362,7 +2005,13 @@ pub const TRANSPORT_API_INITIAL_BACKOFF_MS: u64 = 500;
 /// Maximum backoff delay in milliseconds for transport retries.
 pub const TRANSPORT_API_MAX_BACKOFF_MS: u64 = 4000;
 
-// Crawl4AI HTTP client configuration
+// Self-hosted tool provider HTTP client configuration
+/// Default timeout for SearXNG requests (seconds)
+pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Default engines used for SearXNG rotation fallback.
+pub const SEARXNG_DEFAULT_ROTATION_ENGINES: &[&str] =
+    &["brave", "bing", "qwant", "mojeek", "yandex"];
+
 /// Default timeout for Crawl4AI requests (seconds)
 pub const CRAWL4AI_DEFAULT_TIMEOUT_SECS: u64 = 120;
 
@@ -1377,6 +2026,67 @@ pub const CRAWL4AI_DEFAULT_INITIAL_BACKOFF_SECS: u64 = 2;
 
 /// Default max backoff delay in seconds
 pub const CRAWL4AI_DEFAULT_MAX_BACKOFF_SECS: u64 = 30;
+
+/// Default timeout for Browser Use bridge requests (seconds)
+pub const BROWSER_USE_DEFAULT_TIMEOUT_SECS: u64 = 300;
+
+/// Default max concurrent Browser Use requests per sub-agent.
+pub const BROWSER_USE_DEFAULT_MAX_CONCURRENT: usize = 2;
+
+/// Default max retries for Browser Use bridge requests.
+pub const BROWSER_USE_DEFAULT_MAX_RETRIES: usize = 3;
+
+/// Default initial backoff delay for Browser Use bridge retries (seconds).
+pub const BROWSER_USE_DEFAULT_INITIAL_BACKOFF_SECS: u64 = 2;
+
+/// Default max backoff delay for Browser Use bridge retries (seconds).
+pub const BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS: u64 = 20;
+
+/// Get SearXNG base URL from env.
+///
+/// Environment variable: `SEARXNG_URL`
+#[must_use]
+pub fn get_searxng_url() -> Option<String> {
+    std::env::var("SEARXNG_URL").ok().filter(|s| !s.is_empty())
+}
+
+/// Get SearXNG timeout from env or default.
+///
+/// Environment variable: `SEARXNG_TIMEOUT_SECS`
+#[must_use]
+pub fn get_searxng_timeout() -> u64 {
+    std::env::var("SEARXNG_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SEARXNG_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get preferred engines for SearXNG rotation from env or defaults.
+///
+/// Environment variable: `SEARXNG_ROTATION_ENGINES`
+/// Value format: comma-separated engine names, for example "bing,qwant,yandex".
+#[must_use]
+pub fn get_searxng_rotation_engines() -> Vec<String> {
+    let parsed = std::env::var("SEARXNG_ROTATION_ENGINES")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if parsed.is_empty() {
+        SEARXNG_DEFAULT_ROTATION_ENGINES
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect()
+    } else {
+        parsed
+    }
+}
 
 /// Get Crawl4AI base URL from env.
 ///
@@ -1441,30 +2151,159 @@ pub fn get_crawl4ai_max_backoff() -> u64 {
         .unwrap_or(CRAWL4AI_DEFAULT_MAX_BACKOFF_SECS)
 }
 
-/// Default web search provider
-pub const DEFAULT_SEARCH_PROVIDER: &str = "tavily";
-
-/// Get web search provider from env or default
+/// Get Browser Use bridge base URL from env.
 ///
-/// Environment variable: `SEARCH_PROVIDER`
-/// Valid values: "tavily" or "crawl4ai"
+/// Environment variable: `BROWSER_USE_URL`
 #[must_use]
-pub fn get_search_provider() -> String {
-    std::env::var("SEARCH_PROVIDER")
+pub fn get_browser_use_url() -> Option<String> {
+    std::env::var("BROWSER_USE_URL")
         .ok()
-        .filter(|s| matches!(s.as_str(), "tavily" | "crawl4ai"))
-        .unwrap_or_else(|| DEFAULT_SEARCH_PROVIDER.to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Get Browser Use bridge timeout from env or default.
+///
+/// Environment variable: `BROWSER_USE_TIMEOUT_SECS`
+#[must_use]
+pub fn get_browser_use_timeout() -> u64 {
+    std::env::var("BROWSER_USE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get max concurrent Browser Use requests from env or default.
+///
+/// Environment variable: `BROWSER_USE_MAX_CONCURRENT`
+#[must_use]
+pub fn get_browser_use_max_concurrent() -> usize {
+    std::env::var("BROWSER_USE_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_MAX_CONCURRENT)
+}
+
+/// Get max retries for Browser Use bridge requests from env or default.
+///
+/// Environment variable: `BROWSER_USE_MAX_RETRIES`
+#[must_use]
+pub fn get_browser_use_max_retries() -> usize {
+    std::env::var("BROWSER_USE_MAX_RETRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_MAX_RETRIES)
+}
+
+/// Get initial backoff delay for Browser Use bridge retries from env or default.
+///
+/// Environment variable: `BROWSER_USE_INITIAL_BACKOFF_SECS`
+#[must_use]
+pub fn get_browser_use_initial_backoff() -> u64 {
+    std::env::var("BROWSER_USE_INITIAL_BACKOFF_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_INITIAL_BACKOFF_SECS)
+}
+
+/// Get max backoff delay for Browser Use bridge retries from env or default.
+///
+/// Environment variable: `BROWSER_USE_MAX_BACKOFF_SECS`
+#[must_use]
+pub fn get_browser_use_max_backoff() -> u64 {
+    std::env::var("BROWSER_USE_MAX_BACKOFF_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS)
+}
+
+fn parse_optional_env_bool(name: &str) -> Option<bool> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+}
+
+fn parse_optional_env_u32(name: &str) -> Option<u32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+}
+
+fn parse_optional_env_f32(name: &str) -> Option<f32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+}
+
+fn parse_optional_env_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+/// Determine whether Tavily tools should be registered.
+///
+/// Environment variable: `TAVILY_ENABLED`
+#[must_use]
+pub fn is_tavily_enabled() -> bool {
+    parse_optional_env_bool("TAVILY_ENABLED").unwrap_or_else(|| {
+        std::env::var("TAVILY_API_KEY")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
+/// Determine whether Crawl4AI tools should be registered.
+///
+/// Environment variable: `CRAWL4AI_ENABLED`
+#[must_use]
+pub fn is_crawl4ai_enabled() -> bool {
+    parse_optional_env_bool("CRAWL4AI_ENABLED")
+        .unwrap_or_else(|| get_crawl4ai_url().is_some_and(|value| !value.trim().is_empty()))
+}
+
+/// Determine whether SearXNG tools should be registered.
+///
+/// Environment variable: `SEARXNG_ENABLED`
+#[must_use]
+pub fn is_searxng_enabled() -> bool {
+    parse_optional_env_bool("SEARXNG_ENABLED")
+        .unwrap_or_else(|| get_searxng_url().is_some_and(|value| !value.trim().is_empty()))
+}
+
+/// Determine whether Browser Use tools should be registered.
+///
+/// Controlled by code: returns true if `BROWSER_USE_URL` is set and non-empty.
+///
+/// NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
+/// price-per-token. When such a model is available, re-enable by setting
+/// `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`).
+/// See `docs/browser-use.md` for current model recommendations.
+#[must_use]
+pub fn is_browser_use_enabled() -> bool {
+    get_browser_use_url().is_some_and(|value| !value.trim().is_empty())
 }
 
 // LLM HTTP client configuration
-/// Default timeout for LLM API HTTP requests (seconds)
-/// Keeps long-running model responses alive while preventing infinite hangs
-pub const LLM_HTTP_TIMEOUT_SECS: u64 = 300;
+/// Default timeout for LLM API HTTP requests (seconds).
+/// Short enough for responsive retries, long enough for slow models.
+pub const LLM_HTTP_TIMEOUT_SECS: u64 = 30;
 
 // Compaction configuration
 /// Default token budget reserved for recent tool interactions in hot memory.
 /// Only tool outputs within this budget are protected from pruning during active runs.
 pub const DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS: usize = 8_192;
+/// Default target for raw recent messages retained after PostRun cleanup.
+pub const DEFAULT_POST_RUN_RECENT_RAW_TARGET_TOKENS: usize = 24 * 1024;
+/// Default telemetry target for total hot context retained after PostRun cleanup.
+pub const DEFAULT_POST_RUN_HOT_CONTEXT_TARGET_TOKENS: usize = 32 * 1024;
+/// Default soft warning threshold for hot context growth.
+pub const DEFAULT_HOT_CONTEXT_SOFT_WARNING_TOKENS: usize = 60_000;
+/// Default hard threshold for hot context compaction.
+pub const DEFAULT_HOT_CONTEXT_HARD_COMPACTION_TOKENS: usize = 80_000;
 
 /// Get compaction protected tool window tokens from env or default.
 ///
@@ -1475,6 +2314,30 @@ pub fn get_compaction_protected_tool_window_tokens() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS)
+}
+
+/// Get the raw recent-message target retained after PostRun cleanup.
+///
+/// Environment variable: `POST_RUN_RECENT_RAW_TARGET_TOKENS`
+#[must_use]
+pub fn get_post_run_recent_raw_target_tokens() -> usize {
+    std::env::var("POST_RUN_RECENT_RAW_TARGET_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or(DEFAULT_POST_RUN_RECENT_RAW_TARGET_TOKENS)
+}
+
+/// Get the hot-context telemetry target used after PostRun cleanup.
+///
+/// Environment variable: `POST_RUN_HOT_CONTEXT_TARGET_TOKENS`
+#[must_use]
+pub fn get_post_run_hot_context_target_tokens() -> usize {
+    std::env::var("POST_RUN_HOT_CONTEXT_TARGET_TOKENS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or(DEFAULT_POST_RUN_HOT_CONTEXT_TARGET_TOKENS)
 }
 
 /// Get LLM HTTP timeout from env or default

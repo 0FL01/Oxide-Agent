@@ -14,6 +14,7 @@ use crate::agent::structured_output::parse_structured_output;
 use crate::config::ModelInfo;
 use crate::llm::{ChatResponse, LlmClient, LlmError, ProviderCapabilities};
 use anyhow::{anyhow, Result};
+use std::borrow::Cow;
 use std::future::Future;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -27,6 +28,8 @@ enum AttemptOutcome {
 #[derive(Clone, Copy)]
 struct LlmAttemptMetadata<'a> {
     provider_name: &'a str,
+    model_name: &'a str,
+    route_index: Option<usize>,
     capabilities: ProviderCapabilities,
     attempt: usize,
     max_retries: usize,
@@ -51,37 +54,15 @@ impl AgentRunner {
             }
 
             if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs {
-                if let Some(res) = self.apply_timeout_hook(ctx, &state)? {
+                if let Some(res) = self.apply_timeout_hook(ctx, &mut state)? {
                     return Ok(AgentRunResult::Final(res));
                 }
             }
 
             self.apply_pending_runtime_context(ctx, &mut state).await;
 
-            self.apply_before_iteration_hooks(ctx, &state)?;
-            let cancellation_token = ctx.agent.cancellation_token().clone();
-            let Some(compaction_result) = Self::await_until_cancelled(
-                cancellation_token,
-                self.run_iteration_compaction(ctx, &mut state, iteration),
-            )
-            .await
-            else {
-                return Err(self.cancelled_error(ctx).await);
-            };
-            compaction_result?;
-
-            // Emit milestone after pre-run compaction (only on first iteration).
-            if iteration == 0 {
-                if let Some(tx) = ctx.progress_tx {
-                    let timestamp_ms = chrono::Utc::now().timestamp_millis();
-                    let _ = tx
-                        .send(AgentEvent::Milestone {
-                            name: "pre_run_compaction_done".to_string(),
-                            timestamp_ms,
-                        })
-                        .await;
-                }
-            }
+            self.run_pre_llm_maintenance(ctx, &mut state, iteration)
+                .await?;
 
             debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
 
@@ -144,6 +125,58 @@ impl AgentRunner {
         ))
     }
 
+    async fn run_pre_llm_maintenance(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &mut RunState,
+        iteration: usize,
+    ) -> Result<()> {
+        self.apply_before_iteration_hooks(ctx, state)?;
+
+        let cancellation_token = ctx.agent.cancellation_token().clone();
+        if state.take_manual_compaction_request() {
+            let Some(compaction_result) = Self::await_until_cancelled(
+                cancellation_token.clone(),
+                self.run_compaction_checkpoint(ctx, state, CompactionTrigger::Manual),
+            )
+            .await
+            else {
+                return Err(self.cancelled_error(ctx).await);
+            };
+            compaction_result?;
+        } else {
+            let Some(compaction_result) = Self::await_until_cancelled(
+                cancellation_token,
+                self.run_iteration_compaction(ctx, state, iteration),
+            )
+            .await
+            else {
+                return Err(self.cancelled_error(ctx).await);
+            };
+            compaction_result?;
+        }
+
+        if iteration == 0 {
+            Self::emit_pre_run_compaction_done(ctx.progress_tx).await;
+        }
+
+        Ok(())
+    }
+
+    async fn emit_pre_run_compaction_done(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
+        let Some(tx) = progress_tx else { return };
+
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+        let _ = tx
+            .send(AgentEvent::Milestone {
+                name: "pre_run_compaction_done".to_string(),
+                timestamp_ms,
+            })
+            .await;
+    }
+
     async fn call_llm_with_tools(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
@@ -175,7 +208,6 @@ impl AgentRunner {
         state: &mut RunState,
     ) -> Result<ChatResponse> {
         let max_retries = LlmClient::MAX_RETRIES;
-        let json_mode = self.requires_structured_output(&ctx.config);
         let provider_name = ctx
             .config
             .model_provider
@@ -186,10 +218,49 @@ impl AgentRunner {
                     .ok()
             })
             .unwrap_or_else(|| "unknown".to_string());
-        let capabilities = LlmClient::provider_capabilities(&provider_name);
+        let model_name = ctx.config.model_name.clone();
+        let model_info = self.llm_client.get_model_info(&ctx.config.model_name)?;
+        let json_mode = Self::structured_output_required_for_model(&model_info);
+        let capabilities = LlmClient::provider_capabilities_for_model(&model_info);
+
+        if Self::json_mode_forbids_route(json_mode, &model_info) {
+            let error = LlmError::ApiError(format!(
+                "Structured-output agent calls are disabled for {} model `{}`; configure a non-ChatGPT route for json_mode",
+                model_info.provider, model_info.id
+            ));
+            Self::emit_llm_error(ctx.progress_tx, &error).await;
+            return Err(anyhow!("LLM call failed: {error}"));
+        }
+
+        Self::log_llm_route_selected(
+            ctx,
+            state,
+            0,
+            provider_name.as_str(),
+            model_name.as_str(),
+            json_mode,
+        );
+
+        if !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode) {
+            let error = LlmError::ApiError(format!(
+                "Tool-enabled agent calls are not supported for {} model `{}`",
+                model_info.provider, model_info.id
+            ));
+            Self::emit_llm_error(ctx.progress_tx, &error).await;
+            return Err(anyhow!("LLM call failed: {error}"));
+        }
 
         for attempt in 1..=max_retries {
             Self::refresh_messages_from_memory(ctx);
+            Self::log_llm_route_attempt_started(
+                ctx,
+                state,
+                attempt,
+                max_retries,
+                Some(0),
+                provider_name.as_str(),
+                model_name.as_str(),
+            );
             let result = self
                 .llm_client
                 .chat_with_tools_single_attempt(
@@ -197,6 +268,7 @@ impl AgentRunner {
                     ctx.messages,
                     ctx.tools,
                     &ctx.config.model_name,
+                    ctx.config.temperature,
                     json_mode,
                 )
                 .await;
@@ -207,6 +279,8 @@ impl AgentRunner {
                     state,
                     LlmAttemptMetadata {
                         provider_name: &provider_name,
+                        model_name: &model_name,
+                        route_index: Some(0),
                         capabilities,
                         attempt,
                         max_retries,
@@ -233,11 +307,11 @@ impl AgentRunner {
 
         let mut exhausted_routes = std::collections::HashSet::new();
         let mut pending_failover_from: Option<ModelInfo> = None;
-        let mut last_rate_limit_error: Option<LlmError> = None;
+        let mut last_route_error: Option<LlmError> = None;
 
         loop {
             let Some(route_index) = self.select_model_route_index(ctx, &exhausted_routes) else {
-                let error = last_rate_limit_error.unwrap_or_else(|| {
+                let error = last_route_error.unwrap_or_else(|| {
                     LlmError::Unknown("No healthy model routes available".to_string())
                 });
                 Self::emit_llm_error(ctx.progress_tx, &error).await;
@@ -253,12 +327,46 @@ impl AgentRunner {
             ctx.config.model_max_output_tokens = route.max_output_tokens;
             ctx.config.model_provider = Some(route.provider.clone());
 
-            let json_mode = self.requires_structured_output(&ctx.config);
+            let json_mode = Self::structured_output_required_for_model(&route);
             let provider_name = route.provider.clone();
-            let capabilities = LlmClient::provider_capabilities(&provider_name);
+            let capabilities = LlmClient::provider_capabilities_for_model(&route);
+
+            Self::log_llm_route_selected(
+                ctx,
+                state,
+                route_index,
+                route.provider.as_str(),
+                route.id.as_str(),
+                json_mode,
+            );
+
+            if !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode) {
+                let error = LlmError::ApiError(format!(
+                    "Tool-enabled agent calls are not supported for {} model `{}`",
+                    route.provider, route.id
+                ));
+                warn!(
+                    provider = route.provider,
+                    model = route.id,
+                    "Skipping model route due to unsupported tool capabilities"
+                );
+                exhausted_routes.insert(Self::route_key(&route));
+                pending_failover_from = Some(route.clone());
+                last_route_error = Some(error);
+                continue;
+            }
 
             for attempt in 1..=max_retries {
                 Self::refresh_messages_from_memory(ctx);
+                Self::log_llm_route_attempt_started(
+                    ctx,
+                    state,
+                    attempt,
+                    max_retries,
+                    Some(route_index),
+                    route.provider.as_str(),
+                    route.id.as_str(),
+                );
                 let result = self
                     .llm_client
                     .chat_with_tools_single_attempt_for_model_info(
@@ -266,6 +374,7 @@ impl AgentRunner {
                         ctx.messages,
                         ctx.tools,
                         &route,
+                        ctx.config.temperature,
                         json_mode,
                     )
                     .await;
@@ -276,6 +385,8 @@ impl AgentRunner {
                         state,
                         LlmAttemptMetadata {
                             provider_name: &provider_name,
+                            model_name: &route.id,
+                            route_index: Some(route_index),
                             capabilities,
                             attempt,
                             max_retries,
@@ -292,7 +403,7 @@ impl AgentRunner {
                         self.quarantine_model_route(&route, quarantine_for);
                         exhausted_routes.insert(Self::route_key(&route));
                         pending_failover_from = Some(route.clone());
-                        last_rate_limit_error = Some(error);
+                        last_route_error = Some(error);
                         break;
                     }
                 }
@@ -309,6 +420,7 @@ impl AgentRunner {
     ) -> Result<AttemptOutcome> {
         match result {
             Ok(response) => {
+                Self::log_llm_route_attempt_success(ctx, state, &metadata);
                 if metadata.attempt > 1 {
                     info!(
                         attempt = metadata.attempt,
@@ -320,6 +432,7 @@ impl AgentRunner {
                 Ok(AttemptOutcome::Return(response))
             }
             Err(error) => {
+                Self::log_llm_route_attempt_error(ctx, state, &metadata, &error);
                 if let LlmError::RepairableHistory(reason) = &error {
                     if self
                         .repair_history_before_retry(
@@ -474,6 +587,7 @@ impl AgentRunner {
         exhausted_routes: &std::collections::HashSet<String>,
     ) -> Option<usize> {
         let now = Instant::now();
+        let json_mode = self.structured_output_required_for_config(&ctx.config);
         self.route_failover_state
             .route_quarantine
             .retain(|_, until| *until > now);
@@ -482,7 +596,12 @@ impl AgentRunner {
             return None;
         }
 
-        if self.route_is_available(&ctx.config.model_routes[0], exhausted_routes, now) {
+        if self.route_is_available(
+            &ctx.config.model_routes[0],
+            exhausted_routes,
+            now,
+            json_mode,
+        ) {
             return Some(0);
         }
 
@@ -493,7 +612,7 @@ impl AgentRunner {
             .enumerate()
             .skip(1)
             .filter_map(|(index, route)| {
-                self.route_is_available(route, exhausted_routes, now)
+                self.route_is_available(route, exhausted_routes, now, json_mode)
                     .then_some((index, route.weight.max(1) as usize))
             })
             .collect();
@@ -523,15 +642,21 @@ impl AgentRunner {
         route: &ModelInfo,
         exhausted_routes: &std::collections::HashSet<String>,
         now: Instant,
+        json_mode: bool,
     ) -> bool {
         let route_key = Self::route_key(route);
-        !exhausted_routes.contains(&route_key)
+        !Self::json_mode_forbids_route(json_mode, route)
+            && !exhausted_routes.contains(&route_key)
             && self.llm_client.is_provider_available(&route.provider)
             && self
                 .route_failover_state
                 .route_quarantine
                 .get(&route_key)
                 .is_none_or(|until| *until <= now)
+    }
+
+    fn json_mode_forbids_route(json_mode: bool, route: &ModelInfo) -> bool {
+        json_mode && route.provider.eq_ignore_ascii_case("chatgpt")
     }
 
     fn quarantine_model_route(&mut self, route: &ModelInfo, duration: Duration) {
@@ -548,16 +673,39 @@ impl AgentRunner {
         format!("{}:{}", route.provider, route.id)
     }
 
-    fn requires_structured_output(&self, config: &super::types::AgentRunnerConfig) -> bool {
-        if let Some(provider) = config.model_provider.as_deref() {
-            return !provider.eq_ignore_ascii_case("zai");
+    fn active_model_info_for_config<'a>(
+        &self,
+        config: &'a super::types::AgentRunnerConfig,
+    ) -> Result<Cow<'a, ModelInfo>, LlmError> {
+        if let Some(provider) = config.model_provider.as_ref() {
+            return Ok(Cow::Owned(ModelInfo {
+                id: config.model_name.clone(),
+                max_output_tokens: config.model_max_output_tokens,
+                context_window_tokens: 0,
+                provider: provider.clone(),
+                weight: 1,
+            }));
         }
 
-        match self.llm_client.get_model_info(&config.model_name) {
-            Ok(info) => !info.provider.eq_ignore_ascii_case("zai"),
+        if let Some(route) = config.model_routes.first() {
+            return Ok(Cow::Borrowed(route));
+        }
+
+        self.llm_client
+            .get_model_info(&config.model_name)
+            .map(Cow::Owned)
+    }
+
+    fn structured_output_required_for_config(
+        &self,
+        config: &super::types::AgentRunnerConfig,
+    ) -> bool {
+        match self.active_model_info_for_config(config) {
+            Ok(info) => Self::structured_output_required_for_model(info.as_ref()),
             Err(error) => {
                 warn!(
                     model = config.model_name,
+                    provider = config.model_provider.as_deref().unwrap_or("unknown"),
                     error = %error,
                     "Failed to resolve model info; defaulting to structured output"
                 );
@@ -566,7 +714,11 @@ impl AgentRunner {
         }
     }
 
-    async fn await_until_cancelled<T, F>(
+    fn structured_output_required_for_model(model_info: &ModelInfo) -> bool {
+        LlmClient::supports_structured_output_for_model(model_info)
+    }
+
+    pub(super) async fn await_until_cancelled<T, F>(
         cancellation_token: tokio_util::sync::CancellationToken,
         future: F,
     ) -> Option<T>
@@ -588,13 +740,14 @@ impl AgentRunner {
     ) -> Result<ChatResponse, LlmError> {
         // This method is kept for backwards compatibility.
         // Use call_llm_with_tools for retry handling with UI events.
-        let json_mode = self.requires_structured_output(&ctx.config);
+        let json_mode = self.structured_output_required_for_config(&ctx.config);
         self.llm_client
             .chat_with_tools_single_attempt(
                 ctx.system_prompt,
                 ctx.messages,
                 ctx.tools,
                 &ctx.config.model_name,
+                ctx.config.temperature,
                 json_mode,
             )
             .await
@@ -621,7 +774,7 @@ impl AgentRunner {
                 .await;
         }
 
-        if !self.requires_structured_output(&ctx.config) {
+        if !self.structured_output_required_for_config(&ctx.config) {
             let reasoning = response.reasoning_content.take();
             return self
                 .handle_unstructured_response(reasoning, raw_json.clone(), ctx, state)
@@ -641,6 +794,8 @@ impl AgentRunner {
             }
         };
 
+        let awaiting_user_input = parsed.awaiting_user_input;
+        let final_answer = parsed.final_answer;
         let tool_calls = parsed
             .tool_call
             .map(|tool_call| vec![self.build_tool_call(tool_call)])
@@ -652,10 +807,21 @@ impl AgentRunner {
             ctx.progress_tx,
         );
 
+        if let Some(request) = awaiting_user_input {
+            return self
+                .handle_waiting_for_user_input(
+                    ctx,
+                    state,
+                    raw_json,
+                    response.reasoning_content,
+                    request,
+                )
+                .await;
+        }
+
         if tool_calls.is_empty() {
-            let final_answer = parsed
-                .final_answer
-                .unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
+            let final_answer =
+                final_answer.unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
 
             if self.content_loop_detected(final_answer.as_str()).await {
                 return Err(self
@@ -669,7 +835,6 @@ impl AgentRunner {
 
             let input = FinalResponseInput {
                 final_answer,
-                raw_json,
                 reasoning: response.reasoning_content,
             };
 
@@ -847,6 +1012,8 @@ impl AgentRunner {
             budget_state = ?outcome.budget.state,
             hot_memory_tokens_before = outcome.token_count_before,
             hot_memory_tokens_after = outcome.token_count_after,
+            collapsed_retry_attempts = outcome.error_retry_collapse.collapsed_attempt_count,
+            collapsed_retry_messages = outcome.error_retry_collapse.dropped_message_count,
             externalized_count = outcome.externalization.externalized_count,
             pruned_count = outcome.pruning.pruned_count,
             reclaimed_tokens = outcome.reclaimed_hot_memory_tokens(),
@@ -889,7 +1056,10 @@ impl AgentRunner {
             return;
         }
 
-        if outcome.externalization.applied || outcome.pruning.applied {
+        if outcome.error_retry_collapse.applied
+            || outcome.externalization.applied
+            || outcome.pruning.applied
+        {
             state.cleanup_count = state.cleanup_count.saturating_add(1);
             if state.cleanup_count > 1 {
                 Self::log_repeated_compaction(
@@ -969,6 +1139,77 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<Option<AgentRunResult>> {
+        if let Ok(parsed) = parse_structured_output(&raw_output, ctx.tools) {
+            warn!(
+                model = %ctx.config.model_name,
+                provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                "Model returned structured-output JSON while structured output was disabled; applying fallback parser"
+            );
+
+            state.structured_output_failures = 0;
+            let awaiting_user_input = parsed.awaiting_user_input;
+            let final_answer = parsed.final_answer;
+            let tool_calls = parsed
+                .tool_call
+                .map(|tool_call| vec![self.build_tool_call(tool_call)])
+                .unwrap_or_default();
+
+            self.spawn_narrative_task(reasoning.as_deref(), &tool_calls, ctx.progress_tx);
+
+            if let Some(request) = awaiting_user_input {
+                return self
+                    .handle_waiting_for_user_input(ctx, state, raw_output, reasoning, request)
+                    .await;
+            }
+
+            if tool_calls.is_empty() {
+                let final_answer = final_answer
+                    .unwrap_or_else(|| "Task completed, but answer is empty.".to_string());
+
+                if self.content_loop_detected(final_answer.as_str()).await {
+                    return Err(self
+                        .loop_detected_error(
+                            ctx,
+                            state,
+                            crate::agent::loop_detection::LoopType::ContentLoop,
+                        )
+                        .await);
+                }
+
+                let input = FinalResponseInput {
+                    final_answer,
+                    reasoning,
+                };
+
+                return self.handle_final_response(ctx, state, input).await;
+            }
+
+            if self.tool_loop_detected(&tool_calls).await {
+                return Err(self
+                    .loop_detected_error(
+                        ctx,
+                        state,
+                        crate::agent::loop_detection::LoopType::ToolCallLoop,
+                    )
+                    .await);
+            }
+
+            return self
+                .handle_tool_calls_response(
+                    &mut ChatResponse {
+                        content: Some(raw_output.clone()),
+                        tool_calls,
+                        finish_reason: "stop".to_string(),
+                        reasoning_content: reasoning,
+                        usage: None,
+                    },
+                    &raw_output,
+                    ctx,
+                    state,
+                )
+                .await;
+        }
+
         self.spawn_narrative_task(reasoning.as_deref(), &[], ctx.progress_tx);
 
         let final_answer = if raw_output.trim().is_empty() {
@@ -989,7 +1230,6 @@ impl AgentRunner {
 
         let input = FinalResponseInput {
             final_answer,
-            raw_json: raw_output,
             reasoning,
         };
 
@@ -1105,6 +1345,7 @@ impl AgentRunner {
                     "api"
                 }
             }
+            LlmError::EmptyResponse(_) => "empty_response",
             LlmError::JsonError(_) => "json_error",
             _ => "unknown",
         }
@@ -1131,7 +1372,7 @@ impl AgentRunner {
         }
     }
 
-    async fn emit_compaction_started(
+    pub(super) async fn emit_compaction_started(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         trigger: CompactionTrigger,
     ) {
@@ -1140,7 +1381,7 @@ impl AgentRunner {
         }
     }
 
-    async fn emit_pruning_applied(
+    pub(super) async fn emit_pruning_applied(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         outcome: &crate::agent::CompactionOutcome,
     ) {
@@ -1174,7 +1415,7 @@ impl AgentRunner {
         }
     }
 
-    async fn emit_compaction_completed(
+    pub(super) async fn emit_compaction_completed(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         trigger: CompactionTrigger,
         outcome: &crate::agent::CompactionOutcome,
@@ -1194,7 +1435,7 @@ impl AgentRunner {
         }
     }
 
-    async fn emit_compaction_failed(
+    pub(super) async fn emit_compaction_failed(
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         trigger: CompactionTrigger,
         error: String,
@@ -1261,16 +1502,114 @@ impl AgentRunner {
         let _ = tx.send(AgentEvent::TokenSnapshotUpdated { snapshot }).await;
     }
 
+    fn log_llm_route_selected(
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        route_index: usize,
+        provider: &str,
+        model: &str,
+        json_mode: bool,
+    ) {
+        info!(
+            task_id = %ctx.task_id,
+            iteration = state.iteration,
+            route_index,
+            provider,
+            model,
+            is_sub_agent = ctx.config.is_sub_agent,
+            json_mode,
+            "LLM route selected"
+        );
+    }
+
+    fn log_llm_route_attempt_started(
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        attempt: usize,
+        max_attempts: usize,
+        route_index: Option<usize>,
+        provider: &str,
+        model: &str,
+    ) {
+        debug!(
+            task_id = %ctx.task_id,
+            iteration = state.iteration,
+            attempt,
+            max_attempts,
+            route_index,
+            provider,
+            model,
+            is_sub_agent = ctx.config.is_sub_agent,
+            "LLM route attempt started"
+        );
+    }
+
+    fn log_llm_route_attempt_success(
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        metadata: &LlmAttemptMetadata<'_>,
+    ) {
+        info!(
+            task_id = %ctx.task_id,
+            iteration = state.iteration,
+            attempt = metadata.attempt,
+            max_attempts = metadata.max_retries,
+            route_index = metadata.route_index,
+            provider = metadata.provider_name,
+            model = metadata.model_name,
+            is_sub_agent = ctx.config.is_sub_agent,
+            outcome = "success",
+            "LLM route attempt finished"
+        );
+    }
+
+    fn log_llm_route_attempt_error(
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        metadata: &LlmAttemptMetadata<'_>,
+        error: &LlmError,
+    ) {
+        let outcome = if LlmClient::is_rate_limit_error(error) {
+            "rate_limit"
+        } else if LlmClient::is_retryable_error(error) {
+            "retryable_error"
+        } else {
+            "error"
+        };
+
+        warn!(
+            task_id = %ctx.task_id,
+            iteration = state.iteration,
+            attempt = metadata.attempt,
+            max_attempts = metadata.max_retries,
+            route_index = metadata.route_index,
+            provider = metadata.provider_name,
+            model = metadata.model_name,
+            is_sub_agent = ctx.config.is_sub_agent,
+            error = %error,
+            outcome,
+            "LLM route attempt finished"
+        );
+    }
+
     fn log_token_snapshot(
         ctx: &AgentRunnerContext<'_>,
         iteration: usize,
         phase: &str,
         snapshot: &TokenSnapshot,
     ) {
+        let planned_provider = ctx
+            .config
+            .model_provider
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
         info!(
             task_id = %ctx.task_id,
             iteration,
             phase,
+            planned_provider = planned_provider,
+            planned_model = %ctx.config.model_name,
+            is_sub_agent = ctx.config.is_sub_agent,
             hot_memory_tokens = snapshot.hot_memory_tokens,
             system_prompt_tokens = snapshot.system_prompt_tokens,
             tool_schema_tokens = snapshot.tool_schema_tokens,
@@ -1366,6 +1705,7 @@ mod tests {
         ToolDefinition,
     };
     use async_trait::async_trait;
+    use oxide_agent_memory::MemoryRepository;
     use serde_json::json;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -1485,6 +1825,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -1503,6 +1848,125 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content == "Older request about compaction."));
+    }
+
+    #[test]
+    fn json_mode_forbids_chatgpt_routes_only() {
+        let chatgpt_route = ModelInfo {
+            id: "gpt-5.4-mini".to_string(),
+            provider: "chatgpt".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        };
+        let zai_route = ModelInfo {
+            id: "glm-4.7".to_string(),
+            provider: "zai".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        };
+
+        assert!(AgentRunner::json_mode_forbids_route(true, &chatgpt_route));
+        assert!(!AgentRunner::json_mode_forbids_route(false, &chatgpt_route));
+        assert!(!AgentRunner::json_mode_forbids_route(true, &zai_route));
+    }
+
+    #[test]
+    fn structured_output_requirement_uses_active_provider_without_registry_lookup() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("glm-4.7".to_string(), 8, 4, 60, 4096)
+            .with_model_provider("zai")
+            .with_model_routes(vec![ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(runner.structured_output_required_for_config(&config));
+    }
+
+    #[test]
+    fn structured_output_requirement_disables_chatgpt_primary_route() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("gpt-5.4-mini".to_string(), 8, 4, 60, 4096)
+            .with_model_provider("chatgpt")
+            .with_model_routes(vec![ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(!runner.structured_output_required_for_config(&config));
+    }
+
+    #[test]
+    fn select_model_route_index_keeps_chatgpt_route_when_structured_output_is_disabled() {
+        let llm_client = build_llm_client_for_provider(
+            single_final_response_provider(),
+            "chatgpt",
+            "gpt-5.4-mini",
+        );
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let ctx = AgentRunnerContext {
+            task: "Route selection regression",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-chatgpt-route-selection",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config: AgentRunnerConfig::new("gpt-5.4-mini".to_string(), 8, 4, 60, 4096)
+                .with_model_provider("chatgpt")
+                .with_model_routes(vec![ModelInfo {
+                    id: "gpt-5.4-mini".to_string(),
+                    provider: "chatgpt".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                }]),
+        };
+
+        assert_eq!(
+            runner.select_model_route_index(&ctx, &std::collections::HashSet::new()),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn structured_output_requirement_uses_primary_route_before_selection() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("missing-model-name".to_string(), 8, 4, 60, 4096)
+            .with_model_routes(vec![ModelInfo {
+                id: "glm-4.7".to_string(),
+                provider: "zai".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(runner.structured_output_required_for_config(&config));
     }
 
     #[tokio::test]
@@ -1556,6 +2020,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -1580,6 +2049,114 @@ mod tests {
                 tool_calls.iter().any(|tool_call| tool_call.id == "call-2")
             })
         }));
+    }
+
+    #[tokio::test]
+    async fn run_sub_agent_does_not_persist_post_run_memory() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Sub-agent task"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let store = Arc::new(oxide_agent_memory::InMemoryMemoryRepository::new());
+        let store_for_coordinator = Arc::clone(&store);
+        let store_for_coordinator: Arc<dyn crate::agent::persistent_memory::PersistentMemoryStore> =
+            store_for_coordinator;
+        let coordinator = crate::agent::persistent_memory::PersistentMemoryCoordinator::new(
+            store_for_coordinator,
+        );
+        let mut ctx = AgentRunnerContext {
+            task: "Sub-agent task",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-sub-agent-memory",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: Some(&coordinator),
+            session_id: Some("sub-session".to_string()),
+            memory_scope: Some(crate::agent::AgentMemoryScope::new(42, "topic-a", "flow-a")),
+            memory_behavior: None,
+            memory_classification: None,
+            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256)
+                .with_sub_agent(true),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        assert!(store
+            .get_session_state("sub-session")
+            .await
+            .expect("session state lookup should succeed")
+            .is_none());
+        assert!(store
+            .get_episode(&"runner-sub-agent-memory".to_string())
+            .await
+            .expect("episode lookup should succeed")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn run_unstructured_mode_parses_accidental_structured_final_answer() {
+        let llm_client = build_llm_client_for_provider(
+            accidental_structured_final_answer_provider(),
+            "openrouter",
+            "chat-openrouter",
+        );
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Какие инструменты тебе доступны?"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Какие инструменты тебе доступны?",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-unstructured-structured-fallback",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config: AgentRunnerConfig::new("chat-openrouter".to_string(), 1, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(
+            matches!(result, AgentRunResult::Final(answer) if answer == "Tools: `read_file`, `write_file`")
+        );
+        let last_message = ctx
+            .agent
+            .memory()
+            .get_messages()
+            .last()
+            .expect("assistant response should be saved");
+        assert_eq!(last_message.content, "Tools: `read_file`, `write_file`");
+        assert!(!last_message.content.contains("\"final_answer\""));
     }
 
     #[tokio::test]
@@ -1609,6 +2186,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 128),
         };
 
@@ -1682,6 +2264,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 3, 1, 30, 256),
         };
 
@@ -1755,6 +2342,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 256),
         };
 
@@ -1830,6 +2422,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 256),
         };
 
@@ -1921,6 +2518,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -2014,6 +2616,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: Some(&compaction_service),
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
@@ -2029,6 +2636,45 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.summary_payload().is_some()));
+    }
+
+    #[test]
+    fn refresh_messages_from_memory_drops_transient_messages() {
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let mut session = EphemeralSession::new(1024);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("refresh transient context"));
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        messages.push(crate::llm::Message::system("temporary warning"));
+        let mut ctx = AgentRunnerContext {
+            task: "refresh transient context",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "refresh-transient-test",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
+        };
+
+        AgentRunner::refresh_messages_from_memory(&mut ctx);
+
+        assert!(!ctx
+            .messages
+            .iter()
+            .any(|message| message.role == "system" && message.content == "temporary warning"));
     }
 
     #[tokio::test]
@@ -2060,6 +2706,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
         };
         let mut response = ChatResponse {
@@ -2137,6 +2788,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
                 .with_model_provider("primary")
                 .with_model_routes(vec![
@@ -2238,6 +2894,11 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
             config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
                 .with_model_provider("primary")
                 .with_model_routes(vec![
@@ -2269,15 +2930,117 @@ mod tests {
             .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) }));
     }
 
-    fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {
+    #[tokio::test]
+    async fn run_skips_unsupported_nvidia_route_and_uses_backup() {
+        let mut unsupported_nvidia = MockLlmProvider::new();
+        unsupported_nvidia.expect_chat_with_tools().times(0);
+        stub_non_chat_methods(&mut unsupported_nvidia);
+
+        let mut backup = MockLlmProvider::new();
+        backup
+            .expect_chat_with_tools()
+            .times(1)
+            .return_once(|_| Ok(final_structured_response()));
+        stub_non_chat_methods(&mut backup);
+
         let settings = AgentSettings {
-            agent_model_id: Some("mock-model".to_string()),
-            agent_model_provider: Some("mock".to_string()),
+            agent_model_id: Some("deepseek-ai/deepseek-r1".to_string()),
+            agent_model_provider: Some("nvidia".to_string()),
             agent_model_max_output_tokens: Some(256),
             ..AgentSettings::default()
         };
         let mut llm_client = LlmClient::new(&settings);
-        llm_client.register_provider("mock".to_string(), Arc::new(provider));
+        llm_client.register_provider("nvidia".to_string(), Arc::new(unsupported_nvidia));
+        llm_client.register_provider("backup".to_string(), Arc::new(backup));
+        let llm_client = Arc::new(llm_client);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Skip unsupported NVIDIA route"));
+
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = AgentRunnerContext {
+            task: "Skip unsupported NVIDIA route",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-nvidia-capability-skip",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_service: None,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config: AgentRunnerConfig::new("deepseek-ai/deepseek-r1".to_string(), 1, 1, 30, 256)
+                .with_model_provider("nvidia")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "deepseek-ai/deepseek-r1".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "nvidia".to_string(),
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "backup-model".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "backup".to_string(),
+                        weight: 1,
+                    },
+                ]),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::ProviderFailoverActivated {
+                    from_provider,
+                    from_model,
+                    to_provider,
+                    to_model,
+                } if from_provider == "nvidia"
+                    && from_model == "deepseek-ai/deepseek-r1"
+                    && to_provider == "backup"
+                    && to_model == "backup-model"
+            )
+        }));
+    }
+
+    fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {
+        build_llm_client_for_provider(provider, "mock", "mock-model")
+    }
+
+    fn build_llm_client_for_provider(
+        provider: MockLlmProvider,
+        provider_name: &str,
+        model_name: &str,
+    ) -> Arc<LlmClient> {
+        let settings = AgentSettings {
+            agent_model_id: Some(model_name.to_string()),
+            agent_model_provider: Some(provider_name.to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider(provider_name.to_string(), Arc::new(provider));
         Arc::new(llm_client)
     }
 
@@ -2371,6 +3134,24 @@ mod tests {
         provider
             .expect_analyze_image()
             .returning(|_, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
+        provider
+    }
+
+    fn accidental_structured_final_answer_provider() -> MockLlmProvider {
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().return_once(|_| {
+            Ok(ChatResponse {
+                content: Some(
+                    r#"{"thought":"Tool list ready","tool_call":null,"final_answer":"Tools: `read_file`, `write_file`","awaiting_user_input":null}"#
+                        .to_string(),
+                ),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+                usage: None,
+            })
+        });
+        stub_non_chat_methods(&mut provider);
         provider
     }
 

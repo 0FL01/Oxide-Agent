@@ -1,12 +1,137 @@
 //! Hot-context rebuild after pruning and summary compaction.
 
 use super::archive::ArchiveRef;
+use super::budget::estimate_message_tokens;
+use super::summary::{
+    collect_existing_structured_summaries, merge_summaries_bounded, normalize_summary,
+};
 use super::types::{
-    AgentMessageKind, CompactionRetention, CompactionSnapshot, CompactionSummary, RebuildOutcome,
+    AgentMessageKind, BreadcrumbCard, CompactionRetention, CompactionSnapshot, CompactionSummary,
+    RebuildOutcome,
 };
 use crate::agent::memory::AgentMessage;
+use crate::config::get_post_run_recent_raw_target_tokens;
 use crate::llm::InvocationId;
 use tracing::warn;
+
+const POST_RUN_MAX_RECENT_USER_REQUESTS: usize = 2;
+const POST_RUN_MAX_RECENT_ASSISTANT_UPDATES: usize = 2;
+const POST_RUN_MAX_RECENT_TOOL_OUTCOMES: usize = 3;
+const POST_RUN_MAX_AUTHORITATIVE_ITEMS: usize = 6;
+
+/// PostRun truncate: rebuild a compact retained working set instead of wiping memory down to
+/// summary-only state.
+#[must_use]
+pub fn truncate_to_working_set(
+    messages: &[AgentMessage],
+    summary: Option<CompactionSummary>,
+    archive_ref: Option<ArchiveRef>,
+) -> (Vec<AgentMessage>, RebuildOutcome) {
+    let summary = match summary.and_then(normalize_summary) {
+        Some(s) => s,
+        None => return (messages.to_vec(), RebuildOutcome::default()),
+    };
+
+    let total_before = messages.len();
+    let mut rebuilt = Vec::new();
+    let mut preserved = vec![false; messages.len()];
+
+    if let Some((index, message)) = messages
+        .iter()
+        .enumerate()
+        .find(|(_, message)| message.resolved_kind() == AgentMessageKind::TopicAgentsMd)
+    {
+        preserved[index] = true;
+        rebuilt.push(message.clone());
+    }
+
+    if let Some(index) = latest_matching_index(messages, |kind| kind == AgentMessageKind::UserTask)
+    {
+        if !preserved[index] {
+            preserved[index] = true;
+            rebuilt.push(messages[index].clone());
+        }
+    }
+
+    rebuilt.push(AgentMessage::from_breadcrumb_card(build_breadcrumb_card(
+        messages, &summary,
+    )));
+    rebuilt.push(AgentMessage::from_compaction_summary(summary));
+
+    let inserted_archive_reference = if let Some(archive_ref) = archive_ref {
+        rebuilt.push(AgentMessage::archive_reference_with_ref(
+            format_archive_reference(&archive_ref),
+            Some(archive_ref),
+        ));
+        true
+    } else {
+        false
+    };
+
+    let preserved_recent_indices = collect_post_run_raw_tail_indices(messages, &preserved);
+    for index in &preserved_recent_indices {
+        preserved[*index] = true;
+        rebuilt.push(messages[*index].clone());
+    }
+
+    let snapshot = CompactionSnapshot {
+        entries: messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| super::types::ClassifiedMemoryEntry {
+                index,
+                kind: message.resolved_kind(),
+                retention: message.retention(),
+                estimated_tokens: estimate_message_tokens(message),
+                content_chars: message.content.chars().count(),
+                has_reasoning: message.reasoning.is_some(),
+                tool_name: message.tool_name.clone(),
+                is_externalized: message.is_externalized(),
+                archive_ref: message.archive_ref_payload().cloned().or_else(|| {
+                    message
+                        .externalized_payload
+                        .as_ref()
+                        .map(|payload| payload.archive_ref.clone())
+                }),
+                is_pruned: message.is_pruned(),
+                preserve_in_raw_window: preserved_recent_indices.contains(&index),
+            })
+            .collect(),
+        ..CompactionSnapshot::default()
+    };
+
+    remove_orphaned_tool_results(&snapshot, messages, &mut preserved, &mut rebuilt);
+
+    let outcome = RebuildOutcome {
+        applied: true,
+        inserted_summary: true,
+        inserted_breadcrumb: true,
+        inserted_archive_reference,
+        dropped_message_count: preserved
+            .iter()
+            .filter(|is_preserved| !**is_preserved)
+            .count(),
+        dropped_indices: preserved
+            .iter()
+            .enumerate()
+            .filter_map(|(index, is_preserved)| (!is_preserved).then_some(index))
+            .collect(),
+        preserved_recent_indices,
+    };
+
+    warn!(
+        inserted_summary = outcome.inserted_summary,
+        inserted_breadcrumb = outcome.inserted_breadcrumb,
+        inserted_archive_reference = outcome.inserted_archive_reference,
+        dropped_message_count = outcome.dropped_message_count,
+        messages_before = total_before,
+        messages_after = rebuilt.len(),
+        preserved_recent_count = outcome.preserved_recent_indices.len(),
+        "PostRun truncate-to-working-set: hot context replaced with retained working set"
+    );
+
+    (rebuilt, outcome)
+}
 
 /// Rebuild hot memory into pinned, live, structured-summary, and recent-raw slices.
 #[must_use]
@@ -16,14 +141,10 @@ pub fn rebuild_hot_context(
     new_summary: Option<CompactionSummary>,
     archive_ref: Option<ArchiveRef>,
 ) -> (Vec<AgentMessage>, RebuildOutcome) {
-    let existing_structured_summaries: Vec<CompactionSummary> = snapshot
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == AgentMessageKind::Summary)
-        .filter_map(|entry| messages.get(entry.index))
-        .filter_map(|message| message.summary_payload().cloned())
-        .collect();
-    let summary = merge_summaries(existing_structured_summaries, new_summary);
+    let existing_structured_summaries = collect_existing_structured_summaries(snapshot, messages);
+    let summary = new_summary
+        .and_then(normalize_summary)
+        .or_else(|| merge_summaries_bounded(existing_structured_summaries, None));
     let has_old_history = snapshot.entries.iter().any(|entry| {
         !entry.preserve_in_raw_window
             && matches!(
@@ -47,6 +168,7 @@ pub fn rebuild_hot_context(
     let mut preserved = vec![false; messages.len()];
     let mut outcome = RebuildOutcome {
         inserted_summary: true,
+        inserted_breadcrumb: false,
         preserved_recent_indices: snapshot
             .entries
             .iter()
@@ -105,6 +227,7 @@ pub fn rebuild_hot_context(
     if outcome.applied {
         warn!(
             inserted_summary = outcome.inserted_summary,
+            inserted_breadcrumb = outcome.inserted_breadcrumb,
             inserted_archive_reference = outcome.inserted_archive_reference,
             dropped_message_count = outcome.dropped_message_count,
             dropped_indices = ?outcome.dropped_indices,
@@ -122,6 +245,196 @@ fn format_archive_reference(archive_ref: &ArchiveRef) -> String {
         "[archived context chunk]\narchive_id: {}\ntitle: {}\nstorage_key: {}",
         archive_ref.archive_id, archive_ref.title, archive_ref.storage_key
     )
+}
+
+fn build_breadcrumb_card(messages: &[AgentMessage], summary: &CompactionSummary) -> BreadcrumbCard {
+    BreadcrumbCard {
+        current_goal: if summary.goal.trim().is_empty() {
+            latest_text(messages, |kind| kind == AgentMessageKind::UserTask).unwrap_or_default()
+        } else {
+            summary.goal.trim().to_string()
+        },
+        authoritative_state: summary
+            .constraints
+            .iter()
+            .chain(summary.decisions.iter())
+            .chain(summary.relevant_files_entities.iter())
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+            .take(POST_RUN_MAX_AUTHORITATIVE_ITEMS)
+            .map(ToOwned::to_owned)
+            .collect(),
+        recent_user_requests: collect_recent_texts(
+            messages,
+            POST_RUN_MAX_RECENT_USER_REQUESTS,
+            |kind| {
+                matches!(
+                    kind,
+                    AgentMessageKind::UserTask
+                        | AgentMessageKind::UserTurn
+                        | AgentMessageKind::RuntimeContext
+                )
+            },
+            |message| truncate_chars(&message.content, 240),
+        ),
+        recent_assistant_updates: collect_recent_texts(
+            messages,
+            POST_RUN_MAX_RECENT_ASSISTANT_UPDATES,
+            |kind| {
+                matches!(
+                    kind,
+                    AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
+                )
+            },
+            |message| truncate_chars(&message.content, 240),
+        ),
+        recent_tool_outcomes: collect_recent_texts(
+            messages,
+            POST_RUN_MAX_RECENT_TOOL_OUTCOMES,
+            |kind| kind == AgentMessageKind::ToolResult,
+            |message| {
+                let tool_name = message.tool_name.as_deref().unwrap_or("tool");
+                format!("{tool_name}: {}", truncate_chars(&message.content, 240))
+            },
+        ),
+        next_steps: summary
+            .remaining_work
+            .iter()
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        open_questions: summary
+            .risks
+            .iter()
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+    }
+}
+
+fn collect_post_run_raw_tail_indices(messages: &[AgentMessage], preserved: &[bool]) -> Vec<usize> {
+    let mut selected = Vec::new();
+    let mut protected_tokens = 0usize;
+    let recent_raw_target_tokens = get_post_run_recent_raw_target_tokens();
+
+    for (index, message) in messages.iter().enumerate().rev() {
+        if preserved.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        if !is_post_run_tail_kind(message.resolved_kind()) {
+            continue;
+        }
+
+        let estimated_tokens = estimate_message_tokens(message);
+        if !selected.is_empty()
+            && protected_tokens.saturating_add(estimated_tokens) > recent_raw_target_tokens
+        {
+            continue;
+        }
+
+        selected.push(index);
+        protected_tokens = protected_tokens.saturating_add(estimated_tokens);
+    }
+
+    ensure_latest_anchor(&mut selected, messages, preserved, |kind| {
+        matches!(
+            kind,
+            AgentMessageKind::UserTurn | AgentMessageKind::RuntimeContext
+        )
+    });
+    ensure_latest_anchor(&mut selected, messages, preserved, |kind| {
+        matches!(
+            kind,
+            AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
+        )
+    });
+
+    selected.sort_unstable();
+    selected.dedup();
+    selected
+}
+
+fn ensure_latest_anchor(
+    selected: &mut Vec<usize>,
+    messages: &[AgentMessage],
+    preserved: &[bool],
+    predicate: impl Fn(AgentMessageKind) -> bool,
+) {
+    let Some(index) = messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(index, message)| {
+            !preserved.get(*index).copied().unwrap_or(false) && predicate(message.resolved_kind())
+        })
+        .map(|(index, _)| index)
+    else {
+        return;
+    };
+
+    if !selected.contains(&index) {
+        selected.push(index);
+    }
+}
+
+fn is_post_run_tail_kind(kind: AgentMessageKind) -> bool {
+    matches!(
+        kind,
+        AgentMessageKind::UserTask
+            | AgentMessageKind::RuntimeContext
+            | AgentMessageKind::UserTurn
+            | AgentMessageKind::AssistantResponse
+            | AgentMessageKind::AssistantReasoning
+            | AgentMessageKind::AssistantToolCall
+            | AgentMessageKind::ToolResult
+    )
+}
+
+fn latest_matching_index(
+    messages: &[AgentMessage],
+    predicate: impl Fn(AgentMessageKind) -> bool,
+) -> Option<usize> {
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| predicate(message.resolved_kind()))
+        .map(|(index, _)| index)
+}
+
+fn latest_text(
+    messages: &[AgentMessage],
+    predicate: impl Fn(AgentMessageKind) -> bool,
+) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| predicate(message.resolved_kind()))
+        .map(|message| truncate_chars(&message.content, 240))
+}
+
+fn collect_recent_texts(
+    messages: &[AgentMessage],
+    limit: usize,
+    predicate: impl Fn(AgentMessageKind) -> bool,
+    render: impl Fn(&AgentMessage) -> String,
+) -> Vec<String> {
+    let mut items = messages
+        .iter()
+        .rev()
+        .filter(|message| predicate(message.resolved_kind()))
+        .map(render)
+        .filter(|item| !item.trim().is_empty())
+        .take(limit)
+        .collect::<Vec<_>>();
+    items.reverse();
+    items
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 /// Remove orphaned tool results whose corresponding tool_calls were dropped by compaction.
@@ -214,70 +527,9 @@ fn append_matching_messages(
     }
 }
 
-fn merge_summaries(
-    existing_summaries: Vec<CompactionSummary>,
-    new_summary: Option<CompactionSummary>,
-) -> Option<CompactionSummary> {
-    let mut summaries: Vec<CompactionSummary> = existing_summaries
-        .into_iter()
-        .filter(summary_has_signal)
-        .collect();
-    if let Some(summary) = new_summary.filter(summary_has_signal) {
-        summaries.push(summary);
-    }
-    if summaries.is_empty() {
-        return None;
-    }
-
-    let mut merged = CompactionSummary {
-        goal: summaries
-            .iter()
-            .rev()
-            .find_map(|summary| {
-                let goal = summary.goal.trim();
-                (!goal.is_empty()).then(|| goal.to_string())
-            })
-            .unwrap_or_default(),
-        ..CompactionSummary::default()
-    };
-    for summary in summaries {
-        push_unique(&mut merged.constraints, summary.constraints);
-        push_unique(&mut merged.decisions, summary.decisions);
-        push_unique(&mut merged.discoveries, summary.discoveries);
-        push_unique(
-            &mut merged.relevant_files_entities,
-            summary.relevant_files_entities,
-        );
-        push_unique(&mut merged.remaining_work, summary.remaining_work);
-        push_unique(&mut merged.risks, summary.risks);
-    }
-
-    summary_has_signal(&merged).then_some(merged)
-}
-
-fn summary_has_signal(summary: &CompactionSummary) -> bool {
-    !summary.goal.trim().is_empty()
-        || !summary.constraints.is_empty()
-        || !summary.decisions.is_empty()
-        || !summary.discoveries.is_empty()
-        || !summary.relevant_files_entities.is_empty()
-        || !summary.remaining_work.is_empty()
-        || !summary.risks.is_empty()
-}
-
-fn push_unique(target: &mut Vec<String>, items: Vec<String>) {
-    for item in items {
-        let trimmed = item.trim();
-        if trimmed.is_empty() || target.iter().any(|existing| existing == trimmed) {
-            continue;
-        }
-        target.push(trimmed.to_string());
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{rebuild_hot_context, remove_orphaned_tool_results};
+    use super::{rebuild_hot_context, remove_orphaned_tool_results, truncate_to_working_set};
     use crate::agent::compaction::{
         classify_hot_memory, AgentMessageKind, ClassifiedMemoryEntry, CompactionRetention,
         CompactionSnapshot, CompactionSummary,
@@ -342,15 +594,16 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_hot_context_merges_existing_structured_summary() {
+    fn rebuild_hot_context_replaces_existing_structured_summary_with_authoritative_update() {
         let existing = CompactionSummary {
             goal: "Ship stage 7".to_string(),
             constraints: vec!["Keep AGENTS.md pinned.".to_string()],
             discoveries: vec!["Compaction moved out of memory.rs.".to_string()],
+            risks: vec!["Old risk".to_string()],
             ..CompactionSummary::default()
         };
         let messages = vec![
-            AgentMessage::from_compaction_summary(existing.clone()),
+            AgentMessage::from_compaction_summary(existing),
             AgentMessage::user_task("Ship stage 8"),
             AgentMessage::user("Older request"),
             AgentMessage::assistant("Older response"),
@@ -367,25 +620,23 @@ mod tests {
             ..CompactionSummary::default()
         };
 
-        let (rebuilt, outcome) =
-            rebuild_hot_context(&snapshot, &messages, Some(new_summary.clone()), None);
+        let (rebuilt, outcome) = rebuild_hot_context(&snapshot, &messages, Some(new_summary), None);
 
         assert!(outcome.applied);
         assert_eq!(outcome.dropped_indices, vec![0, 2, 3]);
-        let merged_summary = rebuilt[1].summary_payload().expect("merged summary");
-        assert_eq!(merged_summary.goal, "Ship stage 8");
-        assert!(merged_summary
-            .constraints
-            .iter()
-            .any(|item| item.contains("AGENTS.md")));
-        assert!(merged_summary
-            .discoveries
-            .iter()
-            .any(|item| item.contains("memory.rs")));
-        assert!(merged_summary
-            .decisions
-            .iter()
-            .any(|item| item.contains("first-class summary")));
+        let summary = rebuilt[1].summary_payload().expect("replacement summary");
+        assert_eq!(summary.goal, "Ship stage 8");
+        assert_eq!(
+            summary.decisions,
+            vec!["Use a first-class summary entry.".to_string()]
+        );
+        assert_eq!(
+            summary.remaining_work,
+            vec!["Integrate pre-iteration compaction.".to_string()]
+        );
+        assert!(summary.constraints.is_empty());
+        assert!(summary.discoveries.is_empty());
+        assert!(summary.risks.is_empty());
     }
 
     #[test]
@@ -543,6 +794,7 @@ mod tests {
                 pruned_artifact: None,
                 structured_summary: None,
                 archive_ref: None,
+                breadcrumb_card: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::ToolResult,
@@ -558,6 +810,7 @@ mod tests {
                 pruned_artifact: None,
                 structured_summary: None,
                 archive_ref: None,
+                breadcrumb_card: None,
             },
         ];
         let snapshot = CompactionSnapshot {
@@ -598,5 +851,109 @@ mod tests {
 
         assert_eq!(preserved, vec![false, false]);
         assert!(rebuilt.is_empty());
+    }
+
+    #[test]
+    fn truncate_to_working_set_preserves_breadcrumb_summary_archive_and_recent_tail() {
+        let messages = vec![
+            AgentMessage::topic_agents_md("# Topic AGENTS\nPreserve identity."),
+            AgentMessage::system_context("Execution policy"),
+            AgentMessage::user_task("Ship stage 8"),
+            AgentMessage::user("Older request"),
+            AgentMessage::assistant("Older response"),
+            AgentMessage::user("Recent request 1"),
+            AgentMessage::assistant("Recent response 1"),
+            AgentMessage::user("Recent request 2"),
+            AgentMessage::assistant("Recent response 2"),
+        ];
+        let summary = CompactionSummary {
+            goal: "Ship stage 8".to_string(),
+            decisions: vec!["Truncated entire hot context.".to_string()],
+            remaining_work: vec!["Wire runner lifecycle next.".to_string()],
+            ..CompactionSummary::default()
+        };
+        let archive_ref = crate::agent::ArchiveRef {
+            archive_id: "archive-1".to_string(),
+            created_at: 1,
+            title: "Compacted history: Ship stage 8".to_string(),
+            storage_key: "archive/topic/flow/history-archive-1.json".to_string(),
+        };
+
+        let (rebuilt, outcome) =
+            truncate_to_working_set(&messages, Some(summary.clone()), Some(archive_ref.clone()));
+
+        assert!(outcome.applied);
+        assert!(outcome.inserted_summary);
+        assert!(outcome.inserted_breadcrumb);
+        assert!(outcome.inserted_archive_reference);
+        assert!(outcome.dropped_message_count >= 1);
+        assert!(!outcome.preserved_recent_indices.is_empty());
+        assert_eq!(
+            rebuilt[0].resolved_kind(),
+            crate::agent::AgentMessageKind::TopicAgentsMd
+        );
+        assert_eq!(
+            rebuilt[1].resolved_kind(),
+            crate::agent::AgentMessageKind::UserTask
+        );
+        assert_eq!(
+            rebuilt[2].resolved_kind(),
+            crate::agent::AgentMessageKind::Breadcrumb
+        );
+        assert_eq!(
+            rebuilt[3].resolved_kind(),
+            crate::agent::AgentMessageKind::Summary
+        );
+        assert_eq!(rebuilt[3].summary_payload(), Some(&summary));
+        assert_eq!(rebuilt[4].archive_ref_payload(), Some(&archive_ref));
+        assert!(rebuilt
+            .iter()
+            .any(|message| message.content == "Recent request 2"));
+        assert!(rebuilt
+            .iter()
+            .any(|message| message.content == "Recent response 2"));
+    }
+
+    #[test]
+    fn truncate_to_working_set_without_archive_ref_keeps_breadcrumb_and_summary() {
+        let messages = vec![
+            AgentMessage::user("Request"),
+            AgentMessage::assistant("Response"),
+        ];
+        let summary = CompactionSummary {
+            goal: "Task done".to_string(),
+            ..CompactionSummary::default()
+        };
+
+        let (rebuilt, outcome) = truncate_to_working_set(&messages, Some(summary), None);
+
+        assert!(outcome.applied);
+        assert!(outcome.inserted_summary);
+        assert!(outcome.inserted_breadcrumb);
+        assert!(!outcome.inserted_archive_reference);
+        assert_eq!(rebuilt.len(), 4);
+        assert_eq!(
+            rebuilt[0].resolved_kind(),
+            crate::agent::AgentMessageKind::Breadcrumb
+        );
+        assert_eq!(
+            rebuilt[1].resolved_kind(),
+            crate::agent::AgentMessageKind::Summary
+        );
+        assert_eq!(rebuilt[2].content, "Request");
+        assert_eq!(rebuilt[3].content, "Response");
+    }
+
+    #[test]
+    fn truncate_to_working_set_is_noop_without_summary() {
+        let messages = vec![
+            AgentMessage::user("Request"),
+            AgentMessage::assistant("Response"),
+        ];
+
+        let (rebuilt, outcome) = truncate_to_working_set(&messages, None, None);
+
+        assert!(!outcome.applied);
+        assert_eq!(rebuilt.len(), 2);
     }
 }

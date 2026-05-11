@@ -1,3 +1,4 @@
+use super::shared::{MutationAuditTarget, MutationExecutionResult, PreviewableMutationPlan};
 use super::*;
 
 #[derive(Debug, Deserialize)]
@@ -96,68 +97,57 @@ impl ManagerControlPlaneProvider {
             .get_topic_context(self.user_id, topic_id.clone())
             .await
             .map_err(|err| anyhow!("failed to get current topic context: {err}"))?;
+        let previous_value = Self::to_json_value(&previous)?;
+        let applied_previous = previous_value.clone();
+        let preview = json!({
+            "operation": "upsert",
+            "topic_id": topic_id.clone(),
+            "context": context.clone(),
+        });
+        let dry_run_payload = json!({
+            "topic_id": topic_id.clone(),
+            "context": context.clone(),
+            "previous": previous_value.clone(),
+            "outcome": Self::dry_run_outcome(true)
+        });
+        let storage = Arc::clone(&self.storage);
+        let user_id = self.user_id;
 
-        if args.dry_run {
-            let audit_status = self
-                .append_audit_with_status(AppendAuditEventOptions {
-                    user_id: self.user_id,
-                    topic_id: Some(topic_id.clone()),
-                    agent_id: None,
-                    action: TOOL_TOPIC_CONTEXT_UPSERT.to_string(),
-                    payload: json!({
+        self.execute_previewable_mutation(
+            TOOL_TOPIC_CONTEXT_UPSERT,
+            MutationAuditTarget {
+                topic_id: Some(topic_id.clone()),
+                agent_id: None,
+            },
+            PreviewableMutationPlan {
+                dry_run: args.dry_run,
+                preview,
+                previous: previous_value,
+                dry_run_payload,
+            },
+            || async move {
+                let record = storage
+                    .upsert_topic_context(UpsertTopicContextOptions {
+                        user_id,
+                        topic_id: topic_id.clone(),
+                        context,
+                    })
+                    .await
+                    .map_err(|err| anyhow!("failed to upsert topic context: {err}"))?;
+                let version = record.version;
+
+                Ok(MutationExecutionResult {
+                    response_body: json!({ "ok": true, "topic_context": record }),
+                    audit_payload: json!({
                         "topic_id": topic_id,
-                        "context": context,
-                        "previous": previous,
-                        "outcome": Self::dry_run_outcome(true)
+                        "version": version,
+                        "previous": applied_previous,
+                        "outcome": Self::dry_run_outcome(false)
                     }),
                 })
-                .await;
-
-            let response = Self::attach_audit_status(
-                json!({
-                    "ok": true,
-                    "dry_run": true,
-                    "preview": {
-                        "operation": "upsert",
-                        "topic_id": topic_id,
-                        "context": context
-                    },
-                    "previous": previous
-                }),
-                audit_status,
-            );
-
-            return Self::to_json_string(response);
-        }
-
-        let record = self
-            .storage
-            .upsert_topic_context(UpsertTopicContextOptions {
-                user_id: self.user_id,
-                topic_id: topic_id.clone(),
-                context,
-            })
-            .await
-            .map_err(|err| anyhow!("failed to upsert topic context: {err}"))?;
-
-        let audit_status = self
-            .append_audit_with_status(AppendAuditEventOptions {
-                user_id: self.user_id,
-                topic_id: Some(topic_id),
-                agent_id: None,
-                action: TOOL_TOPIC_CONTEXT_UPSERT.to_string(),
-                payload: json!({
-                    "topic_id": record.topic_id,
-                    "version": record.version,
-                    "previous": previous,
-                    "outcome": Self::dry_run_outcome(false)
-                }),
-            })
-            .await;
-
-        let response =
-            Self::attach_audit_status(json!({ "ok": true, "topic_context": record }), audit_status);
-        Self::to_json_string(response)
+            },
+        )
+        .await
     }
 
     pub(super) async fn execute_topic_context_get(&self, arguments: &str) -> Result<String> {

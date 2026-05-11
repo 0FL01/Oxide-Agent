@@ -15,22 +15,23 @@
 
 use crate::config::MISTRAL_CHAT_TEMPERATURE;
 use crate::llm::{
-    openai_compat, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
+    support::openai_compat, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
 };
 use async_openai::{config::OpenAIConfig, Client};
 use async_trait::async_trait;
 use reqwest::Client as HttpClient;
 use std::sync::{Arc, Mutex};
 
-pub mod chat;
-pub mod client;
-pub mod id_mapper;
-pub mod image;
-pub mod messages;
-pub mod parsing;
-pub mod tests;
-pub mod transcription;
-pub mod types;
+mod chat;
+mod client;
+mod id_mapper;
+mod image;
+mod messages;
+mod parsing;
+#[cfg(test)]
+mod tests;
+mod transcription;
+mod types;
 
 use id_mapper::ToolCallIdMapper;
 
@@ -164,6 +165,3 @@ impl LlmProvider for MistralProvider {
         chat::chat_with_tools(&self.http_client, &self.api_key, request, &self.id_mapper).await
     }
 }
-
-// Re-exports for backward compatibility
-pub use self::types::*;

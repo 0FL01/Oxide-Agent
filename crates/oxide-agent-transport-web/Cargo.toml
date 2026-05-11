@@ -15,6 +15,7 @@ too_many_arguments = "forbid"
 
 [dependencies]
 oxide-agent-core = { path = "../oxide-agent-core" }
+oxide-agent-memory = { path = "../oxide-agent-memory" }
 oxide-agent-runtime = { path = "../oxide-agent-runtime" }
 tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
@@ -37,6 +38,7 @@ tokio-test = "0.4"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 bytes = "1"
 dotenvy = "0.15"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [[test]]
 name = "e2e"

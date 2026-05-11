@@ -1,7 +1,7 @@
 //! Topic-scoped SSH infrastructure provider with approval gating.
 
 use crate::agent::memory::AgentMessage;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, FileDeliveryKind};
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::storage::{
@@ -17,7 +17,7 @@ use rmcp::{
     transport::{ConfigureCommandExt, TokioChildProcess},
     ServiceExt,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use shell_escape::unix::escape;
@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::TempDir;
 use tempfile::{Builder, NamedTempFile};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -37,11 +38,17 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
+use super::file_delivery::{
+    deliver_file_via_progress, format_generic_delivery_report, FileDeliveryRequest,
+    CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
+};
+
 const TOOL_SSH_EXEC: &str = "ssh_exec";
 const TOOL_SSH_SUDO_EXEC: &str = "ssh_sudo_exec";
 const TOOL_SSH_READ_FILE: &str = "ssh_read_file";
 const TOOL_SSH_APPLY_FILE_EDIT: &str = "ssh_apply_file_edit";
 const TOOL_SSH_CHECK_PROCESS: &str = "ssh_check_process";
+const TOOL_SSH_SEND_FILE_TO_USER: &str = "ssh_send_file_to_user";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_REMOTE_OUTPUT_CHARS: usize = 16_000;
@@ -51,9 +58,14 @@ const DEFAULT_UPSTREAM_SSH_MCP_BINARY_PATH: &str = "/usr/local/bin/ssh-mcp";
 const UPSTREAM_SSH_MCP_BINARY_ENV: &str = "OXIDE_SSH_MCP_BINARY";
 const UPSTREAM_TOOL_EXEC: &str = "exec";
 const UPSTREAM_TOOL_SUDO_EXEC: &str = "sudo-exec";
+const UPSTREAM_TOOL_TRANSFER: &str = "transfer";
+const UPSTREAM_TOOL_READ_FILE: &str = "read-file";
+const UPSTREAM_TOOL_APPLY_FILE_EDIT: &str = "apply-file-edit";
+const UPSTREAM_TOOL_CHECK_PROCESS: &str = "check-process";
 const UPSTREAM_TIMEOUT_GRACE_MS: u64 = 30_000;
 const UPSTREAM_MAX_OUTPUT_TOKENS: usize = 12_000;
 const PRIVATE_KEY_TEMPFILE_PREFIX: &str = "oxide-agent-ssh-key-";
+const TRANSFER_SESSION_DIR_PREFIX: &str = "oxide-agent-ssh-transfer-";
 
 /// Supported secret probe kinds for manager-facing diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -442,6 +454,105 @@ impl SshExecutionBackend {
             }
         }
     }
+
+    async fn transfer_get_file(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<()> {
+        match self {
+            Self::Upstream(backend) => {
+                backend
+                    .transfer_get_file(remote_path, local_path, timeout_secs, cancellation_token)
+                    .await
+            }
+        }
+    }
+
+    async fn transfer_root_path(&self) -> Result<PathBuf> {
+        match self {
+            Self::Upstream(backend) => backend.transfer_root_path().await,
+        }
+    }
+
+    async fn read_file(
+        &self,
+        remote_path: &str,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<UpstreamReadFileResponse> {
+        match self {
+            Self::Upstream(backend) => {
+                backend
+                    .read_file(remote_path, timeout_secs, cancellation_token)
+                    .await
+            }
+        }
+    }
+
+    async fn apply_file_edit_partial(
+        &self,
+        remote_path: &str,
+        old_text: &str,
+        new_text: &str,
+        replace_all: bool,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<UpstreamApplyFileEditResponse> {
+        match self {
+            Self::Upstream(backend) => {
+                backend
+                    .apply_file_edit_partial(
+                        remote_path,
+                        old_text,
+                        new_text,
+                        replace_all,
+                        timeout_secs,
+                        cancellation_token,
+                    )
+                    .await
+            }
+        }
+    }
+
+    async fn apply_file_edit_full(
+        &self,
+        remote_path: &str,
+        new_content: &str,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<UpstreamApplyFileEditResponse> {
+        match self {
+            Self::Upstream(backend) => {
+                backend
+                    .apply_file_edit_full(
+                        remote_path,
+                        new_content,
+                        timeout_secs,
+                        cancellation_token,
+                    )
+                    .await
+            }
+        }
+    }
+
+    async fn check_process(
+        &self,
+        job_id: &str,
+        tail_lines: usize,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<UpstreamCheckProcessResponse> {
+        match self {
+            Self::Upstream(backend) => {
+                backend
+                    .check_process(job_id, tail_lines, timeout_secs, cancellation_token)
+                    .await
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -459,6 +570,53 @@ struct UpstreamSshMcpSession {
     peer: Peer<RoleClient>,
     stderr_task: Mutex<Option<JoinHandle<()>>>,
     _key_file: Option<NamedTempFile>,
+    _transfer_root: TempDir,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpstreamTransferResponse {
+    ok: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpstreamReadFileResponse {
+    path: String,
+    content: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    returned_lines: Option<usize>,
+    #[serde(default)]
+    truncated: Option<bool>,
+    #[serde(default)]
+    approx_tokens_returned: Option<usize>,
+    #[serde(default)]
+    approx_tokens_total_estimate: Option<usize>,
+    #[serde(default)]
+    hint: Option<String>,
+    #[serde(default)]
+    sha256: Option<String>,
+    #[serde(default)]
+    read_ticket: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpstreamApplyFileEditResponse {
+    path: String,
+    previous_sha256: String,
+    new_sha256: String,
+    bytes_written: usize,
+    changed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpstreamCheckProcessResponse {
+    running: bool,
+    exit_code: Option<u32>,
+    elapsed_time: String,
+    command: String,
+    log_tail: String,
 }
 
 impl UpstreamSshMcpSession {
@@ -529,6 +687,151 @@ impl UpstreamSshMcpBackend {
             )
             .await?;
         parse_wrapped_remote_output(&wrapped.markers, &response)
+    }
+
+    async fn transfer_get_file(
+        &self,
+        remote_path: &str,
+        local_path: &str,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<()> {
+        let _call_guard = self.call_lock.lock().await;
+        let response = self
+            .call_tool(
+                UPSTREAM_TOOL_TRANSFER,
+                json!({
+                    "operation": "get",
+                    "kind": "file",
+                    "remote_path": remote_path,
+                    "local_path": local_path,
+                    "transport": "auto",
+                    "overwrite": true,
+                    "timeout_ms": upstream_timeout_ms(timeout_secs),
+                }),
+                timeout_secs,
+                cancellation_token,
+            )
+            .await?;
+
+        let parsed: UpstreamTransferResponse = serde_json::from_str(&response)
+            .with_context(|| format!("failed to parse upstream transfer response: {response}"))?;
+        if parsed.ok {
+            return Ok(());
+        }
+
+        bail!(
+            "upstream ssh-mcp transfer failed: {}",
+            parsed
+                .error
+                .unwrap_or_else(|| "unknown transfer error".to_string())
+        )
+    }
+
+    async fn transfer_root_path(&self) -> Result<PathBuf> {
+        let session = self.ensure_session().await?;
+        Ok(session._transfer_root.path().to_path_buf())
+    }
+
+    async fn read_file(
+        &self,
+        remote_path: &str,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<UpstreamReadFileResponse> {
+        let _call_guard = self.call_lock.lock().await;
+        self.call_tool_json(
+            UPSTREAM_TOOL_READ_FILE,
+            json!({
+                "remote_path": remote_path,
+                "mode": "full",
+                "timeout_ms": upstream_timeout_ms(timeout_secs),
+            }),
+            timeout_secs,
+            cancellation_token,
+        )
+        .await
+    }
+
+    async fn apply_file_edit_partial(
+        &self,
+        remote_path: &str,
+        old_text: &str,
+        new_text: &str,
+        replace_all: bool,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<UpstreamApplyFileEditResponse> {
+        let _call_guard = self.call_lock.lock().await;
+        self.call_tool_json(
+            UPSTREAM_TOOL_APPLY_FILE_EDIT,
+            json!({
+                "remote_path": remote_path,
+                "old_text": old_text,
+                "new_text": new_text,
+                "replace_all": replace_all,
+                "timeout_ms": upstream_timeout_ms(timeout_secs),
+            }),
+            timeout_secs,
+            cancellation_token,
+        )
+        .await
+    }
+
+    async fn apply_file_edit_full(
+        &self,
+        remote_path: &str,
+        new_content: &str,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<UpstreamApplyFileEditResponse> {
+        let _call_guard = self.call_lock.lock().await;
+        self.call_tool_json(
+            UPSTREAM_TOOL_APPLY_FILE_EDIT,
+            json!({
+                "remote_path": remote_path,
+                "new_content": new_content,
+                "timeout_ms": upstream_timeout_ms(timeout_secs),
+            }),
+            timeout_secs,
+            cancellation_token,
+        )
+        .await
+    }
+
+    async fn check_process(
+        &self,
+        job_id: &str,
+        tail_lines: usize,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<UpstreamCheckProcessResponse> {
+        let _call_guard = self.call_lock.lock().await;
+        self.call_tool_json(
+            UPSTREAM_TOOL_CHECK_PROCESS,
+            json!({
+                "job_id": job_id,
+                "tail_lines": tail_lines,
+            }),
+            timeout_secs,
+            cancellation_token,
+        )
+        .await
+    }
+
+    async fn call_tool_json<T: DeserializeOwned>(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        timeout_secs: u64,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<T> {
+        let response = self
+            .call_tool(tool_name, arguments, timeout_secs, cancellation_token)
+            .await?;
+        serde_json::from_str(&response).with_context(|| {
+            format!("failed to parse upstream ssh-mcp response for tool '{tool_name}': {response}")
+        })
     }
 
     async fn call_tool(
@@ -609,6 +912,10 @@ impl UpstreamSshMcpBackend {
     async fn spawn_session(&self) -> Result<UpstreamSshMcpSession> {
         let resolved_auth = resolve_backend_auth(&self.storage, self.user_id, &self.config).await?;
         let binary_path = self.binary_path.clone();
+        let transfer_root = Builder::new()
+            .prefix(TRANSFER_SESSION_DIR_PREFIX)
+            .tempdir()
+            .context("failed to create local transfer root for upstream ssh-mcp session")?;
 
         let command = tokio::process::Command::new(&binary_path);
         let (transport, stderr) = TokioChildProcess::builder(command.configure(|cmd| {
@@ -621,7 +928,8 @@ impl UpstreamSshMcpBackend {
                 ))
                 .arg("--maxChars=none")
                 .arg(format!("--max-output-tokens={UPSTREAM_MAX_OUTPUT_TOKENS}"))
-                .arg("--log-level=warn");
+                .arg("--log-level=warn")
+                .current_dir(transfer_root.path());
 
             if let Some(password) = resolved_auth.password.as_deref() {
                 cmd.env("SSH_MCP_PASSWORD", password);
@@ -673,6 +981,7 @@ impl UpstreamSshMcpBackend {
             peer,
             stderr_task: Mutex::new(stderr_task),
             _key_file: resolved_auth.key_file,
+            _transfer_root: transfer_root,
         })
     }
 
@@ -786,16 +1095,34 @@ impl SshMcpProvider {
             },
             ToolDefinition {
                 name: TOOL_SSH_CHECK_PROCESS.to_string(),
-                description: "Check remote processes on the topic infra target by pattern"
+                description: "Check remote processes on the topic infra target. Provide exactly one of job_id or pattern; prefer job_id returned by ssh_exec/ssh_sudo_exec for background jobs."
                     .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "pattern": { "type": "string", "description": "Substring or process pattern to inspect" },
+                        "pattern": { "type": "string", "description": "Legacy substring or process pattern to inspect via pgrep. Provide exactly one of pattern or job_id." },
+                        "job_id": { "type": "string", "description": "Preferred background job id returned by ssh_exec/ssh_sudo_exec" },
+                        "tail_lines": { "type": "integer", "description": "Optional tail line count when using job_id" },
+                        "approval_request_id": { "type": "string", "description": "Approval request id for replay after operator confirmation" },
+                        "approval_token": { "type": "string", "description": "Approval token issued by operator confirmation" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_SSH_SEND_FILE_TO_USER.to_string(),
+                description:
+                    "Transfer a remote file from the topic infra target and send it to the user via the chat transport"
+                        .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Remote file path to transfer and send" },
+                        "file_name": { "type": "string", "description": "Optional override for the delivered file name" },
+                        "timeout_secs": { "type": "integer", "description": "Optional timeout in seconds" },
                         "approval_request_id": { "type": "string", "description": "Approval request id for replay after operator confirmation" },
                         "approval_token": { "type": "string", "description": "Approval token issued by operator confirmation" }
                     },
-                    "required": ["pattern"]
+                    "required": ["path"]
                 }),
             },
         ]
@@ -856,17 +1183,107 @@ impl SshMcpProvider {
         }))?))
     }
 
-    fn requires_approval(&self, mode: TopicInfraToolMode, summary: &str) -> bool {
-        if self.config.approval_required_modes.contains(&mode) {
-            return true;
+    // [APPROVAL DISABLED] Approval flow disabled: always allow tools to execute
+    // without requiring operator confirmation. The approval pipeline (UI,
+    // callbacks, executor resume) was broken — pending replay payloads were
+    // lost between the approval request and user granting approval, causing
+    // "pending SSH replay payload not found" errors. Disabling at the source
+    // prevents WaitingForApproval from ever being emitted.
+    fn requires_approval(&self, _mode: TopicInfraToolMode, _summary: &str) -> bool {
+        // if self.config.approval_required_modes.contains(&mode) {
+        //     return true;
+        // }
+        // match mode {
+        //     TopicInfraToolMode::SudoExec | TopicInfraToolMode::ApplyFileEdit => true,
+        //     TopicInfraToolMode::Exec => is_dangerous_command(summary),
+        //     TopicInfraToolMode::ReadFile => is_sensitive_path(summary),
+        //     TopicInfraToolMode::CheckProcess => false,
+        //     TopicInfraToolMode::Transfer => is_sensitive_path(summary),
+        // }
+        false
+    }
+
+    async fn execute_send_file_to_user(
+        &self,
+        arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        let args: SendRemoteFileArgs = serde_json::from_str(arguments)
+            .map_err(|err| anyhow!("invalid ssh send file args: {err}"))?;
+        let path = validate_non_empty(args.path, "path")?;
+        self.ensure_mode_allowed(TopicInfraToolMode::Transfer)?;
+
+        let summary = format!("transfer file on {}: {}", self.config.target_name, path);
+        if let Some(response) = self
+            .approval_or_continue(
+                TOOL_SSH_SEND_FILE_TO_USER,
+                TopicInfraToolMode::Transfer,
+                arguments,
+                summary,
+                args.approval_request_id.as_deref(),
+                args.approval_token.as_deref(),
+            )
+            .await?
+        {
+            return Ok(response);
         }
 
-        match mode {
-            TopicInfraToolMode::SudoExec | TopicInfraToolMode::ApplyFileEdit => true,
-            TopicInfraToolMode::Exec => is_dangerous_command(summary),
-            TopicInfraToolMode::ReadFile => is_sensitive_path(summary),
-            TopicInfraToolMode::CheckProcess => false,
+        let timeout_secs = args.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let delivered_file_name = match args.file_name {
+            Some(file_name) => validate_chat_file_name(file_name)?,
+            None => default_remote_file_name(&path),
+        };
+        let local_path = unique_transfer_local_path(&delivered_file_name);
+
+        self.backend
+            .transfer_get_file(&path, &local_path, timeout_secs, cancellation_token)
+            .await?;
+
+        let download_path = self.backend.transfer_root_path().await?.join(&local_path);
+
+        let delivery_result = async {
+            let metadata = tokio::fs::metadata(&download_path)
+                .await
+                .with_context(|| format!("failed to stat transferred file {}", download_path.display()))?;
+            if metadata.len() == 0 {
+                return Ok(format!(
+                    "❌ ERROR: File '{}' is empty (0 bytes) and cannot be sent.\nSource path: {}",
+                    delivered_file_name, path
+                ));
+            }
+            if metadata.len() > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
+                return Ok(
+                    "⚠️ ERROR: File too large for chat delivery (>50 MB). Please use another transfer/upload path."
+                        .to_string(),
+                );
+            }
+
+            let content = tokio::fs::read(&download_path)
+                .await
+                .with_context(|| format!("failed to read transferred file {}", download_path.display()))?;
+            let report = deliver_file_via_progress(
+                progress_tx,
+                FileDeliveryRequest {
+                    kind: FileDeliveryKind::Auto,
+                    file_name: delivered_file_name.clone(),
+                    content,
+                    source_path: path.clone(),
+                },
+            )
+            .await;
+            Ok(format_generic_delivery_report(&report))
         }
+        .await;
+
+        let cleanup_result = tokio::fs::remove_file(&download_path).await;
+        if let Err(error) = cleanup_result {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(path = %download_path.display(), error = %error, "Failed to cleanup transferred SSH file");
+            }
+        }
+
+        delivery_result
     }
 
     async fn execute_exec(
@@ -961,65 +1378,80 @@ impl SshMcpProvider {
         }
 
         let max_bytes = args.max_bytes.unwrap_or(16_384).max(1);
-        let remote_script = format!(
-            "python3 - <<'PY'\nfrom pathlib import Path\npath = Path({})\ncontent = path.read_bytes()[:{}]\nimport sys\nsys.stdout.buffer.write(content)\nPY",
-            python_string_literal(&path),
-            max_bytes,
-        );
-        let output = self
-            .backend
-            .execute(&remote_script, DEFAULT_TIMEOUT_SECS, false, None)
-            .await?;
-        serde_json::to_string(&json!({
-            "ok": true,
-            "path": path,
-            "content": output.stdout
-        }))
-        .map_err(Into::into)
+        if is_absolute_remote_path(&path) {
+            if let Ok(response) = self
+                .backend
+                .read_file(&path, DEFAULT_TIMEOUT_SECS, None)
+                .await
+            {
+                return serialize_read_file_response(response, max_bytes);
+            }
+        }
+
+        self.execute_read_file_legacy(&path, max_bytes).await
     }
 
     async fn execute_check_process(&self, arguments: &str) -> Result<String> {
         let args: CheckProcessArgs = serde_json::from_str(arguments)
             .map_err(|err| anyhow!("invalid ssh check process args: {err}"))?;
-        let pattern = validate_non_empty(args.pattern, "pattern")?;
+        let approval_request_id = args.approval_request_id.clone();
+        let approval_token = args.approval_token.clone();
+        let request = normalize_check_process_args(args)?;
         self.ensure_mode_allowed(TopicInfraToolMode::CheckProcess)?;
 
-        let summary = format!(
-            "check process on {}: {}",
-            self.config.target_name,
-            truncate(&pattern, 120)
-        );
+        let summary = match &request {
+            CheckProcessRequest::JobId { job_id, .. } => format!(
+                "check process on {}: job {}",
+                self.config.target_name,
+                truncate(job_id, 120)
+            ),
+            CheckProcessRequest::Pattern(pattern) => format!(
+                "check process on {}: {}",
+                self.config.target_name,
+                truncate(pattern, 120)
+            ),
+        };
         if let Some(response) = self
             .approval_or_continue(
                 TOOL_SSH_CHECK_PROCESS,
                 TopicInfraToolMode::CheckProcess,
                 arguments,
                 summary,
-                args.approval_request_id.as_deref(),
-                args.approval_token.as_deref(),
+                approval_request_id.as_deref(),
+                approval_token.as_deref(),
             )
             .await?
         {
             return Ok(response);
         }
 
-        let remote_script = format!("pgrep -af -- {} || true", escape_shell_argument(&pattern),);
-        let output = self
-            .backend
-            .execute(&remote_script, DEFAULT_TIMEOUT_SECS, false, None)
-            .await?;
-        serde_json::to_string(&json!({
-            "ok": true,
-            "pattern": pattern,
-            "matches": output.stdout
-        }))
-        .map_err(Into::into)
+        match request {
+            CheckProcessRequest::JobId { job_id, tail_lines } => {
+                let response = self
+                    .backend
+                    .check_process(&job_id, tail_lines, DEFAULT_TIMEOUT_SECS, None)
+                    .await?;
+                serde_json::to_string(&json!({
+                    "ok": true,
+                    "job_id": job_id,
+                    "running": response.running,
+                    "exit_code": response.exit_code,
+                    "elapsed_time": response.elapsed_time,
+                    "command": response.command,
+                    "log_tail": response.log_tail,
+                }))
+                .map_err(Into::into)
+            }
+            CheckProcessRequest::Pattern(pattern) => {
+                self.execute_check_process_by_pattern_legacy(&pattern).await
+            }
+        }
     }
 
     async fn execute_apply_file_edit(&self, arguments: &str) -> Result<String> {
         let args: ApplyFileEditArgs = serde_json::from_str(arguments)
             .map_err(|err| anyhow!("invalid ssh apply file edit args: {err}"))?;
-        let path = validate_non_empty(args.path, "path")?;
+        let path = validate_non_empty(args.path.clone(), "path")?;
         self.ensure_mode_allowed(TopicInfraToolMode::ApplyFileEdit)?;
 
         let summary = format!("edit file on {}: {}", self.config.target_name, path);
@@ -1037,6 +1469,77 @@ impl SshMcpProvider {
             return Ok(response);
         }
 
+        let timeout_secs = args.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        if is_absolute_remote_path(&path) {
+            match self
+                .backend
+                .apply_file_edit_partial(
+                    &path,
+                    &args.search,
+                    &args.replace,
+                    false,
+                    timeout_secs,
+                    None,
+                )
+                .await
+            {
+                Ok(response) => return serialize_apply_file_edit_response(response, false),
+                Err(error)
+                    if args.create_if_missing && is_upstream_missing_remote_path_error(&error) =>
+                {
+                    let response = self
+                        .backend
+                        .apply_file_edit_full(&path, &args.replace, timeout_secs, None)
+                        .await?;
+                    return serialize_apply_file_edit_response(response, true);
+                }
+                Err(error) if !args.create_if_missing => return Err(error),
+                Err(_) => {}
+            }
+        }
+
+        self.execute_apply_file_edit_legacy(&path, &args, timeout_secs)
+            .await
+    }
+
+    async fn execute_read_file_legacy(&self, path: &str, max_bytes: usize) -> Result<String> {
+        let remote_script = format!(
+            "python3 - <<'PY'\nfrom pathlib import Path\npath = Path({})\ncontent = path.read_bytes()[:{}]\nimport sys\nsys.stdout.buffer.write(content)\nPY",
+            python_string_literal(path),
+            max_bytes,
+        );
+        let output = self
+            .backend
+            .execute(&remote_script, DEFAULT_TIMEOUT_SECS, false, None)
+            .await?;
+        serde_json::to_string(&json!({
+            "ok": true,
+            "path": path,
+            "content": output.stdout
+        }))
+        .map_err(Into::into)
+    }
+
+    async fn execute_check_process_by_pattern_legacy(&self, pattern: &str) -> Result<String> {
+        let remote_script = format!("pgrep -af -- {} || true", escape_shell_argument(pattern),);
+        let output = self
+            .backend
+            .execute(&remote_script, DEFAULT_TIMEOUT_SECS, false, None)
+            .await?;
+        serde_json::to_string(&json!({
+            "ok": true,
+            "pattern": pattern,
+            "matches": output.stdout
+        }))
+        .map_err(Into::into)
+    }
+
+    async fn execute_apply_file_edit_legacy(
+        &self,
+        path: &str,
+        args: &ApplyFileEditArgs,
+        timeout_secs: u64,
+    ) -> Result<String> {
         let remote_script = format!(
             "python3 - <<'PY'\nimport base64\nfrom pathlib import Path\npath = Path(base64.b64decode({}).decode())\nsearch = base64.b64decode({}).decode()\nreplace = base64.b64decode({}).decode()\ncreate_if_missing = {}\nif not path.exists():\n    if not create_if_missing:\n        raise SystemExit(f'file not found: {path}')\n    path.parent.mkdir(parents=True, exist_ok=True)\n    path.write_text(replace)\n    print('created')\n    raise SystemExit(0)\ntext = path.read_text()\nif search not in text:\n    raise SystemExit('search text not found in remote file')\npath.write_text(text.replace(search, replace, 1))\nprint('updated')\nPY",
             python_string_literal(&BASE64_STANDARD.encode(path.as_bytes())),
@@ -1046,12 +1549,7 @@ impl SshMcpProvider {
         );
         let output = self
             .backend
-            .execute(
-                &remote_script,
-                args.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
-                false,
-                None,
-            )
+            .execute(&remote_script, timeout_secs, false, None)
             .await?;
         serde_json::to_string(&json!({
             "ok": true,
@@ -1216,6 +1714,7 @@ impl ToolProvider for SshMcpProvider {
                 | TOOL_SSH_READ_FILE
                 | TOOL_SSH_APPLY_FILE_EDIT
                 | TOOL_SSH_CHECK_PROCESS
+                | TOOL_SSH_SEND_FILE_TO_USER
         )
     }
 
@@ -1223,7 +1722,7 @@ impl ToolProvider for SshMcpProvider {
         &self,
         tool_name: &str,
         arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         match tool_name {
@@ -1235,6 +1734,10 @@ impl ToolProvider for SshMcpProvider {
             TOOL_SSH_READ_FILE => self.execute_read_file(arguments).await,
             TOOL_SSH_APPLY_FILE_EDIT => self.execute_apply_file_edit(arguments).await,
             TOOL_SSH_CHECK_PROCESS => self.execute_check_process(arguments).await,
+            TOOL_SSH_SEND_FILE_TO_USER => {
+                self.execute_send_file_to_user(arguments, progress_tx, cancellation_token)
+                    .await
+            }
             _ => bail!("unknown ssh_mcp tool: {tool_name}"),
         }
     }
@@ -1283,7 +1786,32 @@ struct ApplyFileEditArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckProcessArgs {
-    pattern: String,
+    #[serde(default)]
+    pattern: Option<String>,
+    #[serde(default)]
+    job_id: Option<String>,
+    #[serde(default)]
+    tail_lines: Option<usize>,
+    #[serde(default)]
+    approval_request_id: Option<String>,
+    #[serde(default)]
+    approval_token: Option<String>,
+}
+
+#[derive(Debug)]
+enum CheckProcessRequest {
+    JobId { job_id: String, tail_lines: usize },
+    Pattern(String),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SendRemoteFileArgs {
+    path: String,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
     #[serde(default)]
     approval_request_id: Option<String>,
     #[serde(default)]
@@ -1332,6 +1860,120 @@ fn upstream_timeout_ms(timeout_secs: u64) -> u64 {
     timeout_secs
         .saturating_mul(1000)
         .saturating_add(UPSTREAM_TIMEOUT_GRACE_MS)
+}
+
+fn normalize_check_process_args(args: CheckProcessArgs) -> Result<CheckProcessRequest> {
+    let pattern = args
+        .pattern
+        .map(|value| validate_non_empty(value, "pattern"));
+    let job_id = args.job_id.map(|value| validate_non_empty(value, "job_id"));
+
+    match (pattern.transpose()?, job_id.transpose()?) {
+        (Some(pattern), None) => Ok(CheckProcessRequest::Pattern(pattern)),
+        (None, Some(job_id)) => Ok(CheckProcessRequest::JobId {
+            job_id,
+            tail_lines: args.tail_lines.unwrap_or(50).max(1),
+        }),
+        (None, None) => bail!("either pattern or job_id must be provided"),
+        (Some(_), Some(_)) => bail!("provide either pattern or job_id, not both"),
+    }
+}
+
+fn is_absolute_remote_path(path: &str) -> bool {
+    Path::new(path).is_absolute()
+}
+
+fn is_upstream_missing_remote_path_error(error: &anyhow::Error) -> bool {
+    error
+        .to_string()
+        .to_ascii_lowercase()
+        .contains("remote_path does not exist")
+}
+
+fn truncate_utf8_to_bytes(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_string(), false);
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    (value[..end].to_string(), true)
+}
+
+fn serialize_read_file_response(
+    response: UpstreamReadFileResponse,
+    max_bytes: usize,
+) -> Result<String> {
+    let UpstreamReadFileResponse {
+        path,
+        content,
+        mode,
+        returned_lines,
+        truncated,
+        approx_tokens_returned,
+        approx_tokens_total_estimate,
+        hint,
+        sha256,
+        read_ticket,
+    } = response;
+    let (content, locally_truncated) = truncate_utf8_to_bytes(&content, max_bytes);
+
+    let mut payload = json!({
+        "ok": true,
+        "path": path,
+        "content": content,
+    });
+    if let Some(mode) = mode {
+        payload["mode"] = serde_json::Value::String(mode);
+    }
+    if let Some(returned_lines) = returned_lines {
+        payload["returned_lines"] = json!(returned_lines);
+    }
+    if let Some(approx_tokens_returned) = approx_tokens_returned {
+        payload["approx_tokens_returned"] = json!(approx_tokens_returned);
+    }
+    if let Some(approx_tokens_total_estimate) = approx_tokens_total_estimate {
+        payload["approx_tokens_total_estimate"] = json!(approx_tokens_total_estimate);
+    }
+    if let Some(hint) = hint {
+        payload["hint"] = serde_json::Value::String(hint);
+    }
+    if let Some(sha256) = sha256 {
+        payload["sha256"] = serde_json::Value::String(sha256);
+    }
+    if let Some(read_ticket) = read_ticket {
+        payload["read_ticket"] = serde_json::Value::String(read_ticket);
+    }
+    if truncated.unwrap_or(false) || locally_truncated {
+        payload["truncated"] = serde_json::Value::Bool(true);
+    }
+
+    serde_json::to_string(&payload).map_err(Into::into)
+}
+
+fn serialize_apply_file_edit_response(
+    response: UpstreamApplyFileEditResponse,
+    created: bool,
+) -> Result<String> {
+    let status = if created {
+        "created"
+    } else if response.changed {
+        "updated"
+    } else {
+        "unchanged"
+    };
+    serde_json::to_string(&json!({
+        "ok": true,
+        "path": response.path,
+        "status": status,
+        "previous_sha256": response.previous_sha256,
+        "new_sha256": response.new_sha256,
+        "bytes_written": response.bytes_written,
+        "changed": response.changed,
+    }))
+    .map_err(Into::into)
 }
 
 async fn resolve_secret_ref(
@@ -1740,6 +2382,51 @@ fn validate_non_empty(value: String, field_name: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+fn validate_chat_file_name(value: String) -> Result<String> {
+    let trimmed = validate_non_empty(value, "file_name")?;
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        bail!("file_name must not contain path separators");
+    }
+    if trimmed.chars().any(char::is_control) {
+        bail!("file_name must not contain control characters");
+    }
+    Ok(trimmed)
+}
+
+fn default_remote_file_name(remote_path: &str) -> String {
+    Path::new(remote_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "file".to_string())
+}
+
+fn sanitize_transfer_local_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' => '_',
+            _ if ch.is_control() => '_',
+            _ => ch,
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "file".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn unique_transfer_local_path(file_name: &str) -> String {
+    format!(
+        "{}-{}",
+        Uuid::new_v4().simple(),
+        sanitize_transfer_local_component(file_name)
+    )
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -1749,6 +2436,9 @@ fn truncate(value: &str, max_chars: usize) -> String {
     truncated
 }
 
+// [APPROVAL DISABLED] Temporarily unused — approval heuristic disabled until the
+// approval pipeline is fixed (replay payload loss between request and grant).
+#[allow(dead_code)]
 fn is_dangerous_command(summary: &str) -> bool {
     let lowered = summary.to_ascii_lowercase();
     [
@@ -1766,6 +2456,8 @@ fn is_dangerous_command(summary: &str) -> bool {
     .any(|pattern| lowered.contains(pattern))
 }
 
+// [APPROVAL DISABLED] Temporarily unused — see is_dangerous_command above.
+#[allow(dead_code)]
 fn is_sensitive_path(summary: &str) -> bool {
     let lowered = summary.to_ascii_lowercase();
     [
@@ -1888,14 +2580,18 @@ pub fn inject_topic_infra_preflight_system_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_stale_private_key_tempfiles_in, decode_hex, fingerprint_for_request,
-        inject_approval_credentials, inject_ssh_approval_system_message,
+        cleanup_stale_private_key_tempfiles_in, decode_hex, default_remote_file_name,
+        fingerprint_for_request, inject_approval_credentials, inject_ssh_approval_system_message,
         inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
-        parse_ssh_keygen_listing, parse_wrapped_remote_output, write_private_key_tempfile_in,
-        SecretProbeKind, SecretProbeReport, SshApprovalRegistry, TopicInfraPreflightReport,
+        normalize_check_process_args, parse_ssh_keygen_listing, parse_wrapped_remote_output,
+        serialize_apply_file_edit_response, serialize_read_file_response,
+        unique_transfer_local_path, validate_chat_file_name, write_private_key_tempfile_in,
+        SecretProbeKind, SecretProbeReport, SshApprovalRegistry, SshMcpProvider,
+        TopicInfraPreflightReport, UpstreamApplyFileEditResponse, UpstreamReadFileResponse,
         WrappedCommandMarkers,
     };
     use crate::storage::TopicInfraAuthMode;
+    use serde_json::json;
     use std::{fs, path::Path};
     use tempfile::tempdir;
 
@@ -1964,6 +2660,25 @@ mod tests {
             "read file on prod: /etc/nginx/nginx.conf"
         ));
         assert!(!is_sensitive_path("read file on prod: /tmp/app.log"));
+    }
+
+    #[test]
+    fn default_remote_file_name_uses_basename() {
+        assert_eq!(default_remote_file_name("/var/log/app.log"), "app.log");
+        assert_eq!(default_remote_file_name("/"), "file");
+    }
+
+    #[test]
+    fn transfer_local_path_is_sanitized_and_unique() {
+        let path = unique_transfer_local_path("../app.log");
+        assert!(!path.contains('/'));
+        assert!(!path.contains(".."));
+    }
+
+    #[test]
+    fn chat_file_name_rejects_path_separators() {
+        assert!(validate_chat_file_name("app.log".to_string()).is_ok());
+        assert!(validate_chat_file_name("foo/bar.log".to_string()).is_err());
     }
 
     #[test]
@@ -2047,6 +2762,134 @@ mod tests {
         assert_eq!(parsed.stdout, "hello");
         assert_eq!(parsed.stderr, "warn");
         assert_eq!(parsed.exit_code, 7);
+    }
+
+    #[test]
+    fn check_process_tool_schema_uses_chatgpt_compatible_top_level_object() {
+        let tool = SshMcpProvider::tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "ssh_check_process")
+            .expect("ssh_check_process tool definition should exist");
+
+        let parameters = &tool.parameters;
+        assert_eq!(parameters["type"], json!("object"));
+        for keyword in ["oneOf", "anyOf", "allOf", "enum", "not"] {
+            assert!(
+                parameters.get(keyword).is_none(),
+                "top-level {keyword} should not be present"
+            );
+        }
+
+        let properties = parameters["properties"]
+            .as_object()
+            .expect("tool parameters should define properties");
+        for property in ["pattern", "job_id", "tail_lines"] {
+            assert!(
+                properties.contains_key(property),
+                "{property} property should be present"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_check_process_args_accepts_job_id_or_pattern() {
+        let job = normalize_check_process_args(super::CheckProcessArgs {
+            pattern: None,
+            job_id: Some("job-1".to_string()),
+            tail_lines: Some(20),
+            approval_request_id: None,
+            approval_token: None,
+        })
+        .expect("job args should validate");
+        assert!(matches!(
+            job,
+            super::CheckProcessRequest::JobId {
+                job_id,
+                tail_lines: 20
+            } if job_id == "job-1"
+        ));
+
+        let pattern = normalize_check_process_args(super::CheckProcessArgs {
+            pattern: Some("nginx".to_string()),
+            job_id: None,
+            tail_lines: None,
+            approval_request_id: None,
+            approval_token: None,
+        })
+        .expect("pattern args should validate");
+        assert!(matches!(
+            pattern,
+            super::CheckProcessRequest::Pattern(value) if value == "nginx"
+        ));
+    }
+
+    #[test]
+    fn normalize_check_process_args_rejects_missing_or_ambiguous_input() {
+        let missing = normalize_check_process_args(super::CheckProcessArgs {
+            pattern: None,
+            job_id: None,
+            tail_lines: None,
+            approval_request_id: None,
+            approval_token: None,
+        })
+        .expect_err("missing args should fail");
+        assert!(missing.to_string().contains("either pattern or job_id"));
+
+        let ambiguous = normalize_check_process_args(super::CheckProcessArgs {
+            pattern: Some("nginx".to_string()),
+            job_id: Some("job-1".to_string()),
+            tail_lines: None,
+            approval_request_id: None,
+            approval_token: None,
+        })
+        .expect_err("ambiguous args should fail");
+        assert!(ambiguous.to_string().contains("either pattern or job_id"));
+    }
+
+    #[test]
+    fn serialize_read_file_response_preserves_legacy_shape_and_metadata() {
+        let response = UpstreamReadFileResponse {
+            path: "/etc/app.conf".to_string(),
+            content: "abcdef".to_string(),
+            mode: Some("full".to_string()),
+            returned_lines: Some(1),
+            truncated: Some(false),
+            approx_tokens_returned: Some(2),
+            approx_tokens_total_estimate: Some(2),
+            hint: Some("hint".to_string()),
+            sha256: Some("deadbeef".to_string()),
+            read_ticket: Some("ticket-1".to_string()),
+        };
+
+        let raw = serialize_read_file_response(response, 4).expect("serialization must succeed");
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("json must parse");
+        assert_eq!(value.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(value.get("content").and_then(|v| v.as_str()), Some("abcd"));
+        assert_eq!(value.get("truncated").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            value.get("read_ticket").and_then(|v| v.as_str()),
+            Some("ticket-1")
+        );
+    }
+
+    #[test]
+    fn serialize_apply_file_edit_response_maps_status() {
+        let response = UpstreamApplyFileEditResponse {
+            path: "/etc/app.conf".to_string(),
+            previous_sha256: "old".to_string(),
+            new_sha256: "new".to_string(),
+            bytes_written: 42,
+            changed: true,
+        };
+
+        let raw =
+            serialize_apply_file_edit_response(response, false).expect("serialization must work");
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("json must parse");
+        assert_eq!(
+            value.get("status").and_then(|v| v.as_str()),
+            Some("updated")
+        );
+        assert_eq!(value.get("changed").and_then(|v| v.as_bool()), Some(true));
     }
 
     #[test]

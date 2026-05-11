@@ -2,14 +2,19 @@
 
 use crate::agent::compaction::CompactionService;
 use crate::agent::context::AgentContext;
+use crate::agent::persistent_memory::{
+    MemoryBehaviorRuntime, MemoryClassificationDecision, PersistentMemoryCoordinator,
+};
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
+use crate::agent::session::{AgentMemoryScope, PendingUserInput};
 use crate::agent::skills::SkillRegistry;
 use crate::config::{
     get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
 };
 use crate::llm::{Message, ToolDefinition};
+use anyhow::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -28,6 +33,8 @@ pub struct AgentRunnerConfig {
     pub timeout_secs: u64,
     /// Reserved output token budget for the active model.
     pub model_max_output_tokens: u32,
+    /// Optional temperature override for main-agent tool calls.
+    pub temperature: Option<f32>,
     /// Active provider name for the current model.
     pub model_provider: Option<String>,
     /// Optional weighted fallback routes for this execution.
@@ -51,6 +58,7 @@ impl AgentRunnerConfig {
             is_sub_agent: false,
             timeout_secs,
             model_max_output_tokens,
+            temperature: None,
             model_provider: None,
             model_routes: Vec::new(),
         }
@@ -67,6 +75,13 @@ impl AgentRunnerConfig {
     #[must_use]
     pub fn with_model_provider(mut self, model_provider: impl Into<String>) -> Self {
         self.model_provider = Some(model_provider.into());
+        self
+    }
+
+    /// Set the main-agent temperature override.
+    #[must_use]
+    pub fn with_temperature(mut self, temperature: Option<f32>) -> Self {
+        self.temperature = temperature;
         self
     }
 
@@ -114,8 +129,59 @@ pub struct AgentRunnerContext<'a> {
     pub skill_registry: Option<&'a mut SkillRegistry>,
     /// Optional compaction service for pre-turn context maintenance.
     pub compaction_service: Option<&'a CompactionService>,
+    /// Optional Stage-4 persistent-memory coordinator.
+    pub persistent_memory: Option<&'a PersistentMemoryCoordinator>,
+    /// Stable top-level session identity when available.
+    pub session_id: Option<String>,
+    /// Stable top-level memory scope when available.
+    pub memory_scope: Option<AgentMemoryScope>,
+    /// Task-local Stage-14 memory behavior runtime.
+    pub memory_behavior: Option<Arc<MemoryBehaviorRuntime>>,
+    /// Single per-task persistent-memory routing decision.
+    pub(crate) memory_classification: Option<MemoryClassificationDecision>,
     /// Runner configuration.
     pub config: AgentRunnerConfig,
+}
+
+pub(crate) struct AgentRunnerContextBase<'a> {
+    pub(crate) task: &'a str,
+    pub(crate) system_prompt: &'a str,
+    pub(crate) tools: &'a [ToolDefinition],
+    pub(crate) registry: &'a ToolRegistry,
+    pub(crate) progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
+    pub(crate) todos_arc: &'a Arc<Mutex<TodoList>>,
+    pub(crate) task_id: &'a str,
+    pub(crate) messages: &'a mut Vec<Message>,
+    pub(crate) agent: &'a mut dyn AgentContext,
+}
+
+impl<'a> AgentRunnerContext<'a> {
+    #[must_use]
+    pub(crate) fn new_base(
+        base: AgentRunnerContextBase<'a>,
+        compaction_service: Option<&'a CompactionService>,
+        config: AgentRunnerConfig,
+    ) -> Self {
+        Self {
+            task: base.task,
+            system_prompt: base.system_prompt,
+            tools: base.tools,
+            registry: base.registry,
+            progress_tx: base.progress_tx,
+            todos_arc: base.todos_arc,
+            task_id: base.task_id,
+            messages: base.messages,
+            agent: base.agent,
+            skill_registry: None,
+            compaction_service,
+            persistent_memory: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            memory_classification: None,
+            config,
+        }
+    }
 }
 
 /// Terminal outcome of a runner execution.
@@ -124,6 +190,26 @@ pub enum AgentRunResult {
     Final(String),
     /// The agent paused because an external approval is required.
     WaitingForApproval,
+    /// The agent paused because it requires additional user input.
+    WaitingForUserInput(PendingUserInput),
+}
+
+pub(crate) enum TimedRunResult {
+    Final(String),
+    WaitingForApproval,
+    WaitingForUserInput(PendingUserInput),
+    Failed(Error),
+    TimedOut,
+}
+
+impl From<AgentRunResult> for TimedRunResult {
+    fn from(result: AgentRunResult) -> Self {
+        match result {
+            AgentRunResult::Final(res) => Self::Final(res),
+            AgentRunResult::WaitingForApproval => Self::WaitingForApproval,
+            AgentRunResult::WaitingForUserInput(request) => Self::WaitingForUserInput(request),
+        }
+    }
 }
 
 /// Internal run state for the current loop execution.
@@ -138,6 +224,8 @@ pub(super) struct RunState {
     pub compaction_count: usize,
     /// Number of deterministic cleanup passes in this run.
     pub cleanup_count: usize,
+    /// Whether the next pre-LLM turn should run manual compaction.
+    pub force_manual_compaction: bool,
 }
 
 impl RunState {
@@ -149,7 +237,20 @@ impl RunState {
             structured_output_failures: 0,
             compaction_count: 0,
             cleanup_count: 0,
+            force_manual_compaction: false,
         }
+    }
+
+    /// Request a manual compaction pass before the next model call.
+    pub(super) fn request_manual_compaction(&mut self) {
+        self.force_manual_compaction = true;
+    }
+
+    /// Consume any pending manual compaction request.
+    pub(super) fn take_manual_compaction_request(&mut self) -> bool {
+        let requested = self.force_manual_compaction;
+        self.force_manual_compaction = false;
+        requested
     }
 }
 
@@ -165,8 +266,6 @@ pub(super) struct StructuredOutputFailure {
 pub(super) struct FinalResponseInput {
     /// Final answer text.
     pub final_answer: String,
-    /// Raw JSON string from the model.
-    pub raw_json: String,
     /// Optional reasoning content from the model.
     pub reasoning: Option<String>,
 }

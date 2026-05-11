@@ -59,6 +59,7 @@
     *   Голосовые и видео сообщения (распознавание речи через Gemini).
     *   Изображения (анализ и описание через мультимодальные модели).
     *   Работа с документами различных форматов.
+*   **🗣️ Синтез голоса:** Kokoro TTS для англоязычных голосовых ответов (`text_to_speech_en`) и Piper TTS для русскоязычных голосовых ответов (`text_to_speech_ru`).
 *   **Управление контекстом:** История диалога сохраняется в Cloudflare R2 (S3).
 *   **🔒 Безопасность и качество:** `unsafe_code = "forbid"`, строгие линты Clippy, отсутствие паник (`zero-panic profile`).
 
@@ -93,6 +94,8 @@
 *   **Docker** — запуск песочницы кода (`agent-sandbox:latest`)
 *   **Tavily API** — опционально для веб-поиска (`TAVILY_API_KEY`)
 *   **Crawl4AI** — альтернативный провайдер глубокого веб-краулинга с извлечением markdown и парсингом PDF
+*   **Kokoro TTS Server** — опционально для англоязычных голосовых ответов (`KOKORO_TTS_URL`)
+*   **Piper TTS Server** — опционально для русскоязычных голосовых ответов (`PIPER_TTS_URL`)
 </details>
 
 ## Установка и запуск
@@ -109,12 +112,7 @@
 2.  **Настройте переменные окружения:**
     Создайте `.env` на основе `.env.example`.
 
-3.  **Соберите образ песочницы:**
-    ```bash
-    docker build -t agent-sandbox:latest -f sandbox/Dockerfile.sandbox ..
-    ```
-
-4.  **Соберите и запустите бота:**
+3.  **Соберите и запустите бота:**
     ```bash
     docker-compose up --build -d
     ```
@@ -130,6 +128,8 @@
 TELEGRAM_TOKEN=ВАШ_ТОКЕН
 ALLOWED_USERS=ID1,ID2 # Список разрешенных Telegram ID (базовый доступ)
 AGENT_ACCESS_IDS=ID1 # Доступ к Режиму Агента (тратит много токенов)
+REMINDER_AGENT_PROGRESS_ENABLED=false # Watch/ward reminders: скрыть progress-шум
+REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: молчать, если изменений нет
 
 # Конфигурация Агента
 AGENT_TIMEOUT_SECS=300          # Тайм-аут выполнения агента
@@ -147,6 +147,8 @@ GROQ_API_KEY=...
 MISTRAL_API_KEY=...
 GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
+NVIDIA_API_KEY=... # NVIDIA NIM / hosted integrate.api.nvidia.com
+NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
 ZAI_API_KEY=... # Провайдер ZAI (Zhipu AI)
 TAVILY_API_KEY=... # Ключ Tavily для веб-поиска в режиме Агента (опционально)
 ```
@@ -178,12 +180,27 @@ SUB_AGENT_MODEL_PROVIDER="zai"
 
 ### Медиа и Нарратор
 ```dotenv
-MEDIA_MODEL_ID="google/gemini-3-flash-preview"
+MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
 MEDIA_MODEL_PROVIDER="openrouter"
 
 NARRATOR_MODEL_ID="labs-mistral-small-creative"
 NARRATOR_MODEL_PROVIDER="mistral"
 ```
+
+### Взвешенные маршруты моделей (failover)
+Для автоматического переключения после устойчивых 429 можно указать несколько маршрутов:
+
+```dotenv
+AGENT_MODEL_ROUTES__0__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__0__PROVIDER="nvidia"
+AGENT_MODEL_ROUTES__0__WEIGHT=3
+
+AGENT_MODEL_ROUTES__1__ID="glm-4.7"
+AGENT_MODEL_ROUTES__1__PROVIDER="zai"
+AGENT_MODEL_ROUTES__1__WEIGHT=5
+```
+
+Для NVIDIA NIM в агентных циклах используйте только модели с подтвержденным tool calling. Если есть сомнения, ставьте NIM перед проверенным backup-маршрутом: рантайм теперь сам пропускает неподдерживаемые NIM-модели в tool-enabled execution и не включает structured output там, где модель его не поддерживает безопасно.
 
 ### Альтернативный пример
 ```
@@ -241,6 +258,11 @@ AGENT_MODEL_PROVIDER="mistral"
 - **File Hoster Provider** (`filehoster.rs`) — публичная загрузка файлов на временный хостинг (до 4GB)
 - **Path Provider** (`path.rs`) — работа с путями и файловой структурой
 - **Delegation Provider** (`delegation.rs`) — делегирование под-агентам для декомпозиции сложных задач
+- **Kokoro TTS Provider** (`tts/`) — англоязычный синтез голосовых ответов
+- **Piper TTS Provider** (`piper_tts/`) — русскоязычный синтез голосовых ответов
+
+> [!WARNING]
+> **Breaking change:** старый инструмент `text_to_speech` удален. Используйте `text_to_speech_en` (Kokoro) и `text_to_speech_ru` (Piper).
 </details>
 
 ## Использование

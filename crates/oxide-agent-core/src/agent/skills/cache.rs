@@ -39,7 +39,7 @@ impl SkillCache {
 
         let arc = Arc::new(skill);
         self.loaded.insert(name.clone(), Arc::clone(&arc));
-        self.order.push_back(name.clone());
+        self.order.push_back(name);
 
         while self.loaded.len() > self.max_loaded {
             if let Some(oldest) = self.order.pop_front() {

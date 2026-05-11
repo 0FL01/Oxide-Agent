@@ -1,16 +1,20 @@
 use super::{
-    agent_mode_session_keys, assemble_text_batch, cancel_status_reply_markup,
-    cleanup_abandoned_empty_flow, clear_pending_cancel_confirmation, clear_pending_cancel_message,
-    derive_agent_mode_session_id, ensure_session_exists, manager_control_plane_enabled,
-    manager_default_chat_id, merge_prompt_instructions, parse_agent_callback_action,
-    parse_agent_control_command, pending_cancel_confirmation, pending_cancel_message,
-    remember_pending_cancel_confirmation, remember_pending_cancel_message,
-    remove_sessions_with_compat, resolve_execution_profile, select_existing_session_id,
-    session_manager_control_plane_enabled, should_create_fresh_flow_on_detach,
-    should_merge_text_batch, take_pending_cancel_confirmation, take_pending_cancel_message,
-    use_inline_flow_controls, AgentCallbackAction, AgentControlCommand, BatchedTextTaskContext,
+    agent_mode_session_keys, assemble_text_batch, begin_completed_response_finalization,
+    cancel_status_reply_markup, cleanup_abandoned_empty_flow,
+    clear_completed_response_delivery_state, clear_pending_cancel_confirmation,
+    clear_pending_cancel_message, derive_agent_mode_session_id, ensure_session_exists,
+    is_no_user_visible_change_response, manager_control_plane_enabled, manager_default_chat_id,
+    mark_completed_response_execution_started, merge_prompt_instructions,
+    parse_agent_callback_action, parse_agent_control_command, pending_cancel_confirmation,
+    pending_cancel_message, prepare_completed_response_delivery,
+    queue_followup_during_completed_response_delivery, remember_pending_cancel_confirmation,
+    remember_pending_cancel_message, remove_sessions_with_compat, resolve_execution_profile,
+    select_existing_session_id, session_manager_control_plane_enabled,
+    should_create_fresh_flow_on_detach, should_merge_text_batch, take_pending_cancel_confirmation,
+    take_pending_cancel_message, use_inline_flow_controls, AgentCallbackAction,
+    AgentControlCommand, BatchedTextTaskContext, CompletedResponseDeliveryAction,
     EnsureSessionContext, PendingTextInputBatch, PendingTextInputPart, SessionTransportContext,
-    AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, SESSION_REGISTRY,
+    AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, NO_USER_VISIBLE_CHANGE_SENTINEL, SESSION_REGISTRY,
 };
 use crate::bot::views::{
     AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -51,11 +55,20 @@ fn test_batch() -> PendingTextInputBatch {
             message_thread_id: None,
             use_inline_progress_controls: false,
             use_inline_flow_controls: false,
+            attach_detach_enabled: true,
         },
         MessageId(10),
         "x".repeat(AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS),
         Instant::now(),
     )
+}
+
+fn test_persistent_memory_store(
+    storage: &Arc<dyn StorageProvider>,
+) -> Arc<dyn oxide_agent_core::agent::PersistentMemoryStore> {
+    Arc::new(oxide_agent_core::storage::StorageMemoryRepository::new(
+        storage.clone(),
+    ))
 }
 
 #[test]
@@ -88,6 +101,20 @@ fn does_not_merge_short_independent_messages() {
         "another short note",
         batch.updated_at + Duration::from_millis(200),
     ));
+}
+
+#[test]
+fn no_change_sentinel_requires_exact_trimmed_response() {
+    assert!(is_no_user_visible_change_response(
+        NO_USER_VISIBLE_CHANGE_SENTINEL
+    ));
+    assert!(is_no_user_visible_change_response(&format!(
+        "  {NO_USER_VISIBLE_CHANGE_SENTINEL}\n"
+    )));
+    assert!(!is_no_user_visible_change_response(&format!(
+        "{NO_USER_VISIBLE_CHANGE_SENTINEL}."
+    )));
+    assert!(!is_no_user_visible_change_response("No visible changes."));
 }
 
 #[test]
@@ -483,6 +510,9 @@ fn test_settings(manager_users: Option<&str>) -> Arc<BotSettings> {
             manager_allowed_users_str: manager_users.map(str::to_string),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -660,6 +690,7 @@ fn cancel_status_reply_markup_uses_flow_controls_in_topics() {
     let markup = cancel_status_reply_markup(
         resolve_thread_spec_from_context(true, true, Some(thread_id)),
         "flow-a",
+        true,
     );
 
     let ReplyMarkup::InlineKeyboard(keyboard) = markup else {
@@ -675,6 +706,7 @@ fn cancel_status_reply_markup_uses_flow_controls_in_private_chats() {
     let markup = cancel_status_reply_markup(
         resolve_thread_spec_from_context(false, false, None),
         "flow-a",
+        true,
     );
 
     let ReplyMarkup::InlineKeyboard(keyboard) = markup else {
@@ -683,6 +715,21 @@ fn cancel_status_reply_markup_uses_flow_controls_in_private_chats() {
 
     assert_eq!(keyboard.inline_keyboard.len(), 1);
     assert_eq!(keyboard.inline_keyboard[0].len(), 2);
+}
+
+#[test]
+fn cancel_status_reply_markup_hides_flow_controls_when_disabled() {
+    let markup = cancel_status_reply_markup(
+        resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42)))),
+        "flow-a",
+        false,
+    );
+
+    let ReplyMarkup::InlineKeyboard(keyboard) = markup else {
+        panic!("topic cancel status should use inline keyboard");
+    };
+
+    assert!(keyboard.inline_keyboard.is_empty());
 }
 
 #[test]
@@ -765,6 +812,9 @@ fn manager_default_chat_id_is_restricted_to_configured_manager_home() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: Some(-100_123),
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -795,6 +845,9 @@ fn manager_control_plane_access_is_restricted_to_configured_manager_home() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: Some(-100_123),
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -835,6 +888,9 @@ fn manager_control_plane_access_requires_dedicated_allowlist_entry() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -867,6 +923,9 @@ fn manager_control_plane_access_is_disabled_in_direct_messages() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -893,6 +952,9 @@ fn manager_control_plane_access_is_disabled_in_non_forum_groups() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -919,6 +981,9 @@ fn manager_control_plane_access_disabled_when_allowlist_is_empty() {
             manager_allowed_users_str: None,
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -945,6 +1010,9 @@ fn manager_control_plane_gating_disables_tools_inside_created_topics() {
             manager_allowed_users_str: Some("88".to_string()),
             manager_home_chat_id: None,
             manager_home_thread_id: None,
+            attach_detach_enabled: true,
+            reminder_agent_progress_enabled: true,
+            reminder_silent_no_change_enabled: false,
             manager_home_agent_id: None,
             topic_configs: Vec::new(),
         },
@@ -988,6 +1056,7 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let manager_settings = test_settings(Some("88"));
     let llm = test_llm(&manager_settings);
+    let persistent_memory_store = test_persistent_memory_store(&storage);
 
     let general_thread = general_forum_topic_id();
     let blocked_thread = ThreadId(MessageId(43));
@@ -1012,6 +1081,7 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &manager_settings,
     })
     .await;
@@ -1030,6 +1100,7 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &manager_settings,
     })
     .await;
@@ -1057,6 +1128,7 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let manager_settings = test_settings(Some("88"));
     let llm = test_llm(&manager_settings);
+    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(88, chat_id, Some(thread_id), "flow-a");
 
     remove_sessions_with_compat(keys).await;
@@ -1076,6 +1148,7 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &manager_settings,
     })
     .await;
@@ -1098,6 +1171,7 @@ async fn new_flow_injects_topic_agents_md_once() {
     ));
     let settings = test_settings(None);
     let llm = test_llm(&settings);
+    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-agents");
 
     remove_sessions_with_compat(keys).await;
@@ -1117,6 +1191,7 @@ async fn new_flow_injects_topic_agents_md_once() {
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -1160,6 +1235,7 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
     });
     let settings = test_settings(None);
     let llm = test_llm(&settings);
+    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-existing");
 
     remove_sessions_with_compat(keys).await;
@@ -1179,6 +1255,7 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -1211,6 +1288,7 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
     let allowed_settings = test_settings(Some("77"));
     let restricted_settings = test_settings(None);
     let llm = test_llm(&allowed_settings);
+    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
 
     remove_sessions_with_compat(keys).await;
@@ -1230,6 +1308,7 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &allowed_settings,
     })
     .await;
@@ -1254,6 +1333,7 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &restricted_settings,
     })
     .await;
@@ -1277,6 +1357,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
     let allowed_settings = test_settings(Some("77"));
     let restricted_settings = test_settings(None);
     let llm = test_llm(&allowed_settings);
+    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
 
     remove_sessions_with_compat(keys).await;
@@ -1296,6 +1377,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &allowed_settings,
     })
     .await;
@@ -1329,6 +1411,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &restricted_settings,
     })
     .await;
@@ -1362,6 +1445,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &restricted_settings,
     })
     .await;
@@ -1375,6 +1459,54 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
 }
 
 #[tokio::test]
+async fn completed_response_delivery_buffers_followups_for_restart() {
+    let session_id = SessionId::from(9001_i64);
+    clear_completed_response_delivery_state(&session_id).await;
+    mark_completed_response_execution_started(session_id).await;
+    begin_completed_response_finalization(session_id).await;
+
+    assert!(
+        queue_followup_during_completed_response_delivery(
+            &session_id,
+            "clarify the model".to_string(),
+        )
+        .await
+    );
+
+    let action = prepare_completed_response_delivery(&session_id).await;
+    assert_eq!(
+        action,
+        CompletedResponseDeliveryAction::Restart(vec!["clarify the model".to_string()])
+    );
+    assert!(
+        !queue_followup_during_completed_response_delivery(&session_id, "too late".to_string(),)
+            .await
+    );
+
+    clear_completed_response_delivery_state(&session_id).await;
+}
+
+#[tokio::test]
+async fn completed_response_delivery_commits_terminal_send_without_followups() {
+    let session_id = SessionId::from(9002_i64);
+    clear_completed_response_delivery_state(&session_id).await;
+    mark_completed_response_execution_started(session_id).await;
+    begin_completed_response_finalization(session_id).await;
+
+    let action = prepare_completed_response_delivery(&session_id).await;
+    assert_eq!(action, CompletedResponseDeliveryAction::Deliver);
+    assert!(
+        !queue_followup_during_completed_response_delivery(
+            &session_id,
+            "arrived after terminal send".to_string(),
+        )
+        .await
+    );
+
+    clear_completed_response_delivery_state(&session_id).await;
+}
+
+#[tokio::test]
 async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
     let bot = Bot::new("token");
     let chat_id = ChatId(-100_123);
@@ -1382,6 +1514,7 @@ async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let legacy_manager_settings = test_settings(Some("77"));
     let llm = test_llm(&legacy_manager_settings);
+    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
 
     remove_sessions_with_compat(keys).await;
@@ -1410,6 +1543,7 @@ async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &restricted_settings,
     })
     .await;
@@ -1431,6 +1565,7 @@ async fn threaded_transport_session_migrates_idle_legacy_session_to_primary_scop
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let settings = test_settings(None);
     let llm = test_llm(&settings);
+    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
 
     remove_sessions_with_compat(keys).await;
@@ -1457,6 +1592,7 @@ async fn threaded_transport_session_migrates_idle_legacy_session_to_primary_scop
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;

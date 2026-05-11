@@ -3,23 +3,28 @@
 //! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
 
 mod builders;
+mod compaction;
 mod control_plane;
 mod error;
 mod flows;
 mod keys;
+mod persistent_memory;
 mod provider;
 mod r2;
 mod r2_base;
 mod r2_control_plane;
 mod r2_memory;
+mod r2_persistent_memory;
 mod r2_provider;
 mod r2_reminder;
 mod r2_user;
 mod reminder;
 mod schema;
+mod telemetry;
 mod user;
 mod utils;
 
+pub use compaction::{CompactionBlobBackend, R2ArchiveSink, R2PayloadSink};
 #[cfg(test)]
 pub(crate) use control_plane::TOPIC_AGENTS_MD_MAX_LINES;
 pub use control_plane::{
@@ -36,13 +41,16 @@ pub(crate) use control_plane::{
 pub use error::StorageError;
 pub use flows::AgentFlowRecord;
 pub use keys::{
-    agent_profile_key, audit_events_key, generate_chat_uuid, private_secret_key, reminder_job_key,
-    reminder_jobs_prefix, topic_agents_md_key, topic_binding_key, topic_context_key,
-    topic_infra_config_key, user_agent_memory_key, user_chat_history_key, user_config_key,
-    user_context_agent_flow_key, user_context_agent_flow_memory_key,
-    user_context_agent_flow_prefix, user_context_agent_flows_prefix, user_context_agent_memory_key,
+    agent_profile_key, audit_events_key, generate_chat_uuid, persistent_memory_episode_key,
+    persistent_memory_record_key, persistent_memory_session_state_key,
+    persistent_memory_thread_key, private_secret_key, reminder_job_key, reminder_jobs_prefix,
+    topic_agents_md_key, topic_binding_key, topic_context_key, topic_infra_config_key,
+    user_agent_memory_key, user_chat_history_key, user_config_key, user_context_agent_flow_key,
+    user_context_agent_flow_memory_key, user_context_agent_flow_prefix,
+    user_context_agent_flows_prefix, user_context_agent_memory_key,
     user_context_chat_history_prefix, user_history_key,
 };
+pub use persistent_memory::StorageMemoryRepository;
 #[cfg(test)]
 pub use provider::MockStorageProvider;
 pub use provider::StorageProvider;

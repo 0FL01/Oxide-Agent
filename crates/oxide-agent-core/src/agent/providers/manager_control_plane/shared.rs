@@ -1,5 +1,25 @@
 use super::*;
 
+#[derive(Debug, Clone)]
+pub(super) struct MutationAuditTarget {
+    pub topic_id: Option<String>,
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub(super) struct MutationExecutionResult {
+    pub response_body: serde_json::Value,
+    pub audit_payload: serde_json::Value,
+}
+
+#[derive(Debug)]
+pub(super) struct PreviewableMutationPlan {
+    pub dry_run: bool,
+    pub preview: serde_json::Value,
+    pub previous: serde_json::Value,
+    pub dry_run_payload: serde_json::Value,
+}
+
 impl ManagerControlPlaneProvider {
     pub(super) fn validate_non_empty(value: String, field_name: &str) -> Result<String> {
         let trimmed = value.trim();
@@ -61,6 +81,11 @@ impl ManagerControlPlaneProvider {
             .map_err(|err| anyhow!("failed to serialize tool response: {err}"))
     }
 
+    pub(super) fn to_json_value(value: impl Serialize) -> Result<serde_json::Value> {
+        serde_json::to_value(value)
+            .map_err(|err| anyhow!("failed to serialize tool payload: {err}"))
+    }
+
     pub(super) fn parse_args<T: for<'de> Deserialize<'de>>(
         arguments: &str,
         tool_name: &str,
@@ -89,5 +114,55 @@ impl ManagerControlPlaneProvider {
         value
             .map(OptionalMetadataPatch::Set)
             .unwrap_or(OptionalMetadataPatch::Clear)
+    }
+
+    pub(super) async fn execute_previewable_mutation<F, Fut>(
+        &self,
+        action: &str,
+        audit_target: MutationAuditTarget,
+        plan: PreviewableMutationPlan,
+        apply: F,
+    ) -> Result<String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<MutationExecutionResult>>,
+    {
+        if plan.dry_run {
+            let audit_status = self
+                .append_audit_with_status(AppendAuditEventOptions {
+                    user_id: self.user_id,
+                    topic_id: audit_target.topic_id,
+                    agent_id: audit_target.agent_id,
+                    action: action.to_string(),
+                    payload: plan.dry_run_payload,
+                })
+                .await;
+
+            return Self::to_json_string(Self::attach_audit_status(
+                json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "preview": plan.preview,
+                    "previous": plan.previous,
+                }),
+                audit_status,
+            ));
+        }
+
+        let result = apply().await?;
+        let audit_status = self
+            .append_audit_with_status(AppendAuditEventOptions {
+                user_id: self.user_id,
+                topic_id: audit_target.topic_id,
+                agent_id: audit_target.agent_id,
+                action: action.to_string(),
+                payload: result.audit_payload,
+            })
+            .await;
+
+        Self::to_json_string(Self::attach_audit_status(
+            result.response_body,
+            audit_status,
+        ))
     }
 }

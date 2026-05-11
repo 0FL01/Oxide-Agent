@@ -1,5 +1,0 @@
-fastapi
-uvicorn
-pyyaml
-python-multipart
-python-dotenv

@@ -1,0 +1,671 @@
+use super::*;
+
+#[derive(Clone)]
+pub struct PersistentMemoryCoordinator {
+    store: Arc<dyn PersistentMemoryStore>,
+    finalizer: EpisodeFinalizer,
+    consolidator: ContextConsolidator,
+    embedding_indexer: Option<PersistentMemoryEmbeddingIndexer>,
+    memory_writer: Option<Arc<dyn PostRunMemoryWriter>>,
+}
+
+impl PersistentMemoryCoordinator {
+    #[must_use]
+    pub fn new(store: Arc<dyn PersistentMemoryStore>) -> Self {
+        Self {
+            store,
+            finalizer: EpisodeFinalizer,
+            consolidator: ContextConsolidator::new(ConsolidationPolicy::default()),
+            embedding_indexer: None,
+            memory_writer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_embedding_indexer(
+        mut self,
+        embedding_indexer: PersistentMemoryEmbeddingIndexer,
+    ) -> Self {
+        self.embedding_indexer = Some(embedding_indexer);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_memory_writer(
+        mut self,
+        memory_writer: Arc<dyn PostRunMemoryWriter>,
+    ) -> Self {
+        self.memory_writer = Some(memory_writer);
+        self
+    }
+
+    pub async fn persist_post_run(&self, ctx: PersistentRunContext<'_>) -> Result<()> {
+        let summary_signal = latest_summary_signal(ctx.messages);
+        let artifacts = collect_artifacts(ctx.messages);
+        let tools_used = collect_tools_used(ctx.messages);
+        let explicit_memories = build_explicit_remember_memories(&ctx);
+        let final_answer = match ctx.phase {
+            PersistentRunPhase::Completed { final_answer } => Some(final_answer.to_string()),
+            PersistentRunPhase::WaitingForUserInput => None,
+        };
+
+        let llm_write = if let Some(final_answer) = final_answer.as_deref() {
+            let Some(memory_writer) = self.memory_writer.as_ref() else {
+                return Err(anyhow::anyhow!(
+                    "PostRun memory writer is required for completed durable memory writes"
+                ));
+            };
+            Some(
+                memory_writer
+                    .write(&PostRunMemoryWriterInput {
+                        task_id: ctx.task_id,
+                        scope: ctx.scope,
+                        task: ctx.task,
+                        final_answer,
+                        messages: ctx.messages,
+                        explicit_remember_intent: ctx.explicit_remember_intent,
+                        tools_used: &tools_used,
+                        artifacts: &artifacts,
+                        tool_memory_drafts: &ctx.tool_memory_drafts,
+                    })
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        let plan = self.finalizer.build_plan(EpisodeFinalizationInput {
+            user_id: ctx.scope.user_id,
+            context_key: ctx.scope.context_key.clone(),
+            flow_id: ctx.scope.flow_id.clone(),
+            session_id: ctx.session_id.to_string(),
+            episode_id: ctx.task_id.to_string(),
+            goal: ctx.task.to_string(),
+            thread_short_summary: llm_write
+                .as_ref()
+                .and_then(|write| write.thread_short_summary.clone()),
+            episode_summary: llm_write
+                .as_ref()
+                .map(|write| write.episode.summary.clone()),
+            episode_outcome: llm_write.as_ref().map(|write| write.episode.outcome),
+            episode_importance: llm_write.as_ref().map(|write| write.episode.importance),
+            final_answer,
+            compaction_summary: summary_signal
+                .as_ref()
+                .map(|signal| signal.summary_text.clone()),
+            tools_used,
+            artifacts,
+            failures: llm_write
+                .as_ref()
+                .map(|write| write.episode.failures.clone())
+                .unwrap_or_else(|| {
+                    summary_signal
+                        .as_ref()
+                        .map_or_else(Vec::new, |signal| signal.failures.clone())
+                }),
+            hot_token_estimate: ctx.hot_token_estimate,
+            finalized_at: Utc::now(),
+        });
+
+        self.store.upsert_thread(plan.thread).await?;
+        let episode = if let Some(episode) = plan.episode {
+            Some(self.store.create_episode(episode).await?)
+        } else {
+            None
+        };
+        if let Some(episode) = episode.as_ref() {
+            info!(
+                episode_id = %episode.episode_id,
+                context_key = %episode.context_key,
+                outcome = outcome_label(episode.outcome),
+                artifact_count = episode.artifacts.len(),
+                tool_count = episode.tools_used.len(),
+                "Persistent episode finalized"
+            );
+        }
+        if let (Some(indexer), Some(episode)) = (self.embedding_indexer.as_ref(), episode.as_ref())
+        {
+            if let Err(error) = indexer.index_episode(episode).await {
+                warn!(error = %error, episode_id = %episode.episode_id, "episode embedding write failed");
+            }
+        }
+        let allow_explicit_remember_override = ctx.explicit_remember_intent
+            && !ctx.classification.write_policy.allow_llm_durable_writes;
+        let mut llm_memories = if ctx.classification.write_policy.allow_llm_durable_writes
+            || allow_explicit_remember_override
+        {
+            if allow_explicit_remember_override {
+                info!(
+                    task_class = ctx.classification.class.as_str(),
+                    task_id = ctx.task_id,
+                    "Explicit remember intent overrides conservative durable-memory admission"
+                );
+            }
+            llm_write
+                .as_ref()
+                .map(|write| write.memories.clone())
+                .unwrap_or_default()
+        } else {
+            if let Some(write) = llm_write
+                .as_ref()
+                .filter(|write| !write.memories.is_empty())
+            {
+                info!(
+                    task_class = ctx.classification.class.as_str(),
+                    explicit_remember_intent = ctx.explicit_remember_intent,
+                    filtered_memory_count = write.memories.len(),
+                    task_id = ctx.task_id,
+                    "Post-run admission filtered LLM durable memories"
+                );
+            }
+            Vec::new()
+        };
+        let tool_memories = if ctx.classification.write_policy.allow_tool_draft_writes {
+            build_tool_draft_memories(&ctx)
+        } else {
+            let filtered_count = build_tool_draft_memories(&ctx).len();
+            if filtered_count > 0 {
+                info!(
+                    task_class = ctx.classification.class.as_str(),
+                    filtered_memory_count = filtered_count,
+                    task_id = ctx.task_id,
+                    "Post-run admission filtered tool-derived durable memories"
+                );
+            }
+            Vec::new()
+        };
+        let tool_hashes = tool_memories
+            .iter()
+            .filter_map(|memory| memory.content_hash.clone())
+            .collect::<HashSet<_>>();
+        llm_memories.retain(|memory| {
+            memory
+                .content_hash
+                .as_ref()
+                .is_none_or(|content_hash| !tool_hashes.contains(content_hash))
+        });
+        let llm_hashes = llm_memories
+            .iter()
+            .filter_map(|memory| memory.content_hash.clone())
+            .collect::<HashSet<_>>();
+        let mut explicit_memories = explicit_memories;
+        explicit_memories.retain(|memory| {
+            memory.content_hash.as_ref().is_none_or(|content_hash| {
+                !tool_hashes.contains(content_hash) && !llm_hashes.contains(content_hash)
+            })
+        });
+        if let Some(episode) = episode.as_ref() {
+            self.persist_generated_memories(episode, &tool_memories, "tool_draft")
+                .await;
+            self.persist_generated_memories(episode, &llm_memories, "llm_post_run")
+                .await;
+            self.persist_generated_memories(episode, &explicit_memories, "explicit_remember")
+                .await;
+        }
+        if let Some(indexer) = self.embedding_indexer.as_ref() {
+            if let Err(error) = indexer.backfill().await {
+                warn!(error = %error, "persistent memory embedding backfill failed");
+            }
+        }
+        self.store.upsert_session_state(plan.session_state).await?;
+        self.run_context_maintenance(&ctx.scope.context_key, Utc::now())
+            .await;
+        self.run_watchdog_pass(Utc::now()).await;
+        Ok(())
+    }
+
+    async fn persist_generated_memories(
+        &self,
+        episode: &oxide_agent_memory::EpisodeRecord,
+        memories: &[MemoryRecord],
+        source_label: &'static str,
+    ) {
+        let mut fact_writes = 0usize;
+        let mut preference_writes = 0usize;
+        let mut procedure_writes = 0usize;
+        let mut decision_writes = 0usize;
+        let mut constraint_writes = 0usize;
+        let mut failed_writes = 0usize;
+        let mut stored_memory_ids = Vec::new();
+
+        for memory in memories.iter().cloned() {
+            match self.store.upsert_memory(memory).await {
+                Ok(memory) => {
+                    match memory.memory_type {
+                        MemoryType::Fact => fact_writes += 1,
+                        MemoryType::Preference => preference_writes += 1,
+                        MemoryType::Procedure => procedure_writes += 1,
+                        MemoryType::Decision => decision_writes += 1,
+                        MemoryType::Constraint => constraint_writes += 1,
+                    }
+                    stored_memory_ids.push(memory.memory_id.clone());
+                    info!(
+                        memory_write_source = source_label,
+                        context_key = %memory.context_key,
+                        episode_id = %episode.episode_id,
+                        memory_id = %memory.memory_id,
+                        memory_type = memory_type_label(memory.memory_type),
+                        "Persistent durable memory write"
+                    );
+                    if let Some(indexer) = self.embedding_indexer.as_ref() {
+                        if let Err(error) = indexer.index_memory(&memory).await {
+                            warn!(error = %error, memory_id = %memory.memory_id, "reusable memory embedding write failed");
+                        }
+                    }
+                }
+                Err(error) => {
+                    failed_writes += 1;
+                    warn!(error = %error, episode_id = %episode.episode_id, "LLM memory write failed");
+                }
+            }
+        }
+
+        if !stored_memory_ids.is_empty() || failed_writes > 0 {
+            info!(
+                memory_write_source = source_label,
+                episode_id = %episode.episode_id,
+                context_key = %episode.context_key,
+                stored_memory_count = stored_memory_ids.len(),
+                failed_memory_writes = failed_writes,
+                fact_writes,
+                preference_writes,
+                procedure_writes,
+                decision_writes,
+                constraint_writes,
+                stored_memory_ids = ?stored_memory_ids,
+                "Post-run durable memory write telemetry"
+            );
+        }
+    }
+
+    async fn run_context_maintenance(&self, context_key: &str, now: chrono::DateTime<Utc>) {
+        let memories = match self
+            .store
+            .list_memories(
+                context_key,
+                &MemoryListFilter {
+                    include_deleted: true,
+                    limit: Some(256),
+                    ..MemoryListFilter::default()
+                },
+            )
+            .await
+        {
+            Ok(memories) => memories,
+            Err(error) => {
+                warn!(error = %error, context_key, "persistent memory maintenance list failed");
+                return;
+            }
+        };
+
+        let plan = self.consolidator.consolidate(&memories, now);
+        if !plan.upserts.is_empty() || !plan.deletions.is_empty() {
+            let upserted_memory_ids = plan
+                .upserts
+                .iter()
+                .map(|memory| memory.memory_id.clone())
+                .collect::<Vec<_>>();
+            info!(
+                context_key,
+                upsert_count = plan.upserts.len(),
+                deletion_count = plan.deletions.len(),
+                exact_merge_deletion_count = plan.diagnostics.exact_merge_deletions.len(),
+                similarity_merge_deletion_count = plan.diagnostics.similarity_merge_deletions.len(),
+                expiration_deletion_count = plan.diagnostics.expired_deletions.len(),
+                upserted_memory_ids = ?upserted_memory_ids,
+                deleted_memory_ids = ?plan.deletions,
+                "Persistent memory consolidation telemetry"
+            );
+        }
+        let oxide_agent_memory::ConsolidatedContext {
+            upserts, deletions, ..
+        } = plan;
+        for memory in upserts {
+            match self.store.upsert_memory(memory.clone()).await {
+                Ok(memory) => {
+                    if let Some(indexer) = self.embedding_indexer.as_ref() {
+                        if let Err(error) = indexer.index_memory(&memory).await {
+                            warn!(error = %error, memory_id = %memory.memory_id, "persistent memory maintenance reindex failed");
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(error = %error, context_key, "persistent memory maintenance upsert failed");
+                }
+            }
+        }
+        for memory_id in deletions {
+            if let Err(error) = self.store.delete_memory(&memory_id).await {
+                warn!(error = %error, %memory_id, context_key, "persistent memory maintenance delete failed");
+            }
+        }
+    }
+
+    pub(crate) async fn run_watchdog_pass(&self, now: chrono::DateTime<Utc>) {
+        let states = match self
+            .store
+            .list_session_states(&SessionStateListFilter {
+                statuses: vec![
+                    oxide_agent_memory::CleanupStatus::Idle,
+                    oxide_agent_memory::CleanupStatus::Cleaning,
+                ],
+                limit: Some(32),
+                ..SessionStateListFilter::default()
+            })
+            .await
+        {
+            Ok(states) => states,
+            Err(error) => {
+                warn!(error = %error, "persistent memory watchdog list failed");
+                return;
+            }
+        };
+        let stale = self.consolidator.stale_sessions(&states, now);
+        let mut seen_contexts = HashSet::new();
+        for state in stale {
+            if seen_contexts.insert(state.context_key.clone()) {
+                self.run_context_maintenance(&state.context_key, now).await;
+            }
+        }
+    }
+}
+
+fn build_tool_draft_memories(ctx: &PersistentRunContext<'_>) -> Vec<MemoryRecord> {
+    let mut seen_hashes = HashSet::new();
+
+    ctx.tool_memory_drafts
+        .iter()
+        .filter_map(|draft| {
+            let content = draft.content.trim();
+            if content.is_empty() {
+                return None;
+            }
+
+            let content_hash = stable_memory_content_hash(draft.memory_type, content);
+            if !seen_hashes.insert(content_hash.clone()) {
+                return None;
+            }
+
+            let title = draft.title.trim();
+            let short_description = draft.short_description.trim();
+            let mut tags = draft
+                .tags
+                .iter()
+                .map(|tag| tag.trim())
+                .filter(|tag| !tag.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            if !draft.source.trim().is_empty() {
+                tags.push(draft.source.trim().to_string());
+            }
+            tags.push("tool_draft".to_string());
+            tags.push(memory_type_label(draft.memory_type).to_string());
+            tags.sort();
+            tags.dedup();
+
+            Some(MemoryRecord {
+                memory_id: format!(
+                    "tool-draft:{}:{}:{}",
+                    ctx.task_id,
+                    memory_type_label(draft.memory_type),
+                    &content_hash[..12.min(content_hash.len())]
+                ),
+                context_key: ctx.scope.context_key.clone(),
+                source_episode_id: Some(ctx.task_id.to_string()),
+                memory_type: draft.memory_type,
+                title: if title.is_empty() {
+                    format!("{} memory", memory_type_label(draft.memory_type))
+                } else {
+                    title.to_string()
+                },
+                content: content.to_string(),
+                short_description: if short_description.is_empty() {
+                    content.to_string()
+                } else {
+                    short_description.to_string()
+                },
+                importance: draft.importance.clamp(0.0, 1.0),
+                confidence: draft.confidence.clamp(0.0, 1.0),
+                source: Some(draft.source.trim().to_string()).filter(|source| !source.is_empty()),
+                content_hash: Some(content_hash),
+                reason: Some(draft.reason.trim().to_string()).filter(|reason| !reason.is_empty()),
+                tags,
+                created_at: draft.captured_at,
+                updated_at: draft.captured_at,
+                deleted_at: None,
+            })
+        })
+        .collect()
+}
+
+fn build_explicit_remember_memories(ctx: &PersistentRunContext<'_>) -> Vec<MemoryRecord> {
+    if !ctx.explicit_remember_intent {
+        return Vec::new();
+    }
+
+    let now = Utc::now();
+    let mut seen_hashes = HashSet::new();
+    let mut memories = Vec::new();
+
+    for content in explicit_remember_candidates(ctx.task, ctx.messages) {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let content_hash = stable_memory_content_hash(MemoryType::Fact, trimmed);
+        if !seen_hashes.insert(content_hash.clone()) {
+            continue;
+        }
+
+        memories.push(MemoryRecord {
+            memory_id: format!(
+                "explicit-remember:{}:{}",
+                ctx.task_id,
+                &content_hash[..12.min(content_hash.len())]
+            ),
+            context_key: ctx.scope.context_key.clone(),
+            source_episode_id: Some(ctx.task_id.to_string()),
+            memory_type: MemoryType::Fact,
+            title: "Explicitly remembered note".to_string(),
+            content: trimmed.to_string(),
+            short_description: truncate_chars(trimmed, 160),
+            importance: 0.98,
+            confidence: 0.98,
+            source: Some("explicit_remember_intent".to_string()),
+            content_hash: Some(content_hash),
+            reason: Some("Captured directly from an explicit user remember request".to_string()),
+            tags: vec![
+                "explicit_remember".to_string(),
+                "fact".to_string(),
+                "user_requested".to_string(),
+            ],
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        });
+    }
+
+    memories
+}
+
+fn explicit_remember_candidates(task: &str, messages: &[AgentMessage]) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    if let Some(candidate) = extract_explicit_remember_payload(task) {
+        candidates.push(candidate);
+    }
+
+    for message in messages {
+        if message.role != crate::agent::memory::MessageRole::User {
+            continue;
+        }
+        if let Some(candidate) = extract_explicit_remember_payload(&message.content) {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates
+}
+
+fn extract_explicit_remember_payload(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(payload) = extract_after_delimiter(trimmed, ':') {
+        return Some(payload);
+    }
+    if let Some(payload) = extract_after_delimiter(trimmed, '：') {
+        return Some(payload);
+    }
+    extract_quoted_payload(trimmed)
+}
+
+fn extract_after_delimiter(text: &str, delimiter: char) -> Option<String> {
+    let (_, tail) = text.split_once(delimiter)?;
+    let candidate = tail
+        .trim()
+        .split(['\n', '.', '!', '?'])
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | '`'))
+        .trim();
+    (!candidate.is_empty()).then(|| candidate.to_string())
+}
+
+fn extract_quoted_payload(text: &str) -> Option<String> {
+    for quote in ['"', '\'', '`'] {
+        let mut parts = text.split(quote);
+        let _ = parts.next();
+        if let Some(candidate) = parts.next() {
+            let candidate = candidate.trim();
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+#[derive(Debug, Clone)]
+struct PersistentSummarySignal {
+    summary_text: String,
+    failures: Vec<String>,
+}
+
+fn latest_summary_signal(messages: &[AgentMessage]) -> Option<PersistentSummarySignal> {
+    let mut latest_summary = None;
+
+    for message in messages.iter().rev() {
+        let Some(summary) = message.summary_payload() else {
+            continue;
+        };
+
+        latest_summary = Some(PersistentSummarySignal {
+            summary_text: message.content.trim().to_string(),
+            failures: summary
+                .risks
+                .iter()
+                .map(|risk| risk.trim())
+                .filter(|risk| !risk.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+        });
+        break;
+    }
+
+    latest_summary
+}
+
+fn collect_artifacts(messages: &[AgentMessage]) -> Vec<ArtifactRef> {
+    let mut seen = HashSet::new();
+    let mut artifacts = Vec::new();
+
+    for message in messages {
+        if let Some(archive_ref) = message.archive_ref_payload() {
+            push_artifact(
+                &mut artifacts,
+                &mut seen,
+                archive_ref.storage_key.clone(),
+                archive_ref.title.clone(),
+                Some("application/json".to_string()),
+                archive_ref.created_at,
+            );
+        }
+        if let Some(payload) = &message.externalized_payload {
+            push_artifact(
+                &mut artifacts,
+                &mut seen,
+                payload.archive_ref.storage_key.clone(),
+                payload.archive_ref.title.clone(),
+                Some("text/plain".to_string()),
+                payload.archive_ref.created_at,
+            );
+        }
+        if let Some(artifact) = &message.pruned_artifact {
+            if let Some(archive_ref) = &artifact.archive_ref {
+                push_artifact(
+                    &mut artifacts,
+                    &mut seen,
+                    archive_ref.storage_key.clone(),
+                    archive_ref.title.clone(),
+                    Some("text/plain".to_string()),
+                    archive_ref.created_at,
+                );
+            }
+        }
+    }
+
+    artifacts
+}
+
+fn push_artifact(
+    artifacts: &mut Vec<ArtifactRef>,
+    seen: &mut HashSet<String>,
+    storage_key: String,
+    description: String,
+    content_type: Option<String>,
+    created_at: i64,
+) {
+    if !seen.insert(storage_key.clone()) {
+        return;
+    }
+
+    let Some(created_at) = chrono::DateTime::<Utc>::from_timestamp(created_at, 0) else {
+        return;
+    };
+
+    artifacts.push(ArtifactRef {
+        storage_key,
+        description,
+        content_type,
+        source: Some("post_run_extract".to_string()),
+        reason: None,
+        tags: vec!["archive".to_string()],
+        created_at,
+    });
+}
+
+fn collect_tools_used(messages: &[AgentMessage]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut tools = Vec::new();
+
+    for message in messages {
+        let Some(tool_name) = message.tool_name.as_deref() else {
+            continue;
+        };
+        let tool_name = tool_name.trim();
+        if tool_name.is_empty() || !seen.insert(tool_name.to_string()) {
+            continue;
+        }
+        tools.push(tool_name.to_string());
+    }
+
+    tools
+}

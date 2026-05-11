@@ -39,6 +39,7 @@ struct PreSpawnAgentMessageContext<'a> {
     sandbox_scope: &'a SandboxScope,
     active_session: &'a ActiveSessionConfig,
     outbound_thread: OutboundThreadParams,
+    attach_detach_enabled: bool,
 }
 
 /// Activate agent mode for a user
@@ -46,12 +47,14 @@ struct PreSpawnAgentMessageContext<'a> {
 /// # Errors
 ///
 /// Returns an error if the user state cannot be updated or the welcome message cannot be sent.
+#[allow(clippy::too_many_arguments)]
 pub async fn activate_agent_mode(
     bot: Bot,
     msg: Message,
     dialogue: AgentDialogue,
     llm: Arc<LlmClient>,
     storage: Arc<dyn StorageProvider>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
     user_id: i64,
 ) -> Result<()> {
@@ -81,6 +84,7 @@ pub async fn activate_agent_mode(
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -118,22 +122,68 @@ async fn delegate_non_agent_context_message(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: AgentDialogue,
+    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     if msg.text().is_some() {
-        return crate::bot::handlers::handle_text(bot, msg, storage, llm, dialogue, settings).await;
+        return crate::bot::handlers::handle_text(
+            bot,
+            msg,
+            storage,
+            llm,
+            dialogue,
+            persistent_memory_store.clone(),
+            settings,
+        )
+        .await;
     }
     if msg.voice().is_some() {
-        return crate::bot::handlers::handle_voice(bot, msg, storage, llm, dialogue, settings)
-            .await;
+        return crate::bot::handlers::handle_voice(
+            bot,
+            msg,
+            storage,
+            llm,
+            dialogue,
+            persistent_memory_store.clone(),
+            settings,
+        )
+        .await;
     }
     if msg.photo().is_some() {
-        return crate::bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings)
-            .await;
+        return crate::bot::handlers::handle_photo(
+            bot,
+            msg,
+            storage,
+            llm,
+            dialogue,
+            persistent_memory_store.clone(),
+            settings,
+        )
+        .await;
+    }
+    if msg.video().is_some() {
+        return crate::bot::handlers::handle_video(
+            bot,
+            msg,
+            storage,
+            llm,
+            dialogue,
+            persistent_memory_store.clone(),
+            settings,
+        )
+        .await;
     }
     if msg.document().is_some() {
-        return crate::bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings)
-            .await;
+        return crate::bot::handlers::handle_document(
+            bot,
+            msg,
+            dialogue,
+            storage,
+            llm,
+            persistent_memory_store.clone(),
+            settings,
+        )
+        .await;
     }
 
     Ok(())
@@ -150,6 +200,7 @@ pub async fn handle_agent_message(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: AgentDialogue,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
@@ -160,8 +211,16 @@ pub async fn handle_agent_message(
     let sandbox_scope = sandbox_scope(user_id, chat_id, thread_spec);
 
     if !is_agent_mode_context(&storage, user_id, chat_id, thread_spec).await? {
-        return delegate_non_agent_context_message(bot, msg, storage, llm, dialogue, settings)
-            .await;
+        return delegate_non_agent_context_message(
+            bot,
+            msg,
+            storage,
+            llm,
+            dialogue,
+            &persistent_memory_store,
+            settings,
+        )
+        .await;
     }
 
     let (agent_flow_id, agent_flow_created, session_keys) =
@@ -193,6 +252,7 @@ pub async fn handle_agent_message(
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -226,6 +286,7 @@ pub async fn handle_agent_message(
         sandbox_scope: &sandbox_scope,
         active_session: &active_session,
         outbound_thread,
+        attach_detach_enabled: settings.telegram.attach_detach_enabled,
     })
     .await?
     {
@@ -244,6 +305,7 @@ pub async fn handle_agent_message(
         message_thread_id: outbound_thread.message_thread_id,
         use_inline_progress_controls: use_inline_topic_controls(thread_spec),
         use_inline_flow_controls: use_inline_flow_controls(thread_spec),
+        attach_detach_enabled: settings.telegram.attach_detach_enabled,
         session_id,
     });
 
@@ -252,8 +314,12 @@ pub async fn handle_agent_message(
 }
 
 async fn handle_pre_spawn_agent_message(ctx: PreSpawnAgentMessageContext<'_>) -> Result<bool> {
-    let dispatch_ctx =
-        build_batched_text_task_context(ctx.bot, ctx.active_session, ctx.outbound_thread);
+    let dispatch_ctx = build_batched_text_task_context(
+        ctx.bot,
+        ctx.active_session,
+        ctx.outbound_thread,
+        ctx.attach_detach_enabled,
+    );
     if handle_batched_text_input_if_needed(BatchedTextInputCheck {
         msg: ctx.msg,
         bot: ctx.bot,
@@ -266,6 +332,7 @@ async fn handle_pre_spawn_agent_message(ctx: PreSpawnAgentMessageContext<'_>) ->
         chat_id: ctx.active_session.chat_id,
         context_key: &ctx.active_session.context_key,
         agent_flow_id: &ctx.active_session.agent_flow_id,
+        attach_detach_enabled: ctx.attach_detach_enabled,
     })
     .await?
     {
@@ -313,10 +380,12 @@ async fn handle_agent_control_command(
     dialogue: AgentDialogue,
     storage: Arc<dyn StorageProvider>,
     _llm: Arc<LlmClient>,
-    _settings: Arc<BotSettings>,
+    settings: Arc<BotSettings>,
 ) -> Result<()> {
     match command {
-        AgentControlCommand::CancelTask => cancel_agent_task(bot, msg, dialogue, storage).await,
+        AgentControlCommand::CancelTask => {
+            cancel_agent_task(bot, msg, dialogue, storage, settings).await
+        }
         AgentControlCommand::ClearMemory => {
             confirm_destructive_action(ConfirmationType::ClearMemory, bot, msg, dialogue).await
         }
@@ -328,6 +397,6 @@ async fn handle_agent_control_command(
                 .await
         }
         AgentControlCommand::ExitAgentMode => exit_agent_mode(bot, msg, dialogue, storage).await,
-        AgentControlCommand::ShowControls => show_agent_controls(bot, msg, storage).await,
+        AgentControlCommand::ShowControls => show_agent_controls(bot, msg, storage, settings).await,
     }
 }

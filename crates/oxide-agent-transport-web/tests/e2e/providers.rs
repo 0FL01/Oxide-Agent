@@ -2,9 +2,10 @@
 
 use async_trait::async_trait;
 use oxide_agent_core::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::{Mutex, Notify};
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,10 @@ pub struct SequencedZaiProvider {
     responses: Arc<Mutex<VecDeque<ChatResponse>>>,
     model_log: Arc<Mutex<Vec<String>>>,
     request_log: Arc<Mutex<Vec<RecordedToolRequest>>>,
+    call_count: Arc<AtomicUsize>,
+    blocked_calls: Arc<StdMutex<BTreeSet<usize>>>,
+    released_calls: Arc<StdMutex<BTreeSet<usize>>>,
+    notify: Arc<Notify>,
 }
 
 impl SequencedZaiProvider {
@@ -28,7 +33,23 @@ impl SequencedZaiProvider {
             responses: Arc::new(Mutex::new(VecDeque::from(responses))),
             model_log: Arc::new(Mutex::new(Vec::new())),
             request_log: Arc::new(Mutex::new(Vec::new())),
+            call_count: Arc::new(AtomicUsize::new(0)),
+            blocked_calls: Arc::new(StdMutex::new(BTreeSet::new())),
+            released_calls: Arc::new(StdMutex::new(BTreeSet::new())),
+            notify: Arc::new(Notify::new()),
         }
+    }
+
+    pub fn with_blocked_calls<I>(self, blocked_calls: I) -> Self
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let provider = self;
+        *provider
+            .blocked_calls
+            .lock()
+            .expect("blocked calls mutex poisoned") = BTreeSet::from_iter(blocked_calls);
+        provider
     }
 
     pub async fn model_log(&self) -> Vec<String> {
@@ -37,6 +58,38 @@ impl SequencedZaiProvider {
 
     pub async fn request_log(&self) -> Vec<RecordedToolRequest> {
         self.request_log.lock().await.clone()
+    }
+
+    pub fn release_call(&self, call_index: usize) {
+        self.released_calls
+            .lock()
+            .expect("released calls mutex poisoned")
+            .insert(call_index);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait_if_blocked(&self, call_index: usize) {
+        loop {
+            let is_blocked = self
+                .blocked_calls
+                .lock()
+                .expect("blocked calls mutex poisoned")
+                .contains(&call_index);
+            if !is_blocked {
+                return;
+            }
+
+            if self
+                .released_calls
+                .lock()
+                .expect("released calls mutex poisoned")
+                .contains(&call_index)
+            {
+                return;
+            }
+
+            self.notify.notified().await;
+        }
     }
 }
 
@@ -59,6 +112,7 @@ impl LlmProvider for SequencedZaiProvider {
         &self,
         request: ChatWithToolsRequest<'a>,
     ) -> Result<ChatResponse, LlmError> {
+        let call_index = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
         self.model_log
             .lock()
             .await
@@ -67,6 +121,8 @@ impl LlmProvider for SequencedZaiProvider {
             system_prompt: request.system_prompt.to_string(),
             messages: request.messages.to_vec(),
         });
+
+        self.wait_if_blocked(call_index).await;
 
         self.responses
             .lock()

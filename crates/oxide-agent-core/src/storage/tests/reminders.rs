@@ -71,6 +71,100 @@ fn compute_next_reminder_run_at_supports_cron_records() {
 }
 
 #[test]
+fn compute_next_reminder_run_at_preserves_interval_phase_after_late_completion() {
+    let scheduled_at = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 24, 6, 0, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    let completed_at = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 24, 6, 4, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    let record = ReminderJobRecord {
+        schema_version: 2,
+        version: 1,
+        reminder_id: "rem-interval-phase".to_string(),
+        user_id: 1,
+        context_key: "ctx".to_string(),
+        flow_id: "flow".to_string(),
+        chat_id: 1,
+        thread_id: None,
+        thread_kind: ReminderThreadKind::Dm,
+        task_prompt: "Ping".to_string(),
+        schedule_kind: ReminderScheduleKind::Interval,
+        status: ReminderJobStatus::Scheduled,
+        next_run_at: scheduled_at,
+        interval_secs: Some(86_400),
+        cron_expression: None,
+        timezone: None,
+        lease_until: None,
+        last_run_at: None,
+        last_error: None,
+        run_count: 0,
+        created_at: scheduled_at,
+        updated_at: scheduled_at,
+    };
+
+    let next =
+        compute_next_reminder_run_at(&record, completed_at).expect("next run should compute");
+    let expected = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 25, 6, 0, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    assert_eq!(next, Some(expected));
+}
+
+#[test]
+fn compute_next_reminder_run_at_skips_missed_interval_runs_without_drift() {
+    let scheduled_at = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 24, 6, 0, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    let completed_at = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 26, 6, 4, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    let record = ReminderJobRecord {
+        schema_version: 2,
+        version: 1,
+        reminder_id: "rem-interval-skip".to_string(),
+        user_id: 1,
+        context_key: "ctx".to_string(),
+        flow_id: "flow".to_string(),
+        chat_id: 1,
+        thread_id: None,
+        thread_kind: ReminderThreadKind::Dm,
+        task_prompt: "Ping".to_string(),
+        schedule_kind: ReminderScheduleKind::Interval,
+        status: ReminderJobStatus::Scheduled,
+        next_run_at: scheduled_at,
+        interval_secs: Some(86_400),
+        cron_expression: None,
+        timezone: None,
+        lease_until: None,
+        last_run_at: None,
+        last_error: None,
+        run_count: 0,
+        created_at: scheduled_at,
+        updated_at: scheduled_at,
+    };
+
+    let next =
+        compute_next_reminder_run_at(&record, completed_at).expect("next run should compute");
+    let expected = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 27, 6, 0, 0)
+        .single()
+        .expect("valid datetime")
+        .timestamp();
+    assert_eq!(next, Some(expected));
+}
+
+#[test]
 fn compute_cron_next_run_at_supports_fixed_utc_offset_timezones() {
     let after = chrono::Utc
         .with_ymd_and_hms(2026, 3, 23, 5, 0, 0)

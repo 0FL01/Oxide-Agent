@@ -3,6 +3,7 @@ use super::{
     keys::{reminder_job_key, topic_agents_md_key, topic_context_key},
     r2::R2Storage,
     reminder::ReminderJobRecord,
+    telemetry::StorageOperation,
     utils::{
         current_timestamp_unix_secs, is_precondition_failed_put_error,
         should_retry_control_plane_rmw, CONTROL_PLANE_RMW_MAX_RETRIES,
@@ -42,10 +43,7 @@ impl ControlPlaneLocks {
     pub(super) async fn acquire(&self, key: String) -> OwnedMutexGuard<()> {
         let lock = {
             let mut locks = self.locks.lock().await;
-            locks
-                .entry(key)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
+            Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
         };
 
         lock.lock_owned().await
@@ -117,6 +115,7 @@ impl R2Storage {
             bucket: bucket.clone(),
             cache,
             control_plane_locks: ControlPlaneLocks::new(),
+            telemetry: Default::default(),
         })
     }
 
@@ -138,7 +137,8 @@ impl R2Storage {
             .insert(key.to_string(), Arc::new(body_bytes.clone()))
             .await;
 
-        self.client
+        match self
+            .client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
@@ -146,7 +146,17 @@ impl R2Storage {
             .content_type("application/json")
             .send()
             .await
-            .map_err(|e| StorageError::S3Put(e.to_string()))?;
+        {
+            Ok(_) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "ok");
+            }
+            Err(error) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "error");
+                return Err(StorageError::S3Put(error.to_string()));
+            }
+        }
 
         Ok(())
     }
@@ -159,7 +169,8 @@ impl R2Storage {
             .insert(key.to_string(), Arc::new(body_bytes.clone()))
             .await;
 
-        self.client
+        match self
+            .client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
@@ -167,7 +178,17 @@ impl R2Storage {
             .content_type("text/plain; charset=utf-8")
             .send()
             .await
-            .map_err(|e| StorageError::S3Put(e.to_string()))?;
+        {
+            Ok(_) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "ok");
+            }
+            Err(error) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "error");
+                return Err(StorageError::S3Put(error.to_string()));
+            }
+        }
 
         Ok(())
     }
@@ -199,13 +220,21 @@ impl R2Storage {
                 self.cache
                     .insert(key.to_string(), Arc::new(body_bytes.clone()))
                     .await;
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "ok");
                 Ok(true)
             }
             Err(err) if is_precondition_failed_put_error(&err) => {
                 self.cache.invalidate(key).await;
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "precondition_failed");
                 Ok(false)
             }
-            Err(err) => Err(StorageError::S3Put(err.to_string())),
+            Err(err) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "error");
+                Err(StorageError::S3Put(err.to_string()))
+            }
         }
     }
 
@@ -220,6 +249,7 @@ impl R2Storage {
     ) -> Result<Option<T>, StorageError> {
         // Read-Through: Check cache first
         if let Some(cached_data) = self.cache.get(key).await {
+            self.telemetry.record_cache_hit(key);
             match serde_json::from_slice(&cached_data) {
                 Ok(data) => return Ok(Some(data)),
                 Err(e) => {
@@ -229,6 +259,8 @@ impl R2Storage {
                 }
             }
         }
+
+        self.telemetry.record_cache_miss(key);
 
         let result = self
             .client
@@ -251,18 +283,29 @@ impl R2Storage {
                 self.cache
                     .insert(key.to_string(), Arc::new(data.to_vec()))
                     .await;
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "ok");
 
                 let json_data = serde_json::from_slice(&data)?;
                 Ok(Some(json_data))
             }
-            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
-            Err(e) => Err(StorageError::S3Get(Box::new(e))),
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => {
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "not_found");
+                Ok(None)
+            }
+            Err(e) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "error");
+                Err(StorageError::S3Get(Box::new(e)))
+            }
         }
     }
 
     /// Load raw UTF-8 text from R2.
     pub async fn load_text(&self, key: &str) -> Result<Option<String>, StorageError> {
         if let Some(cached_data) = self.cache.get(key).await {
+            self.telemetry.record_cache_hit(key);
             return String::from_utf8(cached_data.to_vec())
                 .map(Some)
                 .map_err(|err| {
@@ -271,6 +314,8 @@ impl R2Storage {
                     ))
                 });
         }
+
+        self.telemetry.record_cache_miss(key);
 
         let result = self
             .client
@@ -292,6 +337,8 @@ impl R2Storage {
                 self.cache
                     .insert(key.to_string(), Arc::new(data.to_vec()))
                     .await;
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "ok");
 
                 String::from_utf8(data.to_vec()).map(Some).map_err(|err| {
                     StorageError::Config(format!(
@@ -299,8 +346,16 @@ impl R2Storage {
                     ))
                 })
             }
-            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => Ok(None),
-            Err(e) => Err(StorageError::S3Get(Box::new(e))),
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => {
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "not_found");
+                Ok(None)
+            }
+            Err(e) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "error");
+                Err(StorageError::S3Get(Box::new(e)))
+            }
         }
     }
 
@@ -329,15 +384,23 @@ impl R2Storage {
                 self.cache
                     .insert(key.to_string(), Arc::new(data.to_vec()))
                     .await;
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "ok");
 
                 let json_data = serde_json::from_slice(&data)?;
                 Ok((Some(json_data), etag))
             }
             Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => {
                 self.cache.invalidate(key).await;
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "not_found");
                 Ok((None, None))
             }
-            Err(e) => Err(StorageError::S3Get(Box::new(e))),
+            Err(e) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "error");
+                Err(StorageError::S3Get(Box::new(e)))
+            }
         }
     }
 
@@ -382,13 +445,24 @@ impl R2Storage {
         // Invalidate cache
         self.cache.invalidate(key).await;
 
-        self.client
+        match self
+            .client
             .delete_object()
             .bucket(&self.bucket)
             .key(key)
             .send()
             .await
-            .map_err(|e| StorageError::S3Put(e.to_string()))?;
+        {
+            Ok(_) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Delete, key, "ok");
+            }
+            Err(error) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Delete, key, "error");
+                return Err(StorageError::S3Put(error.to_string()));
+            }
+        }
 
         Ok(())
     }
@@ -397,7 +471,7 @@ impl R2Storage {
         let mut continuation_token: Option<String> = None;
 
         loop {
-            let response = self
+            let response = match self
                 .client
                 .list_objects_v2()
                 .bucket(&self.bucket)
@@ -405,7 +479,17 @@ impl R2Storage {
                 .set_continuation_token(continuation_token.clone())
                 .send()
                 .await
-                .map_err(|error| StorageError::S3Put(error.to_string()))?;
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    self.telemetry
+                        .record_operation(StorageOperation::List, prefix, "error");
+                    return Err(StorageError::S3Put(error.to_string()));
+                }
+            };
+
+            self.telemetry
+                .record_operation(StorageOperation::List, prefix, "ok");
 
             for object in response.contents() {
                 if let Some(key) = object.key() {
@@ -431,7 +515,7 @@ impl R2Storage {
         let mut records = Vec::new();
 
         loop {
-            let response = self
+            let response = match self
                 .client
                 .list_objects_v2()
                 .bucket(&self.bucket)
@@ -439,7 +523,17 @@ impl R2Storage {
                 .set_continuation_token(continuation_token.clone())
                 .send()
                 .await
-                .map_err(|error| StorageError::S3Put(error.to_string()))?;
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    self.telemetry
+                        .record_operation(StorageOperation::List, prefix, "error");
+                    return Err(StorageError::S3Put(error.to_string()));
+                }
+            };
+
+            self.telemetry
+                .record_operation(StorageOperation::List, prefix, "ok");
 
             for object in response.contents() {
                 let Some(key) = object.key() else {
@@ -468,7 +562,7 @@ impl R2Storage {
         let mut keys = Vec::new();
 
         loop {
-            let response = self
+            let response = match self
                 .client
                 .list_objects_v2()
                 .bucket(&self.bucket)
@@ -476,7 +570,17 @@ impl R2Storage {
                 .set_continuation_token(continuation_token.clone())
                 .send()
                 .await
-                .map_err(|error| StorageError::S3Put(error.to_string()))?;
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    self.telemetry
+                        .record_operation(StorageOperation::List, prefix, "error");
+                    return Err(StorageError::S3Put(error.to_string()));
+                }
+            };
+
+            self.telemetry
+                .record_operation(StorageOperation::List, prefix, "ok");
 
             for object in response.contents() {
                 let Some(key) = object.key() else {
@@ -552,8 +656,11 @@ impl R2Storage {
     where
         F: FnOnce(&mut super::UserConfig),
     {
-        let mut config = self.get_user_config(user_id).await?;
-        modifier(&mut config);
-        self.update_user_config(user_id, config).await
+        super::telemetry::with_storage_reason("modify_user_config", async {
+            let mut config = self.get_user_config(user_id).await?;
+            modifier(&mut config);
+            self.update_user_config(user_id, config).await
+        })
+        .await
     }
 }

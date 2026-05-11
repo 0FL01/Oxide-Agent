@@ -144,7 +144,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, reminder"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, stack_logs, search, browser, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -163,7 +163,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, search, reminder"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, stack_logs, search, browser, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -226,44 +226,52 @@ impl ManagerControlPlaneProvider {
         ]
     }
 
-    fn configured_search_tool_group() -> Option<TopicAgentToolGroup> {
-        match crate::config::get_search_provider().as_str() {
-            "tavily" => {
-                #[cfg(feature = "tavily")]
-                {
-                    std::env::var("TAVILY_API_KEY")
-                        .ok()
-                        .filter(|value| !value.trim().is_empty())
-                        .map(|_| TopicAgentToolGroup {
-                            provider: "search",
-                            aliases: &["search", "tavily"],
-                            tools: TOPIC_AGENT_TAVILY_TOOLS,
-                        })
-                }
-                #[cfg(not(feature = "tavily"))]
-                {
-                    None
-                }
-            }
-            "crawl4ai" => {
-                #[cfg(feature = "crawl4ai")]
-                {
-                    std::env::var("CRAWL4AI_URL")
-                        .ok()
-                        .filter(|value| !value.trim().is_empty())
-                        .map(|_| TopicAgentToolGroup {
-                            provider: "search",
-                            aliases: &["search", "crawl4ai"],
-                            tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
-                        })
-                }
-                #[cfg(not(feature = "crawl4ai"))]
-                {
-                    None
-                }
-            }
-            _ => None,
+    fn configured_search_tool_groups() -> Vec<TopicAgentToolGroup> {
+        let mut groups = Vec::new();
+
+        #[cfg(feature = "tavily")]
+        if crate::config::is_tavily_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "tavily",
+                aliases: &["search", "tavily"],
+                tools: TOPIC_AGENT_TAVILY_TOOLS,
+            });
         }
+
+        #[cfg(feature = "searxng")]
+        if crate::config::is_searxng_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "searxng",
+                aliases: &["search", "searxng"],
+                tools: TOPIC_AGENT_SEARXNG_TOOLS,
+            });
+        }
+
+        #[cfg(feature = "crawl4ai")]
+        if crate::config::is_crawl4ai_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "crawl4ai",
+                aliases: &["search", "crawl4ai"],
+                tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
+            });
+        }
+
+        groups
+    }
+
+    fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
+        // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
+        // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
+        #[cfg(feature = "browser_use")]
+        if crate::config::is_browser_use_enabled() {
+            return vec![TopicAgentToolGroup {
+                provider: "browser_use",
+                aliases: &["browser", "browser_use"],
+                tools: TOPIC_AGENT_BROWSER_USE_TOOLS,
+            }];
+        }
+
+        Vec::new()
     }
 
     pub(super) async fn topic_agent_tool_catalog(
@@ -292,6 +300,11 @@ impl ManagerControlPlaneProvider {
                 tools: TOPIC_AGENT_FILEHOSTER_TOOLS,
             },
             TopicAgentToolGroup {
+                provider: "stack_logs",
+                aliases: &["stack_logs", "logs"],
+                tools: TOPIC_AGENT_STACK_LOGS_TOOLS,
+            },
+            TopicAgentToolGroup {
                 provider: "ytdlp",
                 aliases: &["ytdlp", "youtube"],
                 tools: TOPIC_AGENT_YTDLP_TOOLS,
@@ -308,9 +321,8 @@ impl ManagerControlPlaneProvider {
             },
         ];
 
-        if let Some(search_group) = Self::configured_search_tool_group() {
-            groups.push(search_group);
-        }
+        groups.extend(Self::configured_search_tool_groups());
+        groups.extend(Self::configured_browser_tool_groups());
 
         let topic_infra = self
             .storage
@@ -344,6 +356,23 @@ impl ManagerControlPlaneProvider {
                 });
             }
         }
+
+        // TTS groups - always added as they're conditionally enabled via env vars at runtime
+        groups.push(TopicAgentToolGroup {
+            provider: "media_file",
+            aliases: &["media", "media_file"],
+            tools: TOPIC_AGENT_MEDIA_FILE_TOOLS,
+        });
+        groups.push(TopicAgentToolGroup {
+            provider: "tts_en",
+            aliases: &["tts", "tts_en", "kokoro"],
+            tools: TOPIC_AGENT_TTS_EN_TOOLS,
+        });
+        groups.push(TopicAgentToolGroup {
+            provider: "tts_ru",
+            aliases: &["tts_ru", "silero"],
+            tools: TOPIC_AGENT_TTS_RU_TOOLS,
+        });
 
         let mut tool_names = BTreeSet::new();
         for group in &groups {
@@ -514,16 +543,20 @@ impl ManagerControlPlaneProvider {
                 continue;
             }
 
-            let Some(group) = catalog
+            let matching_groups = catalog
                 .groups
                 .iter()
-                .find(|group| group.provider == token || group.aliases.contains(&token.as_str()))
-            else {
-                bail!("unknown tool or provider alias '{token}' for the topic agent");
-            };
+                .filter(|group| group.provider == token || group.aliases.contains(&token.as_str()))
+                .collect::<Vec<_>>();
 
-            for tool in group.tools {
-                requested.insert((*tool).to_string());
+            if matching_groups.is_empty() {
+                bail!("unknown tool or provider alias '{token}' for the topic agent");
+            }
+
+            for group in matching_groups {
+                for tool in group.tools {
+                    requested.insert((*tool).to_string());
+                }
             }
         }
 
@@ -1396,5 +1429,205 @@ impl ManagerControlPlaneProvider {
             snapshot,
             audit_status,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn topic_agent_tool_catalog_includes_media_file_tools() {
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_infra_config()
+            .returning(|_, _| Ok(None));
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let catalog = provider
+            .topic_agent_tool_catalog("topic-a")
+            .await
+            .expect("catalog should build");
+
+        let media_group = catalog
+            .groups
+            .iter()
+            .find(|group| group.provider == "media_file")
+            .expect("media_file group should be present");
+
+        assert_eq!(media_group.aliases, &["media", "media_file"]);
+        assert_eq!(
+            media_group.tools,
+            &[
+                "transcribe_audio_file",
+                "describe_image_file",
+                "describe_video_file"
+            ]
+        );
+        assert!(catalog.tool_names.contains("transcribe_audio_file"));
+        assert!(catalog.tool_names.contains("describe_image_file"));
+        assert!(catalog.tool_names.contains("describe_video_file"));
+    }
+
+    #[cfg(feature = "browser_use")]
+    #[tokio::test]
+    async fn topic_agent_tool_catalog_includes_browser_use_tools_when_enabled() {
+        let _guard = crate::config::test_env_async_mutex().lock().await;
+        std::env::set_var("BROWSER_USE_ENABLED", "true");
+        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+
+        let mut mock = crate::storage::MockStorageProvider::new();
+        mock.expect_get_topic_infra_config()
+            .returning(|_, _| Ok(None));
+
+        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
+        let catalog = provider
+            .topic_agent_tool_catalog("topic-a")
+            .await
+            .expect("catalog should build");
+
+        let browser_group = catalog
+            .groups
+            .iter()
+            .find(|group| group.provider == "browser_use")
+            .expect("browser_use group should be present");
+
+        assert_eq!(browser_group.aliases, &["browser", "browser_use"]);
+        assert_eq!(
+            browser_group.tools,
+            &[
+                "browser_use_run_task",
+                "browser_use_get_session",
+                "browser_use_close_session",
+                "browser_use_extract_content",
+                "browser_use_screenshot"
+            ]
+        );
+        assert!(catalog.tool_names.contains("browser_use_run_task"));
+        assert!(catalog.tool_names.contains("browser_use_get_session"));
+        assert!(catalog.tool_names.contains("browser_use_close_session"));
+        assert!(catalog.tool_names.contains("browser_use_extract_content"));
+        assert!(catalog.tool_names.contains("browser_use_screenshot"));
+
+        std::env::remove_var("BROWSER_USE_ENABLED");
+        std::env::remove_var("BROWSER_USE_URL");
+    }
+
+    #[test]
+    fn browser_alias_expands_browser_use_group() {
+        let catalog = TopicAgentToolCatalog {
+            groups: vec![TopicAgentToolGroup {
+                provider: "browser_use",
+                aliases: &["browser", "browser_use"],
+                tools: &[
+                    "browser_use_run_task",
+                    "browser_use_get_session",
+                    "browser_use_close_session",
+                    "browser_use_extract_content",
+                    "browser_use_screenshot",
+                ],
+            }],
+            tool_names: [
+                "browser_use_run_task",
+                "browser_use_get_session",
+                "browser_use_close_session",
+                "browser_use_extract_content",
+                "browser_use_screenshot",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        };
+
+        let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
+            &catalog,
+            vec!["browser".to_string()],
+        )
+        .expect("browser alias should expand the browser-use provider group");
+
+        assert_eq!(
+            expanded,
+            vec![
+                "browser_use_close_session".to_string(),
+                "browser_use_extract_content".to_string(),
+                "browser_use_get_session".to_string(),
+                "browser_use_run_task".to_string(),
+                "browser_use_screenshot".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn search_alias_expands_all_matching_search_groups() {
+        let catalog = TopicAgentToolCatalog {
+            groups: vec![
+                TopicAgentToolGroup {
+                    provider: "tavily",
+                    aliases: &["search", "tavily"],
+                    tools: &["web_search", "web_extract"],
+                },
+                TopicAgentToolGroup {
+                    provider: "crawl4ai",
+                    aliases: &["search", "crawl4ai"],
+                    tools: &["deep_crawl", "web_markdown", "web_pdf"],
+                },
+            ],
+            tool_names: [
+                "web_search",
+                "web_extract",
+                "deep_crawl",
+                "web_markdown",
+                "web_pdf",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        };
+
+        let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
+            &catalog,
+            vec!["search".to_string()],
+        )
+        .expect("search alias should expand across all enabled search providers");
+
+        assert_eq!(
+            expanded,
+            vec![
+                "deep_crawl".to_string(),
+                "web_extract".to_string(),
+                "web_markdown".to_string(),
+                "web_pdf".to_string(),
+                "web_search".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn logs_alias_expands_stack_logs_group() {
+        let catalog = TopicAgentToolCatalog {
+            groups: vec![TopicAgentToolGroup {
+                provider: "stack_logs",
+                aliases: &["stack_logs", "logs"],
+                tools: &["stack_logs_list_sources", "stack_logs_fetch"],
+            }],
+            tool_names: ["stack_logs_list_sources", "stack_logs_fetch"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        };
+
+        let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
+            &catalog,
+            vec!["logs".to_string()],
+        )
+        .expect("logs alias should expand the stack logs provider group");
+
+        assert_eq!(
+            expanded,
+            vec![
+                "stack_logs_fetch".to_string(),
+                "stack_logs_list_sources".to_string(),
+            ]
+        );
     }
 }

@@ -16,6 +16,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
+COPY --from=planner /app/vendor/gemini-rust /app/vendor/gemini-rust
 # Build dependencies - this layer is cached unless dependencies change
 RUN cargo chef cook --release --workspace --features oxide-agent-core/crawl4ai,oxide-agent-core/jira,oxide-agent-core/mattermost --recipe-path recipe.json
 
@@ -82,6 +83,7 @@ RUN groupadd --system --gid 10001 oxide \
 WORKDIR /app
 COPY --from=builder /app/target/release/oxide-agent-telegram-bot /app/oxide-agent-telegram-bot
 COPY --from=builder /app/target/release/oxide-agent-sandboxd /app/oxide-agent-sandboxd
+COPY --from=builder /app/target/release/chatgpt-login /app/chatgpt-login
 COPY --from=ssh-mcp-binary /usr/local/bin/ssh-mcp /usr/local/bin/ssh-mcp
 COPY --from=jira-mcp-binary /usr/local/bin/jira-mcp /usr/local/bin/jira-mcp
 COPY --from=mattermost-mcp-binary /usr/local/bin/mattermost-mcp /usr/local/bin/mattermost-mcp

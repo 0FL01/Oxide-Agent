@@ -1,14 +1,17 @@
 use super::{
     automatic_agent_control_markup, renew_cancellation_token, run_agent_task_with_text,
-    use_inline_flow_controls, use_inline_topic_controls, ActiveSessionConfig,
-    RunAgentTaskTextContext, PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
+    run_user_input_resume, use_inline_flow_controls, use_inline_topic_controls,
+    ActiveSessionConfig, RunAgentTaskTextContext, RunUserInputResumeContext,
+    PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
 };
-use crate::bot::agent::extract_agent_input;
+use crate::bot::agent::{extract_agent_file_input, extract_agent_input};
 use crate::bot::context::{current_context_state, ensure_current_agent_flow_id};
 use crate::bot::topic_route::{touch_dynamic_binding_activity_if_needed, TopicRouteDecision};
 use crate::bot::{OutboundThreadParams, TelegramThreadSpec};
 use anyhow::Result;
-use oxide_agent_core::agent::{preprocessor::Preprocessor, SessionId};
+use oxide_agent_core::agent::{
+    preprocessor::Preprocessor, PendingUserInput, SessionId, UserInputKind,
+};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
@@ -34,6 +37,7 @@ pub(crate) struct BatchedTextTaskContext {
     pub(crate) message_thread_id: Option<ThreadId>,
     pub(crate) use_inline_progress_controls: bool,
     pub(crate) use_inline_flow_controls: bool,
+    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -61,6 +65,7 @@ pub(crate) struct BatchedTextInputCheck<'a> {
     pub(crate) chat_id: ChatId,
     pub(crate) context_key: &'a str,
     pub(crate) agent_flow_id: &'a str,
+    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -102,6 +107,7 @@ pub(crate) fn build_batched_text_task_context(
     bot: &Bot,
     active_session: &ActiveSessionConfig,
     outbound_thread: OutboundThreadParams,
+    attach_detach_enabled: bool,
 ) -> BatchedTextTaskContext {
     BatchedTextTaskContext {
         bot: bot.clone(),
@@ -114,6 +120,7 @@ pub(crate) fn build_batched_text_task_context(
         message_thread_id: outbound_thread.message_thread_id,
         use_inline_progress_controls: use_inline_topic_controls(active_session.thread_spec),
         use_inline_flow_controls: use_inline_flow_controls(active_session.thread_spec),
+        attach_detach_enabled,
     }
 }
 
@@ -163,6 +170,7 @@ pub(crate) async fn handle_batched_text_input_if_needed(
             message_thread_id: ctx.outbound_thread.message_thread_id,
             use_inline_progress_controls: use_inline_topic_controls(ctx.thread_spec),
             use_inline_flow_controls: use_inline_flow_controls(ctx.thread_spec),
+            attach_detach_enabled: ctx.attach_detach_enabled,
         },
         ctx.msg.id,
         text,
@@ -222,19 +230,25 @@ pub(crate) fn route_allows_agent_processing(route: &TopicRouteDecision, user_id:
 }
 
 fn has_deferred_agent_input_candidate(msg: &Message) -> bool {
-    msg.voice().is_some() || msg.photo().is_some() || msg.document().is_some()
+    msg.voice().is_some()
+        || msg.photo().is_some()
+        || msg.video().is_some()
+        || msg.document().is_some()
 }
 
 fn spawn_deferred_agent_input(ctx: DeferredAgentInputContext) {
     tokio::spawn(async move {
         let chat_id = ctx.dispatch.chat_id;
         let thread_id = ctx.dispatch.message_thread_id;
+        let preserve_binary_uploads =
+            should_preserve_pending_file_input(&ctx.dispatch.session_id).await;
 
         match preprocess_agent_message_input(
             &ctx.dispatch.bot,
             &ctx.msg,
             &ctx.llm,
             &ctx.sandbox_scope,
+            preserve_binary_uploads,
         )
         .await
         {
@@ -281,10 +295,31 @@ pub(crate) async fn preprocess_agent_message_input(
     msg: &Message,
     llm: &Arc<LlmClient>,
     sandbox_scope: &SandboxScope,
+    preserve_binary_uploads: bool,
 ) -> Result<String> {
     let preprocessor = Preprocessor::new(llm.clone(), sandbox_scope.clone());
-    let input = extract_agent_input(bot, msg).await?;
+    let input = if preserve_binary_uploads {
+        extract_agent_file_input(bot, msg).await?
+    } else {
+        extract_agent_input(bot, msg).await?
+    };
     preprocessor.preprocess_input(input).await
+}
+
+pub(crate) fn pending_user_input_requires_file(request: Option<&PendingUserInput>) -> bool {
+    matches!(
+        request.map(|request| &request.kind),
+        Some(UserInputKind::File | UserInputKind::UrlOrFile)
+    )
+}
+
+pub(crate) async fn should_preserve_pending_file_input(session_id: &SessionId) -> bool {
+    let Some(executor_arc) = SESSION_REGISTRY.get(session_id).await else {
+        return false;
+    };
+
+    let executor = executor_arc.read().await;
+    pending_user_input_requires_file(executor.session().pending_user_input())
 }
 
 pub(crate) async fn send_multimodal_unavailable_message(
@@ -295,7 +330,7 @@ pub(crate) async fn send_multimodal_unavailable_message(
     crate::bot::resilient::send_message_resilient_with_thread(
         bot,
         chat_id,
-        "🚫 Agent cannot process this input right now.\nGemini/OpenRouter connection required for vision and audio capabilities.",
+        "🚫 Agent cannot process this input right now.\nGemini/OpenRouter connection required for image, audio, and video capabilities.",
         None,
         thread_id,
     )
@@ -329,6 +364,20 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         }
     }
 
+    if super::queue_followup_during_completed_response_delivery(&ctx.session_id, task_text.clone())
+        .await
+    {
+        crate::bot::resilient::send_message_resilient_with_thread(
+            &ctx.bot,
+            ctx.chat_id,
+            "✏️ Update received before final reply delivery. I’m revising the answer.",
+            None,
+            ctx.message_thread_id,
+        )
+        .await?;
+        return Ok(());
+    }
+
     if !SESSION_REGISTRY.contains(&ctx.session_id).await {
         warn!(session_id = %ctx.session_id, "Session expired before preprocessed input could be processed");
         crate::bot::resilient::send_message_resilient_with_thread(
@@ -342,7 +391,33 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         return Ok(());
     }
 
+    let should_resume_pending_input = match SESSION_REGISTRY.get(&ctx.session_id).await {
+        Some(executor_arc) => {
+            let executor = executor_arc.read().await;
+            executor.session().pending_user_input().is_some() && executor.last_task().is_some()
+        }
+        None => false,
+    };
+
     renew_cancellation_token(ctx.session_id).await;
+
+    if should_resume_pending_input {
+        return run_user_input_resume(RunUserInputResumeContext {
+            bot: ctx.bot,
+            chat_id: ctx.chat_id,
+            session_id: ctx.session_id,
+            user_id: ctx.user_id,
+            user_input: task_text,
+            storage: ctx.storage,
+            context_key: ctx.context_key,
+            agent_flow_id: ctx.agent_flow_id,
+            message_thread_id: ctx.message_thread_id,
+            use_inline_progress_controls: ctx.use_inline_progress_controls,
+            use_inline_flow_controls: ctx.use_inline_flow_controls,
+            attach_detach_enabled: ctx.attach_detach_enabled,
+        })
+        .await;
+    }
 
     run_agent_task_with_text(RunAgentTaskTextContext {
         bot: ctx.bot,
@@ -356,6 +431,9 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         message_thread_id: ctx.message_thread_id,
         use_inline_progress_controls: ctx.use_inline_progress_controls,
         use_inline_flow_controls: ctx.use_inline_flow_controls,
+        attach_detach_enabled: ctx.attach_detach_enabled,
+        progress_enabled: true,
+        silent_no_change_enabled: false,
     })
     .await
 }
@@ -493,4 +571,46 @@ async fn finalize_text_input_batch_if_current(session_id: SessionId, revision: u
 
 async fn finalize_text_input_batch(batch: PendingTextInputBatch) -> Result<()> {
     dispatch_preprocessed_agent_text(batch.ctx, assemble_text_batch(&batch.parts)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_user_input_requires_file;
+    use oxide_agent_core::agent::{PendingUserInput, UserInputKind};
+
+    #[test]
+    fn pending_file_request_requires_preserving_attachments() {
+        let request = PendingUserInput {
+            kind: UserInputKind::File,
+            prompt: "upload file".to_string(),
+        };
+
+        assert!(pending_user_input_requires_file(Some(&request)));
+    }
+
+    #[test]
+    fn pending_url_or_file_request_requires_preserving_attachments() {
+        let request = PendingUserInput {
+            kind: UserInputKind::UrlOrFile,
+            prompt: "upload or paste".to_string(),
+        };
+
+        assert!(pending_user_input_requires_file(Some(&request)));
+    }
+
+    #[test]
+    fn text_and_url_requests_keep_default_media_preprocessing() {
+        let text = PendingUserInput {
+            kind: UserInputKind::Text,
+            prompt: "reply".to_string(),
+        };
+        let url = PendingUserInput {
+            kind: UserInputKind::Url,
+            prompt: "paste url".to_string(),
+        };
+
+        assert!(!pending_user_input_requires_file(Some(&text)));
+        assert!(!pending_user_input_requires_file(Some(&url)));
+        assert!(!pending_user_input_requires_file(None));
+    }
 }

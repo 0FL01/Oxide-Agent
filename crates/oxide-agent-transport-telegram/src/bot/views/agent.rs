@@ -337,7 +337,7 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
 /// Get topic-friendly inline controls for agent mode.
 #[must_use]
 pub fn get_agent_inline_keyboard(agent_flow_id: Option<&str>) -> InlineKeyboardMarkup {
-    get_agent_inline_keyboard_with_exit(true, agent_flow_id)
+    get_agent_inline_keyboard_with_exit(true, agent_flow_id, true)
 }
 
 /// Get topic-friendly inline controls for agent mode with optional exit action.
@@ -345,6 +345,7 @@ pub fn get_agent_inline_keyboard(agent_flow_id: Option<&str>) -> InlineKeyboardM
 pub fn get_agent_inline_keyboard_with_exit(
     include_exit: bool,
     agent_flow_id: Option<&str>,
+    attach_detach_enabled: bool,
 ) -> InlineKeyboardMarkup {
     let mut keyboard = vec![
         vec![InlineKeyboardButton::callback(
@@ -364,14 +365,16 @@ pub fn get_agent_inline_keyboard_with_exit(
             AGENT_CALLBACK_RECREATE_CONTAINER,
         )],
     ];
-    if let Some(agent_flow_id) = agent_flow_id {
-        keyboard.push(vec![
-            InlineKeyboardButton::callback(
-                "🔗 Attach",
-                format!("{AGENT_CALLBACK_ATTACH_PREFIX}{agent_flow_id}"),
-            ),
-            InlineKeyboardButton::callback("✂️ Detach", AGENT_CALLBACK_DETACH),
-        ]);
+    if attach_detach_enabled {
+        if let Some(agent_flow_id) = agent_flow_id {
+            keyboard.push(vec![
+                InlineKeyboardButton::callback(
+                    "🔗 Attach",
+                    format!("{AGENT_CALLBACK_ATTACH_PREFIX}{agent_flow_id}"),
+                ),
+                InlineKeyboardButton::callback("✂️ Detach", AGENT_CALLBACK_DETACH),
+            ]);
+        }
     }
     if include_exit {
         keyboard.push(vec![InlineKeyboardButton::callback(
@@ -420,6 +423,19 @@ pub fn agent_control_markup(use_inline: bool) -> ReplyMarkup {
 /// Get inline flow controls for the final agent response in topics.
 #[must_use]
 pub fn agent_flow_inline_keyboard(agent_flow_id: &str) -> InlineKeyboardMarkup {
+    agent_flow_inline_keyboard_with_toggle(agent_flow_id, true)
+}
+
+/// Get inline flow controls for the final agent response in topics.
+#[must_use]
+pub fn agent_flow_inline_keyboard_with_toggle(
+    agent_flow_id: &str,
+    attach_detach_enabled: bool,
+) -> InlineKeyboardMarkup {
+    if !attach_detach_enabled {
+        return empty_inline_keyboard();
+    }
+
     InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback(
             "🔗 Attach",
@@ -505,7 +521,10 @@ pub fn confirmation_markup(use_inline: bool, action: ConfirmationType) -> ReplyM
 
 #[cfg(test)]
 mod tests {
-    use super::{get_agent_inline_keyboard, get_agent_keyboard, AgentView, DefaultAgentView};
+    use super::{
+        agent_flow_inline_keyboard_with_toggle, get_agent_inline_keyboard,
+        get_agent_inline_keyboard_with_exit, get_agent_keyboard, AgentView, DefaultAgentView,
+    };
 
     #[test]
     fn cancellation_messages_use_distinct_in_progress_and_terminal_text() {
@@ -535,5 +554,18 @@ mod tests {
             .iter()
             .flatten()
             .any(|button| button.text == "🗜 Compact Context"));
+    }
+
+    #[test]
+    fn inline_keyboards_hide_attach_detach_when_disabled() {
+        let inline = get_agent_inline_keyboard_with_exit(true, Some("flow-1"), false);
+        assert!(!inline
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .any(|button| button.text == "🔗 Attach" || button.text == "✂️ Detach"));
+
+        let flow_controls = agent_flow_inline_keyboard_with_toggle("flow-1", false);
+        assert!(flow_controls.inline_keyboard.is_empty());
     }
 }

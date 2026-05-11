@@ -1,4 +1,6 @@
 #[allow(missing_docs)]
+pub mod chatgpt;
+#[allow(missing_docs)]
 pub mod gemini;
 #[allow(missing_docs)]
 pub mod groq;
@@ -7,23 +9,22 @@ pub mod minimax;
 #[allow(missing_docs)]
 pub mod mistral;
 #[allow(missing_docs)]
+pub mod nvidia;
+#[allow(missing_docs)]
 pub mod openrouter;
-#[allow(missing_docs)]
-pub mod protocol_profiles;
-#[allow(missing_docs)]
-pub mod tool_call_adapter;
-#[allow(missing_docs)]
-pub mod tool_call_encoder;
-#[allow(missing_docs)]
-pub mod tool_correlation;
-#[allow(missing_docs)]
-pub mod tool_result_encoder;
+mod protocol_profiles;
+mod tool_call_adapter;
+mod tool_call_encoder;
+mod tool_correlation;
+mod tool_result_encoder;
 #[allow(missing_docs)]
 pub mod zai;
 
+pub use chatgpt::ChatGptProvider;
 pub use gemini::GeminiProvider;
 pub use groq::GroqProvider;
 pub use minimax::MiniMaxProvider;
 pub use mistral::MistralProvider;
+pub use nvidia::NvidiaProvider;
 pub use openrouter::OpenRouterProvider;
 pub use zai::{parse_zai_flush_time, ZaiProvider};

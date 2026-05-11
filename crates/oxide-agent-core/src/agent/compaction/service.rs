@@ -3,16 +3,19 @@
 use super::archive::{persist_compacted_history_chunk, ArchiveSink, NoopArchiveSink};
 use super::budget::estimate_request_budget;
 use super::classifier::classify_hot_memory_with_policy;
+use super::dedup_superseded::{dedup_superseded_tool_results, DedupSupersededContract};
+use super::error_retry_collapse::collapse_error_retries;
 use super::externalize::{externalize_hot_memory, NoopPayloadSink, PayloadSink};
 use super::prune::prune_hot_memory;
-use super::rebuild::rebuild_hot_context;
+use super::rebuild::{rebuild_hot_context, truncate_to_working_set};
 use super::summarizer::CompactionSummarizer;
 use super::types::{
     ArchivePersistenceOutcome, BudgetEstimate, CompactionOutcome, CompactionPolicy,
-    CompactionRequest, CompactionSnapshot, ExternalizationOutcome, PruneOutcome, RebuildOutcome,
-    SummaryGenerationOutcome,
+    CompactionRequest, CompactionSnapshot, DedupSupersededOutcome, ErrorRetryCollapseOutcome,
+    ExternalizationOutcome, PruneOutcome, RebuildOutcome, SummaryGenerationOutcome,
 };
 use crate::agent::context::AgentContext;
+use crate::storage::{R2ArchiveSink, R2PayloadSink, R2Storage};
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -21,6 +24,8 @@ struct CheckpointMetrics<'a> {
     budget: &'a BudgetEstimate,
     snapshot: &'a CompactionSnapshot,
     externalization: &'a ExternalizationOutcome,
+    error_retry_collapse: &'a ErrorRetryCollapseOutcome,
+    dedup_superseded: &'a DedupSupersededOutcome,
     archive_persistence: &'a ArchivePersistenceOutcome,
     pruning: &'a PruneOutcome,
     summary_generation: &'a SummaryGenerationOutcome,
@@ -68,6 +73,14 @@ impl CompactionService {
         self
     }
 
+    /// Replace the sink pair with R2-backed production adapters.
+    #[must_use]
+    pub fn with_r2_storage(mut self, storage: Arc<R2Storage>) -> Self {
+        self.archive_sink = Arc::new(R2ArchiveSink::new(Arc::clone(&storage)));
+        self.payload_sink = Arc::new(R2PayloadSink::new(storage));
+        self
+    }
+
     /// Attach a structured-history summarizer for Stage 7 compaction summaries.
     #[must_use]
     pub fn with_summarizer(mut self, summarizer: CompactionSummarizer) -> Self {
@@ -92,11 +105,16 @@ impl CompactionService {
         agent: &mut dyn AgentContext,
     ) -> Result<CompactionOutcome> {
         let budget_before = estimate_request_budget(&self.policy, request, agent);
-        let (externalization, pruning) =
+        let (error_retry_collapse, dedup_superseded, externalization, pruning) =
             if Self::should_apply_deterministic_stages(request.trigger, budget_before.state) {
                 self.apply_deterministic_stages(request.trigger, agent)
             } else {
-                (Default::default(), Default::default())
+                (
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                    Default::default(),
+                )
             };
         let (archive_persistence, summary_generation, rebuild) =
             self.summarize_and_rebuild(request, agent).await;
@@ -115,6 +133,8 @@ impl CompactionService {
                 budget: &budget,
                 snapshot: &snapshot,
                 externalization: &externalization,
+                error_retry_collapse: &error_retry_collapse,
+                dedup_superseded: &dedup_superseded,
                 archive_persistence: &archive_persistence,
                 pruning: &pruning,
                 summary_generation: &summary_generation,
@@ -129,6 +149,8 @@ impl CompactionService {
                 budget: &budget,
                 snapshot: &snapshot,
                 externalization: &externalization,
+                error_retry_collapse: &error_retry_collapse,
+                dedup_superseded: &dedup_superseded,
                 archive_persistence: &archive_persistence,
                 pruning: &pruning,
                 summary_generation: &summary_generation,
@@ -136,7 +158,9 @@ impl CompactionService {
             },
         );
 
-        if !externalization.applied
+        if !error_retry_collapse.applied
+            && !dedup_superseded.applied
+            && !externalization.applied
             && !pruning.applied
             && !summary_generation.attempted
             && !archive_persistence.attempted
@@ -147,12 +171,18 @@ impl CompactionService {
 
         Ok(CompactionOutcome {
             trigger: request.trigger,
-            applied: externalization.applied || pruning.applied || rebuild.applied,
+            applied: error_retry_collapse.applied
+                || dedup_superseded.applied
+                || externalization.applied
+                || pruning.applied
+                || rebuild.applied,
             token_count_before: budget_before.hot_memory.total_tokens,
             token_count_after: budget.hot_memory.total_tokens,
             budget,
             snapshot,
             externalization,
+            error_retry_collapse,
+            dedup_superseded,
             archive_persistence,
             pruning,
             summary_generation,
@@ -164,8 +194,46 @@ impl CompactionService {
         &self,
         trigger: super::CompactionTrigger,
         agent: &mut dyn AgentContext,
-    ) -> (ExternalizationOutcome, PruneOutcome) {
+    ) -> (
+        ErrorRetryCollapseOutcome,
+        DedupSupersededOutcome,
+        ExternalizationOutcome,
+        PruneOutcome,
+    ) {
         let snapshot_before = classify_hot_memory_with_policy(
+            agent.memory().get_messages(),
+            &self.policy,
+            Some(agent.memory().max_tokens()),
+        );
+
+        let (collapsed_messages, error_retry_collapse) = collapse_error_retries(
+            &snapshot_before,
+            agent.memory().get_messages(),
+            matches!(
+                trigger,
+                super::CompactionTrigger::Manual | super::CompactionTrigger::PostRun
+            ),
+        );
+        if error_retry_collapse.applied {
+            agent.memory_mut().replace_messages(collapsed_messages);
+        }
+
+        let snapshot_after_collapse = classify_hot_memory_with_policy(
+            agent.memory().get_messages(),
+            &self.policy,
+            Some(agent.memory().max_tokens()),
+        );
+        let dedup_contract = DedupSupersededContract::default();
+        let (deduped_messages, dedup_outcome) = dedup_superseded_tool_results(
+            &dedup_contract,
+            &snapshot_after_collapse,
+            agent.memory().get_messages(),
+        );
+        if dedup_outcome.applied {
+            agent.memory_mut().replace_messages(deduped_messages);
+        }
+
+        let snapshot_after_dedup = classify_hot_memory_with_policy(
             agent.memory().get_messages(),
             &self.policy,
             Some(agent.memory().max_tokens()),
@@ -173,7 +241,7 @@ impl CompactionService {
         let (rewritten_messages, externalization) = externalize_hot_memory(
             &self.policy,
             &agent.compaction_scope(),
-            &snapshot_before,
+            &snapshot_after_dedup,
             agent.memory().get_messages(),
             self.payload_sink.as_ref(),
             self.archive_sink.as_ref(),
@@ -197,7 +265,12 @@ impl CompactionService {
             agent.memory_mut().replace_messages(pruned_messages);
         }
 
-        (externalization, pruning)
+        (
+            error_retry_collapse,
+            dedup_outcome,
+            externalization,
+            pruning,
+        )
     }
 
     const fn should_apply_deterministic_stages(
@@ -258,12 +331,20 @@ impl CompactionService {
             .unwrap_or_default();
         let (rebuilt_messages, rebuild) = if let Some(summary) = summary_generation.summary.clone()
         {
-            rebuild_hot_context(
-                &snapshot_before_summary,
-                agent.memory().get_messages(),
-                Some(summary),
-                archive_persistence.archive_refs.first().cloned(),
-            )
+            if matches!(request.trigger, super::CompactionTrigger::PostRun) {
+                truncate_to_working_set(
+                    agent.memory().get_messages(),
+                    Some(summary),
+                    archive_persistence.archive_refs.first().cloned(),
+                )
+            } else {
+                rebuild_hot_context(
+                    &snapshot_before_summary,
+                    agent.memory().get_messages(),
+                    Some(summary),
+                    archive_persistence.archive_refs.first().cloned(),
+                )
+            }
         } else {
             (
                 agent.memory().get_messages().to_vec(),
@@ -311,6 +392,11 @@ impl CompactionService {
             budget_state_before = ?budget_before.state,
             externalized_messages = metrics.externalization.externalized_count,
             externalized_reclaimed_tokens = metrics.externalization.reclaimed_tokens,
+            collapsed_retry_attempts = metrics.error_retry_collapse.collapsed_attempt_count,
+            collapsed_retry_messages = metrics.error_retry_collapse.dropped_message_count,
+            collapsed_retry_reclaimed_tokens = metrics.error_retry_collapse.reclaimed_tokens,
+            deduplicated_superseded_messages = metrics.dedup_superseded.deduplicated_count,
+            deduplicated_superseded_reclaimed_tokens = metrics.dedup_superseded.reclaimed_tokens,
             archived_chunks = metrics.archive_persistence.archived_chunk_count,
             archived_messages = metrics.archive_persistence.archived_message_count,
             pruned_messages = metrics.pruning.pruned_count,
@@ -364,6 +450,9 @@ impl CompactionService {
             projected_total_tokens_after = metrics.budget.projected_total_tokens,
             headroom_tokens_before = budget_before.headroom_tokens,
             headroom_tokens_after = metrics.budget.headroom_tokens,
+            collapsed_retry_attempts = metrics.error_retry_collapse.collapsed_attempt_count,
+            collapsed_retry_messages = metrics.error_retry_collapse.dropped_message_count,
+            deduplicated_superseded_count = metrics.dedup_superseded.deduplicated_count,
             externalized_count = metrics.externalization.externalized_count,
             pruned_count = metrics.pruning.pruned_count,
             reclaimed_tokens = budget_before
@@ -371,8 +460,10 @@ impl CompactionService {
                 .total_tokens
                 .saturating_sub(metrics.budget.hot_memory.total_tokens),
             cleanup_reclaimed_tokens = metrics
-                .externalization
+                .dedup_superseded
                 .reclaimed_tokens
+                .saturating_add(metrics.error_retry_collapse.reclaimed_tokens)
+                .saturating_add(metrics.externalization.reclaimed_tokens)
                 .saturating_add(metrics.pruning.reclaimed_tokens),
             archived_chunk_count = metrics.archive_persistence.archived_chunk_count,
             archived_message_count = metrics.archive_persistence.archived_message_count,
@@ -402,6 +493,8 @@ fn should_warn_checkpoint(
         super::CompactionTrigger::Manual | super::CompactionTrigger::PostRun
     ) || budget_before.state.requires_warn_telemetry()
         || metrics.budget.state.requires_warn_telemetry()
+        || metrics.error_retry_collapse.applied
+        || metrics.dedup_superseded.applied
         || metrics.externalization.applied
         || metrics.pruning.applied
         || metrics.summary_generation.attempted

@@ -5,4 +5,4 @@
 /// Media extraction from Telegram messages
 pub mod media;
 
-pub use media::extract_agent_input;
+pub use media::{extract_agent_file_input, extract_agent_input};

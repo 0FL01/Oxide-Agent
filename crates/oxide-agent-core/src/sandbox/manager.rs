@@ -5,35 +5,56 @@
 //! Manages Docker containers for isolated code execution.
 
 use anyhow::{anyhow, Context, Result};
-use base64::Engine;
+use bollard::container::LogOutput;
 use bollard::errors::Error as DockerError;
 use bollard::exec::{CreateExecOptions, StartExecResults};
-use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::models::{
+    ContainerCreateBody, ContainerSummary, ContainerSummaryStateEnum, HostConfig,
+};
 use bollard::query_parameters::{
     CreateContainerOptions, DownloadFromContainerOptions, InspectContainerOptions,
-    RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
+    LogsOptionsBuilder, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
 };
 use bollard::Docker;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, TryStreamExt};
 use http_body_util::{Either, Full};
 use serde::{Deserialize, Serialize};
 use shell_escape::escape;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, info, instrument, warn};
 
 use crate::config::{
-    get_sandbox_image, sandbox_uses_broker, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA,
-    SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
+    get_sandbox_image, get_stack_logs_project, sandbox_uses_broker, SANDBOX_CPU_PERIOD,
+    SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
 };
-use crate::sandbox::broker::SandboxBrokerClient;
+use crate::sandbox::broker::{
+    ResolvedStackLogsSelector, SandboxBrokerClient, StackLogCursor, StackLogEntry, StackLogSource,
+    StackLogSuppression, StackLogsFetchRequest, StackLogsFetchResponse,
+    StackLogsListSourcesRequest, StackLogsListSourcesResponse, StackLogsSelector, StackLogsWindow,
+};
 use crate::sandbox::SandboxScope;
 
+const DOCKER_COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
+const DOCKER_COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
+const STACK_LOGS_PROJECT_ENV: &str = "STACK_LOGS_PROJECT";
+const UNKNOWN_STACK_LOG_STATE: &str = "unknown";
+const STACK_LOG_STREAM_STDOUT: &str = "stdout";
+const STACK_LOG_STREAM_STDERR: &str = "stderr";
+const STACK_LOGS_HARD_MAX_ENTRIES: usize = 500;
+
+#[derive(Default)]
+struct StackLogBufferState {
+    buffer: String,
+    raw_ordinal: u64,
+}
+
 /// Result of executing a command in the sandbox
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecResult {
     /// Standard output of the command
     pub stdout: String,
@@ -319,6 +340,30 @@ impl SandboxManager {
         }
     }
 
+    pub async fn list_stack_log_sources(
+        request: StackLogsListSourcesRequest,
+    ) -> Result<StackLogsListSourcesResponse> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .list_stack_log_sources(request)
+                .await
+        } else {
+            DockerSandboxManager::list_stack_log_sources(request).await
+        }
+    }
+
+    pub async fn fetch_stack_logs(
+        request: StackLogsFetchRequest,
+    ) -> Result<StackLogsFetchResponse> {
+        if sandbox_uses_broker() {
+            SandboxBrokerClient::from_env()
+                .fetch_stack_logs(request)
+                .await
+        } else {
+            DockerSandboxManager::fetch_stack_logs(request).await
+        }
+    }
+
     #[must_use]
     pub fn is_running(&self) -> bool {
         match &self.inner {
@@ -459,6 +504,15 @@ const RECREATE_REMOVE_INITIAL_BACKOFF_MS: u64 = 50;
 const RECREATE_REMOVE_MAX_BACKOFF_MS: u64 = 800;
 
 impl DockerSandboxManager {
+    fn normalize_non_empty(value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
+    fn normalize_optional_string(value: Option<&str>) -> Option<String> {
+        value.and_then(Self::normalize_non_empty)
+    }
+
     fn parse_label_i64(labels: &HashMap<String, String>, key: &str) -> Option<i64> {
         labels.get(key).and_then(|value| value.parse::<i64>().ok())
     }
@@ -511,6 +565,566 @@ impl DockerSandboxManager {
                 format!("agent.user_id={user_id}"),
             ],
         )])
+    }
+
+    fn normalize_requested_stack_log_services(services: &[String]) -> BTreeSet<String> {
+        services
+            .iter()
+            .filter_map(|service| Self::normalize_non_empty(service))
+            .collect()
+    }
+
+    fn stack_logs_max_entries(max_entries: u32, warnings: &mut Vec<String>) -> usize {
+        let requested = usize::try_from(max_entries).unwrap_or(usize::MAX);
+        if requested == 0 {
+            warnings.push("Requested max_entries=0 is invalid; using 1".to_string());
+            return 1;
+        }
+
+        let effective = requested.min(STACK_LOGS_HARD_MAX_ENTRIES);
+        if requested > STACK_LOGS_HARD_MAX_ENTRIES {
+            warnings.push(format!(
+                "Requested max_entries={requested} exceeds hard limit {STACK_LOGS_HARD_MAX_ENTRIES}; using {STACK_LOGS_HARD_MAX_ENTRIES}"
+            ));
+        }
+        effective
+    }
+
+    fn stack_logs_query_timestamp(value: Option<DateTime<Utc>>) -> i32 {
+        value.map_or(0, |value| {
+            i32::try_from(value.timestamp()).unwrap_or_else(|_| {
+                if value.timestamp().is_negative() {
+                    i32::MIN
+                } else {
+                    i32::MAX
+                }
+            })
+        })
+    }
+
+    fn validate_stack_logs_window(
+        since: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        if let (Some(since), Some(until)) = (since, until) {
+            if since > until {
+                return Err(anyhow!(
+                    "Invalid stack log time window: 'since' must be earlier than or equal to 'until'"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn resolve_stack_logs_selector(
+        request_selector: &StackLogsSelector,
+        env_compose_project: Option<String>,
+        runtime_compose_project: Option<String>,
+    ) -> Result<ResolvedStackLogsSelector> {
+        if let Some(compose_project) =
+            Self::normalize_optional_string(request_selector.compose_project.as_deref())
+        {
+            return Ok(ResolvedStackLogsSelector { compose_project });
+        }
+
+        if let Some(compose_project) = env_compose_project
+            .as_deref()
+            .and_then(Self::normalize_non_empty)
+        {
+            return Ok(ResolvedStackLogsSelector { compose_project });
+        }
+
+        if let Some(compose_project) = runtime_compose_project
+            .as_deref()
+            .and_then(Self::normalize_non_empty)
+        {
+            return Ok(ResolvedStackLogsSelector { compose_project });
+        }
+
+        Err(anyhow!(
+            "Unable to resolve compose project for stack log discovery; set {STACK_LOGS_PROJECT_ENV} or run sandboxd inside a Docker Compose deployment"
+        ))
+    }
+
+    async fn detect_runtime_compose_project(docker: &Docker) -> Result<String> {
+        let hostname = Self::normalize_optional_string(std::env::var("HOSTNAME").ok().as_deref())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Unable to resolve compose project for stack log discovery automatically: HOSTNAME is unavailable; set {STACK_LOGS_PROJECT_ENV}"
+                )
+            })?;
+
+        let inspect = docker
+            .inspect_container(&hostname, None::<InspectContainerOptions>)
+            .await
+            .context("Failed to inspect current sandboxd container for stack log discovery")?;
+
+        inspect
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .and_then(|labels| {
+                Self::normalize_optional_string(
+                    labels.get(DOCKER_COMPOSE_PROJECT_LABEL).map(String::as_str),
+                )
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "Unable to resolve compose project for stack log discovery automatically: current sandboxd container is missing label '{DOCKER_COMPOSE_PROJECT_LABEL}'; set {STACK_LOGS_PROJECT_ENV}"
+                )
+            })
+    }
+
+    fn container_summary_is_running(summary: &ContainerSummary) -> bool {
+        matches!(summary.state, Some(ContainerSummaryStateEnum::RUNNING))
+            || summary
+                .status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Up"))
+    }
+
+    fn container_summary_state(summary: &ContainerSummary) -> String {
+        summary
+            .state
+            .map(|state| state.to_string())
+            .filter(|state| !state.is_empty())
+            .or_else(|| {
+                summary
+                    .status
+                    .as_deref()
+                    .and_then(Self::normalize_non_empty)
+            })
+            .unwrap_or_else(|| UNKNOWN_STACK_LOG_STATE.to_string())
+    }
+
+    fn parse_stack_log_started_at(started_at: Option<&str>) -> Option<DateTime<Utc>> {
+        started_at
+            .and_then(Self::normalize_non_empty)
+            .and_then(|started_at| DateTime::parse_from_rfc3339(&started_at).ok())
+            .map(|started_at| started_at.with_timezone(&Utc))
+    }
+
+    fn parse_timestamped_stack_log_line(line: &str) -> Option<(DateTime<Utc>, String)> {
+        let line = line.trim_end_matches('\r');
+        let (timestamp, message) = line.split_once(' ')?;
+        let timestamp = DateTime::parse_from_rfc3339(timestamp).ok()?;
+        Some((timestamp.with_timezone(&Utc), message.to_string()))
+    }
+
+    fn drain_complete_stack_log_lines(buffer: &mut String) -> Vec<String> {
+        let mut lines = Vec::new();
+        while let Some(newline_index) = buffer.find('\n') {
+            let line = buffer.drain(..=newline_index).collect::<String>();
+            lines.push(line.trim_end_matches('\n').to_string());
+        }
+        lines
+    }
+
+    fn push_stack_log_line(
+        source: &StackLogSource,
+        stream: &str,
+        line: String,
+        raw_ordinal: &mut u64,
+        entries: &mut Vec<StackLogEntry>,
+        unparsable_lines: &mut u64,
+    ) {
+        let Some((ts, message)) = Self::parse_timestamped_stack_log_line(&line) else {
+            *unparsable_lines += 1;
+            return;
+        };
+
+        entries.push(StackLogEntry {
+            ts,
+            service: source.service.clone(),
+            container_name: source.container_name.clone(),
+            stream: stream.to_string(),
+            ordinal: *raw_ordinal,
+            message,
+        });
+        *raw_ordinal += 1;
+    }
+
+    fn ingest_stack_log_chunk(
+        source: &StackLogSource,
+        stream: &str,
+        chunk: &[u8],
+        state: &mut StackLogBufferState,
+        entries: &mut Vec<StackLogEntry>,
+        unparsable_lines: &mut u64,
+    ) {
+        state.buffer.push_str(&String::from_utf8_lossy(chunk));
+        for line in Self::drain_complete_stack_log_lines(&mut state.buffer) {
+            Self::push_stack_log_line(
+                source,
+                stream,
+                line,
+                &mut state.raw_ordinal,
+                entries,
+                unparsable_lines,
+            );
+        }
+    }
+
+    fn finalize_stack_log_buffer(
+        source: &StackLogSource,
+        stream: &str,
+        state: &mut StackLogBufferState,
+        entries: &mut Vec<StackLogEntry>,
+        unparsable_lines: &mut u64,
+    ) {
+        if state.buffer.is_empty() {
+            return;
+        }
+
+        let trailing_line = std::mem::take(&mut state.buffer);
+        Self::push_stack_log_line(
+            source,
+            stream,
+            trailing_line,
+            &mut state.raw_ordinal,
+            entries,
+            unparsable_lines,
+        );
+    }
+
+    fn assign_stack_log_ordinals(entries: &mut [StackLogEntry]) {
+        let mut next_ordinals: HashMap<(String, String), u64> = HashMap::new();
+        for entry in entries {
+            let next_ordinal = next_ordinals
+                .entry((entry.service.clone(), entry.stream.clone()))
+                .or_insert(0);
+            entry.ordinal = *next_ordinal;
+            *next_ordinal += 1;
+        }
+    }
+
+    fn record_stack_log_suppression(
+        suppressed: &mut Vec<StackLogSuppression>,
+        reason: &str,
+        count: u64,
+    ) {
+        if count == 0 {
+            return;
+        }
+
+        if let Some(existing) = suppressed.iter_mut().find(|item| item.reason == reason) {
+            existing.count += count;
+            return;
+        }
+
+        suppressed.push(StackLogSuppression {
+            reason: reason.to_string(),
+            count,
+        });
+    }
+
+    fn is_stack_log_health_probe_chatter(message: &str) -> bool {
+        let normalized = message.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return false;
+        }
+
+        let mentions_endpoint = [
+            "/health",
+            "/healthz",
+            "/ready",
+            "/readyz",
+            "/readiness",
+            "/live",
+            "/livez",
+        ]
+        .iter()
+        .any(|endpoint| normalized.contains(endpoint));
+        if !mentions_endpoint {
+            return false;
+        }
+
+        ["get ", "head ", "healthcheck", "kube-probe", "probe"]
+            .iter()
+            .any(|needle| normalized.contains(needle))
+    }
+
+    fn is_stack_log_exact_duplicate_burst(
+        previous: &StackLogEntry,
+        current: &StackLogEntry,
+    ) -> bool {
+        previous.service == current.service
+            && previous.container_name == current.container_name
+            && previous.stream == current.stream
+            && previous.message == current.message
+            && current.ts >= previous.ts
+            && (current.ts - previous.ts).num_seconds() <= 1
+    }
+
+    fn apply_stack_log_noise_filter(
+        entries: Vec<StackLogEntry>,
+        include_noise: bool,
+    ) -> (Vec<StackLogEntry>, Vec<StackLogSuppression>) {
+        if include_noise {
+            return (entries, Vec::new());
+        }
+
+        let mut filtered = Vec::with_capacity(entries.len());
+        let mut suppressed = Vec::new();
+        let mut last_kept: Option<&StackLogEntry> = None;
+
+        for entry in entries {
+            if entry.message.trim().is_empty() {
+                Self::record_stack_log_suppression(&mut suppressed, "empty_line", 1);
+                continue;
+            }
+
+            if Self::is_stack_log_health_probe_chatter(&entry.message) {
+                Self::record_stack_log_suppression(&mut suppressed, "health_probe_chatter", 1);
+                continue;
+            }
+
+            if let Some(previous) = last_kept {
+                if Self::is_stack_log_exact_duplicate_burst(previous, &entry) {
+                    Self::record_stack_log_suppression(&mut suppressed, "exact_duplicate_burst", 1);
+                    continue;
+                }
+            }
+
+            filtered.push(entry);
+            last_kept = filtered.last();
+        }
+
+        (filtered, suppressed)
+    }
+
+    fn stack_log_cursor_from_entry(entry: &StackLogEntry) -> StackLogCursor {
+        StackLogCursor {
+            ts: entry.ts,
+            service: entry.service.clone(),
+            stream: entry.stream.clone(),
+            ordinal: entry.ordinal,
+        }
+    }
+
+    fn stack_log_entry_is_after_cursor(entry: &StackLogEntry, cursor: &StackLogCursor) -> bool {
+        entry.ts > cursor.ts
+            || (entry.ts == cursor.ts
+                && (entry.service > cursor.service
+                    || (entry.service == cursor.service
+                        && (entry.stream > cursor.stream
+                            || (entry.stream == cursor.stream && entry.ordinal > cursor.ordinal)))))
+    }
+
+    fn apply_stack_log_cursor(
+        entries: Vec<StackLogEntry>,
+        cursor: Option<&StackLogCursor>,
+    ) -> Vec<StackLogEntry> {
+        let Some(cursor) = cursor else {
+            return entries;
+        };
+
+        entries
+            .into_iter()
+            .filter(|entry| Self::stack_log_entry_is_after_cursor(entry, cursor))
+            .collect()
+    }
+
+    fn paginate_stack_log_entries(
+        mut entries: Vec<StackLogEntry>,
+        max_entries: usize,
+    ) -> (Vec<StackLogEntry>, bool, Option<StackLogCursor>) {
+        let truncated = entries.len() > max_entries;
+        if !truncated {
+            return (entries, false, None);
+        }
+
+        entries.truncate(max_entries);
+        let next_cursor = entries.last().map(Self::stack_log_cursor_from_entry);
+        (entries, true, next_cursor)
+    }
+
+    fn stack_log_source_from_summary(
+        summary: &ContainerSummary,
+        requested_services: &BTreeSet<String>,
+        include_stopped: bool,
+    ) -> Option<StackLogSource> {
+        let labels = summary.labels.as_ref()?;
+        let service = Self::normalize_optional_string(
+            labels.get(DOCKER_COMPOSE_SERVICE_LABEL).map(String::as_str),
+        )?;
+
+        if !requested_services.is_empty() && !requested_services.contains(&service) {
+            return None;
+        }
+
+        if !include_stopped && !Self::container_summary_is_running(summary) {
+            return None;
+        }
+
+        let container_id = summary.id.clone()?;
+        Some(StackLogSource {
+            service,
+            container_name: Self::normalize_container_name(summary.names.as_ref(), &container_id),
+            container_id,
+            state: Self::container_summary_state(summary),
+            started_at: None,
+        })
+    }
+
+    async fn enrich_stack_log_source_from_inspect(docker: &Docker, source: &mut StackLogSource) {
+        match docker
+            .inspect_container(&source.container_id, None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(inspect) => {
+                if let Some(container_name) = inspect
+                    .name
+                    .as_deref()
+                    .map(|name| name.trim_start_matches('/'))
+                    .and_then(Self::normalize_non_empty)
+                {
+                    source.container_name = container_name;
+                }
+
+                if let Some(state) = inspect
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.status.map(|status| status.to_string()))
+                    .filter(|state| !state.is_empty())
+                {
+                    source.state = state;
+                }
+
+                source.started_at = inspect.state.as_ref().and_then(|state| {
+                    Self::parse_stack_log_started_at(state.started_at.as_deref())
+                });
+            }
+            Err(error) => {
+                warn!(
+                    container_id = %source.container_id,
+                    error = %error,
+                    "Failed to inspect compose container during stack log source discovery; returning summary metadata only"
+                );
+            }
+        }
+    }
+
+    async fn discover_stack_log_sources(
+        docker: &Docker,
+        selector: &StackLogsSelector,
+        services: &[String],
+        include_stopped: bool,
+    ) -> Result<(ResolvedStackLogsSelector, Vec<StackLogSource>)> {
+        let env_compose_project = get_stack_logs_project();
+        let runtime_compose_project =
+            if selector.compose_project.is_some() || env_compose_project.is_some() {
+                None
+            } else {
+                Some(Self::detect_runtime_compose_project(docker).await?)
+            };
+        let resolved_selector = Self::resolve_stack_logs_selector(
+            selector,
+            env_compose_project,
+            runtime_compose_project,
+        )?;
+
+        let filters = HashMap::from([(
+            "label".to_string(),
+            vec![format!(
+                "{DOCKER_COMPOSE_PROJECT_LABEL}={}",
+                resolved_selector.compose_project
+            )],
+        )]);
+        let containers = docker
+            .list_containers(Some(bollard::query_parameters::ListContainersOptions {
+                all: true,
+                filters: Some(filters),
+                ..Default::default()
+            }))
+            .await
+            .context("Failed to list compose stack containers for stack log discovery")?;
+
+        let requested_services = Self::normalize_requested_stack_log_services(services);
+        let mut sources = Vec::new();
+        for summary in &containers {
+            let Some(mut source) =
+                Self::stack_log_source_from_summary(summary, &requested_services, include_stopped)
+            else {
+                continue;
+            };
+
+            Self::enrich_stack_log_source_from_inspect(docker, &mut source).await;
+            sources.push(source);
+        }
+
+        sources.sort_by(|left, right| {
+            left.service
+                .cmp(&right.service)
+                .then(left.container_name.cmp(&right.container_name))
+                .then(left.container_id.cmp(&right.container_id))
+        });
+
+        Ok((resolved_selector, sources))
+    }
+
+    async fn collect_stack_log_entries_for_source(
+        docker: &Docker,
+        source: &StackLogSource,
+        request: &StackLogsFetchRequest,
+        max_entries: usize,
+    ) -> Result<(Vec<StackLogEntry>, u64)> {
+        let tail = max_entries.to_string();
+        let options = LogsOptionsBuilder::new()
+            .follow(false)
+            .stdout(true)
+            .stderr(request.include_stderr)
+            .since(Self::stack_logs_query_timestamp(request.since))
+            .until(Self::stack_logs_query_timestamp(request.until))
+            .timestamps(true)
+            .tail(&tail)
+            .build();
+
+        let mut output = docker.logs(&source.container_id, Some(options));
+        let mut entries = Vec::new();
+        let mut stdout_state = StackLogBufferState::default();
+        let mut stderr_state = StackLogBufferState::default();
+        let mut unparsable_lines = 0_u64;
+
+        while let Some(message) = output.next().await {
+            match message.context("Failed to stream Docker container logs")? {
+                LogOutput::StdOut { message } => Self::ingest_stack_log_chunk(
+                    source,
+                    STACK_LOG_STREAM_STDOUT,
+                    &message,
+                    &mut stdout_state,
+                    &mut entries,
+                    &mut unparsable_lines,
+                ),
+                LogOutput::StdErr { message } => Self::ingest_stack_log_chunk(
+                    source,
+                    STACK_LOG_STREAM_STDERR,
+                    &message,
+                    &mut stderr_state,
+                    &mut entries,
+                    &mut unparsable_lines,
+                ),
+                _ => {}
+            }
+        }
+
+        Self::finalize_stack_log_buffer(
+            source,
+            STACK_LOG_STREAM_STDOUT,
+            &mut stdout_state,
+            &mut entries,
+            &mut unparsable_lines,
+        );
+        Self::finalize_stack_log_buffer(
+            source,
+            STACK_LOG_STREAM_STDERR,
+            &mut stderr_state,
+            &mut entries,
+            &mut unparsable_lines,
+        );
+
+        Ok((entries, unparsable_lines))
     }
 
     async fn connect_and_ping() -> Result<Docker> {
@@ -679,6 +1293,98 @@ impl DockerSandboxManager {
             .iter()
             .filter_map(Self::record_from_container_summary)
             .find(|record| record.container_name == container_name))
+    }
+
+    /// List compose-stack containers that can be used as stack log sources.
+    pub(crate) async fn list_stack_log_sources(
+        request: StackLogsListSourcesRequest,
+    ) -> Result<StackLogsListSourcesResponse> {
+        let docker = Self::connect_and_ping().await?;
+        let (resolved_selector, sources) = Self::discover_stack_log_sources(
+            &docker,
+            &request.selector,
+            &request.services,
+            request.include_stopped,
+        )
+        .await?;
+
+        Ok(StackLogsListSourcesResponse {
+            stack_selector: resolved_selector,
+            containers: sources,
+        })
+    }
+
+    /// Fetch raw compose-stack log entries for the selected services and time window.
+    pub(crate) async fn fetch_stack_logs(
+        request: StackLogsFetchRequest,
+    ) -> Result<StackLogsFetchResponse> {
+        Self::validate_stack_logs_window(request.since, request.until)?;
+
+        let docker = Self::connect_and_ping().await?;
+        let mut warnings = Vec::new();
+        let max_entries = Self::stack_logs_max_entries(request.max_entries, &mut warnings);
+
+        let (_resolved_selector, sources) =
+            Self::discover_stack_log_sources(&docker, &request.selector, &request.services, true)
+                .await?;
+
+        let mut entries = Vec::new();
+        let mut source_failures = Vec::new();
+        for source in &sources {
+            match Self::collect_stack_log_entries_for_source(&docker, source, &request, max_entries)
+                .await
+            {
+                Ok((mut source_entries, unparsable_lines)) => {
+                    if unparsable_lines > 0 {
+                        warnings.push(format!(
+                            "Skipped {unparsable_lines} unparsable timestamped log lines from {} ({})",
+                            source.service, source.container_name
+                        ));
+                    }
+                    entries.append(&mut source_entries);
+                }
+                Err(error) => {
+                    let message = format!(
+                        "Failed to fetch logs for {} ({}): {error}",
+                        source.service, source.container_name
+                    );
+                    warn!(container_id = %source.container_id, error = %error, "{message}");
+                    source_failures.push(message);
+                }
+            }
+        }
+
+        if !sources.is_empty() && entries.is_empty() && !source_failures.is_empty() {
+            return Err(anyhow!(source_failures.join("; ")));
+        }
+        warnings.extend(source_failures);
+
+        entries.sort_by(|left, right| {
+            left.ts
+                .cmp(&right.ts)
+                .then(left.service.cmp(&right.service))
+                .then(left.stream.cmp(&right.stream))
+                .then(left.container_name.cmp(&right.container_name))
+                .then(left.ordinal.cmp(&right.ordinal))
+        });
+        let (mut entries, suppressed) =
+            Self::apply_stack_log_noise_filter(entries, request.include_noise);
+        Self::assign_stack_log_ordinals(&mut entries);
+        let entries = Self::apply_stack_log_cursor(entries, request.cursor.as_ref());
+        let (entries, truncated, next_cursor) =
+            Self::paginate_stack_log_entries(entries, max_entries);
+
+        Ok(StackLogsFetchResponse {
+            window: StackLogsWindow {
+                since: request.since,
+                until: request.until,
+            },
+            entries,
+            suppressed,
+            truncated,
+            next_cursor,
+            warnings,
+        })
     }
 
     /// Ensure a sandbox exists for the provided scope and return its Docker metadata.
@@ -934,7 +1640,7 @@ impl DockerSandboxManager {
             Err(error) if Self::is_image_not_found_error(&error, &self.image_name) => {
                 return Err(error).with_context(|| {
                     format!(
-                        "Sandbox image '{}' not found. Build it with `docker compose --profile build build sandbox_image`",
+                        "Sandbox image '{}' not found. Build it with `docker compose build sandbox_image` or start the full stack with `docker compose up --build -d`",
                         self.image_name
                     )
                 });
@@ -1114,50 +1820,17 @@ impl DockerSandboxManager {
     /// Returns an error if sandbox is not running or file writing fails.
     #[instrument(skip(self, content), fields(path = %path, content_len = content.len()))]
     pub async fn write_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
-        if self.container_id.is_none() {
-            return Err(anyhow!("Sandbox not running"));
-        }
-
-        // Use base64 to safely transfer binary content
-        let encoded = base64::engine::general_purpose::STANDARD.encode(content);
-
-        let cmd = format!(
-            "echo '{}' | base64 -d > {}",
-            encoded,
-            shell_escape::escape(path.into())
-        );
-
-        let result = self.exec_command(&cmd, None).await?;
-
-        if !result.success() {
-            return Err(anyhow!("Failed to write file: {}", result.stderr));
-        }
-
-        debug!(path = %path, "File written to sandbox");
-        Ok(())
+        self.upload_file(path, content).await
     }
 
-    /// Read content from a file in the sandbox
+    /// Read content from a file in the sandbox.
     ///
     /// # Errors
     ///
-    /// Returns an error if file reading or decoding fails.
+    /// Returns an error if file reading fails.
     #[instrument(skip(self), fields(path = %path))]
     pub async fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
-        let cmd = format!("base64 {}", shell_escape::escape(path.into()));
-
-        let result = self.exec_command(&cmd, None).await?;
-
-        if !result.success() {
-            return Err(anyhow!("Failed to read file: {}", result.stderr));
-        }
-
-        let content = base64::engine::general_purpose::STANDARD
-            .decode(result.stdout.trim())
-            .context("Failed to decode file content")?;
-
-        debug!(path = %path, size = content.len(), "File read from sandbox");
-        Ok(content)
+        self.download_file_via_docker_api(path, None).await
     }
 
     /// Upload a file to the container using Docker's copy API
@@ -1240,25 +1913,35 @@ impl DockerSandboxManager {
     /// Returns an error if sandbox is not running, file doesn't exist, file is too large, or download/extraction fails.
     #[instrument(skip(self), fields(path = %container_path))]
     pub async fn download_file(&mut self, container_path: &str) -> Result<Vec<u8>> {
+        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
+        self.download_file_via_docker_api(container_path, Some(MAX_FILE_SIZE))
+            .await
+    }
+
+    async fn download_file_via_docker_api(
+        &mut self,
+        container_path: &str,
+        max_file_size: Option<u64>,
+    ) -> Result<Vec<u8>> {
+        // Reuse the existing size check to self-heal stale container IDs and verify the path exists.
+        let file_size = self.file_size_bytes(container_path, None).await?;
+
+        if let Some(max_file_size) = max_file_size {
+            if file_size > max_file_size {
+                anyhow::bail!(
+                    "File too large: {} bytes (max {} MB)",
+                    file_size,
+                    max_file_size / 1024 / 1024
+                );
+            }
+        }
+
         let container_id = self
             .container_id
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow!("Sandbox not running"))?;
 
-        // Get file size to check limits (50MB max for transport delivery)
-        let file_size = self.file_size_bytes(container_path, None).await?;
-
-        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
-        if file_size > MAX_FILE_SIZE {
-            anyhow::bail!(
-                "File too large: {} bytes (max {} MB)",
-                file_size,
-                MAX_FILE_SIZE / 1024 / 1024
-            );
-        }
-
-        // Download file as tar archive
         let stream = self
             .docker
             .download_from_container(
@@ -1271,10 +1954,7 @@ impl DockerSandboxManager {
             .await
             .context("Failed to download file from container")?;
 
-        // Combine chunks into single buffer
         let tar_data: Vec<u8> = stream.into_iter().flatten().collect();
-
-        // Extract file from tar
         let mut archive = tar::Archive::new(tar_data.as_slice());
         let mut entries = archive.entries()?;
 
@@ -1469,6 +2149,28 @@ impl Drop for DockerSandboxManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::broker::{
+        StackLogCursor, StackLogEntry, StackLogSuppression, StackLogsSelector,
+    };
+    use chrono::{TimeZone, Utc};
+
+    fn test_stack_log_entry(
+        ts: DateTime<Utc>,
+        service: &str,
+        container_name: &str,
+        stream: &str,
+        ordinal: u64,
+        message: &str,
+    ) -> StackLogEntry {
+        StackLogEntry {
+            ts,
+            service: service.to_string(),
+            container_name: container_name.to_string(),
+            stream: stream.to_string(),
+            ordinal,
+            message: message.to_string(),
+        }
+    }
 
     // Integration test - requires Docker
     #[tokio::test]
@@ -1536,5 +2238,384 @@ mod tests {
 
         sandbox.destroy().await?;
         Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_read_file_round_trips_binary_content() -> Result<(), Box<dyn std::error::Error>> {
+        let mut sandbox = DockerSandboxManager::new(12348).await?;
+        sandbox.create_sandbox().await?;
+
+        let payload = (0..128).map(|value| value as u8).collect::<Vec<_>>();
+        sandbox
+            .upload_file("/workspace/binary-roundtrip.bin", &payload)
+            .await?;
+
+        let content = sandbox.read_file("/workspace/binary-roundtrip.bin").await?;
+        assert_eq!(content, payload);
+
+        sandbox.destroy().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker daemon"]
+    async fn test_write_file_round_trips_large_binary_content(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut sandbox = DockerSandboxManager::new(12349).await?;
+        sandbox.create_sandbox().await?;
+
+        let payload = (0..200_000)
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<_>>();
+        sandbox
+            .write_file("/workspace/large-binary-roundtrip.bin", &payload)
+            .await?;
+
+        let content = sandbox
+            .read_file("/workspace/large-binary-roundtrip.bin")
+            .await?;
+        assert_eq!(content, payload);
+
+        sandbox.destroy().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_stack_logs_selector_prefers_request_over_env_and_runtime() {
+        let resolved = DockerSandboxManager::resolve_stack_logs_selector(
+            &StackLogsSelector {
+                compose_project: Some("request-project".to_string()),
+            },
+            Some("env-project".to_string()),
+            Some("runtime-project".to_string()),
+        )
+        .expect("resolve selector");
+
+        assert_eq!(resolved.compose_project, "request-project");
+    }
+
+    #[test]
+    fn resolve_stack_logs_selector_uses_env_override_before_runtime() {
+        let resolved = DockerSandboxManager::resolve_stack_logs_selector(
+            &StackLogsSelector::default(),
+            Some("env-project".to_string()),
+            Some("runtime-project".to_string()),
+        )
+        .expect("resolve selector");
+
+        assert_eq!(resolved.compose_project, "env-project");
+    }
+
+    #[test]
+    fn resolve_stack_logs_selector_errors_when_project_is_unavailable() {
+        let error = DockerSandboxManager::resolve_stack_logs_selector(
+            &StackLogsSelector::default(),
+            None,
+            None,
+        )
+        .expect_err("selector should fail without compose project");
+
+        assert!(error
+            .to_string()
+            .contains("Unable to resolve compose project for stack log discovery"));
+    }
+
+    #[test]
+    fn stack_log_source_from_summary_filters_by_service_and_running_state() {
+        let summary = ContainerSummary {
+            id: Some("abc123def456".to_string()),
+            names: Some(vec!["/oxide_agent".to_string()]),
+            labels: Some(HashMap::from([
+                (
+                    DOCKER_COMPOSE_PROJECT_LABEL.to_string(),
+                    "oxide-agent".to_string(),
+                ),
+                (
+                    DOCKER_COMPOSE_SERVICE_LABEL.to_string(),
+                    "oxide_agent".to_string(),
+                ),
+            ])),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            status: Some("Up 2 minutes".to_string()),
+            ..Default::default()
+        };
+
+        let filtered = DockerSandboxManager::stack_log_source_from_summary(
+            &summary,
+            &BTreeSet::from(["browser_use".to_string()]),
+            false,
+        );
+        assert!(
+            filtered.is_none(),
+            "non-matching services should be skipped"
+        );
+
+        let source = DockerSandboxManager::stack_log_source_from_summary(
+            &summary,
+            &BTreeSet::from(["oxide_agent".to_string()]),
+            false,
+        )
+        .expect("matching running service should be included");
+
+        assert_eq!(source.service, "oxide_agent");
+        assert_eq!(source.container_name, "oxide_agent");
+        assert_eq!(source.container_id, "abc123def456");
+        assert_eq!(source.state, "running");
+        assert_eq!(source.started_at, None);
+    }
+
+    #[test]
+    fn stack_log_source_from_summary_excludes_stopped_by_default_and_parses_started_at() {
+        let stopped = ContainerSummary {
+            id: Some("abc123def456".to_string()),
+            names: Some(vec!["/oxide_agent".to_string()]),
+            labels: Some(HashMap::from([(
+                DOCKER_COMPOSE_SERVICE_LABEL.to_string(),
+                "oxide_agent".to_string(),
+            )])),
+            state: Some(ContainerSummaryStateEnum::EXITED),
+            status: Some("Exited (0) 5 seconds ago".to_string()),
+            ..Default::default()
+        };
+
+        assert!(DockerSandboxManager::stack_log_source_from_summary(
+            &stopped,
+            &BTreeSet::new(),
+            false,
+        )
+        .is_none());
+
+        let included =
+            DockerSandboxManager::stack_log_source_from_summary(&stopped, &BTreeSet::new(), true)
+                .expect("include_stopped should keep exited containers");
+        assert_eq!(included.state, "exited");
+
+        let started_at = DockerSandboxManager::parse_stack_log_started_at(Some(
+            "2026-04-02T10:11:12.000000000Z",
+        ))
+        .expect("parse started_at");
+        assert_eq!(
+            started_at,
+            Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap()
+        );
+    }
+
+    #[test]
+    fn stack_logs_max_entries_clamps_to_hard_limit() {
+        let mut warnings = Vec::new();
+
+        let effective = DockerSandboxManager::stack_logs_max_entries(999, &mut warnings);
+
+        assert_eq!(effective, STACK_LOGS_HARD_MAX_ENTRIES);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("hard limit 500"));
+    }
+
+    #[test]
+    fn stack_logs_max_entries_rejects_zero() {
+        let mut warnings = Vec::new();
+
+        let effective = DockerSandboxManager::stack_logs_max_entries(0, &mut warnings);
+
+        assert_eq!(effective, 1);
+        assert_eq!(
+            warnings,
+            vec!["Requested max_entries=0 is invalid; using 1"]
+        );
+    }
+
+    #[test]
+    fn validate_stack_logs_window_rejects_inverted_range() {
+        let since = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 13).unwrap();
+        let until = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+
+        let error = DockerSandboxManager::validate_stack_logs_window(Some(since), Some(until))
+            .expect_err("inverted range should fail");
+
+        assert!(error.to_string().contains("Invalid stack log time window"));
+    }
+
+    #[test]
+    fn parse_timestamped_stack_log_line_extracts_timestamp_and_message() {
+        let (ts, message) = DockerSandboxManager::parse_timestamped_stack_log_line(
+            "2026-04-02T10:11:12.000000000Z provider failover activated\r",
+        )
+        .expect("parse timestamped log line");
+
+        assert_eq!(ts, Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap());
+        assert_eq!(message, "provider failover activated");
+    }
+
+    #[test]
+    fn ingest_stack_log_chunk_buffers_partial_lines_until_newline() {
+        let source = StackLogSource {
+            service: "oxide_agent".to_string(),
+            container_name: "oxide_agent".to_string(),
+            container_id: "abc123def456".to_string(),
+            state: "running".to_string(),
+            started_at: None,
+        };
+        let mut state = StackLogBufferState::default();
+        let mut entries = Vec::new();
+        let mut unparsable_lines = 0_u64;
+
+        DockerSandboxManager::ingest_stack_log_chunk(
+            &source,
+            STACK_LOG_STREAM_STDOUT,
+            b"2026-04-02T10:11:12.000000000Z part",
+            &mut state,
+            &mut entries,
+            &mut unparsable_lines,
+        );
+        assert!(entries.is_empty());
+        assert_eq!(state.buffer, "2026-04-02T10:11:12.000000000Z part");
+
+        DockerSandboxManager::ingest_stack_log_chunk(
+            &source,
+            STACK_LOG_STREAM_STDOUT,
+            b"ial\n2026-04-02T10:11:13.000000000Z done\n",
+            &mut state,
+            &mut entries,
+            &mut unparsable_lines,
+        );
+
+        assert!(state.buffer.is_empty());
+        assert_eq!(unparsable_lines, 0);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].message, "partial");
+        assert_eq!(entries[0].ordinal, 0);
+        assert_eq!(entries[1].message, "done");
+        assert_eq!(entries[1].ordinal, 1);
+    }
+
+    #[test]
+    fn assign_stack_log_ordinals_counts_per_service_and_stream() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let mut entries = vec![
+            StackLogEntry {
+                ts,
+                service: "oxide_agent".to_string(),
+                container_name: "oxide_agent".to_string(),
+                stream: STACK_LOG_STREAM_STDOUT.to_string(),
+                ordinal: 11,
+                message: "first".to_string(),
+            },
+            StackLogEntry {
+                ts,
+                service: "oxide_agent".to_string(),
+                container_name: "oxide_agent-2".to_string(),
+                stream: STACK_LOG_STREAM_STDOUT.to_string(),
+                ordinal: 7,
+                message: "second".to_string(),
+            },
+            StackLogEntry {
+                ts,
+                service: "oxide_agent".to_string(),
+                container_name: "oxide_agent".to_string(),
+                stream: STACK_LOG_STREAM_STDERR.to_string(),
+                ordinal: 4,
+                message: "stderr".to_string(),
+            },
+        ];
+
+        DockerSandboxManager::assign_stack_log_ordinals(&mut entries);
+
+        assert_eq!(entries[0].ordinal, 0);
+        assert_eq!(entries[1].ordinal, 1);
+        assert_eq!(entries[2].ordinal, 0);
+    }
+
+    #[test]
+    fn apply_stack_log_noise_filter_suppresses_expected_noise_classes() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let entries = vec![
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "useful"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, ""),
+            test_stack_log_entry(
+                ts,
+                "oxide_agent",
+                "oxide_agent",
+                "stdout",
+                2,
+                "GET /health HTTP/1.1 200 OK",
+            ),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 3, "duplicate"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 4, "duplicate"),
+        ];
+
+        let (filtered, suppressed) =
+            DockerSandboxManager::apply_stack_log_noise_filter(entries, false);
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].message, "useful");
+        assert_eq!(filtered[1].message, "duplicate");
+        assert_eq!(
+            suppressed,
+            vec![
+                StackLogSuppression {
+                    reason: "empty_line".to_string(),
+                    count: 1,
+                },
+                StackLogSuppression {
+                    reason: "health_probe_chatter".to_string(),
+                    count: 1,
+                },
+                StackLogSuppression {
+                    reason: "exact_duplicate_burst".to_string(),
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_stack_log_cursor_returns_entries_after_cursor() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let entries = vec![
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stderr", 0, "stderr"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "first"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, "second"),
+        ];
+
+        let filtered = DockerSandboxManager::apply_stack_log_cursor(
+            entries,
+            Some(&StackLogCursor {
+                ts,
+                service: "oxide_agent".to_string(),
+                stream: "stdout".to_string(),
+                ordinal: 0,
+            }),
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].message, "second");
+    }
+
+    #[test]
+    fn paginate_stack_log_entries_sets_next_cursor_from_last_returned_entry() {
+        let ts = Utc.with_ymd_and_hms(2026, 4, 2, 10, 11, 12).unwrap();
+        let entries = vec![
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 0, "first"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 1, "second"),
+            test_stack_log_entry(ts, "oxide_agent", "oxide_agent", "stdout", 2, "third"),
+        ];
+
+        let (page, truncated, next_cursor) =
+            DockerSandboxManager::paginate_stack_log_entries(entries, 2);
+
+        assert!(truncated);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].message, "first");
+        assert_eq!(page[1].message, "second");
+        assert_eq!(
+            next_cursor,
+            Some(StackLogCursor {
+                ts,
+                service: "oxide_agent".to_string(),
+                stream: "stdout".to_string(),
+                ordinal: 1,
+            })
+        );
     }
 }

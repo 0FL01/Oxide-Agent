@@ -32,7 +32,7 @@ impl HookRegistry {
 
     /// Register a new hook
     pub fn register(&mut self, hook: Box<dyn Hook>) {
-        info!(hook = hook.name(), "Registered hook");
+        debug!(hook = hook.name(), "Registered hook");
         self.hooks.push(hook);
     }
 
@@ -53,6 +53,23 @@ impl HookRegistry {
                         hook = hook.name(),
                         context_len = ctx.len(),
                         "Hook injecting context"
+                    );
+                    return result;
+                }
+                HookResult::InjectTransientContext(ctx) => {
+                    debug!(
+                        hook = hook.name(),
+                        context_len = ctx.len(),
+                        "Hook injecting transient context"
+                    );
+                    return result;
+                }
+                HookResult::RequestCompaction { reason, context } => {
+                    debug!(
+                        hook = hook.name(),
+                        reason = %reason,
+                        context_len = context.as_ref().map(|value| value.len()).unwrap_or(0),
+                        "Hook requesting compaction"
                     );
                     return result;
                 }

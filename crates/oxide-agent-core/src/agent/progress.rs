@@ -35,6 +35,21 @@ pub struct TokenSnapshot {
     pub last_api_usage: Option<TokenUsage>,
 }
 
+/// Preferred delivery kind for a file emitted by the agent.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FileDeliveryKind {
+    /// Let the transport infer the best delivery method from the file itself.
+    #[default]
+    Auto,
+    /// Deliver the file as a regular audio attachment when possible.
+    Audio,
+    /// Deliver the file as a Telegram voice note when possible.
+    VoiceNote,
+    /// Deliver the file as a plain document.
+    Document,
+}
+
 /// Events that can occur during agent execution
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +79,8 @@ pub enum AgentEvent {
         name: String,
         /// Tool execution output
         output: String,
+        /// Whether the tool finished successfully.
+        success: bool,
     },
     /// Agent is waiting for operator approval before continuing a tool call.
     WaitingForApproval {
@@ -88,6 +105,9 @@ pub enum AgentEvent {
     },
     /// File to send to user
     FileToSend {
+        /// Preferred delivery kind for the file.
+        #[serde(default)]
+        kind: FileDeliveryKind,
         /// Original file name
         file_name: String,
         /// Raw file content
@@ -98,12 +118,14 @@ pub enum AgentEvent {
     /// Used by ytdlp provider for automatic cleanup after successful delivery
     #[serde(skip)]
     FileToSendWithConfirmation {
+        /// Preferred delivery kind for the file.
+        kind: FileDeliveryKind,
         /// Original file name
         file_name: String,
         /// Raw file content
         content: Vec<u8>,
-        /// Path in sandbox for cleanup after success
-        sandbox_path: String,
+        /// Source path for diagnostics and cleanup logging
+        source_path: String,
         /// Channel to receive delivery confirmation
         confirmation_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
@@ -282,6 +304,8 @@ pub struct ProgressState {
     pub rate_limit_retry: Option<RateLimitRetryState>,
     /// Latest provider failover notice for the current run.
     pub provider_failover_notice: Option<String>,
+    /// Whether the loop-detected modal was already surfaced for this run.
+    pub loop_notification_sent: bool,
 }
 
 /// State for rate limit retry display
@@ -355,7 +379,7 @@ impl ProgressState {
                 input,
                 command_preview,
             } => self.handle_tool_call(name, input, command_preview),
-            AgentEvent::ToolResult { .. } => self.complete_last_step(),
+            AgentEvent::ToolResult { success, .. } => self.handle_tool_result(success),
             AgentEvent::WaitingForApproval {
                 tool_name,
                 target_name,
@@ -515,6 +539,14 @@ impl ProgressState {
         });
     }
 
+    fn handle_tool_result(&mut self, success: bool) {
+        if success {
+            self.complete_last_step();
+        } else {
+            self.fail_last_step();
+        }
+    }
+
     fn handle_continuation(&mut self, reason: String, count: usize) {
         self.complete_last_step();
         self.steps.push(Step {
@@ -551,17 +583,25 @@ impl ProgressState {
     }
 
     fn handle_todos_update(&mut self, todos: TodoList) {
-        let current_task = todos.current_task().map(|t| t.description.clone());
+        let current_task = todos
+            .current_task()
+            .map(|t| (t.description.clone(), false))
+            .or_else(|| todos.blocked_task().map(|t| (t.description.clone(), true)));
         let completed = todos.completed_count();
         let total = todos.items.len();
 
         self.current_todos = Some(todos);
 
-        if let Some(task) = current_task {
+        if let Some((task, blocked_on_user)) = current_task {
             // Update step description with current task
             if let Some(last) = self.steps.last_mut() {
                 if last.status == StepStatus::InProgress {
-                    last.description = format!("📋 {task} ({completed}/{total})");
+                    let prefix = if blocked_on_user {
+                        "📋 Waiting on user"
+                    } else {
+                        "📋"
+                    };
+                    last.description = format!("{prefix} {task} ({completed}/{total})");
                 }
             }
         }

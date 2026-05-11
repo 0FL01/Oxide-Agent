@@ -311,7 +311,8 @@ jobs:
 
             # Create docker-compose.yml
             echo "Creating docker-compose.yml..."
-            echo "services:
+            echo "name: \\${COMPOSE_PROJECT_NAME:-oxide-agent}
+            services:
               sandboxd:
                 build:
                   context: ./build_context
@@ -323,6 +324,7 @@ jobs:
                 environment:
                   - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
                   - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+                  - STACK_LOGS_PROJECT=\\${COMPOSE_PROJECT_NAME:-oxide-agent}
                 volumes:
                   - /var/run/docker.sock:/var/run/docker.sock
                   - sandboxd-run:/run/sandboxd

@@ -343,8 +343,22 @@ pub fn compute_next_reminder_run_at(
                     record.reminder_id
                 ))
             })?;
-            Ok(Some(after_unix.saturating_add(
-                i64::try_from(interval_secs).unwrap_or(i64::MAX),
+            let interval_secs = i64::try_from(interval_secs).unwrap_or(i64::MAX);
+            if interval_secs <= 0 {
+                return Err(StorageError::InvalidInput(format!(
+                    "interval reminder '{}' has non-positive interval_secs",
+                    record.reminder_id
+                )));
+            }
+
+            if record.next_run_at > after_unix {
+                return Ok(Some(record.next_run_at));
+            }
+
+            let elapsed = after_unix.saturating_sub(record.next_run_at);
+            let intervals_to_advance = elapsed.saturating_div(interval_secs).saturating_add(1);
+            Ok(Some(record.next_run_at.saturating_add(
+                interval_secs.saturating_mul(intervals_to_advance),
             )))
         }
         ReminderScheduleKind::Cron => {

@@ -1,11 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
-use oxide_agent_core::agent::progress::{AgentEvent, ProgressState};
+use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 /// File delivery semantics for progress runtime handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,8 +23,13 @@ pub trait AgentTransport: Send + Sync + 'static {
     async fn update_progress(&self, state: &ProgressState) -> Result<()>;
 
     /// Deliver a file emitted by the agent.
-    async fn deliver_file(&self, mode: DeliveryMode, file_name: &str, content: &[u8])
-        -> Result<()>;
+    async fn deliver_file(
+        &self,
+        mode: DeliveryMode,
+        kind: FileDeliveryKind,
+        file_name: &str,
+        content: &[u8],
+    ) -> Result<()>;
 
     /// Notify the user about loop detection and prompt for an action.
     async fn notify_loop_detected(&self, _loop_type: LoopType, _iteration: usize) -> Result<()> {
@@ -80,9 +85,13 @@ pub async fn run_progress_loop<T: AgentTransport>(
     while let Some(event) = rx.recv().await {
         // File delivery is a side-effect and should not block state updates more than necessary.
         match &event {
-            AgentEvent::FileToSend { file_name, content } => {
+            AgentEvent::FileToSend {
+                kind,
+                file_name,
+                content,
+            } => {
                 if let Err(e) = transport
-                    .deliver_file(DeliveryMode::BestEffort, file_name, content)
+                    .deliver_file(DeliveryMode::BestEffort, *kind, file_name, content)
                     .await
                 {
                     warn!(file_name = %file_name, error = %e, "File delivery failed");
@@ -91,14 +100,15 @@ pub async fn run_progress_loop<T: AgentTransport>(
             AgentEvent::FileToSendWithConfirmation { .. } => {
                 // Destructure to move `confirmation_tx` out.
                 if let AgentEvent::FileToSendWithConfirmation {
+                    kind,
                     file_name,
                     content,
-                    sandbox_path,
+                    source_path,
                     confirmation_tx,
                 } = event
                 {
                     let result = transport
-                        .deliver_file(DeliveryMode::Confirmed, &file_name, &content)
+                        .deliver_file(DeliveryMode::Confirmed, kind, &file_name, &content)
                         .await;
 
                     match result {
@@ -108,7 +118,7 @@ pub async fn run_progress_loop<T: AgentTransport>(
                         Err(e) => {
                             error!(
                                 file_name = %file_name,
-                                sandbox_path = %sandbox_path,
+                                source_path = %source_path,
                                 error = %e,
                                 "Confirmed file delivery failed"
                             );
@@ -125,8 +135,18 @@ pub async fn run_progress_loop<T: AgentTransport>(
                 loop_type,
                 iteration,
             } => {
-                if let Err(e) = transport.notify_loop_detected(*loop_type, *iteration).await {
-                    warn!(error = %e, "Loop detection notification failed");
+                if !state.loop_notification_sent {
+                    state.loop_notification_sent = true;
+                    if let Err(e) = transport.notify_loop_detected(*loop_type, *iteration).await {
+                        warn!(error = %e, "Loop detection notification failed");
+                    }
+                } else {
+                    debug!(
+                        loop_type = ?loop_type,
+                        iteration = *iteration,
+                        "Skipping duplicate loop detection notification"
+                    );
+                    continue;
                 }
             }
             // Rate limit events must update the UI immediately regardless of throttle,
@@ -169,10 +189,13 @@ pub async fn run_progress_loop<T: AgentTransport>(
 mod tests {
     use super::*;
     use oxide_agent_core::agent::compaction::BudgetState;
+    use oxide_agent_core::agent::loop_detection::LoopType;
     use oxide_agent_core::agent::progress::TokenSnapshot;
     use oxide_agent_core::llm::TokenUsage;
     use std::sync::Arc;
     use tokio::sync::{mpsc, oneshot, Mutex};
+
+    type DeliveredFileRecord = (DeliveryMode, FileDeliveryKind, String, usize);
 
     fn sample_snapshot() -> TokenSnapshot {
         TokenSnapshot {
@@ -198,7 +221,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct DummyTransport {
         updates: Arc<Mutex<usize>>,
-        delivered: Arc<Mutex<Vec<(DeliveryMode, String, usize)>>>,
+        delivered: Arc<Mutex<Vec<DeliveredFileRecord>>>,
+        loop_notifications: Arc<Mutex<usize>>,
         fail_deliver: bool,
     }
 
@@ -213,6 +237,7 @@ mod tests {
         async fn deliver_file(
             &self,
             mode: DeliveryMode,
+            kind: FileDeliveryKind,
             file_name: &str,
             content: &[u8],
         ) -> Result<()> {
@@ -221,7 +246,17 @@ mod tests {
             }
 
             let mut delivered = self.delivered.lock().await;
-            delivered.push((mode, file_name.to_string(), content.len()));
+            delivered.push((mode, kind, file_name.to_string(), content.len()));
+            Ok(())
+        }
+
+        async fn notify_loop_detected(
+            &self,
+            _loop_type: LoopType,
+            _iteration: usize,
+        ) -> Result<()> {
+            let mut loop_notifications = self.loop_notifications.lock().await;
+            *loop_notifications += 1;
             Ok(())
         }
     }
@@ -252,6 +287,33 @@ mod tests {
 
         let updates = *transport.updates.lock().await;
         assert!(updates >= 1);
+    }
+
+    #[tokio::test]
+    async fn best_effort_delivery_preserves_file_kind() {
+        let (tx, rx) = mpsc::channel(8);
+        let transport = DummyTransport::default();
+
+        let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(0));
+        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+
+        tx.send(AgentEvent::FileToSend {
+            kind: FileDeliveryKind::VoiceNote,
+            file_name: "speech.ogg".to_string(),
+            content: vec![1, 2, 3],
+        })
+        .await
+        .expect("failed to send file event");
+
+        drop(tx);
+
+        let _state = handle.await.expect("progress runtime join failed");
+        let delivered = transport.delivered.lock().await;
+
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].0, DeliveryMode::BestEffort);
+        assert_eq!(delivered[0].1, FileDeliveryKind::VoiceNote);
+        assert_eq!(delivered[0].2, "speech.ogg");
     }
 
     /// Regression test: RateLimitRetrying must trigger an immediate UI update
@@ -326,9 +388,10 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel();
         let send_result = tx
             .send(AgentEvent::FileToSendWithConfirmation {
+                kind: FileDeliveryKind::Auto,
                 file_name: "out.txt".to_string(),
                 content: vec![1, 2, 3],
-                sandbox_path: "/workspace/out.txt".to_string(),
+                source_path: "/workspace/out.txt".to_string(),
                 confirmation_tx: ack_tx,
             })
             .await;
@@ -349,6 +412,7 @@ mod tests {
         let delivered = transport.delivered.lock().await;
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].0, DeliveryMode::Confirmed);
+        assert_eq!(delivered[0].1, FileDeliveryKind::Auto);
     }
 
     #[tokio::test]
@@ -366,9 +430,10 @@ mod tests {
         let (ack_tx, ack_rx) = oneshot::channel();
         let send_result = tx
             .send(AgentEvent::FileToSendWithConfirmation {
+                kind: FileDeliveryKind::Auto,
                 file_name: "out.txt".to_string(),
                 content: vec![1, 2, 3],
-                sandbox_path: "/workspace/out.txt".to_string(),
+                source_path: "/workspace/out.txt".to_string(),
                 confirmation_tx: ack_tx,
             })
             .await;
@@ -386,5 +451,32 @@ mod tests {
             Ok(state) => state,
             Err(err) => panic!("progress runtime join failed: {err}"),
         };
+    }
+
+    #[tokio::test]
+    async fn loop_notification_is_deduplicated_per_run() {
+        let (tx, rx) = mpsc::channel(8);
+        let transport = DummyTransport::default();
+
+        let cfg = ProgressRuntimeConfig::new(3).with_throttle(Duration::from_millis(0));
+        let handle = spawn_progress_runtime(transport.clone(), rx, cfg);
+
+        tx.send(AgentEvent::LoopDetected {
+            loop_type: LoopType::ToolCallLoop,
+            iteration: 4,
+        })
+        .await
+        .expect("first loop send");
+        tx.send(AgentEvent::LoopDetected {
+            loop_type: LoopType::ToolCallLoop,
+            iteration: 5,
+        })
+        .await
+        .expect("second loop send");
+        drop(tx);
+
+        let _state = handle.await.expect("progress runtime join failed");
+        let loop_notifications = *transport.loop_notifications.lock().await;
+        assert_eq!(loop_notifications, 1);
     }
 }

@@ -43,12 +43,16 @@ pub mod skills;
 pub mod structured_output;
 /// Tool execution bridge with timeout and cancellation
 pub mod tool_bridge;
+/// Task-local tool execution runtime metadata
+pub(crate) mod tool_runtime;
 
 /// Agent thought inference from tool calls
 pub mod thoughts;
 
 /// Narrator for human-readable status updates
 pub mod narrator;
+
+pub(crate) mod persistent_memory;
 
 /// Loop detection subsystem
 pub mod loop_detection;
@@ -73,6 +77,7 @@ pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry,
 pub use identity::SessionId;
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::{AgentMemory, ExternalizedPayload, PrunedArtifact};
+pub use persistent_memory::{connect_postgres_memory_store, PersistentMemoryStore};
 pub use profile::{
     dm_default_blocked_tools, dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
     topic_agent_all_hooks, topic_agent_default_blocked_tools, topic_agent_manageable_hooks,
@@ -87,7 +92,7 @@ pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{
-    AgentMemoryCheckpoint, AgentSession, AgentStatus, PendingSshReplay, RuntimeContextInbox,
-    RuntimeContextInjection,
+    AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingSshReplay,
+    PendingUserInput, RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
 };
 pub use skills::SkillRegistry;

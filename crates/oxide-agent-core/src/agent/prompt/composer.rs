@@ -15,13 +15,32 @@ fn build_date_context() -> String {
     let current_offset = now.format("UTC%:z").to_string();
 
     format!(
-        "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nCurrent local timezone: {current_offset}\nIMPORTANT: Always use this date as the current date. If search results (web_search) contain phrases like 'today', 'tomorrow', or dates contradicting this, consider the search results outdated and interpret them relative to the date above.\n\n"
+        "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nCurrent local timezone: {current_offset}\nIMPORTANT: Always use this date as the current date. If search results (`web_search` or `searxng_search`) contain phrases like 'today', 'tomorrow', or dates contradicting this, consider the search results outdated and interpret them relative to the date above.\n\n"
     )
 }
 
 fn build_reminder_guidance(tools: &[ToolDefinition]) -> Option<&'static str> {
     tools.iter().any(|tool| tool.name == "reminder_schedule").then_some(
-        "## Reminder Scheduling\n- The current date/time block above is the source of truth for local time\n- Do not compute unix timestamps by hand for reminders\n- For a one-time reminder, use `kind=once` with `date` + `time` and optional `timezone`\n- For repeat-after-N-minutes or repeat-after-N-hours, use `kind=interval` with `every_minutes` or `every_hours`\n- For wall-clock schedules like every day at 09:00 or weekdays at 18:30, use `kind=cron` with `time`, optional `weekdays`, and optional `timezone`\n- Do not use `kind=interval` for calendar schedules like every day at 09:00 because interval means fixed delay after the previous run\n- When `timezone` is omitted, reminder scheduling uses the current local timezone shown above"
+        "## Reminder Scheduling\n- The current date/time block above is the source of truth for local time\n- Do not compute unix timestamps by hand for reminders\n- For a one-time reminder, use `kind=once` with `date` + `time` and optional `timezone`\n- For repeat-every-N-minutes or repeat-every-N-hours, use `kind=interval` with `every_minutes` or `every_hours`\n- For wall-clock schedules like every day at 09:00 or weekdays at 18:30, use `kind=cron` with `time`, optional `weekdays`, and optional `timezone`\n- Do not use `kind=interval` for calendar schedules like every day at 09:00; use `kind=cron` to preserve local wall-clock time across calendar/DST changes\n- When `timezone` is omitted, reminder scheduling uses the current local timezone shown above"
+    )
+}
+
+fn build_file_workflow_guidance(tools: &[ToolDefinition]) -> Option<&'static str> {
+    let has_media_file_tools = tools.iter().any(|tool| {
+        matches!(
+            tool.name.as_str(),
+            "transcribe_audio_file" | "describe_image_file" | "describe_video_file"
+        )
+    });
+    let has_tts_file_tools = tools.iter().any(|tool| {
+        matches!(
+            tool.name.as_str(),
+            "text_to_speech_en_file" | "text_to_speech_ru_file"
+        )
+    });
+
+    (has_media_file_tools || has_tts_file_tools).then_some(
+        "## File Workflows\n- Uploaded files provided for file workflows are preserved in the sandbox and remain directly manipulable\n- When the user wants editing, transcoding, muxing, translation dubbing, or other file transformations, operate on the sandbox file instead of summarizing it\n- Use `describe_image_file`, `describe_video_file`, or `transcribe_audio_file` only when you actually need multimodal understanding before acting on the file\n- `describe_image_file` and `describe_video_file` accept either sandbox paths or direct `http(s)` URLs; remote media is downloaded into the sandbox automatically and cleaned up after successful analysis\n- Use `text_to_speech_en_file` or `text_to_speech_ru_file` when another tool such as `ffmpeg` needs an audio file path instead of an immediate voice message"
     )
 }
 
@@ -56,13 +75,22 @@ You MUST respond ONLY with a valid JSON object strictly following the schema:
     "name": "tool_name",
     "arguments": {{}}
   }},
-  "final_answer": "Final answer to the user"
+  "final_answer": "Final answer to the user",
+  "awaiting_user_input": {{
+    "kind": "text|url|file|url_or_file",
+    "prompt": "Question or request for the user"
+  }}
 }}
 
 Rules:
-- EXACTLY one of `tool_call` or `final_answer` must be filled (the other = null)
-- If a tool is needed: `tool_call` = object, `final_answer` = null
-- If answer is ready: `tool_call` = null, `final_answer` = string
+- EXACTLY one of `tool_call`, `final_answer`, or `awaiting_user_input` must be filled (the others = null)
+- If a tool is needed: `tool_call` = object, `final_answer` = null, `awaiting_user_input` = null
+- If answer is ready: `tool_call` = null, `final_answer` = string, `awaiting_user_input` = null
+- If the task is blocked on the user: `tool_call` = null, `final_answer` = null, `awaiting_user_input` = object
+- Use `awaiting_user_input` when you need the user to provide missing text, a link, a file, or either a link/file before the task can continue
+- If you maintain a todo list and the remaining work is blocked on the user, mark the relevant todo as `blocked_on_user` before returning `awaiting_user_input`
+- `awaiting_user_input.kind` must be exactly one of: `text`, `url`, `file`, `url_or_file`
+- `awaiting_user_input.prompt` must be a short, direct request telling the user what to send next
 - `tool_call.arguments` is always a JSON object
 - No extra keys, markdown, XML, explanations, or text outside JSON
 - Tool results arrive in messages with role `tool`
@@ -70,10 +98,13 @@ Rules:
 - Use backticks (`) for inline code, such as file paths, variables, and short commands
 
 ### Example Tool Call
-{{"thought":"Need to read a file","tool_call":{{"name":"read_file","arguments":{{"filePath":"/abs/path/to/file.txt"}}}},"final_answer":null}}
+{{"thought":"Need to read a file","tool_call":{{"name":"read_file","arguments":{{"filePath":"/abs/path/to/file.txt"}}}},"final_answer":null,"awaiting_user_input":null}}
 
 ### Example Final Answer
-{{"thought":"File read, answer ready","tool_call":null,"final_answer":"Here is the content of `file.txt`:\n\n```rust\nfn main() {{\n    println!(\"Hello world\");\n}}\n```"}}
+{{"thought":"File read, answer ready","tool_call":null,"final_answer":"Here is the content of `file.txt`:\n\n```rust\nfn main() {{\n    println!(\"Hello world\");\n}}\n```","awaiting_user_input":null}}
+
+### Example Awaiting User Input
+{{"thought":"Need the APK source before continuing","tool_call":null,"final_answer":null,"awaiting_user_input":{{"kind":"url_or_file","prompt":"Send a direct download link for the APK or upload the APK file so I can continue."}}}}
 
 ## Available Tools (JSON schema)
 {tools_json}"#,
@@ -122,12 +153,15 @@ pub async fn create_agent_system_prompt(
     };
 
     let reminder_guidance = build_reminder_guidance(tools).unwrap_or_default();
+    let file_workflow_guidance = build_file_workflow_guidance(tools).unwrap_or_default();
 
     if structured_output {
         let structured_output = build_structured_output_instructions(tools);
-        format!("{date_context}{base_prompt}\n\n{reminder_guidance}\n\n{structured_output}")
+        format!(
+            "{date_context}{base_prompt}\n\n{reminder_guidance}\n\n{file_workflow_guidance}\n\n{structured_output}"
+        )
     } else {
-        format!("{date_context}{base_prompt}\n\n{reminder_guidance}")
+        format!("{date_context}{base_prompt}\n\n{reminder_guidance}\n\n{file_workflow_guidance}")
     }
 }
 
@@ -233,5 +267,43 @@ mod tests {
 
         assert!(prompt.contains("## Reminder Scheduling"));
         assert!(prompt.contains("Do not compute unix timestamps by hand for reminders"));
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_system_prompt_adds_file_workflow_guidance() {
+        let tools = [
+            ToolDefinition {
+                name: "describe_video_file".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "text_to_speech_en_file".to_string(),
+                description: "demo".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+        ];
+        let mut session = AgentSession::new(1_i64.into());
+
+        let prompt =
+            create_agent_system_prompt("demo task", &tools, true, None, &mut session, None).await;
+
+        assert!(prompt.contains("## File Workflows"));
+        assert!(prompt.contains("operate on the sandbox file instead of summarizing it"));
+        assert!(prompt
+            .contains("`describe_image_file`, `describe_video_file`, or `transcribe_audio_file`"));
+        assert!(prompt.contains("`text_to_speech_en_file` or `text_to_speech_ru_file`"));
+    }
+
+    #[test]
+    fn test_structured_output_instructions_include_awaiting_user_input() {
+        let prompt = build_structured_output_instructions(&[]);
+
+        assert!(prompt.contains("awaiting_user_input"));
+        assert!(prompt.contains("blocked_on_user"));
+        assert!(prompt.contains("url_or_file"));
+        assert!(
+            prompt.contains("EXACTLY one of `tool_call`, `final_answer`, or `awaiting_user_input`")
+        );
     }
 }

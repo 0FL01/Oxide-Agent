@@ -7,8 +7,9 @@ use crate::bot::context::{ensure_current_agent_flow_id, reset_current_agent_flow
 use crate::bot::resilient;
 use crate::bot::state::ConfirmationType;
 use crate::bot::views::{
-    agent_control_markup, agent_flow_inline_keyboard, cancel_task_confirmation_inline_keyboard,
-    empty_inline_keyboard, get_agent_inline_keyboard_with_exit, AgentView, DefaultAgentView,
+    agent_control_markup, agent_flow_inline_keyboard_with_toggle,
+    cancel_task_confirmation_inline_keyboard, empty_inline_keyboard,
+    get_agent_inline_keyboard_with_exit, AgentView, DefaultAgentView,
 };
 use crate::bot::{
     build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec,
@@ -164,6 +165,7 @@ pub(crate) async fn start_manual_compaction(
     msg: Message,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
@@ -194,6 +196,7 @@ pub(crate) async fn start_manual_compaction(
         },
         llm: &llm,
         storage: &storage,
+        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -221,6 +224,7 @@ pub(crate) async fn start_manual_compaction(
         message_thread_id: outbound_thread.message_thread_id,
         use_inline_progress_controls: false,
         use_inline_flow_controls: use_inline_flow_controls(thread_spec),
+        attach_detach_enabled: settings.telegram.attach_detach_enabled,
     });
     Ok(())
 }
@@ -228,9 +232,10 @@ pub(crate) async fn start_manual_compaction(
 pub(crate) fn cancel_status_reply_markup(
     thread_spec: TelegramThreadSpec,
     agent_flow_id: &str,
+    attach_detach_enabled: bool,
 ) -> ReplyMarkup {
     if use_inline_flow_controls(thread_spec) {
-        agent_flow_inline_keyboard(agent_flow_id).into()
+        agent_flow_inline_keyboard_with_toggle(agent_flow_id, attach_detach_enabled).into()
     } else {
         agent_control_markup(false)
     }
@@ -239,8 +244,10 @@ pub(crate) fn cancel_status_reply_markup(
 pub(crate) fn cancel_status_inline_markup(
     use_inline_flow_controls: bool,
     agent_flow_id: &str,
+    attach_detach_enabled: bool,
 ) -> Option<InlineKeyboardMarkup> {
-    use_inline_flow_controls.then(|| agent_flow_inline_keyboard(agent_flow_id))
+    (use_inline_flow_controls && attach_detach_enabled)
+        .then(|| agent_flow_inline_keyboard_with_toggle(agent_flow_id, attach_detach_enabled))
 }
 
 pub(crate) async fn send_agent_flow_controls_message(
@@ -248,8 +255,10 @@ pub(crate) async fn send_agent_flow_controls_message(
     chat_id: ChatId,
     agent_flow_id: &str,
     outbound_thread: OutboundThreadParams,
+    attach_detach_enabled: bool,
 ) -> Result<()> {
-    let reply_markup: ReplyMarkup = agent_flow_inline_keyboard(agent_flow_id).into();
+    let reply_markup: ReplyMarkup =
+        agent_flow_inline_keyboard_with_toggle(agent_flow_id, attach_detach_enabled).into();
     send_agent_message_with_keyboard(
         bot,
         chat_id,
@@ -442,6 +451,7 @@ pub(crate) async fn show_agent_controls(
     bot: Bot,
     msg: Message,
     storage: Arc<dyn StorageProvider>,
+    settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
     let outbound_thread = build_outbound_thread_params(thread_spec);
@@ -449,7 +459,12 @@ pub(crate) async fn show_agent_controls(
     let reply_markup = if use_inline_topic_controls(thread_spec) {
         let (agent_flow_id, _) =
             ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-        get_agent_inline_keyboard_with_exit(false, Some(&agent_flow_id)).into()
+        get_agent_inline_keyboard_with_exit(
+            false,
+            Some(&agent_flow_id),
+            settings.telegram.attach_detach_enabled,
+        )
+        .into()
     } else {
         agent_control_markup(false)
     };
@@ -466,8 +481,16 @@ pub(crate) async fn show_agent_controls(
     if matches!(thread_spec.kind, TelegramThreadKind::Dm) {
         let (agent_flow_id, _) =
             ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-        send_agent_flow_controls_message(&bot, msg.chat.id, &agent_flow_id, outbound_thread)
+        if settings.telegram.attach_detach_enabled {
+            send_agent_flow_controls_message(
+                &bot,
+                msg.chat.id,
+                &agent_flow_id,
+                outbound_thread,
+                settings.telegram.attach_detach_enabled,
+            )
             .await?;
+        }
     }
 
     Ok(())
@@ -520,6 +543,7 @@ pub(crate) async fn handle_recreate_container_confirmation(
     session_keys: AgentModeSessionKeys,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
+    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: &Arc<BotSettings>,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
@@ -550,6 +574,7 @@ pub(crate) async fn handle_recreate_container_confirmation(
         },
         llm,
         storage,
+        persistent_memory_store,
         settings,
     })
     .await;
@@ -687,6 +712,7 @@ pub(crate) async fn confirm_destructive_action(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,
@@ -694,6 +720,7 @@ pub(crate) async fn handle_agent_confirmation(
     action: ConfirmationType,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
+    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
@@ -743,7 +770,15 @@ pub(crate) async fn handle_agent_confirmation(
                 .await?;
             }
             ConfirmationType::CompactContext => {
-                start_manual_compaction(bot.clone(), msg, storage, llm, settings).await?;
+                start_manual_compaction(
+                    bot.clone(),
+                    msg,
+                    storage,
+                    llm,
+                    persistent_memory_store.clone(),
+                    settings,
+                )
+                .await?;
             }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(
@@ -751,6 +786,7 @@ pub(crate) async fn handle_agent_confirmation(
                     session_keys,
                     &storage,
                     &llm,
+                    &persistent_memory_store,
                     &settings,
                     &send_ctx,
                 )

@@ -11,7 +11,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **5 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenRouter, Mistral, Google Gemini), along with Groq support.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, NVIDIA NIM, OpenRouter, Mistral, Google Gemini), along with Groq support.
 
 ### Architecture Highlights
 
@@ -48,7 +48,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
 
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
-    *   **Web Search and Data Extraction:** Tavily API or Crawl4AI integration for retrieving up-to-date information from the web (configurable via `SEARCH_PROVIDER`).
+    *   **Web Search and Data Extraction:** Multiple independent search providers — SearXNG (self-hosted, default), Tavily (API), Crawl4AI (deep crawling) — can run simultaneously.
     *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
         - Completion Check Hook - validates task completion
         - Workload Distributor - enforces separation of duties by blocking heavy manual operations in the Main Agent
@@ -57,6 +57,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         - Soft Timeout Report Hook - provides detailed timeout reporting
         - Sub-Agent Safety - ensures safe execution environments
         - Registry - centralized hook management
+    *   **🌐 Browser Automation:** Self-hosted Browser Use bridge for high-level browser tasks with reusable sessions.
     *   **🔄 Loop Detection:** Three levels of protection (Content Detector, Tool Detector, LLM Detector) to prevent infinite loops.
     *   **⏱️ Universal Runtime:** Transport-agnostic progress rendering system that can be adapted for Discord, Slack, and other transports.
     *   **👥 Hierarchical Delegation:** The Main Agent acts as an orchestrator, delegating heavy retrieval and mechanical tasks (git clone, searching) to Sub-Agents to maximize efficiency and context preservation.
@@ -65,13 +66,13 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **🗣️ Narrator:** Separate model for summarizing agent thoughts and actions in chat.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 5 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
+*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, NVIDIA NIM, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Multimedia Processing:**
     *   Voice and video messages (speech recognition via Gemini or Voxtral).
     *   Images (analysis and description via multimodal models).
     *   Work with documents of various formats.
-*   **🗣️ Voice Synthesis:** Kokoro TTS integration for generating voice messages from agent output.
+*   **🗣️ Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
 *   **Context Management:** Dialogue history saved in Cloudflare R2 (S3) with context-scoped isolation per topic.
 *   **🔒 Security and Quality:** `unsafe_code = "forbid"`, strict Clippy lints, no panics (`zero-panic profile`), DM tool restrictions, SSH approval flow, RBAC.
 
@@ -106,9 +107,12 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 ### 🛠 Infrastructure
 *   **Docker** — run code sandbox (`agent-sandbox:latest`)
 *   **Sandbox Broker** — optional Unix socket broker for security isolation (`SANDBOX_BACKEND=broker`)
-*   **Tavily API** — optional for web search (`TAVILY_API_KEY`)
-*   **Crawl4AI** — alternative deep web crawling provider with markdown extraction and PDF parsing capabilities
-*   **Kokoro TTS Server** — optional for voice message synthesis (`KOKORO_TTS_URL`)
+*   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
+*   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
+*   **Crawl4AI** — deep web crawling provider with markdown extraction and PDF parsing capabilities
+*   **Browser Use Bridge** — self-hosted browser automation sidecar for high-level browser tasks (`BROWSER_USE_URL`) — **currently disabled**, requires a quality vision-capable agent model at a reasonable price-per-token
+*   **Kokoro TTS Server** — optional for English voice message synthesis (`KOKORO_TTS_URL`)
+*   **Silero TTS Server** — optional for Russian voice message synthesis (`SILERO_TTS_URL`)
 </details>
 
 ## Installation and Launch
@@ -125,12 +129,7 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 2.  **Configure environment variables:**
     Create `.env` based on `.env.example`.
 
-3.  **Build sandbox image:**
-    ```bash
-    docker build -t agent-sandbox:latest -f sandbox/Dockerfile.sandbox ..
-    ```
-
-4.  **Build and run the bot:**
+3.  **Build and run the bot:**
     ```bash
     docker-compose up --build -d
     ```
@@ -148,10 +147,12 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 TELEGRAM_TOKEN=YOUR_TOKEN
 ALLOWED_USERS=ID1,ID2 # List of allowed Telegram IDs (basic access)
 AGENT_ACCESS_IDS=ID1 # Access to Agent Mode (consumes many tokens)
+REMINDER_AGENT_PROGRESS_ENABLED=false # Watch/ward reminders: hide progress spam
+REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: stay silent on no visible change
 
 # Agent Configuration
 AGENT_TIMEOUT_SECS=300          # Agent execution timeout
-SEARCH_PROVIDER=tavily          # Search provider (tavily/crawl4ai)
+SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / SEARXNG_ENABLED / CRAWL4AI_ENABLED
 DEBUG_MODE=false                # Debug logging mode
 
 # Cloudflare R2 (S3)
@@ -166,11 +167,28 @@ GROQ_API_KEY=...
 MISTRAL_API_KEY=...
 GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
+NVIDIA_API_KEY=...              # NVIDIA NIM / hosted integrate.api.nvidia.com
+NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
 ZAI_API_KEY=...                 # Zhipu AI / ZAI Provider
 MINIMAX_API_KEY=...             # MiniMax Provider (Claude SDK-compatible)
-TAVILY_API_KEY=...             # Tavily key for web search in Agent mode (optional)
+TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enable via TAVILY_ENABLED=true)
+SEARXNG_URL=http://127.0.0.1:8081  # SearXNG self-hosted search (auto-enabled when set)
+SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
+CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
+# Browser Use self-hosted bridge (disabled: requires a quality vision-capable agent model)
+# BROWSER_USE_URL=http://127.0.0.1:8002
+# BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3 # Optional retained reusable profiles per topic/context scope
+# BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=604800 # Optional idle/stale reusable profile TTL in the bridge
+# BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=2 # Retry early transient browser readiness failures in the bridge
+# BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750 # Delay between bridge readiness retries in milliseconds
+# BROWSER_USE_MODEL_ID="GLM-4.6V" # Browser Use dedicated route
+# BROWSER_USE_MODEL_PROVIDER="zai" # Browser Use dedicated provider
+# BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Legacy browser_use sidecar fallback
+# BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional legacy fallback model override
 ```
 </details>
+
+For Browser Use task execution, the bridge container also needs the matching upstream API key for the selected provider, for example `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`.
 
 ## Model Configuration
 
@@ -197,7 +215,7 @@ Omitting the sub-agent block falls back to the agent model settings.
 
 ### Optional overrides
 ```dotenv
-MEDIA_MODEL_ID="google/gemini-3-flash-preview"
+MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
 MEDIA_MODEL_PROVIDER="openrouter"
 
 NARRATOR_MODEL_ID="labs-mistral-small-creative"
@@ -222,6 +240,39 @@ AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
 AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
 
+### NVIDIA NIM agent route example
+Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven backup route first:
+
+```dotenv
+NVIDIA_API_KEY=...
+NVIDIA_API_BASE="https://integrate.api.nvidia.com/v1"
+
+AGENT_MODEL_ROUTES__0__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__0__PROVIDER="nvidia"
+AGENT_MODEL_ROUTES__0__WEIGHT=3
+
+AGENT_MODEL_ROUTES__1__ID="glm-4.7"
+AGENT_MODEL_ROUTES__1__PROVIDER="zai"
+AGENT_MODEL_ROUTES__1__WEIGHT=5
+```
+
+The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
+
+### Browser Use default route (disabled)
+
+> **NOTE**: Browser Use is currently disabled. It requires a quality vision-capable agent model
+> at a reasonable price-per-token. To re-enable, set `BROWSER_USE_URL` and optionally
+> `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`. See `docs/browser-use.md`.
+
+When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `gemini / gemma-4-31b-it`) even when main/sub-agent stay on a different route:
+
+```dotenv
+BROWSER_USE_MODEL_ID="GLM-4.6V"
+BROWSER_USE_MODEL_PROVIDER="zai"
+```
+
+Browser Use prefers this dedicated route over the currently active main/sub-agent route and falls back to the inherited route only when the dedicated override is absent.
+
 ### Alternate provider example
 ```
 CHAT_MODEL_ID="mistral-large-latest"
@@ -235,21 +286,26 @@ Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or
 
 ## Available LLM Providers
 
-| Name | Provider | Features |
-| :--- | :--- | :--- |
-| **OR Gemini 3 Flash** | OpenRouter | Multimodal, default chat model |
-| **ZAI GLM-4.7** | ZAI (Zhipu AI) | Default agent model, GLM Coding Plan |
-| **MiniMax M2.7** | MiniMax | Claude SDK-compatible, high context |
-| **Mistral Large** | Mistral | Free and generous, includes Voxtral audio transcription |
-| **Gemini 2.5 Flash Lite** | Google | Cheap and efficient |
-| **Devstral 2512** | Mistral | Top free for coding and agent work |
+| Provider | Description |
+| :--- | :--- |
+| **ZAI (Zhipu AI)** | Default agent model, native tool-aware chat |
+| **MiniMax** | Claude SDK-compatible, high context |
+| **NVIDIA NIM** | Tool calling support, hosted inference |
+| **Mistral** | Generous free tier, includes Voxtral audio transcription |
+| **Google Gemini** | Multimodal, efficient |
+| **OpenRouter** | Aggregator for various models |
+| **Groq** | Fast inference (Chat Mode only) |
 
-> **Note:** The models listed above are recommended configurations. Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
+> **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
 
 ## New Tool Providers
 
 ### 🗣️ Kokoro TTS (Voice Synthesis)
 Generates voice messages from agent output using local Kokoro TTS server.
+
+**Tool:** `text_to_speech_en`
+
+**Server Setup:** See [KOKORO-TTS-setup guide](https://github.com/0FL01/KOKORO-TTS-setup) for manual server setup.
 
 **Configuration:**
 ```dotenv
@@ -261,6 +317,28 @@ KOKORO_TTS_TIMEOUT_SECS=60
 
 **Available Voices:** `af_bella`, `af_aoede`, `af_alloy`, `af_heart` (default)
 **Formats:** `ogg` (recommended), `mp3`, `wav`
+
+### 🇷🇺 Silero TTS (Russian Voice Synthesis)
+Generates Russian voice messages from agent output using local Silero TTS server.
+
+**Tool:** `text_to_speech_ru`
+
+**Server Setup:** See [Oxide-Agent-TTS](https://github.com/0FL01/Oxide-Agent-TTS) for containerized Kokoro + Silero TTS servers with FastAPI.
+
+**Configuration:**
+```dotenv
+SILERO_TTS_URL=http://127.0.0.1:8001       # Default
+SILERO_TTS_SPEAKER=baya                    # aidar | baya (default) | kseniya | xenia
+SILERO_TTS_FORMAT=ogg                      # Recommended for Telegram
+SILERO_TTS_SAMPLE_RATE=48000               # 8000 | 24000 | 48000 (default, best quality)
+SILERO_TTS_TIMEOUT_SECS=60
+```
+
+**Available Speakers:** `aidar`, `baya` (default), `kseniya`, `xenia`
+**Formats:** `ogg` (recommended), `wav`
+**SSML Support:** Set `ssml: true` for SSML markup with `<speak>`, `<break>`, `<prosody>` tags
+
+**Migration Note:** Piper TTS has been replaced with Silero TTS. Use `text_to_speech_en` for Kokoro (English) and `text_to_speech_ru` for Silero (Russian).
 
 ### 🔌 Jira MCP Integration
 Full Jira Server 7.5.0 integration via MCP protocol.
@@ -301,7 +379,7 @@ Topic-scoped SSH tools with approval flow for sensitive operations.
 OXIDE_SSH_MCP_BINARY=/usr/local/bin/ssh-mcp
 ```
 
-**Tools:** `ssh_exec`, `ssh_sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_check_process`
+**Tools:** `ssh_exec`, `ssh_sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_check_process`, `ssh_send_file_to_user`
 
 **Features:**
 - Approval flow with TTL 600s
@@ -386,6 +464,11 @@ Startup maintenance sweep that removes stale tool calls from persisted memories.
 Token-based protected tool window instead of fixed count.
 
 **Migration:** Adjust `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS` (default: 8192) if needed. Recommended: 12k-16k for DevOps workflows.
+
+### 5. TTS Tool Split (English/Russian)
+Legacy `text_to_speech` has been replaced by language-specific tools.
+
+**Migration:** Use `text_to_speech_en` for Kokoro (English-only) and `text_to_speech_ru` for Silero (Russian). Configure `SILERO_TTS_*` variables when enabling Russian TTS.
 </details>
 
 ## Agent Architecture
@@ -453,6 +536,7 @@ Extensible architecture for personalizing agent behavior:
 ### 🛠️ Tool Providers
 The agent uses a modular provider system, each offering a specialized set of tools:
 - **Sandbox Provider** (`sandbox.rs`) — code execution, file read/write, shell commands
+- **SearXNG Provider** (`searxng/`) — self-hosted web search via JSON API
 - **Tavily Provider** (`tavily.rs`) — web search and data extraction
 - **Crawl4AI Provider** (`crawl4ai.rs`) — deep web crawling with markdown extraction and PDF parsing (retry with backoff, concurrency limit)
 - **Todos Provider** (`todos.rs`) — task list management for long-term planning
@@ -460,7 +544,8 @@ The agent uses a modular provider system, each offering a specialized set of too
 - **File Hoster Provider** (`filehoster.rs`) — public file upload to temporary hosting (up to 4GB)
 - **Delegation Provider** (`delegation.rs`) — sub-agent delegation for complex task decomposition
 - **Reminder Provider** (`reminder.rs`) — reminder scheduling with pause/resume/retry
-- **Kokoro TTS Provider** (`tts/`) — voice message synthesis
+- **Kokoro TTS Provider** (`tts/`) — English voice message synthesis
+- **Silero TTS Provider** (`silero_tts/`) — Russian voice message synthesis with SSML support
 - **Jira MCP Provider** (`jira_mcp/`) — Jira integration
 - **Mattermost MCP Provider** (`mattermost_mcp/`) — Mattermost integration
 - **SSH MCP Provider** (`ssh_mcp.rs`) — SSH infrastructure with approval flow
@@ -515,9 +600,9 @@ Enhanced reminder scheduling with pause/resume/retry support.
 
 ### Services
 
-1. **sandbox_image** (profile: "build")
-   - Builds agent-sandbox image from `sandbox/Dockerfile.sandbox`
-   - Used for pre-warming sandbox containers
+1. **sandbox_image**
+    - Builds agent-sandbox image from `sandbox/Dockerfile.sandbox`
+    - One-shot build service used during `docker compose up --build`
 
 2. **oxide_agent** (main bot)
    - Builds from root Dockerfile
@@ -533,9 +618,15 @@ Enhanced reminder scheduling with pause/resume/retry support.
    - Socket: `/run/sandboxd/sandboxd.sock`
 
 4. **crawl4ai** (web crawler)
-   - Image: `unclecode/crawl4ai:0.8.5`
-   - Health check: `curl -f http://localhost:11235/health`
-   - Resources: 6GB RAM, 4 CPUs, 2GB shared memory
+    - Image: `unclecode/crawl4ai:0.8.5`
+    - Health check: `curl -f http://localhost:11235/health`
+    - Resources: 6GB RAM, 4 CPUs, 2GB shared memory
+
+5. **searxng** (self-hosted search)
+    - Image: `searxng/searxng:2026.3.24-054174a19`
+    - Port: `127.0.0.1:8081:8080`
+    - Health check: `wget -qO- http://localhost:8080/healthz`
+    - Config: `docker/searxng/settings.yml`
 
 ### Sandbox Broker Protocol
 - Unix socket communication with binary serialization (bincode)
@@ -586,11 +677,12 @@ crates/
 │       │   ├── compaction/     # Compaction pipeline (12 modules)
 │       │   ├── hooks/          # Execution hooks (7 hooks)
 │       │   ├── loop_detection/ # Loop detection (content, tool, llm)
-│       │   ├── providers/      # Tool providers (12 providers)
+│       │   ├── providers/      # Tool providers
 │       │   │   ├── ssh_mcp.rs            # SSH infrastructure
 │       │   │   ├── jira_mcp/             # Jira integration
 │       │   │   ├── mattermost_mcp/       # Mattermost integration
 │       │   │   ├── tts/                  # Kokoro TTS
+│       │   │   ├── silero_tts/           # Silero TTS
 │       │   │   ├── manager_control_plane/ # Topic CRUD, RBAC
 │       │   │   └── ...
 │       │   ├── recovery/       # History repair, tool drift pruning
@@ -683,7 +775,7 @@ cargo clippy --workspace --tests -- -D warnings
 cargo fmt --all
 
 # Build with feature flags
-cargo build --release --features tavily,crawl4ai,jira,mattermost
+cargo build --release --features searxng,crawl4ai,jira,mattermost
 
 # Run E2E tests (requires transport-web crate)
 cargo test -p oxide-agent-transport-web --test e2e
@@ -720,7 +812,7 @@ The project uses GitHub Actions for automatic testing and deployment:
   - `unwrap_used = "forbid"` — all Result/Option must be handled via `?` or `match`
   - `too_many_lines = "forbid"` — files >300 lines must be split
   - `too_many_arguments = "forbid"` — functions >3 arguments require Context/Config struct
-- **Feature flags:** Tavily, Crawl4AI, Jira, Mattermost available via `--features`
+- **Feature flags:** Tavily, SearXNG, Crawl4AI, Jira, Mattermost available via `--features`
 - **Error Handling:** Using `thiserror` for library errors, `anyhow` for application
 </details>
 
@@ -729,13 +821,14 @@ The project uses GitHub Actions for automatic testing and deployment:
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `tavily` | Enable Tavily web search provider | Enabled |
+| `searxng` | Enable SearXNG self-hosted search provider | Enabled |
 | `crawl4ai` | Enable Crawl4AI web search provider | Disabled |
 | `jira` | Enable Jira MCP integration | Disabled |
 | `mattermost` | Enable Mattermost MCP integration | Disabled |
 
 Build with features:
 ```bash
-cargo build --release --features tavily,crawl4ai,jira,mattermost
+cargo build --release --features searxng,crawl4ai,jira,mattermost
 ```
 
 ## License

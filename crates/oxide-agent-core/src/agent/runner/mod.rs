@@ -18,7 +18,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 
+pub(crate) use types::AgentRunnerContextBase;
+pub(crate) use types::TimedRunResult;
 pub use types::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
 
 /// Agent runner that executes the core loop.
@@ -42,12 +45,14 @@ impl AgentRunner {
     #[must_use]
     pub fn new(llm_client: Arc<LlmClient>) -> Self {
         let loop_config = Arc::new(LoopDetectionConfig::from_env());
+        // Note: Using .clone() here for trait object coercion to Arc<dyn LoopScoutClient>
+        #[allow(clippy::clone_on_ref_ptr)]
         let loop_detector = Arc::new(Mutex::new(LoopDetectionService::new(
             llm_client.clone(),
             loop_config,
         )));
 
-        let narrator = Arc::new(Narrator::new(llm_client.clone()));
+        let narrator = Arc::new(Narrator::new(Arc::clone(&llm_client)));
 
         Self {
             llm_client,
@@ -107,5 +112,17 @@ impl AgentRunner {
                 }
             })
             .collect()
+    }
+}
+
+pub(crate) async fn run_with_timeout(
+    runner: &mut AgentRunner,
+    ctx: &mut AgentRunnerContext<'_>,
+    timeout_duration: Duration,
+) -> TimedRunResult {
+    match timeout(timeout_duration, runner.run(ctx)).await {
+        Ok(Ok(result)) => result.into(),
+        Ok(Err(error)) => TimedRunResult::Failed(error),
+        Err(_) => TimedRunResult::TimedOut,
     }
 }
