@@ -298,10 +298,14 @@ impl MemoryRepository for InMemoryMemoryRepository {
         let state = Arc::clone(&self.state);
         async move {
             let mut guard = state.write().map_err(|_| Self::map_storage_error())?;
+            let mut stored = record.clone();
+            if let Some(existing) = guard.memories.get(&record.memory_id) {
+                stored.deleted_at = existing.deleted_at.or(record.deleted_at);
+            }
             guard
                 .memories
-                .insert(record.memory_id.clone(), record.clone());
-            Ok(record)
+                .insert(stored.memory_id.clone(), stored.clone());
+            Ok(stored)
         }
     }
 
@@ -1306,6 +1310,76 @@ mod tests {
             .expect("deleted listing should succeed");
         assert_eq!(deleted.len(), 1);
         assert!(deleted[0].deleted_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn upsert_memory_does_not_resurrect_soft_deleted_record() {
+        let repo = InMemoryMemoryRepository::new();
+        repo.create_memory(memory_record("mem-1", MemoryType::Fact, vec!["topic"], 100))
+            .await
+            .expect("memory should store");
+        let deleted = repo
+            .delete_memory("mem-1")
+            .await
+            .expect("delete should succeed")
+            .expect("memory should exist");
+
+        let mut replacement = memory_record("mem-1", MemoryType::Fact, vec!["topic"], 200);
+        replacement.title = "Updated deleted memory".to_string();
+        replacement.deleted_at = None;
+        let upserted = repo
+            .upsert_memory(replacement)
+            .await
+            .expect("upsert should succeed");
+
+        assert_eq!(upserted.deleted_at, deleted.deleted_at);
+        assert!(repo
+            .list_memories("topic-a", &MemoryListFilter::default())
+            .await
+            .expect("active listing should succeed")
+            .is_empty());
+
+        let all = repo
+            .list_memories(
+                "topic-a",
+                &MemoryListFilter {
+                    include_deleted: true,
+                    ..MemoryListFilter::default()
+                },
+            )
+            .await
+            .expect("deleted listing should succeed");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].title, "Updated deleted memory");
+        assert_eq!(all[0].deleted_at, deleted.deleted_at);
+    }
+
+    #[tokio::test]
+    async fn create_memory_allows_duplicate_content_hash_before_consolidation() {
+        let repo = InMemoryMemoryRepository::new();
+        let mut first = memory_record("mem-1", MemoryType::Fact, vec!["topic"], 100);
+        first.content = "Use cargo check before build".to_string();
+        first.content_hash = Some(stable_memory_content_hash(
+            first.memory_type,
+            &first.content,
+        ));
+        let mut second = memory_record("mem-2", MemoryType::Fact, vec!["topic"], 120);
+        second.content = first.content.clone();
+        second.content_hash = first.content_hash.clone();
+
+        repo.create_memory(first)
+            .await
+            .expect("first memory should store");
+        repo.create_memory(second)
+            .await
+            .expect("second memory with same content_hash should store");
+
+        let memories = repo
+            .list_memories("topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memories should list");
+        assert_eq!(memories.len(), 2);
+        assert_eq!(memories[0].content_hash, memories[1].content_hash);
     }
 
     #[tokio::test]

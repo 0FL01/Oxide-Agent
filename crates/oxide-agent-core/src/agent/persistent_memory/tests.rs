@@ -3,11 +3,14 @@ use crate::agent::compaction::ArchiveRef;
 use crate::storage::MockStorageProvider;
 use chrono::TimeZone;
 use oxide_agent_memory::{
-    CleanupStatus, EmbeddingPendingUpdate, EmbeddingReadyUpdate, EpisodeEmbeddingCandidate,
-    EpisodeOutcome, InMemoryMemoryRepository,
+    CleanupStatus, EmbeddingFailureUpdate, EmbeddingOwnerType, EmbeddingPendingUpdate,
+    EmbeddingReadyUpdate, EmbeddingStatus, EpisodeEmbeddingCandidate, EpisodeOutcome,
+    InMemoryMemoryRepository,
 };
 
 struct FakeEmbeddingGenerator;
+
+struct FailingEmbeddingGenerator;
 
 struct FakePostRunMemoryWriter;
 
@@ -281,6 +284,17 @@ impl MemoryEmbeddingGenerator for FakeEmbeddingGenerator {
 
     async fn embed_query(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
         Ok(vec![1.0, 0.0])
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryEmbeddingGenerator for FailingEmbeddingGenerator {
+    async fn embed_document(&self, _text: &str, _title: Option<&str>) -> anyhow::Result<Vec<f32>> {
+        Err(anyhow::anyhow!("embedding backend unavailable"))
+    }
+
+    async fn embed_query(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+        Err(anyhow::anyhow!("embedding backend unavailable"))
     }
 }
 
@@ -675,6 +689,191 @@ fn retrieval_memory() -> MemoryRecord {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
+    }
+}
+
+fn pending_embedding_record(update: EmbeddingPendingUpdate) -> oxide_agent_memory::EmbeddingRecord {
+    oxide_agent_memory::EmbeddingRecord {
+        owner_id: update.base.owner_id,
+        owner_type: update.base.owner_type,
+        model_id: update.base.model_id,
+        content_hash: update.base.content_hash,
+        embedding: None,
+        dimensions: None,
+        status: EmbeddingStatus::Pending,
+        last_error: None,
+        retry_count: 0,
+        created_at: update.requested_at,
+        updated_at: update.requested_at,
+        indexed_at: None,
+    }
+}
+
+fn failed_embedding_record(update: EmbeddingFailureUpdate) -> oxide_agent_memory::EmbeddingRecord {
+    oxide_agent_memory::EmbeddingRecord {
+        owner_id: update.base.owner_id,
+        owner_type: update.base.owner_type,
+        model_id: update.base.model_id,
+        content_hash: update.base.content_hash,
+        embedding: None,
+        dimensions: None,
+        status: EmbeddingStatus::Failed,
+        last_error: Some(update.error),
+        retry_count: 1,
+        created_at: update.failed_at,
+        updated_at: update.failed_at,
+        indexed_at: None,
+    }
+}
+
+#[tokio::test]
+async fn embedding_indexer_marks_episode_failed_after_generator_error() {
+    let mut storage = MockStorageProvider::new();
+    storage
+        .expect_upsert_memory_embedding_pending()
+        .times(1)
+        .returning(|update: EmbeddingPendingUpdate| {
+            assert_eq!(update.base.owner_type, EmbeddingOwnerType::Episode);
+            assert_eq!(update.base.owner_id, "episode-1");
+            Ok(pending_embedding_record(update))
+        });
+    storage.expect_upsert_memory_embedding_ready().times(0);
+    storage
+        .expect_upsert_memory_embedding_failure()
+        .times(1)
+        .returning(|update: EmbeddingFailureUpdate| {
+            assert_eq!(update.base.owner_type, EmbeddingOwnerType::Episode);
+            assert_eq!(update.base.owner_id, "episode-1");
+            assert!(update.error.contains("embedding backend unavailable"));
+            Ok(failed_embedding_record(update))
+        });
+
+    let indexer = PersistentMemoryEmbeddingIndexer::new(
+        Arc::new(storage),
+        Arc::new(FailingEmbeddingGenerator),
+        "gemini-embedding-001",
+    );
+
+    let error = indexer
+        .index_episode(&retrieval_episode())
+        .await
+        .expect_err("embedding generation should fail");
+    assert!(error.to_string().contains("embedding backend unavailable"));
+}
+
+#[tokio::test]
+async fn embedding_indexer_marks_memory_failed_after_generator_error() {
+    let mut storage = MockStorageProvider::new();
+    storage
+        .expect_upsert_memory_embedding_pending()
+        .times(1)
+        .returning(|update: EmbeddingPendingUpdate| {
+            assert_eq!(update.base.owner_type, EmbeddingOwnerType::Memory);
+            assert_eq!(update.base.owner_id, "memory-1");
+            Ok(pending_embedding_record(update))
+        });
+    storage.expect_upsert_memory_embedding_ready().times(0);
+    storage
+        .expect_upsert_memory_embedding_failure()
+        .times(1)
+        .returning(|update: EmbeddingFailureUpdate| {
+            assert_eq!(update.base.owner_type, EmbeddingOwnerType::Memory);
+            assert_eq!(update.base.owner_id, "memory-1");
+            assert!(update.error.contains("embedding backend unavailable"));
+            Ok(failed_embedding_record(update))
+        });
+
+    let indexer = PersistentMemoryEmbeddingIndexer::new(
+        Arc::new(storage),
+        Arc::new(FailingEmbeddingGenerator),
+        "gemini-embedding-001",
+    );
+
+    let error = indexer
+        .index_memory(&retrieval_memory())
+        .await
+        .expect_err("embedding generation should fail");
+    assert!(error.to_string().contains("embedding backend unavailable"));
+}
+
+#[tokio::test]
+async fn coordinator_persist_post_run_succeeds_when_embeddings_fail() {
+    let store = Arc::new(InMemoryMemoryRepository::new());
+    let store_for_indexer = Arc::clone(&store);
+    let store_for_indexer: Arc<dyn PersistentMemoryStore> = store_for_indexer;
+    let indexer = PersistentMemoryEmbeddingIndexer::new_with_store(
+        store_for_indexer,
+        Arc::new(FailingEmbeddingGenerator),
+        "gemini-embedding-001",
+    );
+    let store_for_coordinator = Arc::clone(&store);
+    let store_for_coordinator: Arc<dyn PersistentMemoryStore> = store_for_coordinator;
+    let coordinator = PersistentMemoryCoordinator::new(store_for_coordinator)
+        .with_memory_writer(Arc::new(FakePostRunMemoryWriter))
+        .with_embedding_indexer(indexer);
+    let scope = AgentMemoryScope::new(42, "topic-a", "flow-1");
+    let messages = vec![AgentMessage::user_turn(
+        "Persist durable memory despite embedding failure",
+    )];
+
+    coordinator
+        .persist_post_run(PersistentRunContext {
+            session_id: "session-embedding-failure",
+            task_id: "episode-embedding-failure",
+            scope: &scope,
+            task: "Persist durable memory despite embedding failure",
+            classification: writes_allowed_classification(),
+            messages: &messages,
+            explicit_remember_intent: false,
+            hot_token_estimate: 16,
+            tool_memory_drafts: Vec::new(),
+            phase: PersistentRunPhase::Completed {
+                final_answer: "Done",
+            },
+        })
+        .await
+        .expect("embedding failures should remain warning-only");
+
+    let state = store
+        .get_session_state("session-embedding-failure")
+        .await
+        .expect("session state lookup should succeed")
+        .expect("session state should exist");
+    assert_eq!(state.cleanup_status, CleanupStatus::Finalized);
+
+    let episode_embedding = MemoryRepository::get_embedding(
+        store.as_ref(),
+        EmbeddingOwnerType::Episode,
+        "episode-embedding-failure",
+    )
+    .await
+    .expect("episode embedding lookup should succeed")
+    .expect("episode embedding row should exist");
+    assert_eq!(episode_embedding.status, EmbeddingStatus::Failed);
+    assert!(episode_embedding
+        .last_error
+        .as_deref()
+        .is_some_and(|error| error.contains("embedding backend unavailable")));
+
+    let memories =
+        MemoryRepository::list_memories(store.as_ref(), "topic-a", &MemoryListFilter::default())
+            .await
+            .expect("memories should list");
+    assert_eq!(memories.len(), 3);
+    for memory in memories {
+        let embedding = MemoryRepository::get_embedding(
+            store.as_ref(),
+            EmbeddingOwnerType::Memory,
+            &memory.memory_id,
+        )
+        .await
+        .expect("memory embedding lookup should succeed")
+        .expect("memory embedding row should exist");
+        assert_eq!(embedding.status, EmbeddingStatus::Failed);
+        assert!(embedding
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("embedding backend unavailable")));
     }
 }
 

@@ -27,6 +27,61 @@ pub struct PgMemoryRepository {
     pool: PgPool,
 }
 
+const UPSERT_MEMORY_QUERY: &str = r#"
+    INSERT INTO memory_records (
+        memory_id,
+        context_key,
+        source_episode_id,
+        memory_type,
+        title,
+        content,
+        short_description,
+        importance,
+        confidence,
+        source,
+        content_hash,
+        reason,
+        tags,
+        created_at,
+        updated_at,
+        deleted_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+    ON CONFLICT (memory_id) DO UPDATE
+    SET
+        context_key = EXCLUDED.context_key,
+        source_episode_id = EXCLUDED.source_episode_id,
+        memory_type = EXCLUDED.memory_type,
+        title = EXCLUDED.title,
+        content = EXCLUDED.content,
+        short_description = EXCLUDED.short_description,
+        importance = EXCLUDED.importance,
+        confidence = EXCLUDED.confidence,
+        source = EXCLUDED.source,
+        content_hash = EXCLUDED.content_hash,
+        reason = EXCLUDED.reason,
+        tags = EXCLUDED.tags,
+        updated_at = EXCLUDED.updated_at,
+        deleted_at = COALESCE(memory_records.deleted_at, EXCLUDED.deleted_at)
+    RETURNING
+        memory_id,
+        context_key,
+        source_episode_id,
+        memory_type,
+        title,
+        content,
+        short_description,
+        importance,
+        confidence,
+        source,
+        content_hash,
+        reason,
+        tags,
+        created_at,
+        updated_at,
+        deleted_at
+    "#;
+
 impl PgMemoryRepository {
     /// Construct a repository from an existing Postgres pool.
     #[must_use]
@@ -582,81 +637,26 @@ impl MemoryRepository for PgMemoryRepository {
     ) -> impl Future<Output = Result<MemoryRecord, RepositoryError>> + Send {
         let pool = self.pool.clone();
         async move {
-            let row = sqlx::query_as::<_, MemoryRow>(
-                r#"
-                INSERT INTO memory_records (
-                    memory_id,
-                    context_key,
-                    source_episode_id,
-                    memory_type,
-                    title,
-                    content,
-                    short_description,
-                    importance,
-                    confidence,
-                    source,
-                    content_hash,
-                    reason,
-                    tags,
-                    created_at,
-                    updated_at,
-                    deleted_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-                ON CONFLICT (memory_id) DO UPDATE
-                SET
-                    context_key = EXCLUDED.context_key,
-                    source_episode_id = EXCLUDED.source_episode_id,
-                    memory_type = EXCLUDED.memory_type,
-                    title = EXCLUDED.title,
-                    content = EXCLUDED.content,
-                    short_description = EXCLUDED.short_description,
-                    importance = EXCLUDED.importance,
-                    confidence = EXCLUDED.confidence,
-                    source = EXCLUDED.source,
-                    content_hash = EXCLUDED.content_hash,
-                    reason = EXCLUDED.reason,
-                    tags = EXCLUDED.tags,
-                    updated_at = EXCLUDED.updated_at,
-                    deleted_at = EXCLUDED.deleted_at
-                RETURNING
-                    memory_id,
-                    context_key,
-                    source_episode_id,
-                    memory_type,
-                    title,
-                    content,
-                    short_description,
-                    importance,
-                    confidence,
-                    source,
-                    content_hash,
-                    reason,
-                    tags,
-                    created_at,
-                    updated_at,
-                    deleted_at
-                "#,
-            )
-            .bind(record.memory_id)
-            .bind(record.context_key)
-            .bind(record.source_episode_id)
-            .bind(encode_memory_type(record.memory_type))
-            .bind(record.title)
-            .bind(record.content)
-            .bind(record.short_description)
-            .bind(record.importance)
-            .bind(record.confidence)
-            .bind(record.source)
-            .bind(record.content_hash)
-            .bind(record.reason)
-            .bind(record.tags)
-            .bind(record.created_at)
-            .bind(record.updated_at)
-            .bind(record.deleted_at)
-            .fetch_one(&pool)
-            .await
-            .map_err(|error| map_sqlx_error("upsert_memory", error))?;
+            let row = sqlx::query_as::<_, MemoryRow>(UPSERT_MEMORY_QUERY)
+                .bind(record.memory_id)
+                .bind(record.context_key)
+                .bind(record.source_episode_id)
+                .bind(encode_memory_type(record.memory_type))
+                .bind(record.title)
+                .bind(record.content)
+                .bind(record.short_description)
+                .bind(record.importance)
+                .bind(record.confidence)
+                .bind(record.source)
+                .bind(record.content_hash)
+                .bind(record.reason)
+                .bind(record.tags)
+                .bind(record.created_at)
+                .bind(record.updated_at)
+                .bind(record.deleted_at)
+                .fetch_one(&pool)
+                .await
+                .map_err(|error| map_sqlx_error("upsert_memory", error))?;
 
             MemoryRecord::try_from(row)
         }
@@ -1684,8 +1684,15 @@ async fn fetch_embedding_row(
 
 #[cfg(test)]
 mod tests {
-    use super::PgMemoryRepository;
+    use super::{PgMemoryRepository, UPSERT_MEMORY_QUERY};
     use sqlx::postgres::PgPoolOptions;
+
+    #[test]
+    fn upsert_memory_sql_preserves_existing_deleted_at() {
+        assert!(UPSERT_MEMORY_QUERY
+            .contains("deleted_at = COALESCE(memory_records.deleted_at, EXCLUDED.deleted_at)"));
+        assert!(!UPSERT_MEMORY_QUERY.contains("deleted_at = EXCLUDED.deleted_at"));
+    }
 
     #[tokio::test]
     async fn repository_wraps_lazy_pool() {

@@ -393,6 +393,40 @@ mod tests {
     }
 
     #[test]
+    fn consolidator_deduplicates_matching_content_hashes() {
+        let consolidator = ContextConsolidator::new(ConsolidationPolicy::default());
+        let shared_hash = stable_memory_content_hash(MemoryType::Fact, "Canonical project fact");
+        let mut older = memory("mem-1", MemoryType::Fact, "Older wording", 100);
+        older.content_hash = Some(shared_hash.clone());
+        older.importance = 0.6;
+        let mut newer = memory("mem-2", MemoryType::Fact, "Newer wording", 120);
+        newer.content_hash = Some(shared_hash);
+        newer.importance = 0.9;
+
+        let result = consolidator.consolidate(&[older, newer], ts(200));
+
+        assert_eq!(result.diagnostics.exact_merge_deletions, vec!["mem-1"]);
+        assert_eq!(result.deletions, vec!["mem-1"]);
+        assert_eq!(result.upserts.len(), 1);
+        assert_eq!(result.upserts[0].memory_id, "mem-2");
+    }
+
+    #[test]
+    fn consolidator_keeps_matching_content_hashes_separate_across_types() {
+        let consolidator = ContextConsolidator::new(ConsolidationPolicy::default());
+        let shared_hash = "imported-shared-hash".to_string();
+        let mut fact = memory("mem-1", MemoryType::Fact, "Shared text", 100);
+        fact.content_hash = Some(shared_hash.clone());
+        let mut procedure = memory("mem-2", MemoryType::Procedure, "Shared text", 120);
+        procedure.content_hash = Some(shared_hash);
+
+        let result = consolidator.consolidate(&[fact, procedure], ts(200));
+
+        assert!(result.deletions.is_empty());
+        assert_eq!(result.upserts.len(), 2);
+    }
+
+    #[test]
     fn consolidator_expires_old_low_signal_memories() {
         let consolidator = ContextConsolidator::new(ConsolidationPolicy::default());
         let mut record = memory("mem-1", MemoryType::Preference, "Prefer terse answers", 0);
