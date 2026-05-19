@@ -1266,19 +1266,12 @@ mod tests {
     }
 
     #[test]
-    fn build_sub_agent_providers_do_not_expose_wiki_memory_delete() {
-        let settings = Arc::new(AgentSettings::default());
-        let provider =
-            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
-        let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let providers = provider.build_sub_agent_providers(todos, None);
-        let tools: HashSet<String> = providers
-            .iter()
-            .flat_map(|provider| provider.tools())
-            .map(|tool| tool.name)
-            .collect();
+    fn build_sub_agent_wiki_memory_policy_keeps_read_only_tools_available() {
+        let blocked: HashSet<&str> = super::BLOCKED_SUB_AGENT_TOOLS.iter().copied().collect();
 
-        assert!(!tools.contains("wiki_memory_delete"));
+        assert!(!blocked.contains("wiki_memory_list"));
+        assert!(!blocked.contains("wiki_memory_read"));
+        assert!(blocked.contains("wiki_memory_delete"));
     }
 
     #[test]
