@@ -132,6 +132,17 @@ impl AgentExecutor {
         self
     }
 
+    /// Return whether durable LLM Wiki storage is configured for this executor.
+    #[must_use]
+    pub const fn has_wiki_memory_store(&self) -> bool {
+        self.wiki_memory_store.is_some()
+    }
+
+    /// Attach or replace the durable LLM Wiki memory store for this executor.
+    pub fn set_wiki_memory_store(&mut self, store: WikiStore) {
+        self.wiki_memory_store = Some(store);
+    }
+
     /// Apply the latest execution profile for the next task run.
     pub fn set_execution_profile(
         &mut self,

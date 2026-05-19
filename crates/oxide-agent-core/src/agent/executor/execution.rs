@@ -26,7 +26,7 @@ use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 impl AgentExecutor {
     /// Inject safe topic infra preflight status into session memory once per change.
@@ -389,7 +389,10 @@ impl AgentExecutor {
     }
 
     async fn render_wiki_context_for_task(&self, task: &str) -> Option<String> {
-        let store = self.wiki_memory_store.clone()?;
+        let Some(store) = self.wiki_memory_store.clone() else {
+            debug!("wiki memory store is not configured; skipping durable wiki context");
+            return None;
+        };
         let scope = self.session.memory_scope();
         let cache = Arc::new(WikiSessionCache::new(store));
         let assembler = WikiContextAssembler::new(cache, WikiContextAssemblerConfig::default());
@@ -409,6 +412,7 @@ impl AgentExecutor {
 
     async fn flush_wiki_memory_after_successful_run(&self, task: &str) {
         let Some(store) = self.wiki_memory_store.clone() else {
+            warn!("wiki memory store is not configured; skipping durable wiki update");
             return;
         };
 
@@ -420,6 +424,12 @@ impl AgentExecutor {
         let Some(patch) =
             WikiPatchPlanner::default().plan_run_patch(&context_id, task_id, task, &drafts, now)
         else {
+            debug!(
+                task_id,
+                context_id,
+                draft_count = drafts.len(),
+                "wiki memory planner produced no durable patch after successful run"
+            );
             return;
         };
 

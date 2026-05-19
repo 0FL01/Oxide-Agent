@@ -150,6 +150,37 @@ async fn executor_flushes_explicit_remember_to_wiki_after_completed_run() {
     assert!(log.contains("post-run wiki memory candidate capture"));
 }
 
+#[tokio::test]
+async fn executor_flushes_russian_save_intent_to_wiki_after_completed_run() {
+    let backend = Arc::new(InMemoryWikiBackend::default());
+    let store_backend: Arc<dyn crate::agent::wiki_memory::WikiObjectBackend> = backend.clone();
+    let wiki_store = crate::agent::wiki_memory::WikiStore::new(store_backend, "prod");
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"done","tool_call":null,"final_answer":"сохранил","awaiting_user_input":null}"#,
+    )
+    .with_wiki_memory_store(wiki_store);
+
+    let result = executor
+        .execute(
+            "Сохрани это в память: перед деплоем запускать smoke tests.",
+            None,
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "сохранил"
+    ));
+    let objects = backend.objects.lock().await;
+    let page_entry = objects
+        .iter()
+        .find(|(key, _)| key.contains("/wiki/v1/contexts/") && key.contains("/pages/"))
+        .map(|(_, value)| value)
+        .expect("wiki page should be flushed for Russian save intent");
+    assert!(page_entry.contains("type: note"));
+    assert!(page_entry.contains("перед деплоем запускать smoke tests"));
+}
+
 #[test]
 fn hard_timeout_uses_configured_duration_and_message() {
     let executor = build_executor_with_timeout(36_000);

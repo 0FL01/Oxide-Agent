@@ -115,7 +115,7 @@ impl WikiPatchPlanner {
 }
 
 fn has_explicit_remember_intent(task: &str) -> bool {
-    let normalized = task.to_ascii_lowercase();
+    let normalized = task.to_lowercase();
     if normalized.contains("do not remember")
         || normalized.contains("don't remember")
         || normalized.contains("dont remember")
@@ -426,6 +426,30 @@ mod tests {
                 assert!(path.starts_with("contexts/ctx-12345678/pages/2026-05-19-"));
                 assert!(content.contains("type: note"));
                 assert!(content.contains("use staging before prod deploys"));
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_russian_save_intent_to_page() {
+        let planner = WikiPatchPlanner::default();
+        let patch = planner
+            .plan_run_patch(
+                "ctx-12345678",
+                "task-abc123",
+                "Сохрани это в память: перед деплоем запускать smoke tests.",
+                &[],
+                now(),
+            )
+            .expect("Russian save intent should create patch");
+
+        assert_eq!(patch.operations.len(), 1);
+        match &patch.operations[0] {
+            WikiPatchOperation::CreatePage { path, content } => {
+                assert!(path.starts_with("contexts/ctx-12345678/pages/2026-05-19-"));
+                assert!(content.contains("type: note"));
+                assert!(content.contains("перед деплоем запускать smoke tests"));
             }
             other => panic!("unexpected op: {other:?}"),
         }

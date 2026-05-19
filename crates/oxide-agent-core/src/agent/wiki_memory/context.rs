@@ -211,8 +211,8 @@ fn markdown_link_path(line: &str) -> Option<&str> {
 fn keywords(task: &str) -> HashSet<String> {
     let mut result = HashSet::new();
     for token in task
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .map(str::to_ascii_lowercase)
+        .split(|ch: char| !ch.is_alphanumeric())
+        .map(str::to_lowercase)
     {
         if token.len() >= 3 {
             result.insert(token);
