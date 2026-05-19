@@ -66,7 +66,7 @@ impl WikiPatchPlanner {
         });
         let source_ref = run_source_ref(task_id, now);
 
-        if has_explicit_remember_intent(task) {
+        if has_explicit_remember_intent(task) && !drafts.iter().any(is_explicit_remember_draft) {
             buffer.push(WikiSignal {
                 kind: WikiSignalKind::ExplicitRemember,
                 content: truncate_chars(task, TASK_SIGNAL_MAX_CHARS),
@@ -114,7 +114,7 @@ impl WikiPatchPlanner {
     }
 }
 
-fn has_explicit_remember_intent(task: &str) -> bool {
+pub(crate) fn has_explicit_remember_intent(task: &str) -> bool {
     let normalized = task.to_lowercase();
     if normalized.contains("do not remember")
         || normalized.contains("don't remember")
@@ -137,6 +137,54 @@ fn has_explicit_remember_intent(task: &str) -> bool {
     ]
     .iter()
     .any(|needle| normalized.contains(needle))
+}
+
+pub(crate) fn extract_explicit_remember_payload(task: &str) -> Option<String> {
+    let trimmed = task.trim();
+    if trimmed.is_empty() || !has_explicit_remember_intent(trimmed) {
+        return None;
+    }
+
+    if let Some((prefix, suffix)) = trimmed.split_once(':') {
+        if has_explicit_remember_intent(prefix) {
+            let cleaned = cleanup_explicit_payload(suffix);
+            if !cleaned.is_empty() {
+                return Some(cleaned);
+            }
+        }
+    }
+
+    for prefix in [
+        "Remember this",
+        "Remember that",
+        "Remember",
+        "remember this",
+        "remember that",
+        "remember",
+        "Save this",
+        "Save that",
+        "Save",
+        "save this",
+        "save that",
+        "save",
+        "Memorize",
+        "memorize",
+        "Use this next time",
+        "use this next time",
+        "Сохрани",
+        "сохрани",
+        "Запомни",
+        "запомни",
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            let cleaned = cleanup_explicit_payload(rest);
+            if !cleaned.is_empty() {
+                return Some(cleaned);
+            }
+        }
+    }
+
+    None
 }
 
 fn signal_kind_for_draft(draft: &ToolDerivedMemoryDraft) -> WikiSignalKind {
@@ -264,9 +312,10 @@ fn page_content(
     let body = draft
         .map(|draft| draft.content.as_str())
         .unwrap_or(signal.content.as_str());
+    let evidence = draft.map(render_evidence_section).unwrap_or_default();
 
     format!(
-        "---\ntitle: {}\ntype: {}\nupdated_at: {}\nconfidence: {}\ntags:\n{}\nsources:\n{}\n---\n\n# {}\n\n{}\n\n## Capture\n\n- Kind: {}\n- Reason: {}\n- Source: {}\n\n## Source Task\n\n{}\n",
+        "---\ntitle: {}\ntype: {}\nupdated_at: {}\nconfidence: {}\ntags:\n{}\nsources:\n{}\n---\n\n# {}\n\n{}{}\n\n## Capture\n\n- Kind: {}\n- Reason: {}\n- Source: {}\n\n## Source Task\n\n{}\n",
         yaml_string(&truncate_chars(title, TITLE_MAX_CHARS)),
         page_type,
         now.to_rfc3339(),
@@ -275,6 +324,7 @@ fn page_content(
         yaml_list(&source_refs),
         truncate_chars(title, TITLE_MAX_CHARS),
         truncate_chars(body, DRAFT_CONTENT_MAX_CHARS),
+        evidence,
         signal_kind_label(signal.kind),
         truncate_chars(reason, 240),
         draft.map(|draft| draft.source.as_str()).unwrap_or("user_task"),
@@ -312,9 +362,10 @@ fn inbox_content(
     let body = draft
         .map(|draft| draft.content.as_str())
         .unwrap_or(signal.content.as_str());
+    let evidence = draft.map(render_evidence_section).unwrap_or_default();
 
     format!(
-        "---\ntitle: {}\ntype: inbox\nupdated_at: {}\nconfidence: {}\ntags:\n{}\nsources:\n{}\n---\n\n# {}\n\n{}\n\n## Capture\n\n- Kind: {}\n- Explicit: {}\n- Reason: {}\n- Source: {}\n\n## Task\n\n{}\n",
+        "---\ntitle: {}\ntype: inbox\nupdated_at: {}\nconfidence: {}\ntags:\n{}\nsources:\n{}\n---\n\n# {}\n\n{}{}\n\n## Capture\n\n- Kind: {}\n- Explicit: {}\n- Reason: {}\n- Source: {}\n\n## Task\n\n{}\n",
         yaml_string(&truncate_chars(title, TITLE_MAX_CHARS)),
         now.to_rfc3339(),
         confidence,
@@ -322,6 +373,7 @@ fn inbox_content(
         yaml_list(&source_refs),
         truncate_chars(title, TITLE_MAX_CHARS),
         truncate_chars(body, DRAFT_CONTENT_MAX_CHARS),
+        evidence,
         signal_kind_label(signal.kind),
         signal.explicit,
         truncate_chars(reason, 240),
@@ -336,6 +388,42 @@ fn page_type_for_draft(draft: &ToolDerivedMemoryDraft) -> &'static str {
         ToolDerivedMemoryKind::Preference => "preference",
         ToolDerivedMemoryKind::Procedure => "procedure",
     }
+}
+
+fn is_explicit_remember_draft(draft: &ToolDerivedMemoryDraft) -> bool {
+    draft.source == "explicit_remember_capture"
+        || draft.tags.iter().any(|tag| tag == "explicit-remember")
+}
+
+fn cleanup_explicit_payload(value: &str) -> String {
+    let mut cleaned = value
+        .trim()
+        .trim_start_matches([':', '-', '—', '–', ' '])
+        .trim_start_matches("this")
+        .trim_start_matches("that")
+        .trim_start_matches("это")
+        .trim();
+    for suffix in ["in memory", "в память"] {
+        if let Some(stripped) = cleaned.strip_suffix(suffix) {
+            cleaned = stripped.trim();
+        }
+    }
+    cleaned.trim_matches([' ', '.', ':']).to_string()
+}
+
+fn render_evidence_section(draft: &ToolDerivedMemoryDraft) -> String {
+    if draft.evidence.is_empty() {
+        return String::new();
+    }
+    format!("\n\n## Evidence\n\n{}", markdown_bullets(&draft.evidence))
+}
+
+fn markdown_bullets(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| format!("- {}", truncate_chars(item, DRAFT_CONTENT_MAX_CHARS)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn page_type_for_signal(kind: WikiSignalKind) -> &'static str {
@@ -432,6 +520,14 @@ mod tests {
     }
 
     #[test]
+    fn planner_extracts_explicit_payload_without_memory_suffix() {
+        assert_eq!(
+            extract_explicit_remember_payload("Сохрани текущий курс BTC USDT в память").as_deref(),
+            Some("текущий курс BTC USDT")
+        );
+    }
+
+    #[test]
     fn planner_routes_russian_save_intent_to_page() {
         let planner = WikiPatchPlanner::default();
         let patch = planner
@@ -468,6 +564,7 @@ mod tests {
             source: "test_hook".to_string(),
             reason: "successful deploy flow observed".to_string(),
             tags: vec!["procedure".to_string(), "deploy".to_string()],
+            evidence: vec!["Tool: write_file. Path: Cargo.toml.".to_string()],
             captured_at: now(),
         };
 
@@ -480,6 +577,7 @@ mod tests {
             WikiPatchOperation::CreatePage { path, content } => {
                 assert!(path.contains("deploy-workflow"));
                 assert!(content.contains("Run cargo test before deployment."));
+                assert!(content.contains("## Evidence"));
                 assert!(content.contains("hook:test_hook"));
             }
             other => panic!("unexpected op: {other:?}"),
@@ -499,6 +597,7 @@ mod tests {
             source: "test_hook".to_string(),
             reason: "failure observed once".to_string(),
             tags: vec!["failure".to_string()],
+            evidence: vec![],
             captured_at: now(),
         };
 
@@ -511,6 +610,42 @@ mod tests {
             WikiPatchOperation::CreateInboxItem { path, content } => {
                 assert!(path.starts_with("contexts/ctx-12345678/inbox/"));
                 assert!(content.contains("type: inbox"));
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn planner_suppresses_raw_explicit_signal_when_explicit_draft_exists() {
+        let planner = WikiPatchPlanner::default();
+        let draft = ToolDerivedMemoryDraft {
+            kind: ToolDerivedMemoryKind::Fact,
+            title: "BTC/USDT current rate".to_string(),
+            content: "BTC/USDT = 80 104.40".to_string(),
+            short_description: "Verified BTC/USDT rate".to_string(),
+            importance: 0.9,
+            confidence: 0.45,
+            source: "explicit_remember_capture".to_string(),
+            reason: "unverified volatile fact".to_string(),
+            tags: vec!["explicit-remember".to_string(), "volatile".to_string()],
+            evidence: vec![],
+            captured_at: now(),
+        };
+
+        let patch = planner
+            .plan_run_patch(
+                "ctx-12345678",
+                "task-abc123",
+                "Сохрани текущий курс BTC USDT в память",
+                &[draft],
+                now(),
+            )
+            .expect("explicit draft should create one operation");
+
+        assert_eq!(patch.operations.len(), 1);
+        match &patch.operations[0] {
+            WikiPatchOperation::CreateInboxItem { content, .. } => {
+                assert!(content.contains("BTC/USDT = 80 104.40"));
             }
             other => panic!("unexpected op: {other:?}"),
         }

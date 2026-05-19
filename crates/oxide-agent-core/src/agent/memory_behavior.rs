@@ -84,6 +84,8 @@ pub struct ToolDerivedMemoryDraft {
     pub reason: String,
     /// Lightweight tags for later wiki patch planning.
     pub tags: Vec<String>,
+    /// Compact evidence lines that explain why this candidate was captured.
+    pub evidence: Vec<String>,
     /// Capture timestamp.
     pub captured_at: DateTime<Utc>,
 }
