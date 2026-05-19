@@ -369,6 +369,10 @@ mod tests {
         async fn put_text(&self, _key: &str, _content: &str) -> Result<(), StorageError> {
             Ok(())
         }
+
+        async fn delete_text(&self, _key: &str) -> Result<(), StorageError> {
+            Ok(())
+        }
     }
 
     fn page(content: &str) -> String {

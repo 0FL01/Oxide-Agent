@@ -3,7 +3,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
     KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
-    SandboxProvider, StackLogsProvider, TodoList, TodosProvider, YtdlpProvider,
+    SandboxProvider, StackLogsProvider, TodoList, TodosProvider, WikiMemoryProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use std::sync::Arc;
@@ -42,6 +42,7 @@ impl AgentExecutor {
 
         // Topic-scoped providers: agents_md, manager, ssh, reminders
         self.register_topic_providers(&mut registry);
+        self.register_wiki_memory_provider(&mut registry);
 
         // Feature-gated MCP, search, and browser automation providers
         self.register_mcp_providers(&mut registry);
@@ -175,6 +176,18 @@ impl AgentExecutor {
         if let Some(reminder_context) = &self.reminder_context {
             registry.register(Box::new(ReminderProvider::new(reminder_context.clone())));
         }
+    }
+
+    fn register_wiki_memory_provider(&self, registry: &mut ToolRegistry) {
+        let Some(store) = self.wiki_memory_store.clone() else {
+            return;
+        };
+        let scope = self.session.memory_scope();
+        registry.register(Box::new(WikiMemoryProvider::new(
+            store,
+            scope.user_id,
+            scope.context_key.clone(),
+        )));
     }
 
     #[cfg(feature = "jira")]

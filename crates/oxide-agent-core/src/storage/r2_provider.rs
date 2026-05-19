@@ -312,6 +312,10 @@ impl StorageProvider for R2Storage {
         with_storage_reason("save_wiki_text", self.save_text(&storage_key, &content)).await
     }
 
+    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
+        with_storage_reason("delete_wiki_text", self.delete_object(&storage_key)).await
+    }
+
     /// Clear all context (history and memory) for a user
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
         self.clear_chat_history(user_id).await?;

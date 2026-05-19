@@ -200,6 +200,13 @@ pub trait StorageProvider: Send + Sync {
         let _ = content;
         Ok(())
     }
+    /// Delete a durable LLM Wiki Markdown object by deterministic storage key.
+    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
+        let _ = storage_key;
+        Err(StorageError::Config(
+            "wiki text deletion is not implemented for this storage provider".to_string(),
+        ))
+    }
     /// Clear all context (history and memory) for a user.
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError>;
     /// Check connection to storage.

@@ -566,6 +566,11 @@ mod tests {
                 .insert(key.to_string(), content.to_string());
             Ok(())
         }
+
+        async fn delete_text(&self, key: &str) -> Result<(), StorageError> {
+            self.objects.lock().await.remove(key);
+            Ok(())
+        }
     }
 
     fn validated_patch(key: &str, content: &str) -> ValidatedWikiPatch {

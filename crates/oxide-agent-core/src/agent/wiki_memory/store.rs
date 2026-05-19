@@ -13,6 +13,8 @@ pub trait WikiObjectBackend: Send + Sync {
     async fn get_text(&self, key: &str) -> Result<Option<String>, StorageError>;
     /// Store one deterministic text object by key.
     async fn put_text(&self, key: &str, content: &str) -> Result<(), StorageError>;
+    /// Delete one deterministic text object by key.
+    async fn delete_text(&self, key: &str) -> Result<(), StorageError>;
 }
 
 #[async_trait]
@@ -23,6 +25,10 @@ impl WikiObjectBackend for R2Storage {
 
     async fn put_text(&self, key: &str, content: &str) -> Result<(), StorageError> {
         self.save_text(key, content).await
+    }
+
+    async fn delete_text(&self, key: &str) -> Result<(), StorageError> {
+        self.delete_object(key).await
     }
 }
 
@@ -58,6 +64,10 @@ impl WikiObjectBackend for StorageProviderWikiBackend {
         self.storage
             .save_wiki_text(key.to_string(), content.to_string())
             .await
+    }
+
+    async fn delete_text(&self, key: &str) -> Result<(), StorageError> {
+        self.storage.delete_wiki_text(key.to_string()).await
     }
 }
 
@@ -181,6 +191,16 @@ impl WikiStore {
             .await
     }
 
+    /// Delete a topic page from a context wiki namespace.
+    pub async fn delete_context_page(
+        &self,
+        context_id: &str,
+        slug: &str,
+    ) -> Result<(), StorageError> {
+        self.delete_key(&self.context_page_key(context_id, slug)?)
+            .await
+    }
+
     /// Read an inbox item from a context wiki namespace.
     pub async fn read_context_inbox_item(
         &self,
@@ -199,6 +219,16 @@ impl WikiStore {
         content: &str,
     ) -> Result<(), StorageError> {
         self.put_key(&self.context_inbox_key(context_id, item_slug)?, content)
+            .await
+    }
+
+    /// Delete an inbox item from a context wiki namespace.
+    pub async fn delete_context_inbox_item(
+        &self,
+        context_id: &str,
+        item_slug: &str,
+    ) -> Result<(), StorageError> {
+        self.delete_key(&self.context_inbox_key(context_id, item_slug)?)
             .await
     }
 
@@ -237,6 +267,10 @@ impl WikiStore {
 
     async fn put_key(&self, key: &str, content: &str) -> Result<(), StorageError> {
         self.backend.put_text(key, content).await
+    }
+
+    async fn delete_key(&self, key: &str) -> Result<(), StorageError> {
+        self.backend.delete_text(key).await
     }
 
     pub(crate) async fn put_validated_key(
@@ -324,6 +358,7 @@ mod tests {
         objects: Mutex<HashMap<String, String>>,
         get_keys: Mutex<Vec<String>>,
         put_keys: Mutex<Vec<String>>,
+        delete_keys: Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -339,6 +374,12 @@ mod tests {
                 .lock()
                 .await
                 .insert(key.to_string(), content.to_string());
+            Ok(())
+        }
+
+        async fn delete_text(&self, key: &str) -> Result<(), StorageError> {
+            self.delete_keys.lock().await.push(key.to_string());
+            self.objects.lock().await.remove(key);
             Ok(())
         }
     }
@@ -436,5 +477,31 @@ mod tests {
 
         assert!(matches!(result, Err(StorageError::InvalidInput(_))));
         assert!(backend.put_keys.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wiki_store_deletes_deterministic_context_inbox_key() {
+        let backend = Arc::new(InMemoryWikiBackend::default());
+        backend.objects.lock().await.insert(
+            "prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md".to_string(),
+            "# Price note".to_string(),
+        );
+        let store_backend = Arc::clone(&backend);
+        let store = WikiStore::new(store_backend, "prod");
+
+        store
+            .delete_context_inbox_item("ctx-12345678", "price-note")
+            .await
+            .expect("delete should succeed");
+
+        assert_eq!(
+            *backend.delete_keys.lock().await,
+            vec!["prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md".to_string()]
+        );
+        assert!(!backend
+            .objects
+            .lock()
+            .await
+            .contains_key("prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md"));
     }
 }

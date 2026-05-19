@@ -18,6 +18,11 @@ impl crate::agent::wiki_memory::WikiObjectBackend for InMemoryWikiBackend {
             .insert(key.to_string(), content.to_string());
         Ok(())
     }
+
+    async fn delete_text(&self, key: &str) -> Result<(), crate::storage::StorageError> {
+        self.objects.lock().await.remove(key);
+        Ok(())
+    }
 }
 
 #[test]
@@ -46,6 +51,19 @@ fn executor_registers_episodic_extract_hook_for_wiki_drafts() {
     let executor = build_executor();
 
     assert!(executor.runner.has_registered_hook("episodic_extract"));
+}
+
+#[test]
+fn executor_exposes_wiki_memory_tools_when_store_configured() {
+    let backend = Arc::new(InMemoryWikiBackend::default());
+    let store_backend: Arc<dyn crate::agent::wiki_memory::WikiObjectBackend> = backend;
+    let wiki_store = crate::agent::wiki_memory::WikiStore::new(store_backend, "prod");
+    let executor = build_executor().with_wiki_memory_store(wiki_store);
+    let tools = executor.current_tool_definitions();
+
+    assert!(tools.iter().any(|tool| tool.name == "wiki_memory_list"));
+    assert!(tools.iter().any(|tool| tool.name == "wiki_memory_read"));
+    assert!(tools.iter().any(|tool| tool.name == "wiki_memory_delete"));
 }
 
 #[tokio::test]

@@ -345,6 +345,12 @@ impl crate::api::StorageProvider for InMemoryStorage {
         Ok(())
     }
 
+    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
+        let mut objects = self.wiki_objects.write().await;
+        objects.remove(&storage_key);
+        Ok(())
+    }
+
     // --- Topic agents md ---
 
     async fn get_topic_agents_md(
