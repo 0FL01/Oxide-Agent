@@ -322,7 +322,7 @@ contexts/{context_id}/log.md
 contexts/{context_id}/overview.md
 ```
 
-`global/user.md` and `global/preferences.md` are required only when global memory is enabled for a user/deployment. If global memory is not enabled, the read path should skip them without S3 LIST.
+`global/user.md` and `global/preferences.md` are required only when global memory is enabled for a user. If global memory is not enabled, the read path should skip them without S3 LIST.
 
 #### Optional objects
 
@@ -352,7 +352,7 @@ AgentMemoryScope {
 
 Mapping:
 
-* `global/` is per user or deployment, depending on product decision.
+* `global/` is per user.
 * `contexts/{context_id}/` is derived from `user_id + context_key`.
 * `flow_id` should not create a separate durable wiki by default; flows are too granular. It may appear in source refs/log entries.
 * `context_id` must be deterministic and safe:
@@ -2315,14 +2315,14 @@ Implementation is accepted when:
 
 ---
 
-## 19. Open questions
+## 19. Resolved open questions
 
-1. Should `global/` be per `user_id`, per deployment, or both? Recommended MVP: per `user_id` if Oxide Agent handles multiple users; otherwise deployment-global is acceptable.
-2. Should `context_id` include Telegram topic/thread IDs directly or use current `context_key` slug+hash? Recommended MVP: `slug_hash(user_id, context_key)`.
-3. Should raw archive ever be enabled by default? Recommended MVP: no.
-4. Should explicit user memory updates return confirmation to the user if flush fails? Recommended MVP: only when the user explicitly asked to remember something.
-5. Should topic `AGENTS.md` be linked from wiki `index.md`? Recommended MVP: no; keep it as separate control-plane context to avoid mixing instructions and durable memory.
-6. Should future embeddings search over wiki pages be added? Future optional enhancement only, after MVP is stable and S3 I/O remains bounded.
+1. `global/` is per `user_id`.
+2. `context_id` uses `slug_hash(user_id, context_key)`.
+3. Raw archive is disabled by default.
+4. Explicit memory updates get user-facing confirmation only if the user explicitly asked to remember something and flush fails.
+5. Topic `AGENTS.md` stays separate from wiki `index.md`.
+6. Embeddings search is optional future work, not part of MVP.
 
 [1]: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f "https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f"
 [2]: https://hermes-agent.nousresearch.com/docs/user-guide/features/memory "https://hermes-agent.nousresearch.com/docs/user-guide/features/memory"
