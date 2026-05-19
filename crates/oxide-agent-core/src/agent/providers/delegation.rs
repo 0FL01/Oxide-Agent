@@ -101,6 +101,7 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     "reminder_pause",
     "reminder_resume",
     "reminder_retry",
+    "wiki_memory_delete",
     // Jira write operations blocked for sub-agents (read-only access allowed)
     "jira_write",
 ];
@@ -1262,6 +1263,22 @@ mod tests {
             .collect();
 
         assert!(!tools.contains("compress"));
+    }
+
+    #[test]
+    fn build_sub_agent_providers_do_not_expose_wiki_memory_delete() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
+        let providers = provider.build_sub_agent_providers(todos, None);
+        let tools: HashSet<String> = providers
+            .iter()
+            .flat_map(|provider| provider.tools())
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(!tools.contains("wiki_memory_delete"));
     }
 
     #[test]
