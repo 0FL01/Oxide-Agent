@@ -19,6 +19,7 @@ use super::setup::{
 /// Test: after the sub-agent relay cleanup fix, a delegated sub-agent completes
 /// without deadlock, even when the sub-agent returns empty content.
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_delegated_sub_agent_empty_content_completes_after_relay_cleanup() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(
         delegated_sub_agent_empty_content_responses(),
@@ -75,6 +76,7 @@ async fn e2e_delegated_sub_agent_empty_content_completes_after_relay_cleanup() {
 /// narrator is still hanging, because the registry is dropped before awaiting
 /// the relay task.
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_delegated_sub_agent_unblocks_after_delayed_narrator_release() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(
         delegated_sub_agent_empty_content_responses(),

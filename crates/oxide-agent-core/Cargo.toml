@@ -64,7 +64,6 @@ cron = "0.15.0"
 chrono-tz = "0.10.4"
 fastrand = "2.3.0"
 gemini-rust = "1.7.1"
-oxide-agent-memory = { path = "../oxide-agent-memory" }
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]

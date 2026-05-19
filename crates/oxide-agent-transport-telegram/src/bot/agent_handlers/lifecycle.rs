@@ -54,7 +54,6 @@ pub async fn activate_agent_mode(
     dialogue: AgentDialogue,
     llm: Arc<LlmClient>,
     storage: Arc<dyn StorageProvider>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
     user_id: i64,
 ) -> Result<()> {
@@ -84,7 +83,6 @@ pub async fn activate_agent_mode(
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -122,68 +120,26 @@ async fn delegate_non_agent_context_message(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: AgentDialogue,
-    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     if msg.text().is_some() {
-        return crate::bot::handlers::handle_text(
-            bot,
-            msg,
-            storage,
-            llm,
-            dialogue,
-            persistent_memory_store.clone(),
-            settings,
-        )
-        .await;
+        return crate::bot::handlers::handle_text(bot, msg, storage, llm, dialogue, settings).await;
     }
     if msg.voice().is_some() {
-        return crate::bot::handlers::handle_voice(
-            bot,
-            msg,
-            storage,
-            llm,
-            dialogue,
-            persistent_memory_store.clone(),
-            settings,
-        )
-        .await;
+        return crate::bot::handlers::handle_voice(bot, msg, storage, llm, dialogue, settings)
+            .await;
     }
     if msg.photo().is_some() {
-        return crate::bot::handlers::handle_photo(
-            bot,
-            msg,
-            storage,
-            llm,
-            dialogue,
-            persistent_memory_store.clone(),
-            settings,
-        )
-        .await;
+        return crate::bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings)
+            .await;
     }
     if msg.video().is_some() {
-        return crate::bot::handlers::handle_video(
-            bot,
-            msg,
-            storage,
-            llm,
-            dialogue,
-            persistent_memory_store.clone(),
-            settings,
-        )
-        .await;
+        return crate::bot::handlers::handle_video(bot, msg, storage, llm, dialogue, settings)
+            .await;
     }
     if msg.document().is_some() {
-        return crate::bot::handlers::handle_document(
-            bot,
-            msg,
-            dialogue,
-            storage,
-            llm,
-            persistent_memory_store.clone(),
-            settings,
-        )
-        .await;
+        return crate::bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings)
+            .await;
     }
 
     Ok(())
@@ -200,7 +156,6 @@ pub async fn handle_agent_message(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: AgentDialogue,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
@@ -211,16 +166,8 @@ pub async fn handle_agent_message(
     let sandbox_scope = sandbox_scope(user_id, chat_id, thread_spec);
 
     if !is_agent_mode_context(&storage, user_id, chat_id, thread_spec).await? {
-        return delegate_non_agent_context_message(
-            bot,
-            msg,
-            storage,
-            llm,
-            dialogue,
-            &persistent_memory_store,
-            settings,
-        )
-        .await;
+        return delegate_non_agent_context_message(bot, msg, storage, llm, dialogue, settings)
+            .await;
     }
 
     let (agent_flow_id, agent_flow_created, session_keys) =
@@ -252,7 +199,6 @@ pub async fn handle_agent_message(
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;

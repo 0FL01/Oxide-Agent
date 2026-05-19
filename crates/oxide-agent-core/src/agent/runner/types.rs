@@ -2,9 +2,7 @@
 
 use crate::agent::compaction::CompactionService;
 use crate::agent::context::AgentContext;
-use crate::agent::persistent_memory::{
-    MemoryBehaviorRuntime, MemoryClassificationDecision, PersistentMemoryCoordinator,
-};
+use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
@@ -129,16 +127,12 @@ pub struct AgentRunnerContext<'a> {
     pub skill_registry: Option<&'a mut SkillRegistry>,
     /// Optional compaction service for pre-turn context maintenance.
     pub compaction_service: Option<&'a CompactionService>,
-    /// Optional Stage-4 persistent-memory coordinator.
-    pub persistent_memory: Option<&'a PersistentMemoryCoordinator>,
     /// Stable top-level session identity when available.
     pub session_id: Option<String>,
     /// Stable top-level memory scope when available.
     pub memory_scope: Option<AgentMemoryScope>,
     /// Task-local Stage-14 memory behavior runtime.
     pub memory_behavior: Option<Arc<MemoryBehaviorRuntime>>,
-    /// Single per-task persistent-memory routing decision.
-    pub(crate) memory_classification: Option<MemoryClassificationDecision>,
     /// Runner configuration.
     pub config: AgentRunnerConfig,
 }
@@ -174,11 +168,9 @@ impl<'a> AgentRunnerContext<'a> {
             agent: base.agent,
             skill_registry: None,
             compaction_service,
-            persistent_memory: None,
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            memory_classification: None,
             config,
         }
     }

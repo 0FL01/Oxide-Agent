@@ -7,21 +7,16 @@ use crate::agent::hooks::{
     CompletionCheckHook, DelegationGuardHook, HotContextHealthHook, RetrievalAdvisorHook,
     SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook, WorkloadDistributorHook,
 };
-use crate::agent::persistent_memory::{
-    LlmMemoryEmbeddingGenerator, LlmMemoryTaskClassifier, LlmPostRunMemoryWriter,
-    PersistentMemoryCoordinator, PersistentMemoryEmbeddingIndexer, PersistentMemoryStore,
-    PostRunMemoryWriterConfig,
-};
 use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext, SshApprovalRegistry};
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::AgentSession;
+use crate::agent::wiki_memory::WikiStore;
 use crate::config::get_agent_search_limit;
 use crate::config::ModelInfo;
 use crate::llm::LlmClient;
-use crate::storage::{StorageMemoryRepository, StorageProvider, TopicInfraConfigRecord};
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex, OnceLock};
-use tracing::{debug, warn};
+use crate::storage::{StorageProvider, TopicInfraConfigRecord};
+use std::sync::Arc;
+use tracing::debug;
 
 fn format_model_routes(routes: &[ModelInfo]) -> Vec<String> {
     routes
@@ -35,25 +30,6 @@ fn format_dedicated_model_route(id: &str, provider: &str) -> Option<String> {
         None
     } else {
         Some(format!("{provider}/{id}"))
-    }
-}
-
-fn memory_classifier_fallback_warning_key(route: &ModelInfo) -> String {
-    format!("{}:{}", route.provider, route.id)
-}
-
-fn should_warn_memory_classifier_text_fallback(route: &ModelInfo) -> bool {
-    if crate::llm::LlmClient::supports_structured_output_for_model(route) {
-        return false;
-    }
-
-    static WARNED_ROUTES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let warned_routes = WARNED_ROUTES.get_or_init(|| Mutex::new(HashSet::new()));
-    let route_key = memory_classifier_fallback_warning_key(route);
-
-    match warned_routes.lock() {
-        Ok(mut warned_routes) => warned_routes.insert(route_key),
-        Err(_) => true,
     }
 }
 
@@ -136,8 +112,6 @@ impl AgentExecutor {
             session,
             skill_registry,
             settings,
-            memory_store: None,
-            memory_artifact_storage: None,
             agents_md: None,
             manager_control_plane: None,
             topic_infra: None,
@@ -146,82 +120,15 @@ impl AgentExecutor {
             tool_policy_state,
             hook_policy_state,
             compaction_service,
-            persistent_memory: None,
-            memory_classifier: None,
+            wiki_memory_store: None,
             last_topic_infra_preflight_summary: None,
         }
     }
 
-    /// Attach a custom persistent-memory store used for Stage-4 durable writes.
+    /// Attach the durable LLM Wiki memory store used for bounded prompt context.
     #[must_use]
-    pub fn with_persistent_memory_store(self, store: Arc<dyn PersistentMemoryStore>) -> Self {
-        self.configure_persistent_memory(store, None)
-    }
-
-    /// Attach a custom persistent-memory store with artifact storage for archive reads.
-    #[must_use]
-    pub fn with_persistent_memory_store_and_artifact_storage(
-        self,
-        store: Arc<dyn PersistentMemoryStore>,
-        artifact_storage: Arc<dyn StorageProvider>,
-    ) -> Self {
-        self.configure_persistent_memory(store, Some(artifact_storage))
-    }
-
-    /// Attach a storage-backed persistent-memory repository for Stage-4 durable writes.
-    #[must_use]
-    pub fn with_storage_memory_repository(self, storage: Arc<dyn StorageProvider>) -> Self {
-        let repository: Arc<dyn PersistentMemoryStore> =
-            Arc::new(StorageMemoryRepository::new(Arc::clone(&storage)));
-        self.configure_persistent_memory(repository, Some(storage))
-    }
-
-    pub(super) fn configure_persistent_memory(
-        mut self,
-        store: Arc<dyn PersistentMemoryStore>,
-        artifact_storage: Option<Arc<dyn StorageProvider>>,
-    ) -> Self {
-        self.memory_store = Some(Arc::clone(&store));
-        self.memory_artifact_storage = artifact_storage;
-        let classifier_model = self.settings.get_configured_memory_classifier_model();
-        if should_warn_memory_classifier_text_fallback(&classifier_model) {
-            warn!(
-                provider = %classifier_model.provider,
-                model = %classifier_model.id,
-                "configured memory classifier route lacks structured output; using text JSON fallback"
-            );
-        }
-        self.memory_classifier = Some(Arc::new(LlmMemoryTaskClassifier::new(
-            self.runner.llm_client(),
-            classifier_model,
-        )));
-        let mut coordinator = PersistentMemoryCoordinator::new(Arc::clone(&store));
-        let (_, _, _, post_run_writer_timeout_secs) =
-            self.settings.get_configured_compaction_model();
-        coordinator = coordinator.with_memory_writer(Arc::new(LlmPostRunMemoryWriter::new(
-            self.runner.llm_client(),
-            PostRunMemoryWriterConfig {
-                model_routes: self.settings.get_configured_compaction_model_routes(false),
-                timeout_secs: post_run_writer_timeout_secs,
-                ..PostRunMemoryWriterConfig::default()
-            },
-        )));
-        if let (Some(model_id), true) = (
-            self.runner
-                .llm_client()
-                .embedding_profile_id()
-                .map(ToOwned::to_owned),
-            self.runner.llm_client().is_embedding_available(),
-        ) {
-            coordinator = coordinator.with_embedding_indexer(
-                PersistentMemoryEmbeddingIndexer::new_with_store(
-                    store,
-                    Arc::new(LlmMemoryEmbeddingGenerator::new(self.runner.llm_client())),
-                    model_id,
-                ),
-            );
-        }
-        self.persistent_memory = Some(coordinator);
+    pub fn with_wiki_memory_store(mut self, store: WikiStore) -> Self {
+        self.wiki_memory_store = Some(store);
         self
     }
 
@@ -303,48 +210,5 @@ impl AgentExecutor {
             control_plane.topic_lifecycle = Some(topic_lifecycle);
         }
         self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        memory_classifier_fallback_warning_key, should_warn_memory_classifier_text_fallback,
-    };
-    use crate::config::ModelInfo;
-
-    fn route(provider: &str, id: &str) -> ModelInfo {
-        ModelInfo {
-            id: id.to_string(),
-            provider: provider.to_string(),
-            max_output_tokens: 512,
-            context_window_tokens: 32_000,
-            weight: 1,
-        }
-    }
-
-    #[test]
-    fn memory_classifier_fallback_warning_key_uses_provider_and_model() {
-        let route = route("chatgpt", "gpt-5.4-mini");
-
-        assert_eq!(
-            memory_classifier_fallback_warning_key(&route),
-            "chatgpt:gpt-5.4-mini"
-        );
-    }
-
-    #[test]
-    fn memory_classifier_text_fallback_warns_once_per_route() {
-        let route = route("chatgpt", "gpt-5.4-mini-warn-once-test");
-
-        assert!(should_warn_memory_classifier_text_fallback(&route));
-        assert!(!should_warn_memory_classifier_text_fallback(&route));
-    }
-
-    #[test]
-    fn memory_classifier_text_fallback_does_not_warn_for_structured_routes() {
-        let route = route("mistral", "mistral-small-2603");
-
-        assert!(!should_warn_memory_classifier_text_fallback(&route));
     }
 }

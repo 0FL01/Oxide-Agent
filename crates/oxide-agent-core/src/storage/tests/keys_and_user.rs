@@ -201,3 +201,51 @@ fn audit_events_key_uses_control_plane_namespace() {
     let key = audit_events_key(42);
     assert_eq!(key, "users/42/control_plane/audit/events.json");
 }
+
+#[test]
+fn wiki_global_key_uses_versioned_prefix() {
+    let key = wiki_global_key("prod", "index.md");
+    assert_eq!(key, "prod/wiki/v1/global/index.md");
+}
+
+#[test]
+fn wiki_keys_trim_storage_prefix_slashes() {
+    let key = wiki_context_key("/prod/", "telegram-topic-a13f9c2b", "overview.md");
+    assert_eq!(
+        key,
+        "prod/wiki/v1/contexts/telegram-topic-a13f9c2b/overview.md"
+    );
+}
+
+#[test]
+fn wiki_keys_work_without_storage_prefix() {
+    let key = wiki_context_key("", "telegram-topic-a13f9c2b", "index.md");
+    assert_eq!(key, "wiki/v1/contexts/telegram-topic-a13f9c2b/index.md");
+}
+
+#[test]
+fn wiki_context_page_key_uses_pages_namespace() {
+    let key = wiki_context_page_key("prod", "ctx-12345678", "deploy-runbook");
+    assert_eq!(
+        key,
+        "prod/wiki/v1/contexts/ctx-12345678/pages/deploy-runbook.md"
+    );
+}
+
+#[test]
+fn wiki_context_inbox_key_uses_inbox_namespace() {
+    let key = wiki_context_inbox_key("prod", "ctx-12345678", "2026-05-19-task-low-confidence");
+    assert_eq!(
+        key,
+        "prod/wiki/v1/contexts/ctx-12345678/inbox/2026-05-19-task-low-confidence.md"
+    );
+}
+
+#[test]
+fn wiki_context_raw_key_uses_month_partition() {
+    let key = wiki_context_raw_key("prod", "ctx-12345678", "2026-05", "run-abc");
+    assert_eq!(
+        key,
+        "prod/wiki/v1/contexts/ctx-12345678/raw/2026-05/run-abc.md"
+    );
+}

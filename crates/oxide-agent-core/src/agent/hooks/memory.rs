@@ -1,23 +1,22 @@
-//! Stage-14 agent-native memory hooks.
+//! Agent-native memory behavior hooks.
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
-use crate::agent::persistent_memory::{
-    MemoryBehaviorRuntime, ToolDerivedMemoryDraft, TopicMemoryPolicy,
+use crate::agent::memory_behavior::{
+    MemoryBehaviorRuntime, ToolDerivedMemoryDraft, ToolDerivedMemoryKind, TopicMemoryPolicy,
 };
 use chrono::Utc;
-use oxide_agent_memory::MemoryType;
 use serde_json::Value;
 
 const TITLE_MAX_CHARS: usize = 96;
 const SHORT_DESCRIPTION_MAX_CHARS: usize = 160;
 const CONTENT_MAX_CHARS: usize = 320;
 
-/// Suggests durable-memory tools when the user task looks history- or policy-heavy.
+/// Adds lightweight wiki-memory reminders when the task looks history- or policy-heavy.
 pub struct RetrievalAdvisorHook;
 
 impl RetrievalAdvisorHook {
-    /// Create the Stage-14 durable-memory retrieval advisor hook.
+    /// Create the durable wiki-memory retrieval advisor hook.
     #[must_use]
     pub const fn new() -> Self {
         Self
@@ -39,7 +38,7 @@ impl Hook for RetrievalAdvisorHook {
         let HookEvent::BeforeAgent { prompt } = event else {
             return HookResult::Continue;
         };
-        if context.is_sub_agent || !context.has_tool("memory_search") {
+        if context.is_sub_agent {
             return HookResult::Continue;
         }
 
@@ -91,19 +90,19 @@ impl Hook for RetrievalAdvisorHook {
         let mut lines = vec!["[Memory advisor]".to_string()];
         if needs_memory_card {
             lines.push(format!(
-                "- Durable memory card: this request may depend on prior {} procedures, constraints, or decisions. Consider `memory_search` with a focused query before repeating work.",
+                "- Durable wiki card: this request may depend on prior {} procedures, constraints, or decisions. Check the injected wiki memory before repeating work, and keep new durable facts concise enough to merge back into the wiki.",
                 policy.context_label
             ));
         }
-        if needs_history_card && context.has_tool("memory_read_thread_summary") {
+        if needs_history_card {
             lines.push(
-                "- History card: if you need prior episode context, start with `memory_read_thread_summary`; use `memory_read_thread_window` only when you need exact older turns."
+                "- History card: if injected wiki context is insufficient, rely on current hot/session context rather than legacy episode memory tools."
                     .to_string(),
             );
         }
-        if normalized.contains("episode") && context.has_tool("memory_read_episode") {
+        if normalized.contains("episode") {
             lines.push(
-                "- Episode card: if you already know the episode id, `memory_read_episode` gives the compact finalized record."
+                "- Episode card: old typed episode lookup is disabled; preserve any still-relevant outcome as a concise wiki update instead."
                     .to_string(),
             );
         }
@@ -112,11 +111,11 @@ impl Hook for RetrievalAdvisorHook {
     }
 }
 
-/// Captures reusable memory candidates from selected tool calls without writing storage directly.
+/// Captures wiki update candidates from selected tool calls without writing storage directly.
 pub struct EpisodicExtractHook;
 
 impl EpisodicExtractHook {
-    /// Create the Stage-14 episodic extraction hook.
+    /// Create the episodic extraction hook.
     #[must_use]
     pub const fn new() -> Self {
         Self
@@ -139,7 +138,7 @@ impl EpisodicExtractHook {
             return;
         }
         runtime.record_draft(ToolDerivedMemoryDraft {
-            memory_type: MemoryType::Preference,
+            kind: ToolDerivedMemoryKind::Preference,
             title: "Topic editing preference".to_string(),
             content: "In this topic, prefer incremental file changes over broad rewrites when updating code or configuration.".to_string(),
             short_description: "Prefer incremental file changes in this topic".to_string(),
@@ -213,7 +212,7 @@ fn procedure_from_write_result(result: &str) -> Option<ToolDerivedMemoryDraft> {
         .unwrap_or(0);
 
     Some(ToolDerivedMemoryDraft {
-        memory_type: MemoryType::Procedure,
+        kind: ToolDerivedMemoryKind::Procedure,
         title: truncate_chars("Sandbox file update workflow", TITLE_MAX_CHARS),
         content: truncate_chars(
             &format!(
@@ -248,7 +247,7 @@ fn procedure_from_edit_result(tool_name: &str, result: &str) -> Option<ToolDeriv
     let status = string_field(&payload, "status").unwrap_or("updated");
 
     Some(ToolDerivedMemoryDraft {
-        memory_type: MemoryType::Procedure,
+        kind: ToolDerivedMemoryKind::Procedure,
         title: truncate_chars("Remote targeted edit workflow", TITLE_MAX_CHARS),
         content: truncate_chars(
             &format!(
@@ -293,7 +292,7 @@ fn failure_from_command_result(tool_name: &str, result: &str) -> Option<ToolDeri
         .unwrap_or_else(|| "execution error".to_string());
 
     Some(ToolDerivedMemoryDraft {
-        memory_type: MemoryType::Fact,
+        kind: ToolDerivedMemoryKind::Fact,
         title: truncate_chars(
             &format!("Command failure: {}", truncate_chars(command, 48)),
             TITLE_MAX_CHARS,
@@ -361,11 +360,10 @@ mod tests {
     use super::{EpisodicExtractHook, RetrievalAdvisorHook};
     use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
     use crate::agent::memory::AgentMemory;
-    use crate::agent::persistent_memory::MemoryBehaviorRuntime;
+    use crate::agent::memory_behavior::{MemoryBehaviorRuntime, ToolDerivedMemoryKind};
     use crate::agent::providers::TodoList;
     use crate::agent::session::AgentMemoryScope;
     use crate::llm::ToolDefinition;
-    use oxide_agent_memory::MemoryType;
 
     fn tool(name: &str) -> ToolDefinition {
         ToolDefinition {
@@ -393,12 +391,7 @@ mod tests {
         let hook = RetrievalAdvisorHook::new();
         let scope = AgentMemoryScope::new(7, "topic-a", "flow-a");
         let runtime = MemoryBehaviorRuntime::new();
-        let tools = vec![
-            tool("memory_search"),
-            tool("memory_read_thread_summary"),
-            tool("memory_read_thread_window"),
-            tool("memory_read_episode"),
-        ];
+        let tools = Vec::new();
 
         let result = hook.handle(
             &HookEvent::BeforeAgent {
@@ -410,8 +403,8 @@ mod tests {
 
         match result {
             HookResult::InjectTransientContext(text) => {
-                assert!(text.contains("memory_search"));
-                assert!(text.contains("memory_read_thread_summary"));
+                assert!(text.contains("Durable wiki card"));
+                assert!(text.contains("History card"));
             }
             other => panic!("unexpected result: {other:?}"),
         }
@@ -422,7 +415,7 @@ mod tests {
         let hook = RetrievalAdvisorHook::new();
         let scope = AgentMemoryScope::new(7, "session:123", "agent-mode");
         let runtime = MemoryBehaviorRuntime::new();
-        let tools = vec![tool("memory_search"), tool("memory_read_thread_summary")];
+        let tools = Vec::new();
 
         let result = hook.handle(
             &HookEvent::BeforeAgent {
@@ -433,8 +426,8 @@ mod tests {
 
         match result {
             HookResult::InjectTransientContext(text) => {
-                assert!(text.contains("memory_search"));
-                assert!(!text.contains("memory_read_thread_summary"));
+                assert!(text.contains("Durable wiki card"));
+                assert!(!text.contains("History card"));
             }
             other => panic!("unexpected result: {other:?}"),
         }
@@ -459,7 +452,7 @@ mod tests {
         assert!(matches!(result, HookResult::Continue));
         let drafts = runtime.snapshot();
         assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].memory_type, MemoryType::Procedure);
+        assert_eq!(drafts[0].kind, ToolDerivedMemoryKind::Procedure);
         assert!(drafts[0].content.contains("/etc/app/config.toml"));
     }
 
@@ -480,7 +473,7 @@ mod tests {
 
         let drafts = runtime.snapshot();
         assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].memory_type, MemoryType::Fact);
+        assert_eq!(drafts[0].kind, ToolDerivedMemoryKind::Fact);
         assert!(drafts[0].content.contains("cargo test"));
     }
 
@@ -510,6 +503,6 @@ mod tests {
         let drafts = runtime.snapshot();
         assert!(drafts
             .iter()
-            .any(|draft| draft.memory_type == MemoryType::Preference));
+            .any(|draft| draft.kind == ToolDerivedMemoryKind::Preference));
     }
 }

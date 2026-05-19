@@ -3,18 +3,12 @@
 
 mod basics;
 mod manager;
-mod persistent_memory;
 mod registry;
 mod resume;
 
 pub(super) use super::policy_hooks::PolicyControlledHook;
 pub(super) use super::AgentExecutor;
 pub(super) use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
-pub(super) use crate::agent::persistent_memory::{
-    MemoryClassificationDecision, MemoryTaskClassifier, PersistentMemoryCoordinator,
-    PostRunMemoryWriter, PostRunMemoryWriterInput, ValidatedPostRunEpisode,
-    ValidatedPostRunMemoryWrite,
-};
 pub(super) use crate::agent::profile::HookAccessPolicy;
 pub(super) use crate::agent::providers::TodoList;
 pub(super) use crate::agent::providers::{
@@ -30,63 +24,12 @@ pub(super) use crate::storage::{
 };
 pub(super) use anyhow::{bail, Result};
 pub(super) use mockall::predicate::eq;
-pub(super) use oxide_agent_memory::{CleanupStatus, InMemoryMemoryRepository, MemoryRepository};
 pub(super) use serde_json::json;
 pub(super) use std::sync::{Arc, Mutex as StdMutex};
 pub(super) use tokio::sync::Mutex;
 
 pub(super) struct RecordingTopicLifecycle {
     create_calls: StdMutex<Vec<ForumTopicCreateRequest>>,
-}
-
-pub(super) struct StubMemoryTaskClassifier {
-    result: StdMutex<Option<Result<MemoryClassificationDecision>>>,
-}
-
-pub(super) struct StubPostRunMemoryWriter;
-
-impl StubMemoryTaskClassifier {
-    pub(super) fn success(decision: MemoryClassificationDecision) -> Self {
-        Self {
-            result: StdMutex::new(Some(Ok(decision))),
-        }
-    }
-
-    pub(super) fn failure(error: anyhow::Error) -> Self {
-        Self {
-            result: StdMutex::new(Some(Err(error))),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl MemoryTaskClassifier for StubMemoryTaskClassifier {
-    async fn classify(&self, _task: &str) -> Result<MemoryClassificationDecision> {
-        self.result
-            .lock()
-            .expect("stub classifier mutex poisoned")
-            .take()
-            .expect("stub classifier must only be called once")
-    }
-}
-
-#[async_trait::async_trait]
-impl PostRunMemoryWriter for StubPostRunMemoryWriter {
-    async fn write(
-        &self,
-        input: &PostRunMemoryWriterInput<'_>,
-    ) -> Result<ValidatedPostRunMemoryWrite> {
-        Ok(ValidatedPostRunMemoryWrite {
-            thread_short_summary: Some(format!("{} summary", input.task)),
-            episode: ValidatedPostRunEpisode {
-                summary: format!("Completed task: {}", input.task),
-                outcome: oxide_agent_memory::EpisodeOutcome::Success,
-                failures: Vec::new(),
-                importance: 0.9,
-            },
-            memories: Vec::new(),
-        })
-    }
 }
 
 impl RecordingTopicLifecycle {
@@ -199,13 +142,6 @@ pub(super) fn build_executor_with_mock_response(response_text: &'static str) -> 
     llm.register_provider("mock".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
     AgentExecutor::new(Arc::new(llm), session, settings)
-}
-
-pub(super) fn verbose_turn(label: &str, idx: usize, repeat: usize) -> String {
-    let repeated = std::iter::repeat_n(label, repeat)
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("{label} turn {idx}: {repeated}")
 }
 
 pub(super) fn build_audit_record(options: AppendAuditEventOptions) -> AuditEventRecord {

@@ -52,7 +52,6 @@ pub(crate) fn spawn_reminder_scheduler(
     bot: Bot,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) {
     tokio::spawn(async move {
@@ -70,15 +69,8 @@ pub(crate) fn spawn_reminder_scheduler(
         reconcile.tick().await;
 
         loop {
-            if let Err(error) = process_due_reminders(
-                &bot,
-                &storage,
-                &llm,
-                &persistent_memory_store,
-                &settings,
-                &scheduler,
-            )
-            .await
+            if let Err(error) =
+                process_due_reminders(&bot, &storage, &llm, &settings, &scheduler).await
             {
                 warn!(error = %error, "Reminder scheduler due-batch failed");
             }
@@ -110,7 +102,6 @@ async fn process_due_reminders(
     bot: &Bot,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
-    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: &Arc<BotSettings>,
     scheduler: &Arc<ReminderSchedulerHandle>,
 ) -> Result<()> {
@@ -120,16 +111,8 @@ async fn process_due_reminders(
     for reminder in reminders {
         let user_id = reminder.user_id;
         let reminder_id = reminder.reminder_id.clone();
-        if let Err(error) = process_due_reminder(
-            bot,
-            storage,
-            llm,
-            persistent_memory_store,
-            settings,
-            scheduler,
-            reminder,
-        )
-        .await
+        if let Err(error) =
+            process_due_reminder(bot, storage, llm, settings, scheduler, reminder).await
         {
             warn!(error = %error, reminder_id = %reminder_id, "Failed to execute due reminder");
             if let Err(reconcile_error) = scheduler
@@ -152,21 +135,12 @@ async fn process_due_reminder(
     bot: &Bot,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
-    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: &Arc<BotSettings>,
     scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: ReminderJobRecord,
 ) -> Result<()> {
-    let Some(prepared) = prepare_due_reminder_execution(
-        bot,
-        storage,
-        llm,
-        persistent_memory_store,
-        settings,
-        scheduler,
-        reminder,
-    )
-    .await?
+    let Some(prepared) =
+        prepare_due_reminder_execution(bot, storage, llm, settings, scheduler, reminder).await?
     else {
         return Ok(());
     };
@@ -254,7 +228,6 @@ async fn prepare_due_reminder_execution(
     bot: &Bot,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
-    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: &Arc<BotSettings>,
     scheduler: &Arc<ReminderSchedulerHandle>,
     reminder: ReminderJobRecord,
@@ -301,7 +274,6 @@ async fn prepare_due_reminder_execution(
         },
         llm,
         storage,
-        persistent_memory_store,
         settings,
     })
     .await;

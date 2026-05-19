@@ -12,6 +12,7 @@ use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
 use super::setup::setup_web_test_with_custom_providers;
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() {
     let tomorrow = Local::now() + ChronoDuration::days(1);
     let tomorrow_date = format!(
@@ -93,6 +94,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_reminder_schedule_supports_weekday_wall_clock_recurring_jobs() {
     let timezone = "UTC+3";
 

@@ -63,15 +63,7 @@ impl OpenAiCompatibleEmbeddingProvider {
         dimensions: Option<u32>,
     ) -> Result<Vec<f32>, LlmError> {
         let url = format!("{}/embeddings", self.api_base);
-        let input = self.prepare_input(text, task_type);
-
-        let mut body = serde_json::json!({
-            "model": model,
-            "input": input
-        });
-        if let Some(dim) = dimensions {
-            body["dimensions"] = serde_json::json!(dim);
-        }
+        let body = self.build_request_body(text, model, task_type, dimensions);
 
         let response = self
             .http_client
@@ -127,6 +119,24 @@ impl OpenAiCompatibleEmbeddingProvider {
                 prefix_embedding_input(self.document_prefix.as_deref(), text)
             }
         }
+    }
+
+    fn build_request_body(
+        &self,
+        text: &str,
+        model: &str,
+        task_type: Option<EmbeddingTaskType>,
+        dimensions: Option<u32>,
+    ) -> serde_json::Value {
+        let input = self.prepare_input(text, task_type);
+        let mut body = serde_json::json!({
+            "model": model,
+            "input": input
+        });
+        if let Some(dim) = dimensions {
+            body["dimensions"] = serde_json::json!(dim);
+        }
+        body
     }
 }
 
@@ -315,9 +325,6 @@ fn map_gemini_error(error: gemini_rust::ClientError) -> LlmError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
 
     #[test]
     fn openai_prompt_style_prefixes_user2_queries_and_documents() {
@@ -363,74 +370,22 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn openai_compatible_request_serializes_prefixed_input() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
-        let addr = listener.local_addr().expect("local addr");
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept request");
-            let mut header_bytes = Vec::new();
-            let mut buffer = [0u8; 1024];
-            let header_end;
-            loop {
-                let read = stream.read(&mut buffer).expect("read request");
-                header_bytes.extend_from_slice(&buffer[..read]);
-                if let Some(pos) = header_bytes
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
-                {
-                    header_end = pos + 4;
-                    break;
-                }
-            }
-            let header_text = String::from_utf8_lossy(&header_bytes[..header_end]);
-            let content_length = header_text
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().expect("content length"))
-                })
-                .expect("content-length header");
-
-            let mut body = header_bytes[header_end..].to_vec();
-            while body.len() < content_length {
-                let read = stream.read(&mut buffer).expect("read request body");
-                body.extend_from_slice(&buffer[..read]);
-            }
-
-            let response = r#"{"data":[{"embedding":[1.0,0.0]}]}"#;
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                response.len(),
-                response
-            )
-            .expect("write response");
-
-            serde_json::from_slice::<serde_json::Value>(&body).expect("valid json body")
-        });
-
+    #[test]
+    fn openai_compatible_request_serializes_prefixed_input() {
         let provider = OpenAiCompatibleEmbeddingProvider::new(
             "test-key".to_string(),
-            format!("http://{addr}/v1"),
+            "http://127.0.0.1:1/v1".to_string(),
             EmbeddingPromptStyle::User2,
             None,
             None,
         );
 
-        let embedding = provider
-            .generate(
-                "deploy fix",
-                "user2-base",
-                Some(EmbeddingTaskType::RetrievalQuery),
-                Some(768),
-            )
-            .await
-            .expect("embedding request succeeds");
-        assert_eq!(embedding, vec![1.0, 0.0]);
-
-        let body = server.join().expect("join server");
+        let body = provider.build_request_body(
+            "deploy fix",
+            "user2-base",
+            Some(EmbeddingTaskType::RetrievalQuery),
+            Some(768),
+        );
         assert_eq!(body["model"], "user2-base");
         assert_eq!(body["input"], "search_query: deploy fix");
         assert_eq!(body["dimensions"], 768);

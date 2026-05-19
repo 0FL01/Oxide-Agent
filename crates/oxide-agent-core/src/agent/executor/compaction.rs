@@ -33,6 +33,7 @@ impl AgentExecutor {
             self.skill_registry.as_mut(),
             &mut self.session,
             self.execution_profile.prompt_instructions(),
+            None,
         )
         .await;
         let request = CompactionRequest::new(

@@ -1,5 +1,4 @@
 use crate::agent::compaction::CompactionService;
-use crate::agent::persistent_memory::{MemoryClassificationDecision, PersistentMemoryCoordinator};
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
 use crate::agent::registry::ToolRegistry;
@@ -43,13 +42,11 @@ pub(super) struct PreparedExecution {
     pub(super) tools: Vec<ToolDefinition>,
     pub(super) system_prompt: String,
     pub(super) messages: Vec<Message>,
-    pub(super) memory_classification: Option<MemoryClassificationDecision>,
     pub(super) runner_config: AgentRunnerConfig,
 }
 
 pub(super) struct RunnerContextServices<'a> {
     pub(super) compaction_service: &'a CompactionService,
-    pub(super) persistent_memory: Option<&'a PersistentMemoryCoordinator>,
 }
 
 impl PreparedExecution {
@@ -82,11 +79,9 @@ impl PreparedExecution {
         );
 
         ctx.skill_registry = skill_registry;
-        ctx.persistent_memory = services.persistent_memory;
         ctx.session_id = session_id;
         ctx.memory_scope = memory_scope;
         ctx.memory_behavior = memory_behavior;
-        ctx.memory_classification = self.memory_classification.clone();
 
         ctx
     }
@@ -145,16 +140,4 @@ pub(super) fn current_model_route(config: &AgentRunnerConfig) -> Option<crate::c
         context_window_tokens: 0,
         weight: 1,
     })
-}
-
-pub(super) fn retrieval_fallback_classification() -> MemoryClassificationDecision {
-    let mut decision = MemoryClassificationDecision::conservative_safe_mode();
-    decision.read_policy.inject_prompt_memory = true;
-    decision.read_policy.search_episodes = true;
-    decision.read_policy.search_memories = true;
-    decision.read_policy.allow_vector_only_memory = false;
-    decision.read_policy.min_importance = 0.8;
-    decision.read_policy.top_k = 3;
-    decision.read_policy.allow_full_thread_read = false;
-    decision
 }

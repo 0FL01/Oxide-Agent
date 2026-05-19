@@ -166,6 +166,7 @@ async fn e2e_latency_session_ready() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_runtime_context_appended_on_next_iteration() {
     let zai_provider = Arc::new(
         SequencedZaiProvider::new(vec![
@@ -233,6 +234,7 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_web_followup_while_running_becomes_separate_task() {
     let zai_provider = Arc::new(
         SequencedZaiProvider::new(vec![
@@ -311,6 +313,7 @@ async fn e2e_web_followup_while_running_becomes_separate_task() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_resume_after_user_input_reuses_saved_task() {
     let provider = Arc::new(SequencedZaiProvider::new(vec![
         structured_awaiting_user_input_response("text", "Send the exact GPT-5.4-mini scope."),

@@ -5,10 +5,6 @@ use super::types::{
 };
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
-use crate::agent::memory::AgentMessage;
-use crate::agent::persistent_memory::{
-    MemoryClassificationDecision, PersistentRunContext, PersistentRunPhase,
-};
 use crate::agent::progress::{AgentEvent, TokenSnapshot};
 use crate::agent::session::PendingUserInput;
 use crate::agent::tool_bridge::sync_todos_from_arc;
@@ -75,69 +71,6 @@ impl AgentRunner {
                 cleanup_target_tokens = telemetry.target_hot_tokens,
                 "Post-run cleanup left hot context above the target budget"
             );
-        }
-    }
-
-    fn has_explicit_remember_intent(task: &str, messages: &[AgentMessage]) -> bool {
-        contains_explicit_remember_phrase(task)
-            || messages.iter().any(|message| {
-                matches!(message.role, crate::agent::memory::MessageRole::User)
-                    && contains_explicit_remember_phrase(&message.content)
-            })
-    }
-
-    async fn persist_post_run_memory(
-        &self,
-        ctx: &mut AgentRunnerContext<'_>,
-        phase: PersistentRunPhase<'_>,
-        pre_compaction_messages: Option<&[AgentMessage]>,
-    ) {
-        if ctx.config.is_sub_agent {
-            return;
-        }
-
-        let (Some(persistent_memory), Some(session_id), Some(scope)) = (
-            ctx.persistent_memory,
-            ctx.session_id.as_deref(),
-            ctx.memory_scope.as_ref(),
-        ) else {
-            return;
-        };
-        let tool_memory_drafts = ctx
-            .memory_behavior
-            .as_ref()
-            .map(|runtime| runtime.snapshot())
-            .unwrap_or_default();
-
-        // Use pre-compaction messages when available (PostRun path): compaction may have
-        // truncated the live messages to a single summary, losing all the original
-        // user turns, tool results and artifacts that the episode finalizer needs.
-        let messages = pre_compaction_messages.unwrap_or_else(|| ctx.agent.memory().get_messages());
-        let explicit_remember_intent = Self::has_explicit_remember_intent(ctx.task, messages);
-        let classification = ctx.memory_classification.clone().unwrap_or_else(|| {
-            warn!(
-                task_id = %ctx.task_id,
-                "Persistent memory classification missing, using conservative safe mode"
-            );
-            MemoryClassificationDecision::conservative_safe_mode()
-        });
-
-        if let Err(error) = persistent_memory
-            .persist_post_run(PersistentRunContext {
-                session_id,
-                task_id: ctx.task_id,
-                scope,
-                task: ctx.task,
-                classification,
-                messages,
-                explicit_remember_intent,
-                hot_token_estimate: ctx.agent.memory().token_count(),
-                tool_memory_drafts,
-                phase,
-            })
-            .await
-        {
-            warn!(error = %error, task_id = %ctx.task_id, "Persistent memory post-run write failed");
         }
     }
 
@@ -304,10 +237,6 @@ impl AgentRunner {
         }
 
         self.save_final_response(ctx, &final_response, input.reasoning);
-        // Snapshot messages before PostRun compaction — the truncation will wipe the
-        // live message list but the episode finalizer needs the original history to
-        // extract artifacts, tools used and summary signal.
-        let pre_compaction_messages: Vec<AgentMessage> = ctx.agent.memory().get_messages().to_vec();
         let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         let _ = self
             .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
@@ -319,27 +248,6 @@ impl AgentRunner {
             &pre_cleanup_snapshot,
             &post_cleanup_snapshot,
         );
-        let mut durable_messages = pre_compaction_messages;
-        durable_messages.extend(
-            ctx.agent
-                .memory()
-                .get_messages()
-                .iter()
-                .filter(|message| {
-                    message.summary_payload().is_some()
-                        || message.archive_ref_payload().is_some()
-                        || message.breadcrumb_payload().is_some()
-                })
-                .cloned(),
-        );
-        self.persist_post_run_memory(
-            ctx,
-            PersistentRunPhase::Completed {
-                final_answer: &final_response,
-            },
-            Some(&durable_messages),
-        )
-        .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
@@ -366,7 +274,6 @@ impl AgentRunner {
 
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         self.save_final_response(ctx, &request.prompt, reasoning);
-        let pre_compaction_messages: Vec<AgentMessage> = ctx.agent.memory().get_messages().to_vec();
         let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         let _ = self
             .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
@@ -378,52 +285,11 @@ impl AgentRunner {
             &pre_cleanup_snapshot,
             &post_cleanup_snapshot,
         );
-        let mut durable_messages = pre_compaction_messages;
-        durable_messages.extend(
-            ctx.agent
-                .memory()
-                .get_messages()
-                .iter()
-                .filter(|message| {
-                    message.summary_payload().is_some()
-                        || message.archive_ref_payload().is_some()
-                        || message.breadcrumb_payload().is_some()
-                })
-                .cloned(),
-        );
-        self.persist_post_run_memory(
-            ctx,
-            PersistentRunPhase::WaitingForUserInput,
-            Some(&durable_messages),
-        )
-        .await;
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
         Ok(Some(AgentRunResult::WaitingForUserInput(request)))
     }
-}
-
-fn contains_explicit_remember_phrase(value: &str) -> bool {
-    let normalized = value.to_lowercase();
-    [
-        "remember this",
-        "remember that",
-        "please remember",
-        "save this",
-        "save that",
-        "don't forget",
-        "do not forget",
-        "keep this in mind",
-        "запомни",
-        "запомните",
-        "не забуд",
-        "сохрани это",
-        "сохрани как",
-        "запиши это",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
 }
 
 fn should_salvage_structured_output_failure(raw: &str) -> bool {
@@ -455,12 +321,8 @@ fn should_salvage_structured_output_failure(raw: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        contains_explicit_remember_phrase, should_salvage_structured_output_failure, AgentRunner,
-        PostRunCleanupTelemetry,
-    };
+    use super::{should_salvage_structured_output_failure, PostRunCleanupTelemetry};
     use crate::agent::compaction::BudgetState;
-    use crate::agent::memory::AgentMessage;
     use crate::agent::progress::TokenSnapshot;
     use crate::config::get_post_run_hot_context_target_tokens;
 
@@ -505,30 +367,6 @@ mod tests {
 
         assert_eq!(telemetry.target_hot_tokens, target);
         assert!(!telemetry.target_met);
-    }
-
-    #[test]
-    fn explicit_remember_phrase_detector_handles_english_and_russian() {
-        assert!(contains_explicit_remember_phrase(
-            "Please remember this deployment workaround"
-        ));
-        assert!(contains_explicit_remember_phrase(
-            "Не забудь этот флаг конфигурации"
-        ));
-        assert!(!contains_explicit_remember_phrase(
-            "Can you explain the previous deployment workaround?"
-        ));
-    }
-
-    #[test]
-    fn explicit_remember_intent_detects_user_messages() {
-        let messages = vec![AgentMessage::user_turn(
-            "Please remember this staging-only workaround.",
-        )];
-        assert!(AgentRunner::has_explicit_remember_intent(
-            "Investigate deploy issue",
-            &messages,
-        ));
     }
 
     #[test]

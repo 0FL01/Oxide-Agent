@@ -199,11 +199,6 @@ pub struct AgentSettings {
     /// Compaction summary model timeout override in seconds
     pub compaction_model_timeout_secs: Option<u64>,
 
-    /// Dedicated persistent-memory classifier model provider override.
-    pub memory_classifier_provider: Option<String>,
-    /// Dedicated persistent-memory classifier model override.
-    pub memory_classifier_model: Option<String>,
-
     /// Soft warning threshold for hot-context growth.
     pub soft_warning_tokens: Option<usize>,
     /// Hard threshold that triggers immediate compaction.
@@ -231,19 +226,6 @@ pub struct AgentSettings {
     pub embedding_query_prefix: Option<String>,
     /// Custom prefix applied to retrieval documents when `embedding_prompt_style=custom`.
     pub embedding_document_prefix: Option<String>,
-
-    /// Postgres connection string for typed persistent memory.
-    pub memory_database_url: Option<String>,
-    /// Maximum SQL connections for the persistent-memory Postgres pool.
-    pub memory_database_max_connections: Option<u32>,
-    /// Run embedded persistent-memory migrations during startup.
-    pub memory_database_auto_migrate: Option<bool>,
-    /// Maximum number of startup attempts for Postgres persistent-memory init.
-    pub memory_database_startup_max_attempts: Option<u32>,
-    /// Delay between Postgres persistent-memory startup retries in milliseconds.
-    pub memory_database_startup_retry_delay_ms: Option<u64>,
-    /// Per-attempt timeout for Postgres persistent-memory startup in seconds.
-    pub memory_database_startup_timeout_secs: Option<u64>,
 
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
@@ -477,37 +459,6 @@ impl AgentSettings {
                     settings.embedding_document_prefix = Some(val);
                 }
             }
-        }
-
-        if settings.memory_database_url.is_none() {
-            if let Ok(val) = std::env::var("MEMORY_DATABASE_URL") {
-                if !val.is_empty() {
-                    settings.memory_database_url = Some(val);
-                }
-            }
-        }
-        if settings.memory_database_max_connections.is_none() {
-            if let Ok(val) = std::env::var("MEMORY_DATABASE_MAX_CONNECTIONS") {
-                if let Ok(parsed) = val.parse::<u32>() {
-                    settings.memory_database_max_connections = Some(parsed);
-                }
-            }
-        }
-        if settings.memory_database_auto_migrate.is_none() {
-            settings.memory_database_auto_migrate =
-                parse_optional_env_bool("MEMORY_DATABASE_AUTO_MIGRATE");
-        }
-        if settings.memory_database_startup_max_attempts.is_none() {
-            settings.memory_database_startup_max_attempts =
-                parse_optional_env_u32("MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS");
-        }
-        if settings.memory_database_startup_retry_delay_ms.is_none() {
-            settings.memory_database_startup_retry_delay_ms =
-                parse_optional_env_u64("MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS");
-        }
-        if settings.memory_database_startup_timeout_secs.is_none() {
-            settings.memory_database_startup_timeout_secs =
-                parse_optional_env_u64("MEMORY_DATABASE_STARTUP_TIMEOUT_SECS");
         }
 
         Ok(settings)
@@ -760,24 +711,6 @@ impl AgentSettings {
         ))
     }
 
-    fn memory_classifier_model_spec(&self) -> Option<(String, ModelInfo)> {
-        let id = self.memory_classifier_model.as_ref()?;
-        let provider = self.memory_classifier_provider.as_ref()?;
-        let context_window_tokens = self
-            .chat_model_context_window_tokens
-            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
-
-        Some((
-            id.clone(),
-            Self::build_model_info(
-                id,
-                provider,
-                MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS,
-                context_window_tokens,
-            ),
-        ))
-    }
-
     fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
@@ -847,10 +780,6 @@ impl AgentSettings {
         }
 
         if let Some((name, info)) = self.compaction_model_spec() {
-            Self::upsert_model(&mut models, name, info);
-        }
-
-        if let Some((name, info)) = self.memory_classifier_model_spec() {
             Self::upsert_model(&mut models, name, info);
         }
 
@@ -1084,21 +1013,6 @@ impl AgentSettings {
             .into_iter()
             .filter(|route| seen.insert(Self::route_dedupe_key(route)))
             .collect()
-    }
-
-    /// Returns the configured persistent-memory classifier model route.
-    pub fn get_configured_memory_classifier_model(&self) -> ModelInfo {
-        self.memory_classifier_model_spec()
-            .map(|(_, info)| info)
-            .unwrap_or_else(|| {
-                Self::build_model_info(
-                    DEFAULT_MEMORY_CLASSIFIER_MODEL,
-                    DEFAULT_MEMORY_CLASSIFIER_PROVIDER,
-                    MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS,
-                    self.chat_model_context_window_tokens
-                        .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS),
-                )
-            })
     }
 
     /// Returns model info by its display name
@@ -1548,38 +1462,6 @@ mod tests {
 
         env::remove_var("SEARXNG_ROTATION_ENGINES");
     }
-
-    #[test]
-    fn memory_database_startup_env_loading() -> Result<(), Box<dyn std::error::Error>> {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        env::set_var("ZAI_API_KEY", "dummy_zai_key");
-        env::set_var("CHAT_MODEL_ID", "test-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
-        env::set_var("MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS", "9");
-        env::set_var("MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS", "1500");
-        env::set_var("MEMORY_DATABASE_STARTUP_TIMEOUT_SECS", "12");
-
-        let settings = AgentSettings::new()?;
-        assert_eq!(settings.memory_database_startup_max_attempts, Some(9));
-        assert_eq!(settings.memory_database_startup_retry_delay_ms, Some(1_500));
-        assert_eq!(settings.memory_database_startup_timeout_secs, Some(12));
-
-        for key in [
-            "ZAI_API_KEY",
-            "CHAT_MODEL_ID",
-            "CHAT_MODEL_PROVIDER",
-            "MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS",
-            "MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS",
-            "MEMORY_DATABASE_STARTUP_TIMEOUT_SECS",
-        ] {
-            env::remove_var(key);
-        }
-
-        Ok(())
-    }
 }
 
 /// Information about a supported LLM model.
@@ -1676,12 +1558,6 @@ pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
 pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
 /// Default sub-agent model context window tokens.
 pub const DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
-/// Default persistent-memory classifier provider.
-pub const DEFAULT_MEMORY_CLASSIFIER_PROVIDER: &str = "mistral";
-/// Default persistent-memory classifier model.
-pub const DEFAULT_MEMORY_CLASSIFIER_MODEL: &str = "mistral-small-2603";
-/// Reserved output budget for the persistent-memory classifier.
-pub const MEMORY_CLASSIFIER_MAX_OUTPUT_TOKENS: u32 = 512;
 /// Internal main-agent context budget cap.
 pub const AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
 /// Internal sub-agent context budget cap.
@@ -2226,22 +2102,10 @@ fn parse_optional_env_bool(name: &str) -> Option<bool> {
         })
 }
 
-fn parse_optional_env_u32(name: &str) -> Option<u32> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())
-}
-
 fn parse_optional_env_f32(name: &str) -> Option<f32> {
     std::env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok())
-}
-
-fn parse_optional_env_u64(name: &str) -> Option<u64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
 /// Determine whether Tavily tools should be registered.

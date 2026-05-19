@@ -1,5 +1,18 @@
 use uuid::Uuid;
 
+fn normalize_object_prefix(prefix: &str) -> String {
+    prefix.trim_matches('/').to_string()
+}
+
+fn key_with_optional_prefix(prefix: &str, suffix: &str) -> String {
+    let normalized = normalize_object_prefix(prefix);
+    if normalized.is_empty() {
+        suffix.to_string()
+    } else {
+        format!("{normalized}/{suffix}")
+    }
+}
+
 /// Returns the R2 key for a user's configuration file.
 #[must_use]
 pub fn user_config_key(user_id: i64) -> String {
@@ -64,34 +77,43 @@ pub fn user_context_agent_flow_memory_key(
     format!("users/{user_id}/topics/{context_key}/flows/{flow_id}/memory.json")
 }
 
-/// Returns the R2 key for a persistent memory thread record.
+/// Returns the S3 key for a global LLM Wiki file.
 #[must_use]
-pub fn persistent_memory_thread_key(thread_id: &str) -> String {
-    format!("persistent_memory/threads/{thread_id}.json")
+pub fn wiki_global_key(prefix: &str, file: &str) -> String {
+    key_with_optional_prefix(prefix, &format!("wiki/v1/global/{file}"))
 }
 
-/// Returns the R2 key for a persistent memory episode record.
+/// Returns the S3 key for a context-scoped LLM Wiki file.
 #[must_use]
-pub fn persistent_memory_episode_key(thread_id: &str, episode_id: &str) -> String {
-    format!("persistent_memory/threads/{thread_id}/episodes/{episode_id}.json")
+pub fn wiki_context_key(prefix: &str, context_id: &str, file: &str) -> String {
+    key_with_optional_prefix(prefix, &format!("wiki/v1/contexts/{context_id}/{file}"))
 }
 
-/// Returns the R2 key for a reusable memory record.
+/// Returns the S3 key for a context-scoped LLM Wiki topic page.
 #[must_use]
-pub fn persistent_memory_record_key(context_key: &str, memory_id: &str) -> String {
-    format!("persistent_memory/contexts/{context_key}/memories/{memory_id}.json")
+pub fn wiki_context_page_key(prefix: &str, context_id: &str, slug: &str) -> String {
+    key_with_optional_prefix(
+        prefix,
+        &format!("wiki/v1/contexts/{context_id}/pages/{slug}.md"),
+    )
 }
 
-/// Returns the R2 key for a persistent session-state record.
+/// Returns the S3 key for a context-scoped LLM Wiki inbox item.
 #[must_use]
-pub fn persistent_memory_session_state_key(session_id: &str) -> String {
-    format!("persistent_memory/session_states/{session_id}.json")
+pub fn wiki_context_inbox_key(prefix: &str, context_id: &str, item_slug: &str) -> String {
+    key_with_optional_prefix(
+        prefix,
+        &format!("wiki/v1/contexts/{context_id}/inbox/{item_slug}.md"),
+    )
 }
 
-/// Returns the R2 key for a persistent memory embedding record.
+/// Returns the S3 key for a context-scoped immutable LLM Wiki raw archive item.
 #[must_use]
-pub fn persistent_memory_embedding_key(owner_type: &str, owner_id: &str) -> String {
-    format!("persistent_memory/embeddings/{owner_type}/{owner_id}.json")
+pub fn wiki_context_raw_key(prefix: &str, context_id: &str, yyyy_mm: &str, run_id: &str) -> String {
+    key_with_optional_prefix(
+        prefix,
+        &format!("wiki/v1/contexts/{context_id}/raw/{yyyy_mm}/{run_id}.md"),
+    )
 }
 
 /// Returns the R2 key for an agent profile record.

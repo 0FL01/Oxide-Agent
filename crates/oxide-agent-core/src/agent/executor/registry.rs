@@ -1,10 +1,9 @@
 use super::AgentExecutor;
-use crate::agent::persistent_memory::LlmMemoryEmbeddingGenerator;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
-    KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, MemoryProvider,
-    ReminderProvider, SandboxProvider, StackLogsProvider, TodoList, TodosProvider, YtdlpProvider,
+    KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
+    SandboxProvider, StackLogsProvider, TodoList, TodosProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use std::sync::Arc;
@@ -85,23 +84,6 @@ impl AgentExecutor {
             YtdlpProvider::new(sandbox_scope.clone())
         };
         registry.register(Box::new(ytdlp_provider));
-
-        if let Some(store) = &self.memory_store {
-            let mut provider = MemoryProvider::new_with_store(
-                Arc::clone(store),
-                self.memory_artifact_storage.clone(),
-                self.session.memory_scope().clone(),
-            );
-            if self.runner.llm_client().is_embedding_available() {
-                provider = provider.with_query_embedding_generator(Arc::new(
-                    LlmMemoryEmbeddingGenerator::new(self.runner.llm_client()),
-                ));
-                if let Some(model_id) = self.runner.llm_client().embedding_profile_id() {
-                    provider = provider.with_query_embedding_model_id(model_id.to_string());
-                }
-            }
-            registry.register(Box::new(provider));
-        }
 
         let mut delegation_provider = DelegationProvider::new(
             self.runner.llm_client(),

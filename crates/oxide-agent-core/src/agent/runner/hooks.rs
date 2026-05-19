@@ -317,11 +317,9 @@ mod tests {
             agent: &mut session,
             skill_registry: None,
             compaction_service: None,
-            persistent_memory: None,
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            memory_classification: None,
             config: AgentRunnerConfig::default(),
         };
 

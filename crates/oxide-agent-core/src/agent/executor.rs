@@ -14,15 +14,12 @@ mod types;
 
 use self::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use crate::agent::compaction::CompactionService;
-use crate::agent::persistent_memory::{
-    MemoryTaskClassifier, PersistentMemoryCoordinator, PersistentMemoryStore,
-};
 use crate::agent::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use crate::agent::providers::ReminderContext;
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::{AgentSession, PendingUserInput};
 use crate::agent::skills::SkillRegistry;
-use crate::storage::StorageProvider;
+use crate::agent::wiki_memory::WikiStore;
 use std::sync::{Arc, RwLock};
 
 // Re-export sanitize_xml_tags for backward compatibility
@@ -34,8 +31,6 @@ pub struct AgentExecutor {
     session: AgentSession,
     skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
-    memory_store: Option<Arc<dyn PersistentMemoryStore>>,
-    memory_artifact_storage: Option<Arc<dyn StorageProvider>>,
     agents_md: Option<AgentsMdContext>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
     topic_infra: Option<TopicInfraContext>,
@@ -44,8 +39,7 @@ pub struct AgentExecutor {
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
     hook_policy_state: Arc<RwLock<HookAccessPolicy>>,
     compaction_service: CompactionService,
-    persistent_memory: Option<PersistentMemoryCoordinator>,
-    memory_classifier: Option<Arc<dyn MemoryTaskClassifier>>,
+    wiki_memory_store: Option<WikiStore>,
     last_topic_infra_preflight_summary: Option<String>,
 }
 

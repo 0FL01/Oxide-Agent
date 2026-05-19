@@ -63,14 +63,6 @@ fn test_batch() -> PendingTextInputBatch {
     )
 }
 
-fn test_persistent_memory_store(
-    storage: &Arc<dyn StorageProvider>,
-) -> Arc<dyn oxide_agent_core::agent::PersistentMemoryStore> {
-    Arc::new(oxide_agent_core::storage::StorageMemoryRepository::new(
-        storage.clone(),
-    ))
-}
-
 #[test]
 fn merges_sequential_large_text_parts() {
     let batch = test_batch();
@@ -1056,7 +1048,6 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let manager_settings = test_settings(Some("88"));
     let llm = test_llm(&manager_settings);
-    let persistent_memory_store = test_persistent_memory_store(&storage);
 
     let general_thread = general_forum_topic_id();
     let blocked_thread = ThreadId(MessageId(43));
@@ -1081,7 +1072,6 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &manager_settings,
     })
     .await;
@@ -1100,7 +1090,6 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &manager_settings,
     })
     .await;
@@ -1128,7 +1117,6 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let manager_settings = test_settings(Some("88"));
     let llm = test_llm(&manager_settings);
-    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(88, chat_id, Some(thread_id), "flow-a");
 
     remove_sessions_with_compat(keys).await;
@@ -1148,7 +1136,6 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &manager_settings,
     })
     .await;
@@ -1171,7 +1158,6 @@ async fn new_flow_injects_topic_agents_md_once() {
     ));
     let settings = test_settings(None);
     let llm = test_llm(&settings);
-    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-agents");
 
     remove_sessions_with_compat(keys).await;
@@ -1191,7 +1177,6 @@ async fn new_flow_injects_topic_agents_md_once() {
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -1235,7 +1220,6 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
     });
     let settings = test_settings(None);
     let llm = test_llm(&settings);
-    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-existing");
 
     remove_sessions_with_compat(keys).await;
@@ -1255,7 +1239,6 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -1288,7 +1271,6 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
     let allowed_settings = test_settings(Some("77"));
     let restricted_settings = test_settings(None);
     let llm = test_llm(&allowed_settings);
-    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
 
     remove_sessions_with_compat(keys).await;
@@ -1308,7 +1290,6 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &allowed_settings,
     })
     .await;
@@ -1333,7 +1314,6 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &restricted_settings,
     })
     .await;
@@ -1357,7 +1337,6 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
     let allowed_settings = test_settings(Some("77"));
     let restricted_settings = test_settings(None);
     let llm = test_llm(&allowed_settings);
-    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
 
     remove_sessions_with_compat(keys).await;
@@ -1377,7 +1356,6 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &allowed_settings,
     })
     .await;
@@ -1411,7 +1389,6 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &restricted_settings,
     })
     .await;
@@ -1445,7 +1422,6 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &restricted_settings,
     })
     .await;
@@ -1514,7 +1490,6 @@ async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let legacy_manager_settings = test_settings(Some("77"));
     let llm = test_llm(&legacy_manager_settings);
-    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
 
     remove_sessions_with_compat(keys).await;
@@ -1543,7 +1518,6 @@ async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &restricted_settings,
     })
     .await;
@@ -1565,7 +1539,6 @@ async fn threaded_transport_session_migrates_idle_legacy_session_to_primary_scop
     let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
     let settings = test_settings(None);
     let llm = test_llm(&settings);
-    let persistent_memory_store = test_persistent_memory_store(&storage);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
 
     remove_sessions_with_compat(keys).await;
@@ -1592,7 +1565,6 @@ async fn threaded_transport_session_migrates_idle_legacy_session_to_primary_scop
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;

@@ -1,13 +1,9 @@
 use super::types::{
-    current_model_route, retrieval_fallback_classification, ExecutionRequest, ExecutionTransition,
-    PreparedExecution, ResolvedExecutionRequest, RunnerContextServices,
+    current_model_route, ExecutionRequest, ExecutionTransition, PreparedExecution,
+    ResolvedExecutionRequest, RunnerContextServices,
 };
 use super::{AgentExecutionOutcome, AgentExecutor};
 use crate::agent::memory::AgentMessage;
-use crate::agent::persistent_memory::{
-    DurableMemoryRetrievalOptions, DurableMemoryRetriever, LlmMemoryEmbeddingGenerator,
-    MemoryClassificationDecision,
-};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_agent_system_prompt;
 use crate::agent::providers::{
@@ -20,8 +16,12 @@ use crate::agent::tool_bridge::{
     execute_single_tool_call, ToolExecutionContext, ToolExecutionResult,
 };
 use crate::agent::tool_runtime::scope_tool_model_route;
+use crate::agent::wiki_memory::{
+    wiki_context_id, WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchPlanner,
+    WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache,
+};
 use crate::config::get_agent_max_iterations;
-use crate::llm::{Message, ToolCall, ToolCallFunction};
+use crate::llm::{ToolCall, ToolCallFunction};
 use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::sync::Arc;
@@ -114,14 +114,6 @@ impl AgentExecutor {
         self.session.last_task.as_deref()
     }
 
-    /// Whether durable persistent-memory orchestration is configured.
-    #[must_use]
-    pub fn has_persistent_memory(&self) -> bool {
-        self.persistent_memory.is_some()
-            && self.memory_store.is_some()
-            && self.memory_classifier.is_some()
-    }
-
     /// Clone the runtime context inbox handle for concurrent transport writes.
     #[must_use]
     pub fn runtime_context_inbox(&self) -> RuntimeContextInbox {
@@ -194,7 +186,6 @@ impl AgentExecutor {
             self.skill_registry.as_mut(),
             RunnerContextServices {
                 compaction_service: &self.compaction_service,
-                persistent_memory: self.persistent_memory.as_ref(),
             },
         );
 
@@ -337,9 +328,16 @@ impl AgentExecutor {
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
         let request = self.resolve_execution_request(request).await?;
+        let task_for_wiki_update = request.task.clone();
         let timeout_error_message = self.agent_timeout_error_message();
         let transition = self.run_execution(request, progress_tx).await?;
-        self.apply_execution_transition(transition, timeout_error_message.as_str())
+        let outcome =
+            self.apply_execution_transition(transition, timeout_error_message.as_str())?;
+        if matches!(outcome, AgentExecutionOutcome::Completed(_)) {
+            self.flush_wiki_memory_after_successful_run(&task_for_wiki_update)
+                .await;
+        }
+        Ok(outcome)
     }
 
     pub(super) async fn prepare_execution(
@@ -359,6 +357,7 @@ impl AgentExecutor {
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
+        let wiki_context = self.render_wiki_context_for_task(task).await;
         let system_prompt = create_agent_system_prompt(
             task,
             &tools,
@@ -366,64 +365,16 @@ impl AgentExecutor {
             self.skill_registry.as_mut(),
             &mut self.session,
             self.execution_profile.prompt_instructions(),
+            wiki_context.as_deref(),
         )
         .await;
-        let mut messages =
-            AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
-        let mut memory_classification = None;
-
-        if let (Some(store), Some(classifier)) = (&self.memory_store, &self.memory_classifier) {
-            let (classification, retrieval_classification) = match classifier.classify(task).await {
-                Ok(decision) => (decision.clone(), decision),
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        task = %task,
-                        "persistent-memory classifier failed; using conservative write mode and retrieval fallback"
-                    );
-                    (
-                        MemoryClassificationDecision::conservative_safe_mode(),
-                        retrieval_fallback_classification(),
-                    )
-                }
-            };
-            memory_classification = Some(classification.clone());
-
-            let query_embeddings = self.runner.llm_client().is_embedding_available().then(|| {
-                Arc::new(LlmMemoryEmbeddingGenerator::new(self.runner.llm_client()))
-                    as Arc<dyn crate::agent::persistent_memory::MemoryEmbeddingGenerator>
-            });
-            let mut retriever = DurableMemoryRetriever::new_with_store(Arc::clone(store));
-            if let Some(query_embeddings) = query_embeddings {
-                retriever = retriever.with_query_embedding_generator(query_embeddings);
-            }
-            if let Some(model_id) = self.runner.llm_client().embedding_profile_id() {
-                retriever = retriever.with_query_embedding_model_id(model_id.to_string());
-            }
-            match retriever
-                .render_prompt_context(
-                    task,
-                    &retrieval_classification,
-                    self.session.memory_scope(),
-                    DurableMemoryRetrievalOptions::default(),
-                )
-                .await
-            {
-                Ok(Some(context)) => messages.push(Message::system(&context)),
-                Ok(None) => {}
-                Err(error) => {
-                    warn!(error = %error, task = %task, "durable memory retrieval failed")
-                }
-            }
-        }
-
+        let messages = AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
         PreparedExecution {
             todos_arc,
             registry,
             tools,
             system_prompt,
             messages,
-            memory_classification,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),
                 get_agent_max_iterations(),
@@ -434,6 +385,93 @@ impl AgentExecutor {
             .with_model_provider(model.provider.clone())
             .with_temperature(self.settings.get_configured_agent_temperature())
             .with_model_routes(model_routes),
+        }
+    }
+
+    async fn render_wiki_context_for_task(&self, task: &str) -> Option<String> {
+        let store = self.wiki_memory_store.clone()?;
+        let scope = self.session.memory_scope();
+        let cache = Arc::new(WikiSessionCache::new(store));
+        let assembler = WikiContextAssembler::new(cache, WikiContextAssemblerConfig::default());
+
+        match assembler
+            .assemble_for_context(scope.user_id, &scope.context_key, task)
+            .await
+        {
+            Ok(rendered) if !rendered.is_empty => Some(rendered.text),
+            Ok(_) => None,
+            Err(error) => {
+                warn!(%error, "wiki memory context assembly failed; continuing without durable wiki context");
+                None
+            }
+        }
+    }
+
+    async fn flush_wiki_memory_after_successful_run(&self, task: &str) {
+        let Some(store) = self.wiki_memory_store.clone() else {
+            return;
+        };
+
+        let scope = self.session.memory_scope();
+        let context_id = wiki_context_id(scope.user_id, &scope.context_key);
+        let task_id = self.session.current_task_id.as_deref().unwrap_or("unknown");
+        let drafts = self.session.memory_behavior_runtime().snapshot();
+        let now = chrono::Utc::now();
+        let Some(patch) =
+            WikiPatchPlanner::default().plan_run_patch(&context_id, task_id, task, &drafts, now)
+        else {
+            return;
+        };
+
+        let validator = WikiPatchValidator::new(WikiPatchValidatorConfig::default());
+        let validated = match validator.validate(&store, &context_id, patch) {
+            Ok(validated) => validated,
+            Err(error) => {
+                warn!(%error, "wiki memory patch validation failed; skipping durable update");
+                return;
+            }
+        };
+
+        let cache = WikiSessionCache::new(store);
+        let applied = match cache.apply_validated_patch(&validated).await {
+            Ok(applied) => applied,
+            Err(error) => {
+                warn!(%error, "wiki memory patch apply failed; skipping durable update");
+                return;
+            }
+        };
+        let metadata_pages = match cache
+            .reconcile_context_patch_metadata(&context_id, &validated, now)
+            .await
+        {
+            Ok(metadata_pages) => metadata_pages,
+            Err(error) => {
+                warn!(%error, "wiki memory metadata reconciliation failed; flushing validated pages only");
+                0
+            }
+        };
+
+        match cache.flush_dirty_pages().await {
+            Ok(result) if result.written_pages > 0 => {
+                info!(
+                    applied_ops = applied,
+                    metadata_pages,
+                    written_pages = result.written_pages,
+                    skipped_unchanged_pages = result.skipped_unchanged_pages,
+                    "wiki memory update flushed after successful run"
+                );
+            }
+            Ok(result) => {
+                info!(
+                    applied_ops = applied,
+                    considered_pages = result.considered_pages,
+                    skipped_unchanged_pages = result.skipped_unchanged_pages,
+                    "wiki memory update produced no changed pages"
+                );
+            }
+            Err(error) => {
+                warn!(%error, "wiki memory flush failed; user task result preserved");
+            }
         }
     }
 

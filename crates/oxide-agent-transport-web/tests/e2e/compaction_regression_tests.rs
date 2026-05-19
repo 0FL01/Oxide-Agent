@@ -179,6 +179,7 @@ fn token_rich_payload(label: &str, words: usize) -> String {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_post_run_deduplicates_superseded_read_file_results() {
     init_test_tracing();
 
@@ -373,6 +374,7 @@ async fn e2e_compaction_post_run_deduplicates_superseded_read_file_results() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
     init_test_tracing();
 
@@ -554,6 +556,7 @@ async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_post_run_blocks_dedup_when_write_file_intervenes() {
     init_test_tracing();
 
@@ -737,6 +740,7 @@ async fn e2e_compaction_post_run_blocks_dedup_when_write_file_intervenes() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
@@ -856,6 +860,7 @@ async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_post_run_preserves_delegate_results_while_cleaning_regular_tools() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
@@ -985,6 +990,7 @@ async fn e2e_compaction_post_run_preserves_delegate_results_while_cleaning_regul
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
     let anchor = "ANCHOR_CTX_9f3a9a4bc7f14d60b2a6e8c14529f0aa";
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
@@ -1076,6 +1082,7 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
@@ -1192,6 +1199,7 @@ async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         two_todo_tool_calls_response(),
@@ -1303,6 +1311,7 @@ async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
@@ -1396,6 +1405,7 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compress_tool_triggers_manual_compaction() {
     init_test_tracing();
 

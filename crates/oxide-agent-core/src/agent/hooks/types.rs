@@ -3,7 +3,7 @@
 //! Defines the data structures used for agent lifecycle hooks.
 
 use super::super::providers::TodoList;
-use crate::agent::persistent_memory::MemoryBehaviorRuntime;
+use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::session::AgentMemoryScope;
 use crate::llm::ToolDefinition;
 

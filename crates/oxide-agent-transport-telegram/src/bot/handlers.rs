@@ -155,7 +155,6 @@ async fn check_state_and_redirect(
     msg: &Message,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
-    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
     settings: &Arc<BotSettings>,
 ) -> Result<bool> {
@@ -178,7 +177,6 @@ async fn check_state_and_redirect(
                 storage.clone(),
                 llm.clone(),
                 dialogue.clone(),
-                persistent_memory_store.clone(),
                 settings.clone(),
             ))
             .await?;
@@ -693,7 +691,6 @@ pub async fn handle_menu_callback(
     q: &CallbackQuery,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
-    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: &Arc<BotSettings>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
 ) -> Result<bool> {
@@ -732,7 +729,6 @@ pub async fn handle_menu_callback(
                     dialogue.clone(),
                     llm.clone(),
                     storage.clone(),
-                    persistent_memory_store.clone(),
                     settings.clone(),
                     user_id,
                 )
@@ -864,7 +860,6 @@ pub async fn handle_text(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let text = msg.text().unwrap_or("").to_string();
@@ -879,13 +874,7 @@ pub async fn handle_text(
     );
 
     if Box::pin(check_state_and_redirect(
-        &bot,
-        &msg,
-        &storage,
-        &llm,
-        &persistent_memory_store,
-        &dialogue,
-        &settings,
+        &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
     .await?
     {
@@ -902,18 +891,7 @@ pub async fn handle_text(
         return Ok(());
     }
 
-    if handle_menu_commands(
-        &bot,
-        &msg,
-        &storage,
-        &llm,
-        &persistent_memory_store,
-        &dialogue,
-        &settings,
-        &text,
-    )
-    .await?
-    {
+    if handle_menu_commands(&bot, &msg, &storage, &llm, &dialogue, &settings, &text).await? {
         touch_dynamic_binding_activity_if_needed(storage.as_ref(), user_id, &route).await;
         return Ok(());
     }
@@ -970,7 +948,6 @@ async fn handle_menu_commands(
     msg: &Message,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
-    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     dialogue: &Dialogue<State, InMemStorage<State>>,
     settings: &Arc<BotSettings>,
     text: &str,
@@ -1017,7 +994,6 @@ async fn handle_menu_commands(
                     dialogue.clone(),
                     llm.clone(),
                     storage.clone(),
-                    persistent_memory_store.clone(),
                     settings.clone(),
                     user_id,
                 )
@@ -1362,7 +1338,6 @@ pub async fn handle_voice(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
@@ -1378,13 +1353,7 @@ pub async fn handle_voice(
     }
 
     if Box::pin(check_state_and_redirect(
-        &bot,
-        &msg,
-        &storage,
-        &llm,
-        &persistent_memory_store,
-        &dialogue,
-        &settings,
+        &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
     .await?
     {
@@ -1487,7 +1456,6 @@ pub async fn handle_photo(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
@@ -1504,13 +1472,7 @@ pub async fn handle_photo(
     }
 
     if Box::pin(check_state_and_redirect(
-        &bot,
-        &msg,
-        &storage,
-        &llm,
-        &persistent_memory_store,
-        &dialogue,
-        &settings,
+        &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
     .await?
     {
@@ -1622,7 +1584,6 @@ pub async fn handle_video(
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
@@ -1639,13 +1600,7 @@ pub async fn handle_video(
     }
 
     if Box::pin(check_state_and_redirect(
-        &bot,
-        &msg,
-        &storage,
-        &llm,
-        &persistent_memory_store,
-        &dialogue,
-        &settings,
+        &bot, &msg, &storage, &llm, &dialogue, &settings,
     ))
     .await?
     {
@@ -1752,7 +1707,6 @@ pub async fn handle_document(
     dialogue: Dialogue<State, InMemStorage<State>>,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let outbound_thread = outbound_thread_from_message(&msg);
@@ -1774,7 +1728,6 @@ pub async fn handle_document(
             storage.clone(),
             llm,
             dialogue,
-            persistent_memory_store,
             settings,
         ))
         .await;

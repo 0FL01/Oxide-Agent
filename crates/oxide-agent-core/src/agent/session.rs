@@ -6,7 +6,7 @@
 use super::compaction::CompactionScope;
 use super::identity::SessionId;
 use super::memory::AgentMemory;
-use super::persistent_memory::MemoryBehaviorRuntime;
+use super::memory_behavior::MemoryBehaviorRuntime;
 // use super::providers::TodoList;
 use crate::config::AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS;
 use crate::llm::InvocationId;
