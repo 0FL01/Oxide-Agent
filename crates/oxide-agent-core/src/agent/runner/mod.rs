@@ -69,6 +69,11 @@ impl AgentRunner {
         self.hook_registry.register(hook);
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_registered_hook(&self, name: &str) -> bool {
+        self.hook_registry.contains_hook(name)
+    }
+
     /// Get access to the internal LLM client.
     #[must_use]
     pub fn llm_client(&self) -> Arc<LlmClient> {

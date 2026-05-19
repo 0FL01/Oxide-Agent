@@ -114,6 +114,11 @@ impl HookRegistry {
     pub fn len(&self) -> usize {
         self.hooks.len()
     }
+
+    #[cfg(test)]
+    pub(crate) fn contains_hook(&self, name: &str) -> bool {
+        self.hooks.iter().any(|hook| hook.name() == name)
+    }
 }
 
 impl Default for HookRegistry {

@@ -4,8 +4,9 @@ use crate::agent::compaction::{
     CompactionService, CompactionSummarizer, CompactionSummarizerConfig,
 };
 use crate::agent::hooks::{
-    CompletionCheckHook, DelegationGuardHook, HotContextHealthHook, RetrievalAdvisorHook,
-    SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook, WorkloadDistributorHook,
+    CompletionCheckHook, DelegationGuardHook, EpisodicExtractHook, HotContextHealthHook,
+    RetrievalAdvisorHook, SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
+    WorkloadDistributorHook,
 };
 use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext, SshApprovalRegistry};
 use crate::agent::runner::AgentRunner;
@@ -54,6 +55,7 @@ impl AgentExecutor {
             settings.get_hot_context_limits(),
         )));
         runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
+        runner.register_hook(Box::new(EpisodicExtractHook::new()));
         Self::register_policy_controlled_hook(
             &mut runner,
             WorkloadDistributorHook::new(),

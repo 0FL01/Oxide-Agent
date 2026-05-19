@@ -41,6 +41,13 @@ fn policy_controlled_hook_skips_disabled_manageable_hook() {
     assert!(matches!(result, HookResult::Continue));
 }
 
+#[test]
+fn executor_registers_episodic_extract_hook_for_wiki_drafts() {
+    let executor = build_executor();
+
+    assert!(executor.runner.has_registered_hook("episodic_extract"));
+}
+
 #[tokio::test]
 async fn executor_injects_configured_wiki_memory_context() {
     let settings = Arc::new(crate::config::AgentSettings {
