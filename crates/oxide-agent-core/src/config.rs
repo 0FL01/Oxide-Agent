@@ -179,6 +179,20 @@ pub struct AgentSettings {
     #[serde(default)]
     pub sub_agent_model_routes: Option<Vec<ModelInfo>>,
 
+    /// Enable asynchronous LLM-assisted Wiki Memory writer after completed runs.
+    pub wiki_memory_writer_enabled: Option<bool>,
+    /// Dedicated Wiki Memory writer model ID override.
+    pub wiki_memory_writer_model_id: Option<String>,
+    /// Dedicated Wiki Memory writer model provider override.
+    pub wiki_memory_writer_model_provider: Option<String>,
+    /// Dedicated Wiki Memory writer max output tokens override.
+    #[serde(alias = "wiki_memory_writer_model_max_tokens")]
+    pub wiki_memory_writer_max_output_tokens: Option<u32>,
+    /// Dedicated Wiki Memory writer context window tokens override.
+    pub wiki_memory_writer_context_window_tokens: Option<u32>,
+    /// Dedicated Wiki Memory writer timeout override in seconds.
+    pub wiki_memory_writer_timeout_secs: Option<u64>,
+
     /// Media model ID override (for voice/images)
     pub media_model_id: Option<String>,
     /// Media model provider override
@@ -682,6 +696,22 @@ impl AgentSettings {
         ))
     }
 
+    fn wiki_memory_writer_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.wiki_memory_writer_model_id.as_ref()?;
+        let provider = self.wiki_memory_writer_model_provider.as_ref()?;
+        let max_output_tokens = self
+            .wiki_memory_writer_max_output_tokens
+            .unwrap_or(WIKI_MEMORY_WRITER_MAX_TOKENS);
+        let context_window_tokens = self
+            .wiki_memory_writer_context_window_tokens
+            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
+
+        Some((
+            id.clone(),
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
+        ))
+    }
+
     fn narrator_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.narrator_model_id.as_ref()?;
         let provider = self.narrator_model_provider.as_ref()?;
@@ -772,6 +802,10 @@ impl AgentSettings {
         }
 
         if let Some((name, info)) = self.sub_agent_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
+        if let Some((name, info)) = self.wiki_memory_writer_model_spec() {
             Self::upsert_model(&mut models, name, info);
         }
 
@@ -880,6 +914,27 @@ impl AgentSettings {
         } else {
             self.get_configured_agent_model_routes()
         }
+    }
+
+    /// Determine whether LLM-assisted background Wiki Memory writing is enabled.
+    #[must_use]
+    pub fn is_wiki_memory_writer_enabled(&self) -> bool {
+        self.wiki_memory_writer_enabled.unwrap_or(false)
+            && self.wiki_memory_writer_model_spec().is_some()
+    }
+
+    /// Returns the configured model info for the background Wiki Memory writer.
+    #[must_use]
+    pub fn get_configured_wiki_memory_writer_model(&self) -> Option<ModelInfo> {
+        self.wiki_memory_writer_model_spec().map(|(_, model)| model)
+    }
+
+    /// Returns the background Wiki Memory writer timeout in seconds.
+    #[must_use]
+    pub fn get_wiki_memory_writer_timeout_secs(&self) -> u64 {
+        self.wiki_memory_writer_timeout_secs
+            .unwrap_or(WIKI_MEMORY_WRITER_TIMEOUT_SECS)
+            .max(1)
     }
 
     fn configured_agent_route_primary(&self) -> Option<ModelInfo> {
@@ -1572,8 +1627,12 @@ pub const AGENT_SEARCH_LIMIT: usize = 10;
 pub const NARRATOR_MAX_TOKENS: u32 = 256;
 /// Maximum tokens for compaction summary response.
 pub const COMPACTION_MAX_TOKENS: u32 = 512;
+/// Maximum tokens for background Wiki Memory writer response.
+pub const WIKI_MEMORY_WRITER_MAX_TOKENS: u32 = 4096;
 /// Default timeout for compaction summary model requests.
 pub const COMPACTION_TIMEOUT_SECS: u64 = 20;
+/// Default timeout for background Wiki Memory writer requests.
+pub const WIKI_MEMORY_WRITER_TIMEOUT_SECS: u64 = 60;
 
 // Skill system configuration
 /// Skills directory (contains modular prompt files)

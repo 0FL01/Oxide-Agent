@@ -3,6 +3,7 @@ use super::*;
 #[derive(Default)]
 struct InMemoryWikiBackend {
     objects: Mutex<std::collections::HashMap<String, String>>,
+    put_gate: StdMutex<Option<Arc<tokio::sync::Semaphore>>>,
 }
 
 #[async_trait::async_trait]
@@ -12,6 +13,18 @@ impl crate::agent::wiki_memory::WikiObjectBackend for InMemoryWikiBackend {
     }
 
     async fn put_text(&self, key: &str, content: &str) -> Result<(), crate::storage::StorageError> {
+        let gate = self
+            .put_gate
+            .lock()
+            .ok()
+            .and_then(|gate| gate.as_ref().cloned());
+        if let Some(gate) = gate {
+            let _permit = gate
+                .acquire()
+                .await
+                .map_err(|_| crate::storage::StorageError::S3Put("test put gate closed".into()))?;
+        }
+
         self.objects
             .lock()
             .await
@@ -22,6 +35,30 @@ impl crate::agent::wiki_memory::WikiObjectBackend for InMemoryWikiBackend {
     async fn delete_text(&self, key: &str) -> Result<(), crate::storage::StorageError> {
         self.objects.lock().await.remove(key);
         Ok(())
+    }
+}
+
+async fn wait_for_wiki_entry(
+    backend: &Arc<InMemoryWikiBackend>,
+    predicate: impl Fn(&str, &str) -> bool,
+) -> (String, String) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if let Some(entry) = {
+            let objects = backend.objects.lock().await;
+            objects
+                .iter()
+                .find(|(key, value)| predicate(key, value))
+                .map(|(key, value)| (key.clone(), value.clone()))
+        } {
+            return entry;
+        }
+
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for wiki background writer"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
 
@@ -153,25 +190,21 @@ async fn executor_flushes_explicit_remember_to_wiki_after_completed_run() {
         result,
         Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "remembered"
     ));
-    let objects = backend.objects.lock().await;
-    let page_entry = objects
-        .iter()
-        .find(|(key, _)| key.contains("/wiki/v1/contexts/") && key.contains("/pages/"))
-        .map(|(_, value)| value)
-        .expect("wiki page should be flushed");
+    let (_, page_entry) = wait_for_wiki_entry(&backend, |key, _| {
+        key.contains("/wiki/v1/contexts/") && key.contains("/pages/")
+    })
+    .await;
     assert!(page_entry.contains("type: note"));
     assert!(page_entry.contains("staging deploys must run smoke tests first"));
-    let index = objects
-        .iter()
-        .find(|(key, _)| key.ends_with("/index.md") && key.contains("/wiki/v1/contexts/"))
-        .map(|(_, value)| value)
-        .expect("wiki index should be reconciled");
+    let (_, index) = wait_for_wiki_entry(&backend, |key, _| {
+        key.ends_with("/index.md") && key.contains("/wiki/v1/contexts/")
+    })
+    .await;
     assert!(index.contains("pages/"));
-    let log = objects
-        .iter()
-        .find(|(key, _)| key.ends_with("/log.md") && key.contains("/wiki/v1/contexts/"))
-        .map(|(_, value)| value)
-        .expect("wiki log should be reconciled");
+    let (_, log) = wait_for_wiki_entry(&backend, |key, _| {
+        key.ends_with("/log.md") && key.contains("/wiki/v1/contexts/")
+    })
+    .await;
     assert!(log.contains("post-run wiki memory candidate capture"));
 }
 
@@ -193,12 +226,10 @@ async fn executor_prefers_contentful_final_answer_for_explicit_remember() {
         result,
         Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "Lucky number = 42."
     ));
-    let objects = backend.objects.lock().await;
-    let page_entry = objects
-        .iter()
-        .find(|(key, _)| key.contains("/wiki/v1/contexts/") && key.contains("/pages/"))
-        .map(|(_, value)| value)
-        .expect("wiki page should be flushed");
+    let (_, page_entry) = wait_for_wiki_entry(&backend, |key, _| {
+        key.contains("/wiki/v1/contexts/") && key.contains("/pages/")
+    })
+    .await;
     assert!(page_entry.contains("Lucky number = 42."));
     assert!(!page_entry.contains("# explicit-remember\n\nRemember this: my lucky number"));
 }
@@ -224,14 +255,125 @@ async fn executor_flushes_russian_save_intent_to_wiki_after_completed_run() {
         result,
         Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "сохранил"
     ));
-    let objects = backend.objects.lock().await;
-    let page_entry = objects
-        .iter()
-        .find(|(key, _)| key.contains("/wiki/v1/contexts/") && key.contains("/pages/"))
-        .map(|(_, value)| value)
-        .expect("wiki page should be flushed for Russian save intent");
+    let (_, page_entry) = wait_for_wiki_entry(&backend, |key, _| {
+        key.contains("/wiki/v1/contexts/") && key.contains("/pages/")
+    })
+    .await;
     assert!(page_entry.contains("type: note"));
     assert!(page_entry.contains("перед деплоем запускать smoke tests"));
+}
+
+#[tokio::test]
+async fn executor_spawns_wiki_memory_flush_without_blocking_completed_result() {
+    let backend = Arc::new(InMemoryWikiBackend::default());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *backend.put_gate.lock().expect("put gate lock poisoned") = Some(Arc::clone(&gate));
+
+    let store_backend: Arc<dyn crate::agent::wiki_memory::WikiObjectBackend> = backend.clone();
+    let wiki_store = crate::agent::wiki_memory::WikiStore::new(store_backend, "prod");
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"done","tool_call":null,"final_answer":"remembered","awaiting_user_input":null}"#,
+    )
+    .with_wiki_memory_store(wiki_store);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        executor.execute(
+            "Remember this: background wiki flush must not block completion.",
+            None,
+        ),
+    )
+    .await;
+
+    gate.add_permits(1);
+
+    assert!(matches!(
+        result,
+        Ok(Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer))) if answer == "remembered"
+    ));
+
+    let (_, page_entry) = wait_for_wiki_entry(&backend, |key, _| {
+        key.contains("/wiki/v1/contexts/") && key.contains("/pages/")
+    })
+    .await;
+    assert!(page_entry.contains("background wiki flush must not block completion"));
+}
+
+#[tokio::test]
+async fn background_writer_extracts_previous_message_for_empty_remember_payload() {
+    let backend = Arc::new(InMemoryWikiBackend::default());
+    let store_backend: Arc<dyn crate::agent::wiki_memory::WikiObjectBackend> = backend.clone();
+    let wiki_store = crate::agent::wiki_memory::WikiStore::new(store_backend, "prod");
+    let settings = Arc::new(crate::config::AgentSettings {
+        agent_model_id: Some("mock-agent".to_string()),
+        agent_model_provider: Some("mock".to_string()),
+        wiki_memory_writer_enabled: Some(true),
+        wiki_memory_writer_model_id: Some("mock-writer".to_string()),
+        wiki_memory_writer_model_provider: Some("mock".to_string()),
+        wiki_memory_writer_max_output_tokens: Some(4096),
+        wiki_memory_writer_timeout_secs: Some(5),
+        ..crate::config::AgentSettings::default()
+    });
+
+    let mut provider = crate::llm::MockLlmProvider::new();
+    provider.expect_chat_with_tools().return_once(|_| {
+        Ok(crate::llm::ChatResponse {
+            content: Some(
+                r#"{"thought":"done","tool_call":null,"final_answer":"Запомнил.","awaiting_user_input":null}"#
+                    .to_string(),
+            ),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: None,
+            usage: None,
+        })
+    });
+    provider
+        .expect_chat_completion()
+        .return_once(|system_prompt, history, user_message, model_id, max_tokens| {
+            assert!(system_prompt.contains("background memory curator"));
+            assert!(history.is_empty());
+            assert_eq!(model_id, "mock-writer");
+            assert_eq!(max_tokens, 4096);
+            assert!(user_message.contains("Локация юзера"));
+            assert!(user_message.contains("сохрани в память"));
+            Ok(r#"{"candidates":[{"kind":"fact","title":"User location","content":"Локация пользователя: Россия, Кировская область, Котельнич.","confidence":0.92,"importance":0.8,"tags":["explicit-remember","profile","location"],"evidence":["Previous user message supplied the location and the latest user message asked to save it."],"reason":"User explicitly asked to save the prior location context."}]}"#.to_string())
+        });
+    provider
+        .expect_transcribe_audio()
+        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+    provider
+        .expect_analyze_image()
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+
+    let mut llm = LlmClient::new(settings.as_ref());
+    llm.register_provider("mock".to_string(), Arc::new(provider));
+    let mut session = AgentSession::new(9_i64.into());
+    session
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user_turn(
+            "Добавь что Локация юзера: Россия, Кировская обл, Котельнич",
+        ));
+    session
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::assistant(
+            "Запомнил: локация юзера — Россия, Кировская обл., Котельнич.",
+        ));
+    let mut executor =
+        AgentExecutor::new(Arc::new(llm), session, settings).with_wiki_memory_store(wiki_store);
+
+    let result = executor.execute("сохрани в память", None).await;
+
+    assert!(matches!(
+        result,
+        Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "Запомнил."
+    ));
+    let (_, page_entry) = wait_for_wiki_entry(&backend, |key, value| {
+        key.contains("/wiki/v1/contexts/") && key.contains("/pages/") && value.contains("Котельнич")
+    })
+    .await;
+    assert!(page_entry.contains("Локация пользователя"));
+    assert!(!page_entry.contains("# сохрани в память"));
 }
 
 #[test]
