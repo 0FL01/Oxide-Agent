@@ -23,6 +23,6 @@ Delegate routine work (setup, exploration) to it to save your context and tokens
 
 {
   "task": "Collect 5 relevant sources on topic X and briefly describe key facts",
-  "tools": ["web_markdown", "deep_crawl", "web_search", "web_extract"],
+  "tools": ["web_markdown", "web_search", "web_extract", "searxng_search"],
   "context": "Use sources no older than 12 months. Result — brief list with links."
 }

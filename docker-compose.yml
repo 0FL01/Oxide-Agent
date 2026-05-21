@@ -20,7 +20,6 @@ services:
     env_file:
       - .env
     environment:
-      - CRAWL4AI_URL=http://127.0.0.1:11235
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
       - TZ=Europe/Moscow
@@ -35,8 +34,6 @@ services:
     network_mode: host
     depends_on:
       sandboxd:
-        condition: service_healthy
-      crawl4ai:
         condition: service_healthy
       searxng:
         condition: service_healthy
@@ -73,30 +70,6 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
-    logging:
-      driver: json-file
-      options:
-        max-size: "1m"
-        max-file: "3"
-
-  crawl4ai:
-    image: unclecode/crawl4ai:0.8.5
-    container_name: crawl4ai
-    restart: unless-stopped
-    shm_size: '2gb'
-    ports:
-      - "127.0.0.1:11235:11235"
-    deploy:
-      resources:
-        limits:
-          memory: 6G
-          cpus: '4'
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
     logging:
       driver: json-file
       options:

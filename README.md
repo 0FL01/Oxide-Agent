@@ -48,7 +48,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
 
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
-    *   **Web Search and Data Extraction:** Multiple independent search providers — SearXNG (self-hosted, default), Tavily (API), Crawl4AI (deep crawling) — can run simultaneously.
+    *   **Web Search and Data Extraction:** SearXNG (self-hosted, default) and Tavily (API) handle discovery; local `web_markdown` fetches one known URL as Markdown.
     *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
         - Completion Check Hook - validates task completion
         - Workload Distributor - enforces separation of duties by blocking heavy manual operations in the Main Agent
@@ -111,7 +111,7 @@ The bot supports **7 main providers** for both standard chat and advanced Agent 
 *   **Sandbox Broker** — optional Unix socket broker for security isolation (`SANDBOX_BACKEND=broker`)
 *   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
 *   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
-*   **Crawl4AI** — deep web crawling provider with markdown extraction and PDF parsing capabilities
+*   **Local Web Markdown** — lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
 *   **Browser Use Bridge** — self-hosted browser automation sidecar for high-level browser tasks (`BROWSER_USE_URL`) — **currently disabled**, requires a quality vision-capable agent model at a reasonable price-per-token
 *   **Kokoro TTS Server** — optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** — optional for Russian voice message synthesis (`SILERO_TTS_URL`)
@@ -154,7 +154,7 @@ REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: stay silent on no
 
 # Agent Configuration
 AGENT_TIMEOUT_SECS=300          # Agent execution timeout
-SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / SEARXNG_ENABLED / CRAWL4AI_ENABLED
+SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / SEARXNG_ENABLED
 DEBUG_MODE=false                # Debug logging mode
 
 # Cloudflare R2 (S3)
@@ -178,7 +178,6 @@ MINIMAX_API_KEY=...             # MiniMax Provider (Claude SDK-compatible)
 TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enable via TAVILY_ENABLED=true)
 SEARXNG_URL=http://127.0.0.1:8081  # SearXNG self-hosted search (auto-enabled when set)
 SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
-CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
 # Browser Use self-hosted bridge (disabled: requires a quality vision-capable agent model)
 # BROWSER_USE_URL=http://127.0.0.1:8002
 # BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3 # Optional retained reusable profiles per topic/context scope
@@ -537,7 +536,7 @@ The agent uses a modular provider system, each offering a specialized set of too
 - **Sandbox Provider** (`sandbox.rs`) — code execution, file read/write, shell commands
 - **SearXNG Provider** (`searxng/`) — self-hosted web search via JSON API
 - **Tavily Provider** (`tavily.rs`) — web search and data extraction
-- **Crawl4AI Provider** (`crawl4ai.rs`) — deep web crawling with markdown extraction and PDF parsing (retry with backoff, concurrency limit)
+- **WebFetch Markdown Provider** (`webfetch_md.rs`) — single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 - **Todos Provider** (`todos.rs`) — task list management for long-term planning
 - **YT-DLP Provider** (`ytdlp.rs`) — video and audio download from various platforms
 - **File Hoster Provider** (`filehoster.rs`) — public file upload to temporary hosting (up to 4GB)
@@ -616,12 +615,7 @@ Enhanced reminder scheduling with pause/resume/retry support.
    - Mounts: `/var/run/docker.sock:/var/run/docker.sock` (only sandboxd has Docker access)
    - Socket: `/run/sandboxd/sandboxd.sock`
 
-4. **crawl4ai** (web crawler)
-    - Image: `unclecode/crawl4ai:0.8.5`
-    - Health check: `curl -f http://localhost:11235/health`
-    - Resources: 6GB RAM, 4 CPUs, 2GB shared memory
-
-5. **searxng** (self-hosted search)
+4. **searxng** (self-hosted search)
     - Image: `searxng/searxng:2026.3.24-054174a19`
     - Port: `127.0.0.1:8081:8080`
     - Health check: `wget -qO- http://localhost:8080/healthz`
@@ -774,7 +768,7 @@ cargo clippy --workspace --tests -- -D warnings
 cargo fmt --all
 
 # Build with feature flags
-cargo build --release --features searxng,crawl4ai,jira,mattermost
+cargo build --release --features searxng,jira,mattermost
 
 # Run E2E tests (requires transport-web crate)
 cargo test -p oxide-agent-transport-web --test e2e
@@ -811,7 +805,7 @@ The project uses GitHub Actions for automatic testing and deployment:
   - `unwrap_used = "forbid"` — all Result/Option must be handled via `?` or `match`
   - `too_many_lines = "forbid"` — files >300 lines must be split
   - `too_many_arguments = "forbid"` — functions >3 arguments require Context/Config struct
-- **Feature flags:** Tavily, SearXNG, Crawl4AI, Jira, Mattermost available via `--features`
+- **Feature flags:** Tavily, SearXNG, Jira, Mattermost available via `--features`
 - **Error Handling:** Using `thiserror` for library errors, `anyhow` for application
 </details>
 
@@ -821,13 +815,12 @@ The project uses GitHub Actions for automatic testing and deployment:
 |---------|-------------|---------|
 | `tavily` | Enable Tavily web search provider | Enabled |
 | `searxng` | Enable SearXNG self-hosted search provider | Enabled |
-| `crawl4ai` | Enable Crawl4AI web search provider | Disabled |
 | `jira` | Enable Jira MCP integration | Disabled |
 | `mattermost` | Enable Mattermost MCP integration | Disabled |
 
 Build with features:
 ```bash
-cargo build --release --features searxng,crawl4ai,jira,mattermost
+cargo build --release --features searxng,jira,mattermost
 ```
 
 ## License

@@ -402,8 +402,8 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, TOOL_WEB_MARKDOWN);
         assert!(provider.can_handle(TOOL_WEB_MARKDOWN));
-        assert!(!provider.can_handle("deep_crawl"));
-        assert!(!provider.can_handle("web_pdf"));
+        assert!(!provider.can_handle("web_search"));
+        assert!(!provider.can_handle("web_extract"));
     }
 
     #[test]

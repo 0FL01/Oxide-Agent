@@ -1,38 +1,32 @@
 ---
 name: web-search
 description: Search and extract information from the internet
-triggers: [find, search, look up, current, news, docs, crawl, extract, pdf]
-allowed_tools: [web_search, web_extract, deep_crawl, web_markdown, web_pdf]
+triggers: [find, search, look up, current, news, docs, extract]
+allowed_tools: [web_search, web_extract, searxng_search, web_markdown]
 weight: medium
 ---
 
 ## Web Search & Extraction
 
-### Quick Search (Tavily):
-- **web_search**: Search internet for news, facts, documentation
-- **web_extract**: Extract content from URLs
+### Discovery
+- **web_search**: Search internet for news, facts, documentation when Tavily is enabled
+- **searxng_search**: Search internet through self-hosted SearXNG when enabled
 
-### Deep Crawling (Crawl4AI):
-- **deep_crawl**: Deep crawl with JS rendering for dynamic sites
-- **web_markdown**: Fast markdown extraction from single URL
-- **web_pdf**: Export webpage to PDF document
+### Reading Known URLs
+- **web_extract**: Extract content from URLs when Tavily is enabled
+- **web_markdown**: Fetch one known http/https URL and return Markdown. It does not crawl, execute JavaScript, or export PDFs.
 
 ## Guidelines:
-- Quick facts/news -> web_search (direct tool)
-- Read article -> **DELEGATE** via `delegate_to_sub_agent` using `web_markdown`
-- JS-heavy SPA sites -> **DELEGATE** via `delegate_to_sub_agent` using `deep_crawl`
-- Save for later/archive -> **DELEGATE** via `delegate_to_sub_agent` using `web_pdf`
+- Search/discovery -> `web_search` or `searxng_search`
+- Read a specific article/page -> `web_markdown`
+- Use `web_markdown` only with a fully-qualified URL found by search or provided by the user.
+- For JS-heavy SPA pages or PDF export, say the lightweight fetcher cannot provide browser/PDF capabilities instead of pretending to crawl.
 
-## Mandatory Delegation for Crawl4AI
-All Crawl4AI tools (`deep_crawl`, `web_markdown`, `web_pdf`) MUST be used via sub-agent. Direct calls are blocked.
-1. Use `delegate_to_sub_agent`.
-2. Add the specific tool name to the `tools` array.
-3. Provide a clear task for the sub-agent.
-
-**Example**:
+## Delegation Example
 ```json
 {
-  "task": "Extract markdown content from https://example.com/article",
-  "tools": ["web_markdown"]
+  "task": "Read https://example.com/article and extract the key claims with citations",
+  "tools": ["web_markdown"],
+  "context": "Return a concise bullet list with the source URL."
 }
 ```

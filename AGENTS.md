@@ -103,7 +103,7 @@ Default branch: `testing`.
 - ChatGPT uses OAuth/Codex Responses streaming and must fail over for structured-output/json-mode routes.
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (native upstream file tools + legacy fallback), yt-dlp, reminders, agents_md, **wiki memory** (list, read, delete), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose logs; disabled by default for topic agents, blocked for sub-agents).
+- sandbox, todos, tavily, searxng (self-hosted), webfetch_md, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (native upstream file tools + legacy fallback), yt-dlp, reminders, agents_md, **wiki memory** (list, read, delete), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose logs; disabled by default for topic agents, blocked for sub-agents).
 - Extend in `agent/providers/`; keep the transport-agnostic contract.
 
 ## Telegram transport
