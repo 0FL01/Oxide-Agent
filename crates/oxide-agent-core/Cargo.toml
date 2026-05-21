@@ -65,6 +65,7 @@ chrono-tz = "0.10.4"
 fastrand = "2.3.0"
 gemini-rust = "1.7.1"
 htmd = "0.5.4"
+url = "2.5.7"
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]

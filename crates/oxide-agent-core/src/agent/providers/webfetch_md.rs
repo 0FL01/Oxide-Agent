@@ -15,6 +15,7 @@ use serde_json::json;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+use url::Host;
 
 const TOOL_WEB_MARKDOWN: &str = "web_markdown";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -60,7 +61,7 @@ impl WebFetchMdProvider {
 
                 match reject_unsafe_url(attempt.url()) {
                     Ok(()) => attempt.follow(),
-                    Err(_) => attempt.stop(),
+                    Err(error) => attempt.error(format!("unsafe redirect target: {error}")),
                 }
             }))
             .build()
@@ -293,18 +294,18 @@ fn reject_media_url(url: &Url) -> Result<()> {
 }
 
 fn reject_unsafe_url(url: &Url) -> Result<()> {
-    let host = url
-        .host_str()
+    match url
+        .host()
         .ok_or_else(|| anyhow!("URL must include a host"))?
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-
-    if host == "localhost" || host.ends_with(".localhost") {
-        bail!("refusing to fetch localhost URL");
-    }
-
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        reject_unsafe_ip(ip)?;
+    {
+        Host::Domain(domain) => {
+            let host = domain.trim_end_matches('.').to_ascii_lowercase();
+            if host == "localhost" || host.ends_with(".localhost") {
+                bail!("refusing to fetch localhost URL");
+            }
+        }
+        Host::Ipv4(ipv4) => reject_unsafe_ip(IpAddr::V4(ipv4))?,
+        Host::Ipv6(ipv6) => reject_unsafe_ip(IpAddr::V6(ipv6))?,
     }
 
     Ok(())
@@ -451,6 +452,30 @@ mod tests {
             .ok()
             .and_then(|url| reject_unsafe_url(&url).err())
             .is_some());
+
+        let metadata_ip = Url::parse("http://169.254.169.254/latest/meta-data");
+        assert!(metadata_ip.is_ok());
+        assert!(metadata_ip
+            .ok()
+            .and_then(|url| reject_unsafe_url(&url).err())
+            .is_some());
+
+        let unique_local_ipv6 = Url::parse("http://[fd00::1]/page");
+        assert!(unique_local_ipv6.is_ok());
+        assert!(unique_local_ipv6
+            .ok()
+            .and_then(|url| reject_unsafe_url(&url).err())
+            .is_some());
+    }
+
+    #[test]
+    fn allows_public_urls() {
+        let public_url = Url::parse("https://example.com/page");
+        assert!(public_url.is_ok());
+        assert!(public_url
+            .ok()
+            .map(|url| reject_unsafe_url(&url).is_ok())
+            .unwrap_or(false));
     }
 
     #[test]
