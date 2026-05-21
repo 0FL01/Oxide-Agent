@@ -53,7 +53,7 @@ pub struct AgentMessage {
     /// Lightweight archive ref for displaced context chunks.
     #[serde(default)]
     pub archive_ref: Option<ArchiveRef>,
-    /// Deterministic breadcrumb handoff state preserved after post-run cleanup.
+    /// Deterministic breadcrumb handoff state preserved by the legacy cleanup pipeline.
     #[serde(default)]
     pub breadcrumb_card: Option<BreadcrumbCard>,
 }

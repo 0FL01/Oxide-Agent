@@ -219,7 +219,7 @@ fn token_rich_payload(label: &str, words: usize) -> String {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_compaction_post_run_deduplicates_superseded_read_file_results() {
+async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
     init_test_tracing();
 
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
@@ -414,7 +414,7 @@ async fn e2e_compaction_post_run_deduplicates_superseded_read_file_results() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
+async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
     init_test_tracing();
 
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
@@ -596,7 +596,7 @@ async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_compaction_post_run_blocks_dedup_when_write_file_intervenes() {
+async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
     init_test_tracing();
 
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
@@ -780,7 +780,7 @@ async fn e2e_compaction_post_run_blocks_dedup_when_write_file_intervenes() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
+async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
@@ -900,7 +900,7 @@ async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_compaction_post_run_preserves_delegate_results_while_cleaning_regular_tools() {
+async fn e2e_compaction_runtime_preserves_delegate_results_while_cleaning_regular_tools() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
@@ -1113,7 +1113,7 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
     let old_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-anchor"))
-        .expect("old tool message should exist after post-run cleanup");
+        .expect("old tool message should exist after runtime compaction");
     assert!(!old_tool.is_pruned());
     assert!(old_tool.content.contains(anchor));
 
@@ -1122,7 +1122,7 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
+async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
@@ -1227,7 +1227,7 @@ async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
     let old_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-call"))
-        .expect("old tool message should exist after post-run cleanup");
+        .expect("old tool message should exist after runtime compaction");
     assert!(old_tool.is_externalized() || old_tool.is_pruned());
     assert!(!old_tool.content.contains("CRITICAL_DECISION_TOKEN"));
     assert!(!messages
@@ -1239,7 +1239,7 @@ async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary_boundary() {
+async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         two_todo_tool_calls_response(),
         two_todo_tool_calls_response(),

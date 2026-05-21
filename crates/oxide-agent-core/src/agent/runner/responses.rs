@@ -5,75 +5,12 @@ use super::types::{
 };
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
-use crate::agent::progress::{AgentEvent, TokenSnapshot};
+use crate::agent::progress::AgentEvent;
 use crate::agent::session::PendingUserInput;
 use crate::agent::tool_bridge::sync_todos_from_arc;
-use crate::config::get_post_run_hot_context_target_tokens;
-use tracing::{info, warn};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PostRunCleanupTelemetry {
-    before_hot_tokens: usize,
-    after_hot_tokens: usize,
-    reclaimed_hot_tokens: usize,
-    target_hot_tokens: usize,
-    target_met: bool,
-}
-
-impl PostRunCleanupTelemetry {
-    fn from_snapshots(before: &TokenSnapshot, after: &TokenSnapshot) -> Self {
-        let target_hot_tokens = get_post_run_hot_context_target_tokens();
-        let after_hot_tokens = after.hot_memory_tokens;
-
-        Self {
-            before_hot_tokens: before.hot_memory_tokens,
-            after_hot_tokens,
-            reclaimed_hot_tokens: before
-                .hot_memory_tokens
-                .saturating_sub(after.hot_memory_tokens),
-            target_hot_tokens,
-            target_met: after_hot_tokens <= target_hot_tokens,
-        }
-    }
-}
+use tracing::warn;
 
 impl AgentRunner {
-    fn log_post_run_cleanup(
-        task_id: &str,
-        phase: &'static str,
-        before: &TokenSnapshot,
-        after: &TokenSnapshot,
-    ) {
-        let telemetry = PostRunCleanupTelemetry::from_snapshots(before, after);
-
-        info!(
-            task_id = %task_id,
-            phase,
-            hot_memory_tokens_before = telemetry.before_hot_tokens,
-            hot_memory_tokens_after = telemetry.after_hot_tokens,
-            reclaimed_hot_tokens = telemetry.reclaimed_hot_tokens,
-            cleanup_target_tokens = telemetry.target_hot_tokens,
-            cleanup_target_met = telemetry.target_met,
-            budget_state_before = ?before.budget_state,
-            budget_state_after = ?after.budget_state,
-            projected_total_tokens_before = before.projected_total_tokens,
-            projected_total_tokens_after = after.projected_total_tokens,
-            headroom_tokens_before = before.headroom_tokens,
-            headroom_tokens_after = after.headroom_tokens,
-            "Post-run cleanup telemetry"
-        );
-
-        if !telemetry.target_met {
-            warn!(
-                task_id = %task_id,
-                phase,
-                hot_memory_tokens_after = telemetry.after_hot_tokens,
-                cleanup_target_tokens = telemetry.target_hot_tokens,
-                "Post-run cleanup left hot context above the target budget"
-            );
-        }
-    }
-
     /// Handle malformed structured output responses.
     pub(super) async fn handle_structured_output_error(
         &mut self,
@@ -237,14 +174,6 @@ impl AgentRunner {
         }
 
         self.save_final_response(ctx, &final_response, input.reasoning);
-        let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
-        let post_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
-        Self::log_post_run_cleanup(
-            ctx.task_id,
-            "completed",
-            &pre_cleanup_snapshot,
-            &post_cleanup_snapshot,
-        );
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
@@ -271,15 +200,7 @@ impl AgentRunner {
 
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         self.save_final_response(ctx, &request.prompt, reasoning);
-        let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         let _ = state;
-        let post_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
-        Self::log_post_run_cleanup(
-            ctx.task_id,
-            "waiting_for_user_input",
-            &pre_cleanup_snapshot,
-            &post_cleanup_snapshot,
-        );
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
@@ -316,53 +237,7 @@ fn should_salvage_structured_output_failure(raw: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_salvage_structured_output_failure, PostRunCleanupTelemetry};
-    use crate::agent::compaction::BudgetState;
-    use crate::agent::progress::TokenSnapshot;
-    use crate::config::get_post_run_hot_context_target_tokens;
-
-    fn snapshot(hot_memory_tokens: usize) -> TokenSnapshot {
-        TokenSnapshot {
-            hot_memory_tokens,
-            system_prompt_tokens: 1_024,
-            tool_schema_tokens: 512,
-            loaded_skill_tokens: 0,
-            total_input_tokens: hot_memory_tokens + 1_536,
-            reserved_output_tokens: 2_048,
-            hard_reserve_tokens: 512,
-            projected_total_tokens: hot_memory_tokens + 4_096,
-            context_window_tokens: 128_000,
-            headroom_tokens: 64_000,
-            budget_state: BudgetState::Healthy,
-            last_api_usage: None,
-        }
-    }
-
-    #[test]
-    fn post_run_cleanup_telemetry_marks_target_met() {
-        let target = get_post_run_hot_context_target_tokens();
-        let after = target.saturating_sub(256);
-        let before = after + 10_000;
-        let telemetry =
-            PostRunCleanupTelemetry::from_snapshots(&snapshot(before), &snapshot(after));
-
-        assert_eq!(telemetry.before_hot_tokens, before);
-        assert_eq!(telemetry.after_hot_tokens, after);
-        assert_eq!(telemetry.reclaimed_hot_tokens, 10_000);
-        assert!(telemetry.target_met);
-    }
-
-    #[test]
-    fn post_run_cleanup_telemetry_marks_target_miss() {
-        let target = get_post_run_hot_context_target_tokens();
-        let telemetry = PostRunCleanupTelemetry::from_snapshots(
-            &snapshot(target + 10_000),
-            &snapshot(target + 1),
-        );
-
-        assert_eq!(telemetry.target_hot_tokens, target);
-        assert!(!telemetry.target_met);
-    }
+    use super::should_salvage_structured_output_failure;
 
     #[test]
     fn salvage_detector_accepts_plain_final_prose() {
