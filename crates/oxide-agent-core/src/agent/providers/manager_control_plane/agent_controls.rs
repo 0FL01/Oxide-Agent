@@ -247,15 +247,6 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "crawl4ai")]
-        if crate::config::is_crawl4ai_enabled() {
-            groups.push(TopicAgentToolGroup {
-                provider: "crawl4ai",
-                aliases: &["search", "crawl4ai"],
-                tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
-            });
-        }
-
         groups
     }
 
@@ -1566,21 +1557,15 @@ mod tests {
                     tools: &["web_search", "web_extract"],
                 },
                 TopicAgentToolGroup {
-                    provider: "crawl4ai",
-                    aliases: &["search", "crawl4ai"],
-                    tools: &["deep_crawl", "web_markdown", "web_pdf"],
+                    provider: "searxng",
+                    aliases: &["search", "searxng"],
+                    tools: &["searxng_search"],
                 },
             ],
-            tool_names: [
-                "web_search",
-                "web_extract",
-                "deep_crawl",
-                "web_markdown",
-                "web_pdf",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+            tool_names: ["web_search", "web_extract", "searxng_search"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         };
 
         let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
@@ -1592,10 +1577,8 @@ mod tests {
         assert_eq!(
             expanded,
             vec![
-                "deep_crawl".to_string(),
+                "searxng_search".to_string(),
                 "web_extract".to_string(),
-                "web_markdown".to_string(),
-                "web_pdf".to_string(),
                 "web_search".to_string(),
             ]
         );

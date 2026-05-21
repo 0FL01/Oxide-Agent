@@ -28,9 +28,6 @@ pub mod tavily;
 #[cfg(feature = "searxng")]
 pub mod searxng;
 
-#[cfg(feature = "crawl4ai")]
-pub mod crawl4ai;
-
 #[cfg(feature = "browser_use")]
 pub mod browser_use;
 
@@ -77,9 +74,6 @@ pub use tavily::TavilyProvider;
 
 #[cfg(feature = "searxng")]
 pub use searxng::SearxngProvider;
-
-#[cfg(feature = "crawl4ai")]
-pub use crawl4ai::Crawl4aiProvider;
 
 #[cfg(feature = "browser_use")]
 pub use browser_use::BrowserUseProvider;

@@ -41,8 +41,6 @@ use uuid::Uuid;
 
 #[cfg(feature = "browser_use")]
 use crate::agent::providers::BrowserUseProvider;
-#[cfg(feature = "crawl4ai")]
-use crate::agent::providers::Crawl4aiProvider;
 #[cfg(feature = "searxng")]
 use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "tavily")]
@@ -114,10 +112,6 @@ pub struct DelegationProvider {
     settings: Arc<crate::config::AgentSettings>,
     browser_use_profile_scope: Option<String>,
     topic_agents_md_context: Option<TopicAgentsMdContext>,
-    /// Semaphore to limit concurrent crawl4ai requests per sub-agent.
-    /// Used via Arc::clone() in build_sub_agent_providers().
-    #[allow(dead_code)]
-    crawl4ai_semaphore: Arc<Semaphore>,
     /// Semaphore to limit concurrent Browser Use requests per sub-agent.
     /// Used via Arc::clone() in build_sub_agent_providers().
     #[allow(dead_code)]
@@ -160,9 +154,6 @@ impl DelegationProvider {
             settings,
             browser_use_profile_scope: None,
             topic_agents_md_context: None,
-            crawl4ai_semaphore: Arc::new(Semaphore::new(
-                crate::config::get_crawl4ai_max_concurrent(),
-            )),
             browser_use_semaphore: Arc::new(Semaphore::new(
                 crate::config::get_browser_use_max_concurrent(),
             )),
@@ -269,24 +260,6 @@ impl DelegationProvider {
         #[cfg(not(feature = "searxng"))]
         if crate::config::is_searxng_enabled() {
             warn!("SearXNG enabled but feature not compiled in");
-        }
-
-        #[cfg(feature = "crawl4ai")]
-        if crate::config::is_crawl4ai_enabled() {
-            if let Some(url) = crate::config::get_crawl4ai_url() {
-                if !url.trim().is_empty() {
-                    let sem = Arc::clone(&self.crawl4ai_semaphore);
-                    providers.push(Box::new(Crawl4aiProvider::new_with_semaphore(&url, sem)));
-                } else {
-                    warn!("Crawl4AI enabled but CRAWL4AI_URL is empty; sub-agent provider not registered");
-                }
-            } else {
-                warn!("Crawl4AI enabled but CRAWL4AI_URL is not set; sub-agent provider not registered");
-            }
-        }
-        #[cfg(not(feature = "crawl4ai"))]
-        if crate::config::is_crawl4ai_enabled() {
-            warn!("Crawl4AI enabled but feature not compiled in");
         }
 
         #[cfg(feature = "browser_use")]

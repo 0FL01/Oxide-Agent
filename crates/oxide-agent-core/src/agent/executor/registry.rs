@@ -12,8 +12,6 @@ use tracing::warn;
 
 #[cfg(feature = "browser_use")]
 use crate::agent::providers::BrowserUseProvider;
-#[cfg(feature = "crawl4ai")]
-use crate::agent::providers::Crawl4aiProvider;
 #[cfg(feature = "searxng")]
 use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "tavily")]
@@ -286,23 +284,6 @@ impl AgentExecutor {
         #[cfg(not(feature = "searxng"))]
         if crate::config::is_searxng_enabled() {
             tracing::warn!("SearXNG enabled but feature not compiled in");
-        }
-
-        #[cfg(feature = "crawl4ai")]
-        if crate::config::is_crawl4ai_enabled() {
-            if let Some(url) = crate::config::get_crawl4ai_url() {
-                if !url.trim().is_empty() {
-                    registry.register(Box::new(Crawl4aiProvider::new(&url)));
-                } else {
-                    warn!("Crawl4AI enabled but CRAWL4AI_URL is empty; provider not registered");
-                }
-            } else {
-                warn!("Crawl4AI enabled but CRAWL4AI_URL is not set; provider not registered");
-            }
-        }
-        #[cfg(not(feature = "crawl4ai"))]
-        if crate::config::is_crawl4ai_enabled() {
-            tracing::warn!("Crawl4AI enabled but feature not compiled in");
         }
     }
 
