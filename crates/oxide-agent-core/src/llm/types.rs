@@ -9,6 +9,9 @@ pub struct Message {
     pub role: String,
     /// Text content of the message
     pub content: String,
+    /// Optional reasoning/thinking content required by some thinking-mode chat providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     /// Legacy tool call id echoed by chat-like providers and persisted for compatibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -33,6 +36,7 @@ impl Message {
         Self {
             role: "user".to_string(),
             content: content.to_string(),
+            reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
@@ -47,6 +51,7 @@ impl Message {
         Self {
             role: "assistant".to_string(),
             content: content.to_string(),
+            reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
@@ -58,11 +63,22 @@ impl Message {
     /// Create a new assistant message with tool calls
     #[must_use]
     pub fn assistant_with_tools(content: &str, tool_calls: Vec<ToolCall>) -> Self {
+        Self::assistant_with_tools_and_reasoning(content, None, tool_calls)
+    }
+
+    /// Create a new assistant message with optional reasoning and tool calls.
+    #[must_use]
+    pub fn assistant_with_tools_and_reasoning(
+        content: &str,
+        reasoning_content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
         let tool_call_correlations = (!tool_calls.is_empty())
             .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             role: "assistant".to_string(),
             content: content.to_string(),
+            reasoning_content,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
@@ -93,6 +109,7 @@ impl Message {
         Self {
             role: "tool".to_string(),
             content: content.to_string(),
+            reasoning_content: None,
             tool_call_id: Some(tool_call_id.to_string()),
             tool_call_correlation: Some(tool_call_correlation),
             name: Some(name.to_string()),
@@ -107,6 +124,7 @@ impl Message {
         Self {
             role: "system".to_string(),
             content: content.to_string(),
+            reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,

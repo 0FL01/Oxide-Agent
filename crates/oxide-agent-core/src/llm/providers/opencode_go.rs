@@ -202,6 +202,13 @@ fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<
                     "role": "assistant",
                     "content": msg.content,
                 });
+                if let Some(reasoning_content) = msg
+                    .reasoning_content
+                    .as_deref()
+                    .filter(|reasoning| !reasoning.trim().is_empty())
+                {
+                    message["reasoning_content"] = json!(reasoning_content);
+                }
 
                 if let Some(tool_calls) = &msg.tool_calls {
                     let encoded_tool_calls: Vec<Value> = tool_calls
@@ -471,8 +478,9 @@ mod tests {
     #[test]
     fn structured_history_preserves_wire_tool_ids() {
         let history = vec![
-            Message::assistant_with_tools(
+            Message::assistant_with_tools_and_reasoning(
                 "Calling tools",
+                Some("provider thinking trace".to_string()),
                 vec![ToolCall::new(
                     "invoke-opencode-1",
                     ToolCallFunction {
@@ -498,6 +506,10 @@ mod tests {
         let messages = prepare_structured_messages("system", &history);
 
         assert_eq!(messages[1]["tool_calls"][0]["id"], json!("call-opencode-1"));
+        assert_eq!(
+            messages[1]["reasoning_content"],
+            json!("provider thinking trace")
+        );
         assert_eq!(messages[2]["tool_call_id"], json!("call-opencode-1"));
     }
 

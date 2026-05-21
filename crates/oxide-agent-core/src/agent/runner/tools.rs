@@ -75,16 +75,20 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         raw_json: &str,
         tool_calls: &[ToolCall],
+        reasoning_content: Option<String>,
     ) {
         let tool_calls_vec = tool_calls.to_vec();
-        ctx.messages.push(Message::assistant_with_tools(
-            raw_json,
-            tool_calls_vec.clone(),
-        ));
+        ctx.messages
+            .push(Message::assistant_with_tools_and_reasoning(
+                raw_json,
+                reasoning_content.clone(),
+                tool_calls_vec.clone(),
+            ));
         ctx.agent
             .memory_mut()
-            .add_message(AgentMessage::assistant_with_tools(
+            .add_message(AgentMessage::assistant_with_tools_and_reasoning(
                 raw_json.to_string(),
+                reasoning_content,
                 tool_calls_vec,
             ));
         Self::refresh_messages_from_memory(ctx);

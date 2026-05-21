@@ -402,13 +402,22 @@ impl AgentMessage {
 
     /// Create a new assistant message with tool calls
     pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self::assistant_with_tools_and_reasoning(content, None, tool_calls)
+    }
+
+    /// Create a new assistant message with optional reasoning and tool calls.
+    pub fn assistant_with_tools_and_reasoning(
+        content: impl Into<String>,
+        reasoning: Option<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
         let tool_call_correlations = (!tool_calls.is_empty())
             .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             kind: AgentMessageKind::AssistantToolCall,
             role: MessageRole::Assistant,
             content: content.into(),
-            reasoning: None,
+            reasoning,
             tool_call_id: None,
             tool_call_correlation: None,
             tool_name: None,
@@ -1314,6 +1323,19 @@ mod tests {
             value["tool_call_correlations"][0]["invocation_id"],
             json!("call-1")
         );
+    }
+
+    #[test]
+    fn test_assistant_tool_batch_preserves_reasoning() {
+        let message = AgentMessage::assistant_with_tools_and_reasoning(
+            "Calling tools",
+            Some("thinking trace".to_string()),
+            vec![tool_call("call-1", "search")],
+        );
+        let value = serde_json::to_value(&message).expect("message serializes");
+
+        assert_eq!(value["reasoning"], json!("thinking trace"));
+        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
     }
 
     #[test]

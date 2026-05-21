@@ -375,6 +375,7 @@ mod tests {
             Message {
                 role: "assistant".to_string(),
                 content: "calling tools".to_string(),
+                reasoning_content: None,
                 tool_call_id: None,
                 tool_call_correlation: None,
                 name: None,
@@ -384,6 +385,7 @@ mod tests {
             Message {
                 role: "tool".to_string(),
                 content: "result".to_string(),
+                reasoning_content: None,
                 tool_call_id: Some("provider-b".to_string()),
                 tool_call_correlation: Some(correlation),
                 name: Some("search".to_string()),
@@ -408,6 +410,7 @@ mod tests {
         let messages = vec![Message {
             role: "assistant".to_string(),
             content: "calling tools".to_string(),
+            reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
@@ -436,6 +439,7 @@ mod tests {
             Message {
                 role: "assistant".to_string(),
                 content: "calling tools".to_string(),
+                reasoning_content: None,
                 tool_call_id: None,
                 tool_call_correlation: None,
                 name: None,
@@ -445,6 +449,7 @@ mod tests {
             Message {
                 role: "tool".to_string(),
                 content: "result".to_string(),
+                reasoning_content: None,
                 tool_call_id: Some("invoke-1".to_string()),
                 tool_call_correlation: Some(tool_result_correlation),
                 name: Some("search".to_string()),

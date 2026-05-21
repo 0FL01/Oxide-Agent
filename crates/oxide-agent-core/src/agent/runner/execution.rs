@@ -892,7 +892,7 @@ impl AgentRunner {
                 .await);
         }
 
-        self.record_assistant_tool_call(ctx, &raw_json, &tool_calls);
+        self.record_assistant_tool_call(ctx, &raw_json, &tool_calls, response.reasoning_content);
         if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
             return Ok(Some(res));
         }
@@ -1275,7 +1275,12 @@ impl AgentRunner {
                 .await);
         }
 
-        self.record_assistant_tool_call(ctx, raw_json, &tool_calls);
+        self.record_assistant_tool_call(
+            ctx,
+            raw_json,
+            &tool_calls,
+            response.reasoning_content.take(),
+        );
         if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
             return Ok(Some(res));
         }

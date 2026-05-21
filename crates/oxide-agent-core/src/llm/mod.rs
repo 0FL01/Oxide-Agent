@@ -147,6 +147,19 @@ mod tests {
     }
 
     #[test]
+    fn assistant_tool_batch_serialization_includes_reasoning_content_when_present() {
+        let message = Message::assistant_with_tools_and_reasoning(
+            "calling tools",
+            Some("thinking trace".to_string()),
+            vec![tool_call("call-1", "search")],
+        );
+        let value = serde_json::to_value(&message).expect("message serializes");
+
+        assert_eq!(value["reasoning_content"], json!("thinking trace"));
+        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+    }
+
+    #[test]
     fn assistant_tool_batch_uses_explicit_tool_call_correlation_metadata() {
         let correlated_tool_call = ToolCall::new(
             "provider-id",
