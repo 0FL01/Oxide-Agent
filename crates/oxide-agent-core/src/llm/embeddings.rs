@@ -242,9 +242,8 @@ impl EmbeddingProvider {
 /// L2-normalize a vector in-place.
 ///
 /// After truncation via `output_dimensionality` the resulting sub-vector is
-/// **not** unit-length. Cosine similarity (the default distance metric for
-/// pgvector `<=>`) assumes normalized inputs for correct ranking, so we
-/// normalise explicitly.
+/// **not** unit-length. Cosine similarity assumes normalized inputs for
+/// correct ranking, so we normalise explicitly.
 fn l2_normalize(v: &mut [f32]) {
     let norm_sq: f32 = v.iter().map(|x| x * x).sum();
     if norm_sq > 0.0 {

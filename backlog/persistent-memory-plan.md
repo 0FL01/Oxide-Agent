@@ -1,4 +1,6 @@
-# Memory / RAG Plan for Oxide Agent
+# Memory / RAG Plan for Oxide Agent (HISTORICAL)
+
+> **Superseded by LLM Wiki Memory** (`docs/wiki-memory.md`). Postgres + pgvector persistent memory was removed on 2026-05-19 and replaced with deterministic S3/R2 wiki pages. This document describes the abandoned design.
 
 ## Goal
 

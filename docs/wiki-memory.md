@@ -1,6 +1,6 @@
 # LLM Wiki Memory
 
-Oxide Agent durable memory is a bounded Markdown wiki stored in the existing S3/R2 object store. It replaces the old typed/vector persistent-memory subsystem; old `ThreadRecord`, `EpisodeRecord`, `MemoryRecord`, embedding records, Postgres memory tables, and R2 objects under `persistent_memory/` are not read or migrated.
+Oxide Agent durable memory is a bounded Markdown wiki stored in the existing S3/R2 object store. It replaced the old typed/vector persistent-memory subsystem (Postgres + pgvector). The old `ThreadRecord`, `EpisodeRecord`, `MemoryRecord`, embedding records, Postgres memory tables, and R2 objects under `persistent_memory/` are not read or migrated. Postgres has been fully removed from the stack; no Postgres service or dependency exists.
 
 ## Runtime Model
 
@@ -27,27 +27,18 @@ With an optional storage prefix, wiki objects live under:
 
 `context_id` is derived deterministically from the transport memory scope. It is intentionally not split by `flow_id`, so topic/project memory can survive individual agent flows.
 
-## Breaking Reset
+## Legacy Data Cleanup
 
-This rollout is a breaking reset for durable memory:
+The old Postgres persistent-memory tables and R2 objects under `persistent_memory/` are no longer read. Postgres has been fully removed from the stack (`docker-compose.yml` postgres service deleted, `crates/oxide-agent-memory` removed).
 
-- There is no dual-write period.
-- Old Postgres memory is ignored.
-- Old R2/S3 objects under `persistent_memory/` are ignored.
-- Old data can be deleted after deployment once rollback is no longer needed.
-
-Manual cleanup examples:
+If you still have legacy data, clean up manually:
 
 ```bash
 # R2/S3: remove old typed durable-memory objects after verifying the bucket/prefix.
 aws s3 rm s3://<bucket>/<optional-prefix>/persistent_memory/ --recursive --endpoint-url <r2-endpoint>
 
-# Postgres: drop old memory tables after taking any backup you want to keep.
-DROP TABLE IF EXISTS memory_embeddings;
-DROP TABLE IF EXISTS memories;
-DROP TABLE IF EXISTS memory_episodes;
-DROP TABLE IF EXISTS memory_threads;
-DROP TABLE IF EXISTS memory_session_states;
+# Postgres: only if you still have a Postgres instance with old tables — the service is no longer in compose.
+# DROP TABLE IF EXISTS memory_embeddings, memory_episodes, memory_threads, memory_session_states, memories;
 ```
 
 The runtime does not require cleanup to be correct; cleanup only removes orphaned legacy data.

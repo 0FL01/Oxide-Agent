@@ -24,8 +24,7 @@ Default branch: `testing`.
 ## Workspace Overview
 
 ### Main crates
-- `crates/oxide-agent-core` - agent domain: execution loop, hooks, skills, compaction, storage facade, LLM providers, sandbox facade, persistent memory (classifier, retrieval, embeddings, post-run), reminder/SSH/manager providers.
-- `crates/oxide-agent-memory` - domain model, Postgres repository, consolidation, finalization, and hybrid retrieval (lexical + vector) for persistent agent memory.
+- `crates/oxide-agent-core` - agent domain: execution loop, hooks, skills, compaction, storage facade, LLM providers, sandbox facade, wiki memory (store, cache, context, planner, patch), reminder/SSH/manager providers.
 - `crates/oxide-agent-runtime` - session runtime orchestration and transport-agnostic progress runtime.
 - `crates/oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
 - `crates/oxide-agent-transport-web` - E2E test web transport: HTTP API (axum), in-memory storage, scripted LLM provider, SSE streaming, latency milestone tracking.
@@ -33,8 +32,7 @@ Default branch: `testing`.
 - `crates/oxide-agent-telegram-bot` - Telegram bot binary.
 
 ### Where code usually lives
-- `crates/oxide-agent-core/src/agent/` - executor (slices: config, execution, registry, compaction, policy_hooks, types), runner, hooks, loop detection, skills, compaction, persistent memory (classifier, retrieval, embeddings, post-run, coordinator), providers.
-- `crates/oxide-agent-memory/src/` - domain types, repository trait, Postgres repo, consolidation, finalization, in-memory harness.
+- `crates/oxide-agent-core/src/agent/` - executor (slices: config, execution, registry, compaction, policy_hooks, types), runner, hooks, loop detection, skills, compaction, wiki memory (store, cache, context, planner, patch), providers.
 - `crates/oxide-agent-core/src/storage/` - storage facade, R2 backend, control-plane records, reminder persistence.
 - `crates/oxide-agent-core/src/llm/providers/` - LLM provider implementations.
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
@@ -54,7 +52,7 @@ Default branch: `testing`.
 - `Topic AGENTS.md` is stored separately in storage, pinned into flow memory during bootstrap, live-synced after `agents_md_update`, and inherited by sub-agents during delegation; `skills/AGENT.md` is no longer the default source of the system prompt.
 - Sandbox runs either directly through the Docker backend or through the broker backend; with `SANDBOX_BACKEND=broker`, access to `docker.sock` stays only with `oxide-agent-sandboxd`.
 - Manager CRUD goes through the `manager_control_plane` provider with an audit trail and RBAC at the Telegram transport level (`manager_allowed_users`).
-- `oxide-agent-memory` defines the domain model and repository trait; `oxide-agent-core` implements orchestration (classifier, coordinator, embeddings, post-run) on top of it.
+- Wiki memory lives entirely in `crates/oxide-agent-core/src/agent/wiki_memory/`; no separate memory crate exists.
 
 ## Key subsystems
 
@@ -64,11 +62,13 @@ Default branch: `testing`.
 - Tool calls can run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
 - Compaction protects recent tool context, prunes only before the summary boundary, and coalesces identical checkpoints.
 
-### Persistent memory
-- Domain model is in `crates/oxide-agent-memory`; orchestration is in `crates/oxide-agent-core/src/agent/persistent_memory/`.
-- Postgres uses pgvector + tsvector with hybrid lexical/vector retrieval and embedding-profile isolation.
-- Memory classification, post-run writing, episode finalization, consolidation, and retrieval hooks are separate stages; keep them transport-agnostic.
-- Main tools: `memory_search`, `memory_read_episode`, `memory_read_thread_summary`, `memory_read_thread_window`, `memory_diagnostics`.
+### Wiki memory (replaces persistent memory)
+- All wiki memory lives in `crates/oxide-agent-core/src/agent/wiki_memory/` — no separate crate.
+- Storage is S3/R2 object storage (same as all other durable state); no Postgres dependency.
+- Wiki pages are deterministic Markdown objects: `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`.
+- Prompt assembly loads wiki context via `load_wiki_text` from the storage facade.
+- Background writer (`planner.rs`) optionally uses an LLM to extract structured memory from conversation.
+- Main tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
 
 ### Hooks, sub-agents, and skills
 - Hooks live in `agent/hooks/`; `completion_check` and `tool_access_policy` are always active. Details: `docs/hooks/`.
@@ -103,7 +103,7 @@ Default branch: `testing`.
 - ChatGPT uses OAuth/Codex Responses streaming and must fail over for structured-output/json-mode routes.
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (native upstream file tools + legacy fallback), yt-dlp, reminders, agents_md, **persistent memory** (search, episode read, thread summary/window, diagnostics), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose logs; disabled by default for topic agents, blocked for sub-agents).
+- sandbox, todos, tavily, searxng (self-hosted), crawl4ai, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (native upstream file tools + legacy fallback), yt-dlp, reminders, agents_md, **wiki memory** (list, read, delete), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose logs; disabled by default for topic agents, blocked for sub-agents).
 - Extend in `agent/providers/`; keep the transport-agnostic contract.
 
 ## Telegram transport
@@ -124,7 +124,7 @@ Default branch: `testing`.
 
 - Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Config files are optional (`required(false)`).
-- Key items: `CHATGPT_AUTH_PATH`, search/embedding provider, SearXNG (`SEARXNG_URL`), narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, persistent memory (`MEMORY_DATABASE_URL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_OPENAI_BASE_URL`, `EMBEDDING_OPENAI_API_KEY`, `EMBEDDING_PROMPT_STYLE`, `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_DOCUMENT_PREFIX`), Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`).
+- Key items: `CHATGPT_AUTH_PATH`, search/embedding provider, SearXNG (`SEARXNG_URL`), narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`), wiki memory writer (`WIKI_MEMORY_WRITER_ENABLED`, model config).
 - Telegram transport config: `ATTACH_DETACH_ENABLED` (default true).
 
 ## Development practice
