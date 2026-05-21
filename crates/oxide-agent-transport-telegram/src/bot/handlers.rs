@@ -1273,6 +1273,7 @@ async fn process_llm_request(
         .map(|m| LlmMessage {
             role: m.role,
             content: m.content,
+            reasoning_content: None,
             tool_call_id: None,
             name: None,
             tool_calls: None,
