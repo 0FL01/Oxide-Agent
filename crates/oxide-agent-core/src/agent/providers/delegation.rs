@@ -14,7 +14,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
-    FileHosterProvider, SandboxProvider, TodoList, TodosProvider, YtdlpProvider,
+    FileHosterProvider, SandboxProvider, TodoList, TodosProvider, WebFetchMdProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{
@@ -217,6 +217,7 @@ impl DelegationProvider {
             Box::new(sandbox_provider),
             Box::new(FileHosterProvider::new(self.sandbox_scope.clone())),
             Box::new(ytdlp_provider),
+            Box::new(WebFetchMdProvider::new()),
         ];
 
         #[cfg(feature = "tavily")]

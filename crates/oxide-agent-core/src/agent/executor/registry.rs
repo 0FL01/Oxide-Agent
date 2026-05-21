@@ -3,7 +3,8 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
     KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
-    SandboxProvider, StackLogsProvider, TodoList, TodosProvider, WikiMemoryProvider, YtdlpProvider,
+    SandboxProvider, StackLogsProvider, TodoList, TodosProvider, WebFetchMdProvider,
+    WikiMemoryProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use std::sync::Arc;
@@ -285,6 +286,8 @@ impl AgentExecutor {
         if crate::config::is_searxng_enabled() {
             tracing::warn!("SearXNG enabled but feature not compiled in");
         }
+
+        registry.register(Box::new(WebFetchMdProvider::new()));
     }
 
     fn register_browser_providers(&self, _registry: &mut ToolRegistry) {

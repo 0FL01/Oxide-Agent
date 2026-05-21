@@ -203,6 +203,7 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
 #[cfg(feature = "searxng")]
 const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
+const TOPIC_AGENT_WEBFETCH_TOOLS: &[&str] = &["web_markdown"];
 #[cfg(feature = "browser_use")]
 const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
     "browser_use_run_task",

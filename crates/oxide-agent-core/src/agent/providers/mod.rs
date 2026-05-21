@@ -17,6 +17,7 @@ pub mod ssh_mcp;
 pub mod stack_logs;
 pub mod todos;
 pub mod tts;
+pub mod webfetch_md;
 pub mod wiki_memory;
 pub mod ytdlp;
 
@@ -66,6 +67,7 @@ pub use ssh_mcp::{
 pub use stack_logs::StackLogsProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use tts::{KokoroTtsProvider, TtsConfig, TtsVoice};
+pub use webfetch_md::WebFetchMdProvider;
 pub use wiki_memory::WikiMemoryProvider;
 pub use ytdlp::YtdlpProvider;
 

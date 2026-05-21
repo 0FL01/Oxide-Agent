@@ -247,6 +247,12 @@ impl ManagerControlPlaneProvider {
             });
         }
 
+        groups.push(TopicAgentToolGroup {
+            provider: "webfetch_md",
+            aliases: &["search", "webfetch", "web_markdown"],
+            tools: TOPIC_AGENT_WEBFETCH_TOOLS,
+        });
+
         groups
     }
 
@@ -1561,11 +1567,21 @@ mod tests {
                     aliases: &["search", "searxng"],
                     tools: &["searxng_search"],
                 },
+                TopicAgentToolGroup {
+                    provider: "webfetch_md",
+                    aliases: &["search", "webfetch", "web_markdown"],
+                    tools: &["web_markdown"],
+                },
             ],
-            tool_names: ["web_search", "web_extract", "searxng_search"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
+            tool_names: [
+                "web_search",
+                "web_extract",
+                "searxng_search",
+                "web_markdown",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
         };
 
         let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
@@ -1579,6 +1595,7 @@ mod tests {
             vec![
                 "searxng_search".to_string(),
                 "web_extract".to_string(),
+                "web_markdown".to_string(),
                 "web_search".to_string(),
             ]
         );
