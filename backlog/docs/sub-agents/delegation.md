@@ -301,12 +301,7 @@ fn build_sub_agent_providers(
         }
     }
 
-    #[cfg(feature = "crawl4ai")]
-    if let Ok(url) = std::env::var("CRAWL4AI_URL") {
-        if !url.is_empty() {
-            providers.push(Box::new(Crawl4aiProvider::new(&url)));
-        }
-    }
+    providers.push(Box::new(WebFetchMdProvider::new()));
 
     providers
 }

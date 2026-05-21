@@ -25,7 +25,7 @@
    ├─ FileHosterProvider (общий хостинг)
    ├─ YtdlpProvider (изолированная песочница)
    ├─ TavilyProvider (если включён)
-   └─ Crawl4aiProvider (если включён)
+   └─ WebFetchMdProvider
     ↓
 5. Фильтрация инструментов
    ├─ Удаление BLOCKED_SUB_AGENT_TOOLS
