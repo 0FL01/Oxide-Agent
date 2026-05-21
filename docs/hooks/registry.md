@@ -146,7 +146,6 @@ Hook 2 → ForceIteration { reason: "..." }
 // src/agent/executor.rs:52-57
 let mut runner = AgentRunner::new(llm_client.clone());
 runner.register_hook(Box::new(CompletionCheckHook::new()));
-runner.register_hook(Box::new(WorkloadDistributorHook::new()));
 runner.register_hook(Box::new(DelegationGuardHook::new()));
 runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
 runner.register_hook(Box::new(TimeoutReportHook::new()));

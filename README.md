@@ -523,7 +523,6 @@ The runtime path does not call OpenAI `/responses/compact`, does not create new 
 ### 🔗 Hooks System
 Extensible architecture for personalizing agent behavior:
 - **Completion Hook** — task completion handling
-- **Workload Distributor** — enforces separation of duties by blocking heavy manual operations in the Main Agent and encouraging delegation
 - **Delegation Guard** — prevents delegation of high-level analytical tasks ("think", "analyze"), restricting sub-agents to mechanical retrieval
 - **Sub-Agent Safety** — ensures safe execution environments for delegated tasks
 - **Search Budget** — limits search tool calls (10 per session)
@@ -532,7 +531,7 @@ Extensible architecture for personalizing agent behavior:
 
 **Protected Hooks (cannot be disabled):** `completion_check`, `tool_access_policy`
 
-**Manageable Hooks:** `workload_distributor`, `delegation_guard`, `search_budget`, `timeout_report`
+**Manageable Hooks:** `delegation_guard`, `search_budget`, `timeout_report`
 
 ### 🛠️ Tool Providers
 The agent uses a modular provider system, each offering a specialized set of tools:

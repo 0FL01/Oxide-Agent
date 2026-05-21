@@ -66,10 +66,9 @@ async fn wait_for_wiki_entry(
 fn policy_controlled_hook_skips_disabled_manageable_hook() {
     let policy = Arc::new(std::sync::RwLock::new(HookAccessPolicy::new(
         None,
-        std::collections::HashSet::from(["workload_distributor".to_string()]),
+        std::collections::HashSet::from(["search_budget".to_string()]),
     )));
-    let hook =
-        PolicyControlledHook::new("workload_distributor", Box::new(BlockingTestHook), policy);
+    let hook = PolicyControlledHook::new("search_budget", Box::new(BlockingTestHook), policy);
     let todos = TodoList::new();
     let memory = crate::agent::memory::AgentMemory::new(1024);
 

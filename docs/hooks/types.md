@@ -43,10 +43,9 @@ pub enum HookEvent {
 
 | Событие | Хуки |
 |---------|-------|
-| `BeforeAgent` | `WorkloadDistributorHook` |
 | `BeforeIteration` | `SubAgentSafetyHook` |
 | `AfterAgent` | `CompletionCheckHook` |
-| `BeforeTool` | `DelegationGuardHook`, `WorkloadDistributorHook`, `SubAgentSafetyHook`, `SearchBudgetHook` |
+| `BeforeTool` | `DelegationGuardHook`, `SubAgentSafetyHook`, `SearchBudgetHook` |
 | `AfterTool` | (логирование/метрики) |
 | `Timeout` | `TimeoutReportHook` |
 
@@ -90,17 +89,6 @@ pub enum HookResult {
 let HookEvent::AfterAgent { response: _ } = event else {
     return HookResult::Continue;
 };
-```
-
-#### InjectContext
-```rust
-// src/agent/hooks/workload.rs:119-130
-if self.is_complex_prompt(prompt) {
-    return HookResult::InjectContext(
-        "[SYSTEM NOTICE: High Complexity Detected]\n\
-        You must SPLIT your workflow to handle this request efficiently...".to_string(),
-    );
-}
 ```
 
 #### ForceIteration
@@ -221,7 +209,6 @@ if context.at_continuation_limit() {
 
 #### Проверка типа агента
 ```rust
-// src/agent/hooks/workload.rs:140-142
 if context.is_sub_agent {
     return HookResult::Continue;
 }

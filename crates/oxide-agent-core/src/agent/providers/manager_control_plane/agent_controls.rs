@@ -198,7 +198,7 @@ impl ManagerControlPlaneProvider {
                         "hooks": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Hook names such as workload_distributor, delegation_guard, search_budget, timeout_report"
+                            "description": "Hook names such as delegation_guard, search_budget, timeout_report"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -216,7 +216,7 @@ impl ManagerControlPlaneProvider {
                         "hooks": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Hook names such as workload_distributor, delegation_guard, search_budget, timeout_report"
+                            "description": "Hook names such as delegation_guard, search_budget, timeout_report"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -795,7 +795,6 @@ impl ManagerControlPlaneProvider {
 
     fn normalize_topic_agent_hook_name(token: &str) -> Option<&'static str> {
         match token {
-            "workload" => Some("workload_distributor"),
             "delegation" => Some("delegation_guard"),
             "search" => Some("search_budget"),
             "timeout" => Some("timeout_report"),

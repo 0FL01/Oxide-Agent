@@ -26,7 +26,6 @@ pub fn execute(&self, event: &HookEvent, context: &HookContext) -> HookResult {
 ### 3. Стратегия
 Разные хуки реализуют разные стратегии обработки одного и того же события. Например, `BeforeTool` обрабатывается:
 - `DelegationGuardHook` - блокирует аналитическое делегирование
-- `WorkloadDistributorHook` - блокирует тяжёлые команды
 - `SubAgentSafetyHook` - блокирует запрещённые инструменты
 
 ### 4. Декоратор
@@ -40,7 +39,6 @@ src/agent/hooks/
 ├── registry.rs            # Hook trait, HookRegistry
 ├── completion.rs          # CompletionCheckHook
 ├── delegation_guard.rs     # DelegationGuardHook
-├── workload.rs            # WorkloadDistributorHook
 ├── sub_agent_safety.rs    # SubAgentSafetyHook
 ├── search_budget.rs        # SearchBudgetHook
 ├── timeout_report.rs      # TimeoutReportHook
@@ -57,7 +55,6 @@ src/agent/runner/
 ```rust
 let mut runner = AgentRunner::new(llm_client.clone());
 runner.register_hook(Box::new(CompletionCheckHook::new()));
-runner.register_hook(Box::new(WorkloadDistributorHook::new()));
 runner.register_hook(Box::new(DelegationGuardHook::new()));
 runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
 runner.register_hook(Box::new(TimeoutReportHook::new()));
@@ -134,7 +131,6 @@ apply_timeout_hook(&mut ctx, &RunState) -> Result<Option<String>>
 | Характеристика | Main Agent | Sub-Agent |
 |---------------|-------------|-----------|
 | Роль | Оркестратор (анализ, принятие решений) | Рабочий (выполнение задач) |
-| WorkloadDistributorHook | ✅ Да | ❌ Нет |
 | DelegationGuardHook | ✅ Да | ❌ Нет |
 | SubAgentSafetyHook | ❌ Нет | ✅ Да |
 | Может делегировать | ✅ Да | ❌ Нет |
@@ -150,9 +146,6 @@ apply_timeout_hook(&mut ctx, &RunState) -> Result<Option<String>>
 
 ### Надёжность
 - `CompletionCheckHook` гарантирует выполнение всех задач через принудительные итерации
-
-### Эффективность
-- `WorkloadDistributorHook` распределяет нагрузку между агентами (Main Agent → анализ, Sub-Agents → выполнение)
 
 ### Отказоустойчивость
 - `TimeoutReportHook` генерирует структурированный отчёт при превышении времени

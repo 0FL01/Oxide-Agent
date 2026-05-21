@@ -95,7 +95,6 @@ const DM_ALLOWED_TOOLS_ENV: &str = "DM_ALLOWED_TOOLS";
 const DM_BLOCKED_TOOLS_ENV: &str = "DM_BLOCKED_TOOLS";
 
 const TOPIC_AGENT_MANAGEABLE_HOOKS: &[&str] = &[
-    "workload_distributor",
     "delegation_guard",
     "search_budget",
     "timeout_report",
@@ -472,7 +471,7 @@ mod tests {
             "systemPrompt": "  you are infra  ",
             "allowedTools": ["todos_write", "execute_command", "execute_command"],
             "blockedTools": ["delegate_to_sub_agent"],
-            "enabledHooks": ["workload_distributor", "search_budget"],
+            "enabledHooks": ["search_budget"],
             "disabledHooks": ["delegation_guard"]
         }));
 
@@ -480,7 +479,7 @@ mod tests {
         assert!(parsed.tool_policy.allows("todos_write"));
         assert!(!parsed.tool_policy.allows("delegate_to_sub_agent"));
         assert!(!parsed.tool_policy.allows("unknown_tool"));
-        assert!(parsed.hook_policy.allows("workload_distributor"));
+        assert!(parsed.hook_policy.allows("search_budget"));
         assert!(!parsed.hook_policy.allows("delegation_guard"));
         assert!(!parsed.hook_policy.allows("timeout_report"));
     }
@@ -565,13 +564,13 @@ mod tests {
         let policy = HookAccessPolicy::new(
             Some(HashSet::from([
                 "delegation_guard".to_string(),
-                "workload_distributor".to_string(),
+                "search_budget".to_string(),
             ])),
             HashSet::new(),
         )
         .with_additional_disabled_hooks(["delegation_guard"]);
 
-        assert!(policy.allows("workload_distributor"));
+        assert!(policy.allows("search_budget"));
         assert!(!policy.allows("delegation_guard"));
     }
 
@@ -580,7 +579,6 @@ mod tests {
         let manageable = topic_agent_manageable_hooks();
         let protected = topic_agent_protected_hooks();
 
-        assert!(manageable.iter().any(|hook| hook == "workload_distributor"));
         assert!(manageable.iter().any(|hook| hook == "timeout_report"));
         assert!(protected.iter().any(|hook| hook == "completion_check"));
         assert!(protected.iter().any(|hook| hook == "tool_access_policy"));

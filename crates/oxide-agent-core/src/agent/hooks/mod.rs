@@ -13,7 +13,6 @@ pub mod sub_agent_safety;
 pub mod timeout_report;
 pub mod tool_access;
 pub mod types;
-pub mod workload;
 
 pub use completion::CompletionCheckHook;
 pub use delegation_guard::DelegationGuardHook;
@@ -25,4 +24,3 @@ pub use sub_agent_safety::{SubAgentSafetyConfig, SubAgentSafetyHook};
 pub use timeout_report::TimeoutReportHook;
 pub use tool_access::ToolAccessPolicyHook;
 pub use types::{HookContext, HookEvent, HookResult};
-pub use workload::WorkloadDistributorHook;

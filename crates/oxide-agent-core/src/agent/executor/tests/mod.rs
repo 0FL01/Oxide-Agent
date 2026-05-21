@@ -162,7 +162,7 @@ pub(super) struct BlockingTestHook;
 
 impl Hook for BlockingTestHook {
     fn name(&self) -> &'static str {
-        "workload_distributor"
+        "search_budget"
     }
 
     fn handle(&self, _event: &HookEvent, _context: &HookContext) -> HookResult {

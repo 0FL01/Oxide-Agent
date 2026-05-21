@@ -43,15 +43,12 @@ User Request: "Исследуй и сравни репозитории"
 
 1. BeforeAgent
    ├─ CompletionCheckHook: Continue (не AfterAgent)
-   ├─ WorkloadDistributorHook: InjectContext
-   │   → [SYSTEM NOTICE: High Complexity Detected]
    └─ DelegationGuardHook: Continue (не BeforeTool)
     ↓
 2. LLM Call + Tool Calls
     ↓
 3. BeforeTool (execute_command)
    ├─ CompletionCheckHook: Continue
-   ├─ WorkloadDistributorHook: Continue (не тяжёлая команда)
    ├─ DelegationGuardHook: Continue (не delegate_to_sub_agent)
    └─ SubAgentSafetyHook: Continue (не sub-agent)
     ↓
@@ -64,7 +61,6 @@ User Request: "Исследуй и сравни репозитории"
     ↓
 7. BeforeTool (delegate_to_sub_agent)
    ├─ CompletionCheckHook: Continue
-   ├─ WorkloadDistributorHook: Continue
    ├─ DelegationGuardHook: Block
    │   → "⛔ Delegation Blocked: The task contains an analytical keyword ('сравни')"
    └─ SubAgentSafetyHook: N/A (заблокировано раньше)
@@ -88,13 +84,11 @@ RUST_LOG=agent::hooks=debug ./target/release/bot
 
 ```
 [INFO] Registered hook: completion_check
-[INFO] Registered hook: workload_distributor
 [INFO] Registered hook: delegation_guard
 [INFO] Registered hook: search_budget
 [INFO] Registered hook: timeout_report
 
 [DEBUG] Hook returned Continue (hook=completion_check)
-[DEBUG] Hook injecting context (hook=workload_distributor, context_len=234)
 [INFO] Hook forcing iteration (hook=completion_check, reason="Not all tasks are completed...")
 [INFO] Hook blocking action (hook=delegation_guard, reason="⛔ Delegation Blocked...")
 ```
@@ -278,16 +272,14 @@ mod tests {
 ```
 Регистрация:
 ├── CompletionCheckHook     (1-й в цепочке)
-├── WorkloadDistributorHook (2-й в цепочке)
-├── DelegationGuardHook    (3-й в цепочке)
-├── SearchBudgetHook      (4-й в цепочке)
-├── CustomHook           (5-й в цепочке)
-└── TimeoutReportHook     (6-й в цепочке)
+├── DelegationGuardHook    (2-й в цепочке)
+├── SearchBudgetHook      (3-й в цепочке)
+├── CustomHook           (4-й в цепочке)
+└── TimeoutReportHook     (5-й в цепочке)
 
 Выполнение BeforeTool:
 1. CompletionCheckHook → Continue
-2. WorkloadDistributorHook → Continue
-3. DelegationGuardHook → Block
+2. DelegationGuardHook → Block
    → [Цепочка останавливается, CustomHook и TimeoutReportHook не выполняются]
 ```
 

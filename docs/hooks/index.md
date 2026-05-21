@@ -12,7 +12,6 @@
 ### Хуки основного агента
 - [**CompletionCheckHook**](completion-check.md) - проверка завершения todo-задач
 - [**DelegationGuardHook**](delegation-guard.md) - защита от делегирования аналитических задач
-- [**WorkloadDistributorHook**](workload-distributor.md) - распределение нагрузки между агентами
 - [**SearchBudgetHook**](search-budget.md) - лимит поисковых запросов
 - [**TimeoutReportHook**](timeout-report.md) - отчёт при достижении тайм-аута
 
@@ -46,7 +45,6 @@
 ### Main Agent (оркестратор)
 ```
 ✅ CompletionCheckHook
-✅ WorkloadDistributorHook
 ✅ DelegationGuardHook
 ✅ SearchBudgetHook
 ✅ TimeoutReportHook
@@ -59,7 +57,6 @@
 ✅ SearchBudgetHook
 ✅ TimeoutReportHook
 
-❌ WorkloadDistributorHook - саб-агенты сами выполняют работу
 ❌ DelegationGuardHook - саб-агентам запрещено делегировать
 ```
 
@@ -68,12 +65,9 @@
 ```
 User Request
     ↓
-[BeforeAgent] → WorkloadDistributorHook: inject context (если сложный промпт)
-    ↓
 LLM Call + Tool Calls
     ↓
 [BeforeTool] → DelegationGuardHook (если delegate_to_sub_agent)
-               WorkloadDistributorHook (блокирует тяжёлые команды)
     ↓
 Tool Execution
     ↓
