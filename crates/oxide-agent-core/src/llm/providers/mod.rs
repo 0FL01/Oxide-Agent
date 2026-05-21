@@ -11,6 +11,8 @@ pub mod mistral;
 #[allow(missing_docs)]
 pub mod nvidia;
 #[allow(missing_docs)]
+pub mod opencode_go;
+#[allow(missing_docs)]
 pub mod openrouter;
 mod protocol_profiles;
 mod tool_call_adapter;
@@ -26,5 +28,6 @@ pub use groq::GroqProvider;
 pub use minimax::MiniMaxProvider;
 pub use mistral::MistralProvider;
 pub use nvidia::NvidiaProvider;
+pub use opencode_go::OpenCodeGoProvider;
 pub use openrouter::OpenRouterProvider;
 pub use zai::{parse_zai_flush_time, ZaiProvider};

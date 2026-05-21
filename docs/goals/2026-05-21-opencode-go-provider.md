@@ -72,6 +72,7 @@ Done when:
 - 2026-05-21 13:54: Goal created from `prd/PRD.md`; RECON confirmed `opencode-go` is not implemented yet and current branch is `dev`.
 - 2026-05-21 13:58: Phase 0 document created. Next: commit Phase 0, then implement config/capabilities.
 - 2026-05-21 14:08: Phase 1 implemented config keys, route-aware ZAI/OpenCode Go credential validation, OpenCode Go capabilities/media mapping, and focused tests. Validation passed: `cargo fmt --all`, `cargo test -p oxide-agent-core opencode_go -- --nocapture`, `cargo test -p oxide-agent-core settings_ -- --nocapture`, `cargo test -p oxide-agent-core capabilities -- --nocapture`. Next: implement provider module.
+- 2026-05-21 14:18: Phase 2 implemented `OpenCodeGoProvider`, OpenAI Chat Completions request builders, native tool-call parser, reasoning/usage parsing, model prefix normalization, and provider module export. Validation passed: `cargo test -p oxide-agent-core opencode_go -- --nocapture`, `cargo check -p oxide-agent-core`. Next: register provider in `LlmClient` and update docs/examples.
 
 ## Risks and Blockers
 
