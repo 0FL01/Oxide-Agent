@@ -132,6 +132,9 @@ pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
         "chatgpt" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
         "minimax" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, false),
         "mistral" => ProviderCapabilities::new(ToolHistoryMode::Strict, true, true),
+        "opencode-go" | "opencode_go" => {
+            ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
+        }
         "openrouter" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
         "zai" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false),
         "gemini" => ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true),
@@ -147,6 +150,7 @@ pub fn provider_media_capabilities(provider_name: &str) -> MediaCapabilities {
         "chatgpt" => MediaCapabilities::new(false, false, false),
         "gemini" | "openrouter" => MediaCapabilities::new(true, true, true),
         "mistral" => MediaCapabilities::new(true, false, false),
+        "opencode-go" | "opencode_go" => MediaCapabilities::new(false, false, false),
         _ => MediaCapabilities::new(false, false, false),
     }
 }
@@ -168,9 +172,34 @@ pub fn provider_capabilities_for_model(model_info: &ModelInfo) -> ProviderCapabi
         capabilities.supports_structured_output = model_capabilities.supports_structured_output;
     } else if model_info.provider.eq_ignore_ascii_case("zai") {
         capabilities.supports_structured_output = zai_supports_structured_output(&model_info.id);
+    } else if is_opencode_go_provider(&model_info.provider) {
+        capabilities.supports_structured_output =
+            opencode_go_supports_structured_output(&model_info.id);
     }
 
     capabilities
+}
+
+fn is_opencode_go_provider(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "opencode-go" | "opencode_go"
+    )
+}
+
+fn normalize_opencode_go_model_id(model_id: &str) -> String {
+    let trimmed = model_id.trim();
+    trimmed
+        .strip_prefix("opencode-go/")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+fn opencode_go_supports_structured_output(model_id: &str) -> bool {
+    matches!(
+        normalize_opencode_go_model_id(model_id).as_str(),
+        "deepseek-v4-flash" | "deepseek-v4-pro"
+    )
 }
 
 fn zai_supports_structured_output(model_id: &str) -> bool {
@@ -263,6 +292,19 @@ mod tests {
     }
 
     #[test]
+    fn opencode_go_capabilities_enable_strict_tools() {
+        let capabilities = super::provider_capabilities("opencode-go");
+
+        assert!(capabilities.supports_tool_calling);
+        assert!(capabilities.supports_structured_output);
+        assert_eq!(capabilities.tool_history_label(), "strict");
+
+        let alias = super::provider_capabilities("opencode_go");
+        assert_eq!(alias.tool_history_label(), "strict");
+        assert!(alias.supports_tool_calling);
+    }
+
+    #[test]
     fn zai_capabilities_disable_structured_output() {
         let capabilities = super::provider_capabilities("zai");
 
@@ -298,11 +340,61 @@ mod tests {
     }
 
     #[test]
+    fn opencode_go_deepseek_v4_flash_supports_structured_output() {
+        let route = crate::config::ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "opencode-go".to_string(),
+            weight: 1,
+        };
+
+        let capabilities = provider_capabilities_for_model(&route);
+
+        assert!(capabilities.supports_tool_calling);
+        assert!(capabilities.supports_structured_output);
+        assert_eq!(capabilities.tool_history_label(), "strict");
+    }
+
+    #[test]
+    fn opencode_go_unknown_model_does_not_overclaim_structured_output() {
+        let route = crate::config::ModelInfo {
+            id: "kimi-k2.6".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "opencode-go".to_string(),
+            weight: 1,
+        };
+
+        let capabilities = provider_capabilities_for_model(&route);
+
+        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
+        assert_eq!(capabilities.tool_history_label(), "strict");
+    }
+
+    #[test]
+    fn opencode_go_prefixed_model_id_is_normalized_for_capabilities() {
+        let route = crate::config::ModelInfo {
+            id: "opencode-go/deepseek-v4-pro".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "opencode_go".to_string(),
+            weight: 1,
+        };
+
+        let capabilities = provider_capabilities_for_model(&route);
+
+        assert!(capabilities.supports_structured_output);
+    }
+
+    #[test]
     fn media_capabilities_are_modality_specific() {
         let gemini = super::provider_media_capabilities("gemini");
         let openrouter = super::provider_media_capabilities("openrouter");
         let mistral = super::provider_media_capabilities("mistral");
         let groq = super::provider_media_capabilities("groq");
+        let opencode_go = super::provider_media_capabilities("opencode-go");
 
         assert!(gemini.supports(super::MediaModality::AudioTranscription));
         assert!(gemini.supports(super::MediaModality::ImageUnderstanding));
@@ -319,5 +411,9 @@ mod tests {
         assert!(!groq.supports(super::MediaModality::AudioTranscription));
         assert!(!groq.supports(super::MediaModality::ImageUnderstanding));
         assert!(!groq.supports(super::MediaModality::VideoUnderstanding));
+
+        assert!(!opencode_go.supports(super::MediaModality::AudioTranscription));
+        assert!(!opencode_go.supports(super::MediaModality::ImageUnderstanding));
+        assert!(!opencode_go.supports(super::MediaModality::VideoUnderstanding));
     }
 }

@@ -71,6 +71,7 @@ Done when:
 
 - 2026-05-21 13:54: Goal created from `prd/PRD.md`; RECON confirmed `opencode-go` is not implemented yet and current branch is `dev`.
 - 2026-05-21 13:58: Phase 0 document created. Next: commit Phase 0, then implement config/capabilities.
+- 2026-05-21 14:08: Phase 1 implemented config keys, route-aware ZAI/OpenCode Go credential validation, OpenCode Go capabilities/media mapping, and focused tests. Validation passed: `cargo fmt --all`, `cargo test -p oxide-agent-core opencode_go -- --nocapture`, `cargo test -p oxide-agent-core settings_ -- --nocapture`, `cargo test -p oxide-agent-core capabilities -- --nocapture`. Next: implement provider module.
 
 ## Risks and Blockers
 

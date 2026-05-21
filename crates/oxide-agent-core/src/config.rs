@@ -41,6 +41,8 @@ pub const MINIMAX_TOOL_TEMPERATURE: f32 = 1.0;
 pub const OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 /// Temperature for OpenRouter image analysis requests.
 pub const OPENROUTER_IMAGE_TEMPERATURE: f32 = 0.7;
+/// Default temperature used for OpenCode Go chat completions.
+pub const OPENCODE_GO_CHAT_TEMPERATURE: f32 = 0.7;
 /// Prompt used for Gemini audio transcriptions.
 pub const GEMINI_AUDIO_TRANSCRIBE_PROMPT: &str = concat!(
     "Make ONLY accurate transcription of speech from this audio/video file. ",
@@ -78,6 +80,11 @@ pub struct AgentSettings {
     pub gemini_api_key: Option<String>,
     /// `OpenRouter` API key
     pub openrouter_api_key: Option<String>,
+    /// OpenCode Go API key.
+    pub opencode_go_api_key: Option<String>,
+    /// OpenCode Go Chat Completions endpoint.
+    #[serde(default = "default_opencode_go_api_base")]
+    pub opencode_go_api_base: String,
     /// `NVIDIA NIM` API key
     pub nvidia_api_key: Option<String>,
     /// Tavily API key
@@ -280,12 +287,27 @@ fn default_zai_api_base() -> String {
     "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string()
 }
 
+fn default_opencode_go_api_base() -> String {
+    "https://opencode.ai/zen/go/v1/chat/completions".to_string()
+}
+
 fn default_nvidia_api_base() -> String {
     "https://integrate.api.nvidia.com/v1".to_string()
 }
 
 fn default_openrouter_site_name() -> String {
     "Oxide Agent Bot".to_string()
+}
+
+fn is_zai_provider(provider: &str) -> bool {
+    provider.trim().eq_ignore_ascii_case("zai")
+}
+
+fn is_opencode_go_provider(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "opencode-go" | "opencode_go"
+    )
 }
 
 /// Build the base configuration loader.
@@ -381,18 +403,21 @@ impl AgentSettings {
                 }
             }
         }
+        if settings.opencode_go_api_key.is_none() {
+            if let Ok(val) = std::env::var("OPENCODE_GO_API_KEY") {
+                if !val.is_empty() {
+                    settings.opencode_go_api_key = Some(val);
+                }
+            }
+        }
+        if let Ok(val) = std::env::var("OPENCODE_GO_API_BASE") {
+            if !val.is_empty() {
+                settings.opencode_go_api_base = val;
+            }
+        }
 
         settings.apply_tool_provider_env_fallbacks();
 
-        if settings
-            .zai_api_key
-            .as_ref()
-            .is_none_or(|key| key.trim().is_empty())
-        {
-            return Err(ConfigError::Message(
-                "Critical: ZAI_API_KEY is required for operation".to_string(),
-            ));
-        }
         if settings
             .chat_model_id
             .as_ref()
@@ -411,6 +436,7 @@ impl AgentSettings {
                 "Critical: CHAT_MODEL_PROVIDER is required for operation".to_string(),
             ));
         }
+        settings.validate_route_credentials()?;
 
         // Fallback for embedding configuration
         if settings.embedding_provider.is_none() {
@@ -469,6 +495,50 @@ impl AgentSettings {
         }
 
         Ok(settings)
+    }
+
+    fn validate_route_credentials(&self) -> Result<(), ConfigError> {
+        if self.has_configured_provider(is_zai_provider)
+            && self
+                .zai_api_key
+                .as_ref()
+                .is_none_or(|key| key.trim().is_empty())
+        {
+            return Err(ConfigError::Message(
+                "Critical: ZAI_API_KEY is required for configured ZAI routes".to_string(),
+            ));
+        }
+
+        if self.has_configured_provider(is_opencode_go_provider)
+            && self
+                .opencode_go_api_key
+                .as_ref()
+                .is_none_or(|key| key.trim().is_empty())
+        {
+            return Err(ConfigError::Message(
+                "Critical: OPENCODE_GO_API_KEY is required for configured OpenCode Go routes"
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn has_configured_provider(&self, predicate: fn(&str) -> bool) -> bool {
+        self.chat_model_provider.as_deref().is_some_and(predicate)
+            || self.agent_model_provider.as_deref().is_some_and(predicate)
+            || self
+                .sub_agent_model_provider
+                .as_deref()
+                .is_some_and(predicate)
+            || self
+                .agent_model_routes
+                .as_deref()
+                .is_some_and(|routes| routes.iter().any(|route| predicate(&route.provider)))
+            || self
+                .sub_agent_model_routes
+                .as_deref()
+                .is_some_and(|routes| routes.iter().any(|route| predicate(&route.provider)))
     }
 
     fn apply_model_routes_from_env(&mut self) {
@@ -1052,6 +1122,19 @@ mod tests {
     use serde_json::json;
     use std::env;
 
+    fn clear_model_route_env() {
+        let keys: Vec<String> = env::vars()
+            .map(|(key, _)| key)
+            .filter(|key| {
+                key.starts_with("AGENT_MODEL_ROUTES__")
+                    || key.starts_with("SUB_AGENT_MODEL_ROUTES__")
+            })
+            .collect();
+        for key in keys {
+            env::remove_var(key);
+        }
+    }
+
     // Tests run sequentially to avoid environment variable race conditions
     #[test]
     fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
@@ -1233,6 +1316,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_model_route_env();
 
         env::set_var("ZAI_API_KEY", "test-key");
         env::set_var("CHAT_MODEL_ID", "chat-model");
@@ -1279,6 +1363,100 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn settings_load_opencode_go_api_key_and_base() -> Result<(), ConfigError> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_model_route_env();
+        env::remove_var("ZAI_API_KEY");
+
+        env::set_var("CHAT_MODEL_ID", "chat-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
+        env::set_var(
+            "OPENCODE_GO_API_BASE",
+            "https://opencode.example.test/v1/chat/completions",
+        );
+
+        let settings = AgentSettings::new()?;
+
+        assert_eq!(
+            settings.opencode_go_api_key.as_deref(),
+            Some("opencode-key")
+        );
+        assert_eq!(
+            settings.opencode_go_api_base,
+            "https://opencode.example.test/v1/chat/completions"
+        );
+
+        env::remove_var("CHAT_MODEL_ID");
+        env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("OPENCODE_GO_API_KEY");
+        env::remove_var("OPENCODE_GO_API_BASE");
+        Ok(())
+    }
+
+    #[test]
+    fn settings_do_not_require_zai_key_when_active_routes_use_opencode_go(
+    ) -> Result<(), ConfigError> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_model_route_env();
+        env::remove_var("ZAI_API_KEY");
+        env::remove_var("OPENCODE_GO_API_BASE");
+
+        env::set_var("CHAT_MODEL_ID", "chat-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
+        env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
+        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode-go");
+        env::set_var("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
+        env::set_var("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "200000");
+
+        let settings = AgentSettings::new()?;
+        let primary = settings.get_configured_agent_model();
+
+        assert_eq!(primary.id, "deepseek-v4-flash");
+        assert_eq!(primary.provider, "opencode-go");
+        assert_eq!(
+            settings.opencode_go_api_base,
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        );
+
+        clear_model_route_env();
+        env::remove_var("CHAT_MODEL_ID");
+        env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("OPENCODE_GO_API_KEY");
+        Ok(())
+    }
+
+    #[test]
+    fn settings_error_when_active_opencode_go_key_missing() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_model_route_env();
+        env::remove_var("ZAI_API_KEY");
+        env::remove_var("OPENCODE_GO_API_KEY");
+        env::remove_var("OPENCODE_GO_API_BASE");
+
+        env::set_var("CHAT_MODEL_ID", "chat-model");
+        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
+        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
+
+        let error = AgentSettings::new().expect_err("missing OpenCode Go key should fail");
+        assert!(error
+            .to_string()
+            .contains("OPENCODE_GO_API_KEY is required"));
+
+        clear_model_route_env();
+        env::remove_var("CHAT_MODEL_ID");
+        env::remove_var("CHAT_MODEL_PROVIDER");
     }
 
     #[test]
