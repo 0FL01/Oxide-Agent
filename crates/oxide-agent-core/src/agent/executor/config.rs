@@ -24,14 +24,6 @@ fn format_model_routes(routes: &[ModelInfo]) -> Vec<String> {
         .collect()
 }
 
-fn format_dedicated_model_route(id: &str, provider: &str) -> Option<String> {
-    if id.trim().is_empty() || provider.trim().is_empty() {
-        None
-    } else {
-        Some(format!("{provider}/{id}"))
-    }
-}
-
 impl AgentExecutor {
     /// Create a new agent executor
     #[must_use]
@@ -80,26 +72,15 @@ impl AgentExecutor {
 
         let skill_registry = None;
 
-        let compaction_controller = {
-            let (compaction_model_id, compaction_model_provider, _, timeout_secs) =
-                settings.get_configured_compaction_model();
-            let inherited_routes = settings.get_configured_agent_model_routes();
-            let model_routes = settings.get_configured_compaction_model_routes(false);
-
-            debug!(
-                dedicated_compaction_route = ?format_dedicated_model_route(
-                    &compaction_model_id,
-                    &compaction_model_provider,
-                ),
-                inherited_agent_routes = ?format_model_routes(&inherited_routes),
-                effective_compaction_routes = ?format_model_routes(&model_routes),
-                timeout_secs,
-                codex_style_compaction_enabled = settings.codex_style_compaction_enabled(),
-                "Configured compaction routes"
-            );
-
-            CompactionController::local_llm(Arc::clone(&llm_client), model_routes, timeout_secs)
-        };
+        debug!(
+            active_agent_routes = ?format_model_routes(&settings.get_configured_agent_model_routes()),
+            codex_style_compaction_enabled = settings.codex_style_compaction_enabled(),
+            "Configured runtime compaction to use active agent routes"
+        );
+        let compaction_controller = CompactionController::local_llm(
+            Arc::clone(&llm_client),
+            settings.get_agent_timeout_secs(),
+        );
 
         Self {
             runner,

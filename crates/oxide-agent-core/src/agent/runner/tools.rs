@@ -273,6 +273,9 @@ impl AgentRunner {
         .await;
         let context = CompactRequestContext {
             task: ctx.task.to_string(),
+            route: current_execution_model_route(ctx).ok_or_else(|| {
+                anyhow::anyhow!("compress requires an active runtime model route")
+            })?,
             reason: CompactionReason::Manual,
             phase: CompactionPhase::Manual,
             target_token_budget: ctx.agent.memory().max_tokens(),

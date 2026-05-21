@@ -233,8 +233,10 @@ async fn manual_compaction_uses_codex_style_controller_when_flag_enabled() {
         });
     }
 
-    assert_eq!(outcome.metadata.generation, 1);
-    assert!(outcome.replacement.history_items_after < outcome.replacement.history_items_before);
+    assert_eq!(outcome.metadata.generation, 2);
+    assert_eq!(outcome.metadata.provider, "mock");
+    assert_eq!(outcome.metadata.route, "mock-model");
+    assert!(outcome.replacement.history_items_after <= outcome.replacement.history_items_before);
     let messages = executor.session().memory.get_messages();
     assert_eq!(
         messages

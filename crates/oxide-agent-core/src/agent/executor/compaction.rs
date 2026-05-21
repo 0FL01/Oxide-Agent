@@ -38,6 +38,7 @@ impl AgentExecutor {
         let cancellation_token = self.session.cancellation_token.clone();
         let context = CompactRequestContext {
             task: task.to_string(),
+            route: self.settings.get_configured_agent_model(),
             reason: CompactionReason::Manual,
             phase: CompactionPhase::Manual,
             target_token_budget: self.session.memory.max_tokens(),

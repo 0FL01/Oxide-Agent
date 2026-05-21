@@ -11,6 +11,8 @@ use thiserror::Error;
 pub struct CompactSummaryRequest<'a> {
     /// User-visible task/current objective.
     pub task: &'a str,
+    /// Active runtime model route that must generate the summary.
+    pub route: &'a ModelInfo,
     /// Source hot-memory messages to summarize.
     pub messages: &'a [AgentMessage],
     /// Previous compacted or legacy summary, if one was detected.
@@ -31,9 +33,6 @@ pub struct CompactSummaryResult {
 /// Summary backend failure.
 #[derive(Debug, Error)]
 pub enum CompactSummaryError {
-    /// No usable model route is available.
-    #[error("no compaction summary route is configured")]
-    NoRoute,
     /// Backend returned empty text.
     #[error("compaction summary output is empty")]
     EmptyOutput,
@@ -56,7 +55,4 @@ pub trait CompactSummaryBackend: Send + Sync {
         &self,
         request: CompactSummaryRequest<'_>,
     ) -> Result<CompactSummaryResult, CompactSummaryError>;
-
-    /// Route selected for the next summary request, if available.
-    fn selected_route(&self) -> Option<&ModelInfo>;
 }

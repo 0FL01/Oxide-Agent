@@ -20,6 +20,8 @@ use thiserror::Error;
 pub struct CompactRequestContext {
     /// User-visible task/current objective.
     pub task: String,
+    /// Active runtime model route used for the summary request.
+    pub route: ModelInfo,
     /// Why compaction is requested.
     pub reason: CompactionReason,
     /// Runtime phase where compaction happens.
@@ -69,14 +71,9 @@ impl CompactionController {
 
     /// Create the default provider-agnostic local LLM compaction controller.
     #[must_use]
-    pub fn local_llm(
-        llm_client: Arc<LlmClient>,
-        routes: Vec<ModelInfo>,
-        timeout_secs: u64,
-    ) -> Self {
+    pub fn local_llm(llm_client: Arc<LlmClient>, timeout_secs: u64) -> Self {
         Self::new(Arc::new(LocalLlmSummary::new(
             llm_client,
-            routes,
             Duration::from_secs(timeout_secs.max(1)),
         )))
     }
@@ -119,11 +116,17 @@ impl CompactionController {
     ) -> Result<CompactRunOutcome, CompactionControllerError> {
         let source_messages = memory.get_messages().to_vec();
         let previous_summary = extract_previous_compacted_summary(&source_messages);
+        let summary_source_messages = bounded_summary_source_messages(
+            &source_messages,
+            previous_summary.as_ref(),
+            &context.route,
+        );
         let summary_result = self
             .summary_backend
             .summarize(CompactSummaryRequest {
                 task: &context.task,
-                messages: &source_messages,
+                route: &context.route,
+                messages: &summary_source_messages,
                 previous_summary: previous_summary.as_ref(),
             })
             .await?;
@@ -167,6 +170,71 @@ impl CompactionController {
             replacement: replacement_outcome,
         })
     }
+}
+
+fn bounded_summary_source_messages(
+    source_messages: &[AgentMessage],
+    previous_summary: Option<&super::PreviousCompactedSummary>,
+    route: &ModelInfo,
+) -> Vec<AgentMessage> {
+    use crate::agent::compaction::CompactionRetention;
+
+    let previous_summary_tokens = previous_summary
+        .map(|summary| crate::agent::compaction::count_tokens_cached(&summary.content))
+        .unwrap_or(0);
+    let route_window = (route.context_window_tokens as usize).max(8_000);
+    let output_budget = (route.max_output_tokens as usize).max(512);
+    let source_budget = route_window
+        .saturating_sub(output_budget)
+        .saturating_sub(2_000)
+        .clamp(4_000, 32_000)
+        .saturating_sub(previous_summary_tokens.min(8_000));
+
+    let mut selected_indices = std::collections::BTreeSet::new();
+    let mut used_tokens = 0usize;
+
+    for (index, message) in source_messages.iter().enumerate() {
+        if matches!(
+            message.retention(),
+            CompactionRetention::Pinned | CompactionRetention::ProtectedLive
+        ) && !super::is_any_compaction_summary_message(message)
+        {
+            selected_indices.insert(index);
+            used_tokens = used_tokens.saturating_add(message_summary_tokens(message));
+        }
+    }
+
+    for (index, message) in source_messages.iter().enumerate().rev() {
+        if super::is_any_compaction_summary_message(message) || selected_indices.contains(&index) {
+            continue;
+        }
+        let message_tokens = message_summary_tokens(message);
+        if used_tokens.saturating_add(message_tokens) > source_budget
+            && !selected_indices.is_empty()
+        {
+            continue;
+        }
+        selected_indices.insert(index);
+        used_tokens = used_tokens.saturating_add(message_tokens);
+        if used_tokens >= source_budget {
+            break;
+        }
+    }
+
+    selected_indices
+        .into_iter()
+        .filter_map(|index| source_messages.get(index).cloned())
+        .collect()
+}
+
+fn message_summary_tokens(message: &AgentMessage) -> usize {
+    crate::agent::compaction::count_tokens_cached(&message.content).saturating_add(
+        message
+            .reasoning
+            .as_deref()
+            .map(crate::agent::compaction::count_tokens_cached)
+            .unwrap_or(0),
+    )
 }
 
 fn build_replacement(
@@ -218,17 +286,13 @@ mod tests {
     impl CompactSummaryBackend for StaticSummaryBackend {
         async fn summarize(
             &self,
-            _request: CompactSummaryRequest<'_>,
+            request: CompactSummaryRequest<'_>,
         ) -> Result<CompactSummaryResult, CompactSummaryError> {
             Ok(CompactSummaryResult {
                 summary_text: "Current state and remaining work.".to_string(),
-                provider: "mock".to_string(),
-                route: "mock-compact".to_string(),
+                provider: request.route.provider.clone(),
+                route: request.route.id.clone(),
             })
-        }
-
-        fn selected_route(&self) -> Option<&crate::config::ModelInfo> {
-            None
         }
     }
 
@@ -240,15 +304,18 @@ mod tests {
         ) -> Result<CompactSummaryResult, CompactSummaryError> {
             Err(CompactSummaryError::Provider("mock failure".to_string()))
         }
-
-        fn selected_route(&self) -> Option<&crate::config::ModelInfo> {
-            None
-        }
     }
 
     fn context() -> CompactRequestContext {
         CompactRequestContext {
             task: "Ship compaction".to_string(),
+            route: ModelInfo {
+                id: "agent-model".to_string(),
+                provider: "mock".to_string(),
+                max_output_tokens: 512,
+                context_window_tokens: 10_000,
+                weight: 1,
+            },
             reason: CompactionReason::Manual,
             phase: CompactionPhase::Manual,
             target_token_budget: 10_000,
@@ -361,5 +428,41 @@ mod tests {
             before_messages
         );
         assert_eq!(memory.token_count(), before_tokens);
+    }
+
+    #[test]
+    fn summary_source_is_bounded_but_keeps_pinned_context_and_recent_tail() {
+        let route = ModelInfo {
+            id: "agent-model".to_string(),
+            provider: "mock".to_string(),
+            max_output_tokens: 512,
+            context_window_tokens: 8_000,
+            weight: 1,
+        };
+        let mut messages = vec![
+            AgentMessage::topic_agents_md("# Topic AGENTS\nKeep this instruction."),
+            AgentMessage::user_task("Finish the compaction cleanup."),
+            AgentMessage::summary("[COMPACTION_SUMMARY]\nold summary"),
+        ];
+        for index in 0..30 {
+            messages.push(AgentMessage::user_turn(format!(
+                "old-{index}: {}",
+                "large historical context ".repeat(120)
+            )));
+        }
+        messages.push(AgentMessage::assistant("recent important finding"));
+
+        let selected = bounded_summary_source_messages(&messages, None, &route);
+        let selected_content = selected
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(selected_content.contains("Keep this instruction."));
+        assert!(selected_content.contains("Finish the compaction cleanup."));
+        assert!(selected_content.contains("recent important finding"));
+        assert!(!selected_content.contains("[COMPACTION_SUMMARY]"));
+        assert!(!selected_content.contains("old-0:"));
     }
 }

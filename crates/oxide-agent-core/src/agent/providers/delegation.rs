@@ -390,11 +390,9 @@ impl DelegationProvider {
     }
 
     fn create_sub_agent_compaction_controller(&self) -> CompactionController {
-        let (_, _, _, timeout_secs) = self.settings.get_configured_compaction_model();
         CompactionController::local_llm(
             Arc::clone(&self.llm_client),
-            self.settings.get_configured_compaction_model_routes(true),
-            timeout_secs,
+            self.settings.get_sub_agent_timeout_secs(),
         )
     }
 

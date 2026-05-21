@@ -31,10 +31,20 @@ enum AttemptOutcome {
 struct LlmAttemptMetadata<'a> {
     provider_name: &'a str,
     model_name: &'a str,
+    route: &'a ModelInfo,
     route_index: Option<usize>,
     capabilities: ProviderCapabilities,
     attempt: usize,
     max_retries: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeCompactionRequest<'a> {
+    route: &'a ModelInfo,
+    reason: CompactionReason,
+    phase: CompactionPhase,
+    force: bool,
+    target_token_budget: usize,
 }
 
 impl AgentRunner {
@@ -109,7 +119,7 @@ impl AgentRunner {
             let cancellation_token = ctx.agent.cancellation_token().clone();
             let Some(response) = Self::await_until_cancelled(
                 cancellation_token,
-                self.call_llm_with_tools(ctx, &mut state),
+                self.call_llm_with_tools(ctx, &mut state, iteration),
             )
             .await
             else {
@@ -183,6 +193,7 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
+        iteration: usize,
     ) -> Result<ChatResponse> {
         // Emit milestone on first LLM call of first iteration.
         if state.iteration == 0 {
@@ -198,16 +209,18 @@ impl AgentRunner {
         }
 
         if ctx.config.model_routes.is_empty() {
-            return self.call_llm_with_tools_legacy(ctx, state).await;
+            return self.call_llm_with_tools_legacy(ctx, state, iteration).await;
         }
 
-        self.call_llm_with_tools_with_failover(ctx, state).await
+        self.call_llm_with_tools_with_failover(ctx, state, iteration)
+            .await
     }
 
     async fn call_llm_with_tools_legacy(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
+        iteration: usize,
     ) -> Result<ChatResponse> {
         let max_retries = LlmClient::MAX_RETRIES;
         let provider_name = ctx
@@ -242,6 +255,9 @@ impl AgentRunner {
             model_name.as_str(),
             json_mode,
         );
+
+        self.maybe_run_runtime_pre_sampling_compaction(ctx, state, iteration, &model_info)
+            .await?;
 
         if !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode) {
             let error = LlmError::ApiError(format!(
@@ -282,6 +298,7 @@ impl AgentRunner {
                     LlmAttemptMetadata {
                         provider_name: &provider_name,
                         model_name: &model_name,
+                        route: &model_info,
                         route_index: Some(0),
                         capabilities,
                         attempt,
@@ -304,6 +321,7 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
+        iteration: usize,
     ) -> Result<ChatResponse> {
         let max_retries = LlmClient::MAX_RETRIES;
 
@@ -372,6 +390,9 @@ impl AgentRunner {
                 .await?;
             }
 
+            self.maybe_run_runtime_pre_sampling_compaction(ctx, state, iteration, &route)
+                .await?;
+
             for attempt in 1..=max_retries {
                 Self::refresh_messages_from_memory(ctx);
                 Self::log_llm_route_attempt_started(
@@ -402,6 +423,7 @@ impl AgentRunner {
                         LlmAttemptMetadata {
                             provider_name: &provider_name,
                             model_name: &route.id,
+                            route: &route,
                             route_index: Some(route_index),
                             capabilities,
                             attempt,
@@ -470,7 +492,7 @@ impl AgentRunner {
 
                 if Self::llm_error_suggests_context_overflow(&error) && metadata.attempt == 1 {
                     let retried = if ctx.config.codex_style_compaction_enabled {
-                        self.run_runtime_context_limit_compaction(ctx, state)
+                        self.run_runtime_context_limit_compaction(ctx, state, metadata.route)
                             .await?
                     } else {
                         false
@@ -908,17 +930,10 @@ impl AgentRunner {
 
     async fn run_iteration_compaction(
         &mut self,
-        ctx: &mut AgentRunnerContext<'_>,
-        state: &mut RunState,
-        iteration: usize,
+        _ctx: &mut AgentRunnerContext<'_>,
+        _state: &mut RunState,
+        _iteration: usize,
     ) -> Result<()> {
-        if ctx.config.codex_style_compaction_enabled {
-            return self
-                .maybe_run_runtime_pre_sampling_compaction(ctx, state, iteration)
-                .await
-                .map(|_| ());
-        }
-
         Ok(())
     }
 
@@ -927,9 +942,11 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<()> {
+        let route = Self::primary_runtime_route(ctx, &self.llm_client)?;
         self.run_runtime_compaction(
             ctx,
             state,
+            &route,
             CompactionReason::Manual,
             CompactionPhase::Manual,
             true,
@@ -943,6 +960,7 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
         iteration: usize,
+        route: &ModelInfo,
     ) -> Result<bool> {
         if !Self::runtime_compaction_threshold_reached(ctx) {
             return Ok(false);
@@ -953,18 +971,27 @@ impl AgentRunner {
         } else {
             CompactionReason::MidTurn
         };
-        self.run_runtime_compaction(ctx, state, reason, CompactionPhase::PreSampling, false)
-            .await
+        self.run_runtime_compaction(
+            ctx,
+            state,
+            route,
+            reason,
+            CompactionPhase::PreSampling,
+            false,
+        )
+        .await
     }
 
     async fn run_runtime_context_limit_compaction(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
+        route: &ModelInfo,
     ) -> Result<bool> {
         self.run_runtime_compaction(
             ctx,
             state,
+            route,
             CompactionReason::ContextLimit,
             CompactionPhase::MidTurn,
             true,
@@ -990,10 +1017,13 @@ impl AgentRunner {
         self.run_runtime_compaction_with_target_budget(
             ctx,
             state,
-            CompactionReason::ModelDownshift,
-            CompactionPhase::ModelSwitch,
-            true,
-            target_budget,
+            RuntimeCompactionRequest {
+                route: next_route,
+                reason: CompactionReason::ModelDownshift,
+                phase: CompactionPhase::ModelSwitch,
+                force: true,
+                target_token_budget: target_budget,
+            },
         )
         .await
     }
@@ -1044,6 +1074,36 @@ impl AgentRunner {
             .saturating_sub(policy.hard_reserve_tokens)
     }
 
+    fn primary_runtime_route(
+        ctx: &AgentRunnerContext<'_>,
+        llm_client: &LlmClient,
+    ) -> Result<ModelInfo> {
+        if let Some(route) = ctx.config.model_routes.first() {
+            return Ok(route.clone());
+        }
+
+        llm_client
+            .get_model_info(&ctx.config.model_name)
+            .or_else(|_| {
+                ctx.config
+                    .model_provider
+                    .clone()
+                    .map(|provider| ModelInfo {
+                        id: ctx.config.model_name.clone(),
+                        provider,
+                        max_output_tokens: ctx.config.model_max_output_tokens,
+                        context_window_tokens: ctx.agent.memory().max_tokens() as u32,
+                        weight: 1,
+                    })
+                    .ok_or_else(|| {
+                        crate::llm::LlmError::Unknown(
+                            "No active model route available for compaction".to_string(),
+                        )
+                    })
+            })
+            .map_err(|error| anyhow!("No active model route available for compaction: {error}"))
+    }
+
     fn tool_schema_tokens(tools: &[crate::llm::ToolDefinition]) -> usize {
         tools.iter().fold(0usize, |acc, tool| {
             let parameter_tokens = serde_json::to_string(&tool.parameters)
@@ -1059,6 +1119,7 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
+        route: &ModelInfo,
         reason: CompactionReason,
         phase: CompactionPhase,
         force: bool,
@@ -1066,10 +1127,13 @@ impl AgentRunner {
         self.run_runtime_compaction_with_target_budget(
             ctx,
             state,
-            reason,
-            phase,
-            force,
-            ctx.agent.memory().max_tokens(),
+            RuntimeCompactionRequest {
+                route,
+                reason,
+                phase,
+                force,
+                target_token_budget: ctx.agent.memory().max_tokens(),
+            },
         )
         .await
     }
@@ -1078,29 +1142,27 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
-        reason: CompactionReason,
-        phase: CompactionPhase,
-        force: bool,
-        target_token_budget: usize,
+        request: RuntimeCompactionRequest<'_>,
     ) -> Result<bool> {
         let Some(controller) = ctx.compaction_controller else {
             return Ok(false);
         };
-        if !force && !Self::runtime_compaction_threshold_reached(ctx) {
+        if !request.force && !Self::runtime_compaction_threshold_reached(ctx) {
             return Ok(false);
         }
 
         let context = CompactRequestContext {
             task: ctx.task.to_string(),
-            reason,
-            phase,
-            target_token_budget,
+            route: request.route.clone(),
+            reason: request.reason,
+            phase: request.phase,
+            target_token_budget: request.target_token_budget,
             created_at: chrono::Utc::now().to_rfc3339(),
         };
         Self::emit_runtime_compaction_started(
             ctx.progress_tx,
-            reason,
-            phase,
+            request.reason,
+            request.phase,
             ctx.agent.memory().token_count(),
             ctx.agent.memory().get_messages().len(),
         )
@@ -1117,15 +1179,15 @@ impl AgentRunner {
                 warn!(
                     task_id = %ctx.task_id,
                     iteration = state.iteration,
-                    reason = ?reason,
-                    phase = ?phase,
+                    reason = ?request.reason,
+                    phase = ?request.phase,
                     error = %error,
                     "Runtime compaction failed in agent runner"
                 );
                 Self::emit_runtime_compaction_failed(
                     ctx.progress_tx,
-                    reason,
-                    phase,
+                    request.reason,
+                    request.phase,
                     error.to_string(),
                 )
                 .await;
@@ -1808,17 +1870,13 @@ mod tests {
     impl CompactSummaryBackend for StaticRuntimeSummaryBackend {
         async fn summarize(
             &self,
-            _request: CompactSummaryRequest<'_>,
+            request: CompactSummaryRequest<'_>,
         ) -> std::result::Result<CompactSummaryResult, CompactSummaryError> {
             Ok(CompactSummaryResult {
                 summary_text: "Condensed history for smaller fallback route.".to_string(),
-                provider: "static".to_string(),
-                route: "static-summary".to_string(),
+                provider: request.route.provider.clone(),
+                route: request.route.id.clone(),
             })
-        }
-
-        fn selected_route(&self) -> Option<&ModelInfo> {
-            None
         }
     }
 
@@ -2072,17 +2130,7 @@ mod tests {
     #[tokio::test]
     async fn run_retries_after_context_overflow_with_runtime_context_limit_compaction() {
         let llm_client = build_llm_client(context_overflow_then_summary_then_final_provider());
-        let compaction_controller = CompactionController::local_llm(
-            Arc::clone(&llm_client),
-            vec![ModelInfo {
-                id: "mock-model".to_string(),
-                max_output_tokens: 256,
-                context_window_tokens: 20_000,
-                provider: "mock".to_string(),
-                weight: 1,
-            }],
-            1,
-        );
+        let compaction_controller = CompactionController::local_llm(Arc::clone(&llm_client), 1);
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         let mut session = EphemeralSession::new(20_000);
         session
@@ -2175,17 +2223,7 @@ mod tests {
     #[tokio::test]
     async fn run_pre_sampling_uses_runtime_compaction_when_threshold_reached() {
         let llm_client = build_llm_client(pre_sampling_summary_then_final_provider());
-        let compaction_controller = CompactionController::local_llm(
-            Arc::clone(&llm_client),
-            vec![ModelInfo {
-                id: "mock-model".to_string(),
-                max_output_tokens: 256,
-                context_window_tokens: 1_000,
-                provider: "mock".to_string(),
-                weight: 1,
-            }],
-            1,
-        );
+        let compaction_controller = CompactionController::local_llm(Arc::clone(&llm_client), 1);
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         let mut session = EphemeralSession::new(1_000);
         session
@@ -2556,8 +2594,10 @@ mod tests {
                 AgentEvent::RuntimeCompactionCompleted {
                     reason: CompactionReason::ModelDownshift,
                     phase: CompactionPhase::ModelSwitch,
+                    provider,
+                    route,
                     ..
-                }
+                } if provider == "backup" && route == "backup-model"
             )
         }));
     }

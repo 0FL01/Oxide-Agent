@@ -83,9 +83,6 @@ fn setup_web_test_with_budget(
         sub_agent_model_provider: Some("zai".to_string()),
         narrator_model_id: Some("narrator-model".to_string()),
         narrator_model_provider: Some("narrator".to_string()),
-        compaction_model_id: Some("narrator-model".to_string()),
-        compaction_model_provider: Some("narrator".to_string()),
-        compaction_model_max_output_tokens: Some(2048),
         agent_timeout_secs: Some(5),
         sub_agent_timeout_secs: Some(5),
         ..AgentSettings::default()

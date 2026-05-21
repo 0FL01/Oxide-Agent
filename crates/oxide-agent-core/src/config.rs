@@ -5,7 +5,7 @@
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 // LLM provider defaults
 /// Default temperature used for Groq chat completions.
@@ -203,15 +203,6 @@ pub struct AgentSettings {
     /// Narrator model provider override
     pub narrator_model_provider: Option<String>,
 
-    /// Compaction summary model ID override
-    pub compaction_model_id: Option<String>,
-    /// Compaction summary model provider override
-    pub compaction_model_provider: Option<String>,
-    /// Compaction summary model max output tokens override
-    #[serde(alias = "compaction_model_max_tokens")]
-    pub compaction_model_max_output_tokens: Option<u32>,
-    /// Compaction summary model timeout override in seconds
-    pub compaction_model_timeout_secs: Option<u64>,
     /// Temporary migration switch for Codex-style runtime/session-level compaction.
     pub oxide_codex_style_compaction: Option<bool>,
 
@@ -727,22 +718,6 @@ impl AgentSettings {
         ))
     }
 
-    fn compaction_model_spec(&self) -> Option<(String, ModelInfo)> {
-        let id = self.compaction_model_id.as_ref()?;
-        let provider = self.compaction_model_provider.as_ref()?;
-        let max_output_tokens = self
-            .compaction_model_max_output_tokens
-            .unwrap_or(COMPACTION_MAX_TOKENS);
-        let context_window_tokens = self
-            .agent_model_context_window_tokens
-            .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
-
-        Some((
-            id.clone(),
-            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
-        ))
-    }
-
     fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
@@ -812,10 +787,6 @@ impl AgentSettings {
         }
 
         if let Some((name, info)) = self.narrator_model_spec() {
-            Self::upsert_model(&mut models, name, info);
-        }
-
-        if let Some((name, info)) = self.compaction_model_spec() {
             Self::upsert_model(&mut models, name, info);
         }
 
@@ -967,26 +938,6 @@ impl AgentSettings {
         })
     }
 
-    fn normalize_compaction_route(route: ModelInfo, max_output_tokens: u32) -> Option<ModelInfo> {
-        let id = route.id.trim();
-        let provider = route.provider.trim();
-        if id.is_empty() || provider.is_empty() {
-            return None;
-        }
-
-        Some(ModelInfo {
-            id: id.to_string(),
-            provider: provider.to_string(),
-            max_output_tokens,
-            context_window_tokens: route.context_window_tokens,
-            weight: route.weight.max(1),
-        })
-    }
-
-    fn route_dedupe_key(route: &ModelInfo) -> (String, String) {
-        (route.id.clone(), route.provider.to_ascii_lowercase())
-    }
-
     /// Returns the internal Agent Mode context budget after applying the clamp policy.
     pub fn get_agent_internal_context_budget_tokens(&self) -> usize {
         clamp_internal_context_budget_tokens(
@@ -1023,61 +974,12 @@ impl AgentSettings {
         (String::new(), String::new())
     }
 
-    /// Returns the configured compaction summary model (id, provider, max_tokens, timeout_secs).
-    pub fn get_configured_compaction_model(&self) -> (String, String, u32, u64) {
-        if let (Some(id), Some(provider)) =
-            (&self.compaction_model_id, &self.compaction_model_provider)
-        {
-            return (
-                id.clone(),
-                provider.clone(),
-                self.compaction_model_max_output_tokens
-                    .unwrap_or(COMPACTION_MAX_TOKENS),
-                self.compaction_model_timeout_secs
-                    .unwrap_or(COMPACTION_TIMEOUT_SECS),
-            );
-        }
-        (String::new(), String::new(), 0, COMPACTION_TIMEOUT_SECS)
-    }
-
     /// Returns whether Codex-style runtime/session-level compaction is enabled.
     #[must_use]
     pub fn codex_style_compaction_enabled(&self) -> bool {
         self.oxide_codex_style_compaction
             .or_else(|| parse_optional_env_bool("OXIDE_CODEX_STYLE_COMPACTION"))
             .unwrap_or(true)
-    }
-
-    /// Returns compaction routes with an optional dedicated primary route and inherited fallback routes.
-    pub fn get_configured_compaction_model_routes(&self, prefer_sub_agent: bool) -> Vec<ModelInfo> {
-        let max_output_tokens = self
-            .compaction_model_max_output_tokens
-            .unwrap_or(COMPACTION_MAX_TOKENS);
-        let mut routes = Vec::new();
-
-        if let Some((_, route)) = self.compaction_model_spec() {
-            if let Some(route) = Self::normalize_compaction_route(route, max_output_tokens) {
-                routes.push(route);
-            }
-        }
-
-        let inherited_routes = if prefer_sub_agent {
-            self.get_configured_sub_agent_model_routes()
-        } else {
-            self.get_configured_agent_model_routes()
-        };
-
-        routes.extend(
-            inherited_routes
-                .into_iter()
-                .filter_map(|route| Self::normalize_compaction_route(route, max_output_tokens)),
-        );
-
-        let mut seen = BTreeSet::new();
-        routes
-            .into_iter()
-            .filter(|route| seen.insert(Self::route_dedupe_key(route)))
-            .collect()
     }
 
     /// Returns model info by its display name
@@ -1380,74 +1282,6 @@ mod tests {
     }
 
     #[test]
-    fn compaction_routes_prepend_dedicated_model_and_reuse_agent_fallbacks() {
-        let settings = AgentSettings {
-            compaction_model_id: Some("compact-model".to_string()),
-            compaction_model_provider: Some("mock".to_string()),
-            compaction_model_max_output_tokens: Some(512),
-            agent_model_routes: Some(vec![
-                ModelInfo {
-                    id: "MiniMax-M2.7".to_string(),
-                    provider: "minimax".to_string(),
-                    max_output_tokens: 32_000,
-                    context_window_tokens: 204_800,
-                    weight: 10,
-                },
-                ModelInfo {
-                    id: "glm-4.7".to_string(),
-                    provider: "zai".to_string(),
-                    max_output_tokens: 32_000,
-                    context_window_tokens: 200_000,
-                    weight: 5,
-                },
-            ]),
-            ..AgentSettings::default()
-        };
-
-        let routes = settings.get_configured_compaction_model_routes(false);
-
-        assert_eq!(routes.len(), 3);
-        assert_eq!(routes[0].id, "compact-model");
-        assert_eq!(routes[0].provider, "mock");
-        assert_eq!(routes[1].id, "MiniMax-M2.7");
-        assert_eq!(routes[2].id, "glm-4.7");
-        assert!(routes.iter().all(|route| route.max_output_tokens == 512));
-    }
-
-    #[test]
-    fn compaction_routes_dedupe_and_sub_agent_inherits_agent_routes() {
-        let settings = AgentSettings {
-            compaction_model_id: Some("MiniMax-M2.7".to_string()),
-            compaction_model_provider: Some("minimax".to_string()),
-            compaction_model_max_output_tokens: Some(512),
-            agent_model_routes: Some(vec![
-                ModelInfo {
-                    id: "MiniMax-M2.7".to_string(),
-                    provider: "minimax".to_string(),
-                    max_output_tokens: 32_000,
-                    context_window_tokens: 204_800,
-                    weight: 10,
-                },
-                ModelInfo {
-                    id: "glm-4.7".to_string(),
-                    provider: "zai".to_string(),
-                    max_output_tokens: 32_000,
-                    context_window_tokens: 200_000,
-                    weight: 5,
-                },
-            ]),
-            ..AgentSettings::default()
-        };
-
-        let routes = settings.get_configured_compaction_model_routes(true);
-
-        assert_eq!(routes.len(), 2);
-        assert_eq!(routes[0].id, "MiniMax-M2.7");
-        assert_eq!(routes[1].id, "glm-4.7");
-        assert!(routes.iter().all(|route| route.max_output_tokens == 512));
-    }
-
-    #[test]
     fn browser_use_model_returns_dedicated_route_when_configured() {
         let settings = AgentSettings {
             browser_use_model_id: Some("GLM-4.6V".to_string()),
@@ -1655,12 +1489,8 @@ pub const AGENT_SEARCH_LIMIT: usize = 10;
 // Narrator system configuration
 /// Maximum tokens for narrator response (concise output)
 pub const NARRATOR_MAX_TOKENS: u32 = 256;
-/// Maximum tokens for compaction summary response.
-pub const COMPACTION_MAX_TOKENS: u32 = 512;
 /// Maximum tokens for background Wiki Memory writer response.
 pub const WIKI_MEMORY_WRITER_MAX_TOKENS: u32 = 4096;
-/// Default timeout for compaction summary model requests.
-pub const COMPACTION_TIMEOUT_SECS: u64 = 20;
 /// Default timeout for background Wiki Memory writer requests.
 pub const WIKI_MEMORY_WRITER_TIMEOUT_SECS: u64 = 60;
 
