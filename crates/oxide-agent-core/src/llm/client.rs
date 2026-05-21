@@ -343,6 +343,17 @@ impl LlmClient {
             );
         }
 
+        if let Some(api_key) = settings.opencode_go_api_key.as_ref() {
+            let provider: Arc<dyn LlmProvider> =
+                Arc::new(providers::OpenCodeGoProvider::new_with_client(
+                    api_key.clone(),
+                    settings.opencode_go_api_base.clone(),
+                    http_client.clone(),
+                ));
+            Self::insert_provider(&mut providers, "opencode-go", provider.clone());
+            Self::insert_provider(&mut providers, "opencode_go", provider);
+        }
+
         if let Some(api_key) = settings.openrouter_api_key.as_ref() {
             Self::insert_provider(
                 &mut providers,
@@ -1170,6 +1181,25 @@ mod tests {
                 if message.contains("video understanding")
                     && message.contains("gemini/openrouter")
         ));
+    }
+
+    #[test]
+    fn llm_client_registers_opencode_go_when_key_present() {
+        let settings = AgentSettings {
+            chat_model_id: Some("deepseek-v4-flash".to_string()),
+            chat_model_provider: Some("opencode-go".to_string()),
+            opencode_go_api_key: Some("test-opencode-key".to_string()),
+            opencode_go_api_base: "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+            ..AgentSettings::default()
+        };
+
+        let llm = LlmClient::new(&settings);
+
+        assert!(llm.is_provider_available("opencode-go"));
+        assert!(llm.is_provider_available("opencode_go"));
+        assert!(llm
+            .configured_provider_names()
+            .contains(&"opencode-go".to_string()));
     }
 
     #[tokio::test]

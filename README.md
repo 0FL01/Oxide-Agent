@@ -11,7 +11,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, NVIDIA NIM, OpenRouter, Mistral, Google Gemini), along with Groq support.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **7 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral, Google Gemini), along with Groq support.
 
 ### Architecture Highlights
 
@@ -66,7 +66,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **🗣️ Narrator:** Separate model for summarizing agent thoughts and actions in chat.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, NVIDIA NIM, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
+*   **Multi-LLM Support:** 7 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Multimedia Processing:**
     *   Voice and video messages (speech recognition via Gemini or Voxtral).
@@ -84,16 +84,18 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 ### 🔑 API Keys (Mandatory)
 | Provider | Variable | Description |
 | :--- | :--- | :--- |
-| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | **Mandatory for Agent** (`glm-4.7`, Default Agent Model). [Zhipu AI](https://z.ai/) |
+| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when configured for Agent routes (`glm-4.7`, default examples). [Zhipu AI](https://z.ai/) |
+| **OpenCode Go** | `OPENCODE_GO_API_KEY` | Required when using `opencode-go` routes such as `deepseek-v4-flash`. |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | **Cloudflare R2** | `R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
 | **Mistral AI** | `MISTRAL_API_KEY` | **Critical for Agent** (`mistral-embed` model for skill selection) |
 
 ### 🤖 Supported LLM Providers for Chat/Agent Mode
-The bot supports **5 main providers** for both standard chat and advanced Agent mode (with tool calling):
+The bot supports **7 main providers** for both standard chat and advanced Agent mode (with tool calling):
 
 *   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — primary provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) — Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
+*   **OpenCode Go** (`OPENCODE_GO_API_KEY`) — subscription OpenAI-compatible provider. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls and structured JSON for DeepSeek V4 routes.
 *   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
 *   **Mistral** (`MISTRAL_API_KEY`) — great for cost-effective agent/chat combos (e.g., `mistral-large-latest`, `pixtral-large-latest`). Supports tool calling via JSON mode or native tools. Includes Voxtral audio transcription (`voxtral-mini-latest`).
 *   **Google Gemini** (`GEMINI_API_KEY`) — direct integration for Gemini models, primarily used for multimodal tasks or as a fallback.
@@ -170,6 +172,8 @@ OPENROUTER_API_KEY=...
 NVIDIA_API_KEY=...              # NVIDIA NIM / hosted integrate.api.nvidia.com
 NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
 ZAI_API_KEY=...                 # Zhipu AI / ZAI Provider
+OPENCODE_GO_API_KEY=...         # OpenCode Go subscription provider
+OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
 MINIMAX_API_KEY=...             # MiniMax Provider (Claude SDK-compatible)
 TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enable via TAVILY_ENABLED=true)
 SEARXNG_URL=http://127.0.0.1:8081  # SearXNG self-hosted search (auto-enabled when set)
