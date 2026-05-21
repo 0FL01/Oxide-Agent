@@ -350,7 +350,7 @@ impl LlmClient {
                     settings.opencode_go_api_base.clone(),
                     http_client.clone(),
                 ));
-            Self::insert_provider(&mut providers, "opencode-go", provider.clone());
+            Self::insert_provider(&mut providers, "opencode-go", Arc::clone(&provider));
             Self::insert_provider(&mut providers, "opencode_go", provider);
         }
 

@@ -1,7 +1,7 @@
 # Goal: OpenCode Go Provider
 
 Date started: 2026-05-21
-Status: active
+Status: complete
 Codex goal: Implement the OpenCode Go LLM provider from prd/PRD.md for Oxide Agent: add config/capabilities, provider implementation, registration, tests, docs, and commit after each implementation phase.
 
 ## Objective
@@ -74,6 +74,7 @@ Done when:
 - 2026-05-21 14:08: Phase 1 implemented config keys, route-aware ZAI/OpenCode Go credential validation, OpenCode Go capabilities/media mapping, and focused tests. Validation passed: `cargo fmt --all`, `cargo test -p oxide-agent-core opencode_go -- --nocapture`, `cargo test -p oxide-agent-core settings_ -- --nocapture`, `cargo test -p oxide-agent-core capabilities -- --nocapture`. Next: implement provider module.
 - 2026-05-21 14:18: Phase 2 implemented `OpenCodeGoProvider`, OpenAI Chat Completions request builders, native tool-call parser, reasoning/usage parsing, model prefix normalization, and provider module export. Validation passed: `cargo test -p oxide-agent-core opencode_go -- --nocapture`, `cargo check -p oxide-agent-core`. Next: register provider in `LlmClient` and update docs/examples.
 - 2026-05-21 14:28: Phase 3 registered `opencode-go`/`opencode_go` in `LlmClient`, added registration coverage, and updated `.env.example`, `README.md`, and `README-ru.md`. Validation passed: `cargo fmt --all`, `cargo test -p oxide-agent-core opencode_go -- --nocapture`, `cargo test -p oxide-agent-core llm_client_registers_opencode_go_when_key_present -- --nocapture`, `cargo check -p oxide-agent-core`. Next: full final validation and cleanup.
+- 2026-05-21 14:37: Phase 4 fixed clippy's `clone_on_ref_ptr` finding for OpenCode Go provider alias registration. Final validation passed: `cargo fmt --all --check`, `cargo test -p oxide-agent-core opencode_go -- --nocapture`, `cargo check -p oxide-agent-core`, `cargo clippy -p oxide-agent-core --all-targets --all-features`.
 
 ## Risks and Blockers
 
@@ -83,4 +84,10 @@ Done when:
 
 ## Final Verification
 
-Pending.
+Completed on 2026-05-21.
+
+- `cargo fmt --all --check` passed.
+- `cargo test -p oxide-agent-core opencode_go -- --nocapture` passed: 17 focused tests.
+- `cargo check -p oxide-agent-core` passed.
+- `cargo clippy -p oxide-agent-core --all-targets --all-features` passed.
+- Live OpenCode Go smoke was not run because no `OPENCODE_GO_API_KEY` was provided in the task; the implementation keeps live verification optional and secret-free.
