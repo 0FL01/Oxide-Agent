@@ -152,13 +152,6 @@ pub enum AgentEvent {
         /// Iteration when detected
         iteration: usize,
     },
-    /// Narrative update from sidecar LLM
-    Narrative {
-        /// Short action-oriented headline
-        headline: String,
-        /// Detailed context explanation
-        content: String,
-    },
     /// Runtime/session-level compaction started.
     RuntimeCompactionStarted {
         /// Why compaction was requested.
@@ -316,10 +309,6 @@ pub struct ProgressState {
     pub error: Option<String>,
     /// Current agent thought/reasoning
     pub current_thought: Option<String>,
-    /// Narrative headline from sidecar LLM
-    pub narrative_headline: Option<String>,
-    /// Narrative content from sidecar LLM
-    pub narrative_content: Option<String>,
     /// Latest compaction status shown to the operator.
     pub last_compaction_status: Option<String>,
     /// Warning shown when the same run keeps compacting repeatedly.
@@ -451,7 +440,6 @@ impl ProgressState {
                 loop_type,
                 iteration,
             } => self.handle_loop_detected(loop_type, iteration),
-            AgentEvent::Narrative { headline, content } => self.handle_narrative(headline, content),
             AgentEvent::RuntimeCompactionStarted {
                 reason,
                 phase,
@@ -756,11 +744,6 @@ impl ProgressState {
         };
         self.error = Some(format!("Loop detected: {label} (iteration {iteration})"));
         self.fail_last_step();
-    }
-
-    fn handle_narrative(&mut self, headline: String, content: String) {
-        self.narrative_headline = Some(headline);
-        self.narrative_content = Some(content);
     }
 
     fn handle_runtime_compaction_started(&mut self, details: RuntimeCompactionStartedDetails) {

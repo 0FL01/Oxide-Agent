@@ -197,7 +197,7 @@ Hybrid retrieval даёт лучшее покрытие:
 Не делать:
 - один общий embeddings-index по всем старым сообщениям;
 - прямое превращение старых чатов в skills;
-- retrieval по narrator text и мусорным tool traces без фильтрации;
+- retrieval по progress text и мусорным tool traces без фильтрации;
 - full chat injection обратно в prompt по умолчанию;
 - хранение раздутого hot context “на всякий случай”.
 
@@ -556,7 +556,7 @@ soft limit warning или по решению агента.
 
 Не индексируем напрямую как first-class memory:
 - сырые tool results без нормализации;
-- narrator output;
+- progress output;
 - повторяющиеся progress messages;
 - шумные промежуточные chain-like traces;
 - большие raw payloads.

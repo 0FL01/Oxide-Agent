@@ -842,12 +842,6 @@ impl AgentRunner {
             .map(|tool_call| vec![self.build_tool_call(tool_call)])
             .unwrap_or_default();
 
-        self.spawn_narrative_task(
-            response.reasoning_content.as_deref(),
-            &tool_calls,
-            ctx.progress_tx,
-        );
-
         if let Some(request) = awaiting_user_input {
             return self
                 .handle_waiting_for_user_input(
@@ -1273,12 +1267,6 @@ impl AgentRunner {
     ) -> Result<Option<AgentRunResult>> {
         let tool_calls = sanitize_tool_calls(std::mem::take(&mut response.tool_calls));
 
-        self.spawn_narrative_task(
-            response.reasoning_content.as_deref(),
-            &tool_calls,
-            ctx.progress_tx,
-        );
-
         if self.tool_loop_detected(&tool_calls).await {
             return Err(self
                 .loop_detected_error(
@@ -1322,8 +1310,6 @@ impl AgentRunner {
                 .tool_call
                 .map(|tool_call| vec![self.build_tool_call(tool_call)])
                 .unwrap_or_default();
-
-            self.spawn_narrative_task(reasoning.as_deref(), &tool_calls, ctx.progress_tx);
 
             if let Some(request) = awaiting_user_input {
                 return self
@@ -1378,8 +1364,6 @@ impl AgentRunner {
                 )
                 .await;
         }
-
-        self.spawn_narrative_task(reasoning.as_deref(), &[], ctx.progress_tx);
 
         let final_answer = if raw_output.trim().is_empty() {
             "Task completed, but answer is empty.".to_string()
@@ -1823,31 +1807,6 @@ impl AgentRunner {
 
     pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
         *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
-    }
-
-    fn spawn_narrative_task(
-        &self,
-        reasoning: Option<&str>,
-        tool_calls: &[crate::llm::ToolCall],
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        let Some(tx) = progress_tx else { return };
-
-        let narrator = std::sync::Arc::clone(&self.narrator);
-        let reasoning = reasoning.map(str::to_string);
-        let tool_calls = tool_calls.to_vec();
-        let tx = tx.clone();
-
-        tokio::spawn(async move {
-            if let Some(narrative) = narrator.generate(reasoning.as_deref(), &tool_calls).await {
-                let _ = tx
-                    .send(AgentEvent::Narrative {
-                        headline: narrative.headline,
-                        content: narrative.content,
-                    })
-                    .await;
-            }
-        });
     }
 
     /// Build a cancellation error and perform cleanup.

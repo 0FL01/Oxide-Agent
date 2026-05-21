@@ -64,7 +64,6 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Autonomy:** Agent plans steps and selects tools itself.
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
-    *   **🗣️ Narrator:** Separate model for summarizing agent thoughts and actions in chat.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
 *   **Multi-LLM Support:** 7 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
@@ -220,9 +219,6 @@ Omitting the sub-agent block falls back to the agent model settings.
 ```dotenv
 MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
 MEDIA_MODEL_PROVIDER="openrouter"
-
-NARRATOR_MODEL_ID="labs-mistral-small-creative"
-NARRATOR_MODEL_PROVIDER="mistral"
 ```
 
 ### Weighted Model Routes (Failover)

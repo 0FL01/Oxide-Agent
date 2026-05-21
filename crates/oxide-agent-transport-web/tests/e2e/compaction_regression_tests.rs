@@ -17,7 +17,7 @@ use super::helpers::{
     create_session_http_with_user, create_task_http_with_body, fetch_task_events,
     fetch_task_progress, tool_call_response, wait_for_task_status, wait_for_zai_calls,
 };
-use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
+use super::providers::SequencedZaiProvider;
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -70,7 +70,6 @@ async fn seed_history(
 
 fn setup_web_test_with_budget(
     zai_provider: Arc<SequencedZaiProvider>,
-    narrator_provider: Arc<ControlledNarratorProvider>,
     model_max_output_tokens: u32,
     context_window_tokens: u32,
 ) -> AppState {
@@ -81,8 +80,6 @@ fn setup_web_test_with_budget(
         agent_model_context_window_tokens: Some(context_window_tokens),
         sub_agent_model_id: Some("glm-4.7".to_string()),
         sub_agent_model_provider: Some("zai".to_string()),
-        narrator_model_id: Some("narrator-model".to_string()),
-        narrator_model_provider: Some("narrator".to_string()),
         agent_timeout_secs: Some(5),
         sub_agent_timeout_secs: Some(5),
         ..AgentSettings::default()
@@ -91,7 +88,6 @@ fn setup_web_test_with_budget(
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
         llm.register_provider("zai".to_string(), zai_provider);
-        llm.register_provider("narrator".to_string(), narrator_provider);
         Arc::new(llm)
     };
 
@@ -100,18 +96,12 @@ fn setup_web_test_with_budget(
     AppState::new(Arc::new(session_manager))
 }
 
-fn setup_web_test_with_compaction_budget(
-    zai_provider: Arc<SequencedZaiProvider>,
-    narrator_provider: Arc<ControlledNarratorProvider>,
-) -> AppState {
-    setup_web_test_with_budget(zai_provider, narrator_provider, 32_000, 200_000)
+fn setup_web_test_with_compaction_budget(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
+    setup_web_test_with_budget(zai_provider, 32_000, 200_000)
 }
 
-fn setup_web_test_with_pressure_budget(
-    zai_provider: Arc<SequencedZaiProvider>,
-    narrator_provider: Arc<ControlledNarratorProvider>,
-) -> AppState {
-    setup_web_test_with_budget(zai_provider, narrator_provider, 1_024, 4_096)
+fn setup_web_test_with_pressure_budget(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
+    setup_web_test_with_budget(zai_provider, 1_024, 4_096)
 }
 
 fn two_todo_tool_calls_response() -> ChatResponse {
@@ -225,9 +215,7 @@ async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -420,9 +408,7 @@ async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -602,9 +588,7 @@ async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -784,9 +768,7 @@ async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -904,9 +886,7 @@ async fn e2e_compaction_runtime_preserves_delegate_results_while_cleaning_regula
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1036,9 +1016,7 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
         two_todo_tool_calls_response(),
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1126,9 +1104,7 @@ async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1245,9 +1221,7 @@ async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summa
         two_todo_tool_calls_response(),
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_pressure_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1355,8 +1329,7 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone(), narrator_provider);
+    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1452,8 +1425,7 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         tool_call_response("compress", serde_json::json!({})),
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider);
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1555,8 +1527,7 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
         compress_and_write_todos_response(),
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider);
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();

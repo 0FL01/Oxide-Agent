@@ -10,7 +10,7 @@ pub fn render_progress_html(state: &ProgressState) -> String {
     ));
     lines.push(String::new());
 
-    push_narrative_or_thought(&mut lines, state);
+    push_current_thought(&mut lines, state);
     push_todos(&mut lines, state);
     push_context(&mut lines, state);
 
@@ -65,20 +65,8 @@ pub fn render_progress_html(state: &ProgressState) -> String {
     lines.join("\n")
 }
 
-fn push_narrative_or_thought(lines: &mut Vec<String>, state: &ProgressState) {
-    if let (Some(ref headline), Some(ref content)) =
-        (&state.narrative_headline, &state.narrative_content)
-    {
-        lines.push(format!(
-            "🧠 <b>{}</b>",
-            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(headline, 50))
-        ));
-        lines.push(format!(
-            "   {}",
-            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(content, 150))
-        ));
-        lines.push(String::new());
-    } else if let Some(ref thought) = state.current_thought {
+fn push_current_thought(lines: &mut Vec<String>, state: &ProgressState) {
+    if let Some(ref thought) = state.current_thought {
         lines.push("💭 <i>Agent thoughts:</i>".to_string());
         lines.push(format!(
             "   {}",

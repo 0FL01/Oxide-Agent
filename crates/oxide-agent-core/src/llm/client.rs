@@ -21,10 +21,6 @@ pub struct LlmClient {
     )>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
-    /// Narrator model ID
-    pub narrator_model: String,
-    /// Narrator provider name
-    pub narrator_provider: String,
     /// Default chat model name for user-facing requests
     pub chat_model_name: String,
     /// Optional media model name for multimodal requests
@@ -371,8 +367,6 @@ impl LlmClient {
             providers,
             embedding: Self::create_embedding_provider(settings),
             models: settings.get_available_models(),
-            narrator_model: settings.get_configured_narrator_model().0,
-            narrator_provider: settings.get_configured_narrator_model().1,
             chat_model_name,
             media_model_name,
             media_model_id,

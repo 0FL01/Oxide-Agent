@@ -94,22 +94,6 @@ pub fn structured_awaiting_user_input_response(kind: &str, prompt: &str) -> Chat
     )
 }
 
-/// Wait until the narrator provider reaches at least `minimum_calls`.
-pub async fn wait_for_narrator_calls(
-    narrator_provider: &super::providers::ControlledNarratorProvider,
-    minimum_calls: usize,
-    timeout: Duration,
-) {
-    let deadline = Instant::now() + timeout;
-    while narrator_provider.call_count() < minimum_calls {
-        assert!(
-            Instant::now() < deadline,
-            "narrator did not reach {minimum_calls} calls in time"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
 /// Wait until the ZAI provider reaches at least `minimum_calls`.
 pub async fn wait_for_zai_calls(
     zai_provider: &super::providers::SequencedZaiProvider,

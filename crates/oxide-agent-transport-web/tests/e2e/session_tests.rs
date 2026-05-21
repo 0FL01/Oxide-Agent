@@ -12,7 +12,7 @@ use super::helpers::{
     structured_awaiting_user_input_response, structured_final_answer_response,
     unstructured_text_response, wait_for_task_status, wait_for_zai_calls,
 };
-use super::providers::{ControlledNarratorProvider, RecordedToolRequest, SequencedZaiProvider};
+use super::providers::{RecordedToolRequest, SequencedZaiProvider};
 use super::setup::{
     execute_task, setup_test, setup_web_test_with_custom_providers,
     setup_web_test_with_structured_main_provider,
@@ -184,9 +184,7 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
         ])
         .with_blocked_calls([1]),
     );
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_custom_providers(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -243,9 +241,7 @@ async fn e2e_web_followup_while_running_becomes_separate_task() {
         ])
         .with_blocked_calls([1]),
     );
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_custom_providers(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -319,9 +315,7 @@ async fn e2e_resume_after_user_input_reuses_saved_task() {
         structured_awaiting_user_input_response("text", "Send the exact GPT-5.4-mini scope."),
         structured_final_answer_response("resumed with clarified GPT-5.4-mini scope"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_structured_main_provider(provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_structured_main_provider(provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();

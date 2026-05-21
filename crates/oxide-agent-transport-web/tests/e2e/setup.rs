@@ -10,7 +10,7 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
+use super::providers::SequencedZaiProvider;
 
 /// Response sequence for delegated sub-agent tests.
 ///
@@ -41,20 +41,15 @@ pub fn delegated_sub_agent_empty_content_responses() -> Vec<oxide_agent_core::ll
     ]
 }
 
-/// Set up AppState with custom ZAI and narrator LLM providers.
+/// Set up AppState with a custom ZAI LLM provider.
 /// Uses two SequencedZaiProvider instances: one for the main-agent ("main-model"),
 /// one for the sub-agent ("glm-4.7").
-pub fn setup_web_test_with_custom_providers(
-    zai_provider: Arc<SequencedZaiProvider>,
-    narrator_provider: Arc<ControlledNarratorProvider>,
-) -> AppState {
+pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
     let agent_settings = Arc::new(AgentSettings {
         agent_model_id: Some("main-model".to_string()),
         agent_model_provider: Some("zai".to_string()),
         sub_agent_model_id: Some("glm-4.7".to_string()),
         sub_agent_model_provider: Some("zai".to_string()),
-        narrator_model_id: Some("narrator-model".to_string()),
-        narrator_model_provider: Some("narrator".to_string()),
         agent_timeout_secs: Some(5),
         sub_agent_timeout_secs: Some(5),
         ..AgentSettings::default()
@@ -63,7 +58,6 @@ pub fn setup_web_test_with_custom_providers(
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
         llm.register_provider("zai".to_string(), zai_provider);
-        llm.register_provider("narrator".to_string(), narrator_provider);
         Arc::new(llm)
     };
 
@@ -75,13 +69,10 @@ pub fn setup_web_test_with_custom_providers(
 /// Set up AppState with a structured-output-capable main-agent route.
 pub fn setup_web_test_with_structured_main_provider(
     provider: Arc<SequencedZaiProvider>,
-    narrator_provider: Arc<ControlledNarratorProvider>,
 ) -> AppState {
     let agent_settings = Arc::new(AgentSettings {
         agent_model_id: Some("gemini-2.0-flash".to_string()),
         agent_model_provider: Some("gemini".to_string()),
-        narrator_model_id: Some("narrator-model".to_string()),
-        narrator_model_provider: Some("narrator".to_string()),
         agent_timeout_secs: Some(5),
         ..AgentSettings::default()
     });
@@ -89,7 +80,6 @@ pub fn setup_web_test_with_structured_main_provider(
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
         llm.register_provider("gemini".to_string(), provider);
-        llm.register_provider("narrator".to_string(), narrator_provider);
         Arc::new(llm)
     };
 

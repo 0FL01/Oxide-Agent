@@ -124,7 +124,7 @@ Default branch: `testing`.
 
 - Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Config files are optional (`required(false)`).
-- Key items: `CHATGPT_AUTH_PATH`, search/embedding provider, SearXNG (`SEARXNG_URL`), narrator/sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`), wiki memory writer (`WIKI_MEMORY_WRITER_ENABLED`, model config).
+- Key items: `CHATGPT_AUTH_PATH`, search/embedding provider, SearXNG (`SEARXNG_URL`), sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`), wiki memory writer (`WIKI_MEMORY_WRITER_ENABLED`, model config).
 - Telegram transport config: `ATTACH_DETACH_ENABLED` (default true).
 
 ## Development practice

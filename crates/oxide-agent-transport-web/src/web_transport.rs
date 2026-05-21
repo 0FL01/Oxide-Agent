@@ -35,7 +35,6 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::Error(_) => "error".to_string(),
         AgentEvent::Reasoning { .. } => "reasoning".to_string(),
         AgentEvent::LoopDetected { .. } => "loop_detected".to_string(),
-        AgentEvent::Narrative { .. } => "narrative".to_string(),
         AgentEvent::RuntimeCompactionStarted { .. } => "compaction_started".to_string(),
         AgentEvent::RuntimeCompactionCompleted { .. } => "compaction_completed".to_string(),
         AgentEvent::RuntimeCompactionFailed { .. } => "compaction_failed".to_string(),

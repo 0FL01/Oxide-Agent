@@ -8,7 +8,7 @@ use super::helpers::{
     create_session_http, create_task_http_with_body, fetch_task_events, spawn_test_server,
     tool_call_response, unstructured_text_response, wait_for_task_status, wait_for_zai_calls,
 };
-use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
+use super::providers::SequencedZaiProvider;
 use super::setup::setup_web_test_with_custom_providers;
 
 #[tokio::test]
@@ -34,9 +34,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
         ),
         unstructured_text_response("Готово, напоминание поставлено."),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_custom_providers(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let storage = session_manager.storage();
     let (server, base_url) = spawn_test_server(app_state).await;
@@ -111,9 +109,7 @@ async fn e2e_reminder_schedule_supports_weekday_wall_clock_recurring_jobs() {
         ),
         unstructured_text_response("Готово, поставил напоминание по будням."),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_custom_providers(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let storage = session_manager.storage();
     let (server, base_url) = spawn_test_server(app_state).await;

@@ -199,11 +199,6 @@ pub struct AgentSettings {
     /// Media model provider override
     pub media_model_provider: Option<String>,
 
-    /// Narrator model ID override
-    pub narrator_model_id: Option<String>,
-    /// Narrator model provider override
-    pub narrator_model_provider: Option<String>,
-
     /// Temporary migration switch for Codex-style runtime/session-level compaction.
     pub oxide_codex_style_compaction: Option<bool>,
 
@@ -752,19 +747,6 @@ impl AgentSettings {
         ))
     }
 
-    fn narrator_model_spec(&self) -> Option<(String, ModelInfo)> {
-        let id = self.narrator_model_id.as_ref()?;
-        let provider = self.narrator_model_provider.as_ref()?;
-        let context_window_tokens = self
-            .chat_model_context_window_tokens
-            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
-
-        Some((
-            id.clone(),
-            Self::build_model_info(id, provider, NARRATOR_MAX_TOKENS, context_window_tokens),
-        ))
-    }
-
     fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
@@ -830,10 +812,6 @@ impl AgentSettings {
         }
 
         if let Some((name, info)) = self.wiki_memory_writer_model_spec() {
-            Self::upsert_model(&mut models, name, info);
-        }
-
-        if let Some((name, info)) = self.narrator_model_spec() {
             Self::upsert_model(&mut models, name, info);
         }
 
@@ -1005,18 +983,6 @@ impl AgentSettings {
     pub fn get_media_model(&self) -> (String, String) {
         if let (Some(id), Some(provider)) = (&self.media_model_id, &self.media_model_provider) {
             return (id.clone(), provider.clone());
-        }
-        (String::new(), String::new())
-    }
-
-    /// Returns the configured narrator model (id, provider)
-    pub fn get_configured_narrator_model(&self) -> (String, String) {
-        if let (Some(id), Some(provider)) = (&self.narrator_model_id, &self.narrator_model_provider)
-        {
-            return (id.clone(), provider.clone());
-        }
-        if let Some((_, info)) = self.chat_model_spec() {
-            return (info.id, info.provider);
         }
         (String::new(), String::new())
     }
@@ -1623,9 +1589,6 @@ pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when
 /// Default limit for search tool calls per agent session
 pub const AGENT_SEARCH_LIMIT: usize = 10;
 
-// Narrator system configuration
-/// Maximum tokens for narrator response (concise output)
-pub const NARRATOR_MAX_TOKENS: u32 = 256;
 /// Maximum tokens for background Wiki Memory writer response.
 pub const WIKI_MEMORY_WRITER_MAX_TOKENS: u32 = 4096;
 /// Default timeout for background Wiki Memory writer requests.
