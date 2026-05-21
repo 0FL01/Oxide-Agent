@@ -376,9 +376,7 @@ impl DelegationProvider {
         let max_iterations = get_sub_agent_max_iterations();
         let mut runner = AgentRunner::new(Arc::clone(&self.llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
-        runner.register_hook(Box::new(HotContextHealthHook::with_limits(
-            self.settings.get_hot_context_limits(),
-        )));
+        runner.register_hook(Box::new(HotContextHealthHook::new()));
         runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
             max_iterations,
             max_tokens,

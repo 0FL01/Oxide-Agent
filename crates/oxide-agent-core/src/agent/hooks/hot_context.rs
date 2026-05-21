@@ -2,40 +2,36 @@
 
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
-use crate::agent::compaction::HotContextLimits;
+use crate::agent::compaction::CompactionPolicy;
 
 /// Warns when the hot context grows too large.
 pub struct HotContextHealthHook {
-    limits: HotContextLimits,
+    policy: CompactionPolicy,
 }
 
 impl HotContextHealthHook {
-    /// Create a hook with the default thresholds.
+    /// Create a hook with the default percentage-based thresholds.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            limits: HotContextLimits::default(),
+            policy: CompactionPolicy::default(),
         }
     }
 
-    #[must_use]
-    /// Create a hook with custom thresholds.
-    pub const fn with_limits(limits: HotContextLimits) -> Self {
-        Self { limits }
-    }
-
     fn effective_soft_limit(&self, context: &HookContext) -> usize {
-        self.limits
-            .soft_warning_tokens
-            .min(context.max_tokens.saturating_mul(60) / 100)
+        percent_of(
+            context.max_tokens,
+            self.policy.warning_threshold_percent.max(1),
+        )
     }
 
     fn effective_hard_limit(&self, context: &HookContext) -> usize {
         let soft_limit = self.effective_soft_limit(context);
-        self.limits
-            .hard_compaction_tokens
-            .min(context.max_tokens.saturating_mul(80) / 100)
-            .max(soft_limit.saturating_add(1))
+        percent_of(
+            context.max_tokens,
+            self.policy.compact_threshold_percent.max(1),
+        )
+        .max(soft_limit.saturating_add(1))
     }
 
     fn build_notice(
@@ -66,6 +62,10 @@ impl HotContextHealthHook {
             )
         }
     }
+}
+
+const fn percent_of(value: usize, percent: u8) -> usize {
+    value.saturating_mul(percent as usize) / 100
 }
 
 impl Default for HotContextHealthHook {
@@ -110,7 +110,6 @@ impl Hook for HotContextHealthHook {
 #[cfg(test)]
 mod tests {
     use super::HotContextHealthHook;
-    use crate::agent::compaction::HotContextLimits;
     use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
     use crate::agent::memory::AgentMemory;
     use crate::agent::providers::TodoList;
@@ -124,11 +123,11 @@ mod tests {
 
     #[test]
     fn soft_limit_returns_transient_notice() {
-        let hook = HotContextHealthHook::with_limits(HotContextLimits::new(10, 20));
+        let hook = HotContextHealthHook::new();
 
         let result = hook.handle(
             &HookEvent::BeforeIteration { iteration: 1 },
-            &context(12, 100),
+            &context(66, 100),
         );
 
         assert!(matches!(result, HookResult::InjectTransientContext(_)));
@@ -136,11 +135,11 @@ mod tests {
 
     #[test]
     fn hard_limit_requests_compaction() {
-        let hook = HotContextHealthHook::with_limits(HotContextLimits::new(10, 20));
+        let hook = HotContextHealthHook::new();
 
         let result = hook.handle(
             &HookEvent::BeforeIteration { iteration: 1 },
-            &context(21, 100),
+            &context(85, 100),
         );
 
         assert!(matches!(result, HookResult::RequestCompaction { .. }));
@@ -148,7 +147,7 @@ mod tests {
 
     #[test]
     fn soft_limit_mentions_compress_when_available() {
-        let hook = HotContextHealthHook::with_limits(HotContextLimits::new(10, 20));
+        let hook = HotContextHealthHook::new();
         let todos = Box::leak(Box::new(TodoList::new()));
         let memory = Box::leak(Box::new(AgentMemory::new(100)));
         let tools = vec![ToolDefinition {
@@ -158,7 +157,7 @@ mod tests {
         }];
         let context = HookContext::new(todos, memory, 0, 0, 4)
             .with_available_tools(&tools)
-            .with_tokens(12, 100);
+            .with_tokens(66, 100);
 
         let result = hook.handle(&HookEvent::BeforeIteration { iteration: 1 }, &context);
 

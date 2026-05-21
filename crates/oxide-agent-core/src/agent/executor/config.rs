@@ -41,9 +41,7 @@ impl AgentExecutor {
         ));
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         runner.register_hook(Box::new(CompletionCheckHook::new()));
-        runner.register_hook(Box::new(HotContextHealthHook::with_limits(
-            settings.get_hot_context_limits(),
-        )));
+        runner.register_hook(Box::new(HotContextHealthHook::new()));
         runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
         runner.register_hook(Box::new(EpisodicExtractHook::new()));
         Self::register_policy_controlled_hook(

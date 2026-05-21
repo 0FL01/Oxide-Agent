@@ -30,7 +30,6 @@ pub use task::{
 pub use types::{
     AgentMessageKind, BreadcrumbCard, BudgetEstimate, BudgetState, CompactedSummaryMetadata,
     CompactionBackend, CompactionPhase, CompactionPolicy, CompactionReason, CompactionRequest,
-    CompactionRetention, CompactionScope, CompactionSummary, CompactionTrigger, HotContextLimits,
-    HotMemoryBudget, LEGACY_BREADCRUMB_PREFIX, LEGACY_COMPACTION_SUMMARY_PREFIX,
-    OXIDE_COMPACTED_SUMMARY_PREFIX,
+    CompactionRetention, CompactionScope, CompactionSummary, CompactionTrigger, HotMemoryBudget,
+    LEGACY_BREADCRUMB_PREFIX, LEGACY_COMPACTION_SUMMARY_PREFIX, OXIDE_COMPACTED_SUMMARY_PREFIX,
 };
