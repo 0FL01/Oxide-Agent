@@ -6,7 +6,7 @@
 use super::compaction::CompactionScope;
 use super::memory::AgentMemory;
 use super::session::{AgentSession, PendingSshReplay, RuntimeContextInjection};
-use crate::config::AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS;
+use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -96,7 +96,7 @@ impl EphemeralSession {
     /// Convenience constructor with default agent limits.
     #[must_use]
     pub fn with_default_limits() -> Self {
-        Self::new(AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS)
+        Self::new(DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS)
     }
 
     /// Access the internal cancellation token mutably if needed.

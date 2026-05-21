@@ -8,7 +8,7 @@ use super::identity::SessionId;
 use super::memory::AgentMemory;
 use super::memory_behavior::MemoryBehaviorRuntime;
 // use super::providers::TodoList;
-use crate::config::AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS;
+use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
 use crate::llm::InvocationId;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
@@ -358,7 +358,7 @@ impl AgentSession {
     ) -> Self {
         Self {
             session_id,
-            memory: AgentMemory::new(AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS),
+            memory: AgentMemory::new(DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS),
             sandbox: None,
             sandbox_scope,
             memory_scope,

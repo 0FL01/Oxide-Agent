@@ -1003,11 +1003,11 @@ impl AgentSettings {
         })
     }
 
-    /// Returns the internal Agent Mode context budget after applying the clamp policy.
+    /// Returns the internal Agent Mode context budget for the configured primary route.
     pub fn get_agent_internal_context_budget_tokens(&self) -> usize {
-        clamp_internal_context_budget_tokens(
+        resolve_internal_context_budget_tokens(
             self.get_configured_agent_model().context_window_tokens,
-            AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS,
+            DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS,
         )
     }
 
@@ -1253,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_internal_context_budget_clamps_model_window() {
+    fn test_agent_internal_context_budget_uses_model_window() {
         let settings = AgentSettings {
             agent_model_id: Some("agent-model".to_string()),
             agent_model_provider: Some("mock".to_string()),
@@ -1261,10 +1261,7 @@ mod tests {
             ..AgentSettings::default()
         };
 
-        assert_eq!(
-            settings.get_agent_internal_context_budget_tokens(),
-            AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS
-        );
+        assert_eq!(settings.get_agent_internal_context_budget_tokens(), 500_000);
     }
 
     #[test]
@@ -1591,6 +1588,18 @@ impl PartialModelRoute {
     }
 }
 
+fn resolve_internal_context_budget_tokens(
+    model_context_window_tokens: u32,
+    default: usize,
+) -> usize {
+    let resolved_window = usize::try_from(model_context_window_tokens).unwrap_or(default);
+    if resolved_window == 0 {
+        default
+    } else {
+        resolved_window
+    }
+}
+
 fn clamp_internal_context_budget_tokens(model_context_window_tokens: u32, cap: usize) -> usize {
     let resolved_window = usize::try_from(model_context_window_tokens).unwrap_or(cap);
     if resolved_window == 0 {
@@ -1629,12 +1638,12 @@ pub const DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
 pub const DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 128_000;
 /// Default main-agent model context window tokens.
 pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
+/// Default internal main-agent context budget when no model window is configured.
+pub const DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS: usize = 200_000;
 /// Default sub-agent model max output tokens.
 pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
 /// Default sub-agent model context window tokens.
 pub const DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
-/// Internal main-agent context budget cap.
-pub const AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
 /// Internal sub-agent context budget cap.
 pub const SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
 /// Max forced continuations when todos incomplete
@@ -2230,21 +2239,6 @@ pub fn is_browser_use_enabled() -> bool {
 /// Default timeout for LLM API HTTP requests (seconds).
 /// Short enough for responsive retries, long enough for slow models.
 pub const LLM_HTTP_TIMEOUT_SECS: u64 = 30;
-
-// Compaction configuration
-/// Default token budget reserved for recent tool interactions in hot memory.
-/// Only tool outputs within this budget are protected from pruning during active runs.
-pub const DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS: usize = 8_192;
-/// Get compaction protected tool window tokens from env or default.
-///
-/// Environment variable: `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`
-#[must_use]
-pub fn get_compaction_protected_tool_window_tokens() -> usize {
-    std::env::var("COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS)
-}
 
 /// Get LLM HTTP timeout from env or default
 ///

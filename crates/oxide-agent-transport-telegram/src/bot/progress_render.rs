@@ -264,7 +264,6 @@ fn budget_state_label(state: oxide_agent_core::agent::compaction::BudgetState) -
     match state {
         oxide_agent_core::agent::compaction::BudgetState::Healthy => "healthy",
         oxide_agent_core::agent::compaction::BudgetState::Warning => "warning",
-        oxide_agent_core::agent::compaction::BudgetState::ShouldPrune => "prune soon",
         oxide_agent_core::agent::compaction::BudgetState::ShouldCompact => "compact soon",
         oxide_agent_core::agent::compaction::BudgetState::OverLimit => "over limit",
     }

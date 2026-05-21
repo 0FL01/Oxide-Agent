@@ -1315,7 +1315,7 @@ async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summa
         .expect("failed to decode task progress");
     assert!(matches!(
         progress["latest_token_snapshot"]["budget_state"].as_str(),
-        Some("ShouldPrune") | Some("ShouldCompact") | Some("OverLimit")
+        Some("Warning") | Some("ShouldCompact") | Some("OverLimit")
     ));
 
     let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;

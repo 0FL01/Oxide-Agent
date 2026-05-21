@@ -5,9 +5,9 @@ use super::types::{
 };
 use super::AgentRunner;
 use crate::agent::compaction::{
-    count_tokens_cached, estimate_request_budget, CompactRequestContext, CompactRunOutcome,
-    CompactionBackend, CompactionPhase, CompactionPolicy, CompactionReason, CompactionRequest,
-    CompactionTrigger,
+    count_tokens_cached, estimate_request_budget, BudgetState, CompactRequestContext,
+    CompactRunOutcome, CompactionBackend, CompactionPhase, CompactionPolicy, CompactionReason,
+    CompactionRequest, CompactionTrigger,
 };
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
@@ -962,7 +962,7 @@ impl AgentRunner {
         iteration: usize,
         route: &ModelInfo,
     ) -> Result<bool> {
-        if !Self::runtime_compaction_threshold_reached(ctx) {
+        if !Self::runtime_compaction_threshold_reached(ctx, route) {
             return Ok(false);
         }
 
@@ -1028,10 +1028,24 @@ impl AgentRunner {
         .await
     }
 
-    fn runtime_compaction_threshold_reached(ctx: &AgentRunnerContext<'_>) -> bool {
-        let memory = ctx.agent.memory();
-        let max_tokens = memory.max_tokens();
-        max_tokens > 0 && memory.token_count().saturating_mul(100) >= max_tokens.saturating_mul(85)
+    fn runtime_compaction_threshold_reached(
+        ctx: &AgentRunnerContext<'_>,
+        route: &ModelInfo,
+    ) -> bool {
+        let request = CompactionRequest::new(
+            CompactionTrigger::PreIteration,
+            ctx.task,
+            ctx.system_prompt,
+            ctx.tools,
+            &route.id,
+            route.max_output_tokens,
+            ctx.config.is_sub_agent,
+        );
+        let budget = estimate_request_budget(&CompactionPolicy::default(), &request, ctx.agent);
+        matches!(
+            budget.state,
+            BudgetState::ShouldCompact | BudgetState::OverLimit
+        )
     }
 
     fn model_downshift_requires_compaction(
@@ -1147,7 +1161,7 @@ impl AgentRunner {
         let Some(controller) = ctx.compaction_controller else {
             return Ok(false);
         };
-        if !request.force && !Self::runtime_compaction_threshold_reached(ctx) {
+        if !request.force && !Self::runtime_compaction_threshold_reached(ctx, request.route) {
             return Ok(false);
         }
 
@@ -2287,6 +2301,54 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn runtime_compaction_threshold_uses_full_request_budget() {
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let mut session = EphemeralSession::new(20_000);
+        session.memory_mut().add_message(AgentMessage::user_task(
+            "Compact because output reserve consumes the route window",
+        ));
+
+        assert!(
+            session.memory().token_count().saturating_mul(100)
+                < session.memory().max_tokens().saturating_mul(85),
+            "test fixture must stay below the old hot-memory-only threshold"
+        );
+
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let ctx = AgentRunnerContext {
+            task: "Compact because output reserve consumes the route window",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-full-budget-threshold",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 16_000),
+        };
+        let route = ModelInfo {
+            id: "mock-model".to_string(),
+            provider: "mock".to_string(),
+            max_output_tokens: 16_000,
+            context_window_tokens: 20_000,
+            weight: 1,
+        };
+
+        assert!(AgentRunner::runtime_compaction_threshold_reached(
+            &ctx, &route
+        ));
+        drop(ctx);
     }
 
     #[test]

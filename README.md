@@ -518,7 +518,6 @@ The runtime path does not call OpenAI `/responses/compact`, does not create new 
 
 **Configuration:**
 - `OXIDE_CODEX_STYLE_COMPACTION` (`true` by default; set `false` only as a short-lived auto-compaction disable)
-- `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS` (8192 tokens)
 
 ### 🔗 Hooks System
 Extensible architecture for personalizing agent behavior:

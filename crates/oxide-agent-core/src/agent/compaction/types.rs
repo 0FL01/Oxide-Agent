@@ -1,6 +1,5 @@
 //! Shared types for Agent Mode context compaction.
 
-use crate::config::get_compaction_protected_tool_window_tokens;
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -195,46 +194,21 @@ pub struct CompactedSummaryMetadata {
 pub struct CompactionPolicy {
     /// Percent of the window where warning-level telemetry should start.
     pub warning_threshold_percent: u8,
-    /// Percent of the window where pruning becomes desirable.
-    pub prune_threshold_percent: u8,
     /// Percent of the window where compaction becomes desirable.
     pub compact_threshold_percent: u8,
     /// Percent of the window treated as an over-limit safety cap.
     pub over_limit_threshold_percent: u8,
     /// Reserved buffer kept free beyond the response budget.
     pub hard_reserve_tokens: usize,
-    /// Minimum approximate token size before a tool payload is externalized.
-    pub externalize_threshold_tokens: usize,
-    /// Minimum character size before a tool payload is externalized.
-    pub externalize_threshold_chars: usize,
-    /// Maximum preview size kept inline after externalization.
-    pub externalize_preview_chars: usize,
-    /// Minimum approximate token size before an old tool payload is pruned.
-    pub prune_min_tokens: usize,
-    /// Minimum character size before an old tool payload is pruned.
-    pub prune_min_chars: usize,
-    /// Maximum preview size kept inline after pruning.
-    pub prune_preview_chars: usize,
-    /// Token budget reserved for the recent raw tool window before older tool
-    /// artifacts become eligible for pruning or summary compaction.
-    pub protected_tool_window_tokens: usize,
 }
 
 impl Default for CompactionPolicy {
     fn default() -> Self {
         Self {
             warning_threshold_percent: 65,
-            prune_threshold_percent: 75,
             compact_threshold_percent: 85,
             over_limit_threshold_percent: 95,
             hard_reserve_tokens: 8_192,
-            externalize_threshold_tokens: 512,
-            externalize_threshold_chars: 2_048,
-            externalize_preview_chars: 280,
-            prune_min_tokens: 128,
-            prune_min_chars: 512,
-            prune_preview_chars: 160,
-            protected_tool_window_tokens: get_compaction_protected_tool_window_tokens(),
         }
     }
 }
@@ -307,8 +281,6 @@ pub enum BudgetState {
     Healthy,
     /// Context is growing and should be surfaced to telemetry.
     Warning,
-    /// Pruning bulky artifacts would likely help.
-    ShouldPrune,
     /// History compaction should run before the next model call.
     ShouldCompact,
     /// The projected request would exceed the configured window.
@@ -319,10 +291,7 @@ impl BudgetState {
     /// Returns true when the checkpoint should emit warning-level telemetry.
     #[must_use]
     pub const fn requires_warn_telemetry(self) -> bool {
-        matches!(
-            self,
-            Self::ShouldPrune | Self::ShouldCompact | Self::OverLimit
-        )
+        matches!(self, Self::ShouldCompact | Self::OverLimit)
     }
 }
 
@@ -372,8 +341,6 @@ pub struct BudgetEstimate {
     pub headroom_tokens: usize,
     /// Warning threshold derived from policy and window size.
     pub warning_threshold_tokens: usize,
-    /// Prune threshold derived from policy and window size.
-    pub prune_threshold_tokens: usize,
     /// Compact threshold derived from policy and window size.
     pub compact_threshold_tokens: usize,
     /// Over-limit threshold derived from policy and window size.
@@ -469,17 +436,15 @@ mod tests {
     #[test]
     fn default_policy_keeps_thresholds_ordered() {
         let policy = CompactionPolicy::default();
-        assert!(policy.warning_threshold_percent < policy.prune_threshold_percent);
-        assert!(policy.prune_threshold_percent < policy.compact_threshold_percent);
+        assert!(policy.warning_threshold_percent < policy.compact_threshold_percent);
         assert!(policy.compact_threshold_percent < policy.over_limit_threshold_percent);
         assert!(policy.hard_reserve_tokens > 0);
     }
 
     #[test]
-    fn budget_state_warn_telemetry_starts_at_should_prune() {
+    fn budget_state_warn_telemetry_starts_at_compaction() {
         assert!(!BudgetState::Healthy.requires_warn_telemetry());
         assert!(!BudgetState::Warning.requires_warn_telemetry());
-        assert!(BudgetState::ShouldPrune.requires_warn_telemetry());
         assert!(BudgetState::ShouldCompact.requires_warn_telemetry());
         assert!(BudgetState::OverLimit.requires_warn_telemetry());
     }
