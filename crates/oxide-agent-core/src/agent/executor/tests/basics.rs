@@ -229,17 +229,12 @@ async fn manual_compaction_uses_codex_style_controller_when_flag_enabled() {
             crate::agent::progress::AgentEvent::RuntimeCompactionCompleted { .. } => {
                 "runtime_completed"
             }
-            crate::agent::progress::AgentEvent::CompactionStarted { .. } => "legacy_started",
-            crate::agent::progress::AgentEvent::CompactionCompleted { .. } => "legacy_completed",
-            crate::agent::progress::AgentEvent::PruningApplied { .. } => "legacy_pruning",
             _ => "other",
         });
     }
 
-    assert!(outcome.applied);
-    assert!(outcome.summary_generation.attempted);
-    assert!(!outcome.pruning.applied);
-    assert_eq!(outcome.archive_persistence.archived_chunk_count, 0);
+    assert_eq!(outcome.metadata.generation, 1);
+    assert!(outcome.replacement.history_items_after < outcome.replacement.history_items_before);
     let messages = executor.session().memory.get_messages();
     assert_eq!(
         messages

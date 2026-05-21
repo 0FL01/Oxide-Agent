@@ -421,34 +421,6 @@ mod tests {
     }
 
     #[test]
-    fn renders_compaction_status_and_warning() {
-        let mut state = ProgressState::new(10);
-
-        state.update(AgentEvent::CompactionStarted {
-            trigger: oxide_agent_core::agent::CompactionTrigger::Manual,
-        });
-        state.update(AgentEvent::CompactionCompleted {
-            trigger: oxide_agent_core::agent::CompactionTrigger::Manual,
-            applied: true,
-            externalized_count: 1,
-            pruned_count: 2,
-            reclaimed_tokens: 1800,
-            archived_chunk_count: 1,
-            summary_updated: true,
-        });
-        state.update(AgentEvent::RepeatedCompactionWarning {
-            kind: oxide_agent_core::agent::RepeatedCompactionKind::Compaction,
-            count: 2,
-        });
-
-        let output = render_progress_html(&state);
-
-        assert!(output.contains("<b>Context:</b>"));
-        assert!(output.contains("Compaction: refreshed summary and rebuilt active context"));
-        assert!(output.contains("🗜 History compaction: 2x"));
-    }
-
-    #[test]
     fn renders_runtime_compaction_status() {
         let mut state = ProgressState::new(10);
 

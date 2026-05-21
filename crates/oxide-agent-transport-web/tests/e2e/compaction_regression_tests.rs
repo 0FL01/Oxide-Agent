@@ -1518,7 +1518,7 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         .any(|event| event == "compaction_completed"));
     assert!(
         !event_names.iter().any(|event| event == "pruning_applied"),
-        "runtime manual compaction must not emit legacy prune/archive cleanup events"
+        "runtime manual compaction must not emit removed prune/archive cleanup events"
     );
 
     let sid = derive_session_id(&session_id, user_id);
@@ -1623,7 +1623,7 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
         .any(|event| event == "tool_result:write_todos"));
     assert!(
         !event_names.iter().any(|event| event == "pruning_applied"),
-        "runtime compaction must not emit legacy prune/archive cleanup events"
+        "runtime compaction must not emit removed prune/archive cleanup events"
     );
 
     let sid = derive_session_id(&session_id, user_id);

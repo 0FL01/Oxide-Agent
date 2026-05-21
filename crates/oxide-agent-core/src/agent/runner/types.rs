@@ -1,8 +1,6 @@
 //! Runner configuration and context types.
 
 use crate::agent::compaction::CompactionController;
-#[cfg(test)]
-use crate::agent::compaction::CompactionService;
 use crate::agent::context::AgentContext;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
@@ -137,9 +135,6 @@ pub struct AgentRunnerContext<'a> {
     pub agent: &'a mut dyn AgentContext,
     /// Optional skill registry for dynamic skill injection.
     pub skill_registry: Option<&'a mut SkillRegistry>,
-    /// Legacy compaction service kept only for compatibility tests.
-    #[cfg(test)]
-    pub compaction_service: Option<&'a CompactionService>,
     /// Optional runtime/session-level compaction controller.
     pub compaction_controller: Option<&'a CompactionController>,
     /// Stable top-level session identity when available.
@@ -182,8 +177,6 @@ impl<'a> AgentRunnerContext<'a> {
             messages: base.messages,
             agent: base.agent,
             skill_registry: None,
-            #[cfg(test)]
-            compaction_service: None,
             compaction_controller,
             session_id: None,
             memory_scope: None,
@@ -231,9 +224,6 @@ pub(super) struct RunState {
     pub structured_output_failures: usize,
     /// Number of applied compaction passes in this run.
     pub compaction_count: usize,
-    /// Number of deterministic cleanup passes in this run.
-    #[cfg(test)]
-    pub cleanup_count: usize,
     /// Whether the next pre-LLM turn should run manual compaction.
     pub force_manual_compaction: bool,
 }
@@ -246,8 +236,6 @@ impl RunState {
             continuation_count: 0,
             structured_output_failures: 0,
             compaction_count: 0,
-            #[cfg(test)]
-            cleanup_count: 0,
             force_manual_compaction: false,
         }
     }
@@ -292,10 +280,5 @@ mod tests {
                 .codex_style_compaction_enabled
         );
         assert!(AgentRunnerConfig::default().codex_style_compaction_enabled);
-        assert!(
-            !AgentRunnerConfig::new("mock".to_string(), 1, 1, 30, 256)
-                .with_codex_style_compaction(false)
-                .codex_style_compaction_enabled
-        );
     }
 }

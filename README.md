@@ -461,9 +461,9 @@ Startup maintenance sweep that removes stale tool calls from persisted memories.
 **Migration:** Monitor first startup after upgrade for memory rewrites. Disable with `STARTUP_TOOL_DRIFT_PRUNE_ENABLED=false` if needed.
 
 ### 4. Codex-Style Runtime Compaction
-Agent Mode can use session-level compaction that replaces hot history with one local LLM summary instead of the legacy staged prune/archive pipeline.
+Agent Mode uses session-level compaction that replaces hot history with one local LLM summary. The old staged prune/archive pipeline is removed from runtime code.
 
-**Migration:** Codex-style compaction is enabled by default. Keep `COMPACTION_MODEL_*` configured for a dedicated summary route, or omit it to reuse agent/sub-agent routes. `OXIDE_CODEX_STYLE_COMPACTION=false` is a short-lived emergency disable for runner auto-compaction; it does not restore the legacy staged pipeline. Legacy compaction data remains readable and is migrated lazily on the next compact.
+**Migration:** Codex-style compaction is enabled by default. Keep `COMPACTION_MODEL_*` configured for a dedicated summary route, or omit it to reuse agent/sub-agent routes. `OXIDE_CODEX_STYLE_COMPACTION=false` is a short-lived emergency disable for runner auto-compaction; it does not restore the removed staged pipeline. Legacy compaction data remains readable and is migrated lazily on the next compact.
 
 ### 5. TTS Tool Split (English/Russian)
 Legacy `text_to_speech` has been replaced by language-specific tools.
@@ -510,7 +510,7 @@ Codex-style Agent Mode compaction is a runtime/session-level operation:
 2. **Summarize** - Use a normal configured LLM route as a provider-agnostic local summary backend.
 3. **Replace Atomically** - Build one `[OXIDE_COMPACTED_SUMMARY_V1]` handoff, preserve pinned state and safe recent text, validate tool history, then replace hot memory in one step.
 
-The new path does not call OpenAI `/responses/compact`, does not create new R2 archive/payload objects, and does not emit active `pruning_applied` events. Old `[COMPACTION_SUMMARY]` and `[BREADCRUMB_CARD]` entries are detected and folded into the next compacted summary.
+The runtime path does not call OpenAI `/responses/compact`, does not create new R2 archive/payload objects, and does not emit `pruning_applied` events. Old `[COMPACTION_SUMMARY]` and `[BREADCRUMB_CARD]` entries are detected and folded into the next compacted summary.
 
 **Configuration:**
 - `OXIDE_CODEX_STYLE_COMPACTION` (`true` by default; set `false` only as a short-lived auto-compaction disable)

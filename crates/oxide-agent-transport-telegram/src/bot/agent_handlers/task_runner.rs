@@ -12,7 +12,7 @@ use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::{AgentView, DefaultAgentView};
 use anyhow::{anyhow, Result};
 use oxide_agent_core::agent::{
-    progress::AgentEvent, AgentExecutionOutcome, CompactionOutcome, SessionId,
+    compaction::CompactRunOutcome, progress::AgentEvent, AgentExecutionOutcome, SessionId,
 };
 use oxide_agent_core::config::get_agent_max_iterations;
 use oxide_agent_core::llm::LlmClient;
@@ -659,7 +659,7 @@ pub(crate) async fn clear_completed_response_delivery_state(session_id: &Session
 
 async fn deliver_manual_compaction_result(
     ctx: &TaskDeliveryContext,
-    result: Result<CompactionOutcome>,
+    result: Result<CompactRunOutcome>,
     progress_text: &str,
     progress_message_id: MessageId,
     progress_reply_markup: Option<InlineKeyboardMarkup>,
@@ -677,11 +677,11 @@ async fn deliver_manual_compaction_result(
     .await;
 
     match result {
-        Ok(outcome) => {
+        Ok(_outcome) => {
             send_agent_message(
                 &ctx.bot,
                 ctx.chat_id,
-                DefaultAgentView::context_compacted(outcome.applied),
+                DefaultAgentView::context_compacted(true),
                 crate::bot::OutboundThreadParams {
                     message_thread_id: ctx.message_thread_id,
                 },
@@ -974,7 +974,7 @@ pub(crate) async fn execute_user_input_resume(
 pub(crate) async fn execute_manual_compaction(
     session_id: SessionId,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-) -> Result<CompactionOutcome> {
+) -> Result<CompactRunOutcome> {
     let executor_arc = SESSION_REGISTRY
         .get(&session_id)
         .await

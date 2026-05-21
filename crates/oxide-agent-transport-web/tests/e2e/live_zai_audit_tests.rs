@@ -384,7 +384,7 @@ fn log_compaction_probe(artifacts: &LiveAuditArtifacts, event_names: &[String]) 
         .iter()
         .filter(|name| name.as_str() == "compaction_started")
         .count();
-    let legacy_pruning_applied = event_names
+    let removed_pruning_applied = event_names
         .iter()
         .filter(|name| name.as_str() == "pruning_applied")
         .count();
@@ -407,8 +407,8 @@ fn log_compaction_probe(artifacts: &LiveAuditArtifacts, event_names: &[String]) 
         last_compaction_status, repeated_compaction_warning
     );
     eprintln!(
-        "  - event_counts: started={}, legacy_pruning_applied={}, completed={}, repeated_warning={}",
-        compaction_started, legacy_pruning_applied, compaction_completed, repeated_compaction
+        "  - event_counts: started={}, removed_pruning_applied={}, completed={}, repeated_warning={}",
+        compaction_started, removed_pruning_applied, compaction_completed, repeated_compaction
     );
 
     if latest_snapshot.is_null() {

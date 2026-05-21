@@ -1,9 +1,7 @@
 use super::loop_detection::LoopType;
 use super::providers::TodoList;
 use super::thoughts;
-use crate::agent::compaction::{
-    BudgetState, CompactionBackend, CompactionPhase, CompactionReason, CompactionTrigger,
-};
+use crate::agent::compaction::{BudgetState, CompactionBackend, CompactionPhase, CompactionReason};
 use crate::llm::TokenUsage;
 use serde::{Deserialize, Serialize};
 
@@ -161,42 +159,6 @@ pub enum AgentEvent {
         /// Detailed context explanation
         content: String,
     },
-    /// Compaction pipeline started for the current context.
-    CompactionStarted {
-        /// Trigger that invoked compaction.
-        trigger: CompactionTrigger,
-    },
-    /// Deterministic pruning removed stale artifacts before summary compaction.
-    PruningApplied {
-        /// Number of pruned hot-memory artifacts.
-        pruned_count: usize,
-        /// Estimated reclaimed tokens.
-        reclaimed_tokens: usize,
-    },
-    /// Compaction pipeline completed.
-    CompactionCompleted {
-        /// Trigger that invoked compaction.
-        trigger: CompactionTrigger,
-        /// Whether hot memory changed.
-        applied: bool,
-        /// Number of newly externalized artifacts.
-        externalized_count: usize,
-        /// Number of newly pruned artifacts.
-        pruned_count: usize,
-        /// Total hot-memory tokens reclaimed by the full checkpoint.
-        reclaimed_tokens: usize,
-        /// Number of archived cold-context chunks.
-        archived_chunk_count: usize,
-        /// Whether a structured summary entry was refreshed.
-        summary_updated: bool,
-    },
-    /// Compaction failed before the run could continue.
-    CompactionFailed {
-        /// Trigger that invoked compaction.
-        trigger: CompactionTrigger,
-        /// Human-readable failure message.
-        error: String,
-    },
     /// Runtime/session-level compaction started.
     RuntimeCompactionStarted {
         /// Why compaction was requested.
@@ -333,8 +295,6 @@ pub enum AgentEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RepeatedCompactionKind {
-    /// Repeated deterministic cleanup of bulky artifacts.
-    Cleanup,
     /// Repeated summary/rebuild passes over older history.
     Compaction,
 }
@@ -415,16 +375,6 @@ pub enum StepStatus {
     Failed,
 }
 
-struct CompactionCompletionDetails {
-    trigger: CompactionTrigger,
-    applied: bool,
-    externalized_count: usize,
-    pruned_count: usize,
-    reclaimed_tokens: usize,
-    archived_chunk_count: usize,
-    summary_updated: bool,
-}
-
 struct RuntimeCompactionStartedDetails {
     reason: CompactionReason,
     phase: CompactionPhase,
@@ -502,31 +452,6 @@ impl ProgressState {
                 iteration,
             } => self.handle_loop_detected(loop_type, iteration),
             AgentEvent::Narrative { headline, content } => self.handle_narrative(headline, content),
-            AgentEvent::CompactionStarted { trigger } => self.handle_compaction_started(trigger),
-            AgentEvent::PruningApplied {
-                pruned_count,
-                reclaimed_tokens,
-            } => self.handle_pruning_applied(pruned_count, reclaimed_tokens),
-            AgentEvent::CompactionCompleted {
-                trigger,
-                applied,
-                externalized_count,
-                pruned_count,
-                reclaimed_tokens,
-                archived_chunk_count,
-                summary_updated,
-            } => self.handle_compaction_completed(CompactionCompletionDetails {
-                trigger,
-                applied,
-                externalized_count,
-                pruned_count,
-                reclaimed_tokens,
-                archived_chunk_count,
-                summary_updated,
-            }),
-            AgentEvent::CompactionFailed { trigger, error } => {
-                self.handle_compaction_failed(trigger, error)
-            }
             AgentEvent::RuntimeCompactionStarted {
                 reason,
                 phase,
@@ -838,85 +763,6 @@ impl ProgressState {
         self.narrative_content = Some(content);
     }
 
-    fn handle_compaction_started(&mut self, trigger: CompactionTrigger) {
-        self.complete_last_step();
-        self.current_thought = Some("Compressing context to preserve task continuity.".to_string());
-        self.steps.push(Step {
-            description: format!(
-                "🗜 Compacting context ({})",
-                compaction_trigger_label(trigger)
-            ),
-            status: StepStatus::InProgress,
-            tokens: None,
-            tool_name: None,
-        });
-    }
-
-    fn handle_pruning_applied(&mut self, pruned_count: usize, reclaimed_tokens: usize) {
-        self.last_compaction_status = Some(format!(
-            "Cleanup: pruned {pruned_count} {} - reclaimed ~{}.",
-            pluralize(pruned_count, "old artifact", "old artifacts"),
-            crate::utils::format_tokens(reclaimed_tokens)
-        ));
-    }
-
-    fn handle_compaction_completed(&mut self, details: CompactionCompletionDetails) {
-        self.complete_last_step();
-        self.last_compaction_status = Some(if details.applied {
-            if details.summary_updated {
-                format!(
-                    "Compaction: refreshed summary and rebuilt active context - reclaimed ~{}.",
-                    crate::utils::format_tokens(details.reclaimed_tokens)
-                )
-            } else {
-                let cleanup_label = match (details.externalized_count, details.pruned_count) {
-                    (externalized, 0) if externalized > 0 => format!(
-                        "externalized {externalized} {}",
-                        pluralize(externalized, "large tool result", "large tool results")
-                    ),
-                    (0, pruned) if pruned > 0 => format!(
-                        "pruned {pruned} {}",
-                        pluralize(pruned, "old artifact", "old artifacts")
-                    ),
-                    (externalized, pruned) if externalized > 0 && pruned > 0 => format!(
-                        "externalized {externalized} {} and pruned {pruned} {}",
-                        pluralize(externalized, "large tool result", "large tool results"),
-                        pluralize(pruned, "old artifact", "old artifacts")
-                    ),
-                    _ if details.archived_chunk_count > 0 => format!(
-                        "archived {} {}",
-                        details.archived_chunk_count,
-                        pluralize(
-                            details.archived_chunk_count,
-                            "context chunk",
-                            "context chunks"
-                        )
-                    ),
-                    _ => "updated hot context".to_string(),
-                };
-                format!(
-                    "Cleanup: {cleanup_label} - reclaimed ~{}.",
-                    crate::utils::format_tokens(details.reclaimed_tokens)
-                )
-            }
-        } else {
-            format!(
-                "Compaction checked context ({}) - no changes were needed.",
-                compaction_trigger_label(details.trigger)
-            )
-        });
-    }
-
-    fn handle_compaction_failed(&mut self, trigger: CompactionTrigger, error: String) {
-        self.last_compaction_status = Some(format!(
-            "Compaction failed ({}) - {}",
-            compaction_trigger_label(trigger),
-            error
-        ));
-        self.error = Some(format!("Compaction failed: {error}"));
-        self.fail_last_step();
-    }
-
     fn handle_runtime_compaction_started(&mut self, details: RuntimeCompactionStartedDetails) {
         self.complete_last_step();
         self.current_thought =
@@ -1002,7 +848,6 @@ impl ProgressState {
 
     fn handle_repeated_compaction_warning(&mut self, kind: RepeatedCompactionKind, count: usize) {
         self.repeated_compaction_warning = Some(match kind {
-            RepeatedCompactionKind::Cleanup => format!("Cleanup repeated: {count}x"),
             RepeatedCompactionKind::Compaction => format!("History compaction: {count}x"),
         });
     }
@@ -1080,15 +925,6 @@ impl ProgressState {
     // Formatting is handled in the UI layer.
 }
 
-fn compaction_trigger_label(trigger: CompactionTrigger) -> &'static str {
-    match trigger {
-        CompactionTrigger::PreRun => "pre-run",
-        CompactionTrigger::PreIteration => "pre-iteration",
-        CompactionTrigger::Manual => "manual",
-        CompactionTrigger::PostRun => "post-run",
-    }
-}
-
 fn compaction_reason_label(reason: CompactionReason) -> &'static str {
     match reason {
         CompactionReason::PreTurn => "pre-turn",
@@ -1124,73 +960,10 @@ fn format_optional_route(provider: Option<&str>, route: Option<&str>) -> String 
     }
 }
 
-fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
-    if count == 1 {
-        singular
-    } else {
-        plural
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{AgentEvent, ProgressState, RepeatedCompactionKind};
-    use crate::agent::compaction::{
-        CompactionBackend, CompactionPhase, CompactionReason, CompactionTrigger,
-    };
-
-    #[test]
-    fn compaction_events_update_progress_state() {
-        let mut state = ProgressState::new(5);
-
-        state.update(AgentEvent::CompactionStarted {
-            trigger: CompactionTrigger::PreRun,
-        });
-        state.update(AgentEvent::PruningApplied {
-            pruned_count: 2,
-            reclaimed_tokens: 1200,
-        });
-        state.update(AgentEvent::CompactionCompleted {
-            trigger: CompactionTrigger::PreRun,
-            applied: true,
-            externalized_count: 1,
-            pruned_count: 2,
-            reclaimed_tokens: 1800,
-            archived_chunk_count: 1,
-            summary_updated: true,
-        });
-
-        assert_eq!(state.steps.len(), 1);
-        assert_eq!(state.steps[0].status, super::StepStatus::Completed);
-        assert!(state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status
-                .contains("Compaction: refreshed summary and rebuilt active context")));
-    }
-
-    #[test]
-    fn cleanup_events_render_cleanup_labels() {
-        let mut state = ProgressState::new(5);
-
-        state.update(AgentEvent::CompactionStarted {
-            trigger: CompactionTrigger::PreIteration,
-        });
-        state.update(AgentEvent::CompactionCompleted {
-            trigger: CompactionTrigger::PreIteration,
-            applied: true,
-            externalized_count: 1,
-            pruned_count: 0,
-            reclaimed_tokens: 797,
-            archived_chunk_count: 0,
-            summary_updated: false,
-        });
-
-        assert_eq!(
-            state.last_compaction_status.as_deref(),
-            Some("Cleanup: externalized 1 large tool result - reclaimed ~797.")
-        );
-    }
+    use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
 
     #[test]
     fn runtime_compaction_events_update_progress_state() {
@@ -1236,31 +1009,16 @@ mod tests {
     }
 
     #[test]
-    fn pruning_events_render_cleanup_labels() {
-        let mut state = ProgressState::new(5);
-
-        state.update(AgentEvent::PruningApplied {
-            pruned_count: 3,
-            reclaimed_tokens: 2100,
-        });
-
-        assert_eq!(
-            state.last_compaction_status.as_deref(),
-            Some("Cleanup: pruned 3 old artifacts - reclaimed ~2.1k.")
-        );
-    }
-
-    #[test]
     fn repeated_compaction_warning_is_preserved() {
         let mut state = ProgressState::new(5);
         state.update(AgentEvent::RepeatedCompactionWarning {
-            kind: RepeatedCompactionKind::Cleanup,
+            kind: RepeatedCompactionKind::Compaction,
             count: 3,
         });
 
         assert!(state
             .repeated_compaction_warning
             .as_deref()
-            .is_some_and(|warning| warning == "Cleanup repeated: 3x"));
+            .is_some_and(|warning| warning == "History compaction: 3x"));
     }
 }

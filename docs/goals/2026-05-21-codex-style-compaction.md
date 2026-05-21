@@ -35,7 +35,7 @@ Out of scope:
 - Runtime entrypoints: `crates/oxide-agent-core/src/agent/runner/execution.rs`, `runner/tools.rs`, `runner/responses.rs`, `runner/types.rs`.
 - Executor entrypoints: `crates/oxide-agent-core/src/agent/executor.rs`, `executor/config.rs`, `executor/types.rs`, `executor/compaction.rs`.
 - Sub-agent wiring: `crates/oxide-agent-core/src/agent/providers/delegation.rs`.
-- State/persistence: `crates/oxide-agent-core/src/agent/memory.rs`, `session.rs`, `storage/r2_memory.rs`, `storage/compaction.rs`.
+- State/persistence: `crates/oxide-agent-core/src/agent/memory.rs`, `session.rs`, and `storage/r2_memory.rs`.
 - Progress/UX: `crates/oxide-agent-core/src/agent/progress.rs`, `crates/oxide-agent-transport-telegram/src/bot/progress_render.rs`, `crates/oxide-agent-transport-web/src/web_transport.rs`.
 - Config/docs: `crates/oxide-agent-core/src/config.rs`, `.env.example`, `README.md`.
 
@@ -130,13 +130,13 @@ Existing conventions to preserve:
 - 2026-05-21 22:14 +03: Validation passed for this coverage slice: `cargo test -p oxide-agent-core repeated_manual_compact_keeps_one_prefixed_summary` and `cargo test -p oxide-agent-core compaction::controller`.
 - 2026-05-21 22:19 +03: Re-ran the focused runtime/transport acceptance suite after the repeated-compaction/todos tests. Passing commands: `cargo test -p oxide-agent-core compaction::history`, `cargo test -p oxide-agent-core compaction::controller`, `cargo test -p oxide-agent-core run_pre_sampling_uses_runtime_compaction_when_threshold_reached`, `cargo test -p oxide-agent-core run_retries_after_context_overflow_with_runtime_context_limit_compaction`, `cargo test -p oxide-agent-core run_compacts_before_downshifting_to_smaller_model_route`, `cargo test -p oxide-agent-transport-web collect_events_records_runtime_compaction_without_pruning_event`, and `cargo test -p oxide-agent-transport-telegram renders_runtime_compaction_status`.
 - 2026-05-21 22:19 +03: Re-ran final gates and E2E evidence. Passing commands: `cargo fmt --all --check`, `cargo check --workspace`, `cargo clippy --workspace --all-targets --all-features`, `cargo test -p oxide-agent-transport-web --features socket_e2e e2e_compress_tool_triggers_manual_compaction -- --nocapture`, and `cargo test -p oxide-agent-transport-web --features socket_e2e e2e_compress_preserves_tool_heavy_batch_continuation -- --nocapture`.
-- 2026-05-21 22:33 +03: Closed the final default/compatibility-export gap. `AgentRunnerConfig::new/default` now selects Codex-style compaction by default; old runner compatibility tests that intentionally exercise `CompactionService` opt out explicitly with `.with_codex_style_compaction(false)`.
-- 2026-05-21 22:33 +03: Marked legacy staged compaction modules/exports in code as compatibility-only, not production runtime fallback. `compaction/mod.rs`, `agent/mod.rs`, and `compaction/service.rs` now document that the active runtime path is `CompactionController` plus `LocalLlmSummary`, while old staged modules remain only for persisted-session compatibility and regression tests.
-- 2026-05-21 22:33 +03: Validation passed after the default/compatibility cleanup: `cargo test -p oxide-agent-core runner_config_defaults_to_codex_style_compaction`, `cargo test -p oxide-agent-core run_applies_pre_run_compaction_before_first_llm_call`, `cargo test -p oxide-agent-core run_retries_after_context_overflow_with_manual_compaction`, `cargo test -p oxide-agent-core run_pre_sampling_uses_runtime_compaction_when_threshold_reached`, `cargo test -p oxide-agent-core compaction::`, `cargo fmt --all --check`, `cargo check --workspace`, and `cargo clippy --workspace --all-targets --all-features`.
+- 2026-05-21 22:33 +03: Closed the final default gap. `AgentRunnerConfig::new/default` now selects Codex-style compaction by default.
+- 2026-05-21 22:33 +03: Validation passed after the default cleanup: `cargo test -p oxide-agent-core runner_config_defaults_to_codex_style_compaction`, `cargo test -p oxide-agent-core run_pre_sampling_uses_runtime_compaction_when_threshold_reached`, `cargo test -p oxide-agent-core compaction::`, `cargo fmt --all --check`, `cargo check --workspace`, and `cargo clippy --workspace --all-targets --all-features`.
+- 2026-05-21 23:05 +03: Removed the old staged compaction implementation instead of keeping it compatibility-only: deleted `CompactionService`, classifier/prune/externalize/rebuild/summarizer modules, old R2 archive/payload sinks, legacy staged tests, legacy progress event variants, and the old `CompactionOutcome` adapter. Only persisted-data serde/migration shapes remain.
 
 ## Acceptance Matrix
 
-- Old active compaction flow disabled in production: executor/delegation construct only `CompactionController`; production runner context no longer carries `CompactionService`; `AgentRunnerConfig::new/default` selects Codex-style compaction; old runner checkpoint/post-run helpers are `#[cfg(test)]`; Codex-style pre-sampling bypasses the old classifier fast path.
+- Old active compaction flow removed from production and tests: executor/delegation construct only `CompactionController`; production runner context no longer carries `CompactionService`; `AgentRunnerConfig::new/default` selects Codex-style compaction; old staged modules and runner compatibility tests were deleted.
 - No active old/new dual path: manual executor compaction, runner `compress`, context-limit retry, pre-sampling, and model-downshift compaction all use the runtime controller path. `OXIDE_CODEX_STYLE_COMPACTION=false` is an emergency auto-compaction disable, not a legacy fallback.
 - Default backend is `LocalLlmSummary`: controller factory uses `LocalLlmSummary`; tests cover route selection, plain-text `chat_completion`, trimming, empty output rejection, missing route rejection, and no-op mutation on backend failure.
 - No OpenAI `/responses/compact`: implementation uses ordinary provider text generation through `chat_completion_for_model_info`; docs explicitly state `/responses/compact` is out of scope.
@@ -146,41 +146,32 @@ Existing conventions to preserve:
 - Context-limit and model-downshift: focused runner tests cover retry after context overflow and compaction before failover to a smaller route.
 - Pinned context and todos: history builder preserves topic `AGENTS.md`, user task, runtime context, skill context, approval replay, infra status, and archive references; approval replay has direct history-builder coverage; controller coverage proves `AgentMemory.todos` survives compaction.
 - Progress UX: core progress state, Telegram rendering, and Web event mapping cover runtime `compaction_started`, `compaction_completed`, `compaction_failed`, and `compaction_skipped`; new path does not emit `pruning_applied`.
-- Docs/config/rollback: `.env.example`, README, source module docs, and this goal document describe the new default, emergency disable behavior, provider-agnostic backend, no `/responses/compact`, compatibility-only legacy modules, and old-data compatibility.
+- Docs/config/rollback: `.env.example`, README, source module docs, and this goal document describe the new default, emergency disable behavior, provider-agnostic backend, no `/responses/compact`, removed staged pipeline, and old-data compatibility.
 
 ## Current Inventory
 
-Old active flow entrypoints found so far:
-- `CompactionService::prepare_for_run` in `crates/oxide-agent-core/src/agent/compaction/service.rs`. Retained for compatibility/regression tests, not production-wired.
-- Executor construction in `crates/oxide-agent-core/src/agent/executor/config.rs`. Closed for production runtime on 2026-05-21 21:08 +03; executor now constructs only `CompactionController`.
-- Executor manual compaction in `crates/oxide-agent-core/src/agent/executor/compaction.rs`. Closed for production runtime on 2026-05-21 21:08 +03; manual compaction always uses controller/runtime events.
-- Runner pre-LLM and context-overflow compaction in `crates/oxide-agent-core/src/agent/runner/execution.rs`. Closed for production runtime on 2026-05-21 21:16 +03; active Codex-style pre-sampling/context-limit paths use `CompactionController`, while old checkpoint helpers are test-only.
-- Runner tool-path compaction in `crates/oxide-agent-core/src/agent/runner/tools.rs`. Closed for production runtime on 2026-05-21 21:16 +03; `compress` uses runtime controller and keeps only compatibility JSON fields.
-- Runner post-run compaction in `crates/oxide-agent-core/src/agent/runner/responses.rs`. Closed for production runtime on 2026-05-21 21:16 +03; legacy cleanup is `#[cfg(test)]`.
-- Runner context service passing in `crates/oxide-agent-core/src/agent/runner/types.rs` and `executor/types.rs`. Closed for production context on 2026-05-21 21:16 +03; legacy service field is `#[cfg(test)]` only.
-- Sub-agent compaction service in `crates/oxide-agent-core/src/agent/providers/delegation.rs`. Closed on 2026-05-21 21:08 +03; delegation now uses `CompactionController`.
-- Old progress events/status in `crates/oxide-agent-core/src/agent/progress.rs`. New runtime events are active; old variants remain for compile/backward compatibility.
-- Telegram/Web rendering of old progress events in `crates/oxide-agent-transport-telegram/src/bot/progress_render.rs` and `crates/oxide-agent-transport-web/src/web_transport.rs`. Runtime compaction rendering/event names are covered as of 2026-05-21 21:31 +03; legacy event names remain compatible.
-- Old architecture tests under `crates/oxide-agent-core/src/agent/compaction/tests/`, `crates/oxide-agent-core/tests/compaction_lifecycle.rs`, and runner/progress transport tests. These remain as compatibility/regression coverage and should not be treated as active production wiring.
+Old active flow entrypoints after cleanup:
+- `CompactionService::prepare_for_run`, old classifier/prune/externalize/rebuild/summarizer modules, R2 archive/payload sinks, old runner compatibility tests, and legacy progress event variants are removed.
+- Executor, runner, `compress`, context-limit retry, pre-sampling, model-downshift, Telegram manual compact, and sub-agent delegation use `CompactionController` / `LocalLlmSummary`.
+- Persisted old-data compatibility remains in memory/history serde shapes only: legacy summary markers, breadcrumb cards, old structured summary fields, and archive-reference messages can still deserialize and be folded into the next runtime compact.
 
 ## Risks and Blockers
 
 - Provider-visible role for compacted summary is resolved as `System` in memory plus provider-call system folding.
 - Mid-turn safe boundary is covered for context-limit retry and `compress` tool paths, including terminal open tool-call batch preservation, web socket E2E coverage for manual `compress`, and a tool-heavy `compress` + `write_todos` batch.
 - New compaction uses `AgentMemory::replace_compacted_history(...)`, which validates before mutation. Keep auditing accidental direct `replace_messages(...)` calls in future runner changes because that older helper can repair after mutation.
-- Old compaction modules and public re-exports remain for persisted-data compatibility and regression tests. Final cleanup can further narrow exports only after legacy tests are migrated, but production wiring is already on the controller path.
-- Old compaction symbols are still exported for integration tests and persisted-data compatibility, and are now marked in source docs as compatibility-only. They are not production runtime entrypoints; a future cleanup can narrow these exports after legacy migration tests are rewritten.
+- Persisted old compaction data is still accepted for lazy migration; the removed staged modules must not be reintroduced as a runtime fallback.
 
 ## Final Verification
 
-Current implementation slice is build-, format-, and lint-clean after the default/compatibility cleanup. Focused core/transport tests and manual/tool-heavy web socket E2E passed in this session. The latest final command set also passed: `cargo fmt --all --check`, `cargo check --workspace`, `cargo clippy --workspace --all-targets --all-features`, `cargo test -p oxide-agent-core compaction::`, `cargo test -p oxide-agent-core runner_config_defaults_to_codex_style_compaction`, legacy runner compatibility tests with explicit opt-out, runtime runner regressions for pre-sampling/context-limit/model-downshift, transport progress/event tests, and both socket E2E compaction regressions.
+Current implementation slice is build-, format-, and lint-clean after the default cleanup. Focused core/transport tests and manual/tool-heavy web socket E2E passed in this session. The latest final command set also passed: `cargo fmt --all --check`, `cargo check --workspace`, `cargo clippy --workspace --all-targets --all-features`, `cargo test -p oxide-agent-core compaction::`, `cargo test -p oxide-agent-core runner_config_defaults_to_codex_style_compaction`, runtime runner regressions for pre-sampling/context-limit/model-downshift, transport progress/event tests, and both socket E2E compaction regressions.
 
-Production wiring is on the `CompactionController` / `LocalLlmSummary` path. Old staged compaction remains compatibility-only for old persisted data and regression tests, not a runtime fallback.
+Production wiring is on the `CompactionController` / `LocalLlmSummary` path. Old staged compaction code and tests are removed; only old persisted-data migration remains.
 
 ## Completion Audit
 
-- Old active compaction agent/summarizer flow removed or disabled from runtime: satisfied. Production executor/delegation construct `CompactionController`; production runner no longer carries `CompactionService`; old checkpoint/post-run helpers are test-only; `AgentRunnerConfig` defaults to Codex-style.
-- No old/new dual compaction in one turn: satisfied. New controller path handles manual, pre-sampling, context-limit, `compress`, and model-downshift. Legacy staged compaction is only reachable in explicit compatibility tests with `.with_codex_style_compaction(false)`.
+- Old active compaction agent/summarizer flow removed from runtime and tests: satisfied. Production executor/delegation construct `CompactionController`; production runner no longer carries `CompactionService`; old checkpoint/post-run helpers, staged modules, and explicit opt-out tests are removed; `AgentRunnerConfig` defaults to Codex-style.
+- No old/new dual compaction in one turn: satisfied. New controller path handles manual, pre-sampling, context-limit, `compress`, and model-downshift. Legacy staged compaction is no longer reachable.
 - `LocalLlmSummary` default/required backend: satisfied for production wiring. `CompactionController::local_llm(...)` is the executor/delegation/runtime factory path; tests cover plain text `chat_completion`, route selection, empty output, missing route, and no-op failure.
 - No dependency on OpenAI `/responses/compact`: satisfied. New summary backend calls ordinary provider text generation via `chat_completion_for_model_info`; docs/config state `/responses/compact` is not used.
 - Long sessions continue after compaction: satisfied by context-overflow retry, pre-sampling, model-downshift, manual `compress`, and tool-heavy socket E2E coverage.
@@ -189,7 +180,7 @@ Production wiring is on the `CompactionController` / `LocalLlmSummary` path. Old
 - Tool-heavy conversations preserve valid tool pairs: satisfied by terminal open tool-batch history test and socket E2E with `compress` + `write_todos`.
 - Context overflow and model downshift reasons/phases: satisfied by focused runner regressions for `ContextLimit`/`MidTurn` and `ModelDownshift`/`ModelSwitch`.
 - Pinned context, todos, approval, runtime state: satisfied by history-builder pinned-kind preservation tests plus direct approval replay and todos controller coverage.
-- Old sessions with structured summaries/archive refs: satisfied by lazy migration fixture and old staged compatibility tests.
+- Old sessions with structured summaries/archive refs: satisfied by lazy migration fixtures and serde-compatible memory fields.
 - No new R2 archive/payload objects by default compaction: satisfied by new controller/history path not depending on archive/payload sinks, and docs/config stating old R2 data is compatibility-only.
 - Telegram/Web progress: satisfied by runtime progress state, Telegram rendering test, Web event-name/collection tests, and E2E assertions that new compaction does not emit `pruning_applied`.
 - Relevant tests/docs/config/rollback: satisfied by focused core/transport/E2E commands above plus `.env.example`, README, source module docs, and this goal document.

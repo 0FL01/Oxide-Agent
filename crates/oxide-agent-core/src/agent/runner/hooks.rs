@@ -316,7 +316,6 @@ mod tests {
             messages: &mut messages,
             agent: &mut session,
             skill_registry: None,
-            compaction_service: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,

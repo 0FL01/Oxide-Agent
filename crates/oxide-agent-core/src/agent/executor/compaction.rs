@@ -1,8 +1,6 @@
 use super::AgentExecutor;
 use crate::agent::compaction::{
-    BudgetEstimate, BudgetState, CompactRequestContext, CompactRunOutcome, CompactionBackend,
-    CompactionOutcome, CompactionPhase, CompactionReason, CompactionSnapshot, CompactionTrigger,
-    HotMemoryBudget, RebuildOutcome, SummaryGenerationOutcome,
+    CompactRequestContext, CompactRunOutcome, CompactionBackend, CompactionPhase, CompactionReason,
 };
 use crate::agent::progress::AgentEvent;
 use anyhow::{anyhow, Result};
@@ -14,7 +12,7 @@ impl AgentExecutor {
     pub async fn compact_current_context(
         &mut self,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Result<CompactionOutcome> {
+    ) -> Result<CompactRunOutcome> {
         let task = self
             .last_task()
             .map(str::to_string)
@@ -27,7 +25,7 @@ impl AgentExecutor {
         &mut self,
         task: &str,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Result<CompactionOutcome> {
+    ) -> Result<CompactRunOutcome> {
         warn!(
             hot_memory_tokens = self.session.memory.token_count(),
             hot_memory_items = self.session.memory.get_messages().len(),
@@ -72,11 +70,9 @@ impl AgentExecutor {
         };
 
         self.session.persist_memory_checkpoint_background();
-        let legacy_outcome =
-            Self::codex_style_manual_outcome_as_legacy(&outcome, self.session.memory.max_tokens());
         warn!(
-            hot_memory_tokens_before = legacy_outcome.token_count_before,
-            hot_memory_tokens_after = legacy_outcome.token_count_after,
+            hot_memory_tokens_before = outcome.replacement.token_before,
+            hot_memory_tokens_after = outcome.replacement.token_after,
             history_items_before = outcome.replacement.history_items_before,
             history_items_after = outcome.replacement.history_items_after,
             provider = %outcome.metadata.provider,
@@ -86,7 +82,7 @@ impl AgentExecutor {
         );
         Self::emit_runtime_manual_compaction_completed(progress_tx.as_ref(), &outcome).await;
 
-        Ok(legacy_outcome)
+        Ok(outcome)
     }
 
     /// Check if the task has been cancelled
@@ -174,74 +170,6 @@ impl AgentExecutor {
                     error,
                 })
                 .await;
-        }
-    }
-
-    fn codex_style_manual_outcome_as_legacy(
-        outcome: &CompactRunOutcome,
-        context_window_tokens: usize,
-    ) -> CompactionOutcome {
-        let token_before = outcome.replacement.token_before;
-        let token_after = outcome.replacement.token_after;
-        let context_window_tokens = context_window_tokens
-            .max(token_before)
-            .max(token_after)
-            .max(1);
-        CompactionOutcome {
-            trigger: CompactionTrigger::Manual,
-            applied: true,
-            token_count_before: token_before,
-            token_count_after: token_after,
-            budget: BudgetEstimate {
-                context_window_tokens,
-                system_prompt_tokens: 0,
-                tool_schema_tokens: 0,
-                hot_memory: HotMemoryBudget {
-                    total_tokens: token_before,
-                    total_messages: outcome.replacement.history_items_before,
-                    pinned_tokens: 0,
-                    protected_live_tokens: 0,
-                    prunable_artifact_tokens: 0,
-                    compactable_history_tokens: token_before,
-                    skill_context_tokens: 0,
-                    runtime_context_tokens: 0,
-                },
-                loaded_skill_tokens: 0,
-                reserved_output_tokens: 0,
-                hard_reserve_tokens: 0,
-                total_input_tokens: token_before,
-                projected_total_tokens: token_before,
-                headroom_tokens: context_window_tokens.saturating_sub(token_after),
-                warning_threshold_tokens: context_window_tokens.saturating_mul(65) / 100,
-                prune_threshold_tokens: context_window_tokens.saturating_mul(75) / 100,
-                compact_threshold_tokens: context_window_tokens.saturating_mul(85) / 100,
-                over_limit_threshold_tokens: context_window_tokens.saturating_mul(95) / 100,
-                state: BudgetState::Healthy,
-            },
-            snapshot: CompactionSnapshot::default(),
-            externalization: Default::default(),
-            error_retry_collapse: Default::default(),
-            dedup_superseded: Default::default(),
-            archive_persistence: Default::default(),
-            pruning: Default::default(),
-            summary_generation: SummaryGenerationOutcome {
-                attempted: true,
-                used_fallback: false,
-                model_name: Some(outcome.metadata.route.clone()),
-                summary: None,
-            },
-            rebuild: RebuildOutcome {
-                applied: true,
-                inserted_summary: true,
-                inserted_breadcrumb: false,
-                inserted_archive_reference: false,
-                dropped_message_count: outcome
-                    .replacement
-                    .history_items_before
-                    .saturating_sub(outcome.replacement.history_items_after),
-                dropped_indices: Vec::new(),
-                preserved_recent_indices: Vec::new(),
-            },
         }
     }
 

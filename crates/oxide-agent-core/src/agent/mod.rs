@@ -62,19 +62,12 @@ pub mod loop_detection;
 /// Progress tracking and runtime events
 pub mod progress;
 
-// Compatibility-only legacy staged compaction exports remain public for old
-// persisted-session tests and downstream migration fixtures. Active runtime
-// compaction is wired through `CompactionController` / `LocalLlmSummary`.
 pub use compaction::{
-    classify_hot_memory, estimate_request_budget, externalize_hot_memory,
-    persist_compacted_history_chunk, prune_hot_memory, rebuild_hot_context, AgentMessageKind,
-    ArchiveChunk, ArchivePersistenceOutcome, ArchiveRecord, ArchiveRef, ArchiveSink,
-    BudgetEstimate, BudgetState, ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome,
-    CompactionPolicy, CompactionRequest, CompactionRetention, CompactionScope, CompactionService,
-    CompactionSnapshot, CompactionSummarizer, CompactionSummarizerConfig, CompactionSummary,
-    CompactionTrigger, ExternalizationOutcome, ExternalizedPayloadRecord, HotMemoryBudget,
-    NoopArchiveSink, NoopPayloadSink, PayloadSink, PruneOutcome, RebuildOutcome, RecentRawWindow,
-    SummaryGenerationOutcome,
+    AgentMessageKind, ArchiveChunk, ArchiveRecord, ArchiveRef, BudgetEstimate, BudgetState,
+    CompactRequestContext, CompactRunOutcome, CompactSummaryBackend, CompactSummaryError,
+    CompactSummaryRequest, CompactSummaryResult, CompactedSummaryMetadata, CompactionBackend,
+    CompactionController, CompactionControllerError, CompactionPhase, CompactionReason,
+    CompactionSummary, CompactionTrigger, HotMemoryBudget, LocalLlmSummary,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};
