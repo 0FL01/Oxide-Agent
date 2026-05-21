@@ -212,6 +212,8 @@ pub struct AgentSettings {
     pub compaction_model_max_output_tokens: Option<u32>,
     /// Compaction summary model timeout override in seconds
     pub compaction_model_timeout_secs: Option<u64>,
+    /// Temporary migration switch for Codex-style runtime/session-level compaction.
+    pub oxide_codex_style_compaction: Option<bool>,
 
     /// Soft warning threshold for hot-context growth.
     pub soft_warning_tokens: Option<usize>,
@@ -1038,6 +1040,14 @@ impl AgentSettings {
         (String::new(), String::new(), 0, COMPACTION_TIMEOUT_SECS)
     }
 
+    /// Returns whether Codex-style runtime/session-level compaction is enabled.
+    #[must_use]
+    pub fn codex_style_compaction_enabled(&self) -> bool {
+        self.oxide_codex_style_compaction
+            .or_else(|| parse_optional_env_bool("OXIDE_CODEX_STYLE_COMPACTION"))
+            .unwrap_or(true)
+    }
+
     /// Returns compaction routes with an optional dedicated primary route and inherited fallback routes.
     pub fn get_configured_compaction_model_routes(&self, prefer_sub_agent: bool) -> Vec<ModelInfo> {
         let max_output_tokens = self
@@ -1238,6 +1248,26 @@ mod tests {
 
         assert_eq!(settings.agent_model_max_output_tokens, Some(12_345));
         assert_eq!(settings.agent_model_context_window_tokens, Some(54_321));
+    }
+
+    #[test]
+    fn codex_style_compaction_defaults_on_and_allows_explicit_disable() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::remove_var("OXIDE_CODEX_STYLE_COMPACTION");
+
+        assert!(AgentSettings::default().codex_style_compaction_enabled());
+
+        env::set_var("OXIDE_CODEX_STYLE_COMPACTION", "false");
+        assert!(!AgentSettings::default().codex_style_compaction_enabled());
+        assert!(AgentSettings {
+            oxide_codex_style_compaction: Some(true),
+            ..AgentSettings::default()
+        }
+        .codex_style_compaction_enabled());
+
+        env::remove_var("OXIDE_CODEX_STYLE_COMPACTION");
     }
 
     #[test]

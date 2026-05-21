@@ -1,4 +1,4 @@
-use crate::agent::compaction::CompactionService;
+use crate::agent::compaction::CompactionController;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
 use crate::agent::registry::ToolRegistry;
@@ -46,7 +46,7 @@ pub(super) struct PreparedExecution {
 }
 
 pub(super) struct RunnerContextServices<'a> {
-    pub(super) compaction_service: &'a CompactionService,
+    pub(super) compaction_controller: &'a CompactionController,
 }
 
 impl PreparedExecution {
@@ -74,7 +74,7 @@ impl PreparedExecution {
                 messages: &mut self.messages,
                 agent: session,
             },
-            Some(services.compaction_service),
+            Some(services.compaction_controller),
             self.runner_config.clone(),
         );
 

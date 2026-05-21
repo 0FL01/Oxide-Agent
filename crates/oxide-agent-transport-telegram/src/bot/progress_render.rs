@@ -449,6 +449,42 @@ mod tests {
     }
 
     #[test]
+    fn renders_runtime_compaction_status() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::RuntimeCompactionStarted {
+            reason: oxide_agent_core::agent::compaction::CompactionReason::Manual,
+            phase: oxide_agent_core::agent::compaction::CompactionPhase::Manual,
+            backend: oxide_agent_core::agent::compaction::CompactionBackend::LocalLlmSummary,
+            provider: None,
+            route: None,
+            token_before: 2400,
+            history_items_before: 12,
+        });
+        state.update(AgentEvent::RuntimeCompactionCompleted {
+            reason: oxide_agent_core::agent::compaction::CompactionReason::Manual,
+            phase: oxide_agent_core::agent::compaction::CompactionPhase::Manual,
+            backend: oxide_agent_core::agent::compaction::CompactionBackend::LocalLlmSummary,
+            provider: "mock".to_string(),
+            route: "compact".to_string(),
+            token_before: 2400,
+            token_after: 900,
+            history_items_before: 12,
+            history_items_after: 4,
+            generation: 1,
+            repair_applied: false,
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("<b>Context:</b>"));
+        assert!(output.contains("Compaction: compacted history"));
+        assert!(output.contains("manual/manual"));
+        assert!(output.contains("local_llm_summary"));
+        assert!(output.contains("mock/compact"));
+    }
+
+    #[test]
     fn renders_rate_limit_retry() {
         let mut state = ProgressState::new(10);
 

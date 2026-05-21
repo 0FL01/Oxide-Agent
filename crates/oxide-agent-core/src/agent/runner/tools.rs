@@ -3,7 +3,9 @@
 use super::hooks::ToolHookDecision;
 use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use super::AgentRunner;
-use crate::agent::compaction::{CompactionRequest, CompactionTrigger};
+use crate::agent::compaction::{
+    CompactRequestContext, CompactionBackend, CompactionPhase, CompactionReason, CompactionTrigger,
+};
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TOOL_COMPRESS;
@@ -251,48 +253,49 @@ impl AgentRunner {
                 .await;
         }
 
-        let Some(compaction_service) = ctx.compaction_service else {
+        Self::execute_runtime_compress_tool(ctx).await
+    }
+
+    async fn execute_runtime_compress_tool(
+        ctx: &mut AgentRunnerContext<'_>,
+    ) -> anyhow::Result<String> {
+        let Some(controller) = ctx.compaction_controller else {
             return Err(anyhow::anyhow!(
                 "compress tool is unavailable in this runner context"
             ));
         };
 
-        let request = CompactionRequest::new(
-            CompactionTrigger::Manual,
-            ctx.task,
-            ctx.system_prompt,
-            ctx.tools,
-            &ctx.config.model_name,
-            ctx.config.model_max_output_tokens,
-            ctx.config.is_sub_agent,
-        );
-
-        Self::emit_compaction_started(ctx.progress_tx, CompactionTrigger::Manual).await;
-
+        Self::emit_runtime_tool_compaction_started(
+            ctx.progress_tx,
+            ctx.agent.memory().token_count(),
+            ctx.agent.memory().get_messages().len(),
+        )
+        .await;
+        let context = CompactRequestContext {
+            task: ctx.task.to_string(),
+            reason: CompactionReason::Manual,
+            phase: CompactionPhase::Manual,
+            target_token_budget: ctx.agent.memory().max_tokens(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
         let cancellation_token = ctx.agent.cancellation_token().clone();
         let outcome = match Self::await_until_cancelled(
             cancellation_token,
-            compaction_service.prepare_for_run(&request, ctx.agent),
+            controller.manual_compact(ctx.agent.memory_mut(), context),
         )
         .await
         {
             Some(Ok(outcome)) => outcome,
             Some(Err(error)) => {
-                Self::emit_compaction_failed(
-                    ctx.progress_tx,
-                    CompactionTrigger::Manual,
-                    error.to_string(),
-                )
-                .await;
-                return Err(error);
+                Self::emit_runtime_tool_compaction_failed(ctx.progress_tx, error.to_string()).await;
+                return Err(error.into());
             }
             None => {
                 if let Some(tx) = ctx.progress_tx {
                     let _ = tx.send(AgentEvent::Cancelled).await;
                 }
-                Self::emit_compaction_failed(
+                Self::emit_runtime_tool_compaction_failed(
                     ctx.progress_tx,
-                    CompactionTrigger::Manual,
                     "Task cancelled by user".to_string(),
                 )
                 .await;
@@ -300,24 +303,88 @@ impl AgentRunner {
             }
         };
 
-        if outcome.pruning.applied {
-            Self::emit_pruning_applied(ctx.progress_tx, &outcome).await;
-        }
-        Self::emit_compaction_completed(ctx.progress_tx, CompactionTrigger::Manual, &outcome).await;
+        ctx.agent.persist_memory_checkpoint_background();
+        Self::refresh_messages_from_memory(ctx);
+        Self::emit_runtime_tool_compaction_completed(ctx.progress_tx, &outcome).await;
 
         Ok(serde_json::json!({
             "ok": true,
-            "applied": outcome.applied,
-            "tokens_before": outcome.token_count_before,
-            "tokens_after": outcome.token_count_after,
-            "reclaimed_tokens": outcome.reclaimed_hot_memory_tokens(),
-            "externalized_count": outcome.externalization.externalized_count,
-            "pruned_count": outcome.pruning.pruned_count,
-            "archived_chunk_count": outcome.archive_persistence.archived_chunk_count,
-            "summary_updated": outcome.rebuild.inserted_summary,
-            "budget_state": outcome.budget.state,
+            "applied": true,
+            "summary_updated": true,
+            "reason": "manual",
+            "phase": "manual",
+            "backend": outcome.metadata.backend.as_str(),
+            "provider": outcome.metadata.provider,
+            "route": outcome.metadata.route,
+            "generation": outcome.metadata.generation,
+            "tokens_before": outcome.replacement.token_before,
+            "tokens_after": outcome.replacement.token_after,
+            "reclaimed_tokens": outcome.replacement.token_before.saturating_sub(outcome.replacement.token_after),
+            "history_items_before": outcome.replacement.history_items_before,
+            "history_items_after": outcome.replacement.history_items_after,
         })
         .to_string())
+    }
+
+    async fn emit_runtime_tool_compaction_started(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        token_before: usize,
+        history_items_before: usize,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::RuntimeCompactionStarted {
+                    reason: CompactionReason::Manual,
+                    phase: CompactionPhase::Manual,
+                    backend: CompactionBackend::LocalLlmSummary,
+                    provider: None,
+                    route: None,
+                    token_before,
+                    history_items_before,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_runtime_tool_compaction_completed(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        outcome: &crate::agent::compaction::CompactRunOutcome,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::RuntimeCompactionCompleted {
+                    reason: outcome.metadata.reason,
+                    phase: outcome.metadata.phase,
+                    backend: outcome.metadata.backend,
+                    provider: outcome.metadata.provider.clone(),
+                    route: outcome.metadata.route.clone(),
+                    token_before: outcome.replacement.token_before,
+                    token_after: outcome.replacement.token_after,
+                    history_items_before: outcome.replacement.history_items_before,
+                    history_items_after: outcome.replacement.history_items_after,
+                    generation: outcome.metadata.generation,
+                    repair_applied: outcome.metadata.repair_applied,
+                })
+                .await;
+        }
+    }
+
+    async fn emit_runtime_tool_compaction_failed(
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        error: String,
+    ) {
+        if let Some(tx) = progress_tx {
+            let _ = tx
+                .send(AgentEvent::RuntimeCompactionFailed {
+                    reason: CompactionReason::Manual,
+                    phase: CompactionPhase::Manual,
+                    backend: CompactionBackend::LocalLlmSummary,
+                    provider: None,
+                    route: None,
+                    error,
+                })
+                .await;
+        }
     }
 
     async fn record_tool_execution_result(

@@ -1,5 +1,7 @@
 //! Runner configuration and context types.
 
+use crate::agent::compaction::CompactionController;
+#[cfg(test)]
 use crate::agent::compaction::CompactionService;
 use crate::agent::context::AgentContext;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;
@@ -37,6 +39,8 @@ pub struct AgentRunnerConfig {
     pub model_provider: Option<String>,
     /// Optional weighted fallback routes for this execution.
     pub model_routes: Vec<ModelInfo>,
+    /// Whether runtime/session-level Codex-style compaction is selected.
+    pub codex_style_compaction_enabled: bool,
 }
 
 impl AgentRunnerConfig {
@@ -59,6 +63,7 @@ impl AgentRunnerConfig {
             temperature: None,
             model_provider: None,
             model_routes: Vec::new(),
+            codex_style_compaction_enabled: true,
         }
     }
 
@@ -87,6 +92,13 @@ impl AgentRunnerConfig {
     #[must_use]
     pub fn with_model_routes(mut self, model_routes: Vec<ModelInfo>) -> Self {
         self.model_routes = model_routes;
+        self
+    }
+
+    /// Set whether Codex-style runtime compaction is enabled for this run.
+    #[must_use]
+    pub const fn with_codex_style_compaction(mut self, enabled: bool) -> Self {
+        self.codex_style_compaction_enabled = enabled;
         self
     }
 }
@@ -125,8 +137,11 @@ pub struct AgentRunnerContext<'a> {
     pub agent: &'a mut dyn AgentContext,
     /// Optional skill registry for dynamic skill injection.
     pub skill_registry: Option<&'a mut SkillRegistry>,
-    /// Optional compaction service for pre-turn context maintenance.
+    /// Legacy compaction service kept only for compatibility tests.
+    #[cfg(test)]
     pub compaction_service: Option<&'a CompactionService>,
+    /// Optional runtime/session-level compaction controller.
+    pub compaction_controller: Option<&'a CompactionController>,
     /// Stable top-level session identity when available.
     pub session_id: Option<String>,
     /// Stable top-level memory scope when available.
@@ -153,7 +168,7 @@ impl<'a> AgentRunnerContext<'a> {
     #[must_use]
     pub(crate) fn new_base(
         base: AgentRunnerContextBase<'a>,
-        compaction_service: Option<&'a CompactionService>,
+        compaction_controller: Option<&'a CompactionController>,
         config: AgentRunnerConfig,
     ) -> Self {
         Self {
@@ -167,7 +182,9 @@ impl<'a> AgentRunnerContext<'a> {
             messages: base.messages,
             agent: base.agent,
             skill_registry: None,
-            compaction_service,
+            #[cfg(test)]
+            compaction_service: None,
+            compaction_controller,
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
@@ -215,6 +232,7 @@ pub(super) struct RunState {
     /// Number of applied compaction passes in this run.
     pub compaction_count: usize,
     /// Number of deterministic cleanup passes in this run.
+    #[cfg(test)]
     pub cleanup_count: usize,
     /// Whether the next pre-LLM turn should run manual compaction.
     pub force_manual_compaction: bool,
@@ -228,6 +246,7 @@ impl RunState {
             continuation_count: 0,
             structured_output_failures: 0,
             compaction_count: 0,
+            #[cfg(test)]
             cleanup_count: 0,
             force_manual_compaction: false,
         }
@@ -260,4 +279,23 @@ pub(super) struct FinalResponseInput {
     pub final_answer: String,
     /// Optional reasoning content from the model.
     pub reasoning: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentRunnerConfig;
+
+    #[test]
+    fn runner_config_defaults_to_codex_style_compaction() {
+        assert!(
+            AgentRunnerConfig::new("mock".to_string(), 1, 1, 30, 256)
+                .codex_style_compaction_enabled
+        );
+        assert!(AgentRunnerConfig::default().codex_style_compaction_enabled);
+        assert!(
+            !AgentRunnerConfig::new("mock".to_string(), 1, 1, 30, 256)
+                .with_codex_style_compaction(false)
+                .codex_style_compaction_enabled
+        );
+    }
 }

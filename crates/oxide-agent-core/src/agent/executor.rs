@@ -13,7 +13,7 @@ mod tests;
 mod types;
 
 use self::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
-use crate::agent::compaction::CompactionService;
+use crate::agent::compaction::CompactionController;
 use crate::agent::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use crate::agent::providers::ReminderContext;
 use crate::agent::runner::AgentRunner;
@@ -38,7 +38,7 @@ pub struct AgentExecutor {
     execution_profile: AgentExecutionProfile,
     tool_policy_state: Arc<RwLock<ToolAccessPolicy>>,
     hook_policy_state: Arc<RwLock<HookAccessPolicy>>,
-    compaction_service: CompactionService,
+    compaction_controller: CompactionController,
     wiki_memory_store: Option<WikiStore>,
     last_topic_infra_preflight_summary: Option<String>,
 }

@@ -83,6 +83,9 @@ fn setup_web_test_with_budget(
         sub_agent_model_provider: Some("zai".to_string()),
         narrator_model_id: Some("narrator-model".to_string()),
         narrator_model_provider: Some("narrator".to_string()),
+        compaction_model_id: Some("narrator-model".to_string()),
+        compaction_model_provider: Some("narrator".to_string()),
+        compaction_model_max_output_tokens: Some(2048),
         agent_timeout_secs: Some(5),
         sub_agent_timeout_secs: Some(5),
         ..AgentSettings::default()
@@ -152,6 +155,45 @@ fn two_todo_tool_calls_response() -> ChatResponse {
                 is_recovered: false,
                 tool_call_correlation: None,
             },
+        ],
+        finish_reason: "tool_calls".to_string(),
+        reasoning_content: None,
+        usage: Some(TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        }),
+    }
+}
+
+fn compress_and_write_todos_response() -> ChatResponse {
+    ChatResponse {
+        content: None,
+        tool_calls: vec![
+            ToolCall::new(
+                "call-compress".to_string(),
+                ToolCallFunction {
+                    name: "compress".to_string(),
+                    arguments: serde_json::json!({}).to_string(),
+                },
+                false,
+            ),
+            ToolCall::new(
+                "call-write-todos".to_string(),
+                ToolCallFunction {
+                    name: "write_todos".to_string(),
+                    arguments: serde_json::json!({
+                        "todos": [
+                            {
+                                "description": "Verify compaction with another tool",
+                                "status": "completed"
+                            }
+                        ]
+                    })
+                    .to_string(),
+                },
+                false,
+            ),
         ],
         finish_reason: "tool_calls".to_string(),
         reasoning_content: None,
@@ -1474,6 +1516,10 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     assert!(event_names
         .iter()
         .any(|event| event == "compaction_completed"));
+    assert!(
+        !event_names.iter().any(|event| event == "pruning_applied"),
+        "runtime manual compaction must not emit legacy prune/archive cleanup events"
+    );
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -1483,6 +1529,12 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
+    assert!(
+        messages.iter().any(|message| message
+            .content
+            .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)),
+        "runtime manual compaction should insert a Codex-style compacted summary"
+    );
     let tool_result = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("call-compress"))
@@ -1493,6 +1545,119 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     assert_eq!(tool_result_json["ok"], true);
     assert_eq!(tool_result_json["applied"], true);
     assert_eq!(tool_result_json["summary_updated"], true);
+
+    server.abort();
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
+    init_test_tracing();
+
+    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+        compress_and_write_todos_response(),
+        super::helpers::unstructured_text_response("done"),
+    ]));
+    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider);
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260405;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+
+    seed_history(
+        session_manager.as_ref(),
+        &session_id,
+        user_id,
+        vec![
+            AgentMessage::user("Older context before tool-heavy compaction."),
+            AgentMessage::assistant("Older answer before tool-heavy compaction."),
+            AgentMessage::user("Recent request before multi-tool batch."),
+        ],
+    )
+    .await;
+
+    let task_id = create_task_http_with_body(
+        &client,
+        &base_url,
+        &session_id,
+        "Compress context, update todos, and finish.",
+    )
+    .await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(3),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let event_names: Vec<String> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .map(str::to_string)
+        .collect();
+
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_started"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_completed"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "tool_call:compress"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "tool_result:compress"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "tool_call:write_todos"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "tool_result:write_todos"));
+    assert!(
+        !event_names.iter().any(|event| event == "pruning_applied"),
+        "runtime compaction must not emit legacy prune/archive cleanup events"
+    );
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+
+    assert!(
+        messages.iter().any(|message| message
+            .content
+            .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)),
+        "runtime compaction should insert a Codex-style compacted summary"
+    );
+    assert!(messages.iter().any(|message| {
+        message.tool_name.as_deref() == Some("compress")
+            && serde_json::from_str::<serde_json::Value>(&message.content)
+                .ok()
+                .is_some_and(|value| value["ok"] == true && value["applied"] == true)
+    }));
+    assert!(messages
+        .iter()
+        .any(|message| message.tool_name.as_deref() == Some("write_todos")));
+
+    let (_validated, repair_outcome) =
+        oxide_agent_core::agent::recovery::repair_agent_message_history_runtime(messages);
+    assert!(
+        !repair_outcome.applied,
+        "tool-heavy compaction history should not require repair"
+    );
+    assert_eq!(executor.session().memory.todos.completed_count(), 1);
 
     server.abort();
 }

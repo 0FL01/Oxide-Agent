@@ -170,6 +170,93 @@ async fn executor_injects_configured_wiki_memory_context() {
 }
 
 #[tokio::test]
+async fn manual_compaction_uses_codex_style_controller_when_flag_enabled() {
+    let settings = Arc::new(crate::config::AgentSettings {
+        agent_model_id: Some("mock-model".to_string()),
+        agent_model_provider: Some("mock".to_string()),
+        oxide_codex_style_compaction: Some(true),
+        ..crate::config::AgentSettings::default()
+    });
+    let mut provider = crate::llm::MockLlmProvider::new();
+    provider
+        .expect_chat_completion()
+        .times(1)
+        .returning(|_, _, user_message, model_id, _| {
+            assert_eq!(model_id, "mock-model");
+            assert!(user_message.contains("## Source History"));
+            Ok("Current compact handoff summary.".to_string())
+        });
+    provider
+        .expect_transcribe_audio()
+        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+    provider
+        .expect_analyze_image()
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+
+    let mut llm = LlmClient::new(settings.as_ref());
+    llm.register_provider("mock".to_string(), Arc::new(provider));
+    let session = AgentSession::new(9_i64.into());
+    let mut executor = AgentExecutor::new(Arc::new(llm), session, settings);
+    executor.session_mut().last_task = Some("Ship compaction".to_string());
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user_task(
+            "Ship compaction",
+        ));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::summary(
+            "[COMPACTION_SUMMARY]\nOld summary",
+        ));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue"));
+
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(8);
+    let outcome = executor
+        .compact_current_context(Some(progress_tx))
+        .await
+        .expect("manual compaction succeeds");
+    let mut event_names = Vec::new();
+    while let Some(event) = progress_rx.recv().await {
+        event_names.push(match event {
+            crate::agent::progress::AgentEvent::RuntimeCompactionStarted { .. } => {
+                "runtime_started"
+            }
+            crate::agent::progress::AgentEvent::RuntimeCompactionCompleted { .. } => {
+                "runtime_completed"
+            }
+            crate::agent::progress::AgentEvent::CompactionStarted { .. } => "legacy_started",
+            crate::agent::progress::AgentEvent::CompactionCompleted { .. } => "legacy_completed",
+            crate::agent::progress::AgentEvent::PruningApplied { .. } => "legacy_pruning",
+            _ => "other",
+        });
+    }
+
+    assert!(outcome.applied);
+    assert!(outcome.summary_generation.attempted);
+    assert!(!outcome.pruning.applied);
+    assert_eq!(outcome.archive_persistence.archived_chunk_count, 0);
+    let messages = executor.session().memory.get_messages();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message
+                .content
+                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX))
+            .count(),
+        1
+    );
+    assert!(messages
+        .iter()
+        .all(|message| !message.content.contains("[COMPACTION_SUMMARY]")));
+    assert_eq!(event_names, vec!["runtime_started", "runtime_completed"]);
+}
+
+#[tokio::test]
 async fn executor_flushes_explicit_remember_to_wiki_after_completed_run() {
     let backend = Arc::new(InMemoryWikiBackend::default());
     let store_backend: Arc<dyn crate::agent::wiki_memory::WikiObjectBackend> = backend.clone();

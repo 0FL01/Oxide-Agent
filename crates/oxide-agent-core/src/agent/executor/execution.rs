@@ -242,7 +242,7 @@ impl AgentExecutor {
             &mut self.session,
             self.skill_registry.as_mut(),
             RunnerContextServices {
-                compaction_service: &self.compaction_service,
+                compaction_controller: &self.compaction_controller,
             },
         );
 
@@ -443,7 +443,8 @@ impl AgentExecutor {
             )
             .with_model_provider(model.provider.clone())
             .with_temperature(self.settings.get_configured_agent_temperature())
-            .with_model_routes(model_routes),
+            .with_model_routes(model_routes)
+            .with_codex_style_compaction(self.settings.codex_style_compaction_enabled()),
         }
     }
 

@@ -8,6 +8,15 @@ use crate::config::{
 use crate::llm::ToolDefinition;
 use serde::{Deserialize, Serialize};
 
+/// Stable marker for the new runtime/session-level compacted summary format.
+pub const OXIDE_COMPACTED_SUMMARY_PREFIX: &str = "[OXIDE_COMPACTED_SUMMARY_V1]";
+
+/// Legacy structured summary marker produced by the old multi-stage pipeline.
+pub const LEGACY_COMPACTION_SUMMARY_PREFIX: &str = "[COMPACTION_SUMMARY]";
+
+/// Legacy breadcrumb marker produced by the old post-run cleanup path.
+pub const LEGACY_BREADCRUMB_PREFIX: &str = "[BREADCRUMB_CARD]";
+
 /// Stable semantic kind for an entry stored in hot agent memory.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum AgentMessageKind {
@@ -109,6 +118,82 @@ pub enum CompactionTrigger {
     Manual,
     /// Cleanup and compaction housekeeping after a task reaches a final answer.
     PostRun,
+}
+
+/// Why runtime/session-level compaction is requested.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CompactionReason {
+    /// Normal pre-turn/pre-sampling budget management.
+    PreTurn,
+    /// Runtime continuation within a turn needs a smaller context.
+    MidTurn,
+    /// Explicit operator or transport request.
+    Manual,
+    /// Provider reported or strongly implied context overflow.
+    ContextLimit,
+    /// Route/failover selected a model with a smaller context window.
+    ModelDownshift,
+}
+
+/// Where compaction happens in the runtime flow.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CompactionPhase {
+    /// Before the next provider sampling request.
+    PreSampling,
+    /// While a turn is still in progress and needs follow-up sampling.
+    MidTurn,
+    /// Explicit manual compact operation.
+    Manual,
+    /// During model route/failover switching.
+    ModelSwitch,
+}
+
+/// Backend that generated a compact handoff summary.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CompactionBackend {
+    /// Provider-agnostic ordinary LLM text request.
+    LocalLlmSummary,
+}
+
+impl CompactionBackend {
+    /// Stable label for progress/events/summary metadata.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalLlmSummary => "local_llm_summary",
+        }
+    }
+}
+
+/// Minimal metadata embedded in the new compacted summary message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompactedSummaryMetadata {
+    /// Monotonic compacted-summary generation within the session.
+    pub generation: u32,
+    /// Runtime reason that requested compaction.
+    pub reason: CompactionReason,
+    /// Runtime phase where compaction happened.
+    pub phase: CompactionPhase,
+    /// Approximate hot-memory tokens before replacement.
+    pub token_before: usize,
+    /// Approximate hot-memory tokens after replacement.
+    pub token_after: usize,
+    /// Hot-memory item count before replacement.
+    pub history_items_before: usize,
+    /// Hot-memory item count after replacement.
+    pub history_items_after: usize,
+    /// Provider used for summary generation.
+    pub provider: String,
+    /// Model/route used for summary generation.
+    pub route: String,
+    /// Summary backend.
+    pub backend: CompactionBackend,
+    /// RFC3339 timestamp or caller-provided timestamp string.
+    pub created_at: String,
+    /// Whether a previous compacted or legacy summary was detected.
+    pub previous_summary_detected: bool,
+    /// Whether history repair changed replacement output.
+    pub repair_applied: bool,
 }
 
 /// Static policy knobs for the compaction subsystem.

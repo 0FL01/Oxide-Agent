@@ -1,8 +1,6 @@
 use super::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use super::AgentExecutor;
-use crate::agent::compaction::{
-    CompactionService, CompactionSummarizer, CompactionSummarizerConfig,
-};
+use crate::agent::compaction::CompactionController;
 use crate::agent::hooks::{
     CompletionCheckHook, DelegationGuardHook, EpisodicExtractHook, HotContextHealthHook,
     RetrievalAdvisorHook, SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
@@ -82,7 +80,7 @@ impl AgentExecutor {
 
         let skill_registry = None;
 
-        let compaction_service = {
+        let compaction_controller = {
             let (compaction_model_id, compaction_model_provider, _, timeout_secs) =
                 settings.get_configured_compaction_model();
             let inherited_routes = settings.get_configured_agent_model_routes();
@@ -96,17 +94,11 @@ impl AgentExecutor {
                 inherited_agent_routes = ?format_model_routes(&inherited_routes),
                 effective_compaction_routes = ?format_model_routes(&model_routes),
                 timeout_secs,
-                "Configured compaction summarizer routes"
+                codex_style_compaction_enabled = settings.codex_style_compaction_enabled(),
+                "Configured compaction routes"
             );
 
-            CompactionService::default().with_summarizer(CompactionSummarizer::new(
-                llm_client,
-                CompactionSummarizerConfig {
-                    model_routes,
-                    timeout_secs,
-                    ..CompactionSummarizerConfig::default()
-                },
-            ))
+            CompactionController::local_llm(Arc::clone(&llm_client), model_routes, timeout_secs)
         };
 
         Self {
@@ -121,7 +113,7 @@ impl AgentExecutor {
             execution_profile: crate::agent::profile::AgentExecutionProfile::default(),
             tool_policy_state,
             hook_policy_state,
-            compaction_service,
+            compaction_controller,
             wiki_memory_store: None,
             last_topic_infra_preflight_summary: None,
         }

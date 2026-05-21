@@ -460,10 +460,10 @@ Startup maintenance sweep that removes stale tool calls from persisted memories.
 
 **Migration:** Monitor first startup after upgrade for memory rewrites. Disable with `STARTUP_TOOL_DRIFT_PRUNE_ENABLED=false` if needed.
 
-### 4. Compaction Token-Based Window
-Token-based protected tool window instead of fixed count.
+### 4. Codex-Style Runtime Compaction
+Agent Mode can use session-level compaction that replaces hot history with one local LLM summary instead of the legacy staged prune/archive pipeline.
 
-**Migration:** Adjust `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS` (default: 8192) if needed. Recommended: 12k-16k for DevOps workflows.
+**Migration:** Codex-style compaction is enabled by default. Keep `COMPACTION_MODEL_*` configured for a dedicated summary route, or omit it to reuse agent/sub-agent routes. `OXIDE_CODEX_STYLE_COMPACTION=false` is a short-lived emergency disable for runner auto-compaction; it does not restore the legacy staged pipeline. Legacy compaction data remains readable and is migrated lazily on the next compact.
 
 ### 5. TTS Tool Split (English/Russian)
 Legacy `text_to_speech` has been replaced by language-specific tools.
@@ -504,18 +504,18 @@ Three-level loop detection system (`agent/loop_detection/`):
 
 **Configuration:** `LOOP_DETECTION_ENABLED`, `LOOP_TOOL_CALL_THRESHOLD` (5), `LOOP_LLM_CHECK_AFTER_TURNS` (30), `LOOP_SCOUT_MODEL`
 
-### 🔄 Compaction Pipeline
-Advanced context compression with token-based protected window:
-1. **Budget Estimation** - Estimate memory usage
-2. **Classify** - Categorize messages by importance
-3. **Externalize** - Move payloads to archive
-4. **Prune** - Remove less important messages (respects protected window)
-5. **Summarize** - Generate concise summary with retry backoff
-6. **Rebuild** - Reconstruct hot context
+### 🔄 Runtime Compaction
+Codex-style Agent Mode compaction is a runtime/session-level operation:
+1. **Detect** - Pre-sampling, context-limit retry, manual compact, or model-route downshift.
+2. **Summarize** - Use a normal configured LLM route as a provider-agnostic local summary backend.
+3. **Replace Atomically** - Build one `[OXIDE_COMPACTED_SUMMARY_V1]` handoff, preserve pinned state and safe recent text, validate tool history, then replace hot memory in one step.
+
+The new path does not call OpenAI `/responses/compact`, does not create new R2 archive/payload objects, and does not emit active `pruning_applied` events. Old `[COMPACTION_SUMMARY]` and `[BREADCRUMB_CARD]` entries are detected and folded into the next compacted summary.
 
 **Configuration:**
+- `OXIDE_CODEX_STYLE_COMPACTION` (`true` by default; set `false` only as a short-lived auto-compaction disable)
 - `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS` (8192 tokens)
-- `COMPACTION_MODEL_ID`, `COMPACTION_MODEL_PROVIDER` - Dedicated LLM for summarization
+- `COMPACTION_MODEL_ID`, `COMPACTION_MODEL_PROVIDER` - Optional dedicated LLM for summarization
 - `COMPACTION_MODEL_MAX_OUTPUT_TOKENS` (512)
 - `COMPACTION_MODEL_TIMEOUT_SECS` (20)
 

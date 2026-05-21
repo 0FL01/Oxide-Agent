@@ -1,7 +1,9 @@
 use super::loop_detection::LoopType;
 use super::providers::TodoList;
 use super::thoughts;
-use crate::agent::compaction::{BudgetState, CompactionTrigger};
+use crate::agent::compaction::{
+    BudgetState, CompactionBackend, CompactionPhase, CompactionReason, CompactionTrigger,
+};
 use crate::llm::TokenUsage;
 use serde::{Deserialize, Serialize};
 
@@ -195,6 +197,72 @@ pub enum AgentEvent {
         /// Human-readable failure message.
         error: String,
     },
+    /// Runtime/session-level compaction started.
+    RuntimeCompactionStarted {
+        /// Why compaction was requested.
+        reason: CompactionReason,
+        /// Runtime phase where compaction is running.
+        phase: CompactionPhase,
+        /// Summary backend used.
+        backend: CompactionBackend,
+        /// Provider selected when known.
+        provider: Option<String>,
+        /// Model/route selected when known.
+        route: Option<String>,
+        /// Approximate hot-memory tokens before compaction.
+        token_before: usize,
+        /// Hot-memory item count before compaction.
+        history_items_before: usize,
+    },
+    /// Runtime/session-level compaction completed.
+    RuntimeCompactionCompleted {
+        /// Why compaction was requested.
+        reason: CompactionReason,
+        /// Runtime phase where compaction ran.
+        phase: CompactionPhase,
+        /// Summary backend used.
+        backend: CompactionBackend,
+        /// Provider used for summary generation.
+        provider: String,
+        /// Model/route used for summary generation.
+        route: String,
+        /// Approximate hot-memory tokens before compaction.
+        token_before: usize,
+        /// Approximate hot-memory tokens after replacement.
+        token_after: usize,
+        /// Hot-memory item count before compaction.
+        history_items_before: usize,
+        /// Hot-memory item count after replacement.
+        history_items_after: usize,
+        /// Compacted-summary generation.
+        generation: u32,
+        /// Whether history repair changed replacement output.
+        repair_applied: bool,
+    },
+    /// Runtime/session-level compaction failed before mutation or continuation.
+    RuntimeCompactionFailed {
+        /// Why compaction was requested.
+        reason: CompactionReason,
+        /// Runtime phase where compaction ran.
+        phase: CompactionPhase,
+        /// Summary backend used.
+        backend: CompactionBackend,
+        /// Provider selected when known.
+        provider: Option<String>,
+        /// Model/route selected when known.
+        route: Option<String>,
+        /// Human-readable failure message.
+        error: String,
+    },
+    /// Runtime/session-level compaction was skipped.
+    RuntimeCompactionSkipped {
+        /// Why compaction was considered.
+        reason: CompactionReason,
+        /// Runtime phase where compaction was considered.
+        phase: CompactionPhase,
+        /// Human-readable skipped reason.
+        skipped_reason: String,
+    },
     /// Warning that the same run needed multiple compaction passes.
     RepeatedCompactionWarning {
         /// Which kind of repeated maintenance triggered the warning.
@@ -357,6 +425,39 @@ struct CompactionCompletionDetails {
     summary_updated: bool,
 }
 
+struct RuntimeCompactionStartedDetails {
+    reason: CompactionReason,
+    phase: CompactionPhase,
+    backend: CompactionBackend,
+    provider: Option<String>,
+    route: Option<String>,
+    token_before: usize,
+    history_items_before: usize,
+}
+
+struct RuntimeCompactionCompletedDetails {
+    reason: CompactionReason,
+    phase: CompactionPhase,
+    backend: CompactionBackend,
+    provider: String,
+    route: String,
+    token_before: usize,
+    token_after: usize,
+    history_items_before: usize,
+    history_items_after: usize,
+    generation: u32,
+    repair_applied: bool,
+}
+
+struct RuntimeCompactionFailedDetails {
+    reason: CompactionReason,
+    phase: CompactionPhase,
+    backend: CompactionBackend,
+    provider: Option<String>,
+    route: Option<String>,
+    error: String,
+}
+
 impl ProgressState {
     /// Creates a new empty progress state
     #[must_use]
@@ -426,6 +527,68 @@ impl ProgressState {
             AgentEvent::CompactionFailed { trigger, error } => {
                 self.handle_compaction_failed(trigger, error)
             }
+            AgentEvent::RuntimeCompactionStarted {
+                reason,
+                phase,
+                backend,
+                provider,
+                route,
+                token_before,
+                history_items_before,
+            } => self.handle_runtime_compaction_started(RuntimeCompactionStartedDetails {
+                reason,
+                phase,
+                backend,
+                provider,
+                route,
+                token_before,
+                history_items_before,
+            }),
+            AgentEvent::RuntimeCompactionCompleted {
+                reason,
+                phase,
+                backend,
+                provider,
+                route,
+                token_before,
+                token_after,
+                history_items_before,
+                history_items_after,
+                generation,
+                repair_applied,
+            } => self.handle_runtime_compaction_completed(RuntimeCompactionCompletedDetails {
+                reason,
+                phase,
+                backend,
+                provider,
+                route,
+                token_before,
+                token_after,
+                history_items_before,
+                history_items_after,
+                generation,
+                repair_applied,
+            }),
+            AgentEvent::RuntimeCompactionFailed {
+                reason,
+                phase,
+                backend,
+                provider,
+                route,
+                error,
+            } => self.handle_runtime_compaction_failed(RuntimeCompactionFailedDetails {
+                reason,
+                phase,
+                backend,
+                provider,
+                route,
+                error,
+            }),
+            AgentEvent::RuntimeCompactionSkipped {
+                reason,
+                phase,
+                skipped_reason,
+            } => self.handle_runtime_compaction_skipped(reason, phase, skipped_reason),
             AgentEvent::RepeatedCompactionWarning { kind, count } => {
                 self.handle_repeated_compaction_warning(kind, count)
             }
@@ -754,6 +917,89 @@ impl ProgressState {
         self.fail_last_step();
     }
 
+    fn handle_runtime_compaction_started(&mut self, details: RuntimeCompactionStartedDetails) {
+        self.complete_last_step();
+        self.current_thought =
+            Some("Compacting session history with a local LLM summary.".to_string());
+        let route = format_optional_route(details.provider.as_deref(), details.route.as_deref());
+        self.steps.push(Step {
+            description: format!(
+                "🗜 Compacting context ({}/{}, {}, {} items, ~{})",
+                compaction_reason_label(details.reason),
+                compaction_phase_label(details.phase),
+                compaction_backend_label(details.backend),
+                details.history_items_before,
+                crate::utils::format_tokens(details.token_before)
+            ),
+            status: StepStatus::InProgress,
+            tokens: None,
+            tool_name: None,
+        });
+        self.last_compaction_status = Some(format!(
+            "Compaction: running {} ({}/{}){}.",
+            compaction_backend_label(details.backend),
+            compaction_reason_label(details.reason),
+            compaction_phase_label(details.phase),
+            route
+        ));
+    }
+
+    fn handle_runtime_compaction_completed(&mut self, details: RuntimeCompactionCompletedDetails) {
+        self.complete_last_step();
+        let reclaimed = details.token_before.saturating_sub(details.token_after);
+        let repair_note = if details.repair_applied {
+            "; history repair applied"
+        } else {
+            ""
+        };
+        self.last_compaction_status = Some(format!(
+            "Compaction: compacted history ({}/{}, {}, {}/{}) - {} -> {}, {} -> {} items, reclaimed ~{}; generation {}{}.",
+            compaction_reason_label(details.reason),
+            compaction_phase_label(details.phase),
+            compaction_backend_label(details.backend),
+            details.provider,
+            details.route,
+            crate::utils::format_tokens(details.token_before),
+            crate::utils::format_tokens(details.token_after),
+            details.history_items_before,
+            details.history_items_after,
+            crate::utils::format_tokens(reclaimed),
+            details.generation,
+            repair_note
+        ));
+        self.last_history_repair_status = details
+            .repair_applied
+            .then(|| "History repair applied after compaction.".to_string());
+    }
+
+    fn handle_runtime_compaction_failed(&mut self, details: RuntimeCompactionFailedDetails) {
+        let route = format_optional_route(details.provider.as_deref(), details.route.as_deref());
+        self.last_compaction_status = Some(format!(
+            "Compaction failed ({}/{}, {}){} - {}",
+            compaction_reason_label(details.reason),
+            compaction_phase_label(details.phase),
+            compaction_backend_label(details.backend),
+            route,
+            details.error
+        ));
+        self.error = Some(format!("Compaction failed: {}", details.error));
+        self.fail_last_step();
+    }
+
+    fn handle_runtime_compaction_skipped(
+        &mut self,
+        reason: CompactionReason,
+        phase: CompactionPhase,
+        skipped_reason: String,
+    ) {
+        self.last_compaction_status = Some(format!(
+            "Compaction skipped ({}/{}) - {}",
+            compaction_reason_label(reason),
+            compaction_phase_label(phase),
+            skipped_reason
+        ));
+    }
+
     fn handle_repeated_compaction_warning(&mut self, kind: RepeatedCompactionKind, count: usize) {
         self.repeated_compaction_warning = Some(match kind {
             RepeatedCompactionKind::Cleanup => format!("Cleanup repeated: {count}x"),
@@ -843,6 +1089,41 @@ fn compaction_trigger_label(trigger: CompactionTrigger) -> &'static str {
     }
 }
 
+fn compaction_reason_label(reason: CompactionReason) -> &'static str {
+    match reason {
+        CompactionReason::PreTurn => "pre-turn",
+        CompactionReason::MidTurn => "mid-turn",
+        CompactionReason::Manual => "manual",
+        CompactionReason::ContextLimit => "context-limit",
+        CompactionReason::ModelDownshift => "model-downshift",
+    }
+}
+
+fn compaction_phase_label(phase: CompactionPhase) -> &'static str {
+    match phase {
+        CompactionPhase::PreSampling => "pre-sampling",
+        CompactionPhase::MidTurn => "mid-turn",
+        CompactionPhase::Manual => "manual",
+        CompactionPhase::ModelSwitch => "model-switch",
+    }
+}
+
+fn compaction_backend_label(backend: CompactionBackend) -> &'static str {
+    backend.as_str()
+}
+
+fn format_optional_route(provider: Option<&str>, route: Option<&str>) -> String {
+    match (
+        provider.filter(|value| !value.is_empty()),
+        route.filter(|value| !value.is_empty()),
+    ) {
+        (Some(provider), Some(route)) => format!(" via {provider}/{route}"),
+        (Some(provider), None) => format!(" via {provider}"),
+        (None, Some(route)) => format!(" via {route}"),
+        (None, None) => String::new(),
+    }
+}
+
 fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
     if count == 1 {
         singular
@@ -854,7 +1135,9 @@ fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::{AgentEvent, ProgressState, RepeatedCompactionKind};
-    use crate::agent::compaction::CompactionTrigger;
+    use crate::agent::compaction::{
+        CompactionBackend, CompactionPhase, CompactionReason, CompactionTrigger,
+    };
 
     #[test]
     fn compaction_events_update_progress_state() {
@@ -907,6 +1190,49 @@ mod tests {
             state.last_compaction_status.as_deref(),
             Some("Cleanup: externalized 1 large tool result - reclaimed ~797.")
         );
+    }
+
+    #[test]
+    fn runtime_compaction_events_update_progress_state() {
+        let mut state = ProgressState::new(5);
+
+        state.update(AgentEvent::RuntimeCompactionStarted {
+            reason: CompactionReason::Manual,
+            phase: CompactionPhase::Manual,
+            backend: CompactionBackend::LocalLlmSummary,
+            provider: None,
+            route: None,
+            token_before: 2_000,
+            history_items_before: 10,
+        });
+        state.update(AgentEvent::RuntimeCompactionCompleted {
+            reason: CompactionReason::Manual,
+            phase: CompactionPhase::Manual,
+            backend: CompactionBackend::LocalLlmSummary,
+            provider: "mock".to_string(),
+            route: "compact".to_string(),
+            token_before: 2_000,
+            token_after: 900,
+            history_items_before: 10,
+            history_items_after: 3,
+            generation: 2,
+            repair_applied: false,
+        });
+
+        assert_eq!(state.steps.len(), 1);
+        assert_eq!(state.steps[0].status, super::StepStatus::Completed);
+        assert!(state
+            .last_compaction_status
+            .as_deref()
+            .is_some_and(|status| status.contains("Compaction: compacted history")));
+        assert!(state
+            .last_compaction_status
+            .as_deref()
+            .is_some_and(|status| status.contains("manual/manual")));
+        assert!(state
+            .last_compaction_status
+            .as_deref()
+            .is_some_and(|status| status.contains("mock/compact")));
     }
 
     #[test]

@@ -62,6 +62,9 @@ pub mod loop_detection;
 /// Progress tracking and runtime events
 pub mod progress;
 
+// Compatibility-only legacy staged compaction exports remain public for old
+// persisted-session tests and downstream migration fixtures. Active runtime
+// compaction is wired through `CompactionController` / `LocalLlmSummary`.
 pub use compaction::{
     classify_hot_memory, estimate_request_budget, externalize_hot_memory,
     persist_compacted_history_chunk, prune_hot_memory, rebuild_hot_context, AgentMessageKind,

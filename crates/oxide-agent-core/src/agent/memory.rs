@@ -4,13 +4,14 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    count_tokens_cached, AgentMessageKind, ArchiveRef, BreadcrumbCard, CompactionRetention,
-    CompactionSummary,
+    count_tokens_cached, AgentMessageKind, ArchiveRef, BreadcrumbCard, CompactedSummaryMetadata,
+    CompactionRetention, CompactionSummary, OXIDE_COMPACTED_SUMMARY_PREFIX,
 };
 use crate::agent::providers::TodoList;
-use crate::agent::recovery::repair_agent_message_history_runtime;
+use crate::agent::recovery::{repair_agent_message_history_runtime, HistoryRepairOutcome};
 use crate::llm::{TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tracing::warn;
 
 pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
@@ -85,6 +86,29 @@ pub struct PrunedArtifact {
     /// Optional archive reference when the payload was also externalized.
     #[serde(default)]
     pub archive_ref: Option<ArchiveRef>,
+}
+
+/// Outcome of an atomic compacted-history replacement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactedHistoryReplacementOutcome {
+    /// Approximate token count before replacement.
+    pub token_before: usize,
+    /// Approximate token count after replacement.
+    pub token_after: usize,
+    /// Message count before replacement.
+    pub history_items_before: usize,
+    /// Message count after replacement.
+    pub history_items_after: usize,
+    /// Validation repair result. Normal replacement requires `applied == false`.
+    pub repair_outcome: HistoryRepairOutcome,
+}
+
+/// Error that prevents compacted-history replacement before mutation.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum CompactedHistoryReplacementError {
+    /// Replacement would require runtime history repair, so the builder is unsafe.
+    #[error("compacted history replacement failed tool-history validation")]
+    InvalidToolHistory(HistoryRepairOutcome),
 }
 
 /// Role of a message sender in agent memory
@@ -430,6 +454,29 @@ impl AgentMessage {
         }
     }
 
+    /// Create a Codex-style runtime compacted summary message.
+    pub fn compacted_summary(
+        summary_text: impl AsRef<str>,
+        metadata: &CompactedSummaryMetadata,
+    ) -> Self {
+        Self {
+            kind: AgentMessageKind::Summary,
+            role: MessageRole::System,
+            content: format_compacted_summary(summary_text.as_ref(), metadata),
+            reasoning: None,
+            tool_call_id: None,
+            tool_call_correlation: None,
+            tool_name: None,
+            tool_calls: None,
+            tool_call_correlations: None,
+            externalized_payload: None,
+            pruned_artifact: None,
+            structured_summary: None,
+            archive_ref: None,
+            breadcrumb_card: None,
+        }
+    }
+
     /// Create a summary entry backed by structured compaction data.
     pub fn from_compaction_summary(summary: CompactionSummary) -> Self {
         Self {
@@ -733,6 +780,36 @@ impl AgentMemory {
         self.repair_history_after_mutation("replace_messages");
     }
 
+    /// Atomically replace hot memory with prevalidated compacted history.
+    ///
+    /// Unlike `replace_messages`, this method validates the replacement before
+    /// mutation and rejects histories that would need tool-call repair.
+    pub fn replace_compacted_history(
+        &mut self,
+        messages: Vec<AgentMessage>,
+    ) -> Result<CompactedHistoryReplacementOutcome, CompactedHistoryReplacementError> {
+        let token_before = self.token_count;
+        let history_items_before = self.messages.len();
+        let (validated, repair_outcome) = repair_agent_message_history_runtime(&messages);
+        if repair_outcome.applied || validated.len() != messages.len() {
+            return Err(CompactedHistoryReplacementError::InvalidToolHistory(
+                repair_outcome,
+            ));
+        }
+
+        self.messages = messages;
+        self.last_api_usage = None;
+        self.recalculate_token_count();
+
+        Ok(CompactedHistoryReplacementOutcome {
+            token_before,
+            token_after: self.token_count,
+            history_items_before,
+            history_items_after: self.messages.len(),
+            repair_outcome,
+        })
+    }
+
     fn repair_history_after_mutation(&mut self, boundary: &'static str) {
         let (repaired_messages, outcome) = repair_agent_message_history_runtime(&self.messages);
         if !outcome.applied {
@@ -800,6 +877,41 @@ fn format_compaction_summary(summary: &CompactionSummary) -> String {
     push_summary_list(&mut sections, "Risks", &summary.risks);
 
     sections.join("\n\n")
+}
+
+fn format_compacted_summary(summary_text: &str, metadata: &CompactedSummaryMetadata) -> String {
+    format!(
+        "{prefix}\n\
+generation: {generation}\n\
+reason: {reason:?}\n\
+phase: {phase:?}\n\
+provider: {provider}\n\
+route: {route}\n\
+backend: {backend}\n\
+token_before: {token_before}\n\
+token_after: {token_after}\n\
+history_items_before: {history_items_before}\n\
+history_items_after: {history_items_after}\n\
+created_at: {created_at}\n\
+previous_summary_detected: {previous_summary_detected}\n\
+repair_applied: {repair_applied}\n\n\
+{summary}",
+        prefix = OXIDE_COMPACTED_SUMMARY_PREFIX,
+        generation = metadata.generation,
+        reason = metadata.reason,
+        phase = metadata.phase,
+        provider = metadata.provider,
+        route = metadata.route,
+        backend = metadata.backend.as_str(),
+        token_before = metadata.token_before,
+        token_after = metadata.token_after,
+        history_items_before = metadata.history_items_before,
+        history_items_after = metadata.history_items_after,
+        created_at = metadata.created_at,
+        previous_summary_detected = metadata.previous_summary_detected,
+        repair_applied = metadata.repair_applied,
+        summary = summary_text.trim(),
+    )
 }
 
 fn push_summary_list(sections: &mut Vec<String>, title: &str, items: &[String]) {
@@ -959,6 +1071,50 @@ mod tests {
 
         assert!(memory.token_count() > 0);
         assert_eq!(memory.api_token_count(), None);
+    }
+
+    #[test]
+    fn replace_compacted_history_replaces_valid_history_atomically() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user("Before"));
+        let token_before = memory.token_count();
+
+        let outcome = memory
+            .replace_compacted_history(vec![
+                AgentMessage::summary("[OXIDE_COMPACTED_SUMMARY_V1]\nsummary"),
+                AgentMessage::user("After"),
+            ])
+            .expect("valid compacted history replaces memory");
+
+        assert_eq!(outcome.token_before, token_before);
+        assert_eq!(outcome.history_items_before, 1);
+        assert_eq!(outcome.history_items_after, 2);
+        assert!(!outcome.repair_outcome.applied);
+        assert_eq!(memory.get_messages()[1].content, "After");
+        assert!(memory.token_count() > 0);
+    }
+
+    #[test]
+    fn replace_compacted_history_rejects_invalid_history_without_mutation() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user("Before"));
+        let token_before = memory.token_count();
+
+        let err = memory
+            .replace_compacted_history(vec![AgentMessage::tool(
+                "call-orphan",
+                "search",
+                "orphan result",
+            )])
+            .expect_err("orphan tool result is rejected");
+
+        assert!(matches!(
+            err,
+            CompactedHistoryReplacementError::InvalidToolHistory(_)
+        ));
+        assert_eq!(memory.get_messages().len(), 1);
+        assert_eq!(memory.get_messages()[0].content, "Before");
+        assert_eq!(memory.token_count(), token_before);
     }
 
     #[test]

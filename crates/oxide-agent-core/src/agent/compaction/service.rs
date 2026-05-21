@@ -1,4 +1,10 @@
-//! Stage 1 compaction orchestration facade.
+//! Compatibility-only legacy staged compaction orchestration facade.
+//!
+//! Production Agent Mode runtime compaction uses
+//! [`super::controller::CompactionController`] with
+//! [`super::local_llm_summary::LocalLlmSummary`]. This module remains to load
+//! and regression-test old persisted compaction data and staged cleanup
+//! behavior; it must not be wired as an active production runtime fallback.
 
 use super::archive::{persist_compacted_history_chunk, ArchiveSink, NoopArchiveSink};
 use super::budget::estimate_request_budget;
@@ -32,7 +38,10 @@ struct CheckpointMetrics<'a> {
     rebuild: &'a RebuildOutcome,
 }
 
-/// Entry point for Agent Mode context compaction orchestration.
+/// Legacy entry point for staged compaction orchestration.
+///
+/// Compatibility-only: production runtime code should use
+/// [`super::controller::CompactionController`] instead.
 #[derive(Clone)]
 pub struct CompactionService {
     policy: CompactionPolicy,

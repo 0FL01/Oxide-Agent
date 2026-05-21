@@ -238,9 +238,12 @@ impl AgentRunner {
 
         self.save_final_response(ctx, &final_response, input.reasoning);
         let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
-        let _ = self
-            .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
-            .await?;
+        #[cfg(test)]
+        if !ctx.config.codex_style_compaction_enabled {
+            let _ = self
+                .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
+                .await?;
+        }
         let post_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         Self::log_post_run_cleanup(
             ctx.task_id,
@@ -275,9 +278,14 @@ impl AgentRunner {
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         self.save_final_response(ctx, &request.prompt, reasoning);
         let pre_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
-        let _ = self
-            .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
-            .await?;
+        #[cfg(not(test))]
+        let _ = state;
+        #[cfg(test)]
+        if !ctx.config.codex_style_compaction_enabled {
+            let _ = self
+                .run_compaction_checkpoint(ctx, state, CompactionTrigger::PostRun)
+                .await?;
+        }
         let post_cleanup_snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PostRun);
         Self::log_post_run_cleanup(
             ctx.task_id,

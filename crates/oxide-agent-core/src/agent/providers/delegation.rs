@@ -3,9 +3,7 @@
 //! Exposes `delegate_to_sub_agent` tool that runs an isolated agent loop
 //! with a lightweight model and restricted toolset.
 
-use crate::agent::compaction::{
-    CompactionService, CompactionSummarizer, CompactionSummarizerConfig,
-};
+use crate::agent::compaction::CompactionController;
 use crate::agent::context::{AgentContext, EphemeralSession};
 use crate::agent::hooks::{
     CompletionCheckHook, HotContextHealthHook, SearchBudgetHook, SubAgentSafetyConfig,
@@ -143,7 +141,7 @@ struct PreparedSubAgentExecution {
     messages: Vec<Message>,
     sub_session: EphemeralSession,
     runner_config: AgentRunnerConfig,
-    compaction_service: CompactionService,
+    compaction_controller: CompactionController,
     progress_tx: Option<mpsc::Sender<AgentEvent>>,
     progress_relay_task: Option<JoinHandle<()>>,
 }
@@ -391,16 +389,13 @@ impl DelegationProvider {
         runner
     }
 
-    fn create_sub_agent_compaction_service(&self) -> CompactionService {
+    fn create_sub_agent_compaction_controller(&self) -> CompactionController {
         let (_, _, _, timeout_secs) = self.settings.get_configured_compaction_model();
-        CompactionService::default().with_summarizer(CompactionSummarizer::new(
+        CompactionController::local_llm(
             Arc::clone(&self.llm_client),
-            CompactionSummarizerConfig {
-                model_routes: self.settings.get_configured_compaction_model_routes(true),
-                timeout_secs,
-                ..CompactionSummarizerConfig::default()
-            },
-        ))
+            self.settings.get_configured_compaction_model_routes(true),
+            timeout_secs,
+        )
     }
 
     fn parse_delegate_args(arguments: &str) -> Result<DelegateToSubAgentArgs> {
@@ -482,6 +477,7 @@ impl DelegationProvider {
         .with_model_provider(model.provider.clone())
         .with_model_routes(self.settings.get_configured_sub_agent_model_routes())
         .with_sub_agent(true)
+        .with_codex_style_compaction(true)
     }
 
     async fn prepare_sub_agent_execution(
@@ -541,7 +537,7 @@ impl DelegationProvider {
             messages: AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages()),
             sub_session,
             runner_config: self.build_sub_agent_runner_config(&model),
-            compaction_service: self.create_sub_agent_compaction_service(),
+            compaction_controller: self.create_sub_agent_compaction_controller(),
             progress_tx: sub_agent_progress_tx,
             progress_relay_task,
         })
@@ -562,7 +558,7 @@ impl DelegationProvider {
                 messages: &mut prepared.messages,
                 agent: &mut prepared.sub_session,
             },
-            Some(&prepared.compaction_service),
+            Some(&prepared.compaction_controller),
             prepared.runner_config.clone(),
         )
     }
