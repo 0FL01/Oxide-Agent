@@ -8,7 +8,7 @@ use crate::llm::ToolDefinition;
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT};
+use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, SERVER, USER_AGENT};
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
@@ -27,6 +27,8 @@ const MARKDOWN_ACCEPT_HEADER: &str =
     "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
 const BROWSER_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+const ANTI_BOT_ERROR: &str =
+    "web_markdown blocked by anti-bot protection; this lightweight fetcher cannot solve JS/CAPTCHA challenges";
 
 /// Local provider for fetching a single URL as Markdown.
 pub struct WebFetchMdProvider {
@@ -132,13 +134,12 @@ impl WebFetchMdProvider {
             .header(ACCEPT_LANGUAGE, "en-US,en;q=0.9")
             .send()
             .await
-            .context("request failed")?
-            .error_for_status()
-            .context("server returned non-success status")?;
+            .context("request failed")?;
 
+        let status = response.status();
         let final_url = response.url().clone();
-        let content_type = response
-            .headers()
+        let headers = response.headers().clone();
+        let content_type = headers
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
@@ -157,6 +158,12 @@ impl WebFetchMdProvider {
         let body = read_limited_body(response, cancellation_token).await?;
         let bytes_read = body.len();
         let text = String::from_utf8_lossy(&body).into_owned();
+
+        reject_anti_bot_challenge(&headers, &text)?;
+
+        if !status.is_success() {
+            bail!("server returned non-success status: {status}");
+        }
 
         Ok(FetchResult {
             final_url,
@@ -357,6 +364,51 @@ fn display_content_type(content_type: &str) -> &str {
     }
 }
 
+fn reject_anti_bot_challenge(headers: &HeaderMap, body: &str) -> Result<()> {
+    if header_contains(headers, "cf-mitigated", "challenge") {
+        bail!(ANTI_BOT_ERROR);
+    }
+
+    if server_header_contains_cloudflare(headers) && body_has_cloudflare_challenge_marker(body) {
+        bail!(ANTI_BOT_ERROR);
+    }
+
+    if body_has_anti_bot_marker(body) {
+        bail!(ANTI_BOT_ERROR);
+    }
+
+    Ok(())
+}
+
+fn header_contains(headers: &HeaderMap, name: &'static str, needle: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains(needle))
+}
+
+fn server_header_contains_cloudflare(headers: &HeaderMap) -> bool {
+    headers
+        .get(SERVER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("cloudflare"))
+}
+
+fn body_has_cloudflare_challenge_marker(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("challenge") || lower.contains("cf-chl-") || lower.contains("just a moment")
+}
+
+fn body_has_anti_bot_marker(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+
+    lower.contains("just a moment")
+        || lower.contains("checking your browser")
+        || lower.contains("enable javascript and cookies")
+        || lower.contains("cf-chl-")
+        || lower.contains("captcha")
+}
+
 fn html_to_markdown(html: &str) -> Result<String> {
     htmd::HtmlToMarkdown::builder()
         .skip_tags(vec![
@@ -393,6 +445,7 @@ fn truncate_chars(input: String, max_chars: usize) -> TruncatedOutput {
 mod tests {
     use super::*;
     use crate::agent::provider::ToolProvider;
+    use reqwest::header::HeaderValue;
 
     #[test]
     fn lists_only_web_markdown_tool() {
@@ -486,6 +539,54 @@ mod tests {
             .ok()
             .and_then(|url| reject_media_url(&url).err())
             .is_some());
+    }
+
+    #[test]
+    fn detects_cf_mitigated_challenge_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cf-mitigated", HeaderValue::from_static("challenge"));
+
+        let error = reject_anti_bot_challenge(&headers, "").expect_err("challenge must fail");
+
+        assert_eq!(error.to_string(), ANTI_BOT_ERROR);
+    }
+
+    #[test]
+    fn detects_cloudflare_server_with_challenge_marker() {
+        let mut headers = HeaderMap::new();
+        headers.insert(SERVER, HeaderValue::from_static("cloudflare"));
+
+        let error = reject_anti_bot_challenge(&headers, "<html>challenge platform</html>")
+            .expect_err("cloudflare challenge must fail");
+
+        assert_eq!(error.to_string(), ANTI_BOT_ERROR);
+    }
+
+    #[test]
+    fn detects_common_antibot_body_markers() {
+        let headers = HeaderMap::new();
+
+        for body in [
+            "Just a moment...",
+            "Checking your browser before accessing the site",
+            "Please enable JavaScript and cookies to continue",
+            "<script src=\"/cdn-cgi/challenge-platform/h/b/cf-chl-jschl\"></script>",
+            "captcha verification required",
+        ] {
+            let error = reject_anti_bot_challenge(&headers, body).expect_err("marker must fail");
+            assert_eq!(error.to_string(), ANTI_BOT_ERROR);
+        }
+    }
+
+    #[test]
+    fn allows_regular_html_without_antibot_markers() {
+        let headers = HeaderMap::new();
+
+        assert!(reject_anti_bot_challenge(
+            &headers,
+            "<html><body><h1>Regular article</h1></body></html>",
+        )
+        .is_ok());
     }
 
     #[test]
