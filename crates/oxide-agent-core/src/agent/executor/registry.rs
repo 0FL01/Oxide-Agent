@@ -32,7 +32,8 @@ impl AgentExecutor {
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
         if Self::v1_tool_runtime_enabled_for_model(&model) {
-            return self.build_tool_runtime_registry(None).specs();
+            let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
+            return self.build_tool_runtime_registry(todos_arc, None).specs();
         }
 
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
@@ -71,9 +72,16 @@ impl AgentExecutor {
     #[must_use]
     pub(super) fn build_tool_runtime_registry(
         &self,
+        todos_arc: Arc<Mutex<TodoList>>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> RuntimeToolRegistry {
         let mut registry = RuntimeToolRegistry::new();
+
+        let todos_provider = Arc::new(TodosProvider::new(todos_arc));
+        Self::register_tool_runtime_executors(
+            &mut registry,
+            todos_provider.tool_runtime_executors(),
+        );
 
         let sandbox_scope = self.session.sandbox_scope().clone();
         let sandbox_provider = if let Some(tx) = progress_tx {

@@ -42,7 +42,8 @@ fn v1_tool_runtime_model_detection_rejects_other_routes() {
 #[test]
 fn typed_runtime_registry_exposes_sandbox_tools() {
     let executor = build_executor();
-    let registry = executor.build_tool_runtime_registry(None);
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
     let tool_names = registry
         .tool_names()
         .into_iter()
@@ -54,6 +55,7 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
         "read_file",
         "recreate_sandbox",
         "send_file_to_user",
+        "write_todos",
         "write_file",
     ] {
         assert!(
@@ -83,9 +85,9 @@ fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
 
     assert!(tool_names.contains("execute_command"));
     assert!(tool_names.contains("read_file"));
+    assert!(tool_names.contains("write_todos"));
     assert!(tool_names.contains("write_file"));
     assert!(!tool_names.contains("compress"));
-    assert!(!tool_names.contains("write_todos"));
 }
 
 #[tokio::test]

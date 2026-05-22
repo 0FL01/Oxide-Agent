@@ -345,7 +345,10 @@ impl AgentExecutor {
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
         let tool_runtime_registry = if Self::v1_tool_runtime_enabled_for_model(&model) {
-            Some(Arc::new(self.build_tool_runtime_registry(progress_tx)))
+            Some(Arc::new(self.build_tool_runtime_registry(
+                Arc::clone(&todos_arc),
+                progress_tx,
+            )))
         } else {
             None
         };

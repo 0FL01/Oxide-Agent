@@ -12,9 +12,10 @@ use std::sync::Arc;
 
 use crate::setup::execute_task;
 
-/// Test: measure latency with multiple sequential tool calls.
+/// Test: measure latency with multiple parallel tool calls.
 /// This test verifies that 3 tool calls execute and measures total time.
-/// Currently tools execute sequentially; after optimization should be parallel.
+/// The scripted provider is registered on the v1 opencode-go route so the
+/// active path uses the typed tool runtime.
 #[tokio::test]
 async fn e2e_parallel_tool_execution_latency() {
     let test_start = std::time::Instant::now();
@@ -24,21 +25,21 @@ async fn e2e_parallel_tool_execution_latency() {
             tool_calls: vec![
                 ScriptedToolCall {
                     id: "call_1".to_string(),
-                    name: "todos_write".to_string(),
+                    name: "write_todos".to_string(),
                     arguments:
                         r#"{"todos":[{"id":"1","description":"Task 1","status":"pending"}]}"#
                             .to_string(),
                 },
                 ScriptedToolCall {
                     id: "call_2".to_string(),
-                    name: "todos_write".to_string(),
+                    name: "write_todos".to_string(),
                     arguments:
                         r#"{"todos":[{"id":"2","description":"Task 2","status":"pending"}]}"#
                             .to_string(),
                 },
                 ScriptedToolCall {
                     id: "call_3".to_string(),
-                    name: "todos_write".to_string(),
+                    name: "write_todos".to_string(),
                     arguments:
                         r#"{"todos":[{"id":"3","description":"Task 3","status":"pending"}]}"#
                             .to_string(),
@@ -50,8 +51,8 @@ async fn e2e_parallel_tool_execution_latency() {
     ]));
 
     let agent_settings = Arc::new(AgentSettings {
-        agent_model_id: Some("test-model".to_string()),
-        agent_model_provider: Some("scripted".to_string()),
+        agent_model_id: Some("deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         agent_timeout_secs: Some(10),
         ..Default::default()
     });
@@ -59,7 +60,7 @@ async fn e2e_parallel_tool_execution_latency() {
     let llm = LlmClient::new(&agent_settings);
     let llm = {
         let mut llm = llm;
-        llm.register_provider("scripted".to_string(), scripted);
+        llm.register_provider("opencode-go".to_string(), scripted);
         Arc::new(llm)
     };
 
@@ -108,7 +109,7 @@ async fn e2e_parallel_tool_execution_latency() {
         test_start.elapsed().as_millis()
     );
     eprintln!(
-        "[RESULT] Tool execution latency baseline: {}ms for 3 sequential calls",
+        "[RESULT] Tool execution latency baseline: {}ms for 3 typed runtime calls",
         execution_time
     );
 

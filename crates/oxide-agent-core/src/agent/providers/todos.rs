@@ -4,6 +4,10 @@
 //! enabling proactive agent behavior for complex multi-step requests.
 
 use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -204,15 +208,23 @@ impl TodosProvider {
     pub async fn get_todos(&self) -> TodoList {
         self.todos.lock().await.clone()
     }
-}
 
-#[async_trait]
-impl ToolProvider for TodosProvider {
-    fn name(&self) -> &'static str {
-        "todos"
+    /// Build typed runtime executors for todo tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        self.tool_specs()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(TodosRuntimeExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
     }
 
-    fn tools(&self) -> Vec<ToolDefinition> {
+    fn tool_specs(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             name: "write_todos".to_string(),
             description: "Create or update a list of tasks for the current request. \
@@ -248,23 +260,7 @@ impl ToolProvider for TodosProvider {
         }]
     }
 
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == "write_todos"
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        debug!(tool = tool_name, "Executing todos tool");
-
-        if tool_name != "write_todos" {
-            anyhow::bail!("Unknown todos tool: {tool_name}");
-        }
-
+    async fn write_todos(&self, arguments: &str) -> Result<String> {
         let args: WriteTodosArgs = serde_json::from_str(arguments)?;
 
         // Convert to TodoItems with XML sanitization to prevent UI corruption
@@ -321,6 +317,70 @@ impl ToolProvider for TodosProvider {
         );
 
         Ok(response)
+    }
+}
+
+#[async_trait]
+impl ToolProvider for TodosProvider {
+    fn name(&self) -> &'static str {
+        "todos"
+    }
+
+    fn tools(&self) -> Vec<ToolDefinition> {
+        self.tool_specs()
+    }
+
+    fn can_handle(&self, tool_name: &str) -> bool {
+        tool_name == "write_todos"
+    }
+
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
+        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        debug!(tool = tool_name, "Executing todos tool");
+
+        if tool_name != "write_todos" {
+            anyhow::bail!("Unknown todos tool: {tool_name}");
+        }
+
+        self.write_todos(arguments).await
+    }
+}
+
+struct TodosRuntimeExecutor {
+    provider: Arc<TodosProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+}
+
+#[async_trait]
+impl ToolExecutor for TodosRuntimeExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .write_todos(&invocation.raw_arguments)
+            .await
+            .map(|message| normalizer.success(&invocation, &message, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }
 
