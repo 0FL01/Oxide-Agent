@@ -1,5 +1,6 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
+use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
     KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
@@ -8,11 +9,14 @@ use crate::agent::providers::{
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
-    v1_tool_runtime_enabled_for_model, ToolExecutor, ToolRegistry as RuntimeToolRegistry,
+    v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
+    ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::ModelInfo;
+use crate::llm::ToolDefinition;
+use async_trait::async_trait;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::warn;
 
 #[cfg(feature = "browser_use")]
@@ -78,7 +82,7 @@ impl AgentExecutor {
         let mut registry = RuntimeToolRegistry::new();
 
         let todos_provider = Arc::new(TodosProvider::new(todos_arc));
-        Self::register_tool_runtime_executors(
+        self.register_tool_runtime_executors(
             &mut registry,
             todos_provider.tool_runtime_executors(),
         );
@@ -89,10 +93,13 @@ impl AgentExecutor {
         } else {
             SandboxProvider::new(sandbox_scope)
         };
-        Self::register_tool_runtime_executors(
+        self.register_tool_runtime_executors(
             &mut registry,
             Arc::new(sandbox_provider).tool_runtime_executors(),
         );
+
+        self.register_topic_runtime_providers(&mut registry, progress_tx);
+        self.register_wiki_memory_runtime_provider(&mut registry, progress_tx);
 
         if let Some(topic_infra) = &self.topic_infra {
             let ssh_provider = Arc::new(SshMcpProvider::new(
@@ -102,7 +109,7 @@ impl AgentExecutor {
                 topic_infra.config.clone(),
                 topic_infra.approvals.clone(),
             ));
-            Self::register_tool_runtime_executors(
+            self.register_tool_runtime_executors(
                 &mut registry,
                 ssh_provider.tool_runtime_executors(),
             );
@@ -112,11 +119,19 @@ impl AgentExecutor {
     }
 
     fn register_tool_runtime_executors(
+        &self,
         registry: &mut RuntimeToolRegistry,
         executors: Vec<Arc<dyn ToolExecutor>>,
     ) {
         for executor in executors {
             let tool_name = executor.name();
+            if !self
+                .execution_profile
+                .tool_policy()
+                .allows(tool_name.as_str())
+            {
+                continue;
+            }
             if let Err(error) = registry.register(executor) {
                 warn!(
                     tool_name = %tool_name,
@@ -125,6 +140,68 @@ impl AgentExecutor {
                 );
             }
         }
+    }
+
+    fn register_tool_runtime_provider(
+        &self,
+        registry: &mut RuntimeToolRegistry,
+        provider: Arc<dyn ToolProvider>,
+        progress_tx: Option<&Sender<AgentEvent>>,
+    ) {
+        self.register_tool_runtime_executors(
+            registry,
+            ProviderRuntimeExecutor::from_provider(provider, progress_tx.cloned()),
+        );
+    }
+
+    fn register_topic_runtime_providers(
+        &self,
+        registry: &mut RuntimeToolRegistry,
+        progress_tx: Option<&Sender<AgentEvent>>,
+    ) {
+        if let Some(agents_md) = &self.agents_md {
+            self.register_tool_runtime_provider(
+                registry,
+                Arc::new(AgentsMdProvider::new(
+                    Arc::clone(&agents_md.storage),
+                    agents_md.user_id,
+                    agents_md.topic_id.clone(),
+                )),
+                progress_tx,
+            );
+        }
+
+        if let Some(manager_provider) = self.manager_control_plane_provider() {
+            self.register_tool_runtime_provider(registry, Arc::new(manager_provider), progress_tx);
+        }
+
+        if let Some(reminder_context) = &self.reminder_context {
+            self.register_tool_runtime_provider(
+                registry,
+                Arc::new(ReminderProvider::new(reminder_context.clone())),
+                progress_tx,
+            );
+        }
+    }
+
+    fn register_wiki_memory_runtime_provider(
+        &self,
+        registry: &mut RuntimeToolRegistry,
+        progress_tx: Option<&Sender<AgentEvent>>,
+    ) {
+        let Some(store) = self.wiki_memory_store.clone() else {
+            return;
+        };
+        let scope = self.session.memory_scope();
+        self.register_tool_runtime_provider(
+            registry,
+            Arc::new(WikiMemoryProvider::new(
+                store,
+                scope.user_id,
+                scope.context_key.clone(),
+            )),
+            progress_tx,
+        );
     }
 
     #[must_use]
@@ -227,15 +304,7 @@ impl AgentExecutor {
             )));
         }
 
-        if let Some(control_plane) = &self.manager_control_plane {
-            let mut manager_provider = ManagerControlPlaneProvider::new(
-                Arc::clone(&control_plane.storage),
-                control_plane.user_id,
-            );
-            if let Some(topic_lifecycle) = &control_plane.topic_lifecycle {
-                manager_provider =
-                    manager_provider.with_topic_lifecycle(Arc::clone(topic_lifecycle));
-            }
+        if let Some(manager_provider) = self.manager_control_plane_provider() {
             registry.register(Box::new(manager_provider));
         }
 
@@ -252,6 +321,18 @@ impl AgentExecutor {
         if let Some(reminder_context) = &self.reminder_context {
             registry.register(Box::new(ReminderProvider::new(reminder_context.clone())));
         }
+    }
+
+    fn manager_control_plane_provider(&self) -> Option<ManagerControlPlaneProvider> {
+        let control_plane = self.manager_control_plane.as_ref()?;
+        let mut manager_provider = ManagerControlPlaneProvider::new(
+            Arc::clone(&control_plane.storage),
+            control_plane.user_id,
+        );
+        if let Some(topic_lifecycle) = &control_plane.topic_lifecycle {
+            manager_provider = manager_provider.with_topic_lifecycle(Arc::clone(topic_lifecycle));
+        }
+        Some(manager_provider)
     }
 
     fn register_wiki_memory_provider(&self, registry: &mut ToolRegistry) {
@@ -462,5 +543,69 @@ impl AgentExecutor {
         let base_url = provider.base_url().to_string();
         registry.register(Box::new(provider));
         tracing::debug!(url = %base_url, "Silero TTS provider registered");
+    }
+}
+
+struct ProviderRuntimeExecutor {
+    provider: Arc<dyn ToolProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    progress_tx: Option<Sender<AgentEvent>>,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+impl ProviderRuntimeExecutor {
+    fn from_provider(
+        provider: Arc<dyn ToolProvider>,
+        progress_tx: Option<Sender<AgentEvent>>,
+    ) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        provider
+            .tools()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(Self {
+                    provider: Arc::clone(&provider),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    progress_tx: progress_tx.clone(),
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for ProviderRuntimeExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let output = self
+            .provider
+            .execute(
+                self.name.as_str(),
+                &invocation.raw_arguments,
+                self.progress_tx.as_ref(),
+                Some(&invocation.cancellation_token),
+            )
+            .await
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        Ok(normalizer.success(&invocation, &output, ""))
     }
 }

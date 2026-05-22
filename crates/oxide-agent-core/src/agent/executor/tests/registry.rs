@@ -1,5 +1,7 @@
 use super::*;
+use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use crate::config::ModelInfo;
+use std::collections::HashSet;
 
 #[test]
 fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
@@ -67,6 +69,77 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
 }
 
 #[test]
+fn typed_runtime_registry_exposes_manager_tools_when_manager_enabled() {
+    let executor =
+        build_executor().with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for tool_name in [
+        "topic_binding_set",
+        "topic_binding_get",
+        "agent_profile_upsert",
+        "topic_agent_tools_get",
+        "topic_agent_tools_enable",
+        "topic_agent_tools_disable",
+    ] {
+        assert!(
+            tool_names.contains(tool_name),
+            "missing typed runtime manager tool: {tool_name}"
+        );
+    }
+}
+
+#[test]
+fn typed_runtime_registry_exposes_manager_lifecycle_tools_when_lifecycle_is_attached() {
+    let lifecycle = Arc::new(RecordingTopicLifecycle::new());
+    let executor = build_executor()
+        .with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77)
+        .with_manager_topic_lifecycle(lifecycle);
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for tool_name in ["forum_topic_create", "forum_topic_list"] {
+        assert!(
+            tool_names.contains(tool_name),
+            "missing typed runtime lifecycle tool: {tool_name}"
+        );
+    }
+}
+
+#[test]
+fn typed_runtime_registry_applies_execution_profile_tool_policy() {
+    let mut executor =
+        build_executor().with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
+    executor.set_execution_profile(AgentExecutionProfile::new(
+        None,
+        None,
+        ToolAccessPolicy::new(
+            Some(HashSet::from(["execute_command".to_string()])),
+            HashSet::default(),
+        ),
+    ));
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(tool_names.contains("execute_command"));
+    assert!(!tool_names.contains("write_todos"));
+    assert!(!tool_names.contains("topic_agent_tools_get"));
+}
+
+#[test]
 fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     let settings = Arc::new(AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),
@@ -88,6 +161,31 @@ fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     assert!(tool_names.contains("write_todos"));
     assert!(tool_names.contains("write_file"));
     assert!(!tool_names.contains("compress"));
+}
+
+#[test]
+fn current_tool_definitions_include_manager_tools_for_v1_route() {
+    let settings = Arc::new(AgentSettings {
+        agent_model_id: Some("deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings)
+        .with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
+
+    let tool_names = executor
+        .current_tool_definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(tool_names.contains("execute_command"));
+    assert!(tool_names.contains("write_todos"));
+    assert!(tool_names.contains("topic_agent_tools_get"));
+    assert!(tool_names.contains("topic_agent_tools_enable"));
+    assert!(tool_names.contains("agent_profile_upsert"));
 }
 
 #[tokio::test]
