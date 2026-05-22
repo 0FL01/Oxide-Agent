@@ -103,6 +103,29 @@ fn executor_exposes_wiki_memory_tools_when_store_configured() {
 }
 
 #[tokio::test]
+async fn new_task_clears_stale_todos_before_completion_check() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"answer ready","tool_call":null,"final_answer":"quick answer","awaiting_user_input":null}"#,
+    );
+    executor
+        .session_mut()
+        .memory
+        .todos
+        .items
+        .push(crate::agent::providers::TodoItem::new(
+            "stale unfinished work",
+        ));
+
+    let result = executor.execute("answer a simple question", None).await;
+
+    assert!(matches!(
+        result,
+        Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "quick answer"
+    ));
+    assert!(executor.session().memory.todos.items.is_empty());
+}
+
+#[tokio::test]
 async fn executor_injects_configured_wiki_memory_context() {
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("mock-model".to_string()),

@@ -290,6 +290,7 @@ impl AgentExecutor {
     fn prime_session_for_execution(&mut self, task: &str, append_user_message: bool) -> String {
         if append_user_message {
             self.session.reset_memory_behavior_runtime();
+            self.session.clear_todos();
         }
         self.session.start_task();
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
