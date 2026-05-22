@@ -7,6 +7,7 @@ use crate::agent::runner::{
 };
 use crate::agent::session::{AgentSession, PendingUserInput};
 use crate::agent::skills::SkillRegistry;
+use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::llm::{Message, ToolCall, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::Error;
@@ -39,6 +40,7 @@ pub(super) struct TopicInfraContext {
 pub(super) struct PreparedExecution {
     pub(super) todos_arc: Arc<Mutex<TodoList>>,
     pub(super) registry: ToolRegistry,
+    pub(super) tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
     pub(super) tools: Vec<ToolDefinition>,
     pub(super) system_prompt: String,
     pub(super) messages: Vec<Message>,
@@ -82,6 +84,7 @@ impl PreparedExecution {
         ctx.session_id = session_id;
         ctx.memory_scope = memory_scope;
         ctx.memory_behavior = memory_behavior;
+        ctx.tool_runtime_registry = self.tool_runtime_registry.as_ref().map(Arc::clone);
 
         ctx
     }

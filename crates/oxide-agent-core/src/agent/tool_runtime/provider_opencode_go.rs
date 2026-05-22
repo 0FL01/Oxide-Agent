@@ -30,6 +30,45 @@ pub struct OpenCodeGoToolCallBatch {
 }
 
 impl OpenCodeGoToolCallBatch {
+    /// Build a runtime batch from already-normalized LLM tool calls.
+    #[must_use]
+    pub fn from_llm_tool_calls(turn_id: TurnId, tool_calls: Vec<ToolCall>) -> Self {
+        let calls = tool_calls
+            .into_iter()
+            .enumerate()
+            .map(|(batch_index, tool_call)| {
+                let correlation = tool_call.correlation();
+                let invocation_id = correlation.invocation_id.clone();
+                let original_provider_tool_call_id = correlation
+                    .provider_tool_call_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_string());
+                let tool_call_id = ToolCallId::from(tool_call.wire_tool_call_id().to_string());
+                let tool_name = tool_call.function.name;
+                let raw_arguments = tool_call.function.arguments;
+                OpenCodeGoParsedToolCall {
+                    batch_index,
+                    invocation_id,
+                    tool_call_id: tool_call_id.clone(),
+                    original_provider_tool_call_id,
+                    tool_name: ToolName::from(tool_name.clone()),
+                    raw_arguments: raw_arguments.clone(),
+                    raw_provider_payload: json!({
+                        "id": tool_call_id.as_str(),
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": raw_arguments,
+                        },
+                    }),
+                    protocol_issue: None,
+                }
+            })
+            .collect();
+
+        Self { turn_id, calls }
+    }
+
     /// Convert parsed calls to existing LLM `ToolCall` history items.
     #[must_use]
     pub fn to_llm_tool_calls(&self) -> Vec<ToolCall> {
@@ -282,6 +321,7 @@ mod tests {
     use crate::agent::tool_runtime::output::{
         CleanupStatus, OutputTruncationMetadata, ToolOutput, ToolOutputIdentity, ToolOutputStatus,
     };
+    use crate::llm::{ToolCallCorrelation, ToolCallFunction, ToolProtocol, ToolTransport};
     use chrono::Utc;
     use serde_json::json;
 
@@ -425,6 +465,40 @@ mod tests {
         assert_eq!(encoded["tool_call_id"], "call_encoded");
         assert_eq!(content["tool_call_id"], "call_encoded");
         assert_eq!(content["status"], "provider_protocol_error");
+    }
+
+    #[test]
+    fn batch_from_llm_tool_calls_preserves_correlation_ids() {
+        let tool_call = ToolCall::new(
+            "invoke-read-1",
+            ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-read-1")
+                .with_provider_tool_call_id("call-read-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let batch =
+            OpenCodeGoToolCallBatch::from_llm_tool_calls(TurnId::from("turn_7"), vec![tool_call]);
+
+        assert_eq!(batch.calls.len(), 1);
+        assert_eq!(batch.calls[0].invocation_id.as_str(), "invoke-read-1");
+        assert_eq!(batch.calls[0].tool_call_id.as_str(), "call-read-1");
+        assert_eq!(
+            batch.calls[0].original_provider_tool_call_id.as_deref(),
+            Some("call-read-1")
+        );
+        assert_eq!(batch.calls[0].tool_name.as_str(), "read_file");
+        assert_eq!(
+            batch.to_llm_tool_calls()[0].wire_tool_call_id(),
+            "call-read-1"
+        );
     }
 
     fn parse(value: Value) -> OpenCodeGoToolCallBatch {

@@ -1,5 +1,6 @@
 //! Runtime configuration for async parallel tool execution.
 
+use crate::config::ModelInfo;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -100,4 +101,33 @@ impl Default for ToolRuntimeConfig {
             max_in_flight_tools: None,
         }
     }
+}
+
+/// Whether a model route is supported by the v1 typed tool runtime.
+#[must_use]
+pub fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
+    let provider = normalize_tool_runtime_route_part(&model.provider);
+    if provider != "opencode-go" {
+        return false;
+    }
+
+    let model_id = model
+        .id
+        .rsplit_once('/')
+        .map_or(model.id.as_str(), |(_, tail)| tail);
+    normalize_tool_runtime_route_part(model_id) == "deepseek-v4-flash"
+}
+
+fn normalize_tool_runtime_route_part(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch == '_' || ch.is_whitespace() {
+                '-'
+            } else {
+                ch.to_ascii_lowercase()
+            }
+        })
+        .collect()
 }

@@ -7,7 +7,9 @@ use crate::agent::providers::{
     WebFetchMdProvider, WikiMemoryProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
-use crate::agent::tool_runtime::{ToolExecutor, ToolRegistry as RuntimeToolRegistry};
+use crate::agent::tool_runtime::{
+    v1_tool_runtime_enabled_for_model, ToolExecutor, ToolRegistry as RuntimeToolRegistry,
+};
 use crate::config::ModelInfo;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -119,30 +121,7 @@ impl AgentExecutor {
 
     #[must_use]
     pub(super) fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
-        let provider = Self::normalize_tool_runtime_route_part(&model.provider);
-        if provider != "opencode-go" {
-            return false;
-        }
-
-        let model_id = model
-            .id
-            .rsplit_once('/')
-            .map_or(model.id.as_str(), |(_, tail)| tail);
-        Self::normalize_tool_runtime_route_part(model_id) == "deepseek-v4-flash"
-    }
-
-    fn normalize_tool_runtime_route_part(value: &str) -> String {
-        value
-            .trim()
-            .chars()
-            .map(|ch| {
-                if ch == '_' || ch.is_whitespace() {
-                    '-'
-                } else {
-                    ch.to_ascii_lowercase()
-                }
-            })
-            .collect()
+        v1_tool_runtime_enabled_for_model(model)
     }
 
     fn register_core_providers(

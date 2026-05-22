@@ -412,8 +412,13 @@ impl AgentExecutor {
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
-        let tools = if Self::v1_tool_runtime_enabled_for_model(&model) {
-            self.build_tool_runtime_registry(progress_tx).specs()
+        let tool_runtime_registry = if Self::v1_tool_runtime_enabled_for_model(&model) {
+            Some(Arc::new(self.build_tool_runtime_registry(progress_tx)))
+        } else {
+            None
+        };
+        let tools = if let Some(runtime_registry) = &tool_runtime_registry {
+            runtime_registry.specs()
         } else {
             self.execution_profile
                 .tool_policy()
@@ -435,6 +440,7 @@ impl AgentExecutor {
         PreparedExecution {
             todos_arc,
             registry,
+            tool_runtime_registry,
             tools,
             system_prompt,
             messages,

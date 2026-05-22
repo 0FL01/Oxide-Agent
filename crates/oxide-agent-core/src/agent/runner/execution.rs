@@ -1292,6 +1292,18 @@ impl AgentRunner {
                 .await);
         }
 
+        if ctx.tool_runtime_registry.is_some() {
+            return self
+                .execute_tools_with_runtime(
+                    ctx,
+                    state,
+                    raw_json,
+                    response.reasoning_content.take(),
+                    tool_calls,
+                )
+                .await;
+        }
+
         self.record_assistant_tool_call(
             ctx,
             raw_json,
@@ -1988,6 +2000,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-chatgpt-route-selection",
@@ -2075,6 +2088,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-history-repair",
@@ -2133,6 +2147,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-unstructured-structured-fallback",
@@ -2187,6 +2202,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-overflow-runtime-compaction",
@@ -2277,6 +2293,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-pre-sampling-runtime-compaction",
@@ -2340,6 +2357,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-full-budget-threshold",
@@ -2382,6 +2400,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "refresh-transient-test",
@@ -2425,6 +2444,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-token-metrics",
@@ -2505,6 +2525,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-provider-failover",
@@ -2626,6 +2647,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-model-downshift",
@@ -2736,6 +2758,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-primary-recovery",
@@ -2817,6 +2840,7 @@ mod tests {
             system_prompt: "system prompt",
             tools: &tools,
             registry: &registry,
+            tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-nvidia-capability-skip",

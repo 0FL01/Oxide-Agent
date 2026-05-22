@@ -17,7 +17,9 @@ pub mod runtime;
 pub mod types;
 
 pub use artifacts::{ArtifactKind, ArtifactRef};
-pub use config::{ToolOutputBudget, ToolRuntimeConfig, ToolTimeoutConfig};
+pub use config::{
+    v1_tool_runtime_enabled_for_model, ToolOutputBudget, ToolRuntimeConfig, ToolTimeoutConfig,
+};
 pub use executor::ToolExecutor;
 pub use history::{ToolHistoryError, ToolHistoryWriter};
 pub use invocation::{

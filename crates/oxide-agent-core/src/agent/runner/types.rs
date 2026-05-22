@@ -8,6 +8,7 @@ use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
 use crate::agent::skills::SkillRegistry;
+use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
     get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
 };
@@ -123,6 +124,8 @@ pub struct AgentRunnerContext<'a> {
     pub tools: &'a [ToolDefinition],
     /// Tool registry for executing tool calls.
     pub registry: &'a ToolRegistry,
+    /// Optional typed runtime registry for v1 async tool execution.
+    pub tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
     /// Progress event channel.
     pub progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     /// Shared todo list state.
@@ -171,6 +174,7 @@ impl<'a> AgentRunnerContext<'a> {
             system_prompt: base.system_prompt,
             tools: base.tools,
             registry: base.registry,
+            tool_runtime_registry: None,
             progress_tx: base.progress_tx,
             todos_arc: base.todos_arc,
             task_id: base.task_id,
