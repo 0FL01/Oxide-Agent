@@ -6,16 +6,19 @@
 pub mod artifacts;
 pub mod config;
 pub mod executor;
+pub mod history;
 pub mod invocation;
 pub mod normalizer;
 pub mod output;
 pub mod provider_opencode_go;
 pub mod registry;
+pub mod runtime;
 pub mod types;
 
 pub use artifacts::{ArtifactKind, ArtifactRef};
 pub use config::{ToolOutputBudget, ToolRuntimeConfig, ToolTimeoutConfig};
 pub use executor::ToolExecutor;
+pub use history::{ToolHistoryError, ToolHistoryWriter};
 pub use invocation::{
     EnvironmentMetadata, ModelMetadata, ProviderMetadata, ToolExecutionContext, ToolInvocation,
 };
@@ -29,4 +32,5 @@ pub use provider_opencode_go::{
     OpenCodeGoToolCallParser, OpenCodeGoToolOutputEncoder, OpenCodeGoToolParseError,
 };
 pub use registry::{RegistryError, ToolRegistry};
+pub use runtime::{ToolCallRuntime, ToolRuntimeFatal, ToolTurnContext};
 pub use types::{ToolBatchId, ToolCallId, ToolName, TurnId};
