@@ -12,38 +12,32 @@ use std::sync::Arc;
 
 use super::providers::SequencedZaiProvider;
 
-/// Response sequence for delegated sub-agent tests.
+/// Response sequence for async sub-agent spawn tests.
 ///
-/// Call order: main-agent (delegate_to_sub_agent) -> sub-agent (write_todos) ->
-/// sub-agent (empty unstructured) -> main-agent (final text).
-pub fn delegated_sub_agent_empty_content_responses() -> Vec<oxide_agent_core::llm::ChatResponse> {
+/// Call order starts with main-agent `spawn_sub_agents`. The background sub-agent
+/// and main-agent continuation can race, so the remaining scripted responses are
+/// plain final text and are safe for either model.
+pub fn async_sub_agent_spawn_responses() -> Vec<oxide_agent_core::llm::ChatResponse> {
     vec![
         super::helpers::tool_call_response(
-            "delegate_to_sub_agent",
+            "spawn_sub_agents",
             serde_json::json!({
-                "task": "Capture package status and finish.",
-                "tools": ["write_todos"],
-            }),
-        ),
-        super::helpers::tool_call_response(
-            "write_todos",
-            serde_json::json!({
-                "todos": [
+                "tasks": [
                     {
-                        "description": "Capture package status",
-                        "status": "completed"
+                        "task": "Capture package status and finish.",
+                        "tools": ["write_todos"]
                     }
                 ]
             }),
         ),
-        super::helpers::empty_unstructured_response(),
+        super::helpers::unstructured_text_response("sub-agent spawned"),
         super::helpers::unstructured_text_response("delegation complete"),
     ]
 }
 
 /// Set up AppState with a custom ZAI LLM provider.
-/// Uses two SequencedZaiProvider instances: one for the main-agent ("main-model"),
-/// one for the sub-agent ("glm-4.7").
+/// Uses one SequencedZaiProvider for both the main-agent ("main-model") and
+/// sub-agent ("glm-4.7") model ids.
 pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
     let agent_settings = Arc::new(AgentSettings {
         agent_model_id: Some("main-model".to_string()),

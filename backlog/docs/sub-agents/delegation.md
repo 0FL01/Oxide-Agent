@@ -1,38 +1,35 @@
 # Механизм делегирования
 
-`delegate_to_sub_agent` инструмент для выполнения задач в изолированном саб-агенте.
+Асинхронные инструменты `spawn_sub_agents`, `wait_sub_agents` и `cancel_sub_agents` запускают задачи в изолированных саб-агентах.
 
-## Инструмент delegate_to_sub_agent
+## Инструмент spawn_sub_agents
 
 ### Определение
 
 ```rust
 // src/agent/providers/delegation.rs:182-209
 ToolDefinition {
-    name: "delegate_to_sub_agent".to_string(),
-    description: "Delegate rough work to lightweight sub-agent. \
-    Pass a short, clear task and a list of allowed tools. \
-    You can add additional context (e.g., a quote from a skill). \
-    If the sub-agent doesn't finish, a partial report will be returned."
+    name: "spawn_sub_agents".to_string(),
+    description: "Spawn up to five lightweight sub-agents and return their ids immediately. \
+    Use wait_sub_agents only when results are needed."
         .to_string(),
     parameters: json!({
         "type": "object",
         "properties": {
-            "task": {
-                "type": "string",
-                "description": "Task for sub-agent"
-            },
-            "tools": {
+            "tasks": {
                 "type": "array",
-                "description": "Whitelist of allowed tools",
-                "items": {"type": "string"}
-            },
-            "context": {
-                "type": "string",
-                "description": "Additional context (optional)"
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string"},
+                        "tools": {"type": "array", "items": {"type": "string"}},
+                        "context": {"type": "string"}
+                    },
+                    "required": ["task", "tools"]
+                }
             }
         },
-        "required": ["task", "tools"]
+        "required": ["tasks"]
     }),
 }
 ```
@@ -41,41 +38,54 @@ ToolDefinition {
 
 | Параметр | Тип | Обязательный | Описание |
 |----------|------|--------------|----------|
-| `task` | string | ✅ Да | Задача для саб-агента |
-| `tools` | array[string] | ✅ Да | Whitelist разрешённых инструментов |
-| `context` | string | ❌ Нет | Дополнительный контекст (опционально) |
+| `tasks` | array[object] | ✅ Да | До пяти задач для саб-агентов |
+| `tasks[].task` | string | ✅ Да | Задача для саб-агента |
+| `tasks[].tools` | array[string] | ✅ Да | Whitelist разрешённых инструментов |
+| `tasks[].context` | string | ❌ Нет | Дополнительный контекст |
 
 ## Примеры вызова
 
 ### Пример 1: Поиск файлов
 ```json
 {
-  "task": "Найди все .rs файлы в src/agent/",
-  "tools": ["execute_command", "cat"]
+  "tasks": [
+    {
+      "task": "Найди все .rs файлы в src/agent/",
+      "tools": ["execute_command", "cat"]
+    }
+  ]
 }
 ```
 
 ### Пример 2: Клонирование и поиск
 ```json
 {
-  "task": "Клонируй репозиторий и найди все вызовы async fn",
-  "tools": ["execute_command", "grep"],
-  "context": "Ищем в src/ директории"
+  "tasks": [
+    {
+      "task": "Клонируй репозиторий и найди все вызовы async fn",
+      "tools": ["execute_command", "grep"],
+      "context": "Ищем в src/ директории"
+    }
+  ]
 }
 ```
 
 ### Пример 3: Веб-поиск
 ```json
 {
-  "task": "Найди последние новости о Rust",
-  "tools": ["web_search", "web_extract"]
+  "tasks": [
+    {
+      "task": "Найди последние новости о Rust",
+      "tools": ["web_search", "web_extract"]
+    }
+  ]
 }
 ```
 
 ## Реализация
 
 ```rust
-// src/agent/providers/delegation.rs:216-329
+// src/agent/providers/delegation.rs
 async fn execute(
     &self,
     tool_name: &str,
@@ -83,103 +93,20 @@ async fn execute(
     progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     cancellation_token: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<String> {
-    if tool_name != "delegate_to_sub_agent" {
-        return Err(anyhow!("Unknown delegation tool: {tool_name}"));
-    }
-
-    let args: DelegateToSubAgentArgs = serde_json::from_str(arguments)?;
-    if args.task.trim().is_empty() {
-        return Err(anyhow!("Sub-agent task cannot be empty"));
-    }
-    if args.tools.is_empty() {
-        return Err(anyhow!("Sub-agent tools whitelist cannot be empty"));
-    }
-
-    let task_id = format!("sub-{}", Uuid::new_v4());
-
-    // Создание sub-session с родительским токеном отмены
-    let mut sub_session = match cancellation_token {
-        Some(parent_token) => {
-            EphemeralSession::with_parent_token(sub_agent_context_budget, parent_token)
+    match tool_name {
+        "spawn_sub_agents" => {
+            // Validate up to five tasks, reserve active slots, prepare isolated
+            // EphemeralSession contexts, then tokio::spawn background jobs.
+            // The JSON response contains started job ids immediately.
         }
-        None => EphemeralSession::new(sub_agent_context_budget),
-    };
-    sub_session
-        .memory_mut()
-        .add_message(AgentMessage::user(task.as_str()));
-
-    let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
-    let providers = self.build_sub_agent_providers(Arc::clone(&todos_arc), progress_tx);
-    let available_tools: HashSet<String> = providers
-        .iter()
-        .flat_map(|provider| provider.tools())
-        .map(|tool| tool.name)
-        .collect();
-
-    let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
-    let registry = self.build_registry(&allowed, providers);
-    let tools = registry.all_tools();
-
-    let mut messages =
-        AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages());
-
-    let system_prompt =
-        create_sub_agent_system_prompt(task.as_str(), &tools, context.as_deref());
-
-    let mut runner = self.create_sub_agent_runner(Self::blocked_tool_set());
-
-    let mut ctx = AgentRunnerContext {
-        task: task.as_str(),
-        system_prompt: &system_prompt,
-        tools: &tools,
-        registry: &registry,
-        progress_tx,
-        todos_arc: &todos_arc,
-        task_id: &task_id,
-        messages: &mut messages,
-        agent: &mut sub_session,
-        skill_registry: None,
-        config: {
-            let (model_id, _, _) = self.settings.get_configured_sub_agent_model();
-            AgentRunnerConfig::new(
-                model_id,
-                SUB_AGENT_MAX_ITERATIONS,
-                AGENT_CONTINUATION_LIMIT,
-                self.settings.get_sub_agent_timeout_secs(),
-            )
-            .with_sub_agent(true)
-        },
-    };
-
-    info!(task_id = %task_id, "Running sub-agent delegation");
-
-    let timeout_secs = self.settings.get_sub_agent_timeout_secs();
-    let timeout_duration = Duration::from_secs(timeout_secs + 30);
-    match timeout(timeout_duration, runner.run(&mut ctx)).await {
-        Ok(Ok(result)) => Ok(result),
-        Ok(Err(err)) => {
-            warn!(task_id = %task_id, error = %err, "Sub-agent failed");
-            Ok(build_sub_agent_report(SubAgentReportContext {
-                task_id: &task_id,
-                status: SubAgentReportStatus::Error,
-                error: Some(err.to_string()),
-                memory: sub_session.memory(),
-                timeout_secs: self.settings.get_sub_agent_timeout_secs(),
-            }))
+        "wait_sub_agents" => {
+            // Poll or wait for selected job ids. Terminal results include
+            // success/error/timeout/cancelled reports from the job store.
         }
-        Err(_) => {
-            warn!(task_id = %task_id, "Sub-agent hard timed out");
-            Ok(build_sub_agent_report(SubAgentReportContext {
-                task_id: &task_id,
-                status: SubAgentReportStatus::Timeout,
-                error: Some(format!(
-                    "Sub-agent hard timed out after {} seconds",
-                    limit + 30
-                )),
-                memory: sub_session.memory(),
-                timeout_secs: limit,
-            }))
+        "cancel_sub_agents" => {
+            // Cancel selected jobs or all run-scoped jobs.
         }
+        _ => return Err(anyhow!("Unknown delegation tool: {tool_name}")),
     }
 }
 ```
@@ -307,11 +234,19 @@ fn build_sub_agent_providers(
 }
 ```
 
-## Возврат результата
+## Ожидание результата
 
 ### Успешное завершение
-```
-"Результат выполнения задачи саб-агента"
+```json
+{
+  "results": [
+    {
+      "id": "sub-uuid",
+      "status": "completed",
+      "output": "Результат выполнения задачи саб-агента"
+    }
+  ]
+}
 ```
 
 ### Ошибка или тайм-аут

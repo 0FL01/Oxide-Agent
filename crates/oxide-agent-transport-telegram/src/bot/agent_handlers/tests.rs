@@ -1707,7 +1707,7 @@ async fn resolve_execution_profile_loads_profile_policy_for_static_topic_agent()
             serde_json::json!({
                 "systemPrompt": "act as infra agent",
                 "allowedTools": ["todos_write", "execute_command"],
-                "blockedTools": ["delegate_to_sub_agent"],
+                "blockedTools": ["spawn_sub_agents"],
                 "disabledHooks": ["search_budget"]
             }),
             "persistent topic runbook",
@@ -1741,7 +1741,7 @@ async fn resolve_execution_profile_loads_profile_policy_for_static_topic_agent()
     assert!(prompt.contains("persistent topic runbook"));
     assert!(profile.tool_policy().allows("todos_write"));
     assert!(profile.tool_policy().allows("reminder_schedule"));
-    assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
+    assert!(!profile.tool_policy().allows("spawn_sub_agents"));
     assert!(!profile.tool_policy().allows("file_write"));
     assert!(!profile.hook_policy().allows("search_budget"));
 }
@@ -1769,7 +1769,9 @@ async fn resolve_execution_profile_applies_manager_default_blocklist() {
     .await;
 
     assert!(profile.tool_policy().allows("execute_command"));
-    assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
+    assert!(!profile.tool_policy().allows("spawn_sub_agents"));
+    assert!(!profile.tool_policy().allows("wait_sub_agents"));
+    assert!(!profile.tool_policy().allows("cancel_sub_agents"));
     assert!(!profile.tool_policy().allows("ytdlp_get_video_metadata"));
     assert!(!profile.tool_policy().allows("ytdlp_download_video"));
 }
@@ -1807,7 +1809,9 @@ async fn resolve_execution_profile_keeps_manager_tools_available_with_profile_al
     assert!(profile.tool_policy().allows("topic_agents_md_upsert"));
     assert!(profile.tool_policy().allows("topic_agents_md_get"));
     assert!(profile.tool_policy().allows("forum_topic_list"));
-    assert!(!profile.tool_policy().allows("delegate_to_sub_agent"));
+    assert!(!profile.tool_policy().allows("spawn_sub_agents"));
+    assert!(!profile.tool_policy().allows("wait_sub_agents"));
+    assert!(!profile.tool_policy().allows("cancel_sub_agents"));
 }
 
 #[tokio::test]
@@ -1850,7 +1854,9 @@ async fn resolve_execution_profile_blocks_ssh_jira_mattermost_in_dm_context() {
 
     // Regular tools should still be allowed
     assert!(dm_profile.tool_policy().allows("todos_write"));
-    assert!(dm_profile.tool_policy().allows("delegate_to_sub_agent"));
+    assert!(dm_profile.tool_policy().allows("spawn_sub_agents"));
+    assert!(dm_profile.tool_policy().allows("wait_sub_agents"));
+    assert!(dm_profile.tool_policy().allows("cancel_sub_agents"));
 
     // Forum context - same agent_id (no agent configured, so no topic-agent blocklist)
     let forum_profile = resolve_execution_profile(

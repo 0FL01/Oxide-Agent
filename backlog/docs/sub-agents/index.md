@@ -5,7 +5,7 @@
 ## Структура
 
 - [**Жизненный цикл саб-агента**](lifecycle.md) - создание, выполнение, завершение
-- [**Механизм делегирования**](delegation.md) - `delegate_to_sub_agent` инструмент
+- [**Механизм делегирования**](delegation.md) - `spawn_sub_agents`, `wait_sub_agents`, `cancel_sub_agents`
 - [**EphemeralSession**](ephemeral-session.md) - изолированная сессия саб-агента
 
 ## Отличия от Main Agent
@@ -14,7 +14,6 @@
 |---------------|-------------|-----------|
 | Роль | Оркестратор (анализ, принятие решений) | Рабочий (выполнение задач) |
 | CompletionCheckHook | ✅ Да | ✅ Да |
-| WorkloadDistributorHook | ✅ Да | ❌ Нет |
 | SubAgentSafetyHook | ❌ Нет | ✅ Да |
 | SearchBudgetHook | ✅ Да | ✅ Да |
 | TimeoutReportHook | ✅ Да | ✅ Да |
@@ -38,7 +37,9 @@
 ```rust
 // src/agent/providers/delegation.rs:39
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
-    "delegate_to_sub_agent",  // Запрещено рекурсивное делегирование
+    "spawn_sub_agents",      // Запрещено рекурсивное делегирование
+    "wait_sub_agents",       // Запрещено управление саб-агентами из саб-агента
+    "cancel_sub_agents",     // Запрещено управление саб-агентами из саб-агента
     "send_file_to_user",     // Запрещена отправка файлов пользователю
 ];
 ```
@@ -64,7 +65,7 @@ fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
 ## Поток делегирования
 
 ```
-Main Agent вызывает delegate_to_sub_agent
+Main Agent вызывает spawn_sub_agents
     ↓
 Создаётся EphemeralSession с родительским токеном отмены
     ↓
@@ -72,9 +73,9 @@ Main Agent вызывает delegate_to_sub_agent
     ↓
 Создаётся SubAgentRunner с хуками
     ↓
-Запускается runner.run() с тайм-аутом
+Саб-агент запускается в фоне с тайм-аутом
     ↓
-Результат возвращается как JSON-отчёт
+Результат доступен через wait_sub_agents
 ```
 
 ## Конфигурация саб-агентов
@@ -95,5 +96,5 @@ Main Agent вызывает delegate_to_sub_agent
 
 ### Ограничения
 - `SubAgentSafetyHook` проверяет итерации, токены и инструменты
-- Нет возможности делегировать (`delegate_to_sub_agent` заблокирован)
+- Нет возможности запускать вложенных саб-агентов (`spawn_sub_agents`/`wait_sub_agents`/`cancel_sub_agents` заблокированы)
 - Нет возможности отправлять файлы (`send_file_to_user` заблокирован)

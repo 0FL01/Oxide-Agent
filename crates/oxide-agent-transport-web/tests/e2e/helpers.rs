@@ -50,21 +50,6 @@ pub fn unstructured_text_response(content: &str) -> ChatResponse {
     }
 }
 
-/// Build an empty-content unstructured ChatResponse (used to trigger the empty-content path).
-pub fn empty_unstructured_response() -> ChatResponse {
-    ChatResponse {
-        content: Some(String::new()),
-        tool_calls: Vec::new(),
-        finish_reason: "stop".to_string(),
-        reasoning_content: None,
-        usage: Some(TokenUsage {
-            prompt_tokens: 10,
-            completion_tokens: 0,
-            total_tokens: 10,
-        }),
-    }
-}
-
 /// Build a structured final-answer ChatResponse.
 pub fn structured_final_answer_response(final_answer: &str) -> ChatResponse {
     unstructured_text_response(

@@ -51,7 +51,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Web Search and Data Extraction:** SearXNG (self-hosted, default) and Tavily (API) handle discovery; local `web_markdown` fetches one known URL as Markdown.
     *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
         - Completion Check Hook - validates task completion
-        - Workload Distributor - enforces separation of duties by blocking heavy manual operations in the Main Agent
+        - Tool Access Policy - enforces profile-level tool allowlists and blocklists
         - Search Budget Hook - prevents infinite loops in tool calls
         - Soft Timeout Report Hook - provides detailed timeout reporting
         - Sub-Agent Safety - ensures safe execution environments
@@ -418,7 +418,7 @@ SSH, Jira, and Mattermost tools are **blocked by default in private/DM chats** f
 
 **Configuration:**
 ```dotenv
-DM_ALLOWED_TOOLS=todos_write,todos_list,delegate_to_sub_agent  # Allowlist mode
+DM_ALLOWED_TOOLS=todos_write,todos_list,spawn_sub_agents,wait_sub_agents,cancel_sub_agents  # Allowlist mode
 DM_BLOCKED_TOOLS=sandbox_exec  # Additional blocklist
 ```
 
@@ -534,7 +534,7 @@ The agent uses a modular provider system, each offering a specialized set of too
 - **Todos Provider** (`todos.rs`) — task list management for long-term planning
 - **YT-DLP Provider** (`ytdlp.rs`) — video and audio download from various platforms
 - **File Hoster Provider** (`filehoster.rs`) — public file upload to temporary hosting (up to 4GB)
-- **Delegation Provider** (`delegation.rs`) — sub-agent delegation for complex task decomposition
+- **Delegation Provider** (`delegation.rs`) — async sub-agent spawn, wait, and cancellation for complex task decomposition
 - **Reminder Provider** (`reminder.rs`) — reminder scheduling with pause/resume/retry
 - **Kokoro TTS Provider** (`tts/`) — English voice message synthesis
 - **Silero TTS Provider** (`silero_tts/`) — Russian voice message synthesis with SSML support

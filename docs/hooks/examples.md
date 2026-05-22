@@ -57,7 +57,7 @@ User Request: "Исследуй и сравни репозитории"
     ↓
 6. LLM Call с результатами
     ↓
-7. BeforeTool (delegate_to_sub_agent)
+7. BeforeTool (spawn_sub_agents)
    ├─ CompletionCheckHook: Continue
    └─ SubAgentSafetyHook: Continue (не sub-agent)
 ```

@@ -5,10 +5,10 @@
 ## Пошаговый процесс
 
 ```
-1. Main Agent вызывает delegate_to_sub_agent
-   ├─ task: "Задача для саб-агента"
-   ├─ tools: ["execute_command", "cat", ...]
-   └─ context: "Дополнительный контекст (опционально)"
+1. Main Agent вызывает spawn_sub_agents
+   ├─ tasks[0].task: "Задача для саб-агента"
+   ├─ tasks[0].tools: ["execute_command", "cat", ...]
+   └─ tasks[0].context: "Дополнительный контекст (опционально)"
     ↓
 2. Создание EphemeralSession
    ├─ AgentMemory наследует context window основного агента, если sub-agent window не задан явно
@@ -42,7 +42,7 @@
    ├─ config: конфигурация с лимитами
    └─ agent: EphemeralSession
     ↓
-8. Запуск с тайм-аутом
+8. Фоновый запуск с тайм-аутом
    ├─ timeout_duration = sub_agent_timeout_secs + 30
    ├─ runner.run(&mut ctx)
    └─ timeout(timeout_duration, ...)
@@ -56,10 +56,10 @@
    │   └── after_agent_hook_result()
    └─ или TimeoutReportHook при тайм-ауте
     ↓
-10. Возврат результата
-    ├─ Success → JSON с результатом
-    ├─ Error → JSON с ошибкой
-    └─ Timeout → JSON с тайм-аутом и отчётом
+10. Сохранение результата в run-scoped job store
+    ├─ Success → JSON с результатом для wait_sub_agents
+    ├─ Error → JSON с ошибкой для wait_sub_agents
+    └─ Timeout → JSON с тайм-аутом и отчётом для wait_sub_agents
 ```
 
 ## Пример выполнения
@@ -67,9 +67,13 @@
 ### Шаг 1: Вызов из Main Agent
 ```json
 {
-  "task": "Найти все .rs файлы в src/agent/",
-  "tools": ["execute_command", "cat"],
-  "context": null
+  "tasks": [
+    {
+      "task": "Найти все .rs файлы в src/agent/",
+      "tools": ["execute_command", "cat"],
+      "context": null
+    }
+  ]
 }
 ```
 
@@ -112,16 +116,12 @@ fn filter_allowed_tools(
 let mut runner = self.create_sub_agent_runner(Self::blocked_tool_set());
 ```
 
-### Шаг 5: Запуск с тайм-аутом
+### Шаг 5: Фоновый запуск с тайм-аутом
 ```rust
-// src/agent/providers/delegation.rs:300-328
-let timeout_secs = self.settings.get_sub_agent_timeout_secs();
-let timeout_duration = Duration::from_secs(timeout_secs + 30);
-match timeout(timeout_duration, runner.run(&mut ctx)).await {
-    Ok(Ok(result)) => Ok(result),
-    Ok(Err(err)) => Ok(build_sub_agent_report(...)),
-    Err(_) => Ok(build_sub_agent_report(...)),
-}
+let handle = tokio::spawn(async move {
+    run_prepared_sub_agent_execution(prepared, cancellation_token).await
+});
+job_store.insert_running(job_id, task, cancellation_token, handle);
 ```
 
 ## Отмена саб-агента
@@ -181,7 +181,7 @@ fn build_sub_agent_report(ctx: SubAgentReportContext<'_>) -> String {
 | `max_iterations` | 60 | Лимит итераций |
 | `max_tokens` | inherited / explicit override | Лимит токенов |
 | `timeout` | настроенный + 30 сек | Жёсткий тайм-аут |
-| `blocked_tools` | delegate_to_sub_agent, send_file_to_user | Заблокированные инструменты |
+| `blocked_tools` | spawn_sub_agents, wait_sub_agents, cancel_sub_agents, send_file_to_user | Заблокированные инструменты |
 
 ## Логирование
 

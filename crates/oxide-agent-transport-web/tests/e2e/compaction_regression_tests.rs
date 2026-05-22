@@ -882,7 +882,7 @@ async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_compaction_runtime_preserves_delegate_results_while_cleaning_regular_tools() {
+async fn e2e_compaction_runtime_preserves_sub_agent_wait_results_while_cleaning_regular_tools() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
@@ -899,13 +899,13 @@ async fn e2e_compaction_runtime_preserves_delegate_results_while_cleaning_regula
         &session_id,
         user_id,
         vec![
-            AgentMessage::user_task("Investigate delegated network findings"),
+            AgentMessage::user_task("Investigate sub-agent network findings"),
             AgentMessage::tool(
-                "delegate-old",
-                "delegate_to_sub_agent",
+                "sub-agent-wait-old",
+                "wait_sub_agents",
                 &format!(
-                    "delegated summary DELEGATE_MARKER {}",
-                    token_rich_payload("delegate", 2_500)
+                    "sub-agent summary SUB_AGENT_MARKER {}",
+                    token_rich_payload("sub-agent", 2_500)
                 ),
             ),
             AgentMessage::tool(
@@ -990,18 +990,18 @@ async fn e2e_compaction_runtime_preserves_delegate_results_while_cleaning_regula
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    let delegate_tool = messages
+    let sub_agent_tool = messages
         .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("delegate-old"))
-        .expect("delegate result should exist");
+        .find(|message| message.tool_call_id.as_deref() == Some("sub-agent-wait-old"))
+        .expect("sub-agent wait result should exist");
     let web_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("web-old"))
         .expect("web result should exist");
 
-    assert!(delegate_tool.content.contains("DELEGATE_MARKER"));
-    assert!(!delegate_tool.is_externalized());
-    assert!(!delegate_tool.is_pruned());
+    assert!(sub_agent_tool.content.contains("SUB_AGENT_MARKER"));
+    assert!(!sub_agent_tool.is_externalized());
+    assert!(!sub_agent_tool.is_pruned());
     assert!(web_tool.is_externalized() || web_tool.is_pruned());
     assert!(!web_tool.content.contains("WEB_MARKER"));
 

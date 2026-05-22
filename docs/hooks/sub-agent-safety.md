@@ -41,7 +41,9 @@ pub struct SubAgentSafetyConfig {
 ```rust
 // src/agent/providers/delegation.rs:39
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
-    "delegate_to_sub_agent",  // Запрещено рекурсивное делегирование
+    "spawn_sub_agents",      // Запрещено рекурсивное делегирование
+    "wait_sub_agents",       // Запрещено управление саб-агентами из саб-агента
+    "cancel_sub_agents",     // Запрещено управление саб-агентами из саб-агента
     "send_file_to_user",     // Запрещена отправка файлов пользователю
     "ssh_send_file_to_user", // Запрещена отправка удалённых файлов пользователю
 ];
@@ -152,20 +154,20 @@ max_tokens = inherited or explicit sub-agent budget
 }
 ```
 
-### Сценарий 3: Попытка делегировать
+### Сценарий 3: Попытка запустить саб-агента
 ```
-tool_name = "delegate_to_sub_agent"
-blocked_tools = ["delegate_to_sub_agent", "send_file_to_user", "ssh_send_file_to_user"]
+tool_name = "spawn_sub_agents"
+blocked_tools = ["spawn_sub_agents", "wait_sub_agents", "cancel_sub_agents", "send_file_to_user", "ssh_send_file_to_user"]
 
 Результат: HookResult::Block {
-    reason: "Tool 'delegate_to_sub_agent' is blocked for sub-agents"
+    reason: "Tool 'spawn_sub_agents' is blocked for sub-agents"
 }
 ```
 
 ### Сценарий 4: Попытка отправить файл
 ```
 tool_name = "send_file_to_user"
-blocked_tools = ["delegate_to_sub_agent", "send_file_to_user", "ssh_send_file_to_user"]
+blocked_tools = ["spawn_sub_agents", "wait_sub_agents", "cancel_sub_agents", "send_file_to_user", "ssh_send_file_to_user"]
 
 Результат: HookResult::Block {
     reason: "Tool 'send_file_to_user' is blocked for sub-agents"
@@ -175,7 +177,7 @@ blocked_tools = ["delegate_to_sub_agent", "send_file_to_user", "ssh_send_file_to
 ### Сценарий 5: Разрешённый инструмент
 ```
 tool_name = "execute_command"
-blocked_tools = ["delegate_to_sub_agent", "send_file_to_user", "ssh_send_file_to_user"]
+blocked_tools = ["spawn_sub_agents", "wait_sub_agents", "cancel_sub_agents", "send_file_to_user", "ssh_send_file_to_user"]
 
 Результат: HookResult::Continue
 ```
@@ -198,7 +200,7 @@ impl SubAgentSafetyHook {
 
 ```
 [INFO] Hook blocking action: "Sub-agent iteration limit reached (60)"
-[INFO] Hook blocking action: "Tool 'delegate_to_sub_agent' is blocked for sub-agents"
+[INFO] Hook blocking action: "Tool 'spawn_sub_agents' is blocked for sub-agents"
 ```
 
 ## Сравнение с Main Agent
@@ -220,7 +222,7 @@ impl SubAgentSafetyHook {
 - Лимит токенов предотвращает переполнение контекста
 
 ### Защита от рекурсивного делегирования
-- Блокировка `delegate_to_sub_agent` предотвращает вложенность
+- Блокировка `spawn_sub_agents`, `wait_sub_agents`, `cancel_sub_agents` предотвращает вложенность
 
 ### Защита от прямого взаимодействия с пользователем
 - Блокировка `send_file_to_user` и `ssh_send_file_to_user` обеспечивает изоляцию

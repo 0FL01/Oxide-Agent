@@ -19,7 +19,7 @@
 
 ### Саб-агенты
 - [**Обзор саб-агентов**](sub-agents/index.md) - жизненный цикл и отличия от main agent
-- [**Механизм делегирования**](sub-agents/delegation.md) - `delegate_to_sub_agent` инструмент
+- [**Механизм делегирования**](sub-agents/delegation.md) - `spawn_sub_agents`, `wait_sub_agents`, `cancel_sub_agents`
 - [**EphemeralSession**](sub-agents/ephemeral-session.md) - изолированная сессия саб-агента
 
 ### Примеры
