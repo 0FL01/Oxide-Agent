@@ -43,6 +43,8 @@ pub const OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 pub const OPENROUTER_IMAGE_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for OpenCode Go chat completions.
 pub const OPENCODE_GO_CHAT_TEMPERATURE: f32 = 0.7;
+/// Default max concurrent OpenCode Go requests shared by main and sub-agents.
+pub const OPENCODE_GO_DEFAULT_MAX_CONCURRENT: usize = 5;
 /// Prompt used for Gemini audio transcriptions.
 pub const GEMINI_AUDIO_TRANSCRIBE_PROMPT: &str = concat!(
     "Make ONLY accurate transcription of speech from this audio/video file. ",
@@ -2070,6 +2072,18 @@ pub fn get_browser_use_max_concurrent() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(BROWSER_USE_DEFAULT_MAX_CONCURRENT)
+}
+
+/// Get max concurrent OpenCode Go requests from env or default.
+///
+/// Environment variable: `OPENCODE_GO_MAX_CONCURRENT`
+#[must_use]
+pub fn get_opencode_go_max_concurrent() -> usize {
+    std::env::var("OPENCODE_GO_MAX_CONCURRENT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(OPENCODE_GO_DEFAULT_MAX_CONCURRENT)
 }
 
 /// Get max retries for Browser Use bridge requests from env or default.

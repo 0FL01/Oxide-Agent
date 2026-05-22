@@ -268,13 +268,15 @@ impl AgentRunner {
             return Err(anyhow!("LLM call failed: {error}"));
         }
 
-        for attempt in 1..=max_retries {
+        let mut attempt = 1usize;
+        loop {
+            let attempt_max_retries = max_retries.max(attempt);
             Self::refresh_messages_from_memory(ctx);
             Self::log_llm_route_attempt_started(
                 ctx,
                 state,
                 attempt,
-                max_retries,
+                attempt_max_retries,
                 Some(0),
                 provider_name.as_str(),
                 model_name.as_str(),
@@ -302,19 +304,20 @@ impl AgentRunner {
                         route_index: Some(0),
                         capabilities,
                         attempt,
-                        max_retries,
+                        max_retries: attempt_max_retries,
                     },
                     result,
                 )
                 .await?
             {
                 AttemptOutcome::Return(response) => return Ok(response),
-                AttemptOutcome::RetrySameRoute => continue,
+                AttemptOutcome::RetrySameRoute => {
+                    attempt = attempt.saturating_add(1);
+                    continue;
+                }
                 AttemptOutcome::FailoverToNextRoute(_) => unreachable!("legacy path has no routes"),
             }
         }
-
-        Err(anyhow!("LLM call failed after all retries"))
     }
 
     async fn call_llm_with_tools_with_failover(
@@ -393,13 +396,15 @@ impl AgentRunner {
             self.maybe_run_runtime_pre_sampling_compaction(ctx, state, iteration, &route)
                 .await?;
 
-            for attempt in 1..=max_retries {
+            let mut attempt = 1usize;
+            loop {
+                let attempt_max_retries = max_retries.max(attempt);
                 Self::refresh_messages_from_memory(ctx);
                 Self::log_llm_route_attempt_started(
                     ctx,
                     state,
                     attempt,
-                    max_retries,
+                    attempt_max_retries,
                     Some(route_index),
                     route.provider.as_str(),
                     route.id.as_str(),
@@ -427,14 +432,17 @@ impl AgentRunner {
                             route_index: Some(route_index),
                             capabilities,
                             attempt,
-                            max_retries,
+                            max_retries: attempt_max_retries,
                         },
                         result,
                     )
                     .await?;
                 match attempt_result {
                     AttemptOutcome::Return(response) => return Ok(response),
-                    AttemptOutcome::RetrySameRoute => continue,
+                    AttemptOutcome::RetrySameRoute => {
+                        attempt = attempt.saturating_add(1);
+                        continue;
+                    }
                     AttemptOutcome::FailoverToNextRoute(error) => {
                         let quarantine_for =
                             Self::rate_limit_quarantine_duration(&error, max_retries);
@@ -464,7 +472,7 @@ impl AgentRunner {
                         attempt = metadata.attempt,
                         max_attempts = metadata.max_retries,
                         provider = metadata.provider_name,
-                        "LLM retry succeeded after rate limit"
+                        "LLM retry succeeded after retryable error"
                     );
                 }
                 Ok(AttemptOutcome::Return(response))
@@ -502,7 +510,9 @@ impl AgentRunner {
                     }
                 }
 
-                if metadata.attempt < metadata.max_retries {
+                let retry_budget_remaining = metadata.attempt < metadata.max_retries
+                    || Self::opencode_go_unbounded_retry_allowed(metadata.provider_name, &error);
+                if retry_budget_remaining {
                     if let Some(backoff) = LlmClient::get_retry_delay(&error, metadata.attempt) {
                         let wait_secs = backoff.as_secs();
                         let wait_secs_display = if wait_secs > 0 {
@@ -1805,6 +1815,17 @@ impl AgentRunner {
         .any(|needle| message.contains(needle))
     }
 
+    fn opencode_go_unbounded_retry_allowed(provider_name: &str, error: &LlmError) -> bool {
+        Self::is_opencode_go_provider_name(provider_name) && LlmClient::is_retryable_error(error)
+    }
+
+    fn is_opencode_go_provider_name(provider_name: &str) -> bool {
+        matches!(
+            provider_name.trim().to_ascii_lowercase().as_str(),
+            "opencode-go" | "opencode_go"
+        )
+    }
+
     pub(super) fn refresh_messages_from_memory(ctx: &mut AgentRunnerContext<'_>) {
         *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
     }
@@ -1836,7 +1857,7 @@ mod tests {
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
     use crate::config::{AgentSettings, ModelInfo};
     use crate::llm::{
-        ChatResponse, LlmClient, MockLlmProvider, TokenUsage, ToolCall, ToolCallFunction,
+        ChatResponse, LlmClient, LlmError, MockLlmProvider, TokenUsage, ToolCall, ToolCallFunction,
     };
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -1895,6 +1916,32 @@ mod tests {
             }]);
 
         assert!(runner.structured_output_required_for_config(&config));
+    }
+
+    #[test]
+    fn unbounded_retry_is_limited_to_opencode_go_retryable_errors() {
+        let rate_limit = LlmError::RateLimit {
+            wait_secs: None,
+            message: "too many requests".to_string(),
+        };
+        let invalid_request = LlmError::ApiError("invalid API key".to_string());
+
+        assert!(AgentRunner::opencode_go_unbounded_retry_allowed(
+            "opencode-go",
+            &rate_limit
+        ));
+        assert!(AgentRunner::opencode_go_unbounded_retry_allowed(
+            "opencode_go",
+            &LlmError::NetworkError("connection reset".to_string())
+        ));
+        assert!(!AgentRunner::opencode_go_unbounded_retry_allowed(
+            "openrouter",
+            &rate_limit
+        ));
+        assert!(!AgentRunner::opencode_go_unbounded_retry_allowed(
+            "opencode-go",
+            &invalid_request
+        ));
     }
 
     #[test]

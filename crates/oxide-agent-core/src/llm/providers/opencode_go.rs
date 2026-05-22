@@ -1,4 +1,4 @@
-use crate::config::OPENCODE_GO_CHAT_TEMPERATURE;
+use crate::config::{get_opencode_go_max_concurrent, OPENCODE_GO_CHAT_TEMPERATURE};
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::{create_http_client, send_json_request};
 use crate::llm::{
@@ -8,6 +8,15 @@ use crate::llm::{
 use async_trait::async_trait;
 use reqwest::Client as HttpClient;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+use tokio::sync::Notify;
+use tracing::{debug, warn};
+
+const OPENCODE_GO_FAILURES_BEFORE_COOLDOWN: usize = 3;
+const OPENCODE_GO_COOLDOWN_STEP_SECS: u64 = 5;
+const OPENCODE_GO_MAX_COOLDOWN_SECS: u64 = 60;
+const OPENCODE_GO_SUCCESS_STREAK_TO_INCREASE: usize = 3;
 
 /// LLM provider implementation for OpenCode Go's OpenAI-compatible endpoint.
 #[derive(Debug, Clone)]
@@ -15,6 +24,7 @@ pub struct OpenCodeGoProvider {
     http_client: HttpClient,
     api_key: String,
     api_base: String,
+    throttle: Arc<OpenCodeGoAdaptiveThrottle>,
 }
 
 impl OpenCodeGoProvider {
@@ -25,6 +35,7 @@ impl OpenCodeGoProvider {
             http_client: create_http_client(),
             api_key,
             api_base,
+            throttle: OpenCodeGoAdaptiveThrottle::from_env(),
         }
     }
 
@@ -35,7 +46,195 @@ impl OpenCodeGoProvider {
             http_client,
             api_key,
             api_base,
+            throttle: OpenCodeGoAdaptiveThrottle::from_env(),
         }
+    }
+}
+
+#[derive(Debug)]
+struct OpenCodeGoAdaptiveThrottle {
+    state: Mutex<OpenCodeGoThrottleState>,
+    notify: Notify,
+}
+
+#[derive(Debug)]
+struct OpenCodeGoThrottleState {
+    max_concurrent: usize,
+    current_limit: usize,
+    in_flight: usize,
+    consecutive_failures: usize,
+    success_streak: usize,
+    cooldown_secs: u64,
+    cooldown_until: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OpenCodeGoAcquireWait {
+    Slot,
+    Cooldown(Duration),
+}
+
+#[derive(Debug)]
+struct OpenCodeGoPermit {
+    throttle: Arc<OpenCodeGoAdaptiveThrottle>,
+}
+
+impl OpenCodeGoAdaptiveThrottle {
+    fn from_env() -> Arc<Self> {
+        Arc::new(Self::new(get_opencode_go_max_concurrent()))
+    }
+
+    fn new(max_concurrent: usize) -> Self {
+        let max_concurrent = max_concurrent.max(1);
+        Self {
+            state: Mutex::new(OpenCodeGoThrottleState {
+                max_concurrent,
+                current_limit: max_concurrent,
+                in_flight: 0,
+                consecutive_failures: 0,
+                success_streak: 0,
+                cooldown_secs: 0,
+                cooldown_until: None,
+            }),
+            notify: Notify::new(),
+        }
+    }
+
+    async fn acquire(self: &Arc<Self>, model_id: &str) -> OpenCodeGoPermit {
+        loop {
+            match self.try_acquire() {
+                Ok(()) => {
+                    debug!(
+                        model = normalize_model_id(model_id),
+                        "OpenCode Go request admitted by adaptive throttle"
+                    );
+                    return OpenCodeGoPermit {
+                        throttle: Arc::clone(self),
+                    };
+                }
+                Err(OpenCodeGoAcquireWait::Slot) => {
+                    self.notify.notified().await;
+                }
+                Err(OpenCodeGoAcquireWait::Cooldown(wait)) => {
+                    debug!(
+                        model = normalize_model_id(model_id),
+                        wait_ms = wait.as_millis(),
+                        "OpenCode Go adaptive throttle is cooling down"
+                    );
+                    tokio::select! {
+                        () = tokio::time::sleep(wait) => {}
+                        () = self.notify.notified() => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn try_acquire(&self) -> Result<(), OpenCodeGoAcquireWait> {
+        let mut state = self.lock_state();
+        if let Some(until) = state.cooldown_until {
+            let now = Instant::now();
+            if until > now {
+                return Err(OpenCodeGoAcquireWait::Cooldown(until.duration_since(now)));
+            }
+            state.cooldown_until = None;
+        }
+
+        if state.in_flight < state.current_limit {
+            state.in_flight += 1;
+            Ok(())
+        } else {
+            Err(OpenCodeGoAcquireWait::Slot)
+        }
+    }
+
+    fn record_result<T>(&self, result: &Result<T, LlmError>) {
+        match result {
+            Ok(_) => self.record_success(),
+            Err(error) if opencode_go_should_throttle(error) => {
+                self.record_retryable_failure(error)
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn record_success(&self) {
+        let mut state = self.lock_state();
+        state.consecutive_failures = 0;
+
+        if state.current_limit >= state.max_concurrent {
+            state.success_streak = 0;
+            state.cooldown_secs = 0;
+            return;
+        }
+
+        state.success_streak += 1;
+        if state.success_streak < OPENCODE_GO_SUCCESS_STREAK_TO_INCREASE {
+            return;
+        }
+
+        state.success_streak = 0;
+        state.current_limit += 1;
+        if state.current_limit >= state.max_concurrent {
+            state.cooldown_secs = 0;
+        }
+
+        debug!(
+            current_limit = state.current_limit,
+            max_concurrent = state.max_concurrent,
+            "OpenCode Go adaptive throttle increased concurrency"
+        );
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    fn record_retryable_failure(&self, error: &LlmError) {
+        let mut state = self.lock_state();
+        state.success_streak = 0;
+        state.consecutive_failures += 1;
+
+        if state.consecutive_failures < OPENCODE_GO_FAILURES_BEFORE_COOLDOWN {
+            return;
+        }
+
+        state.consecutive_failures = 0;
+        state.current_limit = state.current_limit.saturating_sub(1).max(1);
+        state.cooldown_secs = if state.cooldown_secs == 0 {
+            OPENCODE_GO_COOLDOWN_STEP_SECS
+        } else {
+            (state.cooldown_secs + OPENCODE_GO_COOLDOWN_STEP_SECS)
+                .min(OPENCODE_GO_MAX_COOLDOWN_SECS)
+        };
+        state.cooldown_until = Some(Instant::now() + Duration::from_secs(state.cooldown_secs));
+
+        warn!(
+            error = %error,
+            current_limit = state.current_limit,
+            max_concurrent = state.max_concurrent,
+            cooldown_secs = state.cooldown_secs,
+            "OpenCode Go adaptive throttle entered cooldown"
+        );
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    fn release(&self) {
+        let mut state = self.lock_state();
+        state.in_flight = state.in_flight.saturating_sub(1);
+        drop(state);
+        self.notify.notify_waiters();
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, OpenCodeGoThrottleState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Drop for OpenCodeGoPermit {
+    fn drop(&mut self) {
+        self.throttle.release();
     }
 }
 
@@ -49,18 +248,25 @@ impl LlmProvider for OpenCodeGoProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
+        let _permit = self.throttle.acquire(model_id).await;
         let body =
             build_chat_completion_body(system_prompt, history, user_message, model_id, max_tokens);
         let auth = format!("Bearer {}", self.api_key);
-        let response =
-            send_json_request(&self.http_client, &self.api_base, &body, Some(&auth), &[]).await?;
-        let parsed = parse_chat_response(response)?;
+        let result = async {
+            let response =
+                send_json_request(&self.http_client, &self.api_base, &body, Some(&auth), &[])
+                    .await?;
+            let parsed = parse_chat_response(response)?;
 
-        parsed.content.ok_or_else(|| {
-            LlmError::ApiError(
-                "OpenCode Go returned no text content for chat_completion".to_string(),
-            )
-        })
+            parsed.content.ok_or_else(|| {
+                LlmError::ApiError(
+                    "OpenCode Go returned no text content for chat_completion".to_string(),
+                )
+            })
+        }
+        .await;
+        self.throttle.record_result(&result);
+        result
     }
 
     async fn transcribe_audio(
@@ -109,10 +315,40 @@ impl LlmProvider for OpenCodeGoProvider {
             json_mode,
         );
         let auth = format!("Bearer {}", self.api_key);
-        let response =
-            send_json_request(&self.http_client, &self.api_base, &body, Some(&auth), &[]).await?;
+        let _permit = self.throttle.acquire(model_id).await;
+        let result = async {
+            let response =
+                send_json_request(&self.http_client, &self.api_base, &body, Some(&auth), &[])
+                    .await?;
 
-        parse_chat_response(response)
+            parse_chat_response(response)
+        }
+        .await;
+        self.throttle.record_result(&result);
+        result
+    }
+}
+
+fn opencode_go_should_throttle(error: &LlmError) -> bool {
+    match error {
+        LlmError::RateLimit { .. } | LlmError::EmptyResponse(_) | LlmError::JsonError(_) => true,
+        LlmError::NetworkError(message) => !message.to_ascii_lowercase().contains("builder"),
+        LlmError::ApiError(message) => {
+            let message = message.to_ascii_lowercase();
+            message.contains("429")
+                || message.contains("500")
+                || message.contains("internal server error")
+                || message.contains("502")
+                || message.contains("bad gateway")
+                || message.contains("503")
+                || message.contains("service unavailable")
+                || message.contains("504")
+                || message.contains("gateway timeout")
+                || message.contains("temporarily unavailable")
+                || message.contains("timeout")
+                || message.contains("overloaded")
+        }
+        _ => false,
     }
 }
 
@@ -398,11 +634,16 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_completion_body, build_tool_chat_body, normalize_model_id, parse_chat_response,
-        parse_tool_calls, prepare_structured_messages, prepare_tools_json,
+        build_chat_completion_body, build_tool_chat_body, normalize_model_id,
+        opencode_go_should_throttle, parse_chat_response, parse_tool_calls,
+        prepare_structured_messages, prepare_tools_json, OpenCodeGoAdaptiveThrottle,
     };
-    use crate::llm::{Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition};
+    use crate::llm::{
+        LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
+    };
     use serde_json::json;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     fn read_file_tool() -> ToolDefinition {
         ToolDefinition {
@@ -590,5 +831,84 @@ mod tests {
 
         assert_eq!(tools[0]["function"]["name"], json!("read_file"));
         assert!(tools[0].get("name").is_none());
+    }
+
+    #[tokio::test]
+    async fn adaptive_throttle_blocks_until_capacity_is_released() {
+        let throttle = Arc::new(OpenCodeGoAdaptiveThrottle::new(1));
+        let permit = throttle.acquire("deepseek-v4-flash").await;
+
+        let blocked = tokio::time::timeout(
+            Duration::from_millis(30),
+            throttle.acquire("deepseek-v4-flash"),
+        )
+        .await;
+        assert!(blocked.is_err());
+
+        drop(permit);
+
+        let second = tokio::time::timeout(
+            Duration::from_millis(200),
+            throttle.acquire("deepseek-v4-flash"),
+        )
+        .await;
+        assert!(second.is_ok());
+    }
+
+    #[test]
+    fn adaptive_throttle_enters_incremental_cooldown_after_failure_bursts() {
+        let throttle = OpenCodeGoAdaptiveThrottle::new(5);
+        let rate_limit_error = || LlmError::RateLimit {
+            wait_secs: None,
+            message: "too many requests".to_string(),
+        };
+
+        for _ in 0..3 {
+            throttle.record_result::<()>(&Err(rate_limit_error()));
+        }
+        {
+            let state = throttle.lock_state();
+            assert_eq!(state.current_limit, 4);
+            assert_eq!(state.cooldown_secs, 5);
+            assert!(state.cooldown_until.is_some());
+        }
+
+        for _ in 0..3 {
+            throttle.record_result::<()>(&Err(rate_limit_error()));
+        }
+        let state = throttle.lock_state();
+        assert_eq!(state.current_limit, 3);
+        assert_eq!(state.cooldown_secs, 10);
+    }
+
+    #[test]
+    fn adaptive_throttle_recovers_concurrency_after_success_streak() {
+        let throttle = OpenCodeGoAdaptiveThrottle::new(3);
+        for _ in 0..3 {
+            throttle.record_result::<()>(&Err(LlmError::ApiError(
+                "500 Internal Server Error".to_string(),
+            )));
+        }
+
+        for _ in 0..3 {
+            throttle.record_result::<()>(&Ok(()));
+        }
+
+        let state = throttle.lock_state();
+        assert_eq!(state.current_limit, 3);
+        assert_eq!(state.cooldown_secs, 0);
+    }
+
+    #[test]
+    fn opencode_go_throttle_classifies_retryable_provider_errors_only() {
+        assert!(opencode_go_should_throttle(&LlmError::ApiError(
+            "500 Internal Server Error".to_string()
+        )));
+        assert!(opencode_go_should_throttle(&LlmError::NetworkError(
+            "connection reset".to_string()
+        )));
+        assert!(!opencode_go_should_throttle(&LlmError::ApiError(
+            "invalid API key".to_string()
+        )));
     }
 }
