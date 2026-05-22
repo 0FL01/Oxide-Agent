@@ -22,15 +22,17 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
     let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
     info!("LLM Client initialized.");
 
-    if let Err(error) = run_startup_tool_drift_prune(
-        Arc::clone(&storage),
-        Arc::clone(&llm_client),
-        Arc::clone(&settings),
-    )
-    .await
-    {
-        error!(%error, "Startup tool drift prune failed");
-    }
+    let maintenance_storage = Arc::clone(&storage);
+    let maintenance_llm = Arc::clone(&llm_client);
+    let maintenance_settings = Arc::clone(&settings);
+    tokio::spawn(async move {
+        if let Err(error) =
+            run_startup_tool_drift_prune(maintenance_storage, maintenance_llm, maintenance_settings)
+                .await
+        {
+            error!(%error, "Startup tool drift prune failed");
+        }
+    });
 
     let storage: Arc<dyn storage::StorageProvider> = storage;
 
@@ -45,7 +47,7 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
     let unauthorized_cache = init_unauthorized_cache();
     let handler = setup_handler();
 
-    info!("Bot is running...");
+    info!("Bot is running with Telegram long polling...");
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![
