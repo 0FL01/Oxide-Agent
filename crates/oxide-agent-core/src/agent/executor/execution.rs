@@ -407,15 +407,18 @@ impl AgentExecutor {
     ) -> PreparedExecution {
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
         let registry = self.build_tool_registry(Arc::clone(&todos_arc), progress_tx);
-        let tools = self
-            .execution_profile
-            .tool_policy()
-            .filter_definitions(registry.all_tools());
         let model_routes = self.settings.get_configured_agent_model_routes();
         let model = model_routes
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
+        let tools = if Self::v1_tool_runtime_enabled_for_model(&model) {
+            self.build_tool_runtime_registry(progress_tx).specs()
+        } else {
+            self.execution_profile
+                .tool_policy()
+                .filter_definitions(registry.all_tools())
+        };
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
         let wiki_context = self.render_wiki_context_for_task(task).await;
         let system_prompt = create_agent_system_prompt(

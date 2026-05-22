@@ -3,10 +3,12 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
     KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
-    SandboxProvider, StackLogsProvider, TodoList, TodosProvider, WebFetchMdProvider,
-    WikiMemoryProvider, YtdlpProvider,
+    SandboxProvider, SshMcpProvider, StackLogsProvider, TodoList, TodosProvider,
+    WebFetchMdProvider, WikiMemoryProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
+use crate::agent::tool_runtime::{ToolExecutor, ToolRegistry as RuntimeToolRegistry};
+use crate::config::ModelInfo;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -22,6 +24,15 @@ impl AgentExecutor {
     /// Build the currently exposed tool definitions for this executor state.
     #[must_use]
     pub fn current_tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
+        let model_routes = self.settings.get_configured_agent_model_routes();
+        let model = model_routes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| self.settings.get_configured_agent_model());
+        if Self::v1_tool_runtime_enabled_for_model(&model) {
+            return self.build_tool_runtime_registry(None).specs();
+        }
+
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
         let registry = self.build_tool_registry(todos_arc, None);
         self.execution_profile
@@ -53,6 +64,85 @@ impl AgentExecutor {
         self.register_silero_tts_provider(&mut registry, progress_tx);
 
         registry
+    }
+
+    #[must_use]
+    pub(super) fn build_tool_runtime_registry(
+        &self,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> RuntimeToolRegistry {
+        let mut registry = RuntimeToolRegistry::new();
+
+        let sandbox_scope = self.session.sandbox_scope().clone();
+        let sandbox_provider = if let Some(tx) = progress_tx {
+            SandboxProvider::new(sandbox_scope).with_progress_tx(tx.clone())
+        } else {
+            SandboxProvider::new(sandbox_scope)
+        };
+        Self::register_tool_runtime_executors(
+            &mut registry,
+            Arc::new(sandbox_provider).tool_runtime_executors(),
+        );
+
+        if let Some(topic_infra) = &self.topic_infra {
+            let ssh_provider = Arc::new(SshMcpProvider::new(
+                Arc::clone(&topic_infra.storage),
+                topic_infra.user_id,
+                topic_infra.topic_id.clone(),
+                topic_infra.config.clone(),
+                topic_infra.approvals.clone(),
+            ));
+            Self::register_tool_runtime_executors(
+                &mut registry,
+                ssh_provider.tool_runtime_executors(),
+            );
+        }
+
+        registry
+    }
+
+    fn register_tool_runtime_executors(
+        registry: &mut RuntimeToolRegistry,
+        executors: Vec<Arc<dyn ToolExecutor>>,
+    ) {
+        for executor in executors {
+            let tool_name = executor.name();
+            if let Err(error) = registry.register(executor) {
+                warn!(
+                    tool_name = %tool_name,
+                    error = %error,
+                    "Skipping duplicate typed tool runtime executor"
+                );
+            }
+        }
+    }
+
+    #[must_use]
+    pub(super) fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
+        let provider = Self::normalize_tool_runtime_route_part(&model.provider);
+        if provider != "opencode-go" {
+            return false;
+        }
+
+        let model_id = model
+            .id
+            .rsplit_once('/')
+            .map_or(model.id.as_str(), |(_, tail)| tail);
+        Self::normalize_tool_runtime_route_part(model_id) == "deepseek-v4-flash"
+    }
+
+    fn normalize_tool_runtime_route_part(value: &str) -> String {
+        value
+            .trim()
+            .chars()
+            .map(|ch| {
+                if ch == '_' || ch.is_whitespace() {
+                    '-'
+                } else {
+                    ch.to_ascii_lowercase()
+                }
+            })
+            .collect()
     }
 
     fn register_core_providers(

@@ -1,4 +1,92 @@
 use super::*;
+use crate::config::ModelInfo;
+
+#[test]
+fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "opencode-go/deepseek_v4_flash".to_string(),
+            provider: "OpenCode Go".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+}
+
+#[test]
+fn v1_tool_runtime_model_detection_rejects_other_routes() {
+    assert!(!AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            provider: "openrouter".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(!AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "deepseek-chat".to_string(),
+            provider: "opencode-go".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+}
+
+#[test]
+fn typed_runtime_registry_exposes_sandbox_tools() {
+    let executor = build_executor();
+    let registry = executor.build_tool_runtime_registry(None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for tool_name in [
+        "execute_command",
+        "list_files",
+        "read_file",
+        "recreate_sandbox",
+        "send_file_to_user",
+        "write_file",
+    ] {
+        assert!(
+            tool_names.contains(tool_name),
+            "missing typed runtime tool: {tool_name}"
+        );
+    }
+    assert!(!tool_names.contains("compress"));
+}
+
+#[test]
+fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
+    let settings = Arc::new(AgentSettings {
+        agent_model_id: Some("deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let tool_names = executor
+        .current_tool_definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(tool_names.contains("execute_command"));
+    assert!(tool_names.contains("read_file"));
+    assert!(tool_names.contains("write_file"));
+    assert!(!tool_names.contains("compress"));
+    assert!(!tool_names.contains("write_todos"));
+}
 
 #[tokio::test]
 async fn manager_enabled_registry_executes_manager_tool() {
