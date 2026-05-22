@@ -3,6 +3,10 @@
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, FileDeliveryKind};
 use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    CleanupStatus, OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
+    ToolRuntimeConfig, ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use crate::storage::{
     StorageProvider, TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode,
@@ -18,7 +22,7 @@ use rmcp::{
     ServiceExt,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use shell_escape::unix::escape;
 use std::borrow::Cow;
@@ -997,6 +1001,8 @@ impl UpstreamSshMcpBackend {
 #[derive(Clone)]
 pub struct SshMcpProvider {
     topic_id: String,
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
     config: TopicInfraConfigRecord,
     approvals: SshApprovalRegistry,
     backend: SshExecutionBackend,
@@ -1019,6 +1025,8 @@ impl SshMcpProvider {
                 config.clone(),
             )),
             topic_id,
+            storage,
+            user_id,
             config,
             approvals,
         }
@@ -1028,6 +1036,71 @@ impl SshMcpProvider {
     #[must_use]
     pub fn approvals(&self) -> SshApprovalRegistry {
         self.approvals.clone()
+    }
+
+    /// Build typed v1 runtime executors for SSH process-like tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        Self::runtime_tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(SshRuntimeToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn runtime_tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_SSH_EXEC.to_string(),
+                description: "Run a remote SSH command on the topic infra target".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Remote shell command" },
+                        "timeout_secs": { "type": "integer", "description": "Optional timeout in seconds" }
+                    },
+                    "required": ["command"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_SSH_SUDO_EXEC.to_string(),
+                description: "Run a sudo remote SSH command on the topic infra target".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Remote shell command executed under sudo" },
+                        "timeout_secs": { "type": "integer", "description": "Optional timeout in seconds" }
+                    },
+                    "required": ["command"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_SSH_CHECK_PROCESS.to_string(),
+                description: "Check a remote process by job_id or a legacy process pattern on the topic infra target."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Legacy substring or process pattern to inspect via pgrep. Provide exactly one of pattern or job_id." },
+                        "job_id": { "type": "string", "description": "Preferred background job id returned by ssh_exec/ssh_sudo_exec" },
+                        "tail_lines": { "type": "integer", "description": "Optional tail line count when using job_id" }
+                    }
+                }),
+            },
+        ]
+    }
+
+    fn fresh_runtime_backend(&self) -> SshExecutionBackend {
+        SshExecutionBackend::Upstream(UpstreamSshMcpBackend::new(
+            Arc::clone(&self.storage),
+            self.user_id,
+            self.config.clone(),
+        ))
     }
 
     fn tool_definitions() -> Vec<ToolDefinition> {
@@ -1558,6 +1631,233 @@ impl SshMcpProvider {
         }))
         .map_err(Into::into)
     }
+
+    async fn execute_typed_ssh_tool(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        match invocation.tool_name.as_str() {
+            TOOL_SSH_EXEC => self.execute_exec_typed(invocation, false).await,
+            TOOL_SSH_SUDO_EXEC => self.execute_exec_typed(invocation, true).await,
+            TOOL_SSH_CHECK_PROCESS => self.execute_check_process_typed(invocation).await,
+            other => Err(ToolRuntimeError::Internal(format!(
+                "typed ssh executor received unsupported tool: {other}"
+            ))),
+        }
+    }
+
+    async fn execute_exec_typed(
+        &self,
+        invocation: &ToolInvocation,
+        sudo: bool,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let args: CommandArgs = parse_runtime_args(invocation)?;
+        let command = validate_non_empty(args.command, "command")
+            .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))?;
+        let mode = if sudo {
+            TopicInfraToolMode::SudoExec
+        } else {
+            TopicInfraToolMode::Exec
+        };
+        self.ensure_mode_allowed(mode)
+            .map_err(ssh_runtime_failure)?;
+
+        let backend = self.fresh_runtime_backend();
+        let output = backend
+            .execute(
+                &command,
+                args.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+                sudo,
+                Some(&invocation.cancellation_token),
+            )
+            .await
+            .map_err(ssh_runtime_failure)?;
+
+        Ok(typed_ssh_exec_output(
+            invocation,
+            &self.config,
+            &command,
+            sudo,
+            output,
+        ))
+    }
+
+    async fn execute_check_process_typed(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let args: CheckProcessArgs = parse_runtime_args(invocation)?;
+        let request = normalize_check_process_args(args)
+            .map_err(|error| ToolRuntimeError::InvalidArguments(error.to_string()))?;
+        self.ensure_mode_allowed(TopicInfraToolMode::CheckProcess)
+            .map_err(ssh_runtime_failure)?;
+
+        let backend = self.fresh_runtime_backend();
+        match request {
+            CheckProcessRequest::JobId { job_id, tail_lines } => {
+                let response = backend
+                    .check_process(
+                        &job_id,
+                        tail_lines,
+                        DEFAULT_TIMEOUT_SECS,
+                        Some(&invocation.cancellation_token),
+                    )
+                    .await
+                    .map_err(ssh_runtime_failure)?;
+                let exit_code = response.exit_code.and_then(|code| i32::try_from(code).ok());
+                let log_tail = response.log_tail;
+                Ok(typed_ssh_payload_output(
+                    invocation,
+                    json!({
+                        "ok": true,
+                        "job_id": job_id,
+                        "running": response.running,
+                        "exit_code": response.exit_code,
+                        "elapsed_time": response.elapsed_time,
+                        "command": response.command,
+                        "log_tail": log_tail,
+                        "cleanup_status": "best_effort_remote_cleanup",
+                    }),
+                    "",
+                    &log_tail,
+                    exit_code,
+                ))
+            }
+            CheckProcessRequest::Pattern(pattern) => {
+                let remote_script =
+                    format!("pgrep -af -- {} || true", escape_shell_argument(&pattern));
+                let output = backend
+                    .execute(
+                        &remote_script,
+                        DEFAULT_TIMEOUT_SECS,
+                        false,
+                        Some(&invocation.cancellation_token),
+                    )
+                    .await
+                    .map_err(ssh_runtime_failure)?;
+                let stdout = output.stdout;
+                let stderr = output.stderr;
+                let exit_code = output.exit_code;
+                Ok(typed_ssh_payload_output(
+                    invocation,
+                    json!({
+                        "ok": true,
+                        "pattern": pattern,
+                        "matches": stdout,
+                        "cleanup_status": "best_effort_remote_cleanup",
+                    }),
+                    &stdout,
+                    &stderr,
+                    Some(exit_code),
+                ))
+            }
+        }
+    }
+}
+
+struct SshRuntimeToolExecutor {
+    provider: Arc<SshMcpProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+}
+
+#[async_trait]
+impl ToolExecutor for SshRuntimeToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        self.provider.execute_typed_ssh_tool(&invocation).await
+    }
+}
+
+fn parse_runtime_args<T>(invocation: &ToolInvocation) -> std::result::Result<T, ToolRuntimeError>
+where
+    T: DeserializeOwned,
+{
+    match serde_json::from_value(invocation.normalized_arguments.clone()) {
+        Ok(args) => Ok(args),
+        Err(value_error) => {
+            serde_json::from_str(&invocation.raw_arguments).map_err(|string_error| {
+                ToolRuntimeError::InvalidArguments(format!(
+                    "invalid ssh arguments: {value_error}; raw JSON parse error: {string_error}"
+                ))
+            })
+        }
+    }
+}
+
+fn ssh_runtime_failure(error: anyhow::Error) -> ToolRuntimeError {
+    ToolRuntimeError::Failure(error.to_string())
+}
+
+fn typed_ssh_exec_output(
+    invocation: &ToolInvocation,
+    config: &TopicInfraConfigRecord,
+    command: &str,
+    sudo: bool,
+    output: RemoteOutput,
+) -> ToolOutput {
+    typed_ssh_payload_output(
+        invocation,
+        json!({
+            "ok": output.exit_code == 0,
+            "target_name": config.target_name.clone(),
+            "host": config.host.clone(),
+            "command": command,
+            "sudo": sudo,
+            "exit_code": output.exit_code,
+            "cleanup_status": "best_effort_remote_cleanup",
+        }),
+        &output.stdout,
+        &output.stderr,
+        Some(output.exit_code),
+    )
+}
+
+fn typed_ssh_payload_output(
+    invocation: &ToolInvocation,
+    payload: Value,
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+) -> ToolOutput {
+    let normalizer = ssh_normalizer(invocation);
+    let ok = payload
+        .get("ok")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| exit_code == Some(0));
+    let mut output = if ok {
+        normalizer.success(invocation, stdout, stderr)
+    } else {
+        normalizer
+            .failure(invocation, "remote SSH tool reported failure")
+            .with_streams(
+                normalizer.stdout_preview(stdout),
+                normalizer.stderr_preview(stderr),
+            )
+    };
+    output.exit_code = exit_code;
+    output.structured_payload = Some(payload);
+    output.cleanup_status = CleanupStatus::BestEffortRemoteCleanup;
+    output
+}
+
+fn ssh_normalizer(invocation: &ToolInvocation) -> OutputNormalizer {
+    let config = ToolRuntimeConfig {
+        timeout: invocation.timeout.clone(),
+        artifact_dir: invocation.execution_context.artifact_dir.clone(),
+        ..ToolRuntimeConfig::default()
+    };
+    OutputNormalizer::new(config)
 }
 
 struct ResolvedSecretMaterial {
@@ -2584,15 +2884,23 @@ mod tests {
         fingerprint_for_request, inject_approval_credentials, inject_ssh_approval_system_message,
         inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
         normalize_check_process_args, parse_ssh_keygen_listing, parse_wrapped_remote_output,
-        serialize_apply_file_edit_response, serialize_read_file_response,
+        serialize_apply_file_edit_response, serialize_read_file_response, typed_ssh_exec_output,
         unique_transfer_local_path, validate_chat_file_name, write_private_key_tempfile_in,
-        SecretProbeKind, SecretProbeReport, SshApprovalRegistry, SshMcpProvider,
+        RemoteOutput, SecretProbeKind, SecretProbeReport, SshApprovalRegistry, SshMcpProvider,
         TopicInfraPreflightReport, UpstreamApplyFileEditResponse, UpstreamReadFileResponse,
         WrappedCommandMarkers,
     };
-    use crate::storage::TopicInfraAuthMode;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        CleanupStatus, ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId,
+        ToolExecutionContext, ToolInvocation, ToolName, ToolOutputStatus, ToolTimeoutConfig,
+        TurnId,
+    };
+    use crate::llm::InvocationId;
+    use crate::storage::{TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode};
+    use chrono::Utc;
     use serde_json::json;
-    use std::{fs, path::Path};
+    use std::{fs, path::Path, path::PathBuf};
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -2792,6 +3100,58 @@ mod tests {
     }
 
     #[test]
+    fn runtime_ssh_tool_schemas_exclude_approval_fields() {
+        let tools = SshMcpProvider::runtime_tool_definitions();
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+
+        assert_eq!(
+            names,
+            vec!["ssh_exec", "ssh_sudo_exec", "ssh_check_process"]
+        );
+        for tool in tools {
+            let properties = tool.parameters["properties"]
+                .as_object()
+                .expect("runtime tool schema should define properties");
+            assert!(!properties.contains_key("approval_request_id"));
+            assert!(!properties.contains_key("approval_token"));
+        }
+    }
+
+    #[test]
+    fn typed_ssh_exec_output_preserves_exit_code_and_remote_cleanup_status() {
+        let invocation = test_invocation("ssh_exec");
+        let config = test_topic_config();
+        let output = typed_ssh_exec_output(
+            &invocation,
+            &config,
+            "false",
+            false,
+            RemoteOutput {
+                stdout: "out".to_string(),
+                stderr: "err".to_string(),
+                exit_code: 7,
+            },
+        );
+
+        assert_eq!(output.status, ToolOutputStatus::Failure);
+        assert_eq!(output.exit_code, Some(7));
+        assert_eq!(output.stdout.text.as_deref(), Some("out"));
+        assert_eq!(output.stderr.text.as_deref(), Some("err"));
+        assert_eq!(
+            output.cleanup_status,
+            CleanupStatus::BestEffortRemoteCleanup
+        );
+        assert_eq!(
+            output
+                .structured_payload
+                .as_ref()
+                .and_then(|payload: &serde_json::Value| payload.get("target_name"))
+                .and_then(serde_json::Value::as_str),
+            Some("prod-app")
+        );
+    }
+
+    #[test]
     fn normalize_check_process_args_accepts_job_id_or_pattern() {
         let job = normalize_check_process_args(super::CheckProcessArgs {
             pattern: None,
@@ -2844,6 +3204,63 @@ mod tests {
         })
         .expect_err("ambiguous args should fail");
         assert!(ambiguous.to_string().contains("either pattern or job_id"));
+    }
+
+    fn test_topic_config() -> TopicInfraConfigRecord {
+        TopicInfraConfigRecord {
+            schema_version: 1,
+            version: 1,
+            user_id: 42,
+            topic_id: "topic-a".to_string(),
+            target_name: "prod-app".to_string(),
+            host: "prod.example.com".to_string(),
+            port: 22,
+            remote_user: "deploy".to_string(),
+            auth_mode: TopicInfraAuthMode::PrivateKey,
+            secret_ref: Some("storage:ssh/key".to_string()),
+            sudo_secret_ref: None,
+            environment: Some("prod".to_string()),
+            tags: Vec::new(),
+            allowed_tool_modes: vec![
+                TopicInfraToolMode::Exec,
+                TopicInfraToolMode::SudoExec,
+                TopicInfraToolMode::CheckProcess,
+            ],
+            approval_required_modes: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn test_invocation(tool_name: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(42),
+            turn_id: TurnId::from("turn_ssh"),
+            batch_id: ToolBatchId::from("batch_ssh"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invocation_{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call_{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: "{}".to_string(),
+            normalized_arguments: json!({}),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(PathBuf::from(".oxide/tool-artifacts")),
+            provider_metadata: ProviderMetadata {
+                provider: "opencode-go".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "deepseek-v4-flash".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
     }
 
     #[test]

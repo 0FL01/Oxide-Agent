@@ -6,12 +6,17 @@
 use crate::agent::progress::AgentEvent;
 use crate::agent::progress::FileDeliveryKind;
 use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    CleanupStatus, OutputNormalizer, OutputPreview, ToolExecutor, ToolInvocation, ToolName,
+    ToolOutput, ToolRuntimeConfig, ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{ExecResult, SandboxManager, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use shell_escape::escape;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
@@ -56,6 +61,21 @@ impl SandboxProvider {
     pub async fn set_sandbox(&self, sandbox: SandboxManager) {
         let mut guard = self.sandbox.lock().await;
         *guard = Some(sandbox);
+    }
+
+    /// Build typed runtime executors for sandbox tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        ToolProvider::tools(self.as_ref())
+            .into_iter()
+            .map(|spec| {
+                Arc::new(SandboxToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
     }
 
     async fn get_or_create_sandbox(&self) -> Result<SandboxManager> {
@@ -312,6 +332,285 @@ impl SandboxProvider {
             })),
         }
     }
+
+    async fn execute_typed_sandbox_tool(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        debug!(tool = %invocation.tool_name, "Executing typed sandbox tool");
+
+        match invocation.tool_name.as_str() {
+            "recreate_sandbox" => {
+                let _exclusive = self.execution_gate.write().await;
+                let mut sandbox = self
+                    .get_or_init_sandbox_manager()
+                    .await
+                    .map_err(tool_failure)?;
+                let _args: RecreateSandboxArgs = parse_invocation_args(invocation)?;
+                let result = sandbox.recreate().await;
+                self.set_sandbox(sandbox).await;
+                Ok(typed_simple_result(
+                    invocation,
+                    result.map(|()| {
+                        json!({
+                            "ok": true,
+                            "status": "recreated",
+                            "message": "Sandbox recreated successfully. Previous workspace contents were removed.",
+                        })
+                    }),
+                ))
+            }
+            "execute_command" => {
+                let _shared = self.execution_gate.read().await;
+                let args: ExecuteCommandArgs = parse_invocation_args(invocation)?;
+                let mut sandbox = self.get_or_create_sandbox().await.map_err(tool_failure)?;
+                let result = sandbox
+                    .exec_command(&args.command, Some(&invocation.cancellation_token))
+                    .await;
+                Ok(match result {
+                    Ok(result) => typed_exec_result(invocation, &args.command, result),
+                    Err(error) => typed_simple_result::<Value>(
+                        invocation,
+                        Err(anyhow::anyhow!("sandbox command failed: {error}")),
+                    ),
+                })
+            }
+            "write_file" => {
+                let _shared = self.execution_gate.read().await;
+                let args: WriteFileArgs = parse_invocation_args(invocation)?;
+                let mut sandbox = self.get_or_create_sandbox().await.map_err(tool_failure)?;
+                let result = sandbox
+                    .write_file(&args.path, args.content.as_bytes())
+                    .await;
+                Ok(typed_simple_result(
+                    invocation,
+                    result.map(|()| {
+                        json!({
+                            "ok": true,
+                            "path": args.path,
+                            "bytes_written": args.content.len(),
+                        })
+                    }),
+                ))
+            }
+            "read_file" => {
+                let _shared = self.execution_gate.read().await;
+                let args: ReadFileArgs = parse_invocation_args(invocation)?;
+                let mut sandbox = self.get_or_create_sandbox().await.map_err(tool_failure)?;
+                let result = sandbox.read_file(&args.path).await;
+                Ok(match result {
+                    Ok(content) => typed_read_file_result(invocation, &args.path, &content),
+                    Err(error) => typed_simple_result::<Value>(
+                        invocation,
+                        Err(anyhow::anyhow!("sandbox read_file failed: {error}")),
+                    ),
+                })
+            }
+            "send_file_to_user" => {
+                let _shared = self.execution_gate.read().await;
+                let args: SendFileArgs = parse_invocation_args(invocation)?;
+                let mut sandbox = self.get_or_create_sandbox().await.map_err(tool_failure)?;
+                let result = Self::handle_send_file(
+                    self.progress_tx.as_ref(),
+                    &mut sandbox,
+                    &args.to_json(),
+                )
+                .await;
+                Ok(typed_json_string_result(invocation, result))
+            }
+            "list_files" => {
+                let _shared = self.execution_gate.read().await;
+                let args: ListFilesRuntimeArgs = parse_invocation_args(invocation)?;
+                let mut sandbox = self.get_or_create_sandbox().await.map_err(tool_failure)?;
+                let cmd = format!(
+                    "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
+                    escape(args.path.as_str().into()),
+                    escape(args.path.as_str().into())
+                );
+                let result = sandbox.exec_command(&cmd, None).await;
+                Ok(match result {
+                    Ok(result) => typed_list_files_result(invocation, &args.path, result),
+                    Err(error) => typed_simple_result::<Value>(
+                        invocation,
+                        Err(anyhow::anyhow!("sandbox list_files failed: {error}")),
+                    ),
+                })
+            }
+            other => Err(ToolRuntimeError::Internal(format!(
+                "typed sandbox executor received unknown tool: {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+struct ListFilesRuntimeArgs {
+    #[serde(default = "default_workspace_path")]
+    path: String,
+}
+
+fn default_workspace_path() -> String {
+    "/workspace".to_string()
+}
+
+impl SendFileArgs {
+    fn to_json(&self) -> String {
+        json!({ "path": self.path }).to_string()
+    }
+}
+
+fn parse_invocation_args<T>(invocation: &ToolInvocation) -> std::result::Result<T, ToolRuntimeError>
+where
+    T: DeserializeOwned,
+{
+    match serde_json::from_value(invocation.normalized_arguments.clone()) {
+        Ok(args) => Ok(args),
+        Err(value_error) => {
+            serde_json::from_str(&invocation.raw_arguments).map_err(|string_error| {
+                ToolRuntimeError::InvalidArguments(format!(
+                "invalid sandbox arguments: {value_error}; raw JSON parse error: {string_error}"
+            ))
+            })
+        }
+    }
+}
+
+fn tool_failure(error: anyhow::Error) -> ToolRuntimeError {
+    ToolRuntimeError::Failure(error.to_string())
+}
+
+fn typed_exec_result(invocation: &ToolInvocation, command: &str, result: ExecResult) -> ToolOutput {
+    let normalizer = sandbox_normalizer(invocation);
+    let mut output = if result.success() {
+        normalizer.success(invocation, &result.stdout, &result.stderr)
+    } else {
+        normalizer
+            .failure(
+                invocation,
+                format!("sandbox command exited with code {}", result.exit_code),
+            )
+            .with_streams(
+                normalizer.stdout_preview(&result.stdout),
+                normalizer.stderr_preview(&result.stderr),
+            )
+    };
+    output.exit_code = Some(i32::try_from(result.exit_code).unwrap_or(-1));
+    output.cleanup_status = CleanupStatus::NotNeeded;
+    output.structured_payload = Some(json!({
+        "ok": result.success(),
+        "command": command,
+        "exit_code": result.exit_code,
+    }));
+    output
+}
+
+fn typed_list_files_result(
+    invocation: &ToolInvocation,
+    path: &str,
+    result: ExecResult,
+) -> ToolOutput {
+    let mut output = typed_exec_result(invocation, "list_files", result);
+    if let Some(payload) = output.structured_payload.as_mut() {
+        payload["path"] = json!(path);
+    }
+    output
+}
+
+fn typed_read_file_result(invocation: &ToolInvocation, path: &str, content: &[u8]) -> ToolOutput {
+    let normalizer = sandbox_normalizer(invocation);
+    let binary = bytes_look_binary(content);
+    let text = String::from_utf8_lossy(content);
+    let mut output = normalizer.success(invocation, "", "");
+    output.cleanup_status = CleanupStatus::NotNeeded;
+    output.structured_payload = Some(json!({
+        "ok": true,
+        "path": path,
+        "bytes": content.len(),
+        "binary": binary,
+    }));
+    output.stdout = if binary {
+        OutputPreview {
+            text: None,
+            bytes_captured: 0,
+            bytes_total_known: Some(content.len()),
+            truncated: false,
+            binary: true,
+            ..OutputPreview::default()
+        }
+    } else {
+        normalizer.stdout_preview(&text)
+    };
+    output.truncation.stdout_truncated = output.stdout.truncated;
+    output
+}
+
+fn typed_json_string_result(invocation: &ToolInvocation, result: Result<String>) -> ToolOutput {
+    match result {
+        Ok(json_string) => match serde_json::from_str::<Value>(&json_string) {
+            Ok(value) => typed_simple_result(invocation, Ok(value)),
+            Err(error) => typed_simple_result::<Value>(
+                invocation,
+                Err(anyhow::anyhow!("sandbox returned invalid JSON: {error}")),
+            ),
+        },
+        Err(error) => typed_simple_result::<Value>(invocation, Err(error)),
+    }
+}
+
+fn typed_simple_result<T>(invocation: &ToolInvocation, result: Result<T>) -> ToolOutput
+where
+    T: Into<Value>,
+{
+    let normalizer = sandbox_normalizer(invocation);
+    match result {
+        Ok(payload) => {
+            let mut output = normalizer.success(invocation, "", "");
+            output.structured_payload = Some(payload.into());
+            output.cleanup_status = CleanupStatus::NotNeeded;
+            output
+        }
+        Err(error) => normalizer
+            .failure(invocation, error.to_string())
+            .with_cleanup_status(CleanupStatus::NotNeeded),
+    }
+}
+
+fn sandbox_normalizer(invocation: &ToolInvocation) -> OutputNormalizer {
+    let config = ToolRuntimeConfig {
+        timeout: invocation.timeout.clone(),
+        artifact_dir: invocation.execution_context.artifact_dir.clone(),
+        ..ToolRuntimeConfig::default()
+    };
+    OutputNormalizer::new(config)
+}
+
+fn bytes_look_binary(bytes: &[u8]) -> bool {
+    let inspected = &bytes[..bytes.len().min(65_536)];
+    inspected.contains(&0)
+}
+
+struct SandboxToolExecutor {
+    provider: Arc<SandboxProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+}
+
+#[async_trait]
+impl ToolExecutor for SandboxToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        self.provider.execute_typed_sandbox_tool(&invocation).await
+    }
 }
 
 fn serialize_json(value: serde_json::Value) -> Result<String> {
@@ -358,7 +657,15 @@ fn build_send_file_response(path: &str, report: &FileDeliveryReport) -> serde_js
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use chrono::Utc;
     use serde_json::Value;
+    use std::path::PathBuf;
 
     #[test]
     fn recreate_sandbox_is_registered() {
@@ -425,6 +732,97 @@ mod tests {
         assert_eq!(parsed["ok"], Value::Bool(true));
         assert_eq!(parsed["command"], Value::String("pwd".to_string()));
         assert_eq!(parsed["exit_code"], Value::Number(0.into()));
+    }
+
+    #[test]
+    fn runtime_executors_cover_sandbox_tool_specs() {
+        let provider = Arc::new(SandboxProvider::new(1));
+        let executor_names: Vec<String> = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect();
+
+        assert_eq!(
+            executor_names,
+            vec![
+                "execute_command",
+                "write_file",
+                "read_file",
+                "send_file_to_user",
+                "list_files",
+                "recreate_sandbox"
+            ]
+        );
+    }
+
+    #[test]
+    fn typed_exec_result_preserves_nonzero_exit_and_streams() {
+        let invocation = test_invocation("execute_command");
+        let output = typed_exec_result(
+            &invocation,
+            "false",
+            ExecResult {
+                stdout: "out".to_string(),
+                stderr: "err".to_string(),
+                exit_code: 7,
+            },
+        );
+
+        assert_eq!(output.status, ToolOutputStatus::Failure);
+        assert_eq!(output.exit_code, Some(7));
+        assert_eq!(output.stdout.text.as_deref(), Some("out"));
+        assert_eq!(output.stderr.text.as_deref(), Some("err"));
+        assert_eq!(output.cleanup_status, CleanupStatus::NotNeeded);
+    }
+
+    #[test]
+    fn typed_read_file_result_marks_binary_output_without_inlining() {
+        let invocation = test_invocation("read_file");
+        let output = typed_read_file_result(&invocation, "/workspace/blob.bin", b"abc\0def");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        assert!(output.stdout.binary);
+        assert!(output.stdout.text.is_none());
+        assert_eq!(
+            output
+                .structured_payload
+                .as_ref()
+                .and_then(|payload| payload.get("binary"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    fn test_invocation(tool_name: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(42),
+            turn_id: TurnId::from("turn_sandbox"),
+            batch_id: ToolBatchId::from("batch_sandbox"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invocation_{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call_{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: "{}".to_string(),
+            normalized_arguments: json!({}),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(PathBuf::from(".oxide/tool-artifacts")),
+            provider_metadata: ProviderMetadata {
+                provider: "opencode-go".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "deepseek-v4-flash".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
     }
 }
 
