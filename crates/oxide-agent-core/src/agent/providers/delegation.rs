@@ -1,7 +1,6 @@
 //! Delegation provider for sub-agent execution.
 //!
-//! Exposes `delegate_to_sub_agent` tool that runs an isolated agent loop
-//! with a lightweight model and restricted toolset.
+//! Exposes async sub-agent tools that run isolated agent loops with a restricted toolset.
 
 use crate::agent::compaction::CompactionController;
 use crate::agent::context::{AgentContext, EphemeralSession};
@@ -29,11 +28,12 @@ use crate::sandbox::SandboxScope;
 use crate::storage::StorageProvider;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Instant;
+use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
@@ -47,8 +47,17 @@ use crate::agent::providers::SearxngProvider;
 use crate::agent::providers::TavilyProvider;
 use tokio::sync::Semaphore;
 
+const TOOL_SPAWN_SUB_AGENTS: &str = "spawn_sub_agents";
+const TOOL_WAIT_SUB_AGENTS: &str = "wait_sub_agents";
+const TOOL_CANCEL_SUB_AGENTS: &str = "cancel_sub_agents";
+const SUB_AGENT_MAX_CONCURRENT_JOBS: usize = 5;
+const SUB_AGENT_DEFAULT_WAIT_TIMEOUT_MS: u64 = 30_000;
+const SUB_AGENT_MAX_WAIT_TIMEOUT_MS: u64 = 3_600_000;
+
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
-    "delegate_to_sub_agent",
+    TOOL_SPAWN_SUB_AGENTS,
+    TOOL_WAIT_SUB_AGENTS,
+    TOOL_CANCEL_SUB_AGENTS,
     "send_file_to_user",
     "ssh_send_file_to_user",
     "transcribe_audio_file",
@@ -116,6 +125,7 @@ pub struct DelegationProvider {
     /// Used via Arc::clone() in build_sub_agent_providers().
     #[allow(dead_code)]
     browser_use_semaphore: Arc<Semaphore>,
+    jobs: Arc<SubAgentJobStore>,
 }
 
 #[derive(Clone)]
@@ -140,8 +150,333 @@ struct PreparedSubAgentExecution {
     progress_relay_task: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SubAgentJobStatus {
+    Running,
+    Completed,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+impl SubAgentJobStatus {
+    const fn is_terminal(self) -> bool {
+        !matches!(self, Self::Running)
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 struct CompletedSubAgentExecution {
+    status: SubAgentJobStatus,
     output: String,
+}
+
+struct SubAgentJobRecord {
+    id: String,
+    task: String,
+    status: SubAgentJobStatus,
+    output: Option<String>,
+    started_at: Instant,
+    completed_at: Option<Instant>,
+    cancellation_token: tokio_util::sync::CancellationToken,
+    handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone)]
+struct SubAgentJobSnapshot {
+    id: String,
+    task: String,
+    status: SubAgentJobStatus,
+    output: Option<String>,
+    elapsed_ms: u128,
+    completed: bool,
+}
+
+impl SubAgentJobSnapshot {
+    fn to_json(&self) -> serde_json::Value {
+        json!({
+            "id": self.id,
+            "task": self.task,
+            "status": self.status.as_str(),
+            "output": self.output,
+            "elapsed_ms": self.elapsed_ms,
+            "completed": self.completed,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SubAgentMissingSnapshot {
+    id: String,
+    status: &'static str,
+}
+
+impl SubAgentMissingSnapshot {
+    fn to_json(&self) -> serde_json::Value {
+        json!({
+            "id": self.id,
+            "status": self.status,
+        })
+    }
+}
+
+#[derive(Default)]
+struct SubAgentJobLookup {
+    found: Vec<SubAgentJobSnapshot>,
+    missing: Vec<SubAgentMissingSnapshot>,
+}
+
+struct SubAgentJobStore {
+    jobs: StdMutex<HashMap<String, SubAgentJobRecord>>,
+    semaphore: Arc<Semaphore>,
+    notify: Notify,
+}
+
+impl SubAgentJobStore {
+    fn new(max_concurrent: usize) -> Self {
+        Self {
+            jobs: StdMutex::new(HashMap::new()),
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            notify: Notify::new(),
+        }
+    }
+
+    fn max_concurrent(&self) -> usize {
+        SUB_AGENT_MAX_CONCURRENT_JOBS
+    }
+
+    fn active_count(&self) -> usize {
+        let jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        jobs.values()
+            .filter(|job| !job.status.is_terminal())
+            .count()
+    }
+
+    fn try_acquire_slots(&self, count: usize) -> Result<Vec<OwnedSemaphorePermit>> {
+        let mut permits = Vec::with_capacity(count);
+        for _ in 0..count {
+            match Arc::clone(&self.semaphore).try_acquire_owned() {
+                Ok(permit) => permits.push(permit),
+                Err(_) => {
+                    drop(permits);
+                    return Err(anyhow!(
+                        "sub-agent concurrency limit reached: max {} active jobs",
+                        SUB_AGENT_MAX_CONCURRENT_JOBS
+                    ));
+                }
+            }
+        }
+        Ok(permits)
+    }
+
+    fn insert_running(
+        &self,
+        id: String,
+        task: String,
+        cancellation_token: tokio_util::sync::CancellationToken,
+    ) {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        jobs.insert(
+            id.clone(),
+            SubAgentJobRecord {
+                id,
+                task,
+                status: SubAgentJobStatus::Running,
+                output: None,
+                started_at: Instant::now(),
+                completed_at: None,
+                cancellation_token,
+                handle: None,
+            },
+        );
+        self.notify.notify_waiters();
+    }
+
+    fn set_handle(&self, id: &str, handle: JoinHandle<()>) {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(job) = jobs.get_mut(id) {
+            job.handle = Some(handle);
+        }
+    }
+
+    fn finish(&self, id: &str, status: SubAgentJobStatus, output: String) {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(job) = jobs.get_mut(id) {
+            if job.status != SubAgentJobStatus::Cancelled {
+                job.status = status;
+                job.output = Some(output);
+            } else if job.output.is_none() {
+                job.output = Some(output);
+            }
+            job.completed_at = Some(Instant::now());
+        }
+        drop(jobs);
+        self.notify.notify_waiters();
+    }
+
+    fn cancel_ids(&self, ids: &[String]) -> SubAgentJobLookup {
+        let mut jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut lookup = SubAgentJobLookup::default();
+        for id in ids {
+            match jobs.get_mut(id) {
+                Some(job) => {
+                    job.cancellation_token.cancel();
+                    if !job.status.is_terminal() {
+                        job.status = SubAgentJobStatus::Cancelled;
+                        job.output = Some("Sub-agent was cancelled by parent request.".to_string());
+                        job.completed_at = Some(Instant::now());
+                    }
+                    lookup.found.push(snapshot_job(job));
+                }
+                None => lookup.missing.push(SubAgentMissingSnapshot {
+                    id: id.clone(),
+                    status: "not_found",
+                }),
+            }
+        }
+        drop(jobs);
+        self.notify.notify_waiters();
+        lookup
+    }
+
+    fn cancel_all(&self) -> SubAgentJobLookup {
+        let ids = {
+            let jobs = self
+                .jobs
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            jobs.keys().cloned().collect::<Vec<_>>()
+        };
+        self.cancel_ids(&ids)
+    }
+
+    fn lookup(&self, ids: &[String]) -> SubAgentJobLookup {
+        let jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut lookup = SubAgentJobLookup::default();
+        for id in ids {
+            match jobs.get(id) {
+                Some(job) => lookup.found.push(snapshot_job(job)),
+                None => lookup.missing.push(SubAgentMissingSnapshot {
+                    id: id.clone(),
+                    status: "not_found",
+                }),
+            }
+        }
+        lookup
+    }
+
+    async fn wait_for_any_terminal(&self, ids: &[String], timeout_ms: u64) -> SubAgentJobLookup {
+        let wait_duration = Duration::from_millis(timeout_ms.min(SUB_AGENT_MAX_WAIT_TIMEOUT_MS));
+        let started = Instant::now();
+
+        loop {
+            let notified = self.notify.notified();
+            let lookup = self.lookup(ids);
+            if lookup
+                .found
+                .iter()
+                .any(|snapshot| snapshot.status.is_terminal())
+                || !lookup.missing.is_empty()
+                || wait_duration.is_zero()
+                || started.elapsed() >= wait_duration
+            {
+                return lookup;
+            }
+
+            let remaining = wait_duration.saturating_sub(started.elapsed());
+            if timeout(remaining, notified).await.is_err() {
+                return self.lookup(ids);
+            }
+        }
+    }
+}
+
+impl Drop for SubAgentJobStore {
+    fn drop(&mut self) {
+        if let Ok(mut jobs) = self.jobs.lock() {
+            for job in jobs.values_mut() {
+                job.cancellation_token.cancel();
+                if let Some(handle) = job.handle.take() {
+                    handle.abort();
+                }
+            }
+        }
+    }
+}
+
+fn snapshot_job(job: &SubAgentJobRecord) -> SubAgentJobSnapshot {
+    let completed = job.status.is_terminal();
+    let elapsed = job
+        .completed_at
+        .unwrap_or_else(Instant::now)
+        .duration_since(job.started_at);
+    SubAgentJobSnapshot {
+        id: job.id.clone(),
+        task: job.task.clone(),
+        status: job.status,
+        output: job.output.clone(),
+        elapsed_ms: elapsed.as_millis(),
+        completed,
+    }
+}
+
+fn normalize_job_ids(ids: Vec<String>) -> Result<Vec<String>> {
+    let ids = ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Err(anyhow!("ids must contain at least one sub-agent id"));
+    }
+    Ok(ids)
+}
+
+fn lookup_to_json(lookup: SubAgentJobLookup) -> Vec<serde_json::Value> {
+    lookup
+        .found
+        .into_iter()
+        .map(|snapshot| snapshot.to_json())
+        .chain(lookup.missing.into_iter().map(|missing| missing.to_json()))
+        .collect()
+}
+
+fn serialize_json(value: serde_json::Value) -> String {
+    serde_json::to_string_pretty(&value).unwrap_or_else(|error| {
+        json!({
+            "ok": false,
+            "error": format!("failed to serialize sub-agent response: {error}"),
+        })
+        .to_string()
+    })
 }
 
 impl DelegationProvider {
@@ -161,6 +496,7 @@ impl DelegationProvider {
             browser_use_semaphore: Arc::new(Semaphore::new(
                 crate::config::get_browser_use_max_concurrent(),
             )),
+            jobs: Arc::new(SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS)),
         }
     }
 
@@ -376,8 +712,18 @@ impl DelegationProvider {
         )
     }
 
-    fn parse_delegate_args(arguments: &str) -> Result<DelegateToSubAgentArgs> {
-        let args: DelegateToSubAgentArgs = serde_json::from_str(arguments)?;
+    fn parse_sub_agent_task_args(arguments: &str) -> Result<SubAgentTaskArgs> {
+        let args: SubAgentTaskArgs = serde_json::from_str(arguments)?;
+        if args.task.trim().is_empty() {
+            return Err(anyhow!("Sub-agent task cannot be empty"));
+        }
+        if args.tools.is_empty() {
+            return Err(anyhow!("Sub-agent tools whitelist cannot be empty"));
+        }
+        Ok(args)
+    }
+
+    fn validate_sub_agent_task_args(args: SubAgentTaskArgs) -> Result<SubAgentTaskArgs> {
         if args.task.trim().is_empty() {
             return Err(anyhow!("Sub-agent task cannot be empty"));
         }
@@ -464,11 +810,11 @@ impl DelegationProvider {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<PreparedSubAgentExecution> {
-        let DelegateToSubAgentArgs {
+        let SubAgentTaskArgs {
             task,
             tools: requested_tools,
             context,
-        } = Self::parse_delegate_args(arguments)?;
+        } = Self::parse_sub_agent_task_args(arguments)?;
 
         let task_id = format!("sub-{}", Uuid::new_v4());
         let model_routes = self.settings.get_configured_sub_agent_model_routes();
@@ -624,6 +970,17 @@ impl DelegationProvider {
         }
     }
 
+    const fn status_for_timed_run_result(outcome: &TimedRunResult) -> SubAgentJobStatus {
+        match outcome {
+            TimedRunResult::Final(_) => SubAgentJobStatus::Completed,
+            TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
+                SubAgentJobStatus::Failed
+            }
+            TimedRunResult::Failed(_) => SubAgentJobStatus::Failed,
+            TimedRunResult::TimedOut => SubAgentJobStatus::TimedOut,
+        }
+    }
+
     async fn finish_sub_agent_progress_relay(prepared: &mut PreparedSubAgentExecution) {
         // Drop the restricted providers before awaiting the relay task.
         // Some providers retain cloned progress senders internally; if the
@@ -636,6 +993,112 @@ impl DelegationProvider {
         if let Some(task) = prepared.progress_relay_task.take() {
             let _ = task.await;
         }
+    }
+
+    async fn spawn_sub_agents(
+        &self,
+        arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        let args: SpawnSubAgentsArgs = serde_json::from_str(arguments)?;
+        if args.tasks.is_empty() {
+            return Err(anyhow!("tasks must contain at least one sub-agent task"));
+        }
+        if args.tasks.len() > SUB_AGENT_MAX_CONCURRENT_JOBS {
+            return Err(anyhow!(
+                "cannot spawn more than {SUB_AGENT_MAX_CONCURRENT_JOBS} sub-agents at once"
+            ));
+        }
+
+        let tasks = args
+            .tasks
+            .into_iter()
+            .map(Self::validate_sub_agent_task_args)
+            .collect::<Result<Vec<_>>>()?;
+        let permits = self.jobs.try_acquire_slots(tasks.len())?;
+        let mut prepared_jobs = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let arguments = serde_json::to_string(&task)?;
+            let prepared = self
+                .prepare_sub_agent_execution(&arguments, progress_tx, cancellation_token)
+                .await?;
+            prepared_jobs.push(prepared);
+        }
+
+        let mut started = Vec::with_capacity(prepared_jobs.len());
+        for (prepared, permit) in prepared_jobs.into_iter().zip(permits) {
+            let job_id = prepared.task_id.clone();
+            let task = prepared.task.clone();
+            let job_token = prepared.sub_session.cancellation_token().clone();
+            self.jobs
+                .insert_running(job_id.clone(), task.clone(), job_token);
+
+            let jobs = Arc::clone(&self.jobs);
+            let llm_client = Arc::clone(&self.llm_client);
+            let settings = Arc::clone(&self.settings);
+            let task_id_for_run = job_id.clone();
+            let handle = tokio::spawn(async move {
+                let _slot = permit;
+                let completed =
+                    Self::run_prepared_sub_agent_execution(llm_client, settings, prepared).await;
+                jobs.finish(&task_id_for_run, completed.status, completed.output);
+            });
+            self.jobs.set_handle(&job_id, handle);
+
+            started.push(json!({
+                "id": job_id,
+                "task": task,
+                "status": SubAgentJobStatus::Running.as_str(),
+            }));
+        }
+
+        Ok(serialize_json(json!({
+            "ok": true,
+            "started": started,
+            "active_count": self.jobs.active_count(),
+            "max_active": self.jobs.max_concurrent(),
+        })))
+    }
+
+    async fn wait_sub_agents(&self, arguments: &str) -> Result<String> {
+        let args: WaitSubAgentsArgs = serde_json::from_str(arguments)?;
+        let ids = normalize_job_ids(args.ids)?;
+        let timeout_ms = args
+            .timeout_ms
+            .unwrap_or(SUB_AGENT_DEFAULT_WAIT_TIMEOUT_MS)
+            .min(SUB_AGENT_MAX_WAIT_TIMEOUT_MS);
+        let lookup = self.jobs.wait_for_any_terminal(&ids, timeout_ms).await;
+        let timed_out = !lookup
+            .found
+            .iter()
+            .any(|snapshot| snapshot.status.is_terminal())
+            && lookup.missing.is_empty();
+
+        Ok(serialize_json(json!({
+            "ok": true,
+            "timed_out": timed_out,
+            "statuses": lookup_to_json(lookup),
+            "active_count": self.jobs.active_count(),
+            "max_active": self.jobs.max_concurrent(),
+        })))
+    }
+
+    fn cancel_sub_agents(&self, arguments: &str) -> Result<String> {
+        let args: CancelSubAgentsArgs = serde_json::from_str(arguments)?;
+        let lookup = if args.all {
+            self.jobs.cancel_all()
+        } else {
+            let ids = normalize_job_ids(args.ids)?;
+            self.jobs.cancel_ids(&ids)
+        };
+
+        Ok(serialize_json(json!({
+            "ok": true,
+            "statuses": lookup_to_json(lookup),
+            "active_count": self.jobs.active_count(),
+            "max_active": self.jobs.max_concurrent(),
+        })))
     }
 
     async fn run_prepared_sub_agent_execution(
@@ -659,6 +1122,7 @@ impl DelegationProvider {
             )
             .await
         };
+        let status = Self::status_for_timed_run_result(&outcome);
         Self::finish_sub_agent_progress_relay(&mut prepared).await;
 
         let output = Self::shape_sub_agent_terminal_output_for_settings(
@@ -668,7 +1132,7 @@ impl DelegationProvider {
             prepared.sub_session.memory(),
         );
 
-        CompletedSubAgentExecution { output }
+        CompletedSubAgentExecution { status, output }
     }
 }
 
@@ -679,37 +1143,91 @@ impl ToolProvider for DelegationProvider {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "delegate_to_sub_agent".to_string(),
-            description: "Delegate rough work to lightweight sub-agent. \
-Pass a short, clear task and a list of allowed tools. \
-You can add additional context (e.g., a quote from a skill). \
-If the sub-agent doesn't finish, a partial report will be returned."
-                .to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "Task for sub-agent"
+        vec![
+            ToolDefinition {
+                name: TOOL_SPAWN_SUB_AGENTS.to_string(),
+                description: "Start one or more stateless sub-agents in the background. \
+Use this for independent, atomic tasks. Returns sub-agent ids immediately; use wait_sub_agents only when results are needed. \
+At most five sub-agents may run concurrently."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": SUB_AGENT_MAX_CONCURRENT_JOBS,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task": {
+                                        "type": "string",
+                                        "description": "Short, clear task for one sub-agent"
+                                    },
+                                    "tools": {
+                                        "type": "array",
+                                        "description": "Whitelist of allowed tools for this sub-agent",
+                                        "items": {"type": "string"}
+                                    },
+                                    "context": {
+                                        "type": "string",
+                                        "description": "Additional task context (optional)"
+                                    }
+                                },
+                                "required": ["task", "tools"]
+                            }
+                        }
                     },
-                    "tools": {
-                        "type": "array",
-                        "description": "Whitelist of allowed tools",
-                        "items": {"type": "string"}
+                    "required": ["tasks"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_WAIT_SUB_AGENTS.to_string(),
+                description: "Wait for one or more background sub-agents. \
+Returns as soon as any requested sub-agent reaches a final status or the timeout expires."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sub-agent ids returned by spawn_sub_agents"
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Optional wait timeout in milliseconds. Defaults to 30000 and is capped at 3600000."
+                        }
                     },
-                    "context": {
-                        "type": "string",
-                        "description": "Additional context (optional)"
+                    "required": ["ids"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_CANCEL_SUB_AGENTS.to_string(),
+                description: "Cancel selected background sub-agents, or all sub-agents for this parent run with all=true."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sub-agent ids to cancel"
+                        },
+                        "all": {
+                            "type": "boolean",
+                            "description": "Cancel all sub-agents owned by this parent run"
+                        }
                     }
-                },
-                "required": ["task", "tools"]
-            }),
-        }]
+                }),
+            },
+        ]
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == "delegate_to_sub_agent"
+        tool_name == TOOL_SPAWN_SUB_AGENTS
+            || tool_name == TOOL_WAIT_SUB_AGENTS
+            || tool_name == TOOL_CANCEL_SUB_AGENTS
     }
 
     async fn execute(
@@ -719,21 +1237,15 @@ If the sub-agent doesn't finish, a partial report will be returned."
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
-        if tool_name != "delegate_to_sub_agent" {
-            return Err(anyhow!("Unknown delegation tool: {tool_name}"));
+        match tool_name {
+            TOOL_SPAWN_SUB_AGENTS => {
+                self.spawn_sub_agents(arguments, progress_tx, cancellation_token)
+                    .await
+            }
+            TOOL_WAIT_SUB_AGENTS => self.wait_sub_agents(arguments).await,
+            TOOL_CANCEL_SUB_AGENTS => self.cancel_sub_agents(arguments),
+            _ => Err(anyhow!("Unknown delegation tool: {tool_name}")),
         }
-
-        let prepared = self
-            .prepare_sub_agent_execution(arguments, progress_tx, cancellation_token)
-            .await?;
-        let completed = Self::run_prepared_sub_agent_execution(
-            Arc::clone(&self.llm_client),
-            Arc::clone(&self.settings),
-            prepared,
-        )
-        .await;
-
-        Ok(completed.output)
     }
 }
 
@@ -771,12 +1283,32 @@ fn should_forward_sub_agent_progress_event(event: &AgentEvent) -> bool {
     )
 }
 
-#[derive(Debug, Deserialize)]
-struct DelegateToSubAgentArgs {
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SubAgentTaskArgs {
     task: String,
     tools: Vec<String>,
     #[serde(default)]
     context: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpawnSubAgentsArgs {
+    tasks: Vec<SubAgentTaskArgs>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaitSubAgentsArgs {
+    ids: Vec<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CancelSubAgentsArgs {
+    #[serde(default)]
+    ids: Vec<String>,
+    #[serde(default)]
+    all: bool,
 }
 
 struct RestrictedToolProvider {
@@ -909,7 +1441,8 @@ fn role_label(role: &MessageRole) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay, DelegationProvider,
+        should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay,
+        DelegationProvider, SubAgentJobStatus, SubAgentJobStore, SUB_AGENT_MAX_CONCURRENT_JOBS,
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::{AgentContext, EphemeralSession};
@@ -932,6 +1465,9 @@ mod tests {
         let blocked = DelegationProvider::blocked_tool_set();
 
         for tool in [
+            "spawn_sub_agents",
+            "wait_sub_agents",
+            "cancel_sub_agents",
             "transcribe_audio_file",
             "describe_image_file",
             "describe_video_file",
@@ -975,6 +1511,40 @@ mod tests {
         ] {
             assert!(blocked.contains(tool), "missing blocked tool: {tool}");
         }
+    }
+
+    #[test]
+    fn sub_agent_job_store_enforces_five_active_slots() {
+        let store = SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS);
+        let permits = store
+            .try_acquire_slots(SUB_AGENT_MAX_CONCURRENT_JOBS)
+            .expect("five slots should be available");
+
+        let error = match store.try_acquire_slots(1) {
+            Ok(_) => panic!("sixth concurrent sub-agent must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("concurrency limit"));
+
+        drop(permits);
+        assert!(store.try_acquire_slots(1).is_ok());
+    }
+
+    #[test]
+    fn sub_agent_job_store_cancel_marks_jobs_terminal() {
+        let store = SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS);
+        store.insert_running(
+            "sub-1".to_string(),
+            "Inspect workspace".to_string(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        let lookup = store.cancel_ids(&["sub-1".to_string()]);
+
+        assert_eq!(lookup.found.len(), 1);
+        assert_eq!(lookup.found[0].status, SubAgentJobStatus::Cancelled);
+        assert!(lookup.found[0].completed);
+        assert_eq!(store.active_count(), 0);
     }
 
     #[test]

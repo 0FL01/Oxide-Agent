@@ -222,10 +222,12 @@ async fn delegation_tool_inherits_agents_md_context_from_executor() {
 
     let error = registry
         .execute(
-            "delegate_to_sub_agent",
+            "spawn_sub_agents",
             &json!({
-                "task": "Inspect the workspace.",
-                "tools": ["write_todos"]
+                "tasks": [{
+                    "task": "Inspect the workspace.",
+                    "tools": ["write_todos"]
+                }]
             })
             .to_string(),
             None,

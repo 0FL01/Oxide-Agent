@@ -200,7 +200,7 @@ pub fn create_sub_agent_system_prompt(
 You do NOT communicate with the user directly and return the result only to the orchestrator.\n\
 Your task: {task}.\n\
 Use only available tools if necessary.\n\
-Do not call delegate_to_sub_agent and do not send files to the user."
+Do not spawn, wait for, or cancel sub-agents and do not send files to the user."
     );
 
     if let Some(extra) = extra_context {

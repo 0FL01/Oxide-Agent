@@ -99,7 +99,7 @@ pub fn resolve_retention(kind: AgentMessageKind, tool_name: Option<&str>) -> Com
 }
 
 fn is_summary_preferred_tool(tool_name: Option<&str>) -> bool {
-    matches!(tool_name, Some("delegate_to_sub_agent"))
+    matches!(tool_name, Some("wait_sub_agents"))
 }
 
 /// Trigger point for a compaction pipeline invocation.
@@ -410,9 +410,9 @@ mod tests {
     }
 
     #[test]
-    fn delegate_results_are_summary_preferred() {
+    fn sub_agent_wait_results_are_summary_preferred() {
         assert_eq!(
-            resolve_retention(AgentMessageKind::ToolResult, Some("delegate_to_sub_agent")),
+            resolve_retention(AgentMessageKind::ToolResult, Some("wait_sub_agents")),
             CompactionRetention::CompactableHistory
         );
         assert_eq!(

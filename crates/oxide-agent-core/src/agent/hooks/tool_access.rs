@@ -86,15 +86,14 @@ mod tests {
 
     #[test]
     fn blocks_explicitly_blocked_tool() {
-        let policy =
-            ToolAccessPolicy::new(None, HashSet::from(["delegate_to_sub_agent".to_string()]));
+        let policy = ToolAccessPolicy::new(None, HashSet::from(["spawn_sub_agents".to_string()]));
         let hook = ToolAccessPolicyHook::new(Arc::new(RwLock::new(policy)));
         let memory = AgentMemory::new(1024);
         let todos = TodoList::new();
 
         let result = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "delegate_to_sub_agent".to_string(),
+                tool_name: "spawn_sub_agents".to_string(),
                 arguments: "{}".to_string(),
             },
             &hook_context(&memory, &todos),

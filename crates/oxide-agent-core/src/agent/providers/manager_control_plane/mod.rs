@@ -190,7 +190,8 @@ const TOPIC_AGENT_YTDLP_TOOLS: &[&str] = &[
     "ytdlp_download_video",
     "ytdlp_download_audio",
 ];
-const TOPIC_AGENT_DELEGATION_TOOLS: &[&str] = &["delegate_to_sub_agent"];
+const TOPIC_AGENT_DELEGATION_TOOLS: &[&str] =
+    &["spawn_sub_agents", "wait_sub_agents", "cancel_sub_agents"];
 const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
     "reminder_schedule",
     "reminder_list",
