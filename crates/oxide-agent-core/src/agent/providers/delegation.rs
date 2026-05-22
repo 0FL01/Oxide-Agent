@@ -22,7 +22,7 @@ use crate::agent::runner::{
     TimedRunResult,
 };
 use crate::config::{
-    get_agent_search_limit, get_sub_agent_max_iterations, AGENT_CONTINUATION_LIMIT,
+    get_agent_search_limit, get_sub_agent_max_iterations, AgentSettings, AGENT_CONTINUATION_LIMIT,
 };
 use crate::llm::{Message, ToolDefinition};
 use crate::sandbox::SandboxScope;
@@ -138,6 +138,10 @@ struct PreparedSubAgentExecution {
     compaction_controller: CompactionController,
     progress_tx: Option<mpsc::Sender<AgentEvent>>,
     progress_relay_task: Option<JoinHandle<()>>,
+}
+
+struct CompletedSubAgentExecution {
+    output: String,
 }
 
 impl DelegationProvider {
@@ -346,9 +350,13 @@ impl DelegationProvider {
         Ok(allowed)
     }
 
-    fn create_sub_agent_runner(&self, blocked: HashSet<String>, max_tokens: usize) -> AgentRunner {
+    fn create_sub_agent_runner_with_client(
+        llm_client: Arc<crate::llm::LlmClient>,
+        blocked: HashSet<String>,
+        max_tokens: usize,
+    ) -> AgentRunner {
         let max_iterations = get_sub_agent_max_iterations();
-        let mut runner = AgentRunner::new(Arc::clone(&self.llm_client));
+        let mut runner = AgentRunner::new(llm_client);
         runner.register_hook(Box::new(CompletionCheckHook::new()));
         runner.register_hook(Box::new(HotContextHealthHook::new()));
         runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
@@ -533,30 +541,33 @@ impl DelegationProvider {
         )
     }
 
-    async fn run_sub_agent_with_timeout(
-        &self,
-        runner: &mut AgentRunner,
-        ctx: &mut AgentRunnerContext<'_>,
-    ) -> TimedRunResult {
-        run_with_timeout(runner, ctx, self.sub_agent_timeout_duration()).await
+    fn sub_agent_timeout_duration_for_settings(settings: &AgentSettings) -> Duration {
+        Duration::from_secs(settings.get_sub_agent_timeout_secs() + 30)
     }
 
-    fn sub_agent_timeout_duration(&self) -> Duration {
-        Duration::from_secs(self.settings.get_sub_agent_timeout_secs() + 30)
-    }
-
-    fn build_sub_agent_error_report(
-        &self,
+    fn build_sub_agent_error_report_for_settings(
+        settings: &AgentSettings,
         task_id: &str,
         memory: &AgentMemory,
         error: String,
     ) -> String {
-        self.build_sub_agent_report_with_status(task_id, memory, SubAgentReportStatus::Error, error)
+        Self::build_sub_agent_report_with_status_for_settings(
+            settings,
+            task_id,
+            memory,
+            SubAgentReportStatus::Error,
+            error,
+        )
     }
 
-    fn build_sub_agent_timeout_report(&self, task_id: &str, memory: &AgentMemory) -> String {
-        let limit = self.settings.get_sub_agent_timeout_secs();
-        self.build_sub_agent_report_with_status(
+    fn build_sub_agent_timeout_report_for_settings(
+        settings: &AgentSettings,
+        task_id: &str,
+        memory: &AgentMemory,
+    ) -> String {
+        let limit = settings.get_sub_agent_timeout_secs();
+        Self::build_sub_agent_report_with_status_for_settings(
+            settings,
             task_id,
             memory,
             SubAgentReportStatus::Timeout,
@@ -564,8 +575,8 @@ impl DelegationProvider {
         )
     }
 
-    fn build_sub_agent_report_with_status(
-        &self,
+    fn build_sub_agent_report_with_status_for_settings(
+        settings: &AgentSettings,
         task_id: &str,
         memory: &AgentMemory,
         status: SubAgentReportStatus,
@@ -576,12 +587,12 @@ impl DelegationProvider {
             status,
             error: Some(error),
             memory,
-            timeout_secs: self.settings.get_sub_agent_timeout_secs(),
+            timeout_secs: settings.get_sub_agent_timeout_secs(),
         })
     }
 
-    fn shape_sub_agent_terminal_output(
-        &self,
+    fn shape_sub_agent_terminal_output_for_settings(
+        settings: &AgentSettings,
         outcome: TimedRunResult,
         task_id: &str,
         memory: &AgentMemory,
@@ -590,7 +601,8 @@ impl DelegationProvider {
             TimedRunResult::Final(result) => result,
             TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
                 warn!(task_id = %task_id, "Sub-agent paused waiting for unsupported approval");
-                self.build_sub_agent_error_report(
+                Self::build_sub_agent_error_report_for_settings(
+                    settings,
                     task_id,
                     memory,
                     "sub-agent paused waiting for unsupported external approval".to_string(),
@@ -598,11 +610,16 @@ impl DelegationProvider {
             }
             TimedRunResult::Failed(err) => {
                 warn!(task_id = %task_id, error = %err, "Sub-agent failed");
-                self.build_sub_agent_error_report(task_id, memory, err.to_string())
+                Self::build_sub_agent_error_report_for_settings(
+                    settings,
+                    task_id,
+                    memory,
+                    err.to_string(),
+                )
             }
             TimedRunResult::TimedOut => {
                 warn!(task_id = %task_id, "Sub-agent hard timed out");
-                self.build_sub_agent_timeout_report(task_id, memory)
+                Self::build_sub_agent_timeout_report_for_settings(settings, task_id, memory)
             }
         }
     }
@@ -619,6 +636,39 @@ impl DelegationProvider {
         if let Some(task) = prepared.progress_relay_task.take() {
             let _ = task.await;
         }
+    }
+
+    async fn run_prepared_sub_agent_execution(
+        llm_client: Arc<crate::llm::LlmClient>,
+        settings: Arc<AgentSettings>,
+        mut prepared: PreparedSubAgentExecution,
+    ) -> CompletedSubAgentExecution {
+        let mut runner = Self::create_sub_agent_runner_with_client(
+            llm_client,
+            Self::blocked_tool_set(),
+            prepared.sub_session.memory().max_tokens(),
+        );
+        info!(task_id = %prepared.task_id, "Running sub-agent delegation");
+
+        let outcome = {
+            let mut ctx = Self::build_sub_agent_runner_context(&mut prepared);
+            run_with_timeout(
+                &mut runner,
+                &mut ctx,
+                Self::sub_agent_timeout_duration_for_settings(&settings),
+            )
+            .await
+        };
+        Self::finish_sub_agent_progress_relay(&mut prepared).await;
+
+        let output = Self::shape_sub_agent_terminal_output_for_settings(
+            &settings,
+            outcome,
+            &prepared.task_id,
+            prepared.sub_session.memory(),
+        );
+
+        CompletedSubAgentExecution { output }
     }
 }
 
@@ -673,26 +723,17 @@ If the sub-agent doesn't finish, a partial report will be returned."
             return Err(anyhow!("Unknown delegation tool: {tool_name}"));
         }
 
-        let mut prepared = self
+        let prepared = self
             .prepare_sub_agent_execution(arguments, progress_tx, cancellation_token)
             .await?;
-        let mut runner = self.create_sub_agent_runner(
-            Self::blocked_tool_set(),
-            prepared.sub_session.memory().max_tokens(),
-        );
-        info!(task_id = %prepared.task_id, "Running sub-agent delegation");
+        let completed = Self::run_prepared_sub_agent_execution(
+            Arc::clone(&self.llm_client),
+            Arc::clone(&self.settings),
+            prepared,
+        )
+        .await;
 
-        let outcome = {
-            let mut ctx = Self::build_sub_agent_runner_context(&mut prepared);
-            self.run_sub_agent_with_timeout(&mut runner, &mut ctx).await
-        };
-        Self::finish_sub_agent_progress_relay(&mut prepared).await;
-
-        Ok(self.shape_sub_agent_terminal_output(
-            outcome,
-            &prepared.task_id,
-            prepared.sub_session.memory(),
-        ))
+        Ok(completed.output)
     }
 }
 
@@ -1243,14 +1284,13 @@ mod tests {
     #[test]
     fn shape_sub_agent_terminal_output_maps_user_input_pause_to_error_report() {
         let settings = Arc::new(AgentSettings::default());
-        let provider =
-            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let mut session = EphemeralSession::new(512);
         session
             .memory_mut()
             .add_message(AgentMessage::user_task("Inspect the workspace."));
 
-        let report = provider.shape_sub_agent_terminal_output(
+        let report = DelegationProvider::shape_sub_agent_terminal_output_for_settings(
+            settings.as_ref(),
             TimedRunResult::WaitingForUserInput(PendingUserInput {
                 kind: UserInputKind::Text,
                 prompt: "Need confirmation".to_string(),
@@ -1270,14 +1310,13 @@ mod tests {
             sub_agent_timeout_secs: Some(45),
             ..AgentSettings::default()
         });
-        let provider =
-            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let mut session = EphemeralSession::new(512);
         session
             .memory_mut()
             .add_message(AgentMessage::user_task("Inspect the workspace."));
 
-        let report = provider.shape_sub_agent_terminal_output(
+        let report = DelegationProvider::shape_sub_agent_terminal_output_for_settings(
+            settings.as_ref(),
             TimedRunResult::TimedOut,
             "sub-task-2",
             session.memory(),
