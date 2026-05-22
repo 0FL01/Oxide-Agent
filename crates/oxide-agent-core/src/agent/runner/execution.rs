@@ -13,6 +13,7 @@ use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
 use crate::agent::recovery::{repair_agent_message_history_for_provider, sanitize_tool_calls};
 use crate::agent::structured_output::parse_structured_output;
+use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 use crate::config::ModelInfo;
 use crate::llm::{ChatResponse, LlmClient, LlmError, ProviderCapabilities};
 use anyhow::{anyhow, Result};
@@ -209,6 +210,14 @@ impl AgentRunner {
         }
 
         if ctx.config.model_routes.is_empty() {
+            if ctx.tool_runtime_registry.is_some() {
+                let error = LlmError::ApiError(
+                    "typed tool runtime v1 requires an explicit opencode-go/deepseek-v4-flash route"
+                        .to_string(),
+                );
+                Self::emit_llm_error(ctx.progress_tx, &error).await;
+                return Err(anyhow!("LLM call failed: {error}"));
+            }
             return self.call_llm_with_tools_legacy(ctx, state, iteration).await;
         }
 
@@ -327,6 +336,21 @@ impl AgentRunner {
         iteration: usize,
     ) -> Result<ChatResponse> {
         let max_retries = LlmClient::MAX_RETRIES;
+
+        if ctx.tool_runtime_registry.is_some()
+            && !ctx
+                .config
+                .model_routes
+                .iter()
+                .any(v1_tool_runtime_enabled_for_model)
+        {
+            let error = LlmError::ApiError(
+                "typed tool runtime v1 only supports opencode-go/deepseek-v4-flash routes"
+                    .to_string(),
+            );
+            Self::emit_llm_error(ctx.progress_tx, &error).await;
+            return Err(anyhow!("LLM call failed: {error}"));
+        }
 
         let mut exhausted_routes = std::collections::HashSet::new();
         let mut pending_failover_from: Option<ModelInfo> = None;
@@ -644,6 +668,7 @@ impl AgentRunner {
     ) -> Option<usize> {
         let now = Instant::now();
         let json_mode = self.structured_output_required_for_config(&ctx.config);
+        let require_v1_tool_route = ctx.tool_runtime_registry.is_some();
         self.route_failover_state
             .route_quarantine
             .retain(|_, until| *until > now);
@@ -657,6 +682,7 @@ impl AgentRunner {
             exhausted_routes,
             now,
             json_mode,
+            require_v1_tool_route,
         ) {
             return Some(0);
         }
@@ -668,8 +694,14 @@ impl AgentRunner {
             .enumerate()
             .skip(1)
             .filter_map(|(index, route)| {
-                self.route_is_available(route, exhausted_routes, now, json_mode)
-                    .then_some((index, route.weight.max(1) as usize))
+                self.route_is_available(
+                    route,
+                    exhausted_routes,
+                    now,
+                    json_mode,
+                    require_v1_tool_route,
+                )
+                .then_some((index, route.weight.max(1) as usize))
             })
             .collect();
 
@@ -699,9 +731,11 @@ impl AgentRunner {
         exhausted_routes: &std::collections::HashSet<String>,
         now: Instant,
         json_mode: bool,
+        require_v1_tool_route: bool,
     ) -> bool {
         let route_key = Self::route_key(route);
-        !Self::json_mode_forbids_route(json_mode, route)
+        (!require_v1_tool_route || v1_tool_runtime_enabled_for_model(route))
+            && !Self::json_mode_forbids_route(json_mode, route)
             && !exhausted_routes.contains(&route_key)
             && self.llm_client.is_provider_available(&route.provider)
             && self
@@ -1881,6 +1915,7 @@ mod tests {
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::registry::ToolRegistry;
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
+    use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
     use crate::config::{AgentSettings, ModelInfo};
     use crate::llm::{
         ChatResponse, LlmClient, LlmError, MockLlmProvider, TokenUsage, ToolCall, ToolCallFunction,
@@ -2031,6 +2066,76 @@ mod tests {
             runner.select_model_route_index(&ctx, &std::collections::HashSet::new()),
             Some(0)
         );
+    }
+
+    #[test]
+    fn select_model_route_index_does_not_fail_over_typed_runtime_to_non_v1_route() {
+        let mut opencode = MockLlmProvider::new();
+        stub_non_chat_methods(&mut opencode);
+        let mut openrouter = MockLlmProvider::new();
+        stub_non_chat_methods(&mut openrouter);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(opencode));
+        llm.register_provider("openrouter".to_string(), Arc::new(openrouter));
+        let llm_client = Arc::new(llm);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        let registry = ToolRegistry::new();
+        let tools: Vec<crate::llm::ToolDefinition> = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let ctx = AgentRunnerContext {
+            task: "Typed runtime route selection",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            tool_runtime_registry: Some(Arc::new(RuntimeToolRegistry::new())),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-typed-route-selection",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 8, 4, 60, 4096)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "deepseek-v4-flash".to_string(),
+                        provider: "opencode-go".to_string(),
+                        max_output_tokens: 4096,
+                        context_window_tokens: 200_000,
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "deepseek-v4-flash".to_string(),
+                        provider: "openrouter".to_string(),
+                        max_output_tokens: 4096,
+                        context_window_tokens: 200_000,
+                        weight: 10,
+                    },
+                ]),
+        };
+
+        assert_eq!(
+            runner.select_model_route_index(&ctx, &std::collections::HashSet::new()),
+            Some(0)
+        );
+
+        let mut exhausted = std::collections::HashSet::new();
+        exhausted.insert(AgentRunner::route_key(&ctx.config.model_routes[0]));
+        assert_eq!(runner.select_model_route_index(&ctx, &exhausted), None);
     }
 
     #[test]
