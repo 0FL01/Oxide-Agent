@@ -10,6 +10,7 @@ pub mod history;
 pub mod invocation;
 pub mod normalizer;
 pub mod output;
+pub mod process;
 pub mod provider_opencode_go;
 pub mod registry;
 pub mod runtime;
@@ -27,6 +28,7 @@ pub use output::{
     CancellationReason, CleanupStatus, OutputPreview, OutputTruncationMetadata, TimeoutReason,
     ToolOutput, ToolOutputIdentity, ToolOutputStatus,
 };
+pub use process::ProcessManager;
 pub use provider_opencode_go::{
     OpenCodeGoParsedToolCall, OpenCodeGoProtocolIssue, OpenCodeGoToolCallBatch,
     OpenCodeGoToolCallParser, OpenCodeGoToolOutputEncoder, OpenCodeGoToolParseError,
