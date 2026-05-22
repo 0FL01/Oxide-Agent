@@ -85,6 +85,7 @@ Done when:
 ## Progress Log
 
 - 2026-05-22 20:21: Read `prd/PRD.md`, `AGENTS.md`, `README.md`, workspace `Cargo.toml`, existing goal convention, and confirmed working tree was clean. Active Codex goal created for the async parallel tool runtime migration. Next: commit Phase 0, then start runtime typed foundations.
+- 2026-05-22 20:30: Phase 1 implemented typed runtime foundations under `agent/tool_runtime/`, renamed task-local route metadata to `agent/tool_model_route.rs`, and added normalizer tests for success JSON, unknown tool pairing, truncation, and executor error mapping. Validation passed: `cargo test -p oxide-agent-core tool_runtime -- --nocapture`, `cargo check -p oxide-agent-core`, `cargo fmt --all --check`, `cargo clippy -p oxide-agent-core --all-targets --all-features`. Next: Phase 2 strict opencode-go parser/encoder fixtures.
 
 ## Risks and Blockers
 

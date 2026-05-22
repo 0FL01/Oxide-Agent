@@ -11,7 +11,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_bridge::extract_updated_topic_agents_md;
-use crate::agent::tool_runtime::scope_tool_model_route;
+use crate::agent::tool_model_route::scope_tool_model_route;
 use crate::config::ModelInfo;
 
 use crate::llm::{InvocationId, Message, ToolCall, ToolCallFunction};

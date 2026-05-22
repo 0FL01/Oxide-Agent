@@ -8,7 +8,7 @@ mod response;
 mod tests;
 
 use crate::agent::provider::ToolProvider;
-use crate::agent::tool_runtime::current_tool_model_route;
+use crate::agent::tool_model_route::current_tool_model_route;
 use crate::config::{
     get_browser_use_initial_backoff, get_browser_use_max_backoff, get_browser_use_max_concurrent,
     get_browser_use_max_retries, get_browser_use_timeout,

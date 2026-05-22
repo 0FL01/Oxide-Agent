@@ -45,8 +45,10 @@ pub mod skills;
 pub mod structured_output;
 /// Tool execution bridge with timeout and cancellation
 pub mod tool_bridge;
-/// Task-local tool execution runtime metadata
-pub(crate) mod tool_runtime;
+/// Task-local active model route metadata for tool providers.
+pub(crate) mod tool_model_route;
+/// Async parallel tool runtime foundations.
+pub mod tool_runtime;
 /// Durable LLM Wiki memory primitives.
 pub mod wiki_memory;
 

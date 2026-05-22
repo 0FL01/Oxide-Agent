@@ -16,7 +16,7 @@ use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInj
 use crate::agent::tool_bridge::{
     execute_single_tool_call, ToolExecutionContext, ToolExecutionResult,
 };
-use crate::agent::tool_runtime::scope_tool_model_route;
+use crate::agent::tool_model_route::scope_tool_model_route;
 use crate::agent::wiki_memory::planner::{
     extract_explicit_remember_payload, has_explicit_remember_intent,
 };

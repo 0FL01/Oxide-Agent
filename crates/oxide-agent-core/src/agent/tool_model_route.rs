@@ -1,4 +1,4 @@
-//! Task-local runtime metadata for tool execution.
+//! Task-local active model route metadata for tool providers.
 
 use crate::config::ModelInfo;
 use std::future::Future;

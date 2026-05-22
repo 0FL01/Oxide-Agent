@@ -1,6 +1,6 @@
 use super::response::{format_http_error, is_retryable_error};
 use super::*;
-use crate::agent::tool_runtime::scope_tool_model_route;
+use crate::agent::tool_model_route::scope_tool_model_route;
 use reqwest::StatusCode;
 use std::env;
 use std::sync::Arc;
