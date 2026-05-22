@@ -95,7 +95,6 @@ const DM_ALLOWED_TOOLS_ENV: &str = "DM_ALLOWED_TOOLS";
 const DM_BLOCKED_TOOLS_ENV: &str = "DM_BLOCKED_TOOLS";
 
 const TOPIC_AGENT_MANAGEABLE_HOOKS: &[&str] = &[
-    "delegation_guard",
     "search_budget",
     "timeout_report",
     "retrieval_advisor",
@@ -472,7 +471,7 @@ mod tests {
             "allowedTools": ["todos_write", "execute_command", "execute_command"],
             "blockedTools": ["delegate_to_sub_agent"],
             "enabledHooks": ["search_budget"],
-            "disabledHooks": ["delegation_guard"]
+            "disabledHooks": ["timeout_report"]
         }));
 
         assert_eq!(parsed.prompt_instructions.as_deref(), Some("you are infra"));
@@ -480,7 +479,6 @@ mod tests {
         assert!(!parsed.tool_policy.allows("delegate_to_sub_agent"));
         assert!(!parsed.tool_policy.allows("unknown_tool"));
         assert!(parsed.hook_policy.allows("search_budget"));
-        assert!(!parsed.hook_policy.allows("delegation_guard"));
         assert!(!parsed.hook_policy.allows("timeout_report"));
     }
 
@@ -563,15 +561,15 @@ mod tests {
     fn additional_disabled_hooks_override_existing_policy() {
         let policy = HookAccessPolicy::new(
             Some(HashSet::from([
-                "delegation_guard".to_string(),
                 "search_budget".to_string(),
+                "timeout_report".to_string(),
             ])),
             HashSet::new(),
         )
-        .with_additional_disabled_hooks(["delegation_guard"]);
+        .with_additional_disabled_hooks(["search_budget"]);
 
-        assert!(policy.allows("search_budget"));
-        assert!(!policy.allows("delegation_guard"));
+        assert!(policy.allows("timeout_report"));
+        assert!(!policy.allows("search_budget"));
     }
 
     #[test]

@@ -25,8 +25,8 @@ pub fn execute(&self, event: &HookEvent, context: &HookContext) -> HookResult {
 
 ### 3. Стратегия
 Разные хуки реализуют разные стратегии обработки одного и того же события. Например, `BeforeTool` обрабатывается:
-- `DelegationGuardHook` - блокирует аналитическое делегирование
 - `SubAgentSafetyHook` - блокирует запрещённые инструменты
+- `SearchBudgetHook` - ограничивает поисковые вызовы
 
 ### 4. Декоратор
 Хуки "оборачивают" базовую логику агента, добавляя проверки и инъекции контекста.
@@ -38,7 +38,6 @@ src/agent/hooks/
 ├── types.rs               # HookEvent, HookResult, HookContext
 ├── registry.rs            # Hook trait, HookRegistry
 ├── completion.rs          # CompletionCheckHook
-├── delegation_guard.rs     # DelegationGuardHook
 ├── sub_agent_safety.rs    # SubAgentSafetyHook
 ├── search_budget.rs        # SearchBudgetHook
 ├── timeout_report.rs      # TimeoutReportHook
@@ -55,7 +54,6 @@ src/agent/runner/
 ```rust
 let mut runner = AgentRunner::new(llm_client.clone());
 runner.register_hook(Box::new(CompletionCheckHook::new()));
-runner.register_hook(Box::new(DelegationGuardHook::new()));
 runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
 runner.register_hook(Box::new(TimeoutReportHook::new()));
 ```
@@ -68,7 +66,7 @@ fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
     runner.register_hook(Box::new(CompletionCheckHook::new()));
     runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
         max_iterations: SUB_AGENT_MAX_ITERATIONS,
-        max_tokens: SUB_AGENT_MAX_TOKENS,
+        max_tokens: sub_agent_context_budget,
         blocked_tools: blocked,
     })));
     runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
@@ -131,18 +129,16 @@ apply_timeout_hook(&mut ctx, &RunState) -> Result<Option<String>>
 | Характеристика | Main Agent | Sub-Agent |
 |---------------|-------------|-----------|
 | Роль | Оркестратор (анализ, принятие решений) | Рабочий (выполнение задач) |
-| DelegationGuardHook | ✅ Да | ❌ Нет |
 | SubAgentSafetyHook | ❌ Нет | ✅ Да |
 | Может делегировать | ✅ Да | ❌ Нет |
 | Макс. итераций | 200 | 60 |
-| Макс. токены | 200,000 | 64,000 |
+| Макс. токены | По модели/профилю | Наследует main-agent budget, если не задан override |
 | Тип работы | Анализ данных | Получение данных |
 
 ## Ключевые особенности
 
 ### Безопасность
 - `SubAgentSafetyHook` ограничивает итерации, токены и инструменты
-- `DelegationGuardHook` предотвращает делегирование аналитических задач
 
 ### Надёжность
 - `CompletionCheckHook` гарантирует выполнение всех задач через принудительные итерации

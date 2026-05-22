@@ -26,7 +26,7 @@ pub struct EphemeralSession {
 
 | Поле | Тип | Описание |
 |------|------|----------|
-| `memory` | AgentMemory | Память агента с ограничением SUB_AGENT_MAX_TOKENS |
+| `memory` | AgentMemory | Память агента с inherited или explicit sub-agent context budget |
 | `cancellation_token` | CancellationToken | Токен отмены (child от родителя или новый) |
 | `loaded_skills` | HashSet<String> | Загруженные навыки (для RAG) |
 | `skill_token_count` | usize | Токены, использованные на навыки |
@@ -125,9 +125,9 @@ impl AgentContext for EphemeralSession {
 // src/agent/providers/delegation.rs:245-250
 let mut sub_session = match cancellation_token {
     Some(parent_token) => {
-        EphemeralSession::with_parent_token(SUB_AGENT_MAX_TOKENS, parent_token)
+        EphemeralSession::with_parent_token(sub_agent_context_budget, parent_token)
     }
-    None => EphemeralSession::new(SUB_AGENT_MAX_TOKENS),
+    None => EphemeralSession::new(sub_agent_context_budget),
 };
 ```
 
@@ -207,13 +207,13 @@ let skill_tokens = sub_session.skill_token_count();
 
 | Параметр | Значение | Константа |
 |-----------|----------|-----------|
-| `max_tokens` | 64,000 | `SUB_AGENT_MAX_TOKENS` |
+| `max_tokens` | inherited / explicit override | sub-agent context budget |
 | `timeout` | настроенный | `AGENT_TIMEOUT_SECS` (для main), отдельный для sub |
 
 ## Изоляция
 
 ### Память
-- `AgentMemory` создаётся с `SUB_AGENT_MAX_TOKENS`
+- `AgentMemory` создаётся с inherited или explicit sub-agent context budget
 - Не разделяется с основным агентом
 - Не влияет на контекст основного агента
 
@@ -231,6 +231,6 @@ let skill_tokens = sub_session.skill_token_count();
 |---------------|-------------|-------------------|
 | Использование | Основной агент | Саб-агенты |
 | `cancellation_token` | Собственный | Child от родителя или собственный |
-| `max_tokens` | `AGENT_MAX_TOKENS` (200,000) | `SUB_AGENT_MAX_TOKENS` (64,000) |
+| `max_tokens` | main-agent budget | inherited / explicit sub-agent budget |
 | Навыки | Персистентные | Временные в сессии |
 | `elapsed_secs()` | От создания session | От создания EphemeralSession |

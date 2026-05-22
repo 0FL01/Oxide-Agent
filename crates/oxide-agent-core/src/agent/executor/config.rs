@@ -2,8 +2,8 @@ use super::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContex
 use super::AgentExecutor;
 use crate::agent::compaction::CompactionController;
 use crate::agent::hooks::{
-    CompletionCheckHook, DelegationGuardHook, EpisodicExtractHook, HotContextHealthHook,
-    RetrievalAdvisorHook, SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
+    CompletionCheckHook, EpisodicExtractHook, HotContextHealthHook, RetrievalAdvisorHook,
+    SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
 };
 use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext, SshApprovalRegistry};
 use crate::agent::runner::AgentRunner;
@@ -43,11 +43,6 @@ impl AgentExecutor {
         runner.register_hook(Box::new(HotContextHealthHook::new()));
         runner.register_hook(Box::new(RetrievalAdvisorHook::new()));
         runner.register_hook(Box::new(EpisodicExtractHook::new()));
-        Self::register_policy_controlled_hook(
-            &mut runner,
-            DelegationGuardHook::new(),
-            Arc::clone(&hook_policy_state),
-        );
         Self::register_policy_controlled_hook(
             &mut runner,
             SearchBudgetHook::new(get_agent_search_limit()),

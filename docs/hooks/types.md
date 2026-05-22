@@ -45,7 +45,7 @@ pub enum HookEvent {
 |---------|-------|
 | `BeforeIteration` | `SubAgentSafetyHook` |
 | `AfterAgent` | `CompletionCheckHook` |
-| `BeforeTool` | `DelegationGuardHook`, `SubAgentSafetyHook`, `SearchBudgetHook` |
+| `BeforeTool` | `SubAgentSafetyHook`, `SearchBudgetHook` |
 | `AfterTool` | (логирование/метрики) |
 | `Timeout` | `TimeoutReportHook` |
 
@@ -102,13 +102,9 @@ HookResult::ForceIteration {
 
 #### Block
 ```rust
-// src/agent/hooks/delegation_guard.rs:80-87
+// src/agent/hooks/sub_agent_safety.rs
 return HookResult::Block {
-    reason: format!(
-        "⛔ Delegation Blocked: The task contains an analytical keyword ('{}'). \
-         Sub-agents are restricted to raw data retrieval...",
-        keyword
-    ),
+    reason: format!("Tool '{tool_name}' is blocked for sub-agents"),
 };
 ```
 

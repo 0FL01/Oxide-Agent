@@ -53,7 +53,6 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         - Completion Check Hook - validates task completion
         - Workload Distributor - enforces separation of duties by blocking heavy manual operations in the Main Agent
         - Search Budget Hook - prevents infinite loops in tool calls
-        - Delegation Guard - controls sub-agent delegation behavior
         - Soft Timeout Report Hook - provides detailed timeout reporting
         - Sub-Agent Safety - ensures safe execution environments
         - Registry - centralized hook management
@@ -517,7 +516,6 @@ The runtime path does not call OpenAI `/responses/compact`, does not create new 
 ### 🔗 Hooks System
 Extensible architecture for personalizing agent behavior:
 - **Completion Hook** — task completion handling
-- **Delegation Guard** — prevents delegation of high-level analytical tasks ("think", "analyze"), restricting sub-agents to mechanical retrieval
 - **Sub-Agent Safety** — ensures safe execution environments for delegated tasks
 - **Search Budget** — limits search tool calls (10 per session)
 - **Timeout Report** — provides detailed timeout reporting
@@ -525,7 +523,7 @@ Extensible architecture for personalizing agent behavior:
 
 **Protected Hooks (cannot be disabled):** `completion_check`, `tool_access_policy`
 
-**Manageable Hooks:** `delegation_guard`, `search_budget`, `timeout_report`
+**Manageable Hooks:** `search_budget`, `timeout_report`, `retrieval_advisor`, `episodic_extract`
 
 ### 🛠️ Tool Providers
 The agent uses a modular provider system, each offering a specialized set of tools:

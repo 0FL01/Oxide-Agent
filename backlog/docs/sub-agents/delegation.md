@@ -100,9 +100,9 @@ async fn execute(
     // Создание sub-session с родительским токеном отмены
     let mut sub_session = match cancellation_token {
         Some(parent_token) => {
-            EphemeralSession::with_parent_token(SUB_AGENT_MAX_TOKENS, parent_token)
+            EphemeralSession::with_parent_token(sub_agent_context_budget, parent_token)
         }
-        None => EphemeralSession::new(SUB_AGENT_MAX_TOKENS),
+        None => EphemeralSession::new(sub_agent_context_budget),
     };
     sub_session
         .memory_mut()
@@ -331,42 +331,6 @@ fn build_sub_agent_providers(
 }
 ```
 
-## Проверка DelegationGuardHook
+## Проверка политики sub-agent
 
-Перед выполнением делегирования срабатывает `DelegationGuardHook`:
-
-```rust
-// src/agent/hooks/delegation_guard.rs:56-91
-impl Hook for DelegationGuardHook {
-    fn handle(&self, event: &HookEvent, _context: &HookContext) -> HookResult {
-        let HookEvent::BeforeTool {
-            tool_name,
-            arguments,
-        } = event
-        else {
-            return HookResult::Continue;
-        };
-
-        if tool_name != "delegate_to_sub_agent" {
-            return HookResult::Continue;
-        }
-
-        let task = match serde_json::from_str::<Value>(arguments) {
-            Ok(json) => json.get("task").and_then(|v| v.as_str()).unwrap_or(""),
-            Err(_) => return HookResult::Continue,
-        };
-
-        if let Some(keyword) = self.check_task(&task) {
-            return HookResult::Block {
-                reason: format!(
-                    "⛔ Delegation Blocked: The task contains an analytical keyword ('{}'). \
-                     Sub-agents are restricted to raw data retrieval...",
-                    keyword
-                ),
-            };
-        }
-
-        HookResult::Continue
-    }
-}
-```
+Перед выполнением tool call у sub-agent остается `SubAgentSafetyHook`: он блокирует рекурсивное делегирование и инструменты, которые не должны выполняться из ephemeral worker-сессии.

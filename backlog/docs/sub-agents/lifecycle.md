@@ -10,16 +10,12 @@
    ├─ tools: ["execute_command", "cat", ...]
    └─ context: "Дополнительный контекст (опционально)"
     ↓
-2. DelegationGuardHook проверяет задачу
-   ├─ Аналитические ключевые слова? → Block
-   └─ Retrieval глаголы? → Continue
-    ↓
-3. Создание EphemeralSession
-   ├─ AgentMemory с ограничением SUB_AGENT_MAX_TOKENS (64,000)
+2. Создание EphemeralSession
+   ├─ AgentMemory наследует context window основного агента, если sub-agent window не задан явно
    ├─ parent.child_token() для отмены
    └─ started_at для elapsed_secs()
     ↓
-4. Создание провайдеров саб-агента
+3. Создание провайдеров саб-агента
    ├─ TodosProvider (изолированные todos)
    ├─ SandboxProvider (изолированная песочница)
    ├─ FileHosterProvider (общий хостинг)
@@ -82,9 +78,9 @@
 // src/agent/providers/delegation.rs:245-250
 let mut sub_session = match cancellation_token {
     Some(parent_token) => {
-        EphemeralSession::with_parent_token(SUB_AGENT_MAX_TOKENS, parent_token)
+        EphemeralSession::with_parent_token(sub_agent_context_budget, parent_token)
     }
-    None => EphemeralSession::new(SUB_AGENT_MAX_TOKENS),
+    None => EphemeralSession::new(sub_agent_context_budget),
 };
 ```
 
@@ -183,7 +179,7 @@ fn build_sub_agent_report(ctx: SubAgentReportContext<'_>) -> String {
 | Параметр | Значение | Описание |
 |-----------|----------|----------|
 | `max_iterations` | 60 | Лимит итераций |
-| `max_tokens` | 64,000 | Лимит токенов |
+| `max_tokens` | inherited / explicit override | Лимит токенов |
 | `timeout` | настроенный + 30 сек | Жёсткий тайм-аут |
 | `blocked_tools` | delegate_to_sub_agent, send_file_to_user | Заблокированные инструменты |
 

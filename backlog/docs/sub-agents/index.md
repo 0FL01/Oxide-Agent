@@ -15,13 +15,12 @@
 | Роль | Оркестратор (анализ, принятие решений) | Рабочий (выполнение задач) |
 | CompletionCheckHook | ✅ Да | ✅ Да |
 | WorkloadDistributorHook | ✅ Да | ❌ Нет |
-| DelegationGuardHook | ✅ Да | ❌ Нет |
 | SubAgentSafetyHook | ❌ Нет | ✅ Да |
 | SearchBudgetHook | ✅ Да | ✅ Да |
 | TimeoutReportHook | ✅ Да | ✅ Да |
 | Может делегировать | ✅ Да | ❌ Нет |
 | Макс. итераций | 200 | 60 |
-| Макс. токены | 200,000 | 64,000 |
+| Макс. токены | По модели/профилю | Наследует main-agent budget, если не задан override |
 | Тайм-аут | 600 сек (10 мин) | Конфигурируется |
 
 ## Хуки саб-агента
@@ -53,7 +52,7 @@ fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
     runner.register_hook(Box::new(CompletionCheckHook::new()));
     runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
         max_iterations: SUB_AGENT_MAX_ITERATIONS,
-        max_tokens: SUB_AGENT_MAX_TOKENS,
+        max_tokens: sub_agent_context_budget,
         blocked_tools: blocked,
     })));
     runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
@@ -66,8 +65,6 @@ fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
 
 ```
 Main Agent вызывает delegate_to_sub_agent
-    ↓
-DelegationGuardHook проверяет задачу
     ↓
 Создаётся EphemeralSession с родительским токеном отмены
     ↓
@@ -85,7 +82,7 @@ DelegationGuardHook проверяет задачу
 | Константа | Значение | Описание |
 |-----------|----------|----------|
 | `SUB_AGENT_MAX_ITERATIONS` | 60 | Макс. итераций саб-агента (env override) |
-| `SUB_AGENT_MAX_TOKENS` | 64,000 | Макс. токенов саб-агента |
+| sub-agent context budget | inherited | Наследует main-agent budget, если не задан override |
 
 ## Безопасность
 

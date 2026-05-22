@@ -42,14 +42,12 @@ runner.register_hook(Box::new(CustomHook));
 User Request: "Исследуй и сравни репозитории"
 
 1. BeforeAgent
-   ├─ CompletionCheckHook: Continue (не AfterAgent)
-   └─ DelegationGuardHook: Continue (не BeforeTool)
+   └─ CompletionCheckHook: Continue (не AfterAgent)
     ↓
 2. LLM Call + Tool Calls
     ↓
 3. BeforeTool (execute_command)
    ├─ CompletionCheckHook: Continue
-   ├─ DelegationGuardHook: Continue (не delegate_to_sub_agent)
    └─ SubAgentSafetyHook: Continue (не sub-agent)
     ↓
 4. Tool Execution
@@ -61,9 +59,7 @@ User Request: "Исследуй и сравни репозитории"
     ↓
 7. BeforeTool (delegate_to_sub_agent)
    ├─ CompletionCheckHook: Continue
-   ├─ DelegationGuardHook: Block
-   │   → "⛔ Delegation Blocked: The task contains an analytical keyword ('сравни')"
-   └─ SubAgentSafetyHook: N/A (заблокировано раньше)
+   └─ SubAgentSafetyHook: Continue (не sub-agent)
 ```
 
 ## 3. Отладка хуков
@@ -84,13 +80,11 @@ RUST_LOG=agent::hooks=debug ./target/release/bot
 
 ```
 [INFO] Registered hook: completion_check
-[INFO] Registered hook: delegation_guard
 [INFO] Registered hook: search_budget
 [INFO] Registered hook: timeout_report
 
 [DEBUG] Hook returned Continue (hook=completion_check)
 [INFO] Hook forcing iteration (hook=completion_check, reason="Not all tasks are completed...")
-[INFO] Hook blocking action (hook=delegation_guard, reason="⛔ Delegation Blocked...")
 ```
 
 ## 4. Инъекция контекста через хук
@@ -272,14 +266,13 @@ mod tests {
 ```
 Регистрация:
 ├── CompletionCheckHook     (1-й в цепочке)
-├── DelegationGuardHook    (2-й в цепочке)
-├── SearchBudgetHook      (3-й в цепочке)
-├── CustomHook           (4-й в цепочке)
-└── TimeoutReportHook     (5-й в цепочке)
+├── SearchBudgetHook      (2-й в цепочке)
+├── CustomHook           (3-й в цепочке)
+└── TimeoutReportHook     (4-й в цепочке)
 
 Выполнение BeforeTool:
 1. CompletionCheckHook → Continue
-2. DelegationGuardHook → Block
+2. SearchBudgetHook → Block
    → [Цепочка останавливается, CustomHook и TimeoutReportHook не выполняются]
 ```
 

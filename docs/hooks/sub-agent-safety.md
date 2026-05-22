@@ -6,7 +6,7 @@
 
 **Конфигурация:**
 - `max_iterations` = 60
-- `max_tokens` = 64,000
+- `max_tokens` = inherited main-agent context budget unless explicitly overridden for sub-agents
 - `blocked_tools` - динамический набор из `BLOCKED_SUB_AGENT_TOOLS`
 
 **Регистрация:**
@@ -121,7 +121,7 @@ fn create_sub_agent_runner(&self, blocked: HashSet<String>) -> AgentRunner {
     runner.register_hook(Box::new(CompletionCheckHook::new()));
     runner.register_hook(Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
         max_iterations: SUB_AGENT_MAX_ITERATIONS,
-        max_tokens: SUB_AGENT_MAX_TOKENS,
+        max_tokens: sub_agent_context_budget,
         blocked_tools: blocked,
     })));
     runner.register_hook(Box::new(SearchBudgetHook::new(get_agent_search_limit())));
@@ -144,8 +144,8 @@ max_iterations = 60
 
 ### Сценарий 2: Достигнут лимит токенов
 ```
-token_count = 64,000
-max_tokens = 64,000
+token_count = max_tokens
+max_tokens = inherited or explicit sub-agent budget
 
 Результат: HookResult::Block {
     reason: "Sub-agent token limit reached (64000)"
@@ -206,7 +206,7 @@ impl SubAgentSafetyHook {
 | Параметр | Main Agent | Sub-Agent |
 |-----------|-------------|-----------|
 | `max_iterations` | 200 | 60 |
-| `max_tokens` | 200,000 | 64,000 |
+| `max_tokens` | По модели/профилю | Наследует main-agent budget, если не задан override |
 | `SubAgentSafetyHook` | ❌ Нет | ✅ Да |
 | Может делегировать | ✅ Да | ❌ Нет |
 | Может отправлять файлы | ✅ Да | ❌ Нет |

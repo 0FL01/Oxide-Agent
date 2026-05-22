@@ -11,7 +11,6 @@
 
 ### Хуки основного агента
 - [**CompletionCheckHook**](completion-check.md) - проверка завершения todo-задач
-- [**DelegationGuardHook**](delegation-guard.md) - защита от делегирования аналитических задач
 - [**SearchBudgetHook**](search-budget.md) - лимит поисковых запросов
 - [**TimeoutReportHook**](timeout-report.md) - отчёт при достижении тайм-аута
 
@@ -38,14 +37,13 @@
 | `AGENT_MAX_ITERATIONS` | 200 | Макс. итераций (main agent, env override) |
 | `AGENT_TIMEOUT_SECS` | 600 | Тайм-аут агента (10 минут) |
 | `SUB_AGENT_MAX_ITERATIONS` | 60 | Макс. итераций (sub-agent, env override) |
-| `SUB_AGENT_MAX_TOKENS` | 64,000 | Макс. токенов (sub-agent) |
+| sub-agent context budget | inherited | Наследует budget основного агента, если не задан explicit override |
 
 ## Карта хуков по агентам
 
 ### Main Agent (оркестратор)
 ```
 ✅ CompletionCheckHook
-✅ DelegationGuardHook
 ✅ SearchBudgetHook
 ✅ TimeoutReportHook
 ```
@@ -56,8 +54,6 @@
 ✅ SubAgentSafetyHook
 ✅ SearchBudgetHook
 ✅ TimeoutReportHook
-
-❌ DelegationGuardHook - саб-агентам запрещено делегировать
 ```
 
 ## Поток выполнения через хуки
@@ -67,7 +63,7 @@ User Request
     ↓
 LLM Call + Tool Calls
     ↓
-[BeforeTool] → DelegationGuardHook (если delegate_to_sub_agent)
+[BeforeTool] → policy/safety/search hooks
     ↓
 Tool Execution
     ↓

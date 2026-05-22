@@ -531,7 +531,9 @@ impl AgentSettings {
                 self.agent_model_id = Some(primary.id.clone());
                 self.agent_model_provider = Some(primary.provider.clone());
                 self.agent_model_max_output_tokens = Some(primary.max_output_tokens);
-                self.agent_model_context_window_tokens = Some(primary.context_window_tokens);
+                if primary.context_window_tokens != 0 {
+                    self.agent_model_context_window_tokens = Some(primary.context_window_tokens);
+                }
             }
             self.agent_model_routes = Some(routes);
         }
@@ -541,7 +543,9 @@ impl AgentSettings {
                 self.sub_agent_model_id = Some(primary.id.clone());
                 self.sub_agent_model_provider = Some(primary.provider.clone());
                 self.sub_agent_max_output_tokens = Some(primary.max_output_tokens);
-                self.sub_agent_context_window_tokens = Some(primary.context_window_tokens);
+                if primary.context_window_tokens != 0 {
+                    self.sub_agent_context_window_tokens = Some(primary.context_window_tokens);
+                }
             }
             self.sub_agent_model_routes = Some(routes);
         }
@@ -721,9 +725,7 @@ impl AgentSettings {
         let max_output_tokens = self
             .sub_agent_max_output_tokens
             .unwrap_or(DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS);
-        let context_window_tokens = self
-            .sub_agent_context_window_tokens
-            .unwrap_or(DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
+        let context_window_tokens = self.sub_agent_context_window_tokens_or_inherited();
 
         Some((
             id.clone(),
@@ -897,8 +899,7 @@ impl AgentSettings {
                     routes,
                     self.sub_agent_max_output_tokens
                         .unwrap_or(DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS),
-                    self.sub_agent_context_window_tokens
-                        .unwrap_or(DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS),
+                    self.sub_agent_context_window_tokens_or_inherited(),
                 )
             })
             .unwrap_or_default();
@@ -955,8 +956,7 @@ impl AgentSettings {
                 routes,
                 self.sub_agent_max_output_tokens
                     .unwrap_or(DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS),
-                self.sub_agent_context_window_tokens
-                    .unwrap_or(DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS),
+                self.sub_agent_context_window_tokens_or_inherited(),
             )
             .into_iter()
             .next()
@@ -971,12 +971,27 @@ impl AgentSettings {
         )
     }
 
-    /// Returns the internal sub-agent context budget after applying the clamp policy.
+    /// Returns the internal sub-agent context budget, inheriting the main-agent budget by default.
     pub fn get_sub_agent_internal_context_budget_tokens(&self) -> usize {
-        clamp_internal_context_budget_tokens(
+        resolve_internal_context_budget_tokens(
             self.get_configured_sub_agent_model().context_window_tokens,
-            SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS,
+            self.get_agent_internal_context_budget_tokens(),
         )
+    }
+
+    fn inherited_sub_agent_context_window_tokens(&self) -> u32 {
+        let inherited = self.get_configured_agent_model().context_window_tokens;
+        if inherited == 0 {
+            DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS
+        } else {
+            inherited
+        }
+    }
+
+    fn sub_agent_context_window_tokens_or_inherited(&self) -> u32 {
+        self.sub_agent_context_window_tokens
+            .filter(|tokens| *tokens != 0)
+            .unwrap_or_else(|| self.inherited_sub_agent_context_window_tokens())
     }
 
     /// Returns the configured media model (id, provider)
@@ -1213,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sub_agent_runtime_model_keeps_separate_output_and_context_windows() {
+    fn test_sub_agent_runtime_model_keeps_separate_output_and_explicit_context_windows() {
         let settings = AgentSettings {
             sub_agent_model_id: Some("sub-model".to_string()),
             sub_agent_model_provider: Some("mock".to_string()),
@@ -1230,6 +1245,76 @@ mod tests {
         assert_eq!(
             settings.get_sub_agent_internal_context_budget_tokens(),
             48_000
+        );
+    }
+
+    #[test]
+    fn test_sub_agent_runtime_model_inherits_agent_context_window_by_default() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("mock".to_string()),
+            agent_model_context_window_tokens: Some(320_000),
+            sub_agent_model_id: Some("sub-model".to_string()),
+            sub_agent_model_provider: Some("mock".to_string()),
+            sub_agent_max_output_tokens: Some(12_000),
+            ..AgentSettings::default()
+        };
+
+        let model = settings.get_configured_sub_agent_model();
+        assert_eq!(model.id, "sub-model");
+        assert_eq!(model.provider, "mock");
+        assert_eq!(model.max_output_tokens, 12_000);
+        assert_eq!(model.context_window_tokens, 320_000);
+        assert_eq!(
+            settings.get_sub_agent_internal_context_budget_tokens(),
+            320_000
+        );
+    }
+
+    #[test]
+    fn test_sub_agent_zero_context_window_inherits_agent_context_window() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("mock".to_string()),
+            agent_model_context_window_tokens: Some(256_000),
+            sub_agent_model_id: Some("sub-model".to_string()),
+            sub_agent_model_provider: Some("mock".to_string()),
+            sub_agent_context_window_tokens: Some(0),
+            ..AgentSettings::default()
+        };
+
+        let model = settings.get_configured_sub_agent_model();
+        assert_eq!(model.id, "sub-model");
+        assert_eq!(model.context_window_tokens, 256_000);
+        assert_eq!(
+            settings.get_sub_agent_internal_context_budget_tokens(),
+            256_000
+        );
+    }
+
+    #[test]
+    fn test_sub_agent_routes_without_context_window_inherit_agent_context_window() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("mock".to_string()),
+            agent_model_context_window_tokens: Some(384_000),
+            sub_agent_model_routes: Some(vec![ModelInfo {
+                id: "sub-route".to_string(),
+                provider: "mock".to_string(),
+                max_output_tokens: 12_000,
+                context_window_tokens: 0,
+                weight: 1,
+            }]),
+            ..AgentSettings::default()
+        };
+
+        let routes = settings.get_configured_sub_agent_model_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "sub-route");
+        assert_eq!(routes[0].context_window_tokens, 384_000);
+        assert_eq!(
+            settings.get_sub_agent_internal_context_budget_tokens(),
+            384_000
         );
     }
 
@@ -1538,15 +1623,6 @@ fn resolve_internal_context_budget_tokens(
     }
 }
 
-fn clamp_internal_context_budget_tokens(model_context_window_tokens: u32, cap: usize) -> usize {
-    let resolved_window = usize::try_from(model_context_window_tokens).unwrap_or(cap);
-    if resolved_window == 0 {
-        return cap;
-    }
-
-    resolved_window.min(cap)
-}
-
 /// Get the agent model name from environment.
 #[must_use]
 pub fn get_agent_model() -> String {
@@ -1580,10 +1656,6 @@ pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
 pub const DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS: usize = 200_000;
 /// Default sub-agent model max output tokens.
 pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
-/// Default sub-agent model context window tokens.
-pub const DEFAULT_SUB_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
-/// Internal sub-agent context budget cap.
-pub const SUB_AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS: usize = 200_000;
 /// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when todos incomplete
 /// Default limit for search tool calls per agent session
