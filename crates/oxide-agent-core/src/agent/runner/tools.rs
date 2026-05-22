@@ -1123,4 +1123,83 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn typed_runtime_path_rejects_unsupported_active_route_without_history_write() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let legacy_registry = crate::agent::registry::ToolRegistry::new();
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(StaticRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "unsupported typed runtime route",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &legacy_registry,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-unsupported-route-test",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("openrouter")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "openrouter".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-read-unsupported",
+            ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+            },
+            false,
+        );
+
+        let error = match runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                "assistant raw",
+                None,
+                vec![tool_call],
+            )
+            .await
+        {
+            Ok(_) => panic!("unsupported active route must fail before tool execution"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("typed tool runtime v1 only supports opencode-go/deepseek-v4-flash"));
+        assert!(
+            ctx.agent.memory().get_messages().is_empty(),
+            "unsupported route must not write partial assistant/tool history"
+        );
+    }
 }
