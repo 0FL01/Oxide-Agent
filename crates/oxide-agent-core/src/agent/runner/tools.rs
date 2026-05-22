@@ -861,8 +861,14 @@ mod tests {
     use crate::llm::{LlmClient, ToolDefinition};
     use async_trait::async_trait;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     struct StaticRuntimeExecutor;
+    struct ParallelRuntimeExecutor {
+        active: Arc<AtomicUsize>,
+        max_seen: Arc<AtomicUsize>,
+    }
 
     #[async_trait]
     impl ToolExecutor for StaticRuntimeExecutor {
@@ -885,6 +891,44 @@ mod tests {
             Ok(OutputNormalizer::new(ToolRuntimeConfig::default()).success(
                 &invocation,
                 "runtime-ok",
+                "",
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl ToolExecutor for ParallelRuntimeExecutor {
+        fn name(&self) -> ToolName {
+            ToolName::from("read_file")
+        }
+
+        fn spec(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: "parallel read test file".to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<ToolOutput, ToolRuntimeError> {
+            let active_now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_seen.fetch_max(active_now, Ordering::SeqCst);
+
+            let value = invocation
+                .normalized_arguments
+                .get("value")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let delay_ms = 60_u64.saturating_sub(value.saturating_mul(10));
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+
+            Ok(OutputNormalizer::new(ToolRuntimeConfig::default()).success(
+                &invocation,
+                &format!("runtime-{value}"),
                 "",
             ))
         }
@@ -978,5 +1022,105 @@ mod tests {
                 .map(ToolCallCorrelation::wire_tool_call_id),
             Some("call-read-1")
         );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_path_runs_batch_in_parallel_and_preserves_output_order() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let legacy_registry = crate::agent::registry::ToolRegistry::new();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(ParallelRuntimeExecutor {
+                active: Arc::clone(&active),
+                max_seen: Arc::clone(&max_seen),
+            }))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "read several files through runtime",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &legacy_registry,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-parallel-test",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_calls = (0..6)
+            .map(|value| {
+                ToolCall::new(
+                    format!("invoke-read-{value}"),
+                    ToolCallFunction {
+                        name: "read_file".to_string(),
+                        arguments: format!(r#"{{"value":{value}}}"#),
+                    },
+                    false,
+                )
+                .with_correlation(
+                    ToolCallCorrelation::new(format!("invoke-read-{value}"))
+                        .with_provider_tool_call_id(format!("call-read-{value}"))
+                        .with_protocol(ToolProtocol::ChatLike)
+                        .with_transport(ToolTransport::ClientRoundTrip),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let result = runner
+            .execute_tools_with_runtime(&mut ctx, &mut state, "assistant raw", None, tool_calls)
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        assert!(
+            max_seen.load(Ordering::SeqCst) > 1,
+            "runtime must execute more than one tool concurrently"
+        );
+
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 7);
+        assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
+        for value in 0..6 {
+            let message = &memory[value + 1];
+            let expected_invocation_id = format!("invoke-read-{value}");
+            assert_eq!(message.kind, AgentMessageKind::ToolResult);
+            assert_eq!(
+                message.tool_call_id.as_deref(),
+                Some(expected_invocation_id.as_str())
+            );
+            assert!(
+                message.content.contains(&format!("runtime-{value}")),
+                "missing ordered output for value {value}"
+            );
+        }
     }
 }
