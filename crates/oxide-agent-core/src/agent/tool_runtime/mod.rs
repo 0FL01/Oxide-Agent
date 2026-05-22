@@ -8,6 +8,7 @@ pub mod config;
 pub mod invocation;
 pub mod normalizer;
 pub mod output;
+pub mod provider_opencode_go;
 pub mod types;
 
 pub use artifacts::{ArtifactKind, ArtifactRef};
@@ -19,5 +20,9 @@ pub use normalizer::{OutputNormalizer, ToolRuntimeError};
 pub use output::{
     CancellationReason, CleanupStatus, OutputPreview, OutputTruncationMetadata, TimeoutReason,
     ToolOutput, ToolOutputIdentity, ToolOutputStatus,
+};
+pub use provider_opencode_go::{
+    OpenCodeGoParsedToolCall, OpenCodeGoProtocolIssue, OpenCodeGoToolCallBatch,
+    OpenCodeGoToolCallParser, OpenCodeGoToolOutputEncoder, OpenCodeGoToolParseError,
 };
 pub use types::{ToolBatchId, ToolCallId, ToolName, TurnId};
