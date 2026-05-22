@@ -149,13 +149,12 @@ pub async fn run_progress_loop<T: AgentTransport>(
                     continue;
                 }
             }
-            // Rate limit events must update the UI immediately regardless of throttle,
-            // so the user sees the retry status without delay. After the forced update
-            // we continue to skip the normal throttle check.
-            AgentEvent::RateLimitRetrying { .. } => {
+            // LLM retry events must update the UI immediately regardless of throttle,
+            // so the user sees the retry status without delay.
+            AgentEvent::RateLimitRetrying { .. } | AgentEvent::LlmRetrying { .. } => {
                 state.update(event);
                 if let Err(e) = transport.update_progress(&state).await {
-                    warn!(error = %e, "Rate limit progress update failed");
+                    warn!(error = %e, "LLM retry progress update failed");
                 }
                 last_update = Instant::now();
                 needs_update = false;
@@ -316,10 +315,10 @@ mod tests {
         assert_eq!(delivered[0].2, "speech.ogg");
     }
 
-    /// Regression test: RateLimitRetrying must trigger an immediate UI update
+    /// Regression test: retry events must trigger an immediate UI update
     /// even when the throttle is large (the user must see the retry banner
     /// without delay). A subsequent Thinking event must also clear the
-    /// rate_limit_retry state from the rendered output.
+    /// llm_retry state from the rendered output.
     #[tokio::test]
     async fn rate_limit_retrying_forces_immediate_update() {
         let (tx, rx) = mpsc::channel(8);
@@ -333,6 +332,7 @@ mod tests {
         tx.send(AgentEvent::RateLimitRetrying {
             attempt: 2,
             max_attempts: 5,
+            unbounded: false,
             wait_secs: Some(20),
             provider: "minimax".to_string(),
         })
@@ -348,7 +348,7 @@ mod tests {
             "RateLimitRetrying must force at least one immediate update"
         );
 
-        // 2. Send Thinking — must clear rate_limit_retry in state and
+        // 2. Send Thinking — must clear llm_retry in state and
         // trigger a normal throttled update.
         tx.send(AgentEvent::Thinking {
             snapshot: sample_snapshot(),
@@ -370,10 +370,10 @@ mod tests {
             "Expected at least 2 updates: one for RateLimitRetrying, one for Thinking"
         );
 
-        // Verify rate_limit_retry was cleared after Thinking.
+        // Verify llm_retry was cleared after Thinking.
         assert!(
-            _state.rate_limit_retry.is_none(),
-            "rate_limit_retry must be cleared after Thinking event"
+            _state.llm_retry.is_none(),
+            "llm_retry must be cleared after Thinking event"
         );
     }
 

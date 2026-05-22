@@ -246,6 +246,9 @@ pub enum AgentEvent {
         attempt: usize,
         /// Maximum number of retry attempts
         max_attempts: usize,
+        /// Whether retries are intentionally unbounded for this provider/error.
+        #[serde(default)]
+        unbounded: bool,
         /// Wait time in seconds before next attempt (if known)
         wait_secs: Option<u64>,
         /// Provider name for display
@@ -257,6 +260,9 @@ pub enum AgentEvent {
         attempt: usize,
         /// Maximum number of retry attempts
         max_attempts: usize,
+        /// Whether retries are intentionally unbounded for this provider/error.
+        #[serde(default)]
+        unbounded: bool,
         /// Wait time in seconds before next attempt
         wait_secs: Option<u64>,
         /// Provider name for display
@@ -317,25 +323,31 @@ pub struct ProgressState {
     pub latest_token_snapshot: Option<TokenSnapshot>,
     /// Latest status for automatic tool-history repair.
     pub last_history_repair_status: Option<String>,
-    /// Current rate limit retry status (cleared on success or final error)
-    pub rate_limit_retry: Option<RateLimitRetryState>,
+    /// Current LLM retry status (cleared on success or final error)
+    pub llm_retry: Option<LlmRetryState>,
     /// Latest provider failover notice for the current run.
     pub provider_failover_notice: Option<String>,
     /// Whether the loop-detected modal was already surfaced for this run.
     pub loop_notification_sent: bool,
 }
 
-/// State for rate limit retry display
+/// State for LLM retry display
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RateLimitRetryState {
+pub struct LlmRetryState {
     /// Current attempt number (starts at 1)
     pub attempt: usize,
     /// Maximum number of retry attempts
     pub max_attempts: usize,
+    /// Whether retries are intentionally unbounded for this provider/error.
+    #[serde(default)]
+    pub unbounded: bool,
     /// Wait time in seconds before next attempt (if known)
     pub wait_secs: Option<u64>,
     /// Provider name for display
     pub provider: String,
+    /// Error class for non-rate-limit retryable LLM errors.
+    #[serde(default)]
+    pub error_class: Option<String>,
 }
 
 /// A single step in the agent's execution process
@@ -523,16 +535,31 @@ impl ProgressState {
             AgentEvent::RateLimitRetrying {
                 attempt,
                 max_attempts,
+                unbounded,
                 wait_secs,
                 provider,
-            } => self.handle_rate_limit_retrying(attempt, max_attempts, wait_secs, provider),
+            } => self.handle_rate_limit_retrying(
+                attempt,
+                max_attempts,
+                unbounded,
+                wait_secs,
+                provider,
+            ),
             AgentEvent::LlmRetrying {
                 attempt,
                 max_attempts,
+                unbounded,
                 wait_secs,
                 provider,
                 error_class,
-            } => self.handle_llm_retrying(attempt, max_attempts, wait_secs, provider, error_class),
+            } => self.handle_llm_retrying(
+                attempt,
+                max_attempts,
+                unbounded,
+                wait_secs,
+                provider,
+                error_class,
+            ),
             AgentEvent::ProviderFailoverActivated {
                 from_provider,
                 from_model,
@@ -564,9 +591,9 @@ impl ProgressState {
     }
 
     fn handle_thinking(&mut self, snapshot: TokenSnapshot) {
-        // Clear any active rate-limit display: the agent is back to work,
+        // Clear any active LLM retry display: the agent is back to work,
         // so the user should no longer see the "retrying" banner.
-        self.rate_limit_retry = None;
+        self.llm_retry = None;
         self.provider_failover_notice = None;
         self.current_iteration += 1;
         self.complete_last_step();
@@ -859,14 +886,17 @@ impl ProgressState {
         &mut self,
         attempt: usize,
         max_attempts: usize,
+        unbounded: bool,
         wait_secs: Option<u64>,
         provider: String,
     ) {
-        self.rate_limit_retry = Some(RateLimitRetryState {
+        self.llm_retry = Some(LlmRetryState {
             attempt,
             max_attempts,
+            unbounded,
             wait_secs,
             provider,
+            error_class: None,
         });
         // Clear any previous error since we're retrying
         self.error = None;
@@ -876,16 +906,18 @@ impl ProgressState {
         &mut self,
         attempt: usize,
         max_attempts: usize,
+        unbounded: bool,
         wait_secs: Option<u64>,
         provider: String,
         error_class: String,
     ) {
-        // Uses the same rate_limit_retry field for consistency in the UI.
-        self.rate_limit_retry = Some(RateLimitRetryState {
+        self.llm_retry = Some(LlmRetryState {
             attempt,
             max_attempts,
+            unbounded,
             wait_secs,
-            provider: format!("{} [{}]", provider, error_class),
+            provider,
+            error_class: Some(error_class),
         });
         self.error = None;
     }
@@ -897,7 +929,7 @@ impl ProgressState {
         to_provider: String,
         to_model: String,
     ) {
-        self.rate_limit_retry = None;
+        self.llm_retry = None;
         self.provider_failover_notice = Some(format!(
             "Failover: {}:{} -> {}:{}",
             from_provider, from_model, to_provider, to_model

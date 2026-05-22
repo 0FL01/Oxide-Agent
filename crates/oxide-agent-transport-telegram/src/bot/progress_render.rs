@@ -1,4 +1,4 @@
-use oxide_agent_core::agent::progress::{ProgressState, RateLimitRetryState, Step, StepStatus};
+use oxide_agent_core::agent::progress::{LlmRetryState, ProgressState, Step, StepStatus};
 
 /// Render a progress state into Telegram-ready HTML.
 pub fn render_progress_html(state: &ProgressState) -> String {
@@ -45,12 +45,12 @@ pub fn render_progress_html(state: &ProgressState) -> String {
         ));
     }
 
-    // Render rate limit retry status if active
-    if let Some(retry) = &state.rate_limit_retry {
+    // Render LLM retry status if active
+    if let Some(retry) = &state.llm_retry {
         if !lines.last().is_some_and(String::is_empty) {
             lines.push(String::new());
         }
-        push_rate_limit_retry(&mut lines, retry);
+        push_llm_retry(&mut lines, retry);
     }
 
     if state.is_finished {
@@ -103,7 +103,7 @@ fn push_todos(lines: &mut Vec<String>, state: &ProgressState) {
     }
 }
 
-fn push_rate_limit_retry(lines: &mut Vec<String>, retry: &RateLimitRetryState) {
+fn push_llm_retry(lines: &mut Vec<String>, retry: &LlmRetryState) {
     // Format wait time display
     let wait_display = if let Some(secs) = retry.wait_secs {
         if secs >= 60 {
@@ -115,14 +115,30 @@ fn push_rate_limit_retry(lines: &mut Vec<String>, retry: &RateLimitRetryState) {
         String::new()
     };
 
+    let title = if retry.error_class.is_some() {
+        "LLM retrying"
+    } else {
+        "Rate limited"
+    };
+    let provider = match retry.error_class.as_deref() {
+        Some(error_class) => format!("{} [{}]", retry.provider, error_class),
+        None => retry.provider.clone(),
+    };
+    let attempt_display = if retry.unbounded {
+        format!("Attempt {} - retrying{}", retry.attempt, wait_display)
+    } else {
+        format!(
+            "Attempt {}/{} - retrying{}",
+            retry.attempt, retry.max_attempts, wait_display
+        )
+    };
+
     lines.push(format!(
-        "🔄 <b>Rate limited</b> ({})",
-        html_escape::encode_text(&retry.provider)
+        "🔄 <b>{}</b> ({})",
+        title,
+        html_escape::encode_text(&provider)
     ));
-    lines.push(format!(
-        "   Attempt {}/{} - retrying{}",
-        retry.attempt, retry.max_attempts, wait_display
-    ));
+    lines.push(format!("   {attempt_display}"));
 }
 
 fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
@@ -450,6 +466,7 @@ mod tests {
         state.update(AgentEvent::RateLimitRetrying {
             attempt: 2,
             max_attempts: 5,
+            unbounded: false,
             wait_secs: Some(30),
             provider: "mistral".to_string(),
         });
@@ -469,6 +486,7 @@ mod tests {
         state.update(AgentEvent::RateLimitRetrying {
             attempt: 1,
             max_attempts: 5,
+            unbounded: false,
             wait_secs: Some(125),
             provider: "openrouter".to_string(),
         });
@@ -479,5 +497,27 @@ mod tests {
         assert!(output.contains("openrouter"));
         assert!(output.contains("Attempt 1/5"));
         assert!(output.contains("~2m 5s"));
+    }
+
+    #[test]
+    fn renders_unbounded_llm_retry_without_attempt_cap() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::LlmRetrying {
+            attempt: 16,
+            max_attempts: 16,
+            unbounded: true,
+            wait_secs: Some(30),
+            provider: "opencode-go".to_string(),
+            error_class: "server_error".to_string(),
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("🔄 <b>LLM retrying</b>"));
+        assert!(output.contains("opencode-go [server_error]"));
+        assert!(output.contains("Attempt 16 - retrying"));
+        assert!(!output.contains("Attempt 16/16"));
+        assert!(!output.contains("Rate limited"));
     }
 }

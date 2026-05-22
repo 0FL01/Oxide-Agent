@@ -510,8 +510,10 @@ impl AgentRunner {
                     }
                 }
 
-                let retry_budget_remaining = metadata.attempt < metadata.max_retries
-                    || Self::opencode_go_unbounded_retry_allowed(metadata.provider_name, &error);
+                let unbounded_retry =
+                    Self::opencode_go_unbounded_retry_allowed(metadata.provider_name, &error);
+                let retry_budget_remaining =
+                    metadata.attempt < metadata.max_retries || unbounded_retry;
                 if retry_budget_remaining {
                     if let Some(backoff) = LlmClient::get_retry_delay(&error, metadata.attempt) {
                         let wait_secs = backoff.as_secs();
@@ -526,6 +528,7 @@ impl AgentRunner {
                                 ctx.progress_tx,
                                 metadata.attempt,
                                 metadata.max_retries,
+                                unbounded_retry,
                                 wait_secs_display,
                                 metadata.provider_name,
                             )
@@ -544,6 +547,7 @@ impl AgentRunner {
                                 ctx.progress_tx,
                                 metadata.attempt,
                                 metadata.max_retries,
+                                unbounded_retry,
                                 wait_secs_display,
                                 metadata.provider_name,
                                 error_class,
@@ -608,6 +612,7 @@ impl AgentRunner {
             ctx.progress_tx,
             attempt,
             max_retries,
+            false,
             None,
             provider_name,
             capabilities.tool_history_label(),
@@ -1449,6 +1454,7 @@ impl AgentRunner {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         attempt: usize,
         max_attempts: usize,
+        unbounded: bool,
         wait_secs: Option<u64>,
         provider: &str,
     ) {
@@ -1457,6 +1463,7 @@ impl AgentRunner {
                 .send(AgentEvent::RateLimitRetrying {
                     attempt,
                     max_attempts,
+                    unbounded,
                     wait_secs,
                     provider: provider.to_string(),
                 })
@@ -1518,6 +1525,7 @@ impl AgentRunner {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         attempt: usize,
         max_attempts: usize,
+        unbounded: bool,
         wait_secs: Option<u64>,
         provider: &str,
         error_class: &str,
@@ -1527,6 +1535,7 @@ impl AgentRunner {
                 .send(AgentEvent::LlmRetrying {
                     attempt,
                     max_attempts,
+                    unbounded,
                     wait_secs,
                     provider: provider.to_string(),
                     error_class: error_class.to_string(),
