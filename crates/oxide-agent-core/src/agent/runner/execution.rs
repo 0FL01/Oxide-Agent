@@ -901,11 +901,17 @@ impl AgentRunner {
                 .await);
         }
 
-        self.record_assistant_tool_call(ctx, &raw_json, &tool_calls, response.reasoning_content);
-        if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
-            return Ok(Some(res));
+        if ctx.tool_runtime_registry.is_none() {
+            return Err(Self::legacy_tool_execution_disabled_error(ctx));
         }
-        Ok(None)
+        self.execute_tools_with_runtime(
+            ctx,
+            state,
+            &raw_json,
+            response.reasoning_content,
+            tool_calls,
+        )
+        .await
     }
 
     async fn apply_pending_runtime_context(
@@ -1304,16 +1310,15 @@ impl AgentRunner {
                 .await;
         }
 
-        self.record_assistant_tool_call(
-            ctx,
-            raw_json,
-            &tool_calls,
-            response.reasoning_content.take(),
-        );
-        if let Some(res) = self.execute_tools(ctx, state, tool_calls).await? {
-            return Ok(Some(res));
-        }
-        Ok(None)
+        Err(Self::legacy_tool_execution_disabled_error(ctx))
+    }
+
+    fn legacy_tool_execution_disabled_error(ctx: &AgentRunnerContext<'_>) -> anyhow::Error {
+        anyhow!(
+            "legacy tool execution is disabled; active tool calls require typed runtime route opencode-go/deepseek-v4-flash, current provider={}, model={}",
+            ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+            ctx.config.model_name,
+        )
     }
 
     async fn handle_unstructured_response(
@@ -2420,6 +2425,68 @@ mod tests {
             .messages
             .iter()
             .any(|message| message.role == "system" && message.content == "temporary warning"));
+    }
+
+    #[tokio::test]
+    async fn tool_calls_without_typed_runtime_do_not_fallback_to_legacy_execution() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(2048);
+        let registry = ToolRegistry::new();
+        let tools = registry.all_tools();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "legacy fallback disabled",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &registry,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "legacy-fallback-disabled",
+            messages: &mut messages,
+            agent: &mut session,
+            skill_registry: None,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("mock"),
+        };
+        let mut state = RunState::new();
+        let response = ChatResponse {
+            content: Some("assistant raw".to_string()),
+            tool_calls: vec![ToolCall::new(
+                "invoke-legacy-disabled",
+                ToolCallFunction {
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+                },
+                false,
+            )],
+            finish_reason: "tool_calls".to_string(),
+            reasoning_content: None,
+            usage: None,
+        };
+
+        let error = match runner
+            .handle_llm_response(response, &mut ctx, &mut state)
+            .await
+        {
+            Ok(_) => panic!("tool calls without typed runtime must fail"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("legacy tool execution is disabled"));
+        assert!(
+            ctx.agent.memory().get_messages().is_empty(),
+            "legacy fallback must not write partial assistant/tool history"
+        );
+        assert!(ctx.messages.is_empty());
     }
 
     #[tokio::test]

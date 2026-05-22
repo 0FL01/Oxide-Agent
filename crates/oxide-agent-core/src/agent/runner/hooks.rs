@@ -7,12 +7,6 @@ use crate::llm::Message;
 
 use super::AgentRunner;
 
-pub(super) enum ToolHookDecision {
-    Continue,
-    Blocked { reason: String },
-    Finish { report: String },
-}
-
 impl AgentRunner {
     /// Apply hooks that run before the agent starts.
     pub(super) fn apply_before_agent_hooks(
@@ -75,65 +69,6 @@ impl AgentRunner {
         );
 
         self.apply_hook_result(result, ctx, Some(state)).map(|_| ())
-    }
-
-    /// Apply hooks before executing a tool call.
-    pub(super) fn apply_before_tool_hooks(
-        &mut self,
-        ctx: &mut AgentRunnerContext<'_>,
-        state: &mut RunState,
-        tool_call: &crate::llm::ToolCall,
-    ) -> anyhow::Result<ToolHookDecision> {
-        let hook_context = HookContext::new(
-            &ctx.agent.memory().todos,
-            ctx.agent.memory(),
-            state.iteration,
-            state.continuation_count,
-            ctx.config.continuation_limit,
-        )
-        .with_sub_agent(ctx.config.is_sub_agent)
-        .with_available_tools(ctx.tools)
-        .with_memory_scope(ctx.memory_scope.as_ref())
-        .with_memory_behavior(ctx.memory_behavior.as_deref())
-        .with_tokens(
-            ctx.agent.memory().token_count(),
-            ctx.agent.memory().max_tokens(),
-        );
-
-        let result = self.hook_registry.execute(
-            &HookEvent::BeforeTool {
-                tool_name: tool_call.function.name.clone(),
-                arguments: tool_call.function.arguments.clone(),
-            },
-            &hook_context,
-        );
-
-        match result {
-            HookResult::Continue => Ok(ToolHookDecision::Continue),
-            HookResult::InjectContext(context) => {
-                self.inject_system_context(ctx, context);
-                Ok(ToolHookDecision::Continue)
-            }
-            HookResult::InjectTransientContext(context) => {
-                self.inject_transient_context(ctx, context);
-                Ok(ToolHookDecision::Continue)
-            }
-            HookResult::ForceIteration { reason, context } => {
-                if let Some(context) = context {
-                    self.inject_system_context(ctx, context);
-                }
-                Ok(ToolHookDecision::Blocked { reason })
-            }
-            HookResult::RequestCompaction { reason: _, context } => {
-                if let Some(context) = context {
-                    self.inject_transient_context(ctx, context);
-                }
-                state.request_manual_compaction();
-                Ok(ToolHookDecision::Continue)
-            }
-            HookResult::Block { reason } => Ok(ToolHookDecision::Blocked { reason }),
-            HookResult::Finish(report) => Ok(ToolHookDecision::Finish { report }),
-        }
     }
 
     /// Apply hooks after a tool call completes.
