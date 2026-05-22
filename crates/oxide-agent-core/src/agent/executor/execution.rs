@@ -7,9 +7,7 @@ use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_agent_system_prompt;
-use crate::agent::providers::{
-    SshApprovalGrant, SshApprovalRequestView, TopicInfraPreflightReport,
-};
+use crate::agent::providers::{SshApprovalRequestView, TopicInfraPreflightReport};
 use crate::agent::runner::{run_with_timeout, AgentRunner, AgentRunnerConfig};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
 use crate::agent::wiki_memory::planner::{
@@ -112,23 +110,13 @@ impl AgentExecutor {
         }
     }
 
-    /// Grant a pending SSH approval request and return the replay token.
-    pub async fn grant_ssh_approval(&self, request_id: &str) -> Option<SshApprovalGrant> {
-        let topic_infra = self.topic_infra.as_ref()?;
-        topic_infra.approvals.grant(request_id).await
-    }
-
     /// Reject a pending SSH approval request.
     pub async fn reject_ssh_approval(
         &mut self,
         request_id: &str,
     ) -> Option<SshApprovalRequestView> {
         let topic_infra = self.topic_infra.as_ref()?;
-        let rejected = topic_infra.approvals.reject(request_id).await;
-        if rejected.is_some() {
-            let _ = self.session.take_pending_ssh_replay(request_id);
-        }
-        rejected
+        topic_infra.approvals.reject(request_id).await
     }
 
     /// Inject transport-generated system context into the next run.

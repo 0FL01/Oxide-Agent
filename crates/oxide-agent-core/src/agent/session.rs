@@ -9,7 +9,6 @@ use super::memory::AgentMemory;
 use super::memory_behavior::MemoryBehaviorRuntime;
 // use super::providers::TodoList;
 use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
-use crate::llm::InvocationId;
 use crate::sandbox::{SandboxManager, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -29,19 +28,6 @@ use tracing::{debug, info, warn};
 pub struct RuntimeContextInjection {
     /// User-visible text payload to append on the next safe iteration boundary.
     pub content: String,
-}
-
-/// Exact SSH tool call that is paused pending operator approval.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingSshReplay {
-    /// Approval request identifier returned by the SSH provider.
-    pub request_id: String,
-    /// Stable internal invocation id for the paused tool call.
-    pub invocation_id: InvocationId,
-    /// Original tool name.
-    pub tool_name: String,
-    /// Original JSON arguments before approval credentials were injected.
-    pub arguments: String,
 }
 
 /// Type of user input required before the task can continue.
@@ -314,8 +300,6 @@ pub struct AgentSession {
     skill_token_count: usize,
     /// Additional user context waiting for the next safe iteration boundary.
     runtime_context_inbox: RuntimeContextInbox,
-    /// Exact SSH tool calls paused pending operator approval.
-    pending_ssh_replays: Vec<PendingSshReplay>,
     /// Pending user input required before the task can resume.
     pending_user_input: Option<PendingUserInput>,
     /// Optional sink used to persist memory snapshots during long-running tasks.
@@ -370,7 +354,6 @@ impl AgentSession {
             loaded_skills: HashSet::new(),
             skill_token_count: 0,
             runtime_context_inbox: RuntimeContextInbox::new(),
-            pending_ssh_replays: Vec::new(),
             pending_user_input: None,
             memory_checkpoint: None,
             checkpoint_state: Arc::new(AsyncMutex::new(MemoryCheckpointState::default())),
@@ -556,31 +539,6 @@ impl AgentSession {
         self.runtime_context_inbox.has_pending()
     }
 
-    /// Store or replace a pending SSH replay payload.
-    pub fn store_pending_ssh_replay(&mut self, replay: PendingSshReplay) {
-        self.pending_ssh_replays
-            .retain(|entry| entry.request_id != replay.request_id);
-        self.pending_ssh_replays.push(replay);
-    }
-
-    /// Return a pending SSH replay payload by request id.
-    #[must_use]
-    pub fn pending_ssh_replay(&self, request_id: &str) -> Option<PendingSshReplay> {
-        self.pending_ssh_replays
-            .iter()
-            .find(|entry| entry.request_id == request_id)
-            .cloned()
-    }
-
-    /// Remove and return a pending SSH replay payload by request id.
-    pub fn take_pending_ssh_replay(&mut self, request_id: &str) -> Option<PendingSshReplay> {
-        let index = self
-            .pending_ssh_replays
-            .iter()
-            .position(|entry| entry.request_id == request_id)?;
-        Some(self.pending_ssh_replays.remove(index))
-    }
-
     /// Store or replace the pending user input request.
     pub fn set_pending_user_input(&mut self, request: PendingUserInput) {
         self.pending_user_input = Some(request);
@@ -663,7 +621,6 @@ impl AgentSession {
         self.loaded_skills.clear();
         self.skill_token_count = 0;
         let _ = self.runtime_context_inbox.drain();
-        self.pending_ssh_replays.clear();
         self.pending_user_input = None;
         if let Ok(mut state) = self.checkpoint_state.try_lock() {
             *state = MemoryCheckpointState::default();
@@ -818,11 +775,9 @@ mod tests {
     #![allow(clippy::clone_on_ref_ptr)]
 
     use super::{
-        AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, PendingSshReplay, PendingUserInput,
-        UserInputKind,
+        AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, PendingUserInput, UserInputKind,
     };
     use crate::agent::memory::AgentMessage;
-    use crate::llm::InvocationId;
     use crate::sandbox::SandboxScope;
     use anyhow::Result;
     use async_trait::async_trait;
@@ -859,23 +814,6 @@ mod tests {
                 .push(memory.clone());
             Ok(())
         }
-    }
-
-    #[test]
-    fn reset_clears_pending_ssh_replays() {
-        let mut session = AgentSession::new(42_i64.into());
-        session.store_pending_ssh_replay(PendingSshReplay {
-            request_id: "req-1".to_string(),
-            invocation_id: InvocationId::from("call-1"),
-            tool_name: "ssh_sudo_exec".to_string(),
-            arguments: r#"{"command":"journalctl"}"#.to_string(),
-        });
-
-        assert!(session.pending_ssh_replay("req-1").is_some());
-
-        session.reset();
-
-        assert!(session.pending_ssh_replay("req-1").is_none());
     }
 
     #[test]

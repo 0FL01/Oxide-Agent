@@ -76,14 +76,9 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
-        tool_result: &crate::agent::tool_bridge::ToolExecutionResult,
+        tool_name: &str,
+        output: &str,
     ) {
-        let crate::agent::tool_bridge::ToolExecutionResult::Completed { tool_name, output } =
-            tool_result
-        else {
-            return;
-        };
-
         let hook_context = HookContext::new(
             &ctx.agent.memory().todos,
             ctx.agent.memory(),
@@ -102,8 +97,8 @@ impl AgentRunner {
 
         let result = self.hook_registry.execute(
             &HookEvent::AfterTool {
-                tool_name: tool_name.clone(),
-                result: output.clone(),
+                tool_name: tool_name.to_string(),
+                result: output.to_string(),
             },
             &hook_context,
         );

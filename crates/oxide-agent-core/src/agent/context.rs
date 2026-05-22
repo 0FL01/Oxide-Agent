@@ -5,7 +5,7 @@
 
 use super::compaction::CompactionScope;
 use super::memory::AgentMemory;
-use super::session::{AgentSession, PendingSshReplay, RuntimeContextInjection};
+use super::session::{AgentSession, RuntimeContextInjection};
 use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -43,8 +43,6 @@ pub trait AgentContext: Send {
     fn has_pending_runtime_context(&self) -> bool {
         false
     }
-    /// Store an exact SSH tool replay for deterministic post-approval resume.
-    fn store_pending_ssh_replay(&mut self, _replay: PendingSshReplay) {}
     /// Persist the current memory snapshot when the transport provides a checkpoint sink.
     async fn persist_memory_checkpoint(&mut self) -> Result<()> {
         Ok(())
@@ -151,10 +149,6 @@ impl AgentContext for AgentSession {
 
     fn has_pending_runtime_context(&self) -> bool {
         AgentSession::has_pending_runtime_context(self)
-    }
-
-    fn store_pending_ssh_replay(&mut self, replay: PendingSshReplay) {
-        AgentSession::store_pending_ssh_replay(self, replay);
     }
 
     async fn persist_memory_checkpoint(&mut self) -> Result<()> {

@@ -277,11 +277,7 @@ impl AgentRunner {
                 .await;
         }
 
-        let tool_result = crate::agent::tool_bridge::ToolExecutionResult::Completed {
-            tool_name: tool_name.clone(),
-            output: content.clone(),
-        };
-        self.apply_after_tool_hooks(ctx, state, &tool_result);
+        self.apply_after_tool_hooks(ctx, state, &tool_name, &content);
 
         let correlation = ToolCallCorrelation::new(output.invocation_id.clone())
             .with_provider_tool_call_id(output.tool_call_id.as_str())

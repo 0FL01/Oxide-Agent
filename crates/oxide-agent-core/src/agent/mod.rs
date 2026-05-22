@@ -43,8 +43,6 @@ pub mod session;
 pub mod skills;
 /// Structured output parsing and validation
 pub mod structured_output;
-/// Tool execution bridge with timeout and cancellation
-pub mod tool_bridge;
 /// Task-local active model route metadata for tool providers.
 #[cfg(feature = "browser_use")]
 pub(crate) mod tool_model_route;
@@ -92,8 +90,8 @@ pub use recovery::sanitize_xml_tags;
 pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{
-    AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingSshReplay,
-    PendingUserInput, RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
+    AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingUserInput,
+    RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
 };
 pub use skills::SkillRegistry;
 pub use wiki_memory::WikiStore;

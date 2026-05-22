@@ -5,9 +5,12 @@ use super::types::{
 };
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
+use crate::agent::memory::AgentMemory;
 use crate::agent::progress::AgentEvent;
+use crate::agent::providers::TodoList;
 use crate::agent::session::PendingUserInput;
-use crate::agent::tool_bridge::sync_todos_from_arc;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::warn;
 
 impl AgentRunner {
@@ -233,6 +236,11 @@ fn should_salvage_structured_output_failure(raw: &str) -> bool {
         .iter()
         .any(|tail| trimmed.ends_with(*tail));
     !unfinished_tail
+}
+
+async fn sync_todos_from_arc(memory: &mut AgentMemory, todos_arc: &Arc<Mutex<TodoList>>) {
+    let current_todos = todos_arc.lock().await;
+    memory.todos = (*current_todos).clone();
 }
 
 #[cfg(test)]
