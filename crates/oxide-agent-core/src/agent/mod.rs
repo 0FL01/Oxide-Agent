@@ -46,6 +46,7 @@ pub mod structured_output;
 /// Tool execution bridge with timeout and cancellation
 pub mod tool_bridge;
 /// Task-local active model route metadata for tool providers.
+#[cfg(feature = "browser_use")]
 pub(crate) mod tool_model_route;
 /// Async parallel tool runtime foundations.
 pub mod tool_runtime;

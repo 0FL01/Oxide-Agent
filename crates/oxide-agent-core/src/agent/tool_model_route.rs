@@ -1,6 +1,7 @@
 //! Task-local active model route metadata for tool providers.
 
 use crate::config::ModelInfo;
+#[cfg(test)]
 use std::future::Future;
 
 tokio::task_local! {
@@ -8,6 +9,7 @@ tokio::task_local! {
 }
 
 /// Run a future with a task-local active model route visible to tool providers.
+#[cfg(test)]
 pub(crate) async fn scope_tool_model_route<F, T>(route: ModelInfo, future: F) -> T
 where
     F: Future<Output = T>,

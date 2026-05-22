@@ -1,6 +1,6 @@
 use super::types::{
-    current_model_route, ExecutionRequest, ExecutionTransition, PreparedExecution,
-    ResolvedExecutionRequest, RunnerContextServices,
+    ExecutionRequest, ExecutionTransition, PreparedExecution, ResolvedExecutionRequest,
+    RunnerContextServices,
 };
 use super::{AgentExecutionOutcome, AgentExecutor};
 use crate::agent::memory::{AgentMessage, MessageRole};
@@ -8,15 +8,10 @@ use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKin
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_agent_system_prompt;
 use crate::agent::providers::{
-    inject_approval_credentials, SshApprovalGrant, SshApprovalRequestView,
-    TopicInfraPreflightReport,
+    SshApprovalGrant, SshApprovalRequestView, TopicInfraPreflightReport,
 };
 use crate::agent::runner::{run_with_timeout, AgentRunner, AgentRunnerConfig};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
-use crate::agent::tool_bridge::{
-    execute_single_tool_call, ToolExecutionContext, ToolExecutionResult,
-};
-use crate::agent::tool_model_route::scope_tool_model_route;
 use crate::agent::wiki_memory::planner::{
     extract_explicit_remember_payload, has_explicit_remember_intent,
 };
@@ -25,7 +20,7 @@ use crate::agent::wiki_memory::{
     WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache, WikiStore,
 };
 use crate::config::{get_agent_max_iterations, ModelInfo};
-use crate::llm::{LlmClient, ToolCall, ToolCallFunction};
+use crate::llm::LlmClient;
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::future::Future;
@@ -206,8 +201,6 @@ impl AgentExecutor {
         let ResolvedExecutionRequest {
             task,
             append_user_message,
-            initial_tool_call,
-            clear_pending_request_id,
         } = request;
         let task_id = self.prime_session_for_execution(&task, append_user_message);
         info!(
@@ -222,18 +215,6 @@ impl AgentExecutor {
         Self::emit_milestone(progress_tx.as_ref(), "prepare_execution_done").await;
 
         let timeout_duration = self.agent_timeout_duration();
-
-        if self
-            .replay_initial_tool_call(
-                initial_tool_call,
-                clear_pending_request_id.as_deref(),
-                &mut prepared,
-                progress_tx.as_ref(),
-            )
-            .await?
-        {
-            return Ok(ExecutionTransition::WaitingForApproval);
-        }
 
         let mut ctx = prepared.build_runner_context(
             &task,
@@ -317,40 +298,7 @@ impl AgentExecutor {
             ExecutionRequest::NewTask { task } => Ok(ResolvedExecutionRequest {
                 task,
                 append_user_message: true,
-                initial_tool_call: None,
-                clear_pending_request_id: None,
             }),
-            ExecutionRequest::ResumeApproval { request_id } => {
-                let task = self.saved_task("no saved task to resume")?;
-                let grant = self
-                    .grant_ssh_approval(&request_id)
-                    .await
-                    .ok_or_else(|| anyhow!("SSH approval request not found or already handled"))?;
-                let replay = self
-                    .session
-                    .pending_ssh_replay(&request_id)
-                    .ok_or_else(|| anyhow!("pending SSH replay payload not found"))?;
-                let arguments = inject_approval_credentials(
-                    &replay.arguments,
-                    &grant.request_id,
-                    &grant.approval_token,
-                )?;
-                let tool_call = ToolCall::new(
-                    replay.invocation_id.to_string(),
-                    ToolCallFunction {
-                        name: replay.tool_name,
-                        arguments,
-                    },
-                    false,
-                );
-
-                Ok(ResolvedExecutionRequest {
-                    task,
-                    append_user_message: false,
-                    initial_tool_call: Some(tool_call),
-                    clear_pending_request_id: Some(request_id),
-                })
-            }
             ExecutionRequest::ResumeUserInput { content } => {
                 let task = self.saved_task("no saved task to resume")?;
                 if !self.resume_with_user_input(content) {
@@ -360,8 +308,6 @@ impl AgentExecutor {
                 Ok(ResolvedExecutionRequest {
                     task,
                     append_user_message: false,
-                    initial_tool_call: None,
-                    clear_pending_request_id: None,
                 })
             }
             ExecutionRequest::ContinueRuntimeContext => {
@@ -373,8 +319,6 @@ impl AgentExecutor {
                 Ok(ResolvedExecutionRequest {
                     task,
                     append_user_message: false,
-                    initial_tool_call: None,
-                    clear_pending_request_id: None,
                 })
             }
         }
@@ -645,46 +589,6 @@ impl AgentExecutor {
         }
     }
 
-    async fn replay_initial_tool_call(
-        &mut self,
-        initial_tool_call: Option<ToolCall>,
-        clear_pending_request_id: Option<&str>,
-        prepared: &mut PreparedExecution,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Result<bool> {
-        let Some(tool_call) = initial_tool_call else {
-            return Ok(false);
-        };
-
-        let cancellation_token = self.session.cancellation_token.clone();
-        let active_route = current_model_route(&prepared.runner_config);
-        let tool_result = {
-            let mut tool_ctx = ToolExecutionContext {
-                registry: &prepared.registry,
-                progress_tx,
-                todos_arc: &prepared.todos_arc,
-                messages: &mut prepared.messages,
-                agent: &mut self.session,
-                cancellation_token,
-            };
-            let execution = execute_single_tool_call(tool_call, &mut tool_ctx);
-            if let Some(route) = active_route {
-                scope_tool_model_route(route, execution).await?
-            } else {
-                execution.await?
-            }
-        };
-
-        if let Some(request_id) = clear_pending_request_id {
-            let _ = self.session.take_pending_ssh_replay(request_id);
-        }
-
-        Ok(matches!(
-            tool_result,
-            ToolExecutionResult::WaitingForApproval { .. }
-        ))
-    }
-
     pub(super) async fn await_until_cancelled<T, F>(
         cancellation_token: tokio_util::sync::CancellationToken,
         future: F,
@@ -724,15 +628,11 @@ impl AgentExecutor {
     pub async fn resume_ssh_approval(
         &mut self,
         request_id: &str,
-        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        _progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        self.run_execution_request(
-            ExecutionRequest::ResumeApproval {
-                request_id: request_id.to_string(),
-            },
-            progress_tx,
-        )
-        .await
+        Err(anyhow!(
+            "SSH approval resume is disabled in typed tool runtime v1; request_id={request_id}"
+        ))
     }
 
     /// Resume a paused task after receiving the user input it requested.

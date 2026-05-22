@@ -8,7 +8,7 @@ use crate::agent::runner::{
 use crate::agent::session::{AgentSession, PendingUserInput};
 use crate::agent::skills::SkillRegistry;
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
-use crate::llm::{Message, ToolCall, ToolDefinition};
+use crate::llm::{Message, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::Error;
 use std::sync::Arc;
@@ -92,7 +92,6 @@ impl PreparedExecution {
 
 pub(super) enum ExecutionRequest {
     NewTask { task: String },
-    ResumeApproval { request_id: String },
     ResumeUserInput { content: String },
     ContinueRuntimeContext,
 }
@@ -100,8 +99,6 @@ pub(super) enum ExecutionRequest {
 pub(super) struct ResolvedExecutionRequest {
     pub(super) task: String,
     pub(super) append_user_message: bool,
-    pub(super) initial_tool_call: Option<ToolCall>,
-    pub(super) clear_pending_request_id: Option<String>,
 }
 
 pub(super) enum ExecutionTransition {
@@ -122,25 +119,4 @@ impl From<TimedRunResult> for ExecutionTransition {
             TimedRunResult::TimedOut => Self::TimedOut,
         }
     }
-}
-
-pub(super) fn current_model_route(config: &AgentRunnerConfig) -> Option<crate::config::ModelInfo> {
-    if let Some(route) = config.model_routes.iter().find(|route| {
-        route.id == config.model_name
-            && config
-                .model_provider
-                .as_deref()
-                .is_none_or(|provider| route.provider == provider)
-    }) {
-        return Some(route.clone());
-    }
-
-    let provider = config.model_provider.clone()?;
-    Some(crate::config::ModelInfo {
-        id: config.model_name.clone(),
-        provider,
-        max_output_tokens: config.model_max_output_tokens,
-        context_window_tokens: 0,
-        weight: 1,
-    })
 }
