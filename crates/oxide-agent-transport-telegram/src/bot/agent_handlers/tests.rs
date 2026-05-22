@@ -43,12 +43,15 @@ use teloxide::types::{ChatId, MessageId, ReplyMarkup, ThreadId};
 use teloxide::Bot;
 
 fn test_batch() -> PendingTextInputBatch {
+    let agent_settings = Arc::new(AgentSettings::default());
     PendingTextInputBatch::new(
         BatchedTextTaskContext {
             bot: Bot::new("TOKEN"),
             chat_id: ChatId(1),
             session_id: SessionId::from(7_i64),
             user_id: 1,
+            llm: Arc::new(LlmClient::new(agent_settings.as_ref())),
+            agent_settings,
             storage: Arc::new(NoopStorage::default()),
             context_key: "ctx".to_string(),
             agent_flow_id: "flow".to_string(),

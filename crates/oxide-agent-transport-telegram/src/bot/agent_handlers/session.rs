@@ -367,6 +367,7 @@ async fn load_agent_memory_into_session(
 ) {
     if let Some(saved_memory) = load_flow_agent_memory(ctx).await {
         session.memory = saved_memory;
+        session.restore_last_task_from_memory();
         info!(
             user_id = ctx.user_id,
             messages_count = session.memory.get_messages().len(),
@@ -377,6 +378,7 @@ async fn load_agent_memory_into_session(
 
     if ctx.agent_flow_created {
         migrate_legacy_agent_memory_into_flow(ctx, session).await;
+        session.restore_last_task_from_memory();
     } else {
         info!(
             user_id = ctx.user_id,

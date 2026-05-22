@@ -678,6 +678,28 @@ impl AgentSession {
         self.last_task = Some(task.to_string());
     }
 
+    /// Restore volatile execution metadata that is derivable from persisted memory.
+    ///
+    /// Transport session registries are in-memory, while `AgentMemory` is durable.
+    /// After a backend restart we can still recover the last top-level task from
+    /// the most recent `UserTask` entry and make continuation flows deterministic.
+    pub fn restore_last_task_from_memory(&mut self) {
+        if self.last_task.is_some() {
+            return;
+        }
+
+        self.last_task = self
+            .memory
+            .get_messages()
+            .iter()
+            .rev()
+            .find(|message| {
+                message.resolved_kind() == crate::agent::compaction::AgentMessageKind::UserTask
+                    && !message.content.trim().is_empty()
+            })
+            .map(|message| message.content.clone());
+    }
+
     /// Reset loaded skills based on the active system prompt.
     pub fn set_loaded_skills(&mut self, skills: &[crate::agent::skills::SkillContext]) {
         self.loaded_skills = skills.iter().map(|skill| skill.name.clone()).collect();
@@ -867,6 +889,37 @@ mod tests {
         session.start_task();
 
         assert!(session.pending_user_input().is_none());
+    }
+
+    #[test]
+    fn restore_last_task_from_memory_uses_latest_user_task() {
+        let mut session = AgentSession::new(42_i64.into());
+        session
+            .memory
+            .add_message(AgentMessage::user_task("first task"));
+        session
+            .memory
+            .add_message(AgentMessage::assistant("first answer"));
+        session
+            .memory
+            .add_message(AgentMessage::user_task("second task"));
+
+        session.restore_last_task_from_memory();
+
+        assert_eq!(session.last_task.as_deref(), Some("second task"));
+    }
+
+    #[test]
+    fn restore_last_task_from_memory_keeps_existing_last_task() {
+        let mut session = AgentSession::new(42_i64.into());
+        session.remember_task("current volatile task");
+        session
+            .memory
+            .add_message(AgentMessage::user_task("persisted task"));
+
+        session.restore_last_task_from_memory();
+
+        assert_eq!(session.last_task.as_deref(), Some("current volatile task"));
     }
 
     #[test]

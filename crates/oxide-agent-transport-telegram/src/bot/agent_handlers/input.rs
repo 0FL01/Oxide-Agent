@@ -1,8 +1,9 @@
 use super::{
-    automatic_agent_control_markup, renew_cancellation_token, run_agent_task_with_text,
-    run_user_input_resume, use_inline_flow_controls, use_inline_topic_controls,
-    ActiveSessionConfig, RunAgentTaskTextContext, RunUserInputResumeContext,
-    PENDING_TEXT_INPUT_BATCHES, SESSION_REGISTRY,
+    automatic_agent_control_markup, renew_cancellation_token,
+    run_agent_task_continuation_with_text, run_agent_task_with_text, run_user_input_resume,
+    use_inline_flow_controls, use_inline_topic_controls, ActiveSessionConfig, AgentInputIntent,
+    RunAgentTaskTextContext, RunUserInputResumeContext, PENDING_TEXT_INPUT_BATCHES,
+    SESSION_REGISTRY,
 };
 use crate::bot::agent::{extract_agent_file_input, extract_agent_input};
 use crate::bot::context::{current_context_state, ensure_current_agent_flow_id};
@@ -12,6 +13,7 @@ use anyhow::Result;
 use oxide_agent_core::agent::{
     preprocessor::Preprocessor, PendingUserInput, SessionId, UserInputKind,
 };
+use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
@@ -31,6 +33,8 @@ pub(crate) struct BatchedTextTaskContext {
     pub(crate) chat_id: ChatId,
     pub(crate) session_id: SessionId,
     pub(crate) user_id: i64,
+    pub(crate) llm: Arc<LlmClient>,
+    pub(crate) agent_settings: Arc<AgentSettings>,
     pub(crate) storage: Arc<dyn StorageProvider>,
     pub(crate) context_key: String,
     pub(crate) agent_flow_id: String,
@@ -57,6 +61,8 @@ pub(crate) struct BatchedTextInputCheck<'a> {
     pub(crate) msg: &'a Message,
     pub(crate) bot: &'a Bot,
     pub(crate) storage: &'a Arc<dyn StorageProvider>,
+    pub(crate) llm: &'a Arc<LlmClient>,
+    pub(crate) agent_settings: &'a Arc<AgentSettings>,
     pub(crate) route: &'a TopicRouteDecision,
     pub(crate) thread_spec: TelegramThreadSpec,
     pub(crate) outbound_thread: OutboundThreadParams,
@@ -114,6 +120,8 @@ pub(crate) fn build_batched_text_task_context(
         chat_id: active_session.chat_id,
         session_id: active_session.session_id,
         user_id: active_session.user_id,
+        llm: active_session.llm.clone(),
+        agent_settings: active_session.agent_settings.clone(),
         storage: active_session.storage.clone(),
         context_key: active_session.context_key.clone(),
         agent_flow_id: active_session.agent_flow_id.clone(),
@@ -164,6 +172,8 @@ pub(crate) async fn handle_batched_text_input_if_needed(
             chat_id: ctx.chat_id,
             session_id: ctx.session_id,
             user_id: ctx.user_id,
+            llm: ctx.llm.clone(),
+            agent_settings: ctx.agent_settings.clone(),
             storage: ctx.storage.clone(),
             context_key: ctx.context_key.to_string(),
             agent_flow_id: ctx.agent_flow_id.to_string(),
@@ -419,23 +429,56 @@ pub(crate) async fn dispatch_preprocessed_agent_text(
         .await;
     }
 
-    run_agent_task_with_text(RunAgentTaskTextContext {
-        bot: ctx.bot,
-        chat_id: ctx.chat_id,
-        session_id: ctx.session_id,
-        user_id: ctx.user_id,
-        task_text,
-        storage: ctx.storage,
-        context_key: ctx.context_key,
-        agent_flow_id: ctx.agent_flow_id,
-        message_thread_id: ctx.message_thread_id,
-        use_inline_progress_controls: ctx.use_inline_progress_controls,
-        use_inline_flow_controls: ctx.use_inline_flow_controls,
-        attach_detach_enabled: ctx.attach_detach_enabled,
-        progress_enabled: true,
-        silent_no_change_enabled: false,
-    })
+    match super::resolve_agent_input_intent(
+        ctx.session_id,
+        task_text.clone(),
+        &ctx.llm,
+        &ctx.agent_settings,
+    )
     .await
+    {
+        AgentInputIntent::StartNewTask { task } => {
+            run_agent_task_with_text(RunAgentTaskTextContext {
+                bot: ctx.bot,
+                chat_id: ctx.chat_id,
+                session_id: ctx.session_id,
+                user_id: ctx.user_id,
+                task_text: task,
+                storage: ctx.storage,
+                context_key: ctx.context_key,
+                agent_flow_id: ctx.agent_flow_id,
+                message_thread_id: ctx.message_thread_id,
+                use_inline_progress_controls: ctx.use_inline_progress_controls,
+                use_inline_flow_controls: ctx.use_inline_flow_controls,
+                attach_detach_enabled: ctx.attach_detach_enabled,
+                progress_enabled: true,
+                silent_no_change_enabled: false,
+            })
+            .await
+        }
+        AgentInputIntent::ContinueLastTask { user_context }
+        | AgentInputIntent::ReviseLastAnswer {
+            instruction: user_context,
+        } => {
+            run_agent_task_continuation_with_text(RunAgentTaskTextContext {
+                bot: ctx.bot,
+                chat_id: ctx.chat_id,
+                session_id: ctx.session_id,
+                user_id: ctx.user_id,
+                task_text: user_context,
+                storage: ctx.storage,
+                context_key: ctx.context_key,
+                agent_flow_id: ctx.agent_flow_id,
+                message_thread_id: ctx.message_thread_id,
+                use_inline_progress_controls: ctx.use_inline_progress_controls,
+                use_inline_flow_controls: ctx.use_inline_flow_controls,
+                attach_detach_enabled: ctx.attach_detach_enabled,
+                progress_enabled: true,
+                silent_no_change_enabled: false,
+            })
+            .await
+        }
+    }
 }
 
 pub(crate) async fn notify_running_agent_task(

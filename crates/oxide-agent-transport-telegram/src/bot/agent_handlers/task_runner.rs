@@ -325,6 +325,18 @@ pub(crate) async fn run_agent_task_with_text(ctx: RunAgentTaskTextContext) -> Re
     .await
 }
 
+pub(crate) async fn run_agent_task_continuation_with_text(
+    ctx: RunAgentTaskTextContext,
+) -> Result<()> {
+    let delivery_ctx = TaskDeliveryContext::from(&ctx);
+    let session_id = ctx.session_id;
+    let user_context = ctx.task_text;
+    run_task_execution(delivery_ctx, move |progress_tx| async move {
+        execute_agent_task_continuation(session_id, vec![user_context], progress_tx).await
+    })
+    .await
+}
+
 pub(crate) async fn run_approved_ssh_resume(ctx: RunApprovedSshResumeContext) -> Result<()> {
     let delivery_ctx = TaskDeliveryContext::from(&ctx);
     let session_id = ctx.session_id;

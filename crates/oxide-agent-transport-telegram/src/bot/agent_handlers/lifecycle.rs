@@ -206,6 +206,8 @@ pub async fn handle_agent_message(
     let active_session = ActiveSessionConfig {
         session_id,
         storage: storage.clone(),
+        llm: llm.clone(),
+        agent_settings: settings.agent.clone(),
         user_id,
         context_key: context_key.clone(),
         agent_flow_id: agent_flow_id.clone(),
@@ -270,6 +272,8 @@ async fn handle_pre_spawn_agent_message(ctx: PreSpawnAgentMessageContext<'_>) ->
         msg: ctx.msg,
         bot: ctx.bot,
         storage: ctx.storage,
+        llm: ctx.llm,
+        agent_settings: &ctx.active_session.agent_settings,
         route: ctx.route,
         thread_spec: ctx.active_session.thread_spec,
         outbound_thread: ctx.outbound_thread,
