@@ -12,7 +12,6 @@ use crate::llm::LlmProvider;
     feature = "llm-groq",
     feature = "llm-mistral",
     feature = "llm-minimax",
-    feature = "llm-nvidia",
     feature = "llm-openrouter"
 ))]
 use super::super::capabilities::ToolHistoryMode;
@@ -207,7 +206,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     #[cfg(feature = "llm-zai")]
     modules.push(Box::new(super::zai::ZaiProviderModule));
     #[cfg(feature = "llm-nvidia")]
-    modules.push(Box::new(NvidiaProviderModule));
+    modules.push(Box::new(super::nvidia::NvidiaProviderModule));
     #[cfg(feature = "llm-opencode-go")]
     modules.push(Box::new(super::opencode_go::OpenCodeGoProviderModule));
     #[cfg(feature = "llm-openrouter")]
@@ -344,46 +343,6 @@ impl LlmProviderModule for MiniMaxProviderModule {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::new(ToolHistoryMode::Strict, true, false)
-    }
-}
-
-#[cfg(feature = "llm-nvidia")]
-struct NvidiaProviderModule;
-
-#[cfg(feature = "llm-nvidia")]
-impl LlmProviderModule for NvidiaProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/nvidia"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["nvidia"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        settings.nvidia_api_key.as_ref().map(|api_key| {
-            Arc::new(super::NvidiaProvider::new_with_client(
-                api_key.clone(),
-                settings.nvidia_api_base.clone(),
-                ctx.http_client.clone(),
-            )) as Arc<dyn LlmProvider>
-        })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true)
-    }
-
-    fn capabilities_for_model(&self, model_info: &ModelInfo) -> ProviderCapabilities {
-        let mut capabilities = self.capabilities();
-        let model_capabilities = super::nvidia::model_capabilities(&model_info.id);
-        capabilities.supports_tool_calling = model_capabilities.supports_tool_calling;
-        capabilities.supports_structured_output = model_capabilities.supports_structured_output;
-        capabilities
     }
 }
 
@@ -568,5 +527,23 @@ mod tests {
             provider_capabilities_for_model(&route).expect("provider id should resolve");
 
         assert!(capabilities.supports_structured_output);
+    }
+
+    #[cfg(feature = "llm-nvidia")]
+    #[test]
+    fn nvidia_module_owns_model_specific_capabilities() {
+        let route = crate::config::ModelInfo {
+            id: "deepseek-ai/deepseek-r1".to_string(),
+            provider: "llm-provider/nvidia".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            weight: 1,
+        };
+
+        let capabilities =
+            provider_capabilities_for_model(&route).expect("provider id should resolve");
+
+        assert!(!capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
     }
 }
