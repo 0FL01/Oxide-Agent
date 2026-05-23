@@ -31,7 +31,7 @@ aws-config = { version = "1.8.12", optional = true }
 aws-credential-types = { version = "1.2.11", optional = true }
 aws-types = { version = "1.3.11", optional = true }
 async-openai = { version = "0.33.1", default-features = false, features = ["rustls", "chat-completion", "audio", "image"], optional = true }
-reqwest = { version = "0.12", features = ["cookies", "json", "multipart", "rustls-tls", "stream"], default-features = false }
+reqwest = { version = "0.12", features = ["cookies", "json", "multipart", "rustls-tls", "stream"], default-features = false, optional = true }
 base64 = "0.22.1"
 async-trait = "0.1.89"
 html-escape = "0.2.13"
@@ -64,7 +64,7 @@ cron = "0.15.0"
 chrono-tz = "0.10.4"
 fastrand = "2.3.0"
 gemini-rust = { version = "1.7.1", optional = true }
-htmd = "0.5.4"
+htmd = { version = "0.5.4", optional = true }
 url = "2.5.7"
 
 [package.metadata.cargo-machete]
@@ -73,9 +73,9 @@ ignored = ["serde_bytes"]
 [features]
 default = []
 
-# Profile features are compositions of atomic capability features. These are
-# intentionally incomplete dependency gates at this checkpoint; the audit script
-# tracks remaining heavy dependency leaks as modules move behind their features.
+# Profile features are compositions of atomic capability features. Atomic
+# features own heavy dependencies directly so slim profiles can prove their
+# dependency boundary with cargo tree checks.
 profile-full = [
     "transport-telegram",
     "transport-web",
@@ -178,15 +178,15 @@ storage-s3-r2 = [
 storage-local-fs = []
 
 # LLM providers
-llm-chatgpt = []
-llm-gemini = ["dep:gemini-rust"]
+llm-chatgpt = ["dep:reqwest"]
+llm-gemini = ["dep:gemini-rust", "dep:reqwest"]
 llm-groq = ["dep:async-openai"]
-llm-mistral = ["dep:async-openai"]
+llm-mistral = ["dep:async-openai", "dep:reqwest"]
 llm-minimax = ["dep:claudius"]
-llm-zai = ["dep:zai-rs"]
-llm-nvidia = []
-llm-opencode-go = []
-llm-openrouter = []
+llm-zai = ["dep:zai-rs", "dep:reqwest"]
+llm-nvidia = ["dep:reqwest"]
+llm-opencode-go = ["dep:reqwest"]
+llm-openrouter = ["dep:reqwest"]
 
 # Tools
 tool-todos = []
@@ -195,20 +195,20 @@ tool-delegation = []
 tool-agents-md = []
 tool-reminder = []
 tool-wiki-memory = []
-tool-webfetch-md = []
+tool-webfetch-md = ["dep:htmd", "dep:reqwest"]
 tool-tavily = ["dep:tavily"]
-tool-searxng = []
-tool-browser-use = []
+tool-searxng = ["dep:reqwest"]
+tool-browser-use = ["dep:reqwest"]
 tool-sandbox-fileops = []
 tool-sandbox-exec = []
 tool-sandbox-recreate = []
 tool-file-delivery = []
-tool-media-audio = []
-tool-media-image = []
-tool-media-video = []
+tool-media-audio = ["dep:reqwest"]
+tool-media-image = ["dep:reqwest"]
+tool-media-video = ["dep:reqwest"]
 tool-ytdlp = []
-tool-tts-kokoro = []
-tool-tts-silero = []
+tool-tts-kokoro = ["dep:reqwest"]
+tool-tts-silero = ["dep:reqwest"]
 tool-stack-logs = ["sandbox-backend-docker-direct"]
 
 # Sandbox and integrations

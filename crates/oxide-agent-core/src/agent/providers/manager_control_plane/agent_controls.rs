@@ -228,6 +228,17 @@ impl ManagerControlPlaneProvider {
 
     fn configured_search_tool_groups() -> Vec<TopicAgentToolGroup> {
         let mut groups = Vec::new();
+        Self::push_configured_search_tool_groups(&mut groups);
+        groups
+    }
+
+    fn push_configured_search_tool_groups(groups: &mut Vec<TopicAgentToolGroup>) {
+        #[cfg(not(any(
+            feature = "tool-tavily",
+            feature = "tool-searxng",
+            feature = "tool-webfetch-md"
+        )))]
+        let _ = groups;
 
         #[cfg(feature = "tool-tavily")]
         if crate::config::is_tavily_enabled() {
@@ -247,13 +258,12 @@ impl ManagerControlPlaneProvider {
             });
         }
 
+        #[cfg(feature = "tool-webfetch-md")]
         groups.push(TopicAgentToolGroup {
             provider: "webfetch_md",
             aliases: &["search", "webfetch", "web_markdown"],
             tools: TOPIC_AGENT_WEBFETCH_TOOLS,
         });
-
-        groups
     }
 
     fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
@@ -360,17 +370,23 @@ impl ManagerControlPlaneProvider {
             }
         }
 
-        // TTS groups - always added as they're conditionally enabled via env vars at runtime
+        #[cfg(any(
+            feature = "tool-media-audio",
+            feature = "tool-media-image",
+            feature = "tool-media-video"
+        ))]
         groups.push(TopicAgentToolGroup {
             provider: "media_file",
             aliases: &["media", "media_file"],
             tools: TOPIC_AGENT_MEDIA_FILE_TOOLS,
         });
+        #[cfg(feature = "tool-tts-kokoro")]
         groups.push(TopicAgentToolGroup {
             provider: "tts_en",
             aliases: &["tts", "tts_en", "kokoro"],
             tools: TOPIC_AGENT_TTS_EN_TOOLS,
         });
+        #[cfg(feature = "tool-tts-silero")]
         groups.push(TopicAgentToolGroup {
             provider: "tts_ru",
             aliases: &["tts_ru", "silero"],
@@ -1438,6 +1454,11 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    #[cfg(any(
+        feature = "tool-media-audio",
+        feature = "tool-media-image",
+        feature = "tool-media-video"
+    ))]
     #[tokio::test]
     async fn topic_agent_tool_catalog_includes_media_file_tools() {
         let mut mock = crate::storage::MockStorageProvider::new();

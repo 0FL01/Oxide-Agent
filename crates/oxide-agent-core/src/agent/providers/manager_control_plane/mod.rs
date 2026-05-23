@@ -204,6 +204,7 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
 #[cfg(feature = "tool-searxng")]
 const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
+#[cfg(feature = "tool-webfetch-md")]
 const TOPIC_AGENT_WEBFETCH_TOOLS: &[&str] = &["web_markdown"];
 #[cfg(feature = "tool-browser-use")]
 const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
@@ -246,12 +247,19 @@ const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_search_users",
     "mattermost_upload_file",
 ];
+#[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
 const TOPIC_AGENT_MEDIA_FILE_TOOLS: &[&str] = &[
     "transcribe_audio_file",
     "describe_image_file",
     "describe_video_file",
 ];
+#[cfg(feature = "tool-tts-kokoro")]
 const TOPIC_AGENT_TTS_EN_TOOLS: &[&str] = &["text_to_speech_en", "text_to_speech_en_file"];
+#[cfg(feature = "tool-tts-silero")]
 const TOPIC_AGENT_TTS_RU_TOOLS: &[&str] = &["text_to_speech_ru", "text_to_speech_ru_file"];
 
 /// Transport-agnostic request for forum topic creation.

@@ -3,9 +3,8 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
-    KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
-    SandboxProvider, TodoList, TodosProvider, WebFetchMdProvider, WikiMemoryProvider,
-    YtdlpProvider,
+    ManagerControlPlaneProvider, ReminderProvider, SandboxProvider, TodoList, TodosProvider,
+    WikiMemoryProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
@@ -21,6 +20,14 @@ use tracing::warn;
 
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::providers::BrowserUseProvider;
+#[cfg(feature = "tool-tts-kokoro")]
+use crate::agent::providers::KokoroTtsProvider;
+#[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
+use crate::agent::providers::MediaFileProvider;
 #[cfg(feature = "tool-searxng")]
 use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "integration-ssh-mcp")]
@@ -29,6 +36,8 @@ use crate::agent::providers::SshMcpProvider;
 use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-tavily")]
 use crate::agent::providers::TavilyProvider;
+#[cfg(feature = "tool-webfetch-md")]
+use crate::agent::providers::WebFetchMdProvider;
 
 impl AgentExecutor {
     /// Build the currently exposed tool definitions for this executor state.
@@ -233,6 +242,11 @@ impl AgentExecutor {
         #[cfg(feature = "tool-stack-logs")]
         registry.register(Box::new(StackLogsProvider::new()));
         registry.register(Box::new(FileHosterProvider::new(sandbox_scope.clone())));
+        #[cfg(any(
+            feature = "tool-media-audio",
+            feature = "tool-media-image",
+            feature = "tool-media-video"
+        ))]
         registry.register(Box::new(MediaFileProvider::new(
             self.runner.llm_client(),
             sandbox_scope.clone(),
@@ -411,6 +425,13 @@ impl AgentExecutor {
     }
 
     fn register_search_providers(&self, registry: &mut ToolRegistry) {
+        #[cfg(not(any(
+            feature = "tool-tavily",
+            feature = "tool-searxng",
+            feature = "tool-webfetch-md"
+        )))]
+        let _ = registry;
+
         #[cfg(feature = "tool-tavily")]
         if crate::config::is_tavily_enabled() {
             if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
@@ -452,6 +473,7 @@ impl AgentExecutor {
             tracing::warn!("SearXNG enabled but feature not compiled in");
         }
 
+        #[cfg(feature = "tool-webfetch-md")]
         registry.register(Box::new(WebFetchMdProvider::new()));
     }
 
@@ -487,6 +509,7 @@ impl AgentExecutor {
         }
     }
 
+    #[cfg(feature = "tool-tts-kokoro")]
     fn register_kokoro_tts_provider(
         &self,
         registry: &mut ToolRegistry,
@@ -519,6 +542,15 @@ impl AgentExecutor {
         tracing::debug!(url = %base_url, "Kokoro TTS provider registered");
     }
 
+    #[cfg(not(feature = "tool-tts-kokoro"))]
+    fn register_kokoro_tts_provider(
+        &self,
+        _registry: &mut ToolRegistry,
+        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
+    }
+
+    #[cfg(feature = "tool-tts-silero")]
     fn register_silero_tts_provider(
         &self,
         registry: &mut ToolRegistry,
@@ -550,6 +582,14 @@ impl AgentExecutor {
         let base_url = provider.base_url().to_string();
         registry.register(Box::new(provider));
         tracing::debug!(url = %base_url, "Silero TTS provider registered");
+    }
+
+    #[cfg(not(feature = "tool-tts-silero"))]
+    fn register_silero_tts_provider(
+        &self,
+        _registry: &mut ToolRegistry,
+        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
     }
 }
 

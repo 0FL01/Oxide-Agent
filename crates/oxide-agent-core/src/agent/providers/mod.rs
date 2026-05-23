@@ -9,9 +9,15 @@ pub mod delegation;
 mod file_delivery;
 pub mod filehoster;
 pub mod manager_control_plane;
+#[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
 pub mod media_file;
 pub mod reminder;
 pub mod sandbox;
+#[cfg(feature = "tool-tts-silero")]
 pub mod silero_tts;
 #[cfg(feature = "integration-ssh-mcp")]
 pub mod ssh_mcp;
@@ -20,7 +26,9 @@ mod ssh_mcp_stub;
 #[cfg(feature = "tool-stack-logs")]
 pub mod stack_logs;
 pub mod todos;
+#[cfg(feature = "tool-tts-kokoro")]
 pub mod tts;
+#[cfg(feature = "tool-webfetch-md")]
 pub mod webfetch_md;
 pub mod wiki_memory;
 pub mod ytdlp;
@@ -51,12 +59,18 @@ pub use manager_control_plane::{
     ForumTopicCreateResult, ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
     ManagerControlPlaneProvider, ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
+#[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
 pub use media_file::MediaFileProvider;
 pub use reminder::{
     reminder_tool_names, ReminderContext, ReminderProvider, ReminderScheduleEvent,
     ReminderScheduleNotifier,
 };
 pub use sandbox::SandboxProvider;
+#[cfg(feature = "tool-tts-silero")]
 pub use silero_tts::{
     SileroSampleRate, SileroTtsConfig, SileroTtsFormat, SileroTtsProvider, SileroTtsRequest,
     SileroTtsSpeaker,
@@ -79,7 +93,9 @@ pub use ssh_mcp_stub::{
 #[cfg(feature = "tool-stack-logs")]
 pub use stack_logs::StackLogsProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
+#[cfg(feature = "tool-tts-kokoro")]
 pub use tts::{KokoroTtsProvider, TtsConfig, TtsVoice};
+#[cfg(feature = "tool-webfetch-md")]
 pub use webfetch_md::WebFetchMdProvider;
 pub use wiki_memory::WikiMemoryProvider;
 pub use ytdlp::YtdlpProvider;

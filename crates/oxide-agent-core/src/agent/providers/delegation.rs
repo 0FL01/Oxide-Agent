@@ -13,7 +13,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
-    FileHosterProvider, SandboxProvider, TodoList, TodosProvider, WebFetchMdProvider, YtdlpProvider,
+    FileHosterProvider, SandboxProvider, TodoList, TodosProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{
@@ -45,6 +45,8 @@ use crate::agent::providers::BrowserUseProvider;
 use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "tool-tavily")]
 use crate::agent::providers::TavilyProvider;
+#[cfg(feature = "tool-webfetch-md")]
+use crate::agent::providers::WebFetchMdProvider;
 use tokio::sync::Semaphore;
 
 const TOOL_SPAWN_SUB_AGENTS: &str = "spawn_sub_agents";
@@ -552,20 +554,28 @@ impl DelegationProvider {
             YtdlpProvider::new(self.sandbox_scope.clone())
         };
 
-        let providers: Vec<Box<dyn ToolProvider>> = vec![
+        let mut providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(TodosProvider::new(todos_arc)),
             Box::new(sandbox_provider),
             Box::new(FileHosterProvider::new(self.sandbox_scope.clone())),
             Box::new(ytdlp_provider),
-            Box::new(WebFetchMdProvider::new()),
         ];
+        self.push_optional_sub_agent_providers(&mut providers);
 
-        #[cfg(any(
+        providers
+    }
+
+    fn push_optional_sub_agent_providers(&self, providers: &mut Vec<Box<dyn ToolProvider>>) {
+        #[cfg(not(any(
+            feature = "tool-webfetch-md",
             feature = "tool-tavily",
             feature = "tool-searxng",
             feature = "tool-browser-use"
-        ))]
-        let mut providers = providers;
+        )))]
+        let _ = providers;
+
+        #[cfg(feature = "tool-webfetch-md")]
+        providers.push(Box::new(WebFetchMdProvider::new()));
 
         #[cfg(feature = "tool-tavily")]
         if crate::config::is_tavily_enabled() {
@@ -611,13 +621,11 @@ impl DelegationProvider {
         }
 
         #[cfg(feature = "tool-browser-use")]
-        self.maybe_push_browser_use_provider(&mut providers);
+        self.maybe_push_browser_use_provider(providers);
         #[cfg(not(feature = "tool-browser-use"))]
         if crate::config::is_browser_use_enabled() {
             warn!("Browser Use enabled but feature not compiled in");
         }
-
-        providers
     }
 
     #[cfg(feature = "tool-browser-use")]

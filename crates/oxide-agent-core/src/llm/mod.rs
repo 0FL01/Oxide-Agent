@@ -17,6 +17,15 @@ pub use error::LlmError;
 pub use provider::LlmProvider;
 #[cfg(test)]
 pub use provider::MockLlmProvider;
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-gemini",
+    feature = "llm-mistral",
+    feature = "llm-zai",
+    feature = "llm-nvidia",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
 pub use support::http;
 pub use types::{
     ChatResponse, ChatWithToolsRequest, InvocationId, Message, ProviderItemId, ProviderToolCallId,

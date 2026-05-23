@@ -8,7 +8,7 @@ Goal: `docs/goals/2026-05-23-modular-architecture-refactor.md`
 
 This document is the Milestone 1 dependency and feature audit baseline. It records current dependency ownership, target feature names, and known leakage that later phases must remove.
 
-The feature map in `crates/oxide-agent-core/Cargo.toml` now uses PRD-style atomic feature names and profile compositions. This checkpoint does not yet claim dependency elimination for every feature. Heavy dependencies that still compile unconditionally are tracked below and by `scripts/check-cargo-tree-deny.sh`.
+The feature map in `crates/oxide-agent-core/Cargo.toml` now uses PRD-style atomic feature names and profile compositions. Heavy dependencies that still compile unconditionally are tracked below and by `scripts/check-cargo-tree-deny.sh`.
 
 ## Storage Decision
 
@@ -56,7 +56,7 @@ Core/light dependencies that may remain shared for now:
 - `tokio`, `tokio-util`, `futures-util`, `async-trait`.
 - `tracing`, `thiserror`, `anyhow`.
 - `serde`, `serde_json`, `serde_yaml`, `config`.
-- `bytes`, `base64`, `chrono`, `uuid`, `regex`, `url`, `sha2`.
+- `base64`, `chrono`, `uuid`, `regex`, `url`, `sha2`.
 - Test/snapshot helpers when dev-only: `insta`, `mockall`, `proptest`, `tempfile`, `dotenvy`, `tracing-subscriber`.
 
 Optional-heavy or module-owned dependencies to isolate:
@@ -76,10 +76,10 @@ Optional-heavy or module-owned dependencies to isolate:
 
 ## Current Leakage Baseline
 
-Known leaks in `oxide-agent-core` after Phase 2e:
+Known leaks in `oxide-agent-core` after Phase 2f:
 
-- `reqwest` and `htmd` are shared across provider/tool paths and still need module ownership boundaries.
 - Telegram and web transport dependencies are in separate transport crates, but workspace builds still include those crates unconditionally until binary/profile composition is introduced.
+- Some tool registrations are still feature-aware inside the legacy registry rather than generated from capability manifests.
 
 Resolved in Phase 2b:
 
@@ -107,14 +107,23 @@ Resolved in Phase 2e:
 - SSH manager/preflight approval types remain available without `rmcp` through a no-client stub.
 - The CI dependency leakage job now enforces the deny list instead of running as a non-blocking report.
 
+Resolved in Phase 2f:
+
+- `reqwest` is optional and owned by HTTP-using LLM/tool features: ChatGPT, Gemini, Mistral, ZAI, Nvidia, OpenCode Go, OpenRouter, webfetch, SearXNG, Browser Use, media, and TTS.
+- `htmd` is optional and owned only by `tool-webfetch-md`.
+- `webfetch_md`, media-file, Kokoro TTS, and Silero TTS provider modules/exports/registrations are gated by their tool features.
+- Sub-agent webfetch registration is gated by `tool-webfetch-md`, so `llm-opencode-go` no longer pulls `htmd`.
+
 ## Verification Commands
 
 Profile build checks:
 
 ```bash
 cargo check --workspace --no-default-features --features profile-embedded-opencode-local
+cargo check --workspace --no-default-features --features profile-lite
 cargo check --workspace --no-default-features --features profile-no-sandbox
 cargo check --workspace --no-default-features --features profile-search-only
+cargo check --workspace --no-default-features --features profile-media-enabled
 cargo check --workspace --no-default-features --features profile-full
 ```
 
@@ -123,15 +132,17 @@ Dependency leakage checks:
 ```bash
 scripts/check-cargo-tree-deny.sh profile-no-sandbox
 scripts/check-cargo-tree-deny.sh profile-search-only
+scripts/check-cargo-tree-deny.sh profile-lite
+scripts/check-cargo-tree-deny.sh profile-embedded-opencode-local
 scripts/check-cargo-tree-deny.sh llm-opencode-go
 ```
 
-These leakage checks are now expected to pass. Add new deny-list entries as later slices define ownership for the remaining shared web/search dependencies.
+These leakage checks are now expected to pass. Add new deny-list entries as later slices define ownership for additional optional boundaries.
 
 ## Next Refactoring Targets
 
-1. Move web/search/browser dependencies to owned tool modules.
-2. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
-3. Move concrete storage construction out of Telegram runner into application bootstrap per the PRD's final registry model.
-4. Refine broker-only sandbox client support so it no longer shares the direct Docker implementation boundary.
-5. Continue replacing unconditional provider registration with feature-aware capability registration.
+1. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
+2. Move concrete storage construction out of Telegram runner into application bootstrap per the PRD's final registry model.
+3. Refine broker-only sandbox client support so it no longer shares the direct Docker implementation boundary.
+4. Continue replacing legacy provider registration with feature-aware capability registration.
+5. Split remaining always-compiled low-risk tool modules only when their dependencies or runtime availability justify it.
