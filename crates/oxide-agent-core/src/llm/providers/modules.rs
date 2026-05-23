@@ -124,6 +124,12 @@ pub(crate) fn provider_capabilities(provider_name: &str) -> Option<ProviderCapab
     find_provider_module(provider_name).map(|module| module.capabilities())
 }
 
+/// Resolves a provider alias or module ID to the compiled provider module ID.
+#[must_use]
+pub(crate) fn provider_module_id(provider_name: &str) -> Option<&'static str> {
+    find_provider_module(provider_name).map(|module| module.provider_id())
+}
+
 /// Returns media capabilities for a compiled provider module.
 #[must_use]
 pub(crate) fn provider_media_capabilities(provider_name: &str) -> Option<MediaCapabilities> {
@@ -511,7 +517,7 @@ fn zai_supports_structured_output(model_id: &str) -> bool {
 mod tests {
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
-        provider_key,
+        provider_key, provider_module_id,
     };
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
 
@@ -533,6 +539,14 @@ mod tests {
         assert!(providers.contains_key("llm-provider/opencode-go"));
         assert!(providers.contains_key("opencode-go"));
         assert!(providers.contains_key("opencode_go"));
+        assert_eq!(
+            provider_module_id("opencode_go"),
+            Some("llm-provider/opencode-go")
+        );
+        assert_eq!(
+            provider_module_id("llm-provider/opencode-go"),
+            Some("llm-provider/opencode-go")
+        );
     }
 
     #[cfg(feature = "llm-opencode-go")]

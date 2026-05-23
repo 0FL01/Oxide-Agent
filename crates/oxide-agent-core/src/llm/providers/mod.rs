@@ -98,5 +98,5 @@ pub use zai::{parse_zai_flush_time, ZaiProvider};
 
 pub(crate) use modules::{
     build_configured_providers, provider_capabilities, provider_capabilities_for_model,
-    provider_key, provider_media_capabilities,
+    provider_key, provider_media_capabilities, provider_module_id,
 };

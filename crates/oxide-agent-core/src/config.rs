@@ -6,6 +6,7 @@ use crate::capabilities::{
     compiled_capability_manifest, CompiledCapabilityManifest, EnabledCapabilityManifest,
     ManifestError,
 };
+use crate::llm::providers::provider_module_id;
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -435,6 +436,7 @@ impl AgentSettings {
                 "Critical: CHAT_MODEL_PROVIDER is required for operation".to_string(),
             ));
         }
+        settings.validate_route_providers()?;
         settings.validate_route_credentials()?;
 
         Ok(settings)
@@ -449,6 +451,77 @@ impl AgentSettings {
             .enabled_capability_manifest(&manifest)
             .map(|_| ())
             .map_err(capability_config_error)
+    }
+
+    fn validate_route_providers(&self) -> Result<(), ConfigError> {
+        self.validate_optional_route_provider(
+            "CHAT_MODEL_PROVIDER",
+            self.chat_model_provider.as_deref(),
+        )?;
+        self.validate_optional_route_provider(
+            "AGENT_MODEL_PROVIDER",
+            self.agent_model_provider.as_deref(),
+        )?;
+        self.validate_optional_route_provider(
+            "SUB_AGENT_MODEL_PROVIDER",
+            self.sub_agent_model_provider.as_deref(),
+        )?;
+        self.validate_optional_route_provider(
+            "MEDIA_MODEL_PROVIDER",
+            self.media_model_provider.as_deref(),
+        )?;
+        self.validate_optional_route_provider(
+            "BROWSER_USE_MODEL_PROVIDER",
+            self.browser_use_model_provider.as_deref(),
+        )?;
+        self.validate_optional_route_provider(
+            "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
+            self.wiki_memory_writer_model_provider.as_deref(),
+        )?;
+
+        if let Some(routes) = self.agent_model_routes.as_deref() {
+            for (index, route) in routes.iter().enumerate() {
+                self.validate_optional_route_provider(
+                    &format!("AGENT_MODEL_ROUTES[{index}].provider"),
+                    Some(route.provider.as_str()),
+                )?;
+            }
+        }
+
+        if let Some(routes) = self.sub_agent_model_routes.as_deref() {
+            for (index, route) in routes.iter().enumerate() {
+                self.validate_optional_route_provider(
+                    &format!("SUB_AGENT_MODEL_ROUTES[{index}].provider"),
+                    Some(route.provider.as_str()),
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_optional_route_provider(
+        &self,
+        source: &str,
+        provider: Option<&str>,
+    ) -> Result<(), ConfigError> {
+        let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(());
+        };
+
+        let Some(module_id) = provider_module_id(provider) else {
+            return Err(ConfigError::Message(format!(
+                "Critical: {source} references provider '{provider}', but no compiled LLM provider module owns that provider alias or ID"
+            )));
+        };
+
+        if !self.is_module_enabled(module_id) {
+            return Err(ConfigError::Message(format!(
+                "Critical: {source} references provider '{provider}', but module '{module_id}' is disabled"
+            )));
+        }
+
+        Ok(())
     }
 
     fn validate_route_credentials(&self) -> Result<(), ConfigError> {
@@ -1135,6 +1208,88 @@ mod tests {
 
         assert!(!settings.modules["tool/a"].enabled_or_default());
         assert!(settings.modules["tool/b"].enabled_or_default());
+    }
+
+    #[test]
+    fn route_provider_validation_rejects_non_compiled_provider() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-model".to_string()),
+            chat_model_provider: Some("removed-provider".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let error = settings
+            .validate_route_providers()
+            .expect_err("unknown provider should fail");
+
+        assert!(error
+            .to_string()
+            .contains("CHAT_MODEL_PROVIDER references provider 'removed-provider'"));
+        assert!(error
+            .to_string()
+            .contains("no compiled LLM provider module owns that provider alias or ID"));
+    }
+
+    #[test]
+    fn route_provider_validation_rejects_non_compiled_weighted_route() {
+        let settings = AgentSettings {
+            agent_model_routes: Some(vec![ModelInfo {
+                id: "route-model".to_string(),
+                provider: "removed-provider".to_string(),
+                max_output_tokens: 10_000,
+                context_window_tokens: 20_000,
+                weight: 1,
+            }]),
+            ..AgentSettings::default()
+        };
+
+        let error = settings
+            .validate_route_providers()
+            .expect_err("unknown weighted route provider should fail");
+
+        assert!(error
+            .to_string()
+            .contains("AGENT_MODEL_ROUTES[0].provider references provider 'removed-provider'"));
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn route_provider_validation_accepts_compiled_provider_alias_and_id() {
+        let settings = AgentSettings {
+            chat_model_id: Some("chat-model".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("media-model".to_string()),
+            media_model_provider: Some("llm-provider/openrouter".to_string()),
+            ..AgentSettings::default()
+        };
+
+        settings
+            .validate_route_providers()
+            .expect("compiled provider alias and id should validate");
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn route_provider_validation_rejects_disabled_provider_module() {
+        let mut settings = AgentSettings {
+            chat_model_id: Some("chat-model".to_string()),
+            chat_model_provider: Some("openrouter".to_string()),
+            ..AgentSettings::default()
+        };
+        settings.modules.insert(
+            "llm-provider/openrouter".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        );
+
+        let error = settings
+            .validate_route_providers()
+            .expect_err("disabled provider module should fail");
+
+        assert!(error.to_string().contains(
+            "CHAT_MODEL_PROVIDER references provider 'openrouter', but module 'llm-provider/openrouter' is disabled"
+        ));
     }
 
     #[test]
