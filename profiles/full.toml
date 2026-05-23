@@ -1,0 +1,16 @@
+profile = "full"
+cargo_features = ["profile-full"]
+
+[modules]
+"transport/telegram" = { enabled = true }
+"transport/web" = { enabled = true }
+"storage/s3-r2" = { enabled = true }
+"llm-provider/chatgpt" = { enabled = true }
+"llm-provider/gemini" = { enabled = true }
+"llm-provider/groq" = { enabled = true }
+"llm-provider/mistral" = { enabled = true }
+"llm-provider/minimax" = { enabled = true }
+"llm-provider/zai" = { enabled = true }
+"llm-provider/nvidia" = { enabled = true }
+"llm-provider/opencode-go" = { enabled = true }
+"llm-provider/openrouter" = { enabled = true }

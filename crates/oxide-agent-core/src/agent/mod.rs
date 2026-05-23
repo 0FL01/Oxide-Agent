@@ -44,7 +44,7 @@ pub mod skills;
 /// Structured output parsing and validation
 pub mod structured_output;
 /// Task-local active model route metadata for tool providers.
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 pub(crate) mod tool_model_route;
 /// Async parallel tool runtime foundations.
 pub mod tool_runtime;

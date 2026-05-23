@@ -71,12 +71,149 @@ url = "2.5.7"
 ignored = ["serde_bytes"]
 
 [features]
-default = ["tavily", "searxng"]
-tavily = ["dep:tavily"]
-searxng = []
-browser_use = []
-jira = []
-mattermost = []
+default = []
+
+# Profile features are compositions of atomic capability features. These are
+# intentionally incomplete dependency gates at this checkpoint; the audit script
+# tracks remaining heavy dependency leaks as modules move behind their features.
+profile-full = [
+    "transport-telegram",
+    "transport-web",
+    "storage-s3-r2",
+    "llm-chatgpt",
+    "llm-gemini",
+    "llm-groq",
+    "llm-mistral",
+    "llm-minimax",
+    "llm-zai",
+    "llm-nvidia",
+    "llm-opencode-go",
+    "llm-openrouter",
+    "tool-todos",
+    "tool-compression",
+    "tool-delegation",
+    "tool-agents-md",
+    "tool-reminder",
+    "tool-wiki-memory",
+    "tool-webfetch-md",
+    "tool-tavily",
+    "tool-searxng",
+    "tool-browser-use",
+    "tool-sandbox-fileops",
+    "tool-sandbox-exec",
+    "tool-sandbox-recreate",
+    "tool-file-delivery",
+    "tool-media-audio",
+    "tool-media-image",
+    "tool-media-video",
+    "tool-ytdlp",
+    "tool-tts-kokoro",
+    "tool-tts-silero",
+    "tool-stack-logs",
+    "sandbox-backend-docker-direct",
+    "sandbox-backend-sandboxd-client",
+    "sandbox-daemon",
+    "integration-mcp-jira",
+    "integration-mcp-mattermost",
+    "integration-ssh-mcp",
+    "manager-control-plane",
+]
+profile-embedded-opencode-local = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-todos",
+    "tool-agents-md",
+    "tool-reminder",
+    "tool-wiki-memory",
+    "tool-webfetch-md",
+]
+profile-lite = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-todos",
+    "tool-webfetch-md",
+    "tool-reminder",
+]
+profile-search-only = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-webfetch-md",
+    "tool-tavily",
+]
+profile-no-sandbox = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-todos",
+    "tool-webfetch-md",
+    "tool-reminder",
+    "tool-wiki-memory",
+]
+profile-media-enabled = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-media-audio",
+    "tool-media-image",
+    "tool-media-video",
+    "tool-file-delivery",
+]
+
+# Transports
+transport-telegram = []
+transport-web = []
+transport-cli = []
+transport-http-api = []
+
+# Storage
+storage-s3-r2 = []
+storage-local-fs = []
+
+# LLM providers
+llm-chatgpt = []
+llm-gemini = []
+llm-groq = []
+llm-mistral = []
+llm-minimax = []
+llm-zai = []
+llm-nvidia = []
+llm-opencode-go = []
+llm-openrouter = []
+
+# Tools
+tool-todos = []
+tool-compression = []
+tool-delegation = []
+tool-agents-md = []
+tool-reminder = []
+tool-wiki-memory = []
+tool-webfetch-md = []
+tool-tavily = ["dep:tavily"]
+tool-searxng = []
+tool-browser-use = []
+tool-sandbox-fileops = []
+tool-sandbox-exec = []
+tool-sandbox-recreate = []
+tool-file-delivery = []
+tool-media-audio = []
+tool-media-image = []
+tool-media-video = []
+tool-ytdlp = []
+tool-tts-kokoro = []
+tool-tts-silero = []
+tool-stack-logs = []
+
+# Sandbox and integrations
+sandbox-backend-docker-direct = []
+sandbox-backend-sandboxd-client = []
+sandbox-daemon = ["sandbox-backend-docker-direct"]
+integration-mcp-jira = []
+integration-mcp-mattermost = []
+integration-ssh-mcp = []
+manager-control-plane = []
 
 [dev-dependencies]
 dotenvy = "0.15"

@@ -89,6 +89,7 @@ Done when:
 ## Progress Log
 
 - 2026-05-23 13:38 +03: Read `prd/PRD.md`, confirmed branch `modular-arch` with clean working tree, created active Codex goal, and started this repo-local goal document. Next: commit Phase 0, then implement Phase 1 dependency/feature audit artifacts.
+- 2026-05-23 13:49 +03: Phase 1 added PRD-style atomic/profile feature names, set `oxide-agent-core` default features to empty, renamed existing feature gates from `tavily`/`searxng`/`browser_use`/`jira`/`mattermost` to canonical `tool-*` and `integration-*` names, added profile TOML stubs, dependency audit docs, a CI workflow for profile checks, and `scripts/check-cargo-tree-deny.sh`. Validation passed: `cargo check --workspace`, all six profile checks (`profile-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-full`), `cargo fmt --all --check`, and `cargo clippy --workspace --all-targets --all-features`. Expected leakage evidence captured: `scripts/check-cargo-tree-deny.sh profile-no-sandbox`, `profile-search-only`, and `llm-opencode-go` fail because AWS SDK, Bollard, RMCP, provider SDKs, and broker deps are still unconditional. Next: Phase 2 optional dependency gates and cfg boundaries for the first heavy module slice.
 
 ## Risks and Blockers
 

@@ -450,7 +450,7 @@ mod gemini_tests {
         }
     }
 
-    #[cfg(feature = "searxng")]
+    #[cfg(feature = "tool-searxng")]
     #[test]
     fn sanitizes_searxng_numeric_enums() {
         let tools = crate::agent::providers::searxng::SearxngProvider::new("http://localhost:8080")

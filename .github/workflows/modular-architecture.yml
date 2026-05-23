@@ -1,0 +1,69 @@
+name: Modular Architecture Checks
+
+on:
+  workflow_dispatch:
+
+jobs:
+  profile-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - profile-embedded-opencode-local
+          - profile-lite
+          - profile-search-only
+          - profile-no-sandbox
+          - profile-media-enabled
+          - profile-full
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-profile-${{ matrix.features }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Check profile
+        run: cargo check --workspace --no-default-features --features "${{ matrix.features }}"
+
+  dependency-leakage-report:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - profile-no-sandbox
+          - profile-search-only
+          - llm-opencode-go
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Report dependency leakage
+        run: scripts/check-cargo-tree-deny.sh "${{ matrix.features }}"

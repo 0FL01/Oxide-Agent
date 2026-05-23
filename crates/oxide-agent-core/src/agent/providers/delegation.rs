@@ -39,11 +39,11 @@ use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 use crate::agent::providers::BrowserUseProvider;
-#[cfg(feature = "searxng")]
+#[cfg(feature = "tool-searxng")]
 use crate::agent::providers::SearxngProvider;
-#[cfg(feature = "tavily")]
+#[cfg(feature = "tool-tavily")]
 use crate::agent::providers::TavilyProvider;
 use tokio::sync::Semaphore;
 
@@ -552,7 +552,7 @@ impl DelegationProvider {
             YtdlpProvider::new(self.sandbox_scope.clone())
         };
 
-        let mut providers: Vec<Box<dyn ToolProvider>> = vec![
+        let providers: Vec<Box<dyn ToolProvider>> = vec![
             Box::new(TodosProvider::new(todos_arc)),
             Box::new(sandbox_provider),
             Box::new(FileHosterProvider::new(self.sandbox_scope.clone())),
@@ -560,7 +560,14 @@ impl DelegationProvider {
             Box::new(WebFetchMdProvider::new()),
         ];
 
-        #[cfg(feature = "tavily")]
+        #[cfg(any(
+            feature = "tool-tavily",
+            feature = "tool-searxng",
+            feature = "tool-browser-use"
+        ))]
+        let mut providers = providers;
+
+        #[cfg(feature = "tool-tavily")]
         if crate::config::is_tavily_enabled() {
             if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
                 if !tavily_key.trim().is_empty() {
@@ -574,12 +581,12 @@ impl DelegationProvider {
                 warn!("Tavily enabled but TAVILY_API_KEY is not set; sub-agent provider not registered");
             }
         }
-        #[cfg(not(feature = "tavily"))]
+        #[cfg(not(feature = "tool-tavily"))]
         if crate::config::is_tavily_enabled() {
             warn!("Tavily enabled but feature not compiled in");
         }
 
-        #[cfg(feature = "searxng")]
+        #[cfg(feature = "tool-searxng")]
         if crate::config::is_searxng_enabled() {
             if let Some(url) = crate::config::get_searxng_url() {
                 if !url.trim().is_empty() {
@@ -598,14 +605,14 @@ impl DelegationProvider {
                 );
             }
         }
-        #[cfg(not(feature = "searxng"))]
+        #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             warn!("SearXNG enabled but feature not compiled in");
         }
 
-        #[cfg(feature = "browser_use")]
+        #[cfg(feature = "tool-browser-use")]
         self.maybe_push_browser_use_provider(&mut providers);
-        #[cfg(not(feature = "browser_use"))]
+        #[cfg(not(feature = "tool-browser-use"))]
         if crate::config::is_browser_use_enabled() {
             warn!("Browser Use enabled but feature not compiled in");
         }
@@ -613,7 +620,7 @@ impl DelegationProvider {
         providers
     }
 
-    #[cfg(feature = "browser_use")]
+    #[cfg(feature = "tool-browser-use")]
     fn maybe_push_browser_use_provider(&self, providers: &mut Vec<Box<dyn ToolProvider>>) {
         // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
         // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
@@ -1796,7 +1803,7 @@ mod tests {
             .contains("Failed to load topic AGENTS.md for sub-agent bootstrap"));
     }
 
-    #[cfg(feature = "browser_use")]
+    #[cfg(feature = "tool-browser-use")]
     #[test]
     fn build_sub_agent_providers_registers_browser_use_when_enabled() {
         let _guard = crate::config::test_env_mutex()

@@ -23,19 +23,19 @@ pub mod ytdlp;
 
 mod path;
 
-#[cfg(feature = "tavily")]
+#[cfg(feature = "tool-tavily")]
 pub mod tavily;
 
-#[cfg(feature = "searxng")]
+#[cfg(feature = "tool-searxng")]
 pub mod searxng;
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 pub mod browser_use;
 
-#[cfg(feature = "jira")]
+#[cfg(feature = "integration-mcp-jira")]
 pub mod jira_mcp;
 
-#[cfg(feature = "mattermost")]
+#[cfg(feature = "integration-mcp-mattermost")]
 pub mod mattermost_mcp;
 
 pub use agents_md::{agents_md_tool_names, AgentsMdProvider};
@@ -71,17 +71,17 @@ pub use webfetch_md::WebFetchMdProvider;
 pub use wiki_memory::WikiMemoryProvider;
 pub use ytdlp::YtdlpProvider;
 
-#[cfg(feature = "tavily")]
+#[cfg(feature = "tool-tavily")]
 pub use tavily::TavilyProvider;
 
-#[cfg(feature = "searxng")]
+#[cfg(feature = "tool-searxng")]
 pub use searxng::SearxngProvider;
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 pub use browser_use::BrowserUseProvider;
 
-#[cfg(feature = "jira")]
+#[cfg(feature = "integration-mcp-jira")]
 pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};
 
-#[cfg(feature = "mattermost")]
+#[cfg(feature = "integration-mcp-mattermost")]
 pub use mattermost_mcp::{MattermostMcpConfig, MattermostMcpProvider};

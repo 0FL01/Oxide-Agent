@@ -1,0 +1,10 @@
+profile = "lite"
+cargo_features = ["profile-lite"]
+
+[modules]
+"transport/telegram" = { enabled = true }
+"storage/s3-r2" = { enabled = true }
+"llm-provider/opencode-go" = { enabled = true }
+"tool/todos" = { enabled = true }
+"tool/reminder" = { enabled = true }
+"tool/webfetch-md" = { enabled = true }

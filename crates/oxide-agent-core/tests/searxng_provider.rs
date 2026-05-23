@@ -1,4 +1,4 @@
-#[cfg(feature = "searxng")]
+#[cfg(feature = "tool-searxng")]
 mod searxng_tests {
     use oxide_agent_core::agent::provider::ToolProvider;
     use oxide_agent_core::agent::providers::SearxngProvider;

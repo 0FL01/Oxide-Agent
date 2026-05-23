@@ -1,4 +1,4 @@
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 mod browser_use_tests {
     use oxide_agent_core::agent::provider::ToolProvider;
     use oxide_agent_core::agent::providers::BrowserUseProvider;

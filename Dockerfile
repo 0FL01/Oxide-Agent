@@ -18,11 +18,11 @@ WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
 COPY --from=planner /app/vendor/gemini-rust /app/vendor/gemini-rust
 # Build dependencies - this layer is cached unless dependencies change
-RUN cargo chef cook --release --workspace --features oxide-agent-core/jira,oxide-agent-core/mattermost --recipe-path recipe.json
+RUN cargo chef cook --release --workspace --no-default-features --features oxide-agent-core/profile-full --recipe-path recipe.json
 
 # Build application - this layer is rebuilt when source changes
 COPY . .
-RUN cargo build --release -p oxide-agent-telegram-bot -p oxide-agent-sandboxd -F oxide-agent-core/jira -F oxide-agent-core/mattermost
+RUN cargo build --release -p oxide-agent-telegram-bot -p oxide-agent-sandboxd --no-default-features -F oxide-agent-core/profile-full
 
 FROM debian:trixie-slim AS ssh-mcp-binary
 

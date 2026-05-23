@@ -19,11 +19,11 @@ use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::warn;
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 use crate::agent::providers::BrowserUseProvider;
-#[cfg(feature = "searxng")]
+#[cfg(feature = "tool-searxng")]
 use crate::agent::providers::SearxngProvider;
-#[cfg(feature = "tavily")]
+#[cfg(feature = "tool-tavily")]
 use crate::agent::providers::TavilyProvider;
 
 impl AgentExecutor {
@@ -257,7 +257,7 @@ impl AgentExecutor {
         registry.register(Box::new(delegation_provider));
     }
 
-    #[cfg(feature = "browser_use")]
+    #[cfg(feature = "tool-browser-use")]
     pub(super) fn browser_use_profile_scope(&self) -> Option<String> {
         self.reminder_context
             .as_ref()
@@ -276,7 +276,7 @@ impl AgentExecutor {
             .filter(|scope| !scope.is_empty())
     }
 
-    #[cfg(not(feature = "browser_use"))]
+    #[cfg(not(feature = "tool-browser-use"))]
     pub(super) fn browser_use_profile_scope(&self) -> Option<String> {
         self.reminder_context
             .as_ref()
@@ -347,7 +347,7 @@ impl AgentExecutor {
         )));
     }
 
-    #[cfg(feature = "jira")]
+    #[cfg(feature = "integration-mcp-jira")]
     fn register_jira_mcp_provider(registry: &mut ToolRegistry) {
         if let Some(config) = crate::agent::providers::JiraMcpConfig::from_env() {
             let binary_path = config.binary_path.clone();
@@ -370,7 +370,7 @@ impl AgentExecutor {
         }
     }
 
-    #[cfg(feature = "mattermost")]
+    #[cfg(feature = "integration-mcp-mattermost")]
     fn register_mattermost_mcp_provider(registry: &mut ToolRegistry) {
         if let Some(config) = crate::agent::providers::MattermostMcpConfig::from_env() {
             let binary_path = config.binary_path.clone();
@@ -396,15 +396,15 @@ impl AgentExecutor {
     }
 
     fn register_mcp_providers(&self, _registry: &mut ToolRegistry) {
-        #[cfg(feature = "jira")]
+        #[cfg(feature = "integration-mcp-jira")]
         Self::register_jira_mcp_provider(_registry);
 
-        #[cfg(feature = "mattermost")]
+        #[cfg(feature = "integration-mcp-mattermost")]
         Self::register_mattermost_mcp_provider(_registry);
     }
 
     fn register_search_providers(&self, registry: &mut ToolRegistry) {
-        #[cfg(feature = "tavily")]
+        #[cfg(feature = "tool-tavily")]
         if crate::config::is_tavily_enabled() {
             if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
                 if !tavily_key.trim().is_empty() {
@@ -418,12 +418,12 @@ impl AgentExecutor {
                 warn!("Tavily enabled but TAVILY_API_KEY is not set; provider not registered");
             }
         }
-        #[cfg(not(feature = "tavily"))]
+        #[cfg(not(feature = "tool-tavily"))]
         if crate::config::is_tavily_enabled() {
             tracing::warn!("Tavily enabled but feature not compiled in");
         }
 
-        #[cfg(feature = "searxng")]
+        #[cfg(feature = "tool-searxng")]
         if crate::config::is_searxng_enabled() {
             if let Some(url) = crate::config::get_searxng_url() {
                 if !url.trim().is_empty() {
@@ -440,7 +440,7 @@ impl AgentExecutor {
                 warn!("SearXNG enabled but SEARXNG_URL is not set; provider not registered");
             }
         }
-        #[cfg(not(feature = "searxng"))]
+        #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             tracing::warn!("SearXNG enabled but feature not compiled in");
         }
@@ -453,7 +453,7 @@ impl AgentExecutor {
         // is available at a reasonable price-per-token. To re-enable, set
         // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
         // `BROWSER_USE_MODEL_PROVIDER`). See `docs/browser-use.md`.
-        #[cfg(feature = "browser_use")]
+        #[cfg(feature = "tool-browser-use")]
         if crate::config::is_browser_use_enabled() {
             if let Some(url) = crate::config::get_browser_use_url() {
                 if !url.trim().is_empty() {
@@ -474,7 +474,7 @@ impl AgentExecutor {
                 );
             }
         }
-        #[cfg(not(feature = "browser_use"))]
+        #[cfg(not(feature = "tool-browser-use"))]
         if crate::config::is_browser_use_enabled() {
             tracing::warn!("Browser Use enabled but feature not compiled in");
         }

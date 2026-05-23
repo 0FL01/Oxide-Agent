@@ -229,7 +229,7 @@ impl ManagerControlPlaneProvider {
     fn configured_search_tool_groups() -> Vec<TopicAgentToolGroup> {
         let mut groups = Vec::new();
 
-        #[cfg(feature = "tavily")]
+        #[cfg(feature = "tool-tavily")]
         if crate::config::is_tavily_enabled() {
             groups.push(TopicAgentToolGroup {
                 provider: "tavily",
@@ -238,7 +238,7 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "searxng")]
+        #[cfg(feature = "tool-searxng")]
         if crate::config::is_searxng_enabled() {
             groups.push(TopicAgentToolGroup {
                 provider: "searxng",
@@ -259,7 +259,7 @@ impl ManagerControlPlaneProvider {
     fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
         // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
         // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
-        #[cfg(feature = "browser_use")]
+        #[cfg(feature = "tool-browser-use")]
         if crate::config::is_browser_use_enabled() {
             return vec![TopicAgentToolGroup {
                 provider: "browser_use",
@@ -334,7 +334,7 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "jira")]
+        #[cfg(feature = "integration-mcp-jira")]
         {
             groups.push(TopicAgentToolGroup {
                 provider: "jira",
@@ -343,7 +343,7 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "mattermost")]
+        #[cfg(feature = "integration-mcp-mattermost")]
         {
             if crate::agent::providers::MattermostMcpConfig::from_env().is_some() {
                 groups.push(TopicAgentToolGroup {
@@ -1464,7 +1464,7 @@ mod tests {
         assert!(catalog.tool_names.contains("describe_video_file"));
     }
 
-    #[cfg(feature = "browser_use")]
+    #[cfg(feature = "tool-browser-use")]
     #[tokio::test]
     async fn topic_agent_tool_catalog_includes_browser_use_tools_when_enabled() {
         let _guard = crate::config::test_env_async_mutex().lock().await;

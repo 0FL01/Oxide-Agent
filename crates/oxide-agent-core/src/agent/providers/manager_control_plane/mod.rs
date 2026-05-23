@@ -200,12 +200,12 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
     "reminder_resume",
     "reminder_retry",
 ];
-#[cfg(feature = "tavily")]
+#[cfg(feature = "tool-tavily")]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
-#[cfg(feature = "searxng")]
+#[cfg(feature = "tool-searxng")]
 const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
 const TOPIC_AGENT_WEBFETCH_TOOLS: &[&str] = &["web_markdown"];
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
     "browser_use_run_task",
     "browser_use_get_session",
@@ -221,9 +221,9 @@ const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_check_process",
     "ssh_send_file_to_user",
 ];
-#[cfg(feature = "jira")]
+#[cfg(feature = "integration-mcp-jira")]
 const TOPIC_AGENT_JIRA_TOOLS: &[&str] = &["jira_read", "jira_write", "jira_schema"];
-#[cfg(feature = "mattermost")]
+#[cfg(feature = "integration-mcp-mattermost")]
 const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_list_teams",
     "mattermost_get_team",

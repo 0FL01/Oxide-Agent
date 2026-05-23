@@ -1058,7 +1058,7 @@ pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
     ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
 }
 
-#[cfg(all(test, feature = "browser_use"))]
+#[cfg(all(test, feature = "tool-browser-use"))]
 pub(crate) fn test_env_async_mutex() -> &'static tokio::sync::Mutex<()> {
     use std::sync::OnceLock;
 

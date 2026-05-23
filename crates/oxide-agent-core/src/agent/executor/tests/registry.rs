@@ -280,7 +280,7 @@ async fn main_agent_registry_includes_stack_log_tools() {
     assert!(tool_names.contains("compress"));
 }
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 #[tokio::test]
 async fn browser_use_enabled_registry_registers_browser_tools() {
     let _guard = crate::config::test_env_mutex()
@@ -302,7 +302,7 @@ async fn browser_use_enabled_registry_registers_browser_tools() {
     std::env::remove_var("BROWSER_USE_URL");
 }
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 #[tokio::test]
 async fn browser_use_disabled_registry_skips_browser_tools() {
     let _guard = crate::config::test_env_mutex()
@@ -319,7 +319,7 @@ async fn browser_use_disabled_registry_skips_browser_tools() {
     assert!(!registry.can_handle("browser_use_screenshot"));
 }
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 #[test]
 fn browser_use_profile_scope_uses_agents_md_topic() {
     let mut executor = build_executor();
@@ -335,7 +335,7 @@ fn browser_use_profile_scope_uses_agents_md_topic() {
     );
 }
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 #[test]
 fn browser_use_profile_scope_prefers_reminder_context() {
     let mut executor = build_executor();
