@@ -54,7 +54,7 @@ impl LlmProvider for ZaiProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("ZAI_FALLBACK_TO_GEMINI".to_string()))
+        Err(LlmError::Unknown("ZAI_FALLBACK_TO_MEDIA".to_string()))
     }
 
     async fn analyze_image(

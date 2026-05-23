@@ -63,7 +63,6 @@ tempfile = "3.27.0"
 cron = "0.15.0"
 chrono-tz = "0.10.4"
 fastrand = "2.3.0"
-gemini-rust = { version = "1.7.1", optional = true }
 htmd = { version = "0.5.4", optional = true }
 url = "2.5.7"
 
@@ -81,7 +80,6 @@ profile-full = [
     "transport-web",
     "storage-s3-r2",
     "llm-chatgpt",
-    "llm-gemini",
     "llm-groq",
     "llm-mistral",
     "llm-minimax",
@@ -179,7 +177,6 @@ storage-local-fs = []
 
 # LLM providers
 llm-chatgpt = ["dep:reqwest"]
-llm-gemini = ["dep:gemini-rust", "dep:reqwest"]
 llm-groq = ["dep:async-openai"]
 llm-mistral = ["dep:async-openai", "dep:reqwest"]
 llm-minimax = ["dep:claudius"]

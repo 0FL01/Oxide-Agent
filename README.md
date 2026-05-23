@@ -11,7 +11,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **7 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral, Google Gemini), along with Groq support.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral), along with Groq support.
 
 ### Architecture Highlights
 
@@ -64,10 +64,10 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 7 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
+*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral). Groq is supported in **Chat Mode only**.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Multimedia Processing:**
-    *   Voice and video messages (speech recognition via Gemini or Voxtral).
+    *   Voice and video messages (speech recognition via OpenRouter-hosted Gemini-family models or Voxtral).
     *   Images (analysis and description via multimodal models).
     *   Work with documents of various formats.
 *   **🗣️ Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
@@ -89,14 +89,13 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 | **Mistral AI** | `MISTRAL_API_KEY` | **Critical for Agent** (`mistral-embed` model for skill selection) |
 
 ### 🤖 Supported LLM Providers for Chat/Agent Mode
-The bot supports **7 main providers** for both standard chat and advanced Agent mode (with tool calling):
+The bot supports **6 main providers** for both standard chat and advanced Agent mode (with tool calling):
 
 *   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — primary provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) — Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
 *   **OpenCode Go** (`OPENCODE_GO_API_KEY`) — subscription OpenAI-compatible provider. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls and structured JSON for DeepSeek V4 routes.
 *   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
 *   **Mistral** (`MISTRAL_API_KEY`) — great for cost-effective agent/chat combos (e.g., `mistral-large-latest`, `pixtral-large-latest`). Supports tool calling via JSON mode or native tools. Includes Voxtral audio transcription (`voxtral-mini-latest`).
-*   **Google Gemini** (`GEMINI_API_KEY`) — direct integration for Gemini models, primarily used for multimodal tasks or as a fallback.
 
 #### Other Providers (Chat only)
 *   **Groq** (`GROQ_API_KEY`) — optional provider for fast specialized chat workloads (e.g. `llama-3.3-70b-versatile`).
@@ -165,7 +164,6 @@ R2_REGION=auto                 # S3-compatible storage region
 # API Keys
 GROQ_API_KEY=...
 MISTRAL_API_KEY=...
-GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
 NVIDIA_API_KEY=...              # NVIDIA NIM / hosted integrate.api.nvidia.com
 NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
@@ -184,12 +182,12 @@ SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
 # BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750 # Delay between bridge readiness retries in milliseconds
 # BROWSER_USE_MODEL_ID="GLM-4.6V" # Browser Use dedicated route
 # BROWSER_USE_MODEL_PROVIDER="zai" # Browser Use dedicated provider
-# BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Legacy browser_use sidecar fallback
-# BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional legacy fallback model override
+# BROWSER_USE_BRIDGE_LLM_PROVIDER=anthropic # Legacy browser_use sidecar fallback
+# BROWSER_USE_BRIDGE_LLM_MODEL=claude-3-5-haiku-latest # Optional legacy fallback model override
 ```
 </details>
 
-For Browser Use task execution, the bridge container also needs the matching upstream API key for the selected provider, for example `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`.
+For Browser Use task execution, Oxide sends inherited-route API keys to the bridge server-to-server; legacy sidecar fallback uses the matching upstream key for the selected fallback provider, for example `ANTHROPIC_API_KEY`.
 
 ## Model Configuration
 
@@ -262,7 +260,7 @@ The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled ex
 > at a reasonable price-per-token. To re-enable, set `BROWSER_USE_URL` and optionally
 > `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`. See `docs/browser-use.md`.
 
-When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `gemini / gemma-4-31b-it`) even when main/sub-agent stay on a different route:
+When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `openrouter / google/gemini-3-flash-preview`) even when main/sub-agent stay on a different route:
 
 ```dotenv
 BROWSER_USE_MODEL_ID="GLM-4.6V"
@@ -280,7 +278,7 @@ AGENT_MODEL_ID="devstral-2512"
 AGENT_MODEL_PROVIDER="mistral"
 ```
 
-Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
+Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-family IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
 
 ## Available LLM Providers
 
@@ -290,8 +288,7 @@ Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or
 | **MiniMax** | Claude SDK-compatible, high context |
 | **NVIDIA NIM** | Tool calling support, hosted inference |
 | **Mistral** | Generous free tier, includes Voxtral audio transcription |
-| **Google Gemini** | Multimodal, efficient |
-| **OpenRouter** | Aggregator for various models |
+| **OpenRouter** | Aggregator for various models, including Gemini-family model IDs |
 | **Groq** | Fast inference (Chat Mode only) |
 
 > **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
@@ -663,7 +660,7 @@ crates/
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
 │       ├── llm/                # LLM provider integrations
-│       │   ├── providers/      # 5+ providers (zai, minimax, mistral, gemini, groq)
+│       │   ├── providers/      # Providers (zai, minimax, mistral, openrouter, groq, ...)
 │       │   └── tool_correlation.rs
 │       ├── storage/            # Storage facade, R2 backend, control-plane records
 │       └── config.rs

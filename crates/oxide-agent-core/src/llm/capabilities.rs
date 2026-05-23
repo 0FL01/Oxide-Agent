@@ -193,27 +193,6 @@ mod tests {
         assert!(!unsupported_capabilities.supports_structured_output);
     }
 
-    #[cfg(feature = "llm-gemini")]
-    #[test]
-    fn structured_only_requests_are_allowed_without_tools() {
-        let capabilities = super::provider_capabilities("gemini");
-
-        assert!(capabilities.can_run_chat_with_tools_request(false, true));
-        assert!(capabilities.can_run_chat_with_tools_request(false, false));
-        assert!(capabilities.can_run_chat_with_tools_request(true, true));
-        assert!(capabilities.can_run_agent_tools());
-    }
-
-    #[cfg(feature = "llm-gemini")]
-    #[test]
-    fn gemini_capabilities_enable_tool_loop_and_structured_output() {
-        let capabilities = super::provider_capabilities("gemini");
-
-        assert!(capabilities.supports_tool_calling);
-        assert!(capabilities.supports_structured_output);
-        assert_eq!(capabilities.tool_history_label(), "best_effort");
-    }
-
     #[cfg(feature = "llm-chatgpt")]
     #[test]
     fn chatgpt_capabilities_disable_structured_output() {
@@ -348,7 +327,6 @@ mod tests {
     }
 
     #[cfg(all(
-        feature = "llm-gemini",
         feature = "llm-openrouter",
         feature = "llm-mistral",
         feature = "llm-groq",
@@ -356,15 +334,10 @@ mod tests {
     ))]
     #[test]
     fn media_capabilities_are_modality_specific() {
-        let gemini = super::provider_media_capabilities("gemini");
         let openrouter = super::provider_media_capabilities("openrouter");
         let mistral = super::provider_media_capabilities("mistral");
         let groq = super::provider_media_capabilities("groq");
         let opencode_go = super::provider_media_capabilities("opencode-go");
-
-        assert!(gemini.supports(super::MediaModality::AudioTranscription));
-        assert!(gemini.supports(super::MediaModality::ImageUnderstanding));
-        assert!(gemini.supports(super::MediaModality::VideoUnderstanding));
 
         assert!(openrouter.supports(super::MediaModality::AudioTranscription));
         assert!(openrouter.supports(super::MediaModality::ImageUnderstanding));

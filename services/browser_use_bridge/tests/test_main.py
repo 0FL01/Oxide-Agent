@@ -139,10 +139,6 @@ class FakeChatBrowserUse(_BaseChat):
     pass
 
 
-class FakeChatGoogle(_BaseChat):
-    pass
-
-
 class FakeChatAnthropic(_BaseChat):
     pass
 
@@ -220,7 +216,6 @@ def make_browser_use_module() -> types.ModuleType:
     module.Agent = FakeAgent
     module.Browser = FakeBrowser
     module.ChatBrowserUse = FakeChatBrowserUse
-    module.ChatGoogle = FakeChatGoogle
     module.ChatAnthropic = FakeChatAnthropic
     module.ChatOpenAI = FakeChatOpenAI
     return module
@@ -284,8 +279,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
 
@@ -293,8 +288,10 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             payload = json.loads(response.body)
 
             self.assertTrue(payload["legacy_env_fallback_configured"])
-            self.assertEqual(payload["legacy_env_llm_provider"], "google")
-            self.assertEqual(payload["legacy_env_llm_model"], "gemini-2.5-flash")
+            self.assertEqual(payload["legacy_env_llm_provider"], "anthropic")
+            self.assertEqual(
+                payload["legacy_env_llm_model"], "claude-3-5-haiku-latest"
+            )
 
     async def test_health_reports_browser_ready_retry_overrides(self):
         with TemporaryDirectory() as tmpdir:
@@ -369,7 +366,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 FakeAgent.instances[-1].llm.kwargs["remove_min_items_from_schema"]
             )
 
-    async def test_google_request_config_does_not_apply_openai_schema_compat_preset(
+    async def test_anthropic_request_config_does_not_apply_openai_schema_compat_preset(
         self,
     ):
         with TemporaryDirectory() as tmpdir:
@@ -384,8 +381,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             request = module.RunTaskRequest(
                 task="Open the docs page and summarize it",
                 browser_llm_config={
-                    "provider": "google",
-                    "model": "gemini-2.5-flash",
+                    "provider": "anthropic",
+                    "model": "claude-3-5-haiku-latest",
                     "supports_vision": True,
                 },
             )
@@ -393,7 +390,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             response = await manager.run_task(request, None)
 
             self.assertEqual(response.status, "completed")
-            self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatGoogle)
+            self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatAnthropic)
             self.assertNotIn(
                 "dont_force_structured_output", FakeAgent.instances[-1].llm.kwargs
             )
@@ -403,8 +400,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -414,8 +411,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(response.status, "completed")
             self.assertEqual(response.llm_source, "legacy_env")
-            self.assertEqual(response.llm_provider, "google")
-            self.assertEqual(response.llm_transport, "google")
+            self.assertEqual(response.llm_provider, "anthropic")
+            self.assertEqual(response.llm_transport, "anthropic")
             self.assertEqual(response.vision_mode, "auto")
             self.assertEqual(response.execution_mode, "autonomous")
             self.assertTrue(response.browser_runtime_alive)
@@ -424,9 +421,10 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(response.browser_keep_alive_requested)
             self.assertFalse(response.browser_keep_alive_effective)
             self.assertEqual(FakeAgent.instances[-1].use_vision, "auto")
-            self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatGoogle)
+            self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatAnthropic)
             self.assertEqual(
-                FakeAgent.instances[-1].llm.kwargs["model"], "gemini-2.5-flash"
+                FakeAgent.instances[-1].llm.kwargs["model"],
+                "claude-3-5-haiku-latest",
             )
 
     async def test_navigation_only_execution_mode_applies_strict_agent_preset(self):
@@ -434,8 +432,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -463,8 +461,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -499,8 +497,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -527,8 +525,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -567,8 +565,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -613,8 +611,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -642,8 +640,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -673,8 +671,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -700,8 +698,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -726,8 +724,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -762,8 +760,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -789,8 +787,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -813,8 +811,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -836,8 +834,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -874,8 +872,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -911,8 +909,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -937,8 +935,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -966,8 +964,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -994,8 +992,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1029,8 +1027,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=2)
@@ -1065,8 +1063,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=2)
@@ -1109,8 +1107,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1140,8 +1138,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1173,8 +1171,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1204,8 +1202,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeBrowser.initial_start_failures = 1
@@ -1232,8 +1230,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1260,8 +1258,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeBrowser.initial_start_failures = 3
@@ -1287,8 +1285,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1315,8 +1313,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1355,8 +1353,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1382,8 +1380,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1412,8 +1410,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1461,8 +1459,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1489,8 +1487,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             first_manager = module.SessionManager(
@@ -1538,8 +1536,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1571,8 +1569,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1606,8 +1604,8 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "google",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "gemini-2.5-flash",
+                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
+                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                     "BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS": "60",
                 }
             )

@@ -4,7 +4,6 @@ pub(crate) mod common;
 pub(crate) mod history;
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-gemini",
     feature = "llm-mistral",
     feature = "llm-zai",
     feature = "llm-nvidia",

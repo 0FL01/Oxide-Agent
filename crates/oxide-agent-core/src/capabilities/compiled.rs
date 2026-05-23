@@ -97,13 +97,6 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "llm-gemini",
-        "llm-provider/gemini",
-        LlmProvider,
-        ["llm-provider/gemini"]
-    );
-    push_module!(
-        modules,
         "llm-groq",
         "llm-provider/groq",
         LlmProvider,

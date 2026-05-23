@@ -63,7 +63,7 @@ impl LlmClient {
         }
 
         Err(LlmError::MissingConfig(format!(
-            "No configured route supports {} (expected providers: gemini/openrouter, mistral for STT)",
+            "No configured route supports {} (expected providers: openrouter, mistral for STT)",
             modality.label()
         )))
     }
@@ -570,7 +570,7 @@ impl LlmClient {
 
     /// Transcribe audio with automatic fallback for text-only providers and retry logic.
     ///
-    /// If the provider returns `ZAI_FALLBACK_TO_GEMINI` error, uses `media_model_provider` instead.
+    /// If the provider returns `ZAI_FALLBACK_TO_MEDIA` error, uses `media_model_provider` instead.
     /// Retries up to 5 times with exponential backoff for retryable errors.
     ///
     /// # Errors
@@ -598,7 +598,7 @@ impl LlmClient {
 
         match primary_result {
             Ok(text) => Ok(text),
-            Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_GEMINI" => {
+            Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_MEDIA" => {
                 let media_provider = self
                     .media_model_provider
                     .as_deref()
@@ -747,9 +747,8 @@ mod tests {
             chat_model_id: Some("chat-openrouter".to_string()),
             chat_model_provider: Some("openrouter".to_string()),
             media_model_id: Some("media-gemini".to_string()),
-            media_model_provider: Some("gemini".to_string()),
+            media_model_provider: Some("openrouter".to_string()),
             openrouter_api_key: Some("test-openrouter-key".to_string()),
-            gemini_api_key: Some("test-gemini-key".to_string()),
             ..AgentSettings::default()
         };
 
@@ -759,7 +758,7 @@ mod tests {
             .expect("media route should resolve");
 
         assert_eq!(route.id, "media-gemini");
-        assert_eq!(route.provider, "gemini");
+        assert_eq!(route.provider, "openrouter");
     }
 
     #[test]
@@ -807,8 +806,8 @@ mod tests {
         let settings = AgentSettings {
             chat_model_id: Some("chat-openrouter".to_string()),
             chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-gemini".to_string()),
-            media_model_provider: Some("gemini".to_string()),
+            media_model_id: Some("media-mistral".to_string()),
+            media_model_provider: Some("mistral".to_string()),
             openrouter_api_key: Some("test-openrouter-key".to_string()),
             ..AgentSettings::default()
         };
@@ -828,9 +827,8 @@ mod tests {
             chat_model_id: Some("chat-openrouter".to_string()),
             chat_model_provider: Some("openrouter".to_string()),
             media_model_id: Some("media-gemini".to_string()),
-            media_model_provider: Some("gemini".to_string()),
+            media_model_provider: Some("openrouter".to_string()),
             openrouter_api_key: Some("test-openrouter-key".to_string()),
-            gemini_api_key: Some("test-gemini-key".to_string()),
             ..AgentSettings::default()
         };
 
@@ -920,7 +918,7 @@ mod tests {
             error,
             crate::llm::LlmError::MissingConfig(message)
                 if message.contains("video understanding")
-                    && message.contains("gemini/openrouter")
+                    && message.contains("openrouter")
         ));
     }
 

@@ -65,15 +65,15 @@ pub fn setup_web_test_with_structured_main_provider(
     provider: Arc<SequencedZaiProvider>,
 ) -> AppState {
     let agent_settings = Arc::new(AgentSettings {
-        agent_model_id: Some("gemini-2.0-flash".to_string()),
-        agent_model_provider: Some("gemini".to_string()),
+        agent_model_id: Some("google/gemini-2.0-flash".to_string()),
+        agent_model_provider: Some("openrouter".to_string()),
         agent_timeout_secs: Some(5),
         ..AgentSettings::default()
     });
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("gemini".to_string(), provider);
+        llm.register_provider("openrouter".to_string(), provider);
         Arc::new(llm)
     };
 

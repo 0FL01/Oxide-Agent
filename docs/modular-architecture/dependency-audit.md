@@ -36,7 +36,7 @@ Initial atomic features:
 
 - Transports: `transport-telegram`, `transport-web`, `transport-cli`, `transport-http-api`.
 - Storage: `storage-s3-r2`, `storage-local-fs`.
-- LLM providers: `llm-chatgpt`, `llm-gemini`, `llm-groq`, `llm-mistral`, `llm-minimax`, `llm-zai`, `llm-nvidia`, `llm-opencode-go`, `llm-openrouter`.
+- LLM providers: `llm-chatgpt`, `llm-groq`, `llm-mistral`, `llm-minimax`, `llm-zai`, `llm-nvidia`, `llm-opencode-go`, `llm-openrouter`.
 - Tools: `tool-todos`, `tool-compression`, `tool-delegation`, `tool-agents-md`, `tool-reminder`, `tool-wiki-memory`, `tool-webfetch-md`, `tool-tavily`, `tool-searxng`, `tool-browser-use`, `tool-sandbox-fileops`, `tool-sandbox-exec`, `tool-sandbox-recreate`, `tool-file-delivery`, `tool-media-audio`, `tool-media-image`, `tool-media-video`, `tool-ytdlp`, `tool-tts-kokoro`, `tool-tts-silero`, `tool-stack-logs`.
 - Sandbox: `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client`, `sandbox-daemon`.
 - Integrations/manager: `integration-mcp-jira`, `integration-mcp-mattermost`, `integration-ssh-mcp`, `manager-control-plane`.
@@ -66,7 +66,7 @@ Optional-heavy or module-owned dependencies to isolate:
 - Sandbox broker/client protocol: `bincode`, `serde_bytes`.
 - MCP child-process integrations: `rmcp`.
 - OpenAI-compatible/chat SDK: `async-openai`.
-- Gemini provider: `gemini-rust`.
+- Former direct Google Gemini SDK code has been removed; Gemini-family routes go through OpenRouter.
 - ZAI provider: `zai-rs`.
 - MiniMax provider: `claudius`.
 - Tavily search: `tavily`.
@@ -84,7 +84,7 @@ Known leaks in `oxide-agent-core` after Phase 2f:
 Resolved in Phase 2b:
 
 - `async-openai` compiles only with `llm-groq` or `llm-mistral`.
-- `gemini-rust` compiles only with `llm-gemini`.
+- Former direct Google Gemini SDK dependency was removed from the project.
 - `zai-rs` compiles only with `llm-zai`.
 - `claudius` compiles only with `llm-minimax`.
 
@@ -109,7 +109,7 @@ Resolved in Phase 2e:
 
 Resolved in Phase 2f:
 
-- `reqwest` is optional and owned by HTTP-using LLM/tool features: ChatGPT, Gemini, Mistral, ZAI, Nvidia, OpenCode Go, OpenRouter, webfetch, SearXNG, Browser Use, media, and TTS.
+- `reqwest` is optional and owned by HTTP-using LLM/tool features: ChatGPT, Mistral, ZAI, Nvidia, OpenCode Go, OpenRouter, webfetch, SearXNG, Browser Use, media, and TTS.
 - `htmd` is optional and owned only by `tool-webfetch-md`.
 - `webfetch_md`, media-file, Kokoro TTS, and Silero TTS provider modules/exports/registrations are gated by their tool features.
 - Sub-agent webfetch registration is gated by `tool-webfetch-md`, so `llm-opencode-go` no longer pulls `htmd`.

@@ -2,9 +2,6 @@
 #[cfg(feature = "llm-chatgpt")]
 pub mod chatgpt;
 #[allow(missing_docs)]
-#[cfg(feature = "llm-gemini")]
-pub mod gemini;
-#[allow(missing_docs)]
 #[cfg(feature = "llm-groq")]
 pub mod groq;
 #[allow(missing_docs)]
@@ -25,7 +22,6 @@ pub mod opencode_go;
 pub mod openrouter;
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-gemini",
     feature = "llm-mistral",
     feature = "llm-minimax",
     feature = "llm-zai",
@@ -37,7 +33,6 @@ pub mod openrouter;
 mod protocol_profiles;
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-gemini",
     feature = "llm-mistral",
     feature = "llm-minimax",
     feature = "llm-zai",
@@ -49,7 +44,6 @@ mod protocol_profiles;
 mod tool_call_adapter;
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-gemini",
     feature = "llm-mistral",
     feature = "llm-minimax",
     feature = "llm-zai",
@@ -61,7 +55,6 @@ mod tool_call_adapter;
 mod tool_call_encoder;
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-gemini",
     feature = "llm-mistral",
     feature = "llm-minimax",
     feature = "llm-zai",
@@ -73,7 +66,6 @@ mod tool_call_encoder;
 mod tool_correlation;
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-gemini",
     feature = "llm-mistral",
     feature = "llm-minimax",
     feature = "llm-zai",
@@ -89,8 +81,6 @@ pub mod zai;
 
 #[cfg(feature = "llm-chatgpt")]
 pub use chatgpt::ChatGptProvider;
-#[cfg(feature = "llm-gemini")]
-pub use gemini::GeminiProvider;
 #[cfg(feature = "llm-groq")]
 pub use groq::GroqProvider;
 #[cfg(feature = "llm-minimax")]

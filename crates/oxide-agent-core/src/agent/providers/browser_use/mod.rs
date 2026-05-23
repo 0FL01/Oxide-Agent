@@ -390,11 +390,6 @@ impl BrowserUseProvider {
         let supports_tools = !matches!(provider.as_str(), "groq");
 
         let (bridge_provider, api_base, api_key) = match provider.as_str() {
-            "gemini" => (
-                "google",
-                None,
-                self.require_route_api_key("gemini", self.settings.gemini_api_key.as_deref())?,
-            ),
             "minimax" => (
                 "minimax",
                 Some(MINIMAX_DEFAULT_API_BASE.to_string()),
@@ -415,7 +410,7 @@ impl BrowserUseProvider {
             ),
             unsupported => {
                 return Err(anyhow!(
-                    "Browser Use route inheritance does not support provider `{unsupported}` yet; supported routes: gemini, minimax, zai, openrouter"
+                    "Browser Use route inheritance does not support provider `{unsupported}` yet; supported routes: minimax, zai, openrouter"
                 ));
             }
         };
@@ -464,7 +459,7 @@ impl BrowserUseProvider {
                 "Warning: Browser Use is running with text-only route `{route_label}`. This task looks UI-heavy, so execution may run in degraded mode without visual grounding."
             ))),
             VisionRequirement::Required => Err(anyhow!(
-                "Browser Use task appears to require visual grounding, but selected route `{route_label}` is text-only. Switch to a vision-capable route such as Gemini, `zai/GLM-4.6V`, or a vision-capable OpenRouter model, or simplify the task to text-only browsing/extraction."
+                "Browser Use task appears to require visual grounding, but selected route `{route_label}` is text-only. Switch to a vision-capable route such as `zai/GLM-4.6V` or an OpenRouter vision model, or simplify the task to text-only browsing/extraction."
             )),
         }
     }
@@ -1263,7 +1258,6 @@ struct ScreenshotRequestBody {
 
 fn route_supports_vision(provider: &str, model: &str) -> bool {
     match provider {
-        "gemini" => true,
         "zai" => is_zai_vision_model(model),
         "openrouter" => is_openrouter_vision_model(model),
         _ => false,

@@ -188,7 +188,6 @@ fn validate_llm_provider_keys() {
     info!("Validating LLM Client configuration...");
     let has_provider = std::env::var("GROQ_API_KEY").is_ok()
         || std::env::var("MISTRAL_API_KEY").is_ok()
-        || std::env::var("GEMINI_API_KEY").is_ok()
         || std::env::var("OPENROUTER_API_KEY").is_ok();
 
     assert!(

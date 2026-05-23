@@ -32,13 +32,13 @@ if [[ ${#deny[@]} -eq 0 ]]; then
             deny=(bollard rmcp bincode serde_bytes tar)
             ;;
         profile-search-only)
-            deny=(bollard rmcp bincode serde_bytes tar gemini-rust zai-rs async-openai claudius)
+            deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius)
             ;;
         profile-lite | profile-embedded-opencode-local)
-            deny=(bollard rmcp bincode serde_bytes tar gemini-rust zai-rs async-openai claudius)
+            deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius)
             ;;
         llm-opencode-go)
-            deny=(gemini-rust zai-rs async-openai claudius aws-sdk-s3 aws-config aws-credential-types aws-types bollard rmcp htmd)
+            deny=(zai-rs async-openai claudius aws-sdk-s3 aws-config aws-credential-types aws-types bollard rmcp htmd)
             ;;
         *)
             echo "No default deny list for feature/profile '$features'." >&2

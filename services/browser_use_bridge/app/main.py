@@ -76,16 +76,14 @@ async def health() -> JSONResponse:
         is not None,
         "legacy_env_llm_provider": clean_optional(settings.llm_provider),
         "legacy_env_llm_model": clean_optional(settings.llm_model),
-        "supported_legacy_env_providers": ["browser_use", "google", "anthropic"],
+        "supported_legacy_env_providers": ["browser_use", "anthropic"],
         "supported_inherited_route_providers": [
-            "gemini",
             "minimax",
             "zai",
             "openrouter",
         ],
         "supported_browser_llm_providers": [
             "browser_use",
-            "google",
             "anthropic",
             "minimax",
             "zai",

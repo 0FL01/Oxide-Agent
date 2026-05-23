@@ -1,6 +1,6 @@
 //! LLM providers and client
 //!
-//! Provides a unified interface to various LLM providers (Groq, Mistral, Gemini, OpenRouter).
+//! Provides a unified interface to various LLM providers (Groq, Mistral, OpenRouter).
 
 mod capabilities;
 mod client;
@@ -19,7 +19,6 @@ pub use provider::LlmProvider;
 pub use provider::MockLlmProvider;
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-gemini",
     feature = "llm-mistral",
     feature = "llm-zai",
     feature = "llm-nvidia",

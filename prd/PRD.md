@@ -76,7 +76,6 @@ Heavy dependency groups include, but are not limited to:
 - searxng integration;
 - Tavily SDK;
 - OpenAI-compatible SDKs;
-- Gemini SDK;
 - ZAI SDK;
 - Groq/Mistral/Minimax/Nvidia/OpenRouter provider code;
 - media/audio/image/video processing support;
@@ -166,7 +165,7 @@ The current workspace contains these crates:
   - Starts the sandbox broker server over Unix socket.
   - Also performs SSH private key cleanup even though SSH cleanup is not a sandbox backend responsibility.
 
-The workspace root excludes `vendor/gemini-rust` from the workspace and patches `gemini-rust` from the local vendor directory.
+Direct Gemini SDK usage was removed from the target architecture; Gemini-family models are reached through OpenRouter instead of a vendored SDK.
 
 Current binary-level problem:
 
@@ -402,7 +401,6 @@ The current LLM provider architecture is centralized in `oxide-agent-core`.
 `oxide-agent-core/src/llm/providers/mod.rs` imports and re-exports all provider implementations unconditionally:
 
 - ChatGPT/OpenAI-style provider;
-- Gemini provider;
 - Groq provider;
 - Minimax provider;
 - Mistral provider;
@@ -420,13 +418,12 @@ Observed runtime provider insertion behavior:
 - Mistral provider is inserted if a Mistral API key exists.
 - Minimax provider is inserted if a Minimax API key exists.
 - ZAI provider is inserted if a ZAI API key exists.
-- Gemini provider is inserted if a Gemini API key exists.
 - Nvidia provider is inserted if a Nvidia API key exists.
 - OpenCode Go provider is inserted if an OpenCode Go API key exists.
 - OpenCode Go aliases are registered globally.
 - OpenRouter provider is inserted if an OpenRouter API key exists.
 
-Embedding provider creation is also a centralized hardcoded match. It switches over provider strings such as Gemini, Google, Mistral, OpenRouter, and OpenAI-compatible provider names.
+Embedding provider creation is also a centralized hardcoded match. It switches over provider strings such as Google, Mistral, OpenRouter, and OpenAI-compatible provider names.
 
 Global model capability and alias logic currently lives in shared code rather than provider modules.
 
@@ -447,6 +444,7 @@ Target state:
 - No provider-specific dependency may compile unless the provider feature is enabled.
 - Model routing must reference provider IDs from the compiled capability manifest.
 - Config for a non-compiled provider must fail loudly.
+- Direct Google Gemini is no longer a target provider. Gemini-family models must be accessed through OpenRouter routes; the former direct provider feature, provider alias, direct credentials, and vendored SDK code must stay absent.
 
 ### 4.5 Current storage architecture
 
@@ -570,7 +568,6 @@ Unconditional dependency groups include:
 - Bollard Docker client;
 - RMCP client/child-process support;
 - OpenAI-compatible SDK;
-- Gemini SDK;
 - ZAI SDK;
 - HTTP client with multipart/stream/cookie features;
 - tokenization and model support dependencies;
@@ -689,7 +686,6 @@ Examples:
 ```text
 llm-provider/opencode-go
 llm-provider/openai-chatgpt
-llm-provider/gemini
 llm-provider/groq
 llm-provider/mistral
 llm-provider/minimax
@@ -790,7 +786,6 @@ profile-full = [
   "storage-r2",
   "storage-local",
   "llm-chatgpt",
-  "llm-gemini",
   "llm-groq",
   "llm-mistral",
   "llm-minimax",
@@ -891,7 +886,6 @@ storage-r2 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types", "d
 
 # LLM providers
 llm-chatgpt = ["dep:async-openai"]
-llm-gemini = ["dep:gemini-rust"]
 llm-groq = []
 llm-mistral = []
 llm-minimax = []
@@ -1313,7 +1307,6 @@ pub struct LlmProviderRegistry {
 Create provider modules for the currently compiled providers:
 
 - `ChatGptProviderModule` / `llm-chatgpt`;
-- `GeminiProviderModule` / `llm-gemini`;
 - `GroqProviderModule` / `llm-groq`;
 - `MistralProviderModule` / `llm-mistral`;
 - `MinimaxProviderModule` / `llm-minimax`;
@@ -1346,12 +1339,12 @@ routes:
     model: openai/gpt-oss-120b
 
   media_image:
-    provider: llm-provider/gemini
-    model: gemini-2.5-flash
+    provider: llm-provider/openrouter
+    model: google/gemini-2.5-flash
 
 ```
 
-If `llm-provider/gemini` is configured but the binary was not built with `llm-gemini`, startup must fail.
+If a removed/non-compiled direct Google Gemini provider is configured, startup must fail. Gemini-family model IDs remain valid only as OpenRouter model IDs.
 
 ### 10.4 Provider aliases
 
@@ -2040,7 +2033,7 @@ Deliverables:
 Acceptance:
 
 - `llm-opencode-go` build compiles only OpenCode Go provider code and shared protocol code.
-- A config referencing Gemini fails if `llm-gemini` is not compiled.
+- A config referencing the removed direct Google Gemini provider fails because it is not a compiled provider.
 - Provider aliases are registered only when the provider module is compiled and enabled.
 - Global hardcoded provider match chains are removed.
 
@@ -2210,7 +2203,6 @@ Examples:
 cargo tree -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local | grep -q aws-sdk-s3 && exit 1
 cargo tree -p oxide-agent-core --no-default-features --features profile-no-sandbox | grep -q bollard && exit 1
 cargo tree -p oxide-agent-core --no-default-features --features profile-search-only | grep -q rmcp && exit 1
-cargo tree -p oxide-agent-core --no-default-features --features llm-opencode-go | grep -q gemini-rust && exit 1
 ```
 
 Replace grep scripts with a checked CI utility if needed.
@@ -2656,7 +2648,6 @@ crates/
       lib.rs
       llm/
         chatgpt.rs
-        gemini.rs
         groq.rs
         mistral.rs
         minimax.rs
@@ -2773,7 +2764,7 @@ xtask/
 
 Alternative acceptable layout:
 
-- split heavy modules into separate crates, such as `oxide-agent-storage-r2`, `oxide-agent-llm-gemini`, `oxide-agent-integration-mcp-jira`, if compile times or dependency isolation require it.
+- split heavy modules into separate crates, such as `oxide-agent-storage-r2` or `oxide-agent-integration-mcp-jira`, if compile times or dependency isolation require it.
 
 Hard requirement:
 
@@ -2933,7 +2924,7 @@ Includes:
 
 Acceptance:
 
-- `gemini-rust`, `zai-rs`, and `async-openai` are absent unless explicitly required by selected modules.
+- Former direct Gemini SDK code stays absent; `zai-rs` and `async-openai` are absent unless explicitly required by selected modules.
 
 ## 25. Required Output Format
 

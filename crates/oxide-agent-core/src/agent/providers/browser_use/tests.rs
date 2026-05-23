@@ -9,7 +9,6 @@ use tokio::net::TcpListener;
 
 fn test_settings() -> Arc<crate::config::AgentSettings> {
     Arc::new(crate::config::AgentSettings {
-        gemini_api_key: Some("gemini-secret".to_string()),
         minimax_api_key: Some("minimax-secret".to_string()),
         zai_api_key: Some("zai-secret".to_string()),
         openrouter_api_key: Some("openrouter-secret".to_string()),
@@ -19,7 +18,6 @@ fn test_settings() -> Arc<crate::config::AgentSettings> {
 
 fn test_settings_with_dedicated_browser_use_model() -> Arc<crate::config::AgentSettings> {
     Arc::new(crate::config::AgentSettings {
-        gemini_api_key: Some("gemini-secret".to_string()),
         minimax_api_key: Some("minimax-secret".to_string()),
         zai_api_key: Some("zai-secret".to_string()),
         openrouter_api_key: Some("openrouter-secret".to_string()),

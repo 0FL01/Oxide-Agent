@@ -23,7 +23,6 @@ except ImportError:  # pragma: no cover - exercised in runtime envs.
 
 ChatAnthropic = getattr(browser_use_module, "ChatAnthropic", None)
 ChatBrowserUse = getattr(browser_use_module, "ChatBrowserUse", None)
-ChatGoogle = getattr(browser_use_module, "ChatGoogle", None)
 ChatOpenAI = getattr(browser_use_module, "ChatOpenAI", None)
 
 
@@ -67,7 +66,6 @@ def infer_transport(provider: str, api_base: str | None, transport: str | None) 
     if normalized_transport:
         if normalized_transport in {
             "browser_use",
-            "google",
             "anthropic",
             "anthropic_compatible",
             "openai_compatible",
@@ -77,8 +75,6 @@ def infer_transport(provider: str, api_base: str | None, transport: str | None) 
 
     if provider in {"browser_use"}:
         return "browser_use"
-    if provider in {"google", "gemini"}:
-        return "google"
     if provider in {"anthropic"}:
         return "anthropic"
     if provider in {"minimax"}:
@@ -142,7 +138,7 @@ def resolve_legacy_llm_config() -> ResolvedBrowserLlmConfig:
             "BROWSER_USE_BRIDGE_LLM_PROVIDER is required for browser task execution"
         )
 
-    if provider not in {"browser_use", "google", "anthropic"}:
+    if provider not in {"browser_use", "anthropic"}:
         raise RuntimeError(
             f"unsupported BROWSER_USE_BRIDGE_LLM_PROVIDER '{settings.llm_provider}'"
         )
@@ -201,13 +197,6 @@ def create_llm_from_config(config: ResolvedBrowserLlmConfig) -> Any:
                 "ChatBrowserUse is unavailable in installed browser_use package"
             )
         return ChatBrowserUse(**kwargs)
-
-    if config.transport == "google":
-        if ChatGoogle is None:
-            raise RuntimeError(
-                "ChatGoogle is unavailable in installed browser_use package"
-            )
-        return ChatGoogle(**kwargs)
 
     if config.transport in {"anthropic", "anthropic_compatible"}:
         if ChatAnthropic is None:

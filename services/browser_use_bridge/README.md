@@ -40,7 +40,7 @@
 - `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS` - idle/stale profile retention TTL in seconds, default `604800` (7 days), `0` disables TTL pruning
 - `BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES` - retry count for early transient browser readiness failures such as `CDP client not initialized`, default `2`
 - `BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS` - delay between readiness retries in milliseconds, default `750`
-- `BROWSER_USE_BRIDGE_LLM_PROVIDER` - legacy fallback: `browser_use`, `google`, or `anthropic`
+- `BROWSER_USE_BRIDGE_LLM_PROVIDER` - legacy fallback: `browser_use` or `anthropic`
 - `BROWSER_USE_BRIDGE_LLM_MODEL` - legacy fallback model override for selected provider
 
 Bridge автоматически устанавливает `BROWSER_USE_HOME` в `BROWSER_USE_BRIDGE_DATA_DIR`, если он не задан явно.
@@ -83,7 +83,6 @@ Bridge принимает нормализованный `browser_llm_config` в
 Поддержанные request-level provider-ы:
 
 - `browser_use`
-- `google`
 - `anthropic`
 - `minimax`
 - `zai`
@@ -109,7 +108,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - Stage 2 wiring publishes the service on `127.0.0.1:8002` and keeps browser state in the `browser-use-data` volume.
 - Default compose now assumes route inheritance as the primary path and no longer passes `BROWSER_USE_BRIDGE_LLM_PROVIDER` / `BROWSER_USE_BRIDGE_LLM_MODEL` into the sidecar.
 - If you need the legacy env fallback, inject `BROWSER_USE_BRIDGE_LLM_PROVIDER`, `BROWSER_USE_BRIDGE_LLM_MODEL`, and the matching API key through a compose override or direct container environment.
-- Stage C Rust provider automatically injects `browser_llm_config` from the active Oxide route for `gemini`, `minimax`, `zai`, and `openrouter`.
+- Stage C Rust provider automatically injects `browser_llm_config` from the active Oxide route for `minimax`, `zai`, and `openrouter`.
 - Stage D secret handling sends inherited-route API keys via `X-Oxide-Browser-Llm-Api-Key`, so `minimax`, `zai`, and `openrouter` do not require dedicated sidecar env passthrough in the default compose setup.
 - Stage 2 profile reuse injects `profile_scope` from runtime context; bridge enforces scope match on `profile_id` reuse and rejects creating more than `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE` retained profiles in one scope.
 - Stage 3 lifecycle cleanup detaches reusable profiles on graceful shutdown, auto-recovers orphaned `active` profiles left after bridge restarts/crashes, and prunes expired idle/stale profiles by TTL before quota checks.

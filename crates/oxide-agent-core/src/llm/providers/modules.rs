@@ -9,7 +9,6 @@ use crate::llm::LlmProvider;
 
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-gemini",
     feature = "llm-groq",
     feature = "llm-mistral",
     feature = "llm-minimax",
@@ -180,8 +179,6 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 
     #[cfg(feature = "llm-chatgpt")]
     modules.push(Box::new(ChatGptProviderModule));
-    #[cfg(feature = "llm-gemini")]
-    modules.push(Box::new(GeminiProviderModule));
     #[cfg(feature = "llm-groq")]
     modules.push(Box::new(GroqProviderModule));
     #[cfg(feature = "llm-mistral")]
@@ -237,38 +234,6 @@ impl LlmProviderModule for ChatGptProviderModule {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
-    }
-}
-
-#[cfg(feature = "llm-gemini")]
-struct GeminiProviderModule;
-
-#[cfg(feature = "llm-gemini")]
-impl LlmProviderModule for GeminiProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/gemini"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["gemini"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        _ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        settings.gemini_api_key.as_ref().map(|api_key| {
-            Arc::new(super::GeminiProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
-        })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true)
-    }
-
-    fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(true, true, true)
     }
 }
 
@@ -544,8 +509,6 @@ fn zai_supports_structured_output(model_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "llm-gemini")]
-    use super::provider_media_capabilities;
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
         provider_key,
@@ -621,19 +584,5 @@ mod tests {
             provider_capabilities_for_model(&route).expect("provider id should resolve");
 
         assert!(capabilities.supports_structured_output);
-    }
-
-    #[cfg(feature = "llm-gemini")]
-    #[test]
-    fn gemini_module_owns_media_capabilities() {
-        let capabilities =
-            provider_media_capabilities("llm-provider/gemini").expect("provider id should resolve");
-
-        assert!(capabilities
-            .supports(super::super::super::capabilities::MediaModality::AudioTranscription));
-        assert!(capabilities
-            .supports(super::super::super::capabilities::MediaModality::ImageUnderstanding));
-        assert!(capabilities
-            .supports(super::super::super::capabilities::MediaModality::VideoUnderstanding));
     }
 }

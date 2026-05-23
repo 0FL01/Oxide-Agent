@@ -6,7 +6,6 @@ cargo_features = ["profile-full"]
 "transport/web" = { enabled = true }
 "storage/s3-r2" = { enabled = true }
 "llm-provider/chatgpt" = { enabled = true }
-"llm-provider/gemini" = { enabled = true }
 "llm-provider/groq" = { enabled = true }
 "llm-provider/mistral" = { enabled = true }
 "llm-provider/minimax" = { enabled = true }
