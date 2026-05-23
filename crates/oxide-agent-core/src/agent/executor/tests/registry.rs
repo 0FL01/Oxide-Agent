@@ -550,6 +550,100 @@ fn legacy_registry_registers_tts_modules_once() {
     std::env::remove_var("KOKORO_TTS_URL");
 }
 
+#[cfg(feature = "tool-media-audio")]
+#[test]
+fn legacy_registry_skips_disabled_media_audio_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/media-audio".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("transcribe_audio_file"));
+    assert!(registry.can_handle("write_todos"));
+}
+
+#[cfg(feature = "tool-media-image")]
+#[test]
+fn legacy_registry_skips_disabled_media_image_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/media-image".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("describe_image_file"));
+    assert!(registry.can_handle("write_todos"));
+}
+
+#[cfg(feature = "tool-media-video")]
+#[test]
+fn legacy_registry_skips_disabled_media_video_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/media-video".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("describe_video_file"));
+    assert!(registry.can_handle("write_todos"));
+}
+
+#[cfg(all(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
+#[test]
+fn legacy_registry_registers_media_modules_once() {
+    let executor = build_executor();
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for tool_name in [
+        "transcribe_audio_file",
+        "describe_image_file",
+        "describe_video_file",
+    ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+}
+
 #[test]
 fn legacy_registry_skips_disabled_sandbox_exec_module() {
     let settings = Arc::new(AgentSettings {

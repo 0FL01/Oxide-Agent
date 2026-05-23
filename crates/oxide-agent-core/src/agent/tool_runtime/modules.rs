@@ -5,6 +5,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{SandboxProvider, TodoList};
 use crate::capabilities::ModuleId;
+use crate::llm::LlmClient;
 use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
@@ -14,11 +15,20 @@ use crate::agent::providers::CompressionProvider;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::providers::FileHosterProvider;
 #[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video",
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate"
 ))]
 use crate::agent::providers::FilteredToolProvider;
+#[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
+use crate::agent::providers::MediaFileProvider;
 #[cfg(feature = "tool-searxng")]
 use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "tool-stack-logs")]
@@ -41,6 +51,7 @@ pub struct ToolModuleContext {
     todos: Arc<Mutex<TodoList>>,
     sandbox_scope: SandboxScope,
     sandbox_provider: Arc<SandboxProvider>,
+    llm_client: Arc<LlmClient>,
     progress_tx: Option<Sender<AgentEvent>>,
 }
 
@@ -51,12 +62,14 @@ impl ToolModuleContext {
         todos: Arc<Mutex<TodoList>>,
         sandbox_scope: SandboxScope,
         sandbox_provider: Arc<SandboxProvider>,
+        llm_client: Arc<LlmClient>,
         progress_tx: Option<Sender<AgentEvent>>,
     ) -> Self {
         Self {
             todos,
             sandbox_scope,
             sandbox_provider,
+            llm_client,
             progress_tx,
         }
     }
@@ -83,6 +96,12 @@ impl ToolModuleContext {
     #[must_use]
     pub fn sandbox_scope(&self) -> SandboxScope {
         self.sandbox_scope.clone()
+    }
+
+    /// Shared LLM client for modules that call model-side media APIs.
+    #[must_use]
+    pub fn llm_client(&self) -> Arc<LlmClient> {
+        Arc::clone(&self.llm_client)
     }
 
     /// Optional progress sender for modules that emit progress events.
@@ -135,6 +154,84 @@ impl ToolModule for FileDeliveryToolModule {
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
         Some(Box::new(FileHosterProvider::new(ctx.sandbox_scope())))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+#[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
+fn media_file_provider(ctx: &ToolModuleContext) -> Arc<dyn ToolProvider> {
+    Arc::new(MediaFileProvider::new(
+        ctx.llm_client(),
+        ctx.sandbox_scope(),
+    ))
+}
+
+/// Capability module for audio file transcription.
+#[cfg(feature = "tool-media-audio")]
+pub struct MediaAudioToolModule;
+
+#[cfg(feature = "tool-media-audio")]
+impl ToolModule for MediaAudioToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/media-audio")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(FilteredToolProvider::new(
+            media_file_provider(ctx),
+            &["transcribe_audio_file"],
+        )))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for image file description.
+#[cfg(feature = "tool-media-image")]
+pub struct MediaImageToolModule;
+
+#[cfg(feature = "tool-media-image")]
+impl ToolModule for MediaImageToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/media-image")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(FilteredToolProvider::new(
+            media_file_provider(ctx),
+            &["describe_image_file"],
+        )))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for video file description.
+#[cfg(feature = "tool-media-video")]
+pub struct MediaVideoToolModule;
+
+#[cfg(feature = "tool-media-video")]
+impl ToolModule for MediaVideoToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/media-video")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(FilteredToolProvider::new(
+            media_file_provider(ctx),
+            &["describe_video_file"],
+        )))
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

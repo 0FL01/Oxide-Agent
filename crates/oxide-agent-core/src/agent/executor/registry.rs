@@ -21,12 +21,6 @@ use tracing::warn;
 
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::providers::BrowserUseProvider;
-#[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
-))]
-use crate::agent::providers::MediaFileProvider;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::SshMcpProvider;
 #[cfg(feature = "tool-compression")]
@@ -35,6 +29,12 @@ use crate::agent::tool_runtime::CompressionToolModule;
 use crate::agent::tool_runtime::FileDeliveryToolModule;
 #[cfg(feature = "tool-tts-kokoro")]
 use crate::agent::tool_runtime::KokoroTtsToolModule;
+#[cfg(feature = "tool-media-audio")]
+use crate::agent::tool_runtime::MediaAudioToolModule;
+#[cfg(feature = "tool-media-image")]
+use crate::agent::tool_runtime::MediaImageToolModule;
+#[cfg(feature = "tool-media-video")]
+use crate::agent::tool_runtime::MediaVideoToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -57,6 +57,9 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-recreate",
     feature = "tool-compression",
     feature = "tool-file-delivery",
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video",
     feature = "tool-searxng",
     feature = "tool-stack-logs",
     feature = "tool-tavily",
@@ -162,6 +165,9 @@ impl AgentExecutor {
             feature = "tool-sandbox-recreate",
             feature = "tool-compression",
             feature = "tool-file-delivery",
+            feature = "tool-media-audio",
+            feature = "tool-media-image",
+            feature = "tool-media-video",
             feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
@@ -177,6 +183,12 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
         #[cfg(feature = "tool-file-delivery")]
         self.register_tool_runtime_module(registry, &FileDeliveryToolModule, ctx);
+        #[cfg(feature = "tool-media-audio")]
+        self.register_tool_runtime_module(registry, &MediaAudioToolModule, ctx);
+        #[cfg(feature = "tool-media-image")]
+        self.register_tool_runtime_module(registry, &MediaImageToolModule, ctx);
+        #[cfg(feature = "tool-media-video")]
+        self.register_tool_runtime_module(registry, &MediaVideoToolModule, ctx);
         #[cfg(feature = "tool-searxng")]
         self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
         #[cfg(feature = "tool-stack-logs")]
@@ -207,6 +219,9 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "tool-compression",
         feature = "tool-file-delivery",
+        feature = "tool-media-audio",
+        feature = "tool-media-image",
+        feature = "tool-media-video",
         feature = "tool-searxng",
         feature = "tool-stack-logs",
         feature = "tool-tavily",
@@ -335,6 +350,7 @@ impl AgentExecutor {
             todos_arc,
             sandbox_scope.clone(),
             self.build_sandbox_provider(sandbox_scope, progress_tx),
+            self.runner.llm_client(),
             progress_tx.cloned(),
         )
     }
@@ -355,15 +371,6 @@ impl AgentExecutor {
     fn register_core_providers(&self, registry: &mut ToolRegistry, module_ctx: &ToolModuleContext) {
         let sandbox_scope = module_ctx.sandbox_scope();
         self.register_legacy_tool_modules(registry, module_ctx);
-        #[cfg(any(
-            feature = "tool-media-audio",
-            feature = "tool-media-image",
-            feature = "tool-media-video"
-        ))]
-        registry.register(Box::new(MediaFileProvider::new(
-            self.runner.llm_client(),
-            sandbox_scope.clone(),
-        )));
 
         let mut delegation_provider = DelegationProvider::new(
             self.runner.llm_client(),
@@ -390,6 +397,9 @@ impl AgentExecutor {
             feature = "tool-sandbox-recreate",
             feature = "tool-compression",
             feature = "tool-file-delivery",
+            feature = "tool-media-audio",
+            feature = "tool-media-image",
+            feature = "tool-media-video",
             feature = "tool-stack-logs",
             feature = "tool-todos",
             feature = "tool-ytdlp"
@@ -412,6 +422,12 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &SandboxFileOpsToolModule, ctx);
         #[cfg(feature = "tool-sandbox-recreate")]
         self.register_legacy_tool_module(registry, &SandboxRecreateToolModule, ctx);
+        #[cfg(feature = "tool-media-audio")]
+        self.register_legacy_tool_module(registry, &MediaAudioToolModule, ctx);
+        #[cfg(feature = "tool-media-image")]
+        self.register_legacy_tool_module(registry, &MediaImageToolModule, ctx);
+        #[cfg(feature = "tool-media-video")]
+        self.register_legacy_tool_module(registry, &MediaVideoToolModule, ctx);
     }
 
     #[cfg(any(
@@ -420,6 +436,9 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "tool-compression",
         feature = "tool-file-delivery",
+        feature = "tool-media-audio",
+        feature = "tool-media-image",
+        feature = "tool-media-video",
         feature = "tool-searxng",
         feature = "tool-stack-logs",
         feature = "tool-tavily",

@@ -32,6 +32,12 @@ pub use modules::CompressionToolModule;
 pub use modules::FileDeliveryToolModule;
 #[cfg(feature = "tool-tts-kokoro")]
 pub use modules::KokoroTtsToolModule;
+#[cfg(feature = "tool-media-audio")]
+pub use modules::MediaAudioToolModule;
+#[cfg(feature = "tool-media-image")]
+pub use modules::MediaImageToolModule;
+#[cfg(feature = "tool-media-video")]
+pub use modules::MediaVideoToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 pub use modules::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
