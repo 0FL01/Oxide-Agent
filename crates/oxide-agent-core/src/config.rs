@@ -2171,8 +2171,8 @@ pub fn is_browser_use_enabled() -> bool {
 
 // LLM HTTP client configuration
 /// Default timeout for LLM API HTTP requests (seconds).
-/// Short enough for responsive retries, long enough for slow models.
-pub const LLM_HTTP_TIMEOUT_SECS: u64 = 30;
+/// Generous default for large prompts and slow models; override with env LLM_HTTP_TIMEOUT_SECS.
+pub const LLM_HTTP_TIMEOUT_SECS: u64 = 90;
 
 /// Get LLM HTTP timeout from env or default
 ///
