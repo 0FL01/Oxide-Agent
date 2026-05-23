@@ -1,9 +1,11 @@
 use dotenvy::dotenv;
 use oxide_agent_core::agent::providers::cleanup_stale_private_key_tempfiles;
+use oxide_agent_core::capabilities::compiled_capability_manifest;
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_transport_telegram::config::{BotSettings, TelegramSettings};
 use oxide_agent_transport_telegram::runner::run_bot;
 use regex::Regex;
+use std::env;
 use std::io::{self, Write};
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -124,8 +126,23 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupCommand {
+    RunBot,
+    PrintCompiledCapabilitiesJson,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match parse_startup_command(env::args().skip(1))? {
+        StartupCommand::RunBot => {}
+        StartupCommand::PrintCompiledCapabilitiesJson => {
+            let manifest = compiled_capability_manifest()?;
+            println!("{}", manifest.to_json_pretty()?);
+            return Ok(());
+        }
+    }
+
     // Load .env file
     dotenv().ok();
 
@@ -156,6 +173,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_bot(settings).await;
 
     Ok(())
+}
+
+fn parse_startup_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    let Some(first) = args.next() else {
+        return Ok(StartupCommand::RunBot);
+    };
+    if first.as_ref() != "capabilities" {
+        return Ok(StartupCommand::RunBot);
+    }
+
+    let mut compiled = false;
+    let mut json = false;
+    for arg in args {
+        match arg.as_ref() {
+            "--compiled" => compiled = true,
+            "--json" => json = true,
+            _ => return Err(capabilities_usage_error()),
+        }
+    }
+
+    if compiled && json {
+        Ok(StartupCommand::PrintCompiledCapabilitiesJson)
+    } else {
+        Err(capabilities_usage_error())
+    }
+}
+
+fn capabilities_usage_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "Usage: oxide-agent-telegram-bot capabilities --compiled --json",
+    )
 }
 
 fn init_logging(patterns: Arc<RedactionPatterns>) {
@@ -202,4 +256,34 @@ fn init_settings() -> Arc<BotSettings> {
 
     info!("Configuration loaded successfully.");
     Arc::new(BotSettings::new(agent_settings, telegram_settings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_startup_command, StartupCommand};
+    use std::io;
+
+    #[test]
+    fn startup_command_defaults_to_bot() {
+        let command =
+            parse_startup_command(std::iter::empty::<&str>()).expect("empty args should run bot");
+
+        assert_eq!(command, StartupCommand::RunBot);
+    }
+
+    #[test]
+    fn startup_command_parses_compiled_capabilities_json() {
+        let command = parse_startup_command(["capabilities", "--compiled", "--json"])
+            .expect("capabilities command should parse");
+
+        assert_eq!(command, StartupCommand::PrintCompiledCapabilitiesJson);
+    }
+
+    #[test]
+    fn startup_command_rejects_partial_capabilities_command() {
+        let error = parse_startup_command(["capabilities", "--compiled"])
+            .expect_err("partial capabilities command should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
 }
