@@ -26,6 +26,10 @@ pub use history::{ToolHistoryError, ToolHistoryWriter};
 pub use invocation::{
     EnvironmentMetadata, ModelMetadata, ProviderMetadata, ToolExecutionContext, ToolInvocation,
 };
+#[cfg(feature = "tool-agents-md")]
+pub use modules::AgentsMdModuleContext;
+#[cfg(feature = "tool-agents-md")]
+pub use modules::AgentsMdToolModule;
 #[cfg(feature = "tool-browser-use")]
 pub use modules::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
@@ -44,6 +48,8 @@ pub use modules::MediaAudioToolModule;
 pub use modules::MediaImageToolModule;
 #[cfg(feature = "tool-media-video")]
 pub use modules::MediaVideoToolModule;
+#[cfg(feature = "tool-reminder")]
+pub use modules::ReminderToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 pub use modules::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -60,6 +66,7 @@ pub use modules::StackLogsToolModule;
 pub use modules::TavilyToolModule;
 #[cfg(feature = "tool-todos")]
 pub use modules::TodosToolModule;
+pub use modules::ToolModuleContextParts;
 #[cfg(feature = "tool-webfetch-md")]
 pub use modules::WebFetchMdToolModule;
 #[cfg(feature = "tool-ytdlp")]

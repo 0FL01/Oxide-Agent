@@ -1,11 +1,14 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
+#[cfg(feature = "tool-agents-md")]
+use crate::agent::providers::AgentsMdProvider;
+#[cfg(feature = "tool-reminder")]
+use crate::agent::providers::ReminderProvider;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::SshMcpProvider;
 use crate::agent::providers::{
-    AgentsMdProvider, DelegationProvider, ManagerControlPlaneProvider, ReminderProvider,
-    SandboxProvider, TodoList, WikiMemoryProvider,
+    DelegationProvider, ManagerControlPlaneProvider, SandboxProvider, TodoList, WikiMemoryProvider,
 };
 use crate::agent::registry::ToolRegistry;
 #[cfg(feature = "tool-browser-use")]
@@ -26,6 +29,8 @@ use crate::agent::tool_runtime::MediaAudioToolModule;
 use crate::agent::tool_runtime::MediaImageToolModule;
 #[cfg(feature = "tool-media-video")]
 use crate::agent::tool_runtime::MediaVideoToolModule;
+#[cfg(feature = "tool-reminder")]
+use crate::agent::tool_runtime::ReminderToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -48,12 +53,14 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-recreate",
     feature = "integration-mcp-jira",
     feature = "integration-mcp-mattermost",
+    feature = "tool-agents-md",
     feature = "tool-browser-use",
     feature = "tool-compression",
     feature = "tool-file-delivery",
     feature = "tool-media-audio",
     feature = "tool-media-image",
     feature = "tool-media-video",
+    feature = "tool-reminder",
     feature = "tool-searxng",
     feature = "tool-stack-logs",
     feature = "tool-tavily",
@@ -70,9 +77,11 @@ use crate::agent::tool_runtime::WebFetchMdToolModule;
 use crate::agent::tool_runtime::YtdlpToolModule;
 use crate::agent::tool_runtime::{
     v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation,
-    ToolModuleContext, ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry,
-    ToolRuntimeConfig, ToolRuntimeError,
+    ToolModuleContext, ToolModuleContextParts, ToolName, ToolOutput,
+    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
+#[cfg(feature = "tool-agents-md")]
+use crate::agent::tool_runtime::{AgentsMdModuleContext, AgentsMdToolModule};
 use crate::config::ModelInfo;
 use crate::llm::ToolDefinition;
 use crate::sandbox::SandboxScope;
@@ -114,7 +123,7 @@ impl AgentExecutor {
         self.register_core_providers(&mut registry, &module_ctx);
 
         // Topic-scoped providers: agents_md, manager, ssh, reminders
-        self.register_topic_providers(&mut registry);
+        self.register_topic_providers(&mut registry, &module_ctx);
         self.register_wiki_memory_provider(&mut registry);
 
         // Feature-gated MCP, search, and browser automation providers
@@ -171,12 +180,14 @@ impl AgentExecutor {
             feature = "tool-sandbox-recreate",
             feature = "integration-mcp-jira",
             feature = "integration-mcp-mattermost",
+            feature = "tool-agents-md",
             feature = "tool-browser-use",
             feature = "tool-compression",
             feature = "tool-file-delivery",
             feature = "tool-media-audio",
             feature = "tool-media-image",
             feature = "tool-media-video",
+            feature = "tool-reminder",
             feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
@@ -188,6 +199,8 @@ impl AgentExecutor {
         )))]
         let _ = (registry, ctx);
 
+        #[cfg(feature = "tool-agents-md")]
+        self.register_tool_runtime_module(registry, &AgentsMdToolModule, ctx);
         #[cfg(feature = "integration-mcp-jira")]
         self.register_tool_runtime_module(registry, &JiraMcpToolModule, ctx);
         #[cfg(feature = "integration-mcp-mattermost")]
@@ -204,6 +217,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &MediaImageToolModule, ctx);
         #[cfg(feature = "tool-media-video")]
         self.register_tool_runtime_module(registry, &MediaVideoToolModule, ctx);
+        #[cfg(feature = "tool-reminder")]
+        self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
         #[cfg(feature = "tool-searxng")]
         self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
         #[cfg(feature = "tool-stack-logs")]
@@ -234,12 +249,14 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "integration-mcp-jira",
         feature = "integration-mcp-mattermost",
+        feature = "tool-agents-md",
         feature = "tool-browser-use",
         feature = "tool-compression",
         feature = "tool-file-delivery",
         feature = "tool-media-audio",
         feature = "tool-media-image",
         feature = "tool-media-video",
+        feature = "tool-reminder",
         feature = "tool-searxng",
         feature = "tool-stack-logs",
         feature = "tool-tavily",
@@ -308,6 +325,7 @@ impl AgentExecutor {
         registry: &mut RuntimeToolRegistry,
         progress_tx: Option<&Sender<AgentEvent>>,
     ) {
+        #[cfg(feature = "tool-agents-md")]
         if let Some(agents_md) = &self.agents_md {
             self.register_tool_runtime_provider(
                 registry,
@@ -324,6 +342,7 @@ impl AgentExecutor {
             self.register_tool_runtime_provider(registry, Arc::new(manager_provider), progress_tx);
         }
 
+        #[cfg(feature = "tool-reminder")]
         if let Some(reminder_context) = &self.reminder_context {
             self.register_tool_runtime_provider(
                 registry,
@@ -364,15 +383,25 @@ impl AgentExecutor {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> ToolModuleContext {
         let sandbox_scope = self.session.sandbox_scope().clone();
-        ToolModuleContext::new(
-            todos_arc,
-            sandbox_scope.clone(),
-            self.build_sandbox_provider(sandbox_scope, progress_tx),
-            self.runner.llm_client(),
-            Arc::clone(&self.settings),
-            self.browser_use_profile_scope(),
-            progress_tx.cloned(),
-        )
+        ToolModuleContext::new(ToolModuleContextParts {
+            todos: todos_arc,
+            sandbox_scope: sandbox_scope.clone(),
+            sandbox_provider: self.build_sandbox_provider(sandbox_scope, progress_tx),
+            llm_client: self.runner.llm_client(),
+            settings: Arc::clone(&self.settings),
+            browser_use_profile_scope: self.browser_use_profile_scope(),
+            #[cfg(feature = "tool-agents-md")]
+            agents_md_context: self.agents_md.as_ref().map(|context| {
+                AgentsMdModuleContext::new(
+                    Arc::clone(&context.storage),
+                    context.user_id,
+                    context.topic_id.clone(),
+                )
+            }),
+            #[cfg(feature = "tool-reminder")]
+            reminder_context: self.reminder_context.clone(),
+            progress_tx: progress_tx.cloned(),
+        })
     }
 
     fn build_sandbox_provider(
@@ -456,12 +485,14 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "integration-mcp-jira",
         feature = "integration-mcp-mattermost",
+        feature = "tool-agents-md",
         feature = "tool-browser-use",
         feature = "tool-compression",
         feature = "tool-file-delivery",
         feature = "tool-media-audio",
         feature = "tool-media-image",
         feature = "tool-media-video",
+        feature = "tool-reminder",
         feature = "tool-searxng",
         feature = "tool-stack-logs",
         feature = "tool-tavily",
@@ -529,14 +560,9 @@ impl AgentExecutor {
             .filter(|scope| !scope.is_empty())
     }
 
-    fn register_topic_providers(&self, registry: &mut ToolRegistry) {
-        if let Some(agents_md) = &self.agents_md {
-            registry.register(Box::new(AgentsMdProvider::new(
-                Arc::clone(&agents_md.storage),
-                agents_md.user_id,
-                agents_md.topic_id.clone(),
-            )));
-        }
+    fn register_topic_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
+        #[cfg(feature = "tool-agents-md")]
+        self.register_legacy_tool_module(registry, &AgentsMdToolModule, ctx);
 
         if let Some(manager_provider) = self.manager_control_plane_provider() {
             registry.register(Box::new(manager_provider));
@@ -553,9 +579,11 @@ impl AgentExecutor {
             )));
         }
 
-        if let Some(reminder_context) = &self.reminder_context {
-            registry.register(Box::new(ReminderProvider::new(reminder_context.clone())));
-        }
+        #[cfg(feature = "tool-reminder")]
+        self.register_legacy_tool_module(registry, &ReminderToolModule, ctx);
+
+        #[cfg(not(any(feature = "tool-agents-md", feature = "tool-reminder")))]
+        let _ = ctx;
     }
 
     fn manager_control_plane_provider(&self) -> Option<ManagerControlPlaneProvider> {

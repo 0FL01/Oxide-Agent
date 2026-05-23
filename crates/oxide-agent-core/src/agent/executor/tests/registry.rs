@@ -1042,6 +1042,108 @@ async fn browser_use_disabled_registry_skips_browser_tools() {
     assert!(!registry.can_handle("browser_use_screenshot"));
 }
 
+#[cfg(feature = "tool-agents-md")]
+#[test]
+fn legacy_registry_skips_disabled_agents_md_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/agents-md".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let mut executor = AgentExecutor::new(llm, session, settings);
+    executor.set_agents_md_context(
+        Arc::new(MockStorageProvider::new()),
+        77,
+        "topic-a".to_string(),
+    );
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("agents_md_get"));
+    assert!(!registry.can_handle("agents_md_update"));
+    assert!(registry.can_handle("write_todos"));
+}
+
+#[cfg(feature = "tool-reminder")]
+#[test]
+fn legacy_registry_skips_disabled_reminder_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/reminder".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let mut executor = AgentExecutor::new(llm, session, settings);
+    executor.set_reminder_context(crate::agent::providers::ReminderContext {
+        storage: Arc::new(MockStorageProvider::new()),
+        user_id: 77,
+        context_key: "topic-reminder".to_string(),
+        flow_id: "flow-1".to_string(),
+        chat_id: 77,
+        thread_id: None,
+        thread_kind: crate::storage::ReminderThreadKind::None,
+        notifier: None,
+    });
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("reminder_schedule"));
+    assert!(!registry.can_handle("reminder_list"));
+    assert!(registry.can_handle("write_todos"));
+}
+
+#[cfg(all(feature = "tool-agents-md", feature = "tool-reminder"))]
+#[test]
+fn legacy_registry_registers_topic_modules_once() {
+    let mut executor = build_executor();
+    executor.set_agents_md_context(
+        Arc::new(MockStorageProvider::new()),
+        77,
+        "topic-a".to_string(),
+    );
+    executor.set_reminder_context(crate::agent::providers::ReminderContext {
+        storage: Arc::new(MockStorageProvider::new()),
+        user_id: 77,
+        context_key: "topic-reminder".to_string(),
+        flow_id: "flow-1".to_string(),
+        chat_id: 77,
+        thread_id: None,
+        thread_kind: crate::storage::ReminderThreadKind::None,
+        notifier: None,
+    });
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for tool_name in [
+        "agents_md_get",
+        "agents_md_update",
+        "reminder_schedule",
+        "reminder_list",
+    ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+}
+
 #[cfg(feature = "tool-browser-use")]
 #[test]
 fn browser_use_profile_scope_uses_agents_md_topic() {

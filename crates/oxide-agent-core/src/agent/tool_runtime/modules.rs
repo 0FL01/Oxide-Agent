@@ -11,6 +11,8 @@ use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 
+#[cfg(feature = "tool-agents-md")]
+use crate::agent::providers::AgentsMdProvider;
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::providers::BrowserUseProvider;
 #[cfg(feature = "tool-compression")]
@@ -50,8 +52,34 @@ use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
 use crate::agent::providers::{KokoroTtsProvider, TtsConfig};
 #[cfg(feature = "integration-mcp-mattermost")]
 use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
+#[cfg(feature = "tool-reminder")]
+use crate::agent::providers::{ReminderContext, ReminderProvider};
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
+#[cfg(feature = "tool-agents-md")]
+use crate::storage::StorageProvider;
+
+/// Topic-scoped context required by the AGENTS.md tools.
+#[cfg(feature = "tool-agents-md")]
+#[derive(Clone)]
+pub struct AgentsMdModuleContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_id: String,
+}
+
+#[cfg(feature = "tool-agents-md")]
+impl AgentsMdModuleContext {
+    /// Create a context for topic-scoped AGENTS.md tools.
+    #[must_use]
+    pub fn new(storage: Arc<dyn StorageProvider>, user_id: i64, topic_id: String) -> Self {
+        Self {
+            storage,
+            user_id,
+            topic_id,
+        }
+    }
+}
 
 /// Runtime context passed to tool capability modules.
 pub struct ToolModuleContext {
@@ -61,29 +89,53 @@ pub struct ToolModuleContext {
     llm_client: Arc<LlmClient>,
     settings: Arc<AgentSettings>,
     browser_use_profile_scope: Option<String>,
+    #[cfg(feature = "tool-agents-md")]
+    agents_md_context: Option<AgentsMdModuleContext>,
+    #[cfg(feature = "tool-reminder")]
+    reminder_context: Option<ReminderContext>,
     progress_tx: Option<Sender<AgentEvent>>,
+}
+
+/// Constructor arguments for [`ToolModuleContext`].
+pub struct ToolModuleContextParts {
+    /// Shared todo list state.
+    pub todos: Arc<Mutex<TodoList>>,
+    /// Current sandbox scope.
+    pub sandbox_scope: SandboxScope,
+    /// Shared sandbox provider.
+    pub sandbox_provider: Arc<SandboxProvider>,
+    /// Shared LLM client.
+    pub llm_client: Arc<LlmClient>,
+    /// Shared agent settings.
+    pub settings: Arc<AgentSettings>,
+    /// Optional Browser Use profile scope.
+    pub browser_use_profile_scope: Option<String>,
+    /// Optional AGENTS.md context.
+    #[cfg(feature = "tool-agents-md")]
+    pub agents_md_context: Option<AgentsMdModuleContext>,
+    /// Optional reminder context.
+    #[cfg(feature = "tool-reminder")]
+    pub reminder_context: Option<ReminderContext>,
+    /// Optional progress sender.
+    pub progress_tx: Option<Sender<AgentEvent>>,
 }
 
 impl ToolModuleContext {
     /// Creates a tool module context.
     #[must_use]
-    pub fn new(
-        todos: Arc<Mutex<TodoList>>,
-        sandbox_scope: SandboxScope,
-        sandbox_provider: Arc<SandboxProvider>,
-        llm_client: Arc<LlmClient>,
-        settings: Arc<AgentSettings>,
-        browser_use_profile_scope: Option<String>,
-        progress_tx: Option<Sender<AgentEvent>>,
-    ) -> Self {
+    pub fn new(parts: ToolModuleContextParts) -> Self {
         Self {
-            todos,
-            sandbox_scope,
-            sandbox_provider,
-            llm_client,
-            settings,
-            browser_use_profile_scope,
-            progress_tx,
+            todos: parts.todos,
+            sandbox_scope: parts.sandbox_scope,
+            sandbox_provider: parts.sandbox_provider,
+            llm_client: parts.llm_client,
+            settings: parts.settings,
+            browser_use_profile_scope: parts.browser_use_profile_scope,
+            #[cfg(feature = "tool-agents-md")]
+            agents_md_context: parts.agents_md_context,
+            #[cfg(feature = "tool-reminder")]
+            reminder_context: parts.reminder_context,
+            progress_tx: parts.progress_tx,
         }
     }
 
@@ -127,6 +179,20 @@ impl ToolModuleContext {
     #[must_use]
     pub fn browser_use_profile_scope(&self) -> Option<String> {
         self.browser_use_profile_scope.clone()
+    }
+
+    /// Optional context for topic-scoped AGENTS.md tools.
+    #[cfg(feature = "tool-agents-md")]
+    #[must_use]
+    pub fn agents_md_context(&self) -> Option<AgentsMdModuleContext> {
+        self.agents_md_context.clone()
+    }
+
+    /// Optional context for reminder tools.
+    #[cfg(feature = "tool-reminder")]
+    #[must_use]
+    pub fn reminder_context(&self) -> Option<ReminderContext> {
+        self.reminder_context.clone()
     }
 
     /// Optional progress sender for modules that emit progress events.
@@ -179,6 +245,52 @@ impl ToolModule for FileDeliveryToolModule {
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
         Some(Box::new(FileHosterProvider::new(ctx.sandbox_scope())))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for topic-scoped AGENTS.md self-editing tools.
+#[cfg(feature = "tool-agents-md")]
+pub struct AgentsMdToolModule;
+
+#[cfg(feature = "tool-agents-md")]
+impl ToolModule for AgentsMdToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/agents-md")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        ctx.agents_md_context().map(|agents_md| {
+            Box::new(AgentsMdProvider::new(
+                agents_md.storage,
+                agents_md.user_id,
+                agents_md.topic_id,
+            )) as Box<dyn ToolProvider>
+        })
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for reminder scheduling tools.
+#[cfg(feature = "tool-reminder")]
+pub struct ReminderToolModule;
+
+#[cfg(feature = "tool-reminder")]
+impl ToolModule for ReminderToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/reminder")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        ctx.reminder_context().map(|reminder_context| {
+            Box::new(ReminderProvider::new(reminder_context)) as Box<dyn ToolProvider>
+        })
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
