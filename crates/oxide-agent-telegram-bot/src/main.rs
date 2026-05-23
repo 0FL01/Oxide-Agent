@@ -1,7 +1,7 @@
 use dotenvy::dotenv;
 use oxide_agent_core::agent::providers::cleanup_stale_private_key_tempfiles;
 use oxide_agent_core::capabilities::compiled_capability_manifest;
-use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::config::{load_module_runtime_settings, AgentSettings};
 use oxide_agent_transport_telegram::config::{BotSettings, TelegramSettings};
 use oxide_agent_transport_telegram::runner::run_bot;
 use regex::Regex;
@@ -126,10 +126,11 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum StartupCommand {
     RunBot,
     PrintCompiledCapabilitiesJson,
+    PrintEnabledCapabilitiesJson { config_path: Option<String> },
 }
 
 #[tokio::main]
@@ -139,6 +140,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         StartupCommand::PrintCompiledCapabilitiesJson => {
             let manifest = compiled_capability_manifest()?;
             println!("{}", manifest.to_json_pretty()?);
+            return Ok(());
+        }
+        StartupCommand::PrintEnabledCapabilitiesJson { config_path } => {
+            let manifest = compiled_capability_manifest()?;
+            let module_settings = load_module_runtime_settings(config_path.as_deref())?;
+            let enabled = module_settings
+                .enabled_capability_manifest(&manifest)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            println!("{}", enabled.to_json_pretty()?);
             return Ok(());
         }
     }
@@ -188,27 +198,65 @@ where
         return Ok(StartupCommand::RunBot);
     }
 
-    let mut compiled = false;
+    let mut mode = None;
+    let mut config_path = None;
     let mut json = false;
-    for arg in args {
+    while let Some(arg) = args.next() {
         match arg.as_ref() {
-            "--compiled" => compiled = true,
-            "--json" => json = true,
+            "--compiled" => set_capability_mode(&mut mode, CapabilityMode::Compiled)?,
+            "--enabled" => set_capability_mode(&mut mode, CapabilityMode::Enabled)?,
+            "--config" => {
+                let Some(path) = args.next() else {
+                    return Err(capabilities_usage_error());
+                };
+                config_path = Some(path.as_ref().to_string());
+            }
+            "--json" => {
+                json = true;
+            }
             _ => return Err(capabilities_usage_error()),
         }
     }
 
-    if compiled && json {
-        Ok(StartupCommand::PrintCompiledCapabilitiesJson)
-    } else {
-        Err(capabilities_usage_error())
+    if !json {
+        return Err(capabilities_usage_error());
+    }
+
+    match mode {
+        Some(CapabilityMode::Compiled) if config_path.is_none() => {
+            Ok(StartupCommand::PrintCompiledCapabilitiesJson)
+        }
+        Some(CapabilityMode::Enabled) => {
+            Ok(StartupCommand::PrintEnabledCapabilitiesJson { config_path })
+        }
+        _ => Err(capabilities_usage_error()),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CapabilityMode {
+    Compiled,
+    Enabled,
+}
+
+fn set_capability_mode(
+    mode: &mut Option<CapabilityMode>,
+    requested: CapabilityMode,
+) -> io::Result<()> {
+    match mode {
+        None => {
+            *mode = Some(requested);
+            Ok(())
+        }
+        Some(existing) if *existing == requested => Ok(()),
+        Some(_) => Err(capabilities_usage_error()),
     }
 }
 
 fn capabilities_usage_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "Usage: oxide-agent-telegram-bot capabilities --compiled --json",
+        "Usage: oxide-agent-telegram-bot capabilities (--compiled | --enabled [--config PATH]) --json",
     )
 }
 
@@ -280,9 +328,36 @@ mod tests {
     }
 
     #[test]
+    fn startup_command_parses_enabled_capabilities_json_with_config() {
+        let command = parse_startup_command([
+            "capabilities",
+            "--enabled",
+            "--config",
+            "config/test-profile.yaml",
+            "--json",
+        ])
+        .expect("enabled capabilities command should parse");
+
+        assert_eq!(
+            command,
+            StartupCommand::PrintEnabledCapabilitiesJson {
+                config_path: Some("config/test-profile.yaml".to_string())
+            }
+        );
+    }
+
+    #[test]
     fn startup_command_rejects_partial_capabilities_command() {
         let error = parse_startup_command(["capabilities", "--compiled"])
             .expect_err("partial capabilities command should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn startup_command_rejects_mixed_capability_modes() {
+        let error = parse_startup_command(["capabilities", "--compiled", "--enabled", "--json"])
+            .expect_err("mixed capability modes should fail");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }

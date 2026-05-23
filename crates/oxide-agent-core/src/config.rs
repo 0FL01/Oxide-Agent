@@ -2,6 +2,10 @@
 //!
 //! Loads settings from environment variables and defines configuration constants.
 //!
+use crate::capabilities::{
+    compiled_capability_manifest, CompiledCapabilityManifest, EnabledCapabilityManifest,
+    ManifestError,
+};
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -64,6 +68,10 @@ pub const OPENROUTER_AUDIO_TRANSCRIBE_PROMPT: &str = concat!(
 /// Agent settings loaded from environment variables.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct AgentSettings {
+    /// Module-scoped runtime configuration keyed by stable module ID.
+    #[serde(default)]
+    pub modules: BTreeMap<String, ModuleRuntimeConfig>,
+
     /// ChatGPT OAuth auth file path.
     pub chatgpt_auth_path: Option<String>,
     /// Groq API key
@@ -209,6 +217,46 @@ pub struct AgentSettings {
     pub sub_agent_timeout_secs: Option<u64>,
 }
 
+/// Runtime config for a single capability module.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, Eq, PartialEq)]
+pub struct ModuleRuntimeConfig {
+    /// Whether this compiled module is enabled at runtime.
+    pub enabled: Option<bool>,
+}
+
+impl ModuleRuntimeConfig {
+    /// Returns true unless the module is explicitly disabled.
+    #[must_use]
+    pub const fn enabled_or_default(&self) -> bool {
+        match self.enabled {
+            Some(enabled) => enabled,
+            None => true,
+        }
+    }
+}
+
+/// Lightweight module-only runtime config.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, Eq, PartialEq)]
+pub struct ModuleRuntimeSettings {
+    /// Module-scoped runtime configuration keyed by stable module ID.
+    #[serde(default)]
+    pub modules: BTreeMap<String, ModuleRuntimeConfig>,
+}
+
+impl ModuleRuntimeSettings {
+    /// Validates configured module IDs and builds the enabled manifest.
+    pub fn enabled_capability_manifest(
+        &self,
+        compiled: &CompiledCapabilityManifest,
+    ) -> Result<EnabledCapabilityManifest, ManifestError> {
+        compiled.enabled_manifest_from_configured_modules(
+            self.modules
+                .iter()
+                .map(|(module_id, config)| (module_id.as_str(), config.enabled_or_default())),
+        )
+    }
+}
+
 const fn default_openrouter_site_url() -> String {
     String::new()
 }
@@ -250,16 +298,31 @@ fn is_opencode_go_provider(provider: &str) -> bool {
 ///
 /// Returns a `ConfigError` if building sources fails.
 pub fn build_config() -> Result<Config, ConfigError> {
+    build_config_with_optional_file(None)
+}
+
+/// Build the base configuration loader with an optional explicit config file.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if building sources fails.
+pub fn build_config_with_optional_file(config_path: Option<&str>) -> Result<Config, ConfigError> {
     let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
 
-    Config::builder()
+    let mut builder = Config::builder()
         // Start off by merging in the "default" configuration file
         .add_source(File::with_name("config/default").required(false))
         // Add in the current environment file
         .add_source(File::with_name(&format!("config/{run_mode}")).required(false))
         // Add in a local configuration file
         // This file shouldn't be checked into git
-        .add_source(File::with_name("config/local").required(false))
+        .add_source(File::with_name("config/local").required(false));
+
+    if let Some(config_path) = config_path {
+        builder = builder.add_source(File::with_name(config_path).required(true));
+    }
+
+    builder
         // Add in settings from the environment (with a prefix of APP)
         // Eg.. `APP_DEBUG=1 ./target/app` would set the `debug` key
         .add_source(Environment::with_prefix("APP").separator("__"))
@@ -268,6 +331,23 @@ pub fn build_config() -> Result<Config, ConfigError> {
         // ignore_empty treats empty env vars as unset
         .add_source(Environment::default().ignore_empty(true))
         .build()
+}
+
+/// Load only module-scoped runtime config.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` if config loading or deserialization fails.
+pub fn load_module_runtime_settings(
+    config_path: Option<&str>,
+) -> Result<ModuleRuntimeSettings, ConfigError> {
+    build_config_with_optional_file(config_path)?.try_deserialize()
+}
+
+fn capability_config_error(error: ManifestError) -> ConfigError {
+    ConfigError::Message(format!(
+        "Capability module config validation failed: {error}"
+    ))
 }
 
 impl AgentSettings {
@@ -286,6 +366,7 @@ impl AgentSettings {
     /// Returns a `ConfigError` if loading fails.
     pub fn new() -> Result<Self, ConfigError> {
         let mut settings: Self = build_config()?.try_deserialize()?;
+        settings.validate_configured_modules()?;
         settings.apply_model_routes_from_env();
 
         // Fallback: Check environment variables directly if config didn't pick them up
@@ -373,6 +454,17 @@ impl AgentSettings {
         settings.validate_route_credentials()?;
 
         Ok(settings)
+    }
+
+    fn validate_configured_modules(&self) -> Result<(), ConfigError> {
+        let manifest = compiled_capability_manifest().map_err(capability_config_error)?;
+        let module_settings = ModuleRuntimeSettings {
+            modules: self.modules.clone(),
+        };
+        module_settings
+            .enabled_capability_manifest(&manifest)
+            .map(|_| ())
+            .map_err(capability_config_error)
     }
 
     fn validate_route_credentials(&self) -> Result<(), ConfigError> {
@@ -1037,6 +1129,20 @@ mod tests {
 
         assert_eq!(settings.agent_model_max_output_tokens, Some(12_345));
         assert_eq!(settings.agent_model_context_window_tokens, Some(54_321));
+    }
+
+    #[test]
+    fn module_runtime_settings_deserialize_enabled_flags() {
+        let settings: ModuleRuntimeSettings = serde_json::from_value(json!({
+            "modules": {
+                "tool/a": { "enabled": false },
+                "tool/b": {}
+            }
+        }))
+        .expect("module runtime settings should deserialize");
+
+        assert!(!settings.modules["tool/a"].enabled_or_default());
+        assert!(settings.modules["tool/b"].enabled_or_default());
     }
 
     #[test]

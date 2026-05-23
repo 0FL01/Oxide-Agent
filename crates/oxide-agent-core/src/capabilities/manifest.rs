@@ -2,7 +2,7 @@
 
 use super::{CapabilityId, CapabilityKind, CapabilityModule, CapabilityRequirement, ModuleId};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 /// Error returned while constructing a capability manifest.
@@ -209,6 +209,45 @@ impl CompiledCapabilityManifest {
         Ok(())
     }
 
+    /// Builds an enabled manifest from runtime module config entries.
+    ///
+    /// All compiled modules are enabled by default. Config entries may disable
+    /// a compiled module with `enabled = false`; entries for non-compiled
+    /// modules are hard errors.
+    pub fn enabled_manifest_from_configured_modules<I, S>(
+        &self,
+        module_configs: I,
+    ) -> Result<EnabledCapabilityManifest, ManifestError>
+    where
+        I: IntoIterator<Item = (S, bool)>,
+        S: AsRef<str>,
+    {
+        let mut disabled_modules = BTreeSet::new();
+
+        for (module_id, enabled) in module_configs {
+            let module_id = module_id.as_ref();
+            if !self.contains_module_id(module_id) {
+                return Err(ManifestError::NonCompiledModuleConfig(
+                    module_id.to_string(),
+                ));
+            }
+            if !enabled {
+                disabled_modules.insert(module_id.to_string());
+            }
+        }
+
+        let enabled_module_ids = self
+            .modules
+            .iter()
+            .map(ModuleManifestEntry::id)
+            .filter(|module_id| !disabled_modules.contains(module_id.as_str()));
+
+        Ok(EnabledCapabilityManifest::from_compiled_module_ids(
+            self,
+            enabled_module_ids,
+        ))
+    }
+
     /// Serializes the manifest as pretty JSON for CLI/debug output.
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
@@ -226,15 +265,31 @@ impl EnabledCapabilityManifest {
     /// Creates an enabled manifest where every compiled module is enabled.
     #[must_use]
     pub fn all_compiled(compiled: &CompiledCapabilityManifest) -> Self {
+        Self::from_compiled_module_ids(
+            compiled,
+            compiled.modules.iter().map(ModuleManifestEntry::id),
+        )
+    }
+
+    /// Creates an enabled manifest from a validated set of compiled module IDs.
+    #[must_use]
+    pub fn from_compiled_module_ids<I>(compiled: &CompiledCapabilityManifest, module_ids: I) -> Self
+    where
+        I: IntoIterator<Item = ModuleId>,
+    {
+        let enabled_modules: BTreeSet<ModuleId> = module_ids.into_iter().collect();
+
         Self {
             modules: compiled
                 .modules
                 .iter()
                 .map(ModuleManifestEntry::id)
+                .filter(|module_id| enabled_modules.contains(module_id))
                 .collect(),
             capabilities: compiled
                 .capabilities
                 .iter()
+                .filter(|entry| enabled_modules.contains(&entry.module()))
                 .map(CapabilityManifestEntry::id)
                 .collect(),
         }
@@ -393,6 +448,44 @@ mod tests {
             error,
             ManifestError::NonCompiledModuleConfig("tool/missing".to_string())
         );
+    }
+
+    #[test]
+    fn enabled_manifest_uses_all_compiled_minus_disabled_modules() {
+        let modules = vec![
+            boxed(StaticCapabilityModule::new(
+                ModuleId::new("tool/a"),
+                CapabilityKind::Tool,
+                "tool-a",
+                TOOL_A_READ,
+            )),
+            boxed(StaticCapabilityModule::new(
+                ModuleId::new("tool/b"),
+                CapabilityKind::Tool,
+                "tool-b",
+                TOOL_A_WRITE,
+            )),
+        ];
+        let manifest =
+            CompiledCapabilityManifest::from_modules(&modules).expect("manifest should be valid");
+
+        let enabled = manifest
+            .enabled_manifest_from_configured_modules([("tool/b", false)])
+            .expect("disabled compiled module config should validate");
+
+        let module_ids: Vec<_> = enabled
+            .modules()
+            .iter()
+            .map(|module_id| module_id.as_str())
+            .collect();
+        let capability_ids: Vec<_> = enabled
+            .capabilities()
+            .iter()
+            .map(|capability_id| capability_id.as_str())
+            .collect();
+
+        assert_eq!(module_ids, ["tool/a"]);
+        assert_eq!(capability_ids, ["tool/a-read"]);
     }
 
     #[test]
