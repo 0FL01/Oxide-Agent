@@ -1,0 +1,102 @@
+# Goal: Modular Architecture Refactor
+
+Date started: 2026-05-23
+Status: active
+Codex goal: Implement the modular architecture refactor described in prd/PRD.md on branch modular-arch. Track progress in this repo-local goal document, proceed milestone by milestone, and commit after each completed major checkpoint.
+
+## Objective
+
+Refactor Oxide Agent into the capability-oriented modular architecture specified by `prd/PRD.md`.
+
+Done when build profiles deterministically select compiled modules, heavy dependencies are eliminated from profiles that do not select them, runtime config can only enable compiled modules, tool/provider/storage/sandbox/transport registration flows through a single capability registry path, Docker/Compose assets match the selected profile, and the PRD acceptance criteria are validated or explicitly documented as remaining work.
+
+## Scope
+
+In scope:
+- Add capability/module foundations, manifests, deterministic compiled module lists, and runtime validation.
+- Replace broad/global provider and tool registration with feature-gated modules.
+- Move LLM providers, tools, storage, sandbox, transports, MCP/media/search/browser integrations, reminders, file delivery, and manager groups toward explicit capability modules.
+- Make Cargo features atomic and compose profile features from them.
+- Move heavyweight dependencies behind optional features and add leakage checks.
+- Make Docker, Compose, sandbox images, and optional binaries profile-aware.
+- Remove legacy compatibility paths, deprecated aliases, embedding/skill runtime, duplicate registries, and old migration-only code as replacement modules land.
+
+Out of scope:
+- Preserving old config compatibility or old environment variable aliases.
+- Deployment migrations for existing state.
+- Enterprise-scale orchestration, sharding, HA, queueing, or extra observability.
+- Adding new product features unrelated to modular architecture.
+- Keeping local filesystem or SQLite as durable storage.
+
+## Repository Context
+
+- PRD: `prd/PRD.md`.
+- Branch for this work: `modular-arch`.
+- Existing workspace crates: `oxide-agent-core`, `oxide-agent-runtime`, `oxide-agent-transport-telegram`, `oxide-agent-transport-web`, `oxide-agent-telegram-bot`, `oxide-agent-sandboxd`.
+- Current feature baseline: `oxide-agent-core` has coarse features (`tavily`, `searxng`, `browser_use`, `jira`, `mattermost`) and default features enabled.
+- Current heavy dependency leakage examples: AWS SDK, RMCP, Bollard, async-openai, Gemini, ZAI, reqwest, tar/bincode/sandbox dependencies are currently core-level dependencies.
+- Existing goal convention: repo-local files in `docs/goals/`.
+
+## Implementation Plan
+
+1. Phase 0: Create this goal document from `prd/PRD.md` and commit it.
+2. Phase 1: Add Milestone 1 dependency/feature audit artifacts: dependency classification, atomic feature naming map, profile map, and first leakage-check script/CI-friendly commands.
+3. Phase 2: Convert Cargo feature defaults toward `default = []`, introduce initial atomic/profile features, and move obvious heavy dependencies to optional features where code already has or can cheaply get cfg boundaries.
+4. Phase 3: Add capability foundation types: module IDs, capability IDs, manifest structs, deterministic compiled module list scaffolding, duplicate detection, and tests.
+5. Phase 4: Add config validation against compiled module manifests and CLI/test hooks to print compiled/enabled capabilities.
+6. Phase 5: Start provider modularization with one narrow provider slice, then repeat provider-by-provider.
+7. Phase 6: Start tool modularization with low-risk atomic tools, then split sandbox/search/MCP/media/manager tools by capability.
+8. Phase 7: Modularize storage around S3/R2 durable storage and remove concrete storage construction from transport startup.
+9. Phase 8: Modularize sandbox backend/tool split and gate sandbox daemon/broker/Docker dependencies.
+10. Phase 9: Decouple transport startup from app composition and introduce profile-aware bootstrap.
+11. Phase 10: Make Docker/Compose/sandbox images profile-aware and remove unconditional sidecars/binaries/assets.
+12. Phase 11: Add final profile matrix, dependency leakage, manifest snapshot, config validation, Docker/Compose, and size-budget checks.
+
+## Validation Contract
+
+- Formatting: `cargo fmt --all --check`.
+- Baseline workspace check during early phases: `cargo check --workspace`.
+- Lint before finishing a code checkpoint: `cargo clippy --workspace --all-targets --all-features`.
+- Profile checks as they become available:
+  - `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`
+  - `cargo check --workspace --no-default-features --features profile-no-sandbox`
+  - `cargo check --workspace --no-default-features --features profile-search-only`
+  - `cargo check --workspace --no-default-features --features profile-lite`
+  - `cargo check --workspace --no-default-features --features profile-media-enabled`
+  - `cargo check --workspace --no-default-features --features profile-full`
+- Dependency leakage checks as they become available:
+  - embedded/profile-specific builds must not include unselected AWS SDK, RMCP, Bollard, or unrelated provider SDKs;
+  - no-sandbox builds must not include Bollard or sandbox broker protocol;
+  - no-MCP/search-only builds must not include RMCP.
+
+Done when:
+- PRD section 20 acceptance criteria are satisfied.
+- Required profile builds are reproducible from Cargo features.
+- Compiled and enabled capabilities are emitted as deterministic JSON.
+- Config schema/example generation exists for compiled modules.
+- Docker/Compose assets correspond to selected modules.
+- CI or CI-ready scripts prove dependency absence and profile topology.
+- Legacy registry/compatibility paths are deleted rather than wrapped.
+
+## Decisions
+
+- 2026-05-23: Treat the PRD as a multi-milestone architecture migration, not a single patch.
+- 2026-05-23: Commit after every completed phase or major checkpoint.
+- 2026-05-23: Use branch `modular-arch` for all work in this goal.
+- 2026-05-23: Treat PRD section 22.7 as authoritative over earlier local-storage examples: S3/R2-compatible object storage is the only durable storage target; local filesystem is transient only.
+- 2026-05-23: Keep implementation pragmatic for personal-scale usage; avoid extra orchestration/HA layers unless the PRD explicitly requires a modular boundary.
+
+## Progress Log
+
+- 2026-05-23 13:38 +03: Read `prd/PRD.md`, confirmed branch `modular-arch` with clean working tree, created active Codex goal, and started this repo-local goal document. Next: commit Phase 0, then implement Phase 1 dependency/feature audit artifacts.
+
+## Risks and Blockers
+
+- The PRD intentionally rejects compatibility and migrations; deletion phases must be sequenced behind replacement modules to keep the workspace buildable.
+- The PRD contains early examples using durable local storage, but section 22.7 later decides against it. This goal follows the later explicit decision.
+- Moving dependencies to optional features can temporarily expose many unconditional imports; use small cfg boundaries and profile checks instead of large speculative rewrites.
+- Docker/Compose profile generation depends on module requirement metadata that does not exist yet; early Docker work should stay profile-specific until manifests can drive generation.
+
+## Final Verification
+
+- Pending.
