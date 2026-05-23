@@ -19,8 +19,12 @@ use crate::agent::providers::FileHosterProvider;
     feature = "tool-sandbox-recreate"
 ))]
 use crate::agent::providers::FilteredToolProvider;
+#[cfg(feature = "tool-stack-logs")]
+use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-todos")]
 use crate::agent::providers::TodosProvider;
+#[cfg(feature = "tool-webfetch-md")]
+use crate::agent::providers::WebFetchMdProvider;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::providers::YtdlpProvider;
 
@@ -123,6 +127,44 @@ impl ToolModule for FileDeliveryToolModule {
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
         Some(Box::new(FileHosterProvider::new(ctx.sandbox_scope())))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for compose-stack log tools.
+#[cfg(feature = "tool-stack-logs")]
+pub struct StackLogsToolModule;
+
+#[cfg(feature = "tool-stack-logs")]
+impl ToolModule for StackLogsToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/stack-logs")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(StackLogsProvider::new()))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for one-shot URL-to-Markdown fetches.
+#[cfg(feature = "tool-webfetch-md")]
+pub struct WebFetchMdToolModule;
+
+#[cfg(feature = "tool-webfetch-md")]
+impl ToolModule for WebFetchMdToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/webfetch-md")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(WebFetchMdProvider::new()))
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

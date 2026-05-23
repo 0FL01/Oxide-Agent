@@ -33,12 +33,8 @@ use crate::agent::providers::MediaFileProvider;
 use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::SshMcpProvider;
-#[cfg(feature = "tool-stack-logs")]
-use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-tavily")]
 use crate::agent::providers::TavilyProvider;
-#[cfg(feature = "tool-webfetch-md")]
-use crate::agent::providers::WebFetchMdProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-file-delivery")]
@@ -49,6 +45,8 @@ use crate::agent::tool_runtime::SandboxExecToolModule;
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
 use crate::agent::tool_runtime::SandboxRecreateToolModule;
+#[cfg(feature = "tool-stack-logs")]
+use crate::agent::tool_runtime::StackLogsToolModule;
 #[cfg(feature = "tool-todos")]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
@@ -57,10 +55,14 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-recreate",
     feature = "tool-compression",
     feature = "tool-file-delivery",
+    feature = "tool-stack-logs",
     feature = "tool-todos",
+    feature = "tool-webfetch-md",
     feature = "tool-ytdlp"
 ))]
 use crate::agent::tool_runtime::ToolModule;
+#[cfg(feature = "tool-webfetch-md")]
+use crate::agent::tool_runtime::WebFetchMdToolModule;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::tool_runtime::YtdlpToolModule;
 
@@ -91,9 +93,10 @@ impl AgentExecutor {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
+        let module_ctx = self.build_tool_module_context(todos_arc, progress_tx);
 
-        // Core providers: todos, sandbox, filehoster, media file analysis, ytdlp, delegation
-        self.register_core_providers(&mut registry, todos_arc, progress_tx);
+        // Core providers: module-owned tools, media file analysis, and delegation
+        self.register_core_providers(&mut registry, &module_ctx);
 
         // Topic-scoped providers: agents_md, manager, ssh, reminders
         self.register_topic_providers(&mut registry);
@@ -101,7 +104,7 @@ impl AgentExecutor {
 
         // Feature-gated MCP, search, and browser automation providers
         self.register_mcp_providers(&mut registry);
-        self.register_search_providers(&mut registry);
+        self.register_search_providers(&mut registry, &module_ctx);
         self.register_browser_providers(&mut registry);
 
         // Optional TTS providers.
@@ -154,7 +157,9 @@ impl AgentExecutor {
             feature = "tool-sandbox-recreate",
             feature = "tool-compression",
             feature = "tool-file-delivery",
+            feature = "tool-stack-logs",
             feature = "tool-todos",
+            feature = "tool-webfetch-md",
             feature = "tool-ytdlp"
         )))]
         let _ = (registry, ctx);
@@ -163,8 +168,12 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
         #[cfg(feature = "tool-file-delivery")]
         self.register_tool_runtime_module(registry, &FileDeliveryToolModule, ctx);
+        #[cfg(feature = "tool-stack-logs")]
+        self.register_tool_runtime_module(registry, &StackLogsToolModule, ctx);
         #[cfg(feature = "tool-todos")]
         self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
+        #[cfg(feature = "tool-webfetch-md")]
+        self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
         #[cfg(feature = "tool-ytdlp")]
         self.register_tool_runtime_module(registry, &YtdlpToolModule, ctx);
         #[cfg(feature = "tool-sandbox-exec")]
@@ -181,7 +190,9 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "tool-compression",
         feature = "tool-file-delivery",
+        feature = "tool-stack-logs",
         feature = "tool-todos",
+        feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
     ))]
     fn register_tool_runtime_module<M>(
@@ -320,17 +331,9 @@ impl AgentExecutor {
         Arc::new(provider)
     }
 
-    fn register_core_providers(
-        &self,
-        registry: &mut ToolRegistry,
-        todos_arc: Arc<Mutex<TodoList>>,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        let sandbox_scope = self.session.sandbox_scope().clone();
-        let module_ctx = self.build_tool_module_context(todos_arc, progress_tx);
-        self.register_legacy_tool_modules(registry, &module_ctx);
-        #[cfg(feature = "tool-stack-logs")]
-        registry.register(Box::new(StackLogsProvider::new()));
+    fn register_core_providers(&self, registry: &mut ToolRegistry, module_ctx: &ToolModuleContext) {
+        let sandbox_scope = module_ctx.sandbox_scope();
+        self.register_legacy_tool_modules(registry, module_ctx);
         #[cfg(any(
             feature = "tool-media-audio",
             feature = "tool-media-image",
@@ -366,6 +369,7 @@ impl AgentExecutor {
             feature = "tool-sandbox-recreate",
             feature = "tool-compression",
             feature = "tool-file-delivery",
+            feature = "tool-stack-logs",
             feature = "tool-todos",
             feature = "tool-ytdlp"
         )))]
@@ -375,6 +379,8 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &CompressionToolModule, ctx);
         #[cfg(feature = "tool-file-delivery")]
         self.register_legacy_tool_module(registry, &FileDeliveryToolModule, ctx);
+        #[cfg(feature = "tool-stack-logs")]
+        self.register_legacy_tool_module(registry, &StackLogsToolModule, ctx);
         #[cfg(feature = "tool-todos")]
         self.register_legacy_tool_module(registry, &TodosToolModule, ctx);
         #[cfg(feature = "tool-ytdlp")]
@@ -393,7 +399,9 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "tool-compression",
         feature = "tool-file-delivery",
+        feature = "tool-stack-logs",
         feature = "tool-todos",
+        feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
     ))]
     fn register_legacy_tool_module<M>(
@@ -563,13 +571,16 @@ impl AgentExecutor {
         Self::register_mattermost_mcp_provider(_registry);
     }
 
-    fn register_search_providers(&self, registry: &mut ToolRegistry) {
+    fn register_search_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
+        #[cfg(not(feature = "tool-webfetch-md"))]
+        let _ = ctx;
+
         #[cfg(not(any(
             feature = "tool-tavily",
             feature = "tool-searxng",
             feature = "tool-webfetch-md"
         )))]
-        let _ = registry;
+        let _ = (registry, ctx);
 
         #[cfg(feature = "tool-tavily")]
         if crate::config::is_tavily_enabled() {
@@ -613,7 +624,7 @@ impl AgentExecutor {
         }
 
         #[cfg(feature = "tool-webfetch-md")]
-        registry.register(Box::new(WebFetchMdProvider::new()));
+        self.register_legacy_tool_module(registry, &WebFetchMdToolModule, ctx);
     }
 
     fn register_browser_providers(&self, _registry: &mut ToolRegistry) {
