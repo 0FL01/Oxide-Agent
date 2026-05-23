@@ -7,7 +7,7 @@ use crate::config::AgentSettings;
 use crate::config::ModelInfo;
 use crate::llm::LlmProvider;
 
-#[cfg(any(feature = "llm-chatgpt", feature = "llm-mistral"))]
+#[cfg(feature = "llm-chatgpt")]
 use super::super::capabilities::ToolHistoryMode;
 use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
 
@@ -194,7 +194,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     #[cfg(feature = "llm-groq")]
     modules.push(Box::new(super::groq::GroqProviderModule));
     #[cfg(feature = "llm-mistral")]
-    modules.push(Box::new(MistralProviderModule));
+    modules.push(Box::new(super::mistral::MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
     modules.push(Box::new(super::minimax::MiniMaxProviderModule));
     #[cfg(feature = "llm-zai")]
@@ -246,41 +246,6 @@ impl LlmProviderModule for ChatGptProviderModule {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
-    }
-}
-
-#[cfg(feature = "llm-mistral")]
-struct MistralProviderModule;
-
-#[cfg(feature = "llm-mistral")]
-impl LlmProviderModule for MistralProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/mistral"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["mistral"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        settings.mistral_api_key.as_ref().map(|api_key| {
-            Arc::new(super::MistralProvider::new_with_client(
-                api_key.clone(),
-                ctx.http_client.clone(),
-            )) as Arc<dyn LlmProvider>
-        })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
-    }
-
-    fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(true, false, false)
     }
 }
 
@@ -510,5 +475,31 @@ mod tests {
         assert_eq!(capabilities.tool_history_label(), "strict");
         assert!(capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);
+    }
+
+    #[cfg(feature = "llm-mistral")]
+    #[test]
+    fn mistral_module_registers_provider_id_and_aliases() {
+        let settings = AgentSettings {
+            mistral_api_key: Some("test-mistral-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let providers = build_configured_providers(&settings);
+
+        assert!(providers.contains_key("llm-provider/mistral"));
+        assert!(providers.contains_key("mistral"));
+        assert_eq!(provider_module_id("mistral"), Some("llm-provider/mistral"));
+    }
+
+    #[cfg(feature = "llm-mistral")]
+    #[test]
+    fn mistral_module_owns_media_capabilities() {
+        let capabilities =
+            provider_media_capabilities("llm-provider/mistral").expect("provider should resolve");
+
+        assert!(capabilities.supports_audio_transcription);
+        assert!(!capabilities.supports_image_understanding);
+        assert!(!capabilities.supports_video_understanding);
     }
 }
