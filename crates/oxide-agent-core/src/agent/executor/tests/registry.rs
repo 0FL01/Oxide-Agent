@@ -456,6 +456,100 @@ fn legacy_registry_registers_search_modules_once() {
     std::env::remove_var("TAVILY_API_KEY");
 }
 
+#[cfg(feature = "tool-tts-kokoro")]
+#[test]
+fn legacy_registry_skips_disabled_kokoro_tts_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("KOKORO_TTS_URL", "http://kokoro-tts:8880");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/tts-kokoro".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("text_to_speech_en"));
+    assert!(!registry.can_handle("text_to_speech_en_file"));
+    assert!(registry.can_handle("write_todos"));
+
+    std::env::remove_var("KOKORO_TTS_URL");
+}
+
+#[cfg(feature = "tool-tts-silero")]
+#[test]
+fn legacy_registry_skips_disabled_silero_tts_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("SILERO_TTS_URL", "http://silero-tts:8000");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/tts-silero".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("text_to_speech_ru"));
+    assert!(!registry.can_handle("text_to_speech_ru_file"));
+    assert!(registry.can_handle("write_todos"));
+
+    std::env::remove_var("SILERO_TTS_URL");
+}
+
+#[cfg(all(feature = "tool-tts-kokoro", feature = "tool-tts-silero"))]
+#[test]
+fn legacy_registry_registers_tts_modules_once() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("KOKORO_TTS_URL", "http://kokoro-tts:8880");
+    std::env::set_var("SILERO_TTS_URL", "http://silero-tts:8000");
+
+    let executor = build_executor();
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for tool_name in [
+        "text_to_speech_en",
+        "text_to_speech_en_file",
+        "text_to_speech_ru",
+        "text_to_speech_ru_file",
+    ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+
+    std::env::remove_var("SILERO_TTS_URL");
+    std::env::remove_var("KOKORO_TTS_URL");
+}
+
 #[test]
 fn legacy_registry_skips_disabled_sandbox_exec_module() {
     let settings = Arc::new(AgentSettings {

@@ -21,8 +21,6 @@ use tracing::warn;
 
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::providers::BrowserUseProvider;
-#[cfg(feature = "tool-tts-kokoro")]
-use crate::agent::providers::KokoroTtsProvider;
 #[cfg(any(
     feature = "tool-media-audio",
     feature = "tool-media-image",
@@ -35,6 +33,8 @@ use crate::agent::providers::SshMcpProvider;
 use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::tool_runtime::FileDeliveryToolModule;
+#[cfg(feature = "tool-tts-kokoro")]
+use crate::agent::tool_runtime::KokoroTtsToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -43,6 +43,8 @@ use crate::agent::tool_runtime::SandboxFileOpsToolModule;
 use crate::agent::tool_runtime::SandboxRecreateToolModule;
 #[cfg(feature = "tool-searxng")]
 use crate::agent::tool_runtime::SearxngToolModule;
+#[cfg(feature = "tool-tts-silero")]
+use crate::agent::tool_runtime::SileroTtsToolModule;
 #[cfg(feature = "tool-stack-logs")]
 use crate::agent::tool_runtime::StackLogsToolModule;
 #[cfg(feature = "tool-tavily")]
@@ -59,6 +61,8 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-stack-logs",
     feature = "tool-tavily",
     feature = "tool-todos",
+    feature = "tool-tts-kokoro",
+    feature = "tool-tts-silero",
     feature = "tool-webfetch-md",
     feature = "tool-ytdlp",
 ))]
@@ -110,8 +114,7 @@ impl AgentExecutor {
         self.register_browser_providers(&mut registry);
 
         // Optional TTS providers.
-        self.register_kokoro_tts_provider(&mut registry, progress_tx);
-        self.register_silero_tts_provider(&mut registry, progress_tx);
+        self.register_tts_providers(&mut registry, &module_ctx);
 
         registry
     }
@@ -163,6 +166,8 @@ impl AgentExecutor {
             feature = "tool-stack-logs",
             feature = "tool-tavily",
             feature = "tool-todos",
+            feature = "tool-tts-kokoro",
+            feature = "tool-tts-silero",
             feature = "tool-webfetch-md",
             feature = "tool-ytdlp"
         )))]
@@ -180,6 +185,10 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &TavilyToolModule, ctx);
         #[cfg(feature = "tool-todos")]
         self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
+        #[cfg(feature = "tool-tts-kokoro")]
+        self.register_tool_runtime_module(registry, &KokoroTtsToolModule, ctx);
+        #[cfg(feature = "tool-tts-silero")]
+        self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
         #[cfg(feature = "tool-webfetch-md")]
         self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
         #[cfg(feature = "tool-ytdlp")]
@@ -202,6 +211,8 @@ impl AgentExecutor {
         feature = "tool-stack-logs",
         feature = "tool-tavily",
         feature = "tool-todos",
+        feature = "tool-tts-kokoro",
+        feature = "tool-tts-silero",
         feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
     ))]
@@ -413,6 +424,8 @@ impl AgentExecutor {
         feature = "tool-stack-logs",
         feature = "tool-tavily",
         feature = "tool-todos",
+        feature = "tool-tts-kokoro",
+        feature = "tool-tts-silero",
         feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
     ))]
@@ -641,87 +654,14 @@ impl AgentExecutor {
         }
     }
 
-    #[cfg(feature = "tool-tts-kokoro")]
-    fn register_kokoro_tts_provider(
-        &self,
-        registry: &mut ToolRegistry,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        let config = crate::agent::providers::tts::TtsConfig::from_env();
+    fn register_tts_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
+        #[cfg(not(any(feature = "tool-tts-kokoro", feature = "tool-tts-silero")))]
+        let _ = (registry, ctx);
 
-        if let Ok(url) = std::env::var("KOKORO_TTS_URL") {
-            if url.trim().is_empty() {
-                tracing::debug!(
-                    "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
-                );
-                return;
-            }
-        }
-
-        tracing::debug!(url = %config.base_url, "Registering TTS provider");
-        let sandbox_scope = self.session.sandbox_scope().clone();
-
-        let provider = if let Some(tx) = progress_tx {
-            KokoroTtsProvider::from_config(config)
-                .with_sandbox_scope(sandbox_scope)
-                .with_progress_tx(tx.clone())
-        } else {
-            KokoroTtsProvider::from_config(config).with_sandbox_scope(sandbox_scope)
-        };
-
-        let base_url = provider.base_url().to_string();
-        registry.register(Box::new(provider));
-        tracing::debug!(url = %base_url, "Kokoro TTS provider registered");
-    }
-
-    #[cfg(not(feature = "tool-tts-kokoro"))]
-    fn register_kokoro_tts_provider(
-        &self,
-        _registry: &mut ToolRegistry,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-    }
-
-    #[cfg(feature = "tool-tts-silero")]
-    fn register_silero_tts_provider(
-        &self,
-        registry: &mut ToolRegistry,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        let config = crate::agent::providers::silero_tts::SileroTtsConfig::from_env();
-
-        if let Ok(url) = std::env::var("SILERO_TTS_URL") {
-            if url.trim().is_empty() {
-                tracing::debug!(
-                    "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
-                );
-                return;
-            }
-        }
-
-        tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");
-        let sandbox_scope = self.session.sandbox_scope().clone();
-
-        let provider = if let Some(tx) = progress_tx {
-            crate::agent::providers::silero_tts::SileroTtsProvider::from_config(config)
-                .with_sandbox_scope(sandbox_scope)
-                .with_progress_tx(tx.clone())
-        } else {
-            crate::agent::providers::silero_tts::SileroTtsProvider::from_config(config)
-                .with_sandbox_scope(sandbox_scope)
-        };
-
-        let base_url = provider.base_url().to_string();
-        registry.register(Box::new(provider));
-        tracing::debug!(url = %base_url, "Silero TTS provider registered");
-    }
-
-    #[cfg(not(feature = "tool-tts-silero"))]
-    fn register_silero_tts_provider(
-        &self,
-        _registry: &mut ToolRegistry,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
+        #[cfg(feature = "tool-tts-kokoro")]
+        self.register_legacy_tool_module(registry, &KokoroTtsToolModule, ctx);
+        #[cfg(feature = "tool-tts-silero")]
+        self.register_legacy_tool_module(registry, &SileroTtsToolModule, ctx);
     }
 }
 

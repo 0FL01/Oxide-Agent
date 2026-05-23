@@ -31,6 +31,10 @@ use crate::agent::providers::TodosProvider;
 use crate::agent::providers::WebFetchMdProvider;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::providers::YtdlpProvider;
+#[cfg(feature = "tool-tts-kokoro")]
+use crate::agent::providers::{KokoroTtsProvider, TtsConfig};
+#[cfg(feature = "tool-tts-silero")]
+use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
 
 /// Runtime context passed to tool capability modules.
 pub struct ToolModuleContext {
@@ -255,6 +259,84 @@ impl ToolModule for SearxngToolModule {
                 None
             }
         }
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for Kokoro English text-to-speech tools.
+#[cfg(feature = "tool-tts-kokoro")]
+pub struct KokoroTtsToolModule;
+
+#[cfg(feature = "tool-tts-kokoro")]
+impl ToolModule for KokoroTtsToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/tts-kokoro")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        let config = TtsConfig::from_env();
+
+        if let Ok(url) = std::env::var("KOKORO_TTS_URL") {
+            if url.trim().is_empty() {
+                tracing::debug!(
+                    "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
+                );
+                return None;
+            }
+        }
+
+        tracing::debug!(url = %config.base_url, "Registering TTS provider");
+        let mut provider =
+            KokoroTtsProvider::from_config(config).with_sandbox_scope(ctx.sandbox_scope());
+        if let Some(tx) = ctx.progress_tx() {
+            provider = provider.with_progress_tx(tx);
+        }
+
+        let base_url = provider.base_url().to_string();
+        tracing::debug!(url = %base_url, "Kokoro TTS provider registered");
+        Some(Box::new(provider))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for Silero Russian text-to-speech tools.
+#[cfg(feature = "tool-tts-silero")]
+pub struct SileroTtsToolModule;
+
+#[cfg(feature = "tool-tts-silero")]
+impl ToolModule for SileroTtsToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/tts-silero")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        let config = SileroTtsConfig::from_env();
+
+        if let Ok(url) = std::env::var("SILERO_TTS_URL") {
+            if url.trim().is_empty() {
+                tracing::debug!(
+                    "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
+                );
+                return None;
+            }
+        }
+
+        tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");
+        let mut provider =
+            SileroTtsProvider::from_config(config).with_sandbox_scope(ctx.sandbox_scope());
+        if let Some(tx) = ctx.progress_tx() {
+            provider = provider.with_progress_tx(tx);
+        }
+
+        let base_url = provider.base_url().to_string();
+        tracing::debug!(url = %base_url, "Silero TTS provider registered");
+        Some(Box::new(provider))
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

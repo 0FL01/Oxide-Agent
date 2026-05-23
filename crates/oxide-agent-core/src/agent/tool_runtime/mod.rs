@@ -30,6 +30,8 @@ pub use invocation::{
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-file-delivery")]
 pub use modules::FileDeliveryToolModule;
+#[cfg(feature = "tool-tts-kokoro")]
+pub use modules::KokoroTtsToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 pub use modules::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -38,6 +40,8 @@ pub use modules::SandboxFileOpsToolModule;
 pub use modules::SandboxRecreateToolModule;
 #[cfg(feature = "tool-searxng")]
 pub use modules::SearxngToolModule;
+#[cfg(feature = "tool-tts-silero")]
+pub use modules::SileroTtsToolModule;
 #[cfg(feature = "tool-stack-logs")]
 pub use modules::StackLogsToolModule;
 #[cfg(feature = "tool-tavily")]
