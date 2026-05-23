@@ -44,8 +44,12 @@ use crate::agent::providers::TodosProvider;
 use crate::agent::providers::WebFetchMdProvider;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::providers::YtdlpProvider;
+#[cfg(feature = "integration-mcp-jira")]
+use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
 #[cfg(feature = "tool-tts-kokoro")]
 use crate::agent::providers::{KokoroTtsProvider, TtsConfig};
+#[cfg(feature = "integration-mcp-mattermost")]
+use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
 
@@ -297,6 +301,88 @@ impl ToolModule for BrowserUseToolModule {
             None => {
                 tracing::warn!(
                     "Browser Use enabled but BROWSER_USE_URL is not set; provider not registered"
+                );
+                None
+            }
+        }
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for Jira MCP tools.
+#[cfg(feature = "integration-mcp-jira")]
+pub struct JiraMcpToolModule;
+
+#[cfg(feature = "integration-mcp-jira")]
+impl ToolModule for JiraMcpToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("integration/mcp-jira")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        match JiraMcpConfig::from_env() {
+            Some(config) => {
+                let binary_path = config.binary_path.clone();
+                tracing::debug!(
+                    binary_path = %binary_path,
+                    jira_url_present = !config.jira_url.is_empty(),
+                    jira_email_present = !config.jira_email.is_empty(),
+                    jira_token_present = !config.jira_token.is_empty(),
+                    "Registering Jira MCP provider"
+                );
+                let provider = JiraMcpProvider::new(config);
+                tracing::debug!(binary_path = %binary_path, "Jira MCP provider registered");
+                Some(Box::new(provider))
+            }
+            None => {
+                tracing::warn!(
+                    "jira feature is enabled but JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN is not set; \
+                     Jira MCP provider will not be available. Set these env vars to enable it."
+                );
+                None
+            }
+        }
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for Mattermost MCP tools.
+#[cfg(feature = "integration-mcp-mattermost")]
+pub struct MattermostMcpToolModule;
+
+#[cfg(feature = "integration-mcp-mattermost")]
+impl ToolModule for MattermostMcpToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("integration/mcp-mattermost")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        match MattermostMcpConfig::from_env() {
+            Some(config) => {
+                let binary_path = config.binary_path.clone();
+                tracing::debug!(
+                    binary_path = %binary_path,
+                    mattermost_url_present = !config.mattermost_url.is_empty(),
+                    mattermost_token_present = !config.mattermost_token.is_empty(),
+                    timeout_secs = config.timeout_secs,
+                    max_retries = config.max_retries,
+                    verify_ssl = config.verify_ssl,
+                    "Registering Mattermost MCP provider"
+                );
+                let provider = MattermostMcpProvider::new(config);
+                tracing::debug!(binary_path = %binary_path, "Mattermost MCP provider registered");
+                Some(Box::new(provider))
+            }
+            None => {
+                tracing::warn!(
+                    "mattermost feature is enabled but MATTERMOST_URL or MATTERMOST_TOKEN is not set; \
+                     Mattermost MCP provider will not be available. Set these env vars to enable it."
                 );
                 None
             }

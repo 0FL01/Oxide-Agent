@@ -456,6 +456,125 @@ fn legacy_registry_registers_search_modules_once() {
     std::env::remove_var("TAVILY_API_KEY");
 }
 
+#[cfg(feature = "integration-mcp-jira")]
+#[test]
+fn legacy_registry_skips_disabled_jira_mcp_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("JIRA_URL", "https://jira.example.test");
+    std::env::set_var("JIRA_EMAIL", "bot@example.test");
+    std::env::set_var("JIRA_API_TOKEN", "dummy-token");
+    std::env::set_var("JIRA_MCP_BINARY_PATH", "jira-mcp");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "integration/mcp-jira".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("jira_read"));
+    assert!(!registry.can_handle("jira_write"));
+    assert!(!registry.can_handle("jira_schema"));
+    assert!(registry.can_handle("write_todos"));
+
+    std::env::remove_var("JIRA_MCP_BINARY_PATH");
+    std::env::remove_var("JIRA_API_TOKEN");
+    std::env::remove_var("JIRA_EMAIL");
+    std::env::remove_var("JIRA_URL");
+}
+
+#[cfg(feature = "integration-mcp-mattermost")]
+#[test]
+fn legacy_registry_skips_disabled_mattermost_mcp_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("MATTERMOST_URL", "https://mattermost.example.test");
+    std::env::set_var("MATTERMOST_TOKEN", "dummy-token");
+    std::env::set_var("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "integration/mcp-mattermost".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("mattermost_list_teams"));
+    assert!(!registry.can_handle("mattermost_post_message"));
+    assert!(registry.can_handle("write_todos"));
+
+    std::env::remove_var("MATTERMOST_MCP_BINARY_PATH");
+    std::env::remove_var("MATTERMOST_TOKEN");
+    std::env::remove_var("MATTERMOST_URL");
+}
+
+#[cfg(all(
+    feature = "integration-mcp-jira",
+    feature = "integration-mcp-mattermost"
+))]
+#[test]
+fn legacy_registry_registers_mcp_modules_once() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("JIRA_URL", "https://jira.example.test");
+    std::env::set_var("JIRA_EMAIL", "bot@example.test");
+    std::env::set_var("JIRA_API_TOKEN", "dummy-token");
+    std::env::set_var("JIRA_MCP_BINARY_PATH", "jira-mcp");
+    std::env::set_var("MATTERMOST_URL", "https://mattermost.example.test");
+    std::env::set_var("MATTERMOST_TOKEN", "dummy-token");
+    std::env::set_var("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
+
+    let executor = build_executor();
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for tool_name in [
+        "jira_read",
+        "jira_write",
+        "jira_schema",
+        "mattermost_list_teams",
+        "mattermost_post_message",
+    ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+
+    std::env::remove_var("MATTERMOST_MCP_BINARY_PATH");
+    std::env::remove_var("MATTERMOST_TOKEN");
+    std::env::remove_var("MATTERMOST_URL");
+    std::env::remove_var("JIRA_MCP_BINARY_PATH");
+    std::env::remove_var("JIRA_API_TOKEN");
+    std::env::remove_var("JIRA_EMAIL");
+    std::env::remove_var("JIRA_URL");
+}
+
 #[cfg(feature = "tool-tts-kokoro")]
 #[test]
 fn legacy_registry_skips_disabled_kokoro_tts_module() {

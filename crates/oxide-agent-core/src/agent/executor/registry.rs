@@ -14,8 +14,12 @@ use crate::agent::tool_runtime::BrowserUseToolModule;
 use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::tool_runtime::FileDeliveryToolModule;
+#[cfg(feature = "integration-mcp-jira")]
+use crate::agent::tool_runtime::JiraMcpToolModule;
 #[cfg(feature = "tool-tts-kokoro")]
 use crate::agent::tool_runtime::KokoroTtsToolModule;
+#[cfg(feature = "integration-mcp-mattermost")]
+use crate::agent::tool_runtime::MattermostMcpToolModule;
 #[cfg(feature = "tool-media-audio")]
 use crate::agent::tool_runtime::MediaAudioToolModule;
 #[cfg(feature = "tool-media-image")]
@@ -42,6 +46,8 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate",
+    feature = "integration-mcp-jira",
+    feature = "integration-mcp-mattermost",
     feature = "tool-browser-use",
     feature = "tool-compression",
     feature = "tool-file-delivery",
@@ -112,7 +118,7 @@ impl AgentExecutor {
         self.register_wiki_memory_provider(&mut registry);
 
         // Feature-gated MCP, search, and browser automation providers
-        self.register_mcp_providers(&mut registry);
+        self.register_mcp_providers(&mut registry, &module_ctx);
         self.register_search_providers(&mut registry, &module_ctx);
         self.register_browser_providers(&mut registry, &module_ctx);
 
@@ -163,6 +169,8 @@ impl AgentExecutor {
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-sandbox-recreate",
+            feature = "integration-mcp-jira",
+            feature = "integration-mcp-mattermost",
             feature = "tool-browser-use",
             feature = "tool-compression",
             feature = "tool-file-delivery",
@@ -180,6 +188,10 @@ impl AgentExecutor {
         )))]
         let _ = (registry, ctx);
 
+        #[cfg(feature = "integration-mcp-jira")]
+        self.register_tool_runtime_module(registry, &JiraMcpToolModule, ctx);
+        #[cfg(feature = "integration-mcp-mattermost")]
+        self.register_tool_runtime_module(registry, &MattermostMcpToolModule, ctx);
         #[cfg(feature = "tool-browser-use")]
         self.register_tool_runtime_module(registry, &BrowserUseToolModule, ctx);
         #[cfg(feature = "tool-compression")]
@@ -220,6 +232,8 @@ impl AgentExecutor {
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
+        feature = "integration-mcp-jira",
+        feature = "integration-mcp-mattermost",
         feature = "tool-browser-use",
         feature = "tool-compression",
         feature = "tool-file-delivery",
@@ -440,6 +454,8 @@ impl AgentExecutor {
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
+        feature = "integration-mcp-jira",
+        feature = "integration-mcp-mattermost",
         feature = "tool-browser-use",
         feature = "tool-compression",
         feature = "tool-file-delivery",
@@ -566,60 +582,18 @@ impl AgentExecutor {
         )));
     }
 
-    #[cfg(feature = "integration-mcp-jira")]
-    fn register_jira_mcp_provider(registry: &mut ToolRegistry) {
-        if let Some(config) = crate::agent::providers::JiraMcpConfig::from_env() {
-            let binary_path = config.binary_path.clone();
-            tracing::debug!(
-                binary_path = %binary_path,
-                jira_url_present = !config.jira_url.is_empty(),
-                jira_email_present = !config.jira_email.is_empty(),
-                jira_token_present = !config.jira_token.is_empty(),
-                "Registering Jira MCP provider"
-            );
-            registry.register(Box::new(crate::agent::providers::JiraMcpProvider::new(
-                config,
-            )));
-            tracing::debug!(binary_path = %binary_path, "Jira MCP provider registered");
-        } else {
-            tracing::warn!(
-                "jira feature is enabled but JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN is not set; \
-                 Jira MCP provider will not be available. Set these env vars to enable it."
-            );
-        }
-    }
+    fn register_mcp_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
+        #[cfg(not(any(
+            feature = "integration-mcp-jira",
+            feature = "integration-mcp-mattermost"
+        )))]
+        let _ = (registry, ctx);
 
-    #[cfg(feature = "integration-mcp-mattermost")]
-    fn register_mattermost_mcp_provider(registry: &mut ToolRegistry) {
-        if let Some(config) = crate::agent::providers::MattermostMcpConfig::from_env() {
-            let binary_path = config.binary_path.clone();
-            tracing::debug!(
-                binary_path = %binary_path,
-                mattermost_url_present = !config.mattermost_url.is_empty(),
-                mattermost_token_present = !config.mattermost_token.is_empty(),
-                timeout_secs = config.timeout_secs,
-                max_retries = config.max_retries,
-                verify_ssl = config.verify_ssl,
-                "Registering Mattermost MCP provider"
-            );
-            registry.register(Box::new(
-                crate::agent::providers::MattermostMcpProvider::new(config),
-            ));
-            tracing::debug!(binary_path = %binary_path, "Mattermost MCP provider registered");
-        } else {
-            tracing::warn!(
-                "mattermost feature is enabled but MATTERMOST_URL or MATTERMOST_TOKEN is not set; \
-                 Mattermost MCP provider will not be available. Set these env vars to enable it."
-            );
-        }
-    }
-
-    fn register_mcp_providers(&self, _registry: &mut ToolRegistry) {
         #[cfg(feature = "integration-mcp-jira")]
-        Self::register_jira_mcp_provider(_registry);
+        self.register_legacy_tool_module(registry, &JiraMcpToolModule, ctx);
 
         #[cfg(feature = "integration-mcp-mattermost")]
-        Self::register_mattermost_mcp_provider(_registry);
+        self.register_legacy_tool_module(registry, &MattermostMcpToolModule, ctx);
     }
 
     fn register_search_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {

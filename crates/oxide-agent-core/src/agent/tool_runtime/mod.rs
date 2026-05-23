@@ -32,8 +32,12 @@ pub use modules::BrowserUseToolModule;
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-file-delivery")]
 pub use modules::FileDeliveryToolModule;
+#[cfg(feature = "integration-mcp-jira")]
+pub use modules::JiraMcpToolModule;
 #[cfg(feature = "tool-tts-kokoro")]
 pub use modules::KokoroTtsToolModule;
+#[cfg(feature = "integration-mcp-mattermost")]
+pub use modules::MattermostMcpToolModule;
 #[cfg(feature = "tool-media-audio")]
 pub use modules::MediaAudioToolModule;
 #[cfg(feature = "tool-media-image")]
