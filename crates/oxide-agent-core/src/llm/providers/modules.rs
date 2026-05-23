@@ -9,7 +9,6 @@ use crate::llm::LlmProvider;
 
 #[cfg(any(
     feature = "llm-chatgpt",
-    feature = "llm-groq",
     feature = "llm-mistral",
     feature = "llm-minimax"
 ))]
@@ -197,7 +196,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     #[cfg(feature = "llm-chatgpt")]
     modules.push(Box::new(ChatGptProviderModule));
     #[cfg(feature = "llm-groq")]
-    modules.push(Box::new(GroqProviderModule));
+    modules.push(Box::new(super::groq::GroqProviderModule));
     #[cfg(feature = "llm-mistral")]
     modules.push(Box::new(MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
@@ -251,34 +250,6 @@ impl LlmProviderModule for ChatGptProviderModule {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
-    }
-}
-
-#[cfg(feature = "llm-groq")]
-struct GroqProviderModule;
-
-#[cfg(feature = "llm-groq")]
-impl LlmProviderModule for GroqProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/groq"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["groq"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        _ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        settings.groq_api_key.as_ref().map(|api_key| {
-            Arc::new(super::GroqProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
-        })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, true)
     }
 }
 
@@ -519,5 +490,31 @@ mod tests {
         assert!(capabilities.supports_audio_transcription);
         assert!(capabilities.supports_image_understanding);
         assert!(capabilities.supports_video_understanding);
+    }
+
+    #[cfg(feature = "llm-groq")]
+    #[test]
+    fn groq_module_registers_provider_id_and_aliases() {
+        let settings = AgentSettings {
+            groq_api_key: Some("test-groq-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let providers = build_configured_providers(&settings);
+
+        assert!(providers.contains_key("llm-provider/groq"));
+        assert!(providers.contains_key("groq"));
+        assert_eq!(provider_module_id("groq"), Some("llm-provider/groq"));
+    }
+
+    #[cfg(feature = "llm-groq")]
+    #[test]
+    fn groq_module_owns_base_capabilities() {
+        let capabilities =
+            provider_capabilities("llm-provider/groq").expect("provider should resolve");
+
+        assert_eq!(capabilities.tool_history_label(), "best_effort");
+        assert!(!capabilities.supports_tool_calling);
+        assert!(capabilities.supports_structured_output);
     }
 }
