@@ -221,6 +221,73 @@ fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
 }
 
 #[test]
+fn legacy_registry_skips_disabled_todos_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/todos".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("write_todos"));
+    assert!(registry.can_handle("execute_command"));
+}
+
+#[test]
+fn legacy_registry_skips_disabled_sandbox_exec_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/sandbox-exec".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("execute_command"));
+    assert!(registry.can_handle("read_file"));
+    assert!(registry.can_handle("recreate_sandbox"));
+}
+
+#[test]
+fn legacy_registry_skips_disabled_sandbox_fileops_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/sandbox-fileops".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    for file_tool in ["write_file", "read_file", "send_file_to_user", "list_files"] {
+        assert!(!registry.can_handle(file_tool));
+    }
+    assert!(registry.can_handle("execute_command"));
+    assert!(registry.can_handle("recreate_sandbox"));
+}
+
+#[test]
 fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     let settings = Arc::new(AgentSettings {
         agent_model_id: Some("deepseek-v4-flash".to_string()),

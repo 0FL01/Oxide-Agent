@@ -3,8 +3,8 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
-    ManagerControlPlaneProvider, ReminderProvider, SandboxProvider, TodoList, TodosProvider,
-    WikiMemoryProvider, YtdlpProvider,
+    FilteredToolProvider, ManagerControlPlaneProvider, ReminderProvider, SandboxProvider, TodoList,
+    TodosProvider, WikiMemoryProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
@@ -18,6 +18,16 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::warn;
+
+const MODULE_TODOS: &str = "tool/todos";
+const MODULE_SANDBOX_EXEC: &str = "tool/sandbox-exec";
+const MODULE_SANDBOX_FILEOPS: &str = "tool/sandbox-fileops";
+const MODULE_SANDBOX_RECREATE: &str = "tool/sandbox-recreate";
+
+const SANDBOX_EXEC_TOOLS: &[&str] = &["execute_command"];
+const SANDBOX_FILEOPS_TOOLS: &[&str] =
+    &["write_file", "read_file", "send_file_to_user", "list_files"];
+const SANDBOX_RECREATE_TOOLS: &[&str] = &["recreate_sandbox"];
 
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::providers::BrowserUseProvider;
@@ -283,7 +293,9 @@ impl AgentExecutor {
         todos_arc: Arc<Mutex<TodoList>>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) {
-        registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
+        if self.settings.is_module_enabled(MODULE_TODOS) {
+            registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
+        }
 
         let sandbox_scope = self.session.sandbox_scope().clone();
         let sandbox_provider = if let Some(tx) = progress_tx {
@@ -291,7 +303,7 @@ impl AgentExecutor {
         } else {
             SandboxProvider::new(sandbox_scope.clone())
         };
-        registry.register(Box::new(sandbox_provider));
+        self.register_sandbox_provider_slices(registry, Arc::new(sandbox_provider));
         registry.register(Box::new(CompressionProvider::new()));
         #[cfg(feature = "tool-stack-logs")]
         registry.register(Box::new(StackLogsProvider::new()));
@@ -329,6 +341,26 @@ impl AgentExecutor {
             delegation_provider = delegation_provider.with_browser_use_profile_scope(profile_scope);
         }
         registry.register(Box::new(delegation_provider));
+    }
+
+    fn register_sandbox_provider_slices(
+        &self,
+        registry: &mut ToolRegistry,
+        sandbox_provider: Arc<SandboxProvider>,
+    ) {
+        let sandbox_provider: Arc<dyn ToolProvider> = sandbox_provider;
+        for (module_id, tool_names) in [
+            (MODULE_SANDBOX_EXEC, SANDBOX_EXEC_TOOLS),
+            (MODULE_SANDBOX_FILEOPS, SANDBOX_FILEOPS_TOOLS),
+            (MODULE_SANDBOX_RECREATE, SANDBOX_RECREATE_TOOLS),
+        ] {
+            if self.settings.is_module_enabled(module_id) {
+                registry.register(Box::new(FilteredToolProvider::new(
+                    Arc::clone(&sandbox_provider),
+                    tool_names,
+                )));
+            }
+        }
     }
 
     #[cfg(feature = "tool-browser-use")]
