@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tracing::{debug, trace, warn};
 
+pub(crate) mod module;
+pub(crate) use module::OpenCodeGoProviderModule;
+
 const OPENCODE_GO_FAILURES_BEFORE_COOLDOWN: usize = 3;
 const OPENCODE_GO_COOLDOWN_STEP_SECS: u64 = 5;
 const OPENCODE_GO_MAX_COOLDOWN_SECS: u64 = 60;
