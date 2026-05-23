@@ -7,11 +7,7 @@ use crate::config::AgentSettings;
 use crate::config::ModelInfo;
 use crate::llm::LlmProvider;
 
-#[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-mistral",
-    feature = "llm-minimax"
-))]
+#[cfg(any(feature = "llm-chatgpt", feature = "llm-mistral"))]
 use super::super::capabilities::ToolHistoryMode;
 use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
 
@@ -200,7 +196,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     #[cfg(feature = "llm-mistral")]
     modules.push(Box::new(MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
-    modules.push(Box::new(MiniMaxProviderModule));
+    modules.push(Box::new(super::minimax::MiniMaxProviderModule));
     #[cfg(feature = "llm-zai")]
     modules.push(Box::new(super::zai::ZaiProviderModule));
     #[cfg(feature = "llm-nvidia")]
@@ -285,34 +281,6 @@ impl LlmProviderModule for MistralProviderModule {
 
     fn media_capabilities(&self) -> MediaCapabilities {
         MediaCapabilities::new(true, false, false)
-    }
-}
-
-#[cfg(feature = "llm-minimax")]
-struct MiniMaxProviderModule;
-
-#[cfg(feature = "llm-minimax")]
-impl LlmProviderModule for MiniMaxProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/minimax"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["minimax"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        _ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        settings.minimax_api_key.as_ref().map(|api_key| {
-            Arc::new(super::MiniMaxProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
-        })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::Strict, true, false)
     }
 }
 
@@ -516,5 +484,31 @@ mod tests {
         assert_eq!(capabilities.tool_history_label(), "best_effort");
         assert!(!capabilities.supports_tool_calling);
         assert!(capabilities.supports_structured_output);
+    }
+
+    #[cfg(feature = "llm-minimax")]
+    #[test]
+    fn minimax_module_registers_provider_id_and_aliases() {
+        let settings = AgentSettings {
+            minimax_api_key: Some("test-minimax-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let providers = build_configured_providers(&settings);
+
+        assert!(providers.contains_key("llm-provider/minimax"));
+        assert!(providers.contains_key("minimax"));
+        assert_eq!(provider_module_id("minimax"), Some("llm-provider/minimax"));
+    }
+
+    #[cfg(feature = "llm-minimax")]
+    #[test]
+    fn minimax_module_owns_base_capabilities() {
+        let capabilities =
+            provider_capabilities("llm-provider/minimax").expect("provider should resolve");
+
+        assert_eq!(capabilities.tool_history_label(), "strict");
+        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
     }
 }
