@@ -1,11 +1,13 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
-use crate::agent::providers::{DelegationProvider, SandboxProvider, TodoList};
+use crate::agent::providers::{SandboxProvider, TodoList};
 use crate::agent::registry::ToolRegistry;
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::tool_runtime::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
+#[cfg(feature = "tool-delegation")]
+use crate::agent::tool_runtime::DelegationToolModule;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::tool_runtime::FileDeliveryToolModule;
 #[cfg(feature = "integration-mcp-jira")]
@@ -53,6 +55,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-agents-md",
     feature = "tool-browser-use",
     feature = "tool-compression",
+    feature = "tool-delegation",
     feature = "tool-file-delivery",
     feature = "tool-media-audio",
     feature = "tool-media-image",
@@ -165,6 +168,7 @@ impl AgentExecutor {
             feature = "tool-agents-md",
             feature = "tool-browser-use",
             feature = "tool-compression",
+            feature = "tool-delegation",
             feature = "tool-file-delivery",
             feature = "tool-media-audio",
             feature = "tool-media-image",
@@ -194,6 +198,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &BrowserUseToolModule, ctx);
         #[cfg(feature = "tool-compression")]
         self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
+        #[cfg(feature = "tool-delegation")]
+        self.register_tool_runtime_module(registry, &DelegationToolModule, ctx);
         #[cfg(feature = "tool-file-delivery")]
         self.register_tool_runtime_module(registry, &FileDeliveryToolModule, ctx);
         #[cfg(feature = "tool-media-audio")]
@@ -243,6 +249,7 @@ impl AgentExecutor {
         feature = "tool-agents-md",
         feature = "tool-browser-use",
         feature = "tool-compression",
+        feature = "tool-delegation",
         feature = "tool-file-delivery",
         feature = "tool-media-audio",
         feature = "tool-media-image",
@@ -397,25 +404,7 @@ impl AgentExecutor {
     }
 
     fn register_core_providers(&self, registry: &mut ToolRegistry, module_ctx: &ToolModuleContext) {
-        let sandbox_scope = module_ctx.sandbox_scope();
         self.register_legacy_tool_modules(registry, module_ctx);
-
-        let mut delegation_provider = DelegationProvider::new(
-            self.runner.llm_client(),
-            sandbox_scope,
-            Arc::clone(&self.settings),
-        );
-        if let Some(agents_md) = &self.agents_md {
-            delegation_provider = delegation_provider.with_topic_agents_md_context(
-                Arc::clone(&agents_md.storage),
-                agents_md.user_id,
-                agents_md.topic_id.clone(),
-            );
-        }
-        if let Some(profile_scope) = self.browser_use_profile_scope() {
-            delegation_provider = delegation_provider.with_browser_use_profile_scope(profile_scope);
-        }
-        registry.register(Box::new(delegation_provider));
     }
 
     fn register_legacy_tool_modules(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
@@ -424,6 +413,7 @@ impl AgentExecutor {
             feature = "tool-sandbox-fileops",
             feature = "tool-sandbox-recreate",
             feature = "tool-compression",
+            feature = "tool-delegation",
             feature = "tool-file-delivery",
             feature = "tool-media-audio",
             feature = "tool-media-image",
@@ -437,6 +427,8 @@ impl AgentExecutor {
 
         #[cfg(feature = "tool-compression")]
         self.register_legacy_tool_module(registry, &CompressionToolModule, ctx);
+        #[cfg(feature = "tool-delegation")]
+        self.register_legacy_tool_module(registry, &DelegationToolModule, ctx);
         #[cfg(feature = "tool-file-delivery")]
         self.register_legacy_tool_module(registry, &FileDeliveryToolModule, ctx);
         #[cfg(feature = "tool-stack-logs")]
@@ -472,6 +464,7 @@ impl AgentExecutor {
         feature = "tool-agents-md",
         feature = "tool-browser-use",
         feature = "tool-compression",
+        feature = "tool-delegation",
         feature = "tool-file-delivery",
         feature = "tool-media-audio",
         feature = "tool-media-image",

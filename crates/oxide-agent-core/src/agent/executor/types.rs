@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
 pub(super) struct AgentsMdContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,

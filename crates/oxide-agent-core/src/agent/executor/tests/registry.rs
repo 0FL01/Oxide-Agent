@@ -483,6 +483,30 @@ fn legacy_registry_skips_disabled_compression_module() {
     assert!(registry.can_handle("write_todos"));
 }
 
+#[cfg(feature = "tool-delegation")]
+#[test]
+fn legacy_registry_skips_disabled_delegation_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/delegation".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("spawn_sub_agents"));
+    assert!(!registry.can_handle("wait_sub_agents"));
+    assert!(!registry.can_handle("cancel_sub_agents"));
+    assert!(registry.can_handle("write_todos"));
+}
+
 #[test]
 fn legacy_registry_skips_disabled_file_delivery_module() {
     let settings = Arc::new(AgentSettings {
@@ -1178,6 +1202,26 @@ fn legacy_registry_registers_ssh_mcp_module_once() {
     }
 }
 
+#[cfg(feature = "tool-delegation")]
+#[test]
+fn legacy_registry_registers_delegation_module_once() {
+    let executor = build_executor();
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for tool_name in ["spawn_sub_agents", "wait_sub_agents", "cancel_sub_agents"] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn manager_disabled_registry_rejects_manager_tool() {
     let executor = build_executor();
@@ -1515,6 +1559,7 @@ fn browser_use_profile_scope_prefers_reminder_context() {
     );
 }
 
+#[cfg(feature = "tool-agents-md")]
 #[tokio::test]
 async fn agents_md_context_enables_self_editing_tools() {
     let mut mock = MockStorageProvider::new();
@@ -1547,6 +1592,7 @@ async fn agents_md_context_enables_self_editing_tools() {
     assert_eq!(parsed["topic_id"], "topic-a");
 }
 
+#[cfg(all(feature = "tool-agents-md", feature = "tool-delegation"))]
 #[tokio::test]
 async fn delegation_tool_inherits_agents_md_context_from_executor() {
     let mut mock = MockStorageProvider::new();

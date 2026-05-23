@@ -35,6 +35,8 @@ pub use modules::AgentsMdToolModule;
 pub use modules::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
+#[cfg(feature = "tool-delegation")]
+pub use modules::DelegationToolModule;
 #[cfg(feature = "tool-file-delivery")]
 pub use modules::FileDeliveryToolModule;
 #[cfg(feature = "integration-mcp-jira")]

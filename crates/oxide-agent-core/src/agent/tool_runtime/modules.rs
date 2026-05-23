@@ -28,6 +28,8 @@ use crate::agent::providers::AgentsMdProvider;
 use crate::agent::providers::BrowserUseProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::providers::CompressionProvider;
+#[cfg(feature = "tool-delegation")]
+use crate::agent::providers::DelegationProvider;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::providers::FileHosterProvider;
 #[cfg(any(
@@ -417,6 +419,48 @@ impl ToolModule for AgentsMdToolModule {
         self.provider(ctx)
             .map(|provider| provider_runtime_executors(Arc::new(provider), ctx.progress_tx()))
             .unwrap_or_default()
+    }
+}
+
+/// Capability module for sub-agent delegation tools.
+#[cfg(feature = "tool-delegation")]
+pub struct DelegationToolModule;
+
+#[cfg(feature = "tool-delegation")]
+impl DelegationToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> DelegationProvider {
+        let mut provider =
+            DelegationProvider::new(ctx.llm_client(), ctx.sandbox_scope(), ctx.settings());
+
+        #[cfg(feature = "tool-agents-md")]
+        if let Some(agents_md) = ctx.agents_md_context() {
+            provider = provider.with_topic_agents_md_context(
+                agents_md.storage,
+                agents_md.user_id,
+                agents_md.topic_id,
+            );
+        }
+
+        if let Some(profile_scope) = ctx.browser_use_profile_scope() {
+            provider = provider.with_browser_use_profile_scope(profile_scope);
+        }
+
+        provider
+    }
+}
+
+#[cfg(feature = "tool-delegation")]
+impl ToolModule for DelegationToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/delegation")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(self.provider(ctx)))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
     }
 }
 
