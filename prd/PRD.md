@@ -630,7 +630,6 @@ Capability module kinds:
 
 - tool modules;
 - LLM provider modules;
-- embedding provider modules;
 - storage backend modules;
 - sandbox backend modules;
 - sandbox tool modules;
@@ -697,11 +696,6 @@ llm-provider/minimax
 llm-provider/zai
 llm-provider/nvidia
 llm-provider/openrouter
-
-embedding-provider/gemini
-embedding-provider/openai-compatible
-embedding-provider/mistral
-embedding-provider/openrouter
 
 tool/tavily-search
 tool/tavily-extract
@@ -804,8 +798,6 @@ profile-full = [
   "llm-nvidia",
   "llm-opencode-go",
   "llm-openrouter",
-  "embedding-gemini",
-  "embedding-openai-compatible",
   "tool-todos",
   "tool-compression",
   "tool-delegation",
@@ -908,12 +900,6 @@ llm-nvidia = []
 llm-opencode-go = []
 llm-openrouter = []
 
-# Embeddings
-embedding-gemini = ["llm-gemini"]
-embedding-openai-compatible = ["dep:async-openai"]
-embedding-mistral = ["llm-mistral"]
-embedding-openrouter = ["llm-openrouter"]
-
 # Search and browser tools
 tool-webfetch-md = ["dep:reqwest", "dep:htmd"]
 tool-tavily = ["dep:tavily"]
@@ -1006,7 +992,6 @@ pub struct ModuleRegistry {
     pub enabled: EnabledCapabilityManifest,
     pub tools: ToolRegistry,
     pub llm_providers: LlmProviderRegistry,
-    pub embedding_providers: EmbeddingProviderRegistry,
     pub storage_backends: StorageBackendRegistry,
     pub sandbox_backends: SandboxBackendRegistry,
     pub transports: TransportRegistry,
@@ -1364,9 +1349,6 @@ routes:
     provider: llm-provider/gemini
     model: gemini-2.5-flash
 
-  embedding:
-    provider: embedding-provider/gemini
-    model: text-embedding-004
 ```
 
 If `llm-provider/gemini` is configured but the binary was not built with `llm-gemini`, startup must fail.
@@ -1393,16 +1375,11 @@ Global alias lists must be removed.
 
 ### 10.5 Embeddings
 
-Embeddings must be separate capabilities because a build may need embeddings without a chat provider or vice versa.
+Embeddings are not part of the target architecture.
 
-Required embedding modules:
+The current embedding code exists only to support the legacy skills subsystem. Since skills are removed, embedding providers, embedding config, embedding cache, and embedding model routing must also be removed.
 
-- `EmbeddingGeminiModule`;
-- `EmbeddingOpenAiCompatibleModule`;
-- `EmbeddingMistralModule`;
-- `EmbeddingOpenRouterModule`.
-
-Embedding provider creation must be moved out of the global hardcoded match in `LlmClient` and into embedding provider modules.
+Future retrieval must not reintroduce embeddings by default. If semantic retrieval is ever required later, it must be proposed as a new explicit capability with S3/R2-backed durable indexes and separate acceptance criteria. It is out of scope for this refactor.
 
 ### 10.6 LLM client target shape
 
@@ -1411,7 +1388,6 @@ Embedding provider creation must be moved out of the global hardcoded match in `
 ```rust
 pub struct LlmRouter {
     providers: BTreeMap<ProviderId, Arc<dyn LlmProvider>>,
-    embeddings: BTreeMap<EmbeddingProviderId, Arc<dyn EmbeddingProvider>>,
     routes: ModelRoutes,
 }
 ```
@@ -1932,7 +1908,6 @@ Delete:
 
 - global provider import/re-export as the registration mechanism;
 - global `LlmClient::new` hardcoded provider insertion chain;
-- global embedding provider match chain;
 - global provider alias lists;
 - config credential checks that assume all providers are compiled.
 
@@ -2058,7 +2033,7 @@ Deliverables:
 - Move each LLM provider behind its own feature.
 - Move provider aliases into provider modules.
 - Move model capability metadata into provider modules.
-- Move embedding providers into embedding modules.
+- Remove embedding providers and their global match chain.
 - Replace global provider insertion chain with module factories.
 - Add provider-specific config schemas.
 
@@ -2351,7 +2326,6 @@ The refactor is complete when all criteria below are true.
 - Adding a new tool requires adding one module and one feature, plus optional profile inclusion.
 - Adding a new provider requires adding one provider module and one feature, plus optional profile inclusion.
 - Global provider match chains are removed.
-- Global embedding provider match chains are removed.
 - Provider aliases are owned by provider modules.
 - Runtime config cannot enable absent compile-time modules.
 
@@ -2607,6 +2581,38 @@ The implementation must treat S3/R2 as the source of truth. Runtime startup must
 
    Recommendation: no migration. Old persisted state can be discarded or ignored by clean deployments.
 
+11. Should embeddings and skills remain in the codebase?
+
+   Decision: no. Remove embeddings and skills from the target architecture.
+
+   RECON shows that embeddings are used only by the legacy skills subsystem for semantic matching of user messages against markdown skill descriptions. They are not used for wiki memory, durable memory retrieval, artifact search, vector storage, or any required runtime path.
+
+   The current skills subsystem is effectively inactive: `AgentExecutor` initializes `skill_registry` as `None`, and the prompt composer accepts `SkillRegistry` but does not use it to build the system prompt. The repository also does not contain an active root `skills/` markdown directory, while Dockerfile/docs still reference it as a legacy artifact.
+
+   Required action:
+
+   - Delete `agent/skills/*`.
+   - Delete `llm/embeddings.rs`.
+   - Remove embedding fields and methods from `LlmClient`.
+   - Remove embedding config fields and environment variables.
+   - Remove `EMBEDDING_*`, `SKILL_*`, `SKILLS_DIR`, and `.embeddings_cache` behavior.
+   - Remove Dockerfile `COPY skills/ /app/skills/`.
+   - Remove docs that describe Mistral or any embedding model as required for skill selection.
+   - Remove embedding provider capabilities from the modular architecture.
+   - Do not add `embedding-provider/*` modules.
+   - Do not add local vector DB or embedding cache support.
+   - Do not preserve old skill names or old skill state.
+
+   All durable context must come from explicit modules such as S3/R2-backed wiki memory, AGENTS.md/topic instructions, profile prompt instructions, and enabled tools. If prompt packs are needed later, they must be deterministic profile-selected prompt modules, not embedding-selected skills.
+
+   Acceptance criteria:
+
+   - No production code path references `EmbeddingProvider`, `EmbeddingTaskType`, `generate_embedding`, `probe_embedding_dimension`, `SkillRegistry`, `SkillMatcher`, or `EmbeddingService`.
+   - Minimal/stateless builds contain no embedding provider code.
+   - Runtime startup does not accept or require `EMBEDDING_*` or `SKILL_*` environment variables.
+   - Docker images do not copy a `skills/` directory.
+   - The agent remains fully recoverable from `.env` plus S3/R2 bucket, with no local embedding cache or local skill state.
+
 ## 23. Proposed Final Repository Shape
 
 Recommended target layout:
@@ -2657,11 +2663,6 @@ crates/
         zai.rs
         nvidia.rs
         opencode_go.rs
-        openrouter.rs
-      embeddings/
-        gemini.rs
-        openai_compatible.rs
-        mistral.rs
         openrouter.rs
       storage/
         local.rs
@@ -2792,7 +2793,6 @@ Includes:
 - web transport if needed;
 - R2 and local storage;
 - all LLM providers;
-- all embedding providers;
 - all search/fetch/browser tools;
 - sandbox fileops and exec;
 - sandboxd and Docker direct backends;
