@@ -1,9 +1,19 @@
 //! Capability-oriented tool modules.
 
+#[cfg(any(
+    feature = "tool-agents-md",
+    feature = "tool-reminder",
+    feature = "tool-wiki-memory"
+))]
+use super::provider_runtime_executors;
 use super::ToolExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{SandboxProvider, TodoList};
+#[cfg(feature = "tool-wiki-memory")]
+use crate::agent::session::AgentMemoryScope;
+#[cfg(feature = "tool-wiki-memory")]
+use crate::agent::wiki_memory::WikiStore;
 use crate::capabilities::ModuleId;
 use crate::config::AgentSettings;
 use crate::llm::LlmClient;
@@ -44,6 +54,8 @@ use crate::agent::providers::TavilyProvider;
 use crate::agent::providers::TodosProvider;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::agent::providers::WebFetchMdProvider;
+#[cfg(feature = "tool-wiki-memory")]
+use crate::agent::providers::WikiMemoryProvider;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::providers::YtdlpProvider;
 #[cfg(feature = "integration-mcp-jira")]
@@ -93,6 +105,10 @@ pub struct ToolModuleContext {
     agents_md_context: Option<AgentsMdModuleContext>,
     #[cfg(feature = "tool-reminder")]
     reminder_context: Option<ReminderContext>,
+    #[cfg(feature = "tool-wiki-memory")]
+    wiki_memory_store: Option<WikiStore>,
+    #[cfg(feature = "tool-wiki-memory")]
+    memory_scope: AgentMemoryScope,
     progress_tx: Option<Sender<AgentEvent>>,
 }
 
@@ -116,6 +132,12 @@ pub struct ToolModuleContextParts {
     /// Optional reminder context.
     #[cfg(feature = "tool-reminder")]
     pub reminder_context: Option<ReminderContext>,
+    /// Optional durable wiki memory store.
+    #[cfg(feature = "tool-wiki-memory")]
+    pub wiki_memory_store: Option<WikiStore>,
+    /// Stable memory scope for wiki memory tools.
+    #[cfg(feature = "tool-wiki-memory")]
+    pub memory_scope: AgentMemoryScope,
     /// Optional progress sender.
     pub progress_tx: Option<Sender<AgentEvent>>,
 }
@@ -135,6 +157,10 @@ impl ToolModuleContext {
             agents_md_context: parts.agents_md_context,
             #[cfg(feature = "tool-reminder")]
             reminder_context: parts.reminder_context,
+            #[cfg(feature = "tool-wiki-memory")]
+            wiki_memory_store: parts.wiki_memory_store,
+            #[cfg(feature = "tool-wiki-memory")]
+            memory_scope: parts.memory_scope,
             progress_tx: parts.progress_tx,
         }
     }
@@ -193,6 +219,20 @@ impl ToolModuleContext {
     #[must_use]
     pub fn reminder_context(&self) -> Option<ReminderContext> {
         self.reminder_context.clone()
+    }
+
+    /// Optional durable wiki memory store.
+    #[cfg(feature = "tool-wiki-memory")]
+    #[must_use]
+    pub fn wiki_memory_store(&self) -> Option<WikiStore> {
+        self.wiki_memory_store.clone()
+    }
+
+    /// Stable memory scope used by wiki memory tools.
+    #[cfg(feature = "tool-wiki-memory")]
+    #[must_use]
+    pub fn memory_scope(&self) -> AgentMemoryScope {
+        self.memory_scope.clone()
     }
 
     /// Optional progress sender for modules that emit progress events.
@@ -257,23 +297,29 @@ impl ToolModule for FileDeliveryToolModule {
 pub struct AgentsMdToolModule;
 
 #[cfg(feature = "tool-agents-md")]
+impl AgentsMdToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<AgentsMdProvider> {
+        ctx.agents_md_context().map(|agents_md| {
+            AgentsMdProvider::new(agents_md.storage, agents_md.user_id, agents_md.topic_id)
+        })
+    }
+}
+
+#[cfg(feature = "tool-agents-md")]
 impl ToolModule for AgentsMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/agents-md")
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        ctx.agents_md_context().map(|agents_md| {
-            Box::new(AgentsMdProvider::new(
-                agents_md.storage,
-                agents_md.user_id,
-                agents_md.topic_id,
-            )) as Box<dyn ToolProvider>
-        })
+        self.provider(ctx)
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| provider_runtime_executors(Arc::new(provider), ctx.progress_tx()))
+            .unwrap_or_default()
     }
 }
 
@@ -282,19 +328,62 @@ impl ToolModule for AgentsMdToolModule {
 pub struct ReminderToolModule;
 
 #[cfg(feature = "tool-reminder")]
+impl ReminderToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<ReminderProvider> {
+        ctx.reminder_context().map(ReminderProvider::new)
+    }
+}
+
+#[cfg(feature = "tool-reminder")]
 impl ToolModule for ReminderToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/reminder")
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        ctx.reminder_context().map(|reminder_context| {
-            Box::new(ReminderProvider::new(reminder_context)) as Box<dyn ToolProvider>
-        })
+        self.provider(ctx)
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| provider_runtime_executors(Arc::new(provider), ctx.progress_tx()))
+            .unwrap_or_default()
+    }
+}
+
+/// Capability module for scoped durable wiki memory tools.
+#[cfg(feature = "tool-wiki-memory")]
+pub struct WikiMemoryToolModule;
+
+#[cfg(feature = "tool-wiki-memory")]
+impl WikiMemoryToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<WikiMemoryProvider> {
+        let store = ctx.wiki_memory_store()?;
+        let scope = ctx.memory_scope();
+        Some(WikiMemoryProvider::new(
+            store,
+            scope.user_id,
+            scope.context_key,
+        ))
+    }
+}
+
+#[cfg(feature = "tool-wiki-memory")]
+impl ToolModule for WikiMemoryToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/wiki-memory")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider(ctx)
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| provider_runtime_executors(Arc::new(provider), ctx.progress_tx()))
+            .unwrap_or_default()
     }
 }
 

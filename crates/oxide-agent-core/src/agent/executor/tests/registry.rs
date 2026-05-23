@@ -3,6 +3,32 @@ use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use crate::config::{ModelInfo, ModuleRuntimeConfig};
 use std::collections::HashSet;
 
+#[derive(Default)]
+struct RegistryWikiBackend;
+
+#[async_trait::async_trait]
+impl crate::agent::wiki_memory::WikiObjectBackend for RegistryWikiBackend {
+    async fn get_text(&self, _key: &str) -> Result<Option<String>, crate::storage::StorageError> {
+        Ok(None)
+    }
+
+    async fn put_text(
+        &self,
+        _key: &str,
+        _content: &str,
+    ) -> Result<(), crate::storage::StorageError> {
+        Ok(())
+    }
+
+    async fn delete_text(&self, _key: &str) -> Result<(), crate::storage::StorageError> {
+        Ok(())
+    }
+}
+
+fn registry_wiki_store() -> crate::agent::wiki_memory::WikiStore {
+    crate::agent::wiki_memory::WikiStore::new(Arc::new(RegistryWikiBackend), "prod")
+}
+
 #[test]
 fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
@@ -111,6 +137,25 @@ fn typed_runtime_registry_exposes_manager_lifecycle_tools_when_lifecycle_is_atta
         assert!(
             tool_names.contains(tool_name),
             "missing typed runtime lifecycle tool: {tool_name}"
+        );
+    }
+}
+
+#[cfg(feature = "tool-wiki-memory")]
+#[test]
+fn typed_runtime_registry_exposes_wiki_memory_tools_when_store_configured() {
+    let executor = build_executor().with_wiki_memory_store(registry_wiki_store());
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for tool_name in ["wiki_memory_list", "wiki_memory_read", "wiki_memory_delete"] {
+        assert!(
+            tool_names.contains(tool_name),
+            "missing typed runtime wiki memory tool: {tool_name}"
         );
     }
 }
@@ -1136,6 +1181,51 @@ fn legacy_registry_registers_topic_modules_once() {
         "reminder_schedule",
         "reminder_list",
     ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+}
+
+#[cfg(feature = "tool-wiki-memory")]
+#[test]
+fn legacy_registry_skips_disabled_wiki_memory_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/wiki-memory".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor =
+        AgentExecutor::new(llm, session, settings).with_wiki_memory_store(registry_wiki_store());
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("wiki_memory_list"));
+    assert!(!registry.can_handle("wiki_memory_read"));
+    assert!(!registry.can_handle("wiki_memory_delete"));
+    assert!(registry.can_handle("write_todos"));
+}
+
+#[cfg(feature = "tool-wiki-memory")]
+#[test]
+fn legacy_registry_registers_wiki_memory_module_once() {
+    let executor = build_executor().with_wiki_memory_store(registry_wiki_store());
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for tool_name in ["wiki_memory_list", "wiki_memory_read", "wiki_memory_delete"] {
         assert_eq!(
             tool_names.iter().filter(|name| *name == tool_name).count(),
             1,

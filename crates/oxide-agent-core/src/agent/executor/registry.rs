@@ -1,14 +1,10 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
-#[cfg(feature = "tool-agents-md")]
-use crate::agent::providers::AgentsMdProvider;
-#[cfg(feature = "tool-reminder")]
-use crate::agent::providers::ReminderProvider;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::SshMcpProvider;
 use crate::agent::providers::{
-    DelegationProvider, ManagerControlPlaneProvider, SandboxProvider, TodoList, WikiMemoryProvider,
+    DelegationProvider, ManagerControlPlaneProvider, SandboxProvider, TodoList,
 };
 use crate::agent::registry::ToolRegistry;
 #[cfg(feature = "tool-browser-use")]
@@ -68,24 +64,24 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-tts-kokoro",
     feature = "tool-tts-silero",
     feature = "tool-webfetch-md",
+    feature = "tool-wiki-memory",
     feature = "tool-ytdlp",
 ))]
 use crate::agent::tool_runtime::ToolModule;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::agent::tool_runtime::WebFetchMdToolModule;
+#[cfg(feature = "tool-wiki-memory")]
+use crate::agent::tool_runtime::WikiMemoryToolModule;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::tool_runtime::YtdlpToolModule;
 use crate::agent::tool_runtime::{
-    v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation,
-    ToolModuleContext, ToolModuleContextParts, ToolName, ToolOutput,
-    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
+    provider_runtime_executors, v1_tool_runtime_enabled_for_model, ToolExecutor, ToolModuleContext,
+    ToolModuleContextParts, ToolRegistry as RuntimeToolRegistry,
 };
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::tool_runtime::{AgentsMdModuleContext, AgentsMdToolModule};
 use crate::config::ModelInfo;
-use crate::llm::ToolDefinition;
 use crate::sandbox::SandboxScope;
-use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::warn;
@@ -124,7 +120,6 @@ impl AgentExecutor {
 
         // Topic-scoped providers: agents_md, manager, ssh, reminders
         self.register_topic_providers(&mut registry, &module_ctx);
-        self.register_wiki_memory_provider(&mut registry);
 
         // Feature-gated MCP, search, and browser automation providers
         self.register_mcp_providers(&mut registry, &module_ctx);
@@ -149,7 +144,6 @@ impl AgentExecutor {
         self.register_tool_runtime_modules(&mut registry, &module_ctx);
 
         self.register_topic_runtime_providers(&mut registry, progress_tx);
-        self.register_wiki_memory_runtime_provider(&mut registry, progress_tx);
 
         #[cfg(feature = "integration-ssh-mcp")]
         if let Some(topic_infra) = &self.topic_infra {
@@ -195,6 +189,7 @@ impl AgentExecutor {
             feature = "tool-tts-kokoro",
             feature = "tool-tts-silero",
             feature = "tool-webfetch-md",
+            feature = "tool-wiki-memory",
             feature = "tool-ytdlp"
         )))]
         let _ = (registry, ctx);
@@ -233,6 +228,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
         #[cfg(feature = "tool-webfetch-md")]
         self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
+        #[cfg(feature = "tool-wiki-memory")]
+        self.register_tool_runtime_module(registry, &WikiMemoryToolModule, ctx);
         #[cfg(feature = "tool-ytdlp")]
         self.register_tool_runtime_module(registry, &YtdlpToolModule, ctx);
         #[cfg(feature = "tool-sandbox-exec")]
@@ -264,6 +261,7 @@ impl AgentExecutor {
         feature = "tool-tts-kokoro",
         feature = "tool-tts-silero",
         feature = "tool-webfetch-md",
+        feature = "tool-wiki-memory",
         feature = "tool-ytdlp"
     ))]
     fn register_tool_runtime_module<M>(
@@ -316,7 +314,7 @@ impl AgentExecutor {
     ) {
         self.register_tool_runtime_executors(
             registry,
-            ProviderRuntimeExecutor::from_provider(provider, progress_tx.cloned()),
+            provider_runtime_executors(provider, progress_tx.cloned()),
         );
     }
 
@@ -325,51 +323,9 @@ impl AgentExecutor {
         registry: &mut RuntimeToolRegistry,
         progress_tx: Option<&Sender<AgentEvent>>,
     ) {
-        #[cfg(feature = "tool-agents-md")]
-        if let Some(agents_md) = &self.agents_md {
-            self.register_tool_runtime_provider(
-                registry,
-                Arc::new(AgentsMdProvider::new(
-                    Arc::clone(&agents_md.storage),
-                    agents_md.user_id,
-                    agents_md.topic_id.clone(),
-                )),
-                progress_tx,
-            );
-        }
-
         if let Some(manager_provider) = self.manager_control_plane_provider() {
             self.register_tool_runtime_provider(registry, Arc::new(manager_provider), progress_tx);
         }
-
-        #[cfg(feature = "tool-reminder")]
-        if let Some(reminder_context) = &self.reminder_context {
-            self.register_tool_runtime_provider(
-                registry,
-                Arc::new(ReminderProvider::new(reminder_context.clone())),
-                progress_tx,
-            );
-        }
-    }
-
-    fn register_wiki_memory_runtime_provider(
-        &self,
-        registry: &mut RuntimeToolRegistry,
-        progress_tx: Option<&Sender<AgentEvent>>,
-    ) {
-        let Some(store) = self.wiki_memory_store.clone() else {
-            return;
-        };
-        let scope = self.session.memory_scope();
-        self.register_tool_runtime_provider(
-            registry,
-            Arc::new(WikiMemoryProvider::new(
-                store,
-                scope.user_id,
-                scope.context_key.clone(),
-            )),
-            progress_tx,
-        );
     }
 
     #[must_use]
@@ -400,6 +356,10 @@ impl AgentExecutor {
             }),
             #[cfg(feature = "tool-reminder")]
             reminder_context: self.reminder_context.clone(),
+            #[cfg(feature = "tool-wiki-memory")]
+            wiki_memory_store: self.wiki_memory_store.clone(),
+            #[cfg(feature = "tool-wiki-memory")]
+            memory_scope: self.session.memory_scope().clone(),
             progress_tx: progress_tx.cloned(),
         })
     }
@@ -451,6 +411,7 @@ impl AgentExecutor {
             feature = "tool-media-video",
             feature = "tool-stack-logs",
             feature = "tool-todos",
+            feature = "tool-wiki-memory",
             feature = "tool-ytdlp"
         )))]
         let _ = (registry, ctx);
@@ -477,6 +438,8 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &MediaImageToolModule, ctx);
         #[cfg(feature = "tool-media-video")]
         self.register_legacy_tool_module(registry, &MediaVideoToolModule, ctx);
+        #[cfg(feature = "tool-wiki-memory")]
+        self.register_legacy_tool_module(registry, &WikiMemoryToolModule, ctx);
     }
 
     #[cfg(any(
@@ -500,6 +463,7 @@ impl AgentExecutor {
         feature = "tool-tts-kokoro",
         feature = "tool-tts-silero",
         feature = "tool-webfetch-md",
+        feature = "tool-wiki-memory",
         feature = "tool-ytdlp"
     ))]
     fn register_legacy_tool_module<M>(
@@ -598,18 +562,6 @@ impl AgentExecutor {
         Some(manager_provider)
     }
 
-    fn register_wiki_memory_provider(&self, registry: &mut ToolRegistry) {
-        let Some(store) = self.wiki_memory_store.clone() else {
-            return;
-        };
-        let scope = self.session.memory_scope();
-        registry.register(Box::new(WikiMemoryProvider::new(
-            store,
-            scope.user_id,
-            scope.context_key.clone(),
-        )));
-    }
-
     fn register_mcp_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
         #[cfg(not(any(
             feature = "integration-mcp-jira",
@@ -669,69 +621,5 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &KokoroTtsToolModule, ctx);
         #[cfg(feature = "tool-tts-silero")]
         self.register_legacy_tool_module(registry, &SileroTtsToolModule, ctx);
-    }
-}
-
-struct ProviderRuntimeExecutor {
-    provider: Arc<dyn ToolProvider>,
-    name: ToolName,
-    spec: ToolDefinition,
-    progress_tx: Option<Sender<AgentEvent>>,
-    execution_lock: Arc<Mutex<()>>,
-}
-
-impl ProviderRuntimeExecutor {
-    fn from_provider(
-        provider: Arc<dyn ToolProvider>,
-        progress_tx: Option<Sender<AgentEvent>>,
-    ) -> Vec<Arc<dyn ToolExecutor>> {
-        let execution_lock = Arc::new(Mutex::new(()));
-        provider
-            .tools()
-            .into_iter()
-            .map(|spec| {
-                Arc::new(Self {
-                    provider: Arc::clone(&provider),
-                    name: ToolName::from(spec.name.clone()),
-                    spec,
-                    progress_tx: progress_tx.clone(),
-                    execution_lock: Arc::clone(&execution_lock),
-                }) as Arc<dyn ToolExecutor>
-            })
-            .collect()
-    }
-}
-
-#[async_trait]
-impl ToolExecutor for ProviderRuntimeExecutor {
-    fn name(&self) -> ToolName {
-        self.name.clone()
-    }
-
-    fn spec(&self) -> ToolDefinition {
-        self.spec.clone()
-    }
-
-    async fn execute(
-        &self,
-        invocation: ToolInvocation,
-    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
-        let _guard = self.execution_lock.lock().await;
-        let output = self
-            .provider
-            .execute(
-                self.name.as_str(),
-                &invocation.raw_arguments,
-                self.progress_tx.as_ref(),
-                Some(&invocation.cancellation_token),
-            )
-            .await
-            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?;
-        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
-            timeout: invocation.timeout.clone(),
-            artifact_dir: invocation.execution_context.artifact_dir.clone(),
-            ..ToolRuntimeConfig::default()
-        });
-        Ok(normalizer.success(&invocation, &output, ""))
     }
 }
