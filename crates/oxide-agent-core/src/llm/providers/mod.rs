@@ -106,4 +106,7 @@ pub use openrouter::OpenRouterProvider;
 #[cfg(feature = "llm-zai")]
 pub use zai::{parse_zai_flush_time, ZaiProvider};
 
-pub(crate) use modules::{build_configured_providers, provider_key};
+pub(crate) use modules::{
+    build_configured_providers, provider_capabilities, provider_capabilities_for_model,
+    provider_key, provider_media_capabilities,
+};

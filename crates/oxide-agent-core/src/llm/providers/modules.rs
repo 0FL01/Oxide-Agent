@@ -4,7 +4,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::AgentSettings;
+use crate::config::ModelInfo;
 use crate::llm::LlmProvider;
+
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-gemini",
+    feature = "llm-groq",
+    feature = "llm-mistral",
+    feature = "llm-minimax",
+    feature = "llm-zai",
+    feature = "llm-nvidia",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+use super::super::capabilities::ToolHistoryMode;
+use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
 
 #[cfg(feature = "llm-chatgpt")]
 use std::path::PathBuf;
@@ -62,6 +77,19 @@ pub(crate) trait LlmProviderModule: Send + Sync {
         settings: &AgentSettings,
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>>;
+
+    /// Base request capabilities for this provider.
+    fn capabilities(&self) -> ProviderCapabilities;
+
+    /// Media modality support for this provider.
+    fn media_capabilities(&self) -> MediaCapabilities {
+        MediaCapabilities::new(false, false, false)
+    }
+
+    /// Request capabilities for a concrete model route.
+    fn capabilities_for_model(&self, _model_info: &ModelInfo) -> ProviderCapabilities {
+        self.capabilities()
+    }
 }
 
 /// Normalizes provider lookup keys.
@@ -89,6 +117,42 @@ pub(crate) fn build_configured_providers(
     }
 
     providers
+}
+
+/// Returns request capabilities for a compiled provider module.
+#[must_use]
+pub(crate) fn provider_capabilities(provider_name: &str) -> Option<ProviderCapabilities> {
+    find_provider_module(provider_name).map(|module| module.capabilities())
+}
+
+/// Returns media capabilities for a compiled provider module.
+#[must_use]
+pub(crate) fn provider_media_capabilities(provider_name: &str) -> Option<MediaCapabilities> {
+    find_provider_module(provider_name).map(|module| module.media_capabilities())
+}
+
+/// Returns request capabilities for a concrete route handled by a compiled provider module.
+#[must_use]
+pub(crate) fn provider_capabilities_for_model(
+    model_info: &ModelInfo,
+) -> Option<ProviderCapabilities> {
+    find_provider_module(&model_info.provider)
+        .map(|module| module.capabilities_for_model(model_info))
+}
+
+fn find_provider_module(provider_name: &str) -> Option<Box<dyn LlmProviderModule>> {
+    let provider_key = provider_key(provider_name);
+    compiled_provider_modules()
+        .into_iter()
+        .find(|module| module_matches_key(module.as_ref(), &provider_key))
+}
+
+fn module_matches_key(module: &dyn LlmProviderModule, expected_key: &str) -> bool {
+    provider_key(module.provider_id()) == expected_key
+        || module
+            .aliases()
+            .iter()
+            .any(|alias| provider_key(alias) == expected_key)
 }
 
 fn insert_provider_aliases(
@@ -170,6 +234,10 @@ impl LlmProviderModule for ChatGptProviderModule {
             ctx.http_client.clone(),
         )))
     }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
+    }
 }
 
 #[cfg(feature = "llm-gemini")]
@@ -194,6 +262,14 @@ impl LlmProviderModule for GeminiProviderModule {
             Arc::new(super::GeminiProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
         })
     }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true)
+    }
+
+    fn media_capabilities(&self) -> MediaCapabilities {
+        MediaCapabilities::new(true, true, true)
+    }
 }
 
 #[cfg(feature = "llm-groq")]
@@ -217,6 +293,10 @@ impl LlmProviderModule for GroqProviderModule {
         settings.groq_api_key.as_ref().map(|api_key| {
             Arc::new(super::GroqProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
         })
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, true)
     }
 }
 
@@ -245,6 +325,14 @@ impl LlmProviderModule for MistralProviderModule {
             )) as Arc<dyn LlmProvider>
         })
     }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
+    }
+
+    fn media_capabilities(&self) -> MediaCapabilities {
+        MediaCapabilities::new(true, false, false)
+    }
 }
 
 #[cfg(feature = "llm-minimax")]
@@ -268,6 +356,10 @@ impl LlmProviderModule for MiniMaxProviderModule {
         settings.minimax_api_key.as_ref().map(|api_key| {
             Arc::new(super::MiniMaxProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
         })
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::Strict, true, false)
     }
 }
 
@@ -297,6 +389,16 @@ impl LlmProviderModule for ZaiProviderModule {
             )) as Arc<dyn LlmProvider>
         })
     }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
+    }
+
+    fn capabilities_for_model(&self, model_info: &ModelInfo) -> ProviderCapabilities {
+        let mut capabilities = self.capabilities();
+        capabilities.supports_structured_output = zai_supports_structured_output(&model_info.id);
+        capabilities
+    }
 }
 
 #[cfg(feature = "llm-nvidia")]
@@ -325,6 +427,18 @@ impl LlmProviderModule for NvidiaProviderModule {
             )) as Arc<dyn LlmProvider>
         })
     }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true)
+    }
+
+    fn capabilities_for_model(&self, model_info: &ModelInfo) -> ProviderCapabilities {
+        let mut capabilities = self.capabilities();
+        let model_capabilities = super::nvidia::model_capabilities(&model_info.id);
+        capabilities.supports_tool_calling = model_capabilities.supports_tool_calling;
+        capabilities.supports_structured_output = model_capabilities.supports_structured_output;
+        capabilities
+    }
 }
 
 #[cfg(feature = "llm-opencode-go")]
@@ -352,6 +466,17 @@ impl LlmProviderModule for OpenCodeGoProviderModule {
                 ctx.http_client.clone(),
             )) as Arc<dyn LlmProvider>
         })
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
+    }
+
+    fn capabilities_for_model(&self, model_info: &ModelInfo) -> ProviderCapabilities {
+        let mut capabilities = self.capabilities();
+        capabilities.supports_structured_output =
+            opencode_go_supports_structured_output(&model_info.id);
+        capabilities
     }
 }
 
@@ -382,11 +507,49 @@ impl LlmProviderModule for OpenRouterProviderModule {
             )) as Arc<dyn LlmProvider>
         })
     }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
+    }
+
+    fn media_capabilities(&self) -> MediaCapabilities {
+        MediaCapabilities::new(true, true, true)
+    }
+}
+
+#[cfg(feature = "llm-opencode-go")]
+fn normalize_opencode_go_model_id(model_id: &str) -> String {
+    let trimmed = model_id.trim();
+    trimmed
+        .strip_prefix("opencode-go/")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+#[cfg(feature = "llm-opencode-go")]
+fn opencode_go_supports_structured_output(model_id: &str) -> bool {
+    matches!(
+        normalize_opencode_go_model_id(model_id).as_str(),
+        "deepseek-v4-flash" | "deepseek-v4-pro"
+    )
+}
+
+#[cfg(feature = "llm-zai")]
+fn zai_supports_structured_output(model_id: &str) -> bool {
+    matches!(
+        model_id.trim().to_ascii_lowercase().as_str(),
+        "glm-4.7" | "glm-4" | "mainagent" | "glm-4.6" | "glm-4.5-air" | "glm-4-air" | "subagent"
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_configured_providers, provider_key};
+    #[cfg(feature = "llm-gemini")]
+    use super::provider_media_capabilities;
+    use super::{
+        build_configured_providers, provider_capabilities, provider_capabilities_for_model,
+        provider_key,
+    };
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
 
     #[test]
@@ -428,5 +591,49 @@ mod tests {
         assert!(!providers.contains_key("llm-provider/opencode-go"));
         assert!(!providers.contains_key("opencode-go"));
         assert!(!providers.contains_key("opencode_go"));
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn opencode_go_capabilities_resolve_provider_id_and_aliases() {
+        let provider_id =
+            provider_capabilities("llm-provider/opencode-go").expect("provider id should resolve");
+        let alias = provider_capabilities("opencode_go").expect("alias should resolve");
+
+        assert_eq!(provider_id.tool_history_label(), "strict");
+        assert_eq!(alias.tool_history_label(), "strict");
+        assert!(provider_id.supports_tool_calling);
+        assert!(alias.supports_tool_calling);
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn opencode_go_module_owns_model_specific_structured_output() {
+        let route = crate::config::ModelInfo {
+            id: "opencode-go/deepseek-v4-flash".to_string(),
+            provider: "llm-provider/opencode-go".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            weight: 1,
+        };
+
+        let capabilities =
+            provider_capabilities_for_model(&route).expect("provider id should resolve");
+
+        assert!(capabilities.supports_structured_output);
+    }
+
+    #[cfg(feature = "llm-gemini")]
+    #[test]
+    fn gemini_module_owns_media_capabilities() {
+        let capabilities =
+            provider_media_capabilities("llm-provider/gemini").expect("provider id should resolve");
+
+        assert!(capabilities
+            .supports(super::super::super::capabilities::MediaModality::AudioTranscription));
+        assert!(capabilities
+            .supports(super::super::super::capabilities::MediaModality::ImageUnderstanding));
+        assert!(capabilities
+            .supports(super::super::super::capabilities::MediaModality::VideoUnderstanding));
     }
 }
