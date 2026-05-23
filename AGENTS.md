@@ -6,7 +6,7 @@ Stack: Rust 1.94, `teloxide`, AWS SDK for Cloudflare R2, native integrations wit
 
 ## Branch
 
-Default branch: `testing`.
+Default branch: `dev`.
 
 ## Scale and decision principles
 
