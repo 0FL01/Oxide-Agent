@@ -249,9 +249,7 @@ fn typed_runtime_registry_skips_disabled_todos_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/todos".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -275,9 +273,7 @@ fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "manager/control-plane".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -304,9 +300,7 @@ fn typed_runtime_registry_skips_disabled_ssh_mcp_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "integration/ssh-mcp".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -337,9 +331,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/sandbox-exec".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -364,9 +356,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/sandbox-fileops".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -393,9 +383,7 @@ fn legacy_registry_skips_disabled_todos_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/todos".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -415,9 +403,7 @@ fn legacy_registry_skips_disabled_manager_control_plane_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "manager/control-plane".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -439,9 +425,7 @@ fn legacy_registry_skips_disabled_ssh_mcp_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "integration/ssh-mcp".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -467,9 +451,7 @@ fn legacy_registry_skips_disabled_compression_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/compression".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -489,9 +471,7 @@ fn legacy_registry_skips_disabled_delegation_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/delegation".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -512,9 +492,7 @@ fn legacy_registry_skips_disabled_file_delivery_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/file-delivery".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -533,9 +511,7 @@ fn legacy_registry_skips_disabled_ytdlp_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/ytdlp".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -555,9 +531,7 @@ fn legacy_registry_skips_disabled_stack_logs_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/stack-logs".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -577,9 +551,7 @@ fn legacy_registry_skips_disabled_webfetch_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/webfetch-md".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -604,9 +576,7 @@ fn legacy_registry_skips_disabled_tavily_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/tavily".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -635,9 +605,7 @@ fn legacy_registry_skips_disabled_searxng_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/searxng".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -715,9 +683,7 @@ fn legacy_registry_skips_disabled_jira_mcp_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "integration/mcp-jira".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -751,9 +717,7 @@ fn legacy_registry_skips_disabled_mattermost_mcp_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "integration/mcp-mattermost".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -831,9 +795,7 @@ fn legacy_registry_skips_disabled_kokoro_tts_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/tts-kokoro".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -861,9 +823,7 @@ fn legacy_registry_skips_disabled_silero_tts_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/tts-silero".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -920,9 +880,7 @@ fn legacy_registry_skips_disabled_media_audio_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/media-audio".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -942,9 +900,7 @@ fn legacy_registry_skips_disabled_media_image_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/media-image".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -964,9 +920,7 @@ fn legacy_registry_skips_disabled_media_video_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/media-video".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -1013,9 +967,7 @@ fn legacy_registry_skips_disabled_sandbox_exec_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/sandbox-exec".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -1035,9 +987,7 @@ fn legacy_registry_skips_disabled_sandbox_fileops_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/sandbox-fileops".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -1331,9 +1281,7 @@ async fn legacy_registry_skips_disabled_browser_use_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/browser-use".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -1376,9 +1324,7 @@ fn legacy_registry_skips_disabled_agents_md_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/agents-md".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -1404,9 +1350,7 @@ fn legacy_registry_skips_disabled_reminder_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/reminder".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });
@@ -1478,9 +1422,7 @@ fn legacy_registry_skips_disabled_wiki_memory_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
             "tool/wiki-memory".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
     });

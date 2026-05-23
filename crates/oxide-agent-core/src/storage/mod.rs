@@ -16,6 +16,8 @@ mod r2;
 #[cfg(feature = "storage-s3-r2")]
 mod r2_base;
 #[cfg(feature = "storage-s3-r2")]
+mod r2_config;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_control_plane;
 #[cfg(feature = "storage-s3-r2")]
 mod r2_memory;
@@ -65,6 +67,8 @@ pub use provider::MockStorageProvider;
 pub use provider::{PersistedAgentMemoryRef, PersistedAgentMemoryStore, StorageProvider};
 #[cfg(feature = "storage-s3-r2")]
 pub use r2::R2Storage;
+#[cfg(feature = "storage-s3-r2")]
+pub use r2_config::R2StorageConfig;
 pub use reminder::{
     compute_cron_next_run_at, compute_next_reminder_run_at, format_reminder_unix_in_timezone,
     parse_reminder_timezone, resolve_reminder_local_datetime, CreateReminderJobOptions,

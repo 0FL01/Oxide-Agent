@@ -6,9 +6,9 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use dotenvy::dotenv;
 use oxide_agent_core::agent::{AgentMemory, AgentMemoryCheckpoint, AgentSession, SessionId};
-use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::storage::{
-    user_context_agent_flow_key, user_context_agent_flow_memory_key, R2Storage, StorageProvider,
+    user_context_agent_flow_key, user_context_agent_flow_memory_key, R2Storage, R2StorageConfig,
+    StorageProvider,
 };
 use std::env;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,7 +52,7 @@ struct FlowFixture {
 impl FlowFixture {
     async fn new() -> Result<Self> {
         init_env();
-        let storage = Arc::new(R2Storage::new(&load_r2_settings()?).await?);
+        let storage = Arc::new(R2Storage::new(&load_r2_config()?).await?);
         let provider: Arc<dyn StorageProvider> = storage.clone();
         let suffix = Uuid::new_v4().to_string();
 
@@ -126,14 +126,13 @@ fn init_env() {
     let _ = dotenv();
 }
 
-fn load_r2_settings() -> Result<AgentSettings> {
-    Ok(AgentSettings {
-        r2_access_key_id: Some(env::var("R2_ACCESS_KEY_ID")?),
-        r2_secret_access_key: Some(env::var("R2_SECRET_ACCESS_KEY")?),
-        r2_endpoint_url: Some(env::var("R2_ENDPOINT_URL")?),
-        r2_bucket_name: Some(env::var("R2_BUCKET_NAME")?),
-        r2_region: env::var("R2_REGION").unwrap_or_else(|_| "auto".to_string()),
-        ..AgentSettings::default()
+fn load_r2_config() -> Result<R2StorageConfig> {
+    Ok(R2StorageConfig {
+        access_key_id: env::var("OXIDE_R2_ACCESS_KEY_ID")?,
+        secret_access_key: env::var("OXIDE_R2_SECRET_ACCESS_KEY")?,
+        endpoint_url: env::var("OXIDE_R2_ENDPOINT_URL")?,
+        bucket_name: env::var("OXIDE_R2_BUCKET_NAME")?,
+        region: env::var("OXIDE_R2_REGION").unwrap_or_else(|_| "auto".to_string()),
     })
 }
 

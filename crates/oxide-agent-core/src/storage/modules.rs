@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use crate::config::AgentSettings;
 
-use super::{PersistedAgentMemoryStore, StorageError, StorageProvider};
+use super::{PersistedAgentMemoryStore, R2StorageConfig, StorageError, StorageProvider};
 
 /// Built storage services exposed by the selected storage backend module.
 pub struct BuiltStorageBackend {
@@ -57,7 +57,8 @@ impl StorageBackendModule for R2StorageModule {
             )));
         }
 
-        let storage = Arc::new(super::R2Storage::new(settings).await?);
+        let config = R2StorageConfig::from_agent_settings(settings)?;
+        let storage = Arc::new(super::R2Storage::new(&config).await?);
         let provider_storage = Arc::clone(&storage);
         let provider: Arc<dyn StorageProvider> = provider_storage;
         let persisted_agent_memory: Arc<dyn PersistedAgentMemoryStore> = storage;

@@ -9,9 +9,8 @@ use super::{
         should_retry_control_plane_rmw, ControlPlaneLocks, CONTROL_PLANE_RMW_MAX_RETRIES,
         CONTROL_PLANE_RMW_RETRY_BACKOFF_MS,
     },
-    StorageError, TopicAgentsMdRecord, TopicContextRecord,
+    R2StorageConfig, StorageError, TopicAgentsMdRecord, TopicContextRecord,
 };
-use crate::config::AgentSettings;
 use crate::storage::StorageProvider;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::error::SdkError;
@@ -45,34 +44,23 @@ impl R2Storage {
     /// # Errors
     ///
     /// Returns an error if R2 configuration is missing.
-    pub async fn new(settings: &AgentSettings) -> Result<Self, StorageError> {
-        let endpoint_url = settings
-            .r2_endpoint_url
-            .as_ref()
-            .ok_or_else(|| StorageError::Config("R2_ENDPOINT_URL is missing".into()))?;
-        let access_key = settings
-            .r2_access_key_id
-            .as_ref()
-            .ok_or_else(|| StorageError::Config("R2_ACCESS_KEY_ID is missing".into()))?;
-        let secret_key = settings
-            .r2_secret_access_key
-            .as_ref()
-            .ok_or_else(|| StorageError::Config("R2_SECRET_ACCESS_KEY is missing".into()))?;
-        let bucket = settings
-            .r2_bucket_name
-            .as_ref()
-            .ok_or_else(|| StorageError::Config("R2_BUCKET_NAME is missing".into()))?;
-
-        let credentials = Credentials::new(access_key, secret_key, None, None, "r2-storage");
+    pub async fn new(config: &R2StorageConfig) -> Result<Self, StorageError> {
+        let credentials = Credentials::new(
+            config.access_key_id.clone(),
+            config.secret_access_key.clone(),
+            None,
+            None,
+            "r2-storage",
+        );
 
         let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
-            .region(Region::new(settings.r2_region.clone()))
+            .region(Region::new(config.region.clone()))
             .load()
             .await;
 
         let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
-            .endpoint_url(endpoint_url)
+            .endpoint_url(config.endpoint_url.clone())
             .force_path_style(true)
             .build();
 
@@ -86,7 +74,7 @@ impl R2Storage {
 
         Ok(Self {
             client,
-            bucket: bucket.clone(),
+            bucket: config.bucket_name.clone(),
             cache,
             control_plane_locks: ControlPlaneLocks::new(),
             telemetry: Default::default(),

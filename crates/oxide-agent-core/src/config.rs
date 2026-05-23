@@ -108,18 +108,6 @@ pub struct AgentSettings {
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
 
-    /// R2 Storage access key ID
-    pub r2_access_key_id: Option<String>,
-    /// R2 Storage secret access key
-    pub r2_secret_access_key: Option<String>,
-    /// R2 Storage endpoint URL
-    pub r2_endpoint_url: Option<String>,
-    /// R2 Storage bucket name
-    pub r2_bucket_name: Option<String>,
-    /// R2 Storage region (defaults to "auto" for Cloudflare R2)
-    #[serde(default = "default_r2_region")]
-    pub r2_region: String,
-
     /// Site URL for `OpenRouter` identification
     #[serde(default = "default_openrouter_site_url")]
     pub openrouter_site_url: String,
@@ -207,9 +195,21 @@ pub struct AgentSettings {
 pub struct ModuleRuntimeConfig {
     /// Whether this compiled module is enabled at runtime.
     pub enabled: Option<bool>,
+
+    #[serde(default, flatten)]
+    raw_config: BTreeMap<String, serde_json::Value>,
 }
 
 impl ModuleRuntimeConfig {
+    /// Creates a config value that explicitly disables a compiled module.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self {
+            enabled: Some(false),
+            raw_config: BTreeMap::new(),
+        }
+    }
+
     /// Returns true unless the module is explicitly disabled.
     #[must_use]
     pub const fn enabled_or_default(&self) -> bool {
@@ -217,6 +217,27 @@ impl ModuleRuntimeConfig {
             Some(enabled) => enabled,
             None => true,
         }
+    }
+
+    /// Returns a raw module-local config value.
+    #[must_use]
+    pub fn value(&self, key: &str) -> Option<&serde_json::Value> {
+        self.raw_config.get(key)
+    }
+
+    /// Returns a module-local string config value.
+    #[must_use]
+    pub fn string_value(&self, key: &str) -> Option<&str> {
+        self.value(key).and_then(serde_json::Value::as_str)
+    }
+
+    /// Returns a nested module-local string config value.
+    #[must_use]
+    pub fn nested_string_value(&self, object_key: &str, key: &str) -> Option<&str> {
+        self.value(object_key)
+            .and_then(serde_json::Value::as_object)
+            .and_then(|object| object.get(key))
+            .and_then(serde_json::Value::as_str)
     }
 }
 
@@ -244,10 +265,6 @@ impl ModuleRuntimeSettings {
 
 const fn default_openrouter_site_url() -> String {
     String::new()
-}
-
-fn default_r2_region() -> String {
-    "auto".to_string()
 }
 
 fn default_zai_api_base() -> String {
@@ -342,44 +359,6 @@ impl AgentSettings {
         let mut settings: Self = build_config()?.try_deserialize()?;
         settings.validate_configured_modules()?;
         settings.apply_model_routes_from_env();
-
-        // Fallback: Check environment variables directly if config didn't pick them up
-        // This handles cases where automatic mapping might fail or behavior differs
-        if settings.r2_endpoint_url.is_none() {
-            if let Ok(val) = std::env::var("R2_ENDPOINT_URL") {
-                if !val.is_empty() {
-                    settings.r2_endpoint_url = Some(val);
-                }
-            }
-        }
-        if settings.r2_access_key_id.is_none() {
-            if let Ok(val) = std::env::var("R2_ACCESS_KEY_ID") {
-                if !val.is_empty() {
-                    settings.r2_access_key_id = Some(val);
-                }
-            }
-        }
-        if settings.r2_secret_access_key.is_none() {
-            if let Ok(val) = std::env::var("R2_SECRET_ACCESS_KEY") {
-                if !val.is_empty() {
-                    settings.r2_secret_access_key = Some(val);
-                }
-            }
-        }
-        if settings.r2_bucket_name.is_none() {
-            if let Ok(val) = std::env::var("R2_BUCKET_NAME") {
-                if !val.is_empty() {
-                    settings.r2_bucket_name = Some(val);
-                }
-            }
-        }
-
-        // R2_REGION has a default value, but allow env override
-        if let Ok(val) = std::env::var("R2_REGION") {
-            if !val.is_empty() {
-                settings.r2_region = val;
-            }
-        }
 
         if settings.agent_model_temperature.is_none() {
             settings.agent_model_temperature = parse_optional_env_f32("AGENT_MODEL_TEMPERATURE");
@@ -1120,53 +1099,40 @@ mod tests {
 
         env::set_var("ZAI_API_KEY", "dummy_zai_key");
 
-        // 1. Test standard loading
-        env::set_var("R2_ENDPOINT_URL", "https://example.com");
         env::set_var("CHAT_MODEL_ID", "test-model");
         env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
         env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
 
         let settings = AgentSettings::new()?;
-        assert_eq!(
-            settings.r2_endpoint_url,
-            Some("https://example.com".to_string())
-        );
         assert_eq!(settings.get_configured_agent_temperature(), Some(0.42));
 
-        env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("CHAT_MODEL_ID");
         env::remove_var("CHAT_MODEL_PROVIDER");
         env::remove_var("AGENT_MODEL_TEMPERATURE");
 
-        // 2. Test empty env var
-        env::set_var("R2_ENDPOINT_URL", "");
+        // 2. Test empty env var ignored by direct fallback parsing.
         env::set_var("CHAT_MODEL_ID", "test-model");
         env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("AGENT_MODEL_TEMPERATURE", "");
 
         let settings = AgentSettings::new()?;
-        // With our fallback logic, if it's empty in env, config might ignore it (or treating as unset).
-        // Our fallback only sets if !val.is_empty().
-        // So it should be None.
-        assert_eq!(settings.r2_endpoint_url, None);
+        assert_eq!(settings.get_configured_agent_temperature(), None);
 
-        env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("CHAT_MODEL_ID");
         env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("AGENT_MODEL_TEMPERATURE");
 
-        // 3. Test explicit mapping case (Upper to lower)
-        env::set_var("R2_ENDPOINT_URL", "https://mapping.test");
+        // 3. Test explicit environment mapping case.
         env::set_var("CHAT_MODEL_ID", "test-model");
         env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("AGENT_MODEL_TEMPERATURE", "0.13");
 
         let settings = AgentSettings::new()?;
-        assert_eq!(
-            settings.r2_endpoint_url,
-            Some("https://mapping.test".to_string())
-        );
+        assert_eq!(settings.get_configured_agent_temperature(), Some(0.13));
 
-        env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("CHAT_MODEL_ID");
         env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("AGENT_MODEL_TEMPERATURE");
 
         env::remove_var("ZAI_API_KEY");
         Ok(())
@@ -1190,7 +1156,7 @@ mod tests {
     fn module_runtime_settings_deserialize_enabled_flags() {
         let settings: ModuleRuntimeSettings = serde_json::from_value(json!({
             "modules": {
-                "tool/a": { "enabled": false },
+                "tool/a": { "enabled": false, "endpoint": "https://example.test" },
                 "tool/b": {}
             }
         }))
@@ -1198,6 +1164,10 @@ mod tests {
 
         assert!(!settings.modules["tool/a"].enabled_or_default());
         assert!(settings.modules["tool/b"].enabled_or_default());
+        assert_eq!(
+            settings.modules["tool/a"].string_value("endpoint"),
+            Some("https://example.test")
+        );
     }
 
     #[test]
@@ -1268,9 +1238,7 @@ mod tests {
         };
         settings.modules.insert(
             "llm-provider/openrouter".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         );
 
         let error = settings

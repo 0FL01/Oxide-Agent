@@ -249,9 +249,7 @@ mod tests {
         };
         settings.modules.insert(
             "llm-provider/opencode-go".to_string(),
-            ModuleRuntimeConfig {
-                enabled: Some(false),
-            },
+            ModuleRuntimeConfig::disabled(),
         );
 
         let providers = build_configured_providers(&settings);
