@@ -275,6 +275,9 @@ impl ManagerControlPlaneProvider {
         &self,
         topic_id: &str,
     ) -> Result<TopicAgentToolCatalog> {
+        #[cfg(not(feature = "integration-ssh-mcp"))]
+        let _ = topic_id;
+
         let mut groups = vec![
             TopicAgentToolGroup {
                 provider: "todos",
@@ -321,17 +324,20 @@ impl ManagerControlPlaneProvider {
         groups.extend(Self::configured_search_tool_groups());
         groups.extend(Self::configured_browser_tool_groups());
 
-        let topic_infra = self
-            .storage
-            .get_topic_infra_config(self.user_id, topic_id.to_string())
-            .await
-            .map_err(|err| anyhow!("failed to get topic infra config: {err}"))?;
-        if topic_infra.is_some() {
-            groups.push(TopicAgentToolGroup {
-                provider: "ssh",
-                aliases: &["ssh"],
-                tools: TOPIC_AGENT_SSH_TOOLS,
-            });
+        #[cfg(feature = "integration-ssh-mcp")]
+        {
+            let topic_infra = self
+                .storage
+                .get_topic_infra_config(self.user_id, topic_id.to_string())
+                .await
+                .map_err(|err| anyhow!("failed to get topic infra config: {err}"))?;
+            if topic_infra.is_some() {
+                groups.push(TopicAgentToolGroup {
+                    provider: "ssh",
+                    aliases: &["ssh"],
+                    tools: TOPIC_AGENT_SSH_TOOLS,
+                });
+            }
         }
 
         #[cfg(feature = "integration-mcp-jira")]

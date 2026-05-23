@@ -41,9 +41,8 @@ jobs:
       - name: Check profile
         run: cargo check --workspace --no-default-features --features "${{ matrix.features }}"
 
-  dependency-leakage-report:
+  dependency-leakage-check:
     runs-on: ubuntu-latest
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -65,5 +64,5 @@ jobs:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
-      - name: Report dependency leakage
+      - name: Check dependency leakage
         run: scripts/check-cargo-tree-deny.sh "${{ matrix.features }}"

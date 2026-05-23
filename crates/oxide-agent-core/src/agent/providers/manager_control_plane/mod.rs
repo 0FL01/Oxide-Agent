@@ -2,7 +2,7 @@
 //!
 //! Exposes user-scoped CRUD tools for topic bindings, topic contexts, and agent profiles.
 
-use super::ssh_mcp::{probe_secret_ref, SecretProbeKind};
+use super::{probe_secret_ref, SecretProbeKind};
 use crate::agent::profile::{
     parse_agent_profile, topic_agent_all_hooks, topic_agent_default_blocked_tools,
     topic_agent_manageable_hooks, topic_agent_protected_hooks, HookAccessPolicy, ToolAccessPolicy,
@@ -213,6 +213,7 @@ const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
     "browser_use_extract_content",
     "browser_use_screenshot",
 ];
+#[cfg(feature = "integration-ssh-mcp")]
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",
     "ssh_sudo_exec",

@@ -36,7 +36,7 @@ base64 = "0.22.1"
 async-trait = "0.1.89"
 html-escape = "0.2.13"
 anyhow = "1.0.100"
-rmcp = { version = "1.2.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "1.2.0", default-features = false, features = ["client", "transport-child-process"], optional = true }
 tiktoken-rs = "0.9.1"
 bollard = { version = "0.20.2", optional = true }
 futures-util = "0.3.31"
@@ -222,9 +222,9 @@ sandbox-backend-docker-direct = [
 sandbox-backend-sandboxd-client = ["sandbox-broker-protocol", "sandbox-backend-docker-direct"]
 sandbox-broker-protocol = ["dep:bincode", "dep:serde_bytes"]
 sandbox-daemon = ["sandbox-backend-docker-direct", "sandbox-backend-sandboxd-client"]
-integration-mcp-jira = []
-integration-mcp-mattermost = []
-integration-ssh-mcp = []
+integration-mcp-jira = ["dep:rmcp"]
+integration-mcp-mattermost = ["dep:rmcp"]
+integration-ssh-mcp = ["dep:rmcp"]
 manager-control-plane = []
 
 [dev-dependencies]

@@ -13,7 +13,10 @@ pub mod media_file;
 pub mod reminder;
 pub mod sandbox;
 pub mod silero_tts;
+#[cfg(feature = "integration-ssh-mcp")]
 pub mod ssh_mcp;
+#[cfg(not(feature = "integration-ssh-mcp"))]
+mod ssh_mcp_stub;
 #[cfg(feature = "tool-stack-logs")]
 pub mod stack_logs;
 pub mod todos;
@@ -58,12 +61,20 @@ pub use silero_tts::{
     SileroSampleRate, SileroTtsConfig, SileroTtsFormat, SileroTtsProvider, SileroTtsRequest,
     SileroTtsSpeaker,
 };
+#[cfg(feature = "integration-ssh-mcp")]
 pub use ssh_mcp::{
     cleanup_stale_private_key_tempfiles, inject_approval_credentials,
     inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
     inspect_topic_infra_config, probe_secret_ref, SecretProbeKind, SecretProbeReport,
     SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
     TopicInfraPreflightReport,
+};
+#[cfg(not(feature = "integration-ssh-mcp"))]
+pub use ssh_mcp_stub::{
+    cleanup_stale_private_key_tempfiles, inject_approval_credentials,
+    inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
+    inspect_topic_infra_config, probe_secret_ref, SecretProbeKind, SecretProbeReport,
+    SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, TopicInfraPreflightReport,
 };
 #[cfg(feature = "tool-stack-logs")]
 pub use stack_logs::StackLogsProvider;

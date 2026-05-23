@@ -28,6 +28,7 @@ pub(super) struct ManagerControlPlaneContext {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
 pub(super) struct TopicInfraContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,

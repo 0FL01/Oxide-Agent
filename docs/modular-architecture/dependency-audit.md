@@ -76,9 +76,8 @@ Optional-heavy or module-owned dependencies to isolate:
 
 ## Current Leakage Baseline
 
-Known leaks in `oxide-agent-core` after Phase 2d:
+Known leaks in `oxide-agent-core` after Phase 2e:
 
-- RMCP compiles whenever `oxide-agent-core` is compiled, instead of only behind `integration-mcp-*` or `integration-ssh-mcp`.
 - `reqwest` and `htmd` are shared across provider/tool paths and still need module ownership boundaries.
 - Telegram and web transport dependencies are in separate transport crates, but workspace builds still include those crates unconditionally until binary/profile composition is introduced.
 
@@ -102,6 +101,12 @@ Resolved in Phase 2d:
 - `profile-no-sandbox`, `profile-search-only`, and `llm-opencode-go` leakage checks now fail only on the remaining RMCP dependency.
 - `oxide-agent-sandboxd` requires an explicit `sandbox-daemon`/`profile-full` feature, and Docker full-profile builds enable it explicitly.
 
+Resolved in Phase 2e:
+
+- `rmcp` compiles only with `integration-mcp-jira`, `integration-mcp-mattermost`, or `integration-ssh-mcp`.
+- SSH manager/preflight approval types remain available without `rmcp` through a no-client stub.
+- The CI dependency leakage job now enforces the deny list instead of running as a non-blocking report.
+
 ## Verification Commands
 
 Profile build checks:
@@ -121,12 +126,12 @@ scripts/check-cargo-tree-deny.sh profile-search-only
 scripts/check-cargo-tree-deny.sh llm-opencode-go
 ```
 
-The leakage script is expected to fail until later phases move dependencies behind optional module features. A failure is evidence for the next refactoring slice, not a blocker for this audit checkpoint.
+These leakage checks are now expected to pass. Add new deny-list entries as later slices define ownership for the remaining shared web/search dependencies.
 
 ## Next Refactoring Targets
 
-1. Split RMCP dependencies by Jira, Mattermost, and SSH MCP modules.
-2. Move web/search/browser dependencies to owned tool modules.
-3. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
-4. Move concrete storage construction out of Telegram runner into application bootstrap per the PRD's final registry model.
-5. Refine broker-only sandbox client support so it no longer shares the direct Docker implementation boundary.
+1. Move web/search/browser dependencies to owned tool modules.
+2. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
+3. Move concrete storage construction out of Telegram runner into application bootstrap per the PRD's final registry model.
+4. Refine broker-only sandbox client support so it no longer shares the direct Docker implementation boundary.
+5. Continue replacing unconditional provider registration with feature-aware capability registration.

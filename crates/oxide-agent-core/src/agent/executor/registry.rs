@@ -4,8 +4,8 @@ use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
     KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
-    SandboxProvider, SshMcpProvider, TodoList, TodosProvider, WebFetchMdProvider,
-    WikiMemoryProvider, YtdlpProvider,
+    SandboxProvider, TodoList, TodosProvider, WebFetchMdProvider, WikiMemoryProvider,
+    YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
@@ -23,6 +23,8 @@ use tracing::warn;
 use crate::agent::providers::BrowserUseProvider;
 #[cfg(feature = "tool-searxng")]
 use crate::agent::providers::SearxngProvider;
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::SshMcpProvider;
 #[cfg(feature = "tool-stack-logs")]
 use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-tavily")]
@@ -103,6 +105,7 @@ impl AgentExecutor {
         self.register_topic_runtime_providers(&mut registry, progress_tx);
         self.register_wiki_memory_runtime_provider(&mut registry, progress_tx);
 
+        #[cfg(feature = "integration-ssh-mcp")]
         if let Some(topic_infra) = &self.topic_infra {
             let ssh_provider = Arc::new(SshMcpProvider::new(
                 Arc::clone(&topic_infra.storage),
@@ -311,6 +314,7 @@ impl AgentExecutor {
             registry.register(Box::new(manager_provider));
         }
 
+        #[cfg(feature = "integration-ssh-mcp")]
         if let Some(topic_infra) = &self.topic_infra {
             registry.register(Box::new(crate::agent::providers::SshMcpProvider::new(
                 Arc::clone(&topic_infra.storage),
