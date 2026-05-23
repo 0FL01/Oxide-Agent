@@ -540,6 +540,17 @@ impl AgentRunner {
                     metadata.attempt < metadata.max_retries || unbounded_retry;
                 if retry_budget_remaining {
                     if let Some(backoff) = LlmClient::get_retry_delay(&error, metadata.attempt) {
+                        debug!(
+                            error = %error,
+                            error_class = Self::error_class(&error),
+                            attempt = metadata.attempt,
+                            max_attempts = metadata.max_retries,
+                            provider = metadata.provider_name,
+                            unbounded_retry,
+                            retry_budget_remaining,
+                            backoff_ms = backoff.as_millis(),
+                            "LLM retry decision computed"
+                        );
                         let wait_secs = backoff.as_secs();
                         let wait_secs_display = if wait_secs > 0 {
                             Some(wait_secs)

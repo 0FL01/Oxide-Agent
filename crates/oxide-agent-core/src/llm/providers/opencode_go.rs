@@ -6,12 +6,12 @@ use crate::llm::{
     ToolDefinition,
 };
 use async_trait::async_trait;
-use reqwest::Client as HttpClient;
+use reqwest::{Client as HttpClient, Url};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 const OPENCODE_GO_FAILURES_BEFORE_COOLDOWN: usize = 3;
 const OPENCODE_GO_COOLDOWN_STEP_SECS: u64 = 5;
@@ -135,6 +135,16 @@ impl OpenCodeGoAdaptiveThrottle {
         if let Some(until) = state.cooldown_until {
             let now = Instant::now();
             if until > now {
+                trace!(
+                    current_limit = state.current_limit,
+                    max_concurrent = state.max_concurrent,
+                    in_flight = state.in_flight,
+                    consecutive_failures = state.consecutive_failures,
+                    success_streak = state.success_streak,
+                    cooldown_secs = state.cooldown_secs,
+                    cooldown_remaining_ms = until.duration_since(now).as_millis(),
+                    "OpenCode Go adaptive throttle denied request during cooldown"
+                );
                 return Err(OpenCodeGoAcquireWait::Cooldown(until.duration_since(now)));
             }
             state.cooldown_until = None;
@@ -142,19 +152,49 @@ impl OpenCodeGoAdaptiveThrottle {
 
         if state.in_flight < state.current_limit {
             state.in_flight += 1;
+            trace!(
+                current_limit = state.current_limit,
+                max_concurrent = state.max_concurrent,
+                in_flight = state.in_flight,
+                consecutive_failures = state.consecutive_failures,
+                success_streak = state.success_streak,
+                cooldown_secs = state.cooldown_secs,
+                "OpenCode Go adaptive throttle granted request slot"
+            );
             Ok(())
         } else {
+            trace!(
+                current_limit = state.current_limit,
+                max_concurrent = state.max_concurrent,
+                in_flight = state.in_flight,
+                consecutive_failures = state.consecutive_failures,
+                success_streak = state.success_streak,
+                cooldown_secs = state.cooldown_secs,
+                "OpenCode Go adaptive throttle waiting for request slot"
+            );
             Err(OpenCodeGoAcquireWait::Slot)
         }
     }
 
     fn record_result<T>(&self, result: &Result<T, LlmError>) {
         match result {
-            Ok(_) => self.record_success(),
+            Ok(_) => {
+                trace!("OpenCode Go adaptive throttle recorded successful request");
+                self.record_success();
+            }
             Err(error) if opencode_go_should_throttle(error) => {
+                trace!(
+                    error = %error,
+                    "OpenCode Go adaptive throttle recorded retryable failure"
+                );
                 self.record_retryable_failure(error)
             }
-            Err(_) => {}
+            Err(error) => {
+                trace!(
+                    error = %error,
+                    "OpenCode Go adaptive throttle ignored non-retryable failure"
+                );
+            }
         }
     }
 
@@ -221,6 +261,15 @@ impl OpenCodeGoAdaptiveThrottle {
     fn release(&self) {
         let mut state = self.lock_state();
         state.in_flight = state.in_flight.saturating_sub(1);
+        trace!(
+            current_limit = state.current_limit,
+            max_concurrent = state.max_concurrent,
+            in_flight = state.in_flight,
+            consecutive_failures = state.consecutive_failures,
+            success_streak = state.success_streak,
+            cooldown_secs = state.cooldown_secs,
+            "OpenCode Go adaptive throttle released request slot"
+        );
         drop(state);
         self.notify.notify_waiters();
     }
@@ -251,12 +300,22 @@ impl LlmProvider for OpenCodeGoProvider {
         let _permit = self.throttle.acquire(model_id).await;
         let body =
             build_chat_completion_body(system_prompt, history, user_message, model_id, max_tokens);
+        log_request_summary(
+            "chat_completion",
+            &self.api_base,
+            model_id,
+            max_tokens,
+            OPENCODE_GO_CHAT_TEMPERATURE,
+            false,
+            &body,
+        );
         let auth = format!("Bearer {}", self.api_key);
         let result = async {
             let response =
                 send_json_request(&self.http_client, &self.api_base, &body, Some(&auth), &[])
                     .await?;
             let parsed = parse_chat_response(response)?;
+            log_response_summary("chat_completion", model_id, &parsed);
 
             parsed.content.ok_or_else(|| {
                 LlmError::ApiError(
@@ -314,6 +373,15 @@ impl LlmProvider for OpenCodeGoProvider {
             temperature,
             json_mode,
         );
+        log_request_summary(
+            "chat_with_tools",
+            &self.api_base,
+            model_id,
+            max_tokens,
+            temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
+            json_mode,
+            &body,
+        );
         let auth = format!("Bearer {}", self.api_key);
         let _permit = self.throttle.acquire(model_id).await;
         let result = async {
@@ -321,7 +389,9 @@ impl LlmProvider for OpenCodeGoProvider {
                 send_json_request(&self.http_client, &self.api_base, &body, Some(&auth), &[])
                     .await?;
 
-            parse_chat_response(response)
+            let parsed = parse_chat_response(response)?;
+            log_response_summary("chat_with_tools", model_id, &parsed);
+            Ok(parsed)
         }
         .await;
         self.throttle.record_result(&result);
@@ -355,6 +425,73 @@ fn opencode_go_should_throttle(error: &LlmError) -> bool {
 fn normalize_model_id(model_id: &str) -> &str {
     let trimmed = model_id.trim();
     trimmed.strip_prefix("opencode-go/").unwrap_or(trimmed)
+}
+
+fn log_request_summary(
+    request_kind: &str,
+    api_base: &str,
+    model_id: &str,
+    max_tokens: u32,
+    temperature: f32,
+    json_mode: bool,
+    body: &Value,
+) {
+    let (endpoint_host, endpoint_path) = endpoint_parts(api_base);
+    let message_count = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let tool_count = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+
+    debug!(
+        provider = "opencode-go",
+        request_kind,
+        model = normalize_model_id(model_id),
+        endpoint_host = endpoint_host.as_str(),
+        endpoint_path = endpoint_path.as_str(),
+        json_mode,
+        has_tools = tool_count > 0,
+        tool_count,
+        message_count,
+        max_tokens,
+        temperature,
+        request_body_bytes = json_body_len(body),
+        "OpenCode Go request summary"
+    );
+}
+
+fn log_response_summary(request_kind: &str, model_id: &str, response: &ChatResponse) {
+    let usage = response.usage.as_ref();
+    debug!(
+        provider = "opencode-go",
+        request_kind,
+        model = normalize_model_id(model_id),
+        finish_reason = response.finish_reason.as_str(),
+        content_len = response.content.as_ref().map_or(0, String::len),
+        reasoning_len = response.reasoning_content.as_ref().map_or(0, String::len),
+        tool_call_count = response.tool_calls.len(),
+        usage_prompt_tokens = usage.map(|usage| usage.prompt_tokens),
+        usage_completion_tokens = usage.map(|usage| usage.completion_tokens),
+        usage_total_tokens = usage.map(|usage| usage.total_tokens),
+        "OpenCode Go response summary"
+    );
+}
+
+fn endpoint_parts(url: &str) -> (String, String) {
+    match Url::parse(url) {
+        Ok(parsed) => (
+            parsed.host_str().unwrap_or("unknown").to_string(),
+            parsed.path().to_string(),
+        ),
+        Err(_) => ("invalid-url".to_string(), "invalid-url".to_string()),
+    }
+}
+
+fn json_body_len(body: &Value) -> usize {
+    serde_json::to_vec(body).map_or(0, |bytes| bytes.len())
 }
 
 fn build_chat_completion_body(
