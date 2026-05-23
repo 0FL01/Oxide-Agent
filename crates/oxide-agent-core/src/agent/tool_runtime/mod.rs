@@ -38,6 +38,8 @@ pub use modules::SandboxFileOpsToolModule;
 pub use modules::SandboxRecreateToolModule;
 #[cfg(feature = "tool-todos")]
 pub use modules::TodosToolModule;
+#[cfg(feature = "tool-ytdlp")]
+pub use modules::YtdlpToolModule;
 pub use modules::{ToolModule, ToolModuleContext};
 pub use normalizer::{OutputNormalizer, ToolRuntimeError};
 pub use output::{

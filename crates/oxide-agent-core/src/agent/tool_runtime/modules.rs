@@ -21,6 +21,8 @@ use crate::agent::providers::FileHosterProvider;
 use crate::agent::providers::FilteredToolProvider;
 #[cfg(feature = "tool-todos")]
 use crate::agent::providers::TodosProvider;
+#[cfg(feature = "tool-ytdlp")]
+use crate::agent::providers::YtdlpProvider;
 
 /// Runtime context passed to tool capability modules.
 pub struct ToolModuleContext {
@@ -121,6 +123,30 @@ impl ToolModule for FileDeliveryToolModule {
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
         Some(Box::new(FileHosterProvider::new(ctx.sandbox_scope())))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for yt-dlp media tools.
+#[cfg(feature = "tool-ytdlp")]
+pub struct YtdlpToolModule;
+
+#[cfg(feature = "tool-ytdlp")]
+impl ToolModule for YtdlpToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/ytdlp")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        let provider = if let Some(tx) = ctx.progress_tx() {
+            YtdlpProvider::new(ctx.sandbox_scope()).with_progress_tx(tx)
+        } else {
+            YtdlpProvider::new(ctx.sandbox_scope())
+        };
+        Some(Box::new(provider))
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

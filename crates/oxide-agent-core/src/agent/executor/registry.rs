@@ -3,7 +3,7 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
     AgentsMdProvider, DelegationProvider, ManagerControlPlaneProvider, ReminderProvider,
-    SandboxProvider, TodoList, WikiMemoryProvider, YtdlpProvider,
+    SandboxProvider, TodoList, WikiMemoryProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
@@ -57,9 +57,12 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-recreate",
     feature = "tool-compression",
     feature = "tool-file-delivery",
-    feature = "tool-todos"
+    feature = "tool-todos",
+    feature = "tool-ytdlp"
 ))]
 use crate::agent::tool_runtime::ToolModule;
+#[cfg(feature = "tool-ytdlp")]
+use crate::agent::tool_runtime::YtdlpToolModule;
 
 impl AgentExecutor {
     /// Build the currently exposed tool definitions for this executor state.
@@ -151,7 +154,8 @@ impl AgentExecutor {
             feature = "tool-sandbox-recreate",
             feature = "tool-compression",
             feature = "tool-file-delivery",
-            feature = "tool-todos"
+            feature = "tool-todos",
+            feature = "tool-ytdlp"
         )))]
         let _ = (registry, ctx);
 
@@ -161,6 +165,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &FileDeliveryToolModule, ctx);
         #[cfg(feature = "tool-todos")]
         self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
+        #[cfg(feature = "tool-ytdlp")]
+        self.register_tool_runtime_module(registry, &YtdlpToolModule, ctx);
         #[cfg(feature = "tool-sandbox-exec")]
         self.register_tool_runtime_module(registry, &SandboxExecToolModule, ctx);
         #[cfg(feature = "tool-sandbox-fileops")]
@@ -175,7 +181,8 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "tool-compression",
         feature = "tool-file-delivery",
-        feature = "tool-todos"
+        feature = "tool-todos",
+        feature = "tool-ytdlp"
     ))]
     fn register_tool_runtime_module<M>(
         &self,
@@ -334,13 +341,6 @@ impl AgentExecutor {
             sandbox_scope.clone(),
         )));
 
-        let ytdlp_provider = if let Some(tx) = progress_tx {
-            YtdlpProvider::new(sandbox_scope.clone()).with_progress_tx(tx.clone())
-        } else {
-            YtdlpProvider::new(sandbox_scope.clone())
-        };
-        registry.register(Box::new(ytdlp_provider));
-
         let mut delegation_provider = DelegationProvider::new(
             self.runner.llm_client(),
             sandbox_scope,
@@ -366,7 +366,8 @@ impl AgentExecutor {
             feature = "tool-sandbox-recreate",
             feature = "tool-compression",
             feature = "tool-file-delivery",
-            feature = "tool-todos"
+            feature = "tool-todos",
+            feature = "tool-ytdlp"
         )))]
         let _ = (registry, ctx);
 
@@ -376,6 +377,8 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &FileDeliveryToolModule, ctx);
         #[cfg(feature = "tool-todos")]
         self.register_legacy_tool_module(registry, &TodosToolModule, ctx);
+        #[cfg(feature = "tool-ytdlp")]
+        self.register_legacy_tool_module(registry, &YtdlpToolModule, ctx);
         #[cfg(feature = "tool-sandbox-exec")]
         self.register_legacy_tool_module(registry, &SandboxExecToolModule, ctx);
         #[cfg(feature = "tool-sandbox-fileops")]
@@ -390,7 +393,8 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "tool-compression",
         feature = "tool-file-delivery",
-        feature = "tool-todos"
+        feature = "tool-todos",
+        feature = "tool-ytdlp"
     ))]
     fn register_legacy_tool_module<M>(
         &self,
