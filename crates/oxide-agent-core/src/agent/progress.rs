@@ -111,7 +111,6 @@ pub enum AgentEvent {
         /// Original file name
         file_name: String,
         /// Raw file content
-        #[serde(with = "serde_bytes")]
         content: Vec<u8>,
     },
     /// File to send to user with delivery confirmation

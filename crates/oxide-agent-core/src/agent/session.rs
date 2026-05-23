@@ -133,7 +133,7 @@ fn checkpoint_debounce_duration() -> Duration {
 }
 
 fn memory_checkpoint_hash(memory: &AgentMemory) -> Result<u64> {
-    let encoded = bincode::serialize(memory)?;
+    let encoded = serde_json::to_vec(memory)?;
     let mut hasher = DefaultHasher::new();
     encoded.hash(&mut hasher);
     Ok(hasher.finish())

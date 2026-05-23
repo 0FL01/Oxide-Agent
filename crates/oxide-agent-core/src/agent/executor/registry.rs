@@ -4,8 +4,8 @@ use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
     KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
-    SandboxProvider, SshMcpProvider, StackLogsProvider, TodoList, TodosProvider,
-    WebFetchMdProvider, WikiMemoryProvider, YtdlpProvider,
+    SandboxProvider, SshMcpProvider, TodoList, TodosProvider, WebFetchMdProvider,
+    WikiMemoryProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
@@ -23,6 +23,8 @@ use tracing::warn;
 use crate::agent::providers::BrowserUseProvider;
 #[cfg(feature = "tool-searxng")]
 use crate::agent::providers::SearxngProvider;
+#[cfg(feature = "tool-stack-logs")]
+use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-tavily")]
 use crate::agent::providers::TavilyProvider;
 
@@ -225,6 +227,7 @@ impl AgentExecutor {
         };
         registry.register(Box::new(sandbox_provider));
         registry.register(Box::new(CompressionProvider::new()));
+        #[cfg(feature = "tool-stack-logs")]
         registry.register(Box::new(StackLogsProvider::new()));
         registry.register(Box::new(FileHosterProvider::new(sandbox_scope.clone())));
         registry.register(Box::new(MediaFileProvider::new(

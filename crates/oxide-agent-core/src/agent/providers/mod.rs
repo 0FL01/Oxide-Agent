@@ -14,6 +14,7 @@ pub mod reminder;
 pub mod sandbox;
 pub mod silero_tts;
 pub mod ssh_mcp;
+#[cfg(feature = "tool-stack-logs")]
 pub mod stack_logs;
 pub mod todos;
 pub mod tts;
@@ -64,6 +65,7 @@ pub use ssh_mcp::{
     SshApprovalGrant, SshApprovalRegistry, SshApprovalRequestView, SshMcpProvider,
     TopicInfraPreflightReport,
 };
+#[cfg(feature = "tool-stack-logs")]
 pub use stack_logs::StackLogsProvider;
 pub use todos::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use tts::{KokoroTtsProvider, TtsConfig, TtsVoice};

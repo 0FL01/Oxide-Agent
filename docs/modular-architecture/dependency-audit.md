@@ -76,12 +76,10 @@ Optional-heavy or module-owned dependencies to isolate:
 
 ## Current Leakage Baseline
 
-Known leaks in `oxide-agent-core` after Phase 2c:
+Known leaks in `oxide-agent-core` after Phase 2d:
 
-- Bollard and tar compile whenever `oxide-agent-core` is compiled, instead of only behind `sandbox-backend-docker-direct` or `sandbox-daemon`.
 - RMCP compiles whenever `oxide-agent-core` is compiled, instead of only behind `integration-mcp-*` or `integration-ssh-mcp`.
 - `reqwest` and `htmd` are shared across provider/tool paths and still need module ownership boundaries.
-- `bincode` and `serde_bytes` are unconditional even when no sandbox broker/client profile is selected.
 - Telegram and web transport dependencies are in separate transport crates, but workspace builds still include those crates unconditionally until binary/profile composition is introduced.
 
 Resolved in Phase 2b:
@@ -96,6 +94,13 @@ Resolved in Phase 2c:
 - AWS SDK crates (`aws-sdk-s3`, `aws-config`, `aws-credential-types`, `aws-types`) compile only with `storage-s3-r2`.
 - R2 storage implementation modules and the direct `R2Storage` export are gated behind `storage-s3-r2`.
 - Telegram's R2-backed runtime path forwards `storage-s3-r2` through the transport and binary package features.
+
+Resolved in Phase 2d:
+
+- Sandbox Docker dependencies (`bollard`, `tar`, `bytes`, `http-body-util`) compile only with sandbox backend features.
+- Sandbox broker protocol dependencies (`bincode`, `serde_bytes`) compile only with sandbox backend features.
+- `profile-no-sandbox`, `profile-search-only`, and `llm-opencode-go` leakage checks now fail only on the remaining RMCP dependency.
+- `oxide-agent-sandboxd` requires an explicit `sandbox-daemon`/`profile-full` feature, and Docker full-profile builds enable it explicitly.
 
 ## Verification Commands
 
@@ -120,8 +125,8 @@ The leakage script is expected to fail until later phases move dependencies behi
 
 ## Next Refactoring Targets
 
-1. Split sandbox direct Docker and sandboxd client dependencies.
-2. Split RMCP dependencies by Jira, Mattermost, and SSH MCP modules.
-3. Move web/search/browser dependencies to owned tool modules.
-4. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
-5. Move concrete storage construction out of Telegram runner into application bootstrap per the PRD's final registry model.
+1. Split RMCP dependencies by Jira, Mattermost, and SSH MCP modules.
+2. Move web/search/browser dependencies to owned tool modules.
+3. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
+4. Move concrete storage construction out of Telegram runner into application bootstrap per the PRD's final registry model.
+5. Refine broker-only sandbox client support so it no longer shares the direct Docker implementation boundary.
