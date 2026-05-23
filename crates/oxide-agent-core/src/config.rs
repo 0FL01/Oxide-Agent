@@ -266,17 +266,6 @@ fn default_openrouter_site_name() -> String {
     "Oxide Agent Bot".to_string()
 }
 
-fn is_zai_provider(provider: &str) -> bool {
-    provider.trim().eq_ignore_ascii_case("zai")
-}
-
-fn is_opencode_go_provider(provider: &str) -> bool {
-    matches!(
-        provider.trim().to_ascii_lowercase().as_str(),
-        "opencode-go" | "opencode_go"
-    )
-}
-
 /// Build the base configuration loader.
 ///
 /// # Errors
@@ -525,7 +514,7 @@ impl AgentSettings {
     }
 
     fn validate_route_credentials(&self) -> Result<(), ConfigError> {
-        if self.has_configured_provider(is_zai_provider)
+        if self.has_configured_provider_module("llm-provider/zai")
             && self
                 .zai_api_key
                 .as_ref()
@@ -536,7 +525,7 @@ impl AgentSettings {
             ));
         }
 
-        if self.has_configured_provider(is_opencode_go_provider)
+        if self.has_configured_provider_module("llm-provider/opencode-go")
             && self
                 .opencode_go_api_key
                 .as_ref()
@@ -551,21 +540,36 @@ impl AgentSettings {
         Ok(())
     }
 
-    fn has_configured_provider(&self, predicate: fn(&str) -> bool) -> bool {
-        self.chat_model_provider.as_deref().is_some_and(predicate)
-            || self.agent_model_provider.as_deref().is_some_and(predicate)
-            || self
-                .sub_agent_model_provider
-                .as_deref()
-                .is_some_and(predicate)
-            || self
-                .agent_model_routes
-                .as_deref()
-                .is_some_and(|routes| routes.iter().any(|route| predicate(&route.provider)))
-            || self
-                .sub_agent_model_routes
-                .as_deref()
-                .is_some_and(|routes| routes.iter().any(|route| predicate(&route.provider)))
+    fn has_configured_provider_module(&self, target_module_id: &str) -> bool {
+        self.configured_route_provider_values()
+            .any(|provider| provider_module_id(provider) == Some(target_module_id))
+    }
+
+    fn configured_route_provider_values(&self) -> impl Iterator<Item = &str> {
+        let direct_providers = [
+            self.chat_model_provider.as_deref(),
+            self.agent_model_provider.as_deref(),
+            self.sub_agent_model_provider.as_deref(),
+            self.media_model_provider.as_deref(),
+            self.browser_use_model_provider.as_deref(),
+            self.wiki_memory_writer_model_provider.as_deref(),
+        ];
+        let agent_route_providers = self
+            .agent_model_routes
+            .iter()
+            .flat_map(|routes| routes.iter().map(|route| route.provider.as_str()));
+        let sub_agent_route_providers = self
+            .sub_agent_model_routes
+            .iter()
+            .flat_map(|routes| routes.iter().map(|route| route.provider.as_str()));
+
+        direct_providers
+            .into_iter()
+            .flatten()
+            .chain(agent_route_providers)
+            .chain(sub_agent_route_providers)
+            .map(str::trim)
+            .filter(|provider| !provider.is_empty())
     }
 
     fn apply_model_routes_from_env(&mut self) {
@@ -1290,6 +1294,24 @@ mod tests {
         assert!(error.to_string().contains(
             "CHAT_MODEL_PROVIDER references provider 'openrouter', but module 'llm-provider/openrouter' is disabled"
         ));
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn route_credentials_validation_resolves_provider_module_ids() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let error = settings
+            .validate_route_credentials()
+            .expect_err("missing OpenCode Go key should fail for module id provider");
+
+        assert!(error
+            .to_string()
+            .contains("OPENCODE_GO_API_KEY is required"));
     }
 
     #[test]
