@@ -2,6 +2,7 @@
 #![allow(clippy::clone_on_ref_ptr)]
 
 mod basics;
+#[cfg(feature = "manager-control-plane")]
 mod manager;
 mod registry;
 mod resume;

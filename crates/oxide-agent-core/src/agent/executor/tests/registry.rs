@@ -94,6 +94,7 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
     assert!(!tool_names.contains("compress"));
 }
 
+#[cfg(feature = "manager-control-plane")]
 #[test]
 fn typed_runtime_registry_exposes_manager_tools_when_manager_enabled() {
     let executor =
@@ -120,6 +121,7 @@ fn typed_runtime_registry_exposes_manager_tools_when_manager_enabled() {
     }
 }
 
+#[cfg(feature = "manager-control-plane")]
 #[test]
 fn typed_runtime_registry_exposes_manager_lifecycle_tools_when_lifecycle_is_attached() {
     let lifecycle = Arc::new(RecordingTopicLifecycle::new());
@@ -209,6 +211,35 @@ fn typed_runtime_registry_skips_disabled_todos_module() {
     assert!(!tool_names.contains("write_todos"));
 }
 
+#[cfg(feature = "manager-control-plane")]
+#[test]
+fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "manager/control-plane".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings)
+        .with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("topic_binding_get"));
+    assert!(!tool_names.contains("topic_agent_tools_get"));
+    assert!(tool_names.contains("write_todos"));
+}
+
 #[test]
 fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
     let settings = Arc::new(AgentSettings {
@@ -284,6 +315,30 @@ fn legacy_registry_skips_disabled_todos_module() {
 
     assert!(!registry.can_handle("write_todos"));
     assert!(registry.can_handle("execute_command"));
+}
+
+#[cfg(feature = "manager-control-plane")]
+#[test]
+fn legacy_registry_skips_disabled_manager_control_plane_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "manager/control-plane".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings)
+        .with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("topic_binding_get"));
+    assert!(!registry.can_handle("topic_agent_tools_get"));
+    assert!(registry.can_handle("write_todos"));
 }
 
 #[test]
@@ -878,6 +933,7 @@ fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     assert!(!tool_names.contains("compress"));
 }
 
+#[cfg(feature = "manager-control-plane")]
 #[test]
 fn current_tool_definitions_include_manager_tools_for_v1_route() {
     let settings = Arc::new(AgentSettings {
@@ -903,6 +959,7 @@ fn current_tool_definitions_include_manager_tools_for_v1_route() {
     assert!(tool_names.contains("agent_profile_upsert"));
 }
 
+#[cfg(feature = "manager-control-plane")]
 #[tokio::test]
 async fn manager_enabled_registry_executes_manager_tool() {
     let mut mock = MockStorageProvider::new();
@@ -937,6 +994,34 @@ async fn manager_enabled_registry_executes_manager_tool() {
         serde_json::from_str(&response).expect("manager tool response must be valid json");
     assert_eq!(parsed["found"], true);
     assert_eq!(parsed["binding"]["agent_id"], "agent-a");
+}
+
+#[cfg(feature = "manager-control-plane")]
+#[test]
+fn legacy_registry_registers_manager_control_plane_module_once() {
+    let lifecycle = Arc::new(RecordingTopicLifecycle::new());
+    let executor = build_executor()
+        .with_manager_control_plane(Arc::new(MockStorageProvider::new()), 77)
+        .with_manager_topic_lifecycle(lifecycle);
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for tool_name in [
+        "topic_binding_get",
+        "topic_agent_tools_get",
+        "agent_profile_upsert",
+        "forum_topic_create",
+    ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -1,11 +1,8 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::SshMcpProvider;
-use crate::agent::providers::{
-    DelegationProvider, ManagerControlPlaneProvider, SandboxProvider, TodoList,
-};
+use crate::agent::providers::{DelegationProvider, SandboxProvider, TodoList};
 use crate::agent::registry::ToolRegistry;
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::tool_runtime::BrowserUseToolModule;
@@ -17,6 +14,10 @@ use crate::agent::tool_runtime::FileDeliveryToolModule;
 use crate::agent::tool_runtime::JiraMcpToolModule;
 #[cfg(feature = "tool-tts-kokoro")]
 use crate::agent::tool_runtime::KokoroTtsToolModule;
+#[cfg(feature = "manager-control-plane")]
+use crate::agent::tool_runtime::ManagerControlPlaneModuleContext;
+#[cfg(feature = "manager-control-plane")]
+use crate::agent::tool_runtime::ManagerControlPlaneToolModule;
 #[cfg(feature = "integration-mcp-mattermost")]
 use crate::agent::tool_runtime::MattermostMcpToolModule;
 #[cfg(feature = "tool-media-audio")]
@@ -47,6 +48,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate",
+    feature = "manager-control-plane",
     feature = "integration-mcp-jira",
     feature = "integration-mcp-mattermost",
     feature = "tool-agents-md",
@@ -75,15 +77,15 @@ use crate::agent::tool_runtime::WikiMemoryToolModule;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::tool_runtime::YtdlpToolModule;
 use crate::agent::tool_runtime::{
-    provider_runtime_executors, v1_tool_runtime_enabled_for_model, ToolExecutor, ToolModuleContext,
-    ToolModuleContextParts, ToolRegistry as RuntimeToolRegistry,
+    v1_tool_runtime_enabled_for_model, ToolExecutor, ToolModuleContext, ToolModuleContextParts,
+    ToolRegistry as RuntimeToolRegistry,
 };
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::tool_runtime::{AgentsMdModuleContext, AgentsMdToolModule};
 use crate::config::ModelInfo;
 use crate::sandbox::SandboxScope;
 use std::sync::Arc;
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::Mutex;
 use tracing::warn;
 
 impl AgentExecutor {
@@ -143,8 +145,6 @@ impl AgentExecutor {
         let module_ctx = self.build_tool_module_context(Arc::clone(&todos_arc), progress_tx);
         self.register_tool_runtime_modules(&mut registry, &module_ctx);
 
-        self.register_topic_runtime_providers(&mut registry, progress_tx);
-
         #[cfg(feature = "integration-ssh-mcp")]
         if let Some(topic_infra) = &self.topic_infra {
             let ssh_provider = Arc::new(SshMcpProvider::new(
@@ -172,6 +172,7 @@ impl AgentExecutor {
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-sandbox-recreate",
+            feature = "manager-control-plane",
             feature = "integration-mcp-jira",
             feature = "integration-mcp-mattermost",
             feature = "tool-agents-md",
@@ -198,6 +199,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &AgentsMdToolModule, ctx);
         #[cfg(feature = "integration-mcp-jira")]
         self.register_tool_runtime_module(registry, &JiraMcpToolModule, ctx);
+        #[cfg(feature = "manager-control-plane")]
+        self.register_tool_runtime_module(registry, &ManagerControlPlaneToolModule, ctx);
         #[cfg(feature = "integration-mcp-mattermost")]
         self.register_tool_runtime_module(registry, &MattermostMcpToolModule, ctx);
         #[cfg(feature = "tool-browser-use")]
@@ -244,6 +247,7 @@ impl AgentExecutor {
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
+        feature = "manager-control-plane",
         feature = "integration-mcp-jira",
         feature = "integration-mcp-mattermost",
         feature = "tool-agents-md",
@@ -282,6 +286,35 @@ impl AgentExecutor {
         self.register_tool_runtime_executors(registry, module.tool_runtime_executors(ctx));
     }
 
+    #[cfg_attr(
+        not(any(
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-sandbox-recreate",
+            feature = "manager-control-plane",
+            feature = "integration-ssh-mcp",
+            feature = "integration-mcp-jira",
+            feature = "integration-mcp-mattermost",
+            feature = "tool-agents-md",
+            feature = "tool-browser-use",
+            feature = "tool-compression",
+            feature = "tool-file-delivery",
+            feature = "tool-media-audio",
+            feature = "tool-media-image",
+            feature = "tool-media-video",
+            feature = "tool-reminder",
+            feature = "tool-searxng",
+            feature = "tool-stack-logs",
+            feature = "tool-tavily",
+            feature = "tool-todos",
+            feature = "tool-tts-kokoro",
+            feature = "tool-tts-silero",
+            feature = "tool-webfetch-md",
+            feature = "tool-wiki-memory",
+            feature = "tool-ytdlp"
+        )),
+        allow(dead_code)
+    )]
     fn register_tool_runtime_executors(
         &self,
         registry: &mut RuntimeToolRegistry,
@@ -303,28 +336,6 @@ impl AgentExecutor {
                     "Skipping duplicate typed tool runtime executor"
                 );
             }
-        }
-    }
-
-    fn register_tool_runtime_provider(
-        &self,
-        registry: &mut RuntimeToolRegistry,
-        provider: Arc<dyn ToolProvider>,
-        progress_tx: Option<&Sender<AgentEvent>>,
-    ) {
-        self.register_tool_runtime_executors(
-            registry,
-            provider_runtime_executors(provider, progress_tx.cloned()),
-        );
-    }
-
-    fn register_topic_runtime_providers(
-        &self,
-        registry: &mut RuntimeToolRegistry,
-        progress_tx: Option<&Sender<AgentEvent>>,
-    ) {
-        if let Some(manager_provider) = self.manager_control_plane_provider() {
-            self.register_tool_runtime_provider(registry, Arc::new(manager_provider), progress_tx);
         }
     }
 
@@ -352,6 +363,14 @@ impl AgentExecutor {
                     Arc::clone(&context.storage),
                     context.user_id,
                     context.topic_id.clone(),
+                )
+            }),
+            #[cfg(feature = "manager-control-plane")]
+            manager_control_plane_context: self.manager_control_plane.as_ref().map(|context| {
+                ManagerControlPlaneModuleContext::new(
+                    Arc::clone(&context.storage),
+                    context.user_id,
+                    context.topic_lifecycle.clone(),
                 )
             }),
             #[cfg(feature = "tool-reminder")]
@@ -446,6 +465,7 @@ impl AgentExecutor {
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
+        feature = "manager-control-plane",
         feature = "integration-mcp-jira",
         feature = "integration-mcp-mattermost",
         feature = "tool-agents-md",
@@ -528,9 +548,8 @@ impl AgentExecutor {
         #[cfg(feature = "tool-agents-md")]
         self.register_legacy_tool_module(registry, &AgentsMdToolModule, ctx);
 
-        if let Some(manager_provider) = self.manager_control_plane_provider() {
-            registry.register(Box::new(manager_provider));
-        }
+        #[cfg(feature = "manager-control-plane")]
+        self.register_legacy_tool_module(registry, &ManagerControlPlaneToolModule, ctx);
 
         #[cfg(feature = "integration-ssh-mcp")]
         if let Some(topic_infra) = &self.topic_infra {
@@ -546,20 +565,13 @@ impl AgentExecutor {
         #[cfg(feature = "tool-reminder")]
         self.register_legacy_tool_module(registry, &ReminderToolModule, ctx);
 
-        #[cfg(not(any(feature = "tool-agents-md", feature = "tool-reminder")))]
-        let _ = ctx;
-    }
-
-    fn manager_control_plane_provider(&self) -> Option<ManagerControlPlaneProvider> {
-        let control_plane = self.manager_control_plane.as_ref()?;
-        let mut manager_provider = ManagerControlPlaneProvider::new(
-            Arc::clone(&control_plane.storage),
-            control_plane.user_id,
-        );
-        if let Some(topic_lifecycle) = &control_plane.topic_lifecycle {
-            manager_provider = manager_provider.with_topic_lifecycle(Arc::clone(topic_lifecycle));
-        }
-        Some(manager_provider)
+        #[cfg(not(any(
+            feature = "tool-agents-md",
+            feature = "manager-control-plane",
+            feature = "integration-ssh-mcp",
+            feature = "tool-reminder"
+        )))]
+        let _ = (registry, ctx);
     }
 
     fn register_mcp_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {

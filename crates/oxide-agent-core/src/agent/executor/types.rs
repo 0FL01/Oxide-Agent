@@ -21,6 +21,7 @@ pub(super) struct AgentsMdContext {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
 pub(super) struct ManagerControlPlaneContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,

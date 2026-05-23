@@ -41,6 +41,10 @@ pub use modules::FileDeliveryToolModule;
 pub use modules::JiraMcpToolModule;
 #[cfg(feature = "tool-tts-kokoro")]
 pub use modules::KokoroTtsToolModule;
+#[cfg(feature = "manager-control-plane")]
+pub use modules::ManagerControlPlaneModuleContext;
+#[cfg(feature = "manager-control-plane")]
+pub use modules::ManagerControlPlaneToolModule;
 #[cfg(feature = "integration-mcp-mattermost")]
 pub use modules::MattermostMcpToolModule;
 #[cfg(feature = "tool-media-audio")]

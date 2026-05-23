@@ -2,6 +2,7 @@
 
 #[cfg(any(
     feature = "tool-agents-md",
+    feature = "manager-control-plane",
     feature = "tool-reminder",
     feature = "tool-wiki-memory"
 ))]
@@ -62,13 +63,15 @@ use crate::agent::providers::YtdlpProvider;
 use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
 #[cfg(feature = "tool-tts-kokoro")]
 use crate::agent::providers::{KokoroTtsProvider, TtsConfig};
+#[cfg(feature = "manager-control-plane")]
+use crate::agent::providers::{ManagerControlPlaneProvider, ManagerTopicLifecycle};
 #[cfg(feature = "integration-mcp-mattermost")]
 use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
 #[cfg(feature = "tool-reminder")]
 use crate::agent::providers::{ReminderContext, ReminderProvider};
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
-#[cfg(feature = "tool-agents-md")]
+#[cfg(any(feature = "tool-agents-md", feature = "manager-control-plane"))]
 use crate::storage::StorageProvider;
 
 /// Topic-scoped context required by the AGENTS.md tools.
@@ -93,6 +96,32 @@ impl AgentsMdModuleContext {
     }
 }
 
+/// User-scoped context required by manager control-plane tools.
+#[cfg(feature = "manager-control-plane")]
+#[derive(Clone)]
+pub struct ManagerControlPlaneModuleContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
+}
+
+#[cfg(feature = "manager-control-plane")]
+impl ManagerControlPlaneModuleContext {
+    /// Create a context for manager control-plane tools.
+    #[must_use]
+    pub fn new(
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+        topic_lifecycle: Option<Arc<dyn ManagerTopicLifecycle>>,
+    ) -> Self {
+        Self {
+            storage,
+            user_id,
+            topic_lifecycle,
+        }
+    }
+}
+
 /// Runtime context passed to tool capability modules.
 pub struct ToolModuleContext {
     todos: Arc<Mutex<TodoList>>,
@@ -103,6 +132,8 @@ pub struct ToolModuleContext {
     browser_use_profile_scope: Option<String>,
     #[cfg(feature = "tool-agents-md")]
     agents_md_context: Option<AgentsMdModuleContext>,
+    #[cfg(feature = "manager-control-plane")]
+    manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
     #[cfg(feature = "tool-reminder")]
     reminder_context: Option<ReminderContext>,
     #[cfg(feature = "tool-wiki-memory")]
@@ -129,6 +160,9 @@ pub struct ToolModuleContextParts {
     /// Optional AGENTS.md context.
     #[cfg(feature = "tool-agents-md")]
     pub agents_md_context: Option<AgentsMdModuleContext>,
+    /// Optional manager control-plane context.
+    #[cfg(feature = "manager-control-plane")]
+    pub manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
     /// Optional reminder context.
     #[cfg(feature = "tool-reminder")]
     pub reminder_context: Option<ReminderContext>,
@@ -155,6 +189,8 @@ impl ToolModuleContext {
             browser_use_profile_scope: parts.browser_use_profile_scope,
             #[cfg(feature = "tool-agents-md")]
             agents_md_context: parts.agents_md_context,
+            #[cfg(feature = "manager-control-plane")]
+            manager_control_plane_context: parts.manager_control_plane_context,
             #[cfg(feature = "tool-reminder")]
             reminder_context: parts.reminder_context,
             #[cfg(feature = "tool-wiki-memory")]
@@ -212,6 +248,13 @@ impl ToolModuleContext {
     #[must_use]
     pub fn agents_md_context(&self) -> Option<AgentsMdModuleContext> {
         self.agents_md_context.clone()
+    }
+
+    /// Optional context for manager control-plane tools.
+    #[cfg(feature = "manager-control-plane")]
+    #[must_use]
+    pub fn manager_control_plane_context(&self) -> Option<ManagerControlPlaneModuleContext> {
+        self.manager_control_plane_context.clone()
     }
 
     /// Optional context for reminder tools.
@@ -309,6 +352,40 @@ impl AgentsMdToolModule {
 impl ToolModule for AgentsMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/agents-md")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider(ctx)
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| provider_runtime_executors(Arc::new(provider), ctx.progress_tx()))
+            .unwrap_or_default()
+    }
+}
+
+/// Capability module for manager control-plane tools.
+#[cfg(feature = "manager-control-plane")]
+pub struct ManagerControlPlaneToolModule;
+
+#[cfg(feature = "manager-control-plane")]
+impl ManagerControlPlaneToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<ManagerControlPlaneProvider> {
+        let manager = ctx.manager_control_plane_context()?;
+        let mut provider = ManagerControlPlaneProvider::new(manager.storage, manager.user_id);
+        if let Some(topic_lifecycle) = manager.topic_lifecycle {
+            provider = provider.with_topic_lifecycle(topic_lifecycle);
+        }
+        Some(provider)
+    }
+}
+
+#[cfg(feature = "manager-control-plane")]
+impl ToolModule for ManagerControlPlaneToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("manager/control-plane")
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
