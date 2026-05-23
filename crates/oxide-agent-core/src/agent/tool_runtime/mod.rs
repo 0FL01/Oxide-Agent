@@ -28,6 +28,8 @@ pub use invocation::{
 };
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
+#[cfg(feature = "tool-file-delivery")]
+pub use modules::FileDeliveryToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 pub use modules::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]

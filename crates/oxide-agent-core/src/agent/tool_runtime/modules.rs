@@ -5,11 +5,14 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{SandboxProvider, TodoList};
 use crate::capabilities::ModuleId;
+use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 
 #[cfg(feature = "tool-compression")]
 use crate::agent::providers::CompressionProvider;
+#[cfg(feature = "tool-file-delivery")]
+use crate::agent::providers::FileHosterProvider;
 #[cfg(any(
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
@@ -22,6 +25,7 @@ use crate::agent::providers::TodosProvider;
 /// Runtime context passed to tool capability modules.
 pub struct ToolModuleContext {
     todos: Arc<Mutex<TodoList>>,
+    sandbox_scope: SandboxScope,
     sandbox_provider: Arc<SandboxProvider>,
     progress_tx: Option<Sender<AgentEvent>>,
 }
@@ -31,11 +35,13 @@ impl ToolModuleContext {
     #[must_use]
     pub fn new(
         todos: Arc<Mutex<TodoList>>,
+        sandbox_scope: SandboxScope,
         sandbox_provider: Arc<SandboxProvider>,
         progress_tx: Option<Sender<AgentEvent>>,
     ) -> Self {
         Self {
             todos,
+            sandbox_scope,
             sandbox_provider,
             progress_tx,
         }
@@ -57,6 +63,12 @@ impl ToolModuleContext {
     #[must_use]
     pub fn sandbox_provider_dyn(&self) -> Arc<dyn ToolProvider> {
         Arc::<SandboxProvider>::clone(&self.sandbox_provider)
+    }
+
+    /// Sandbox scope for modules that need their own sandbox-backed provider.
+    #[must_use]
+    pub fn sandbox_scope(&self) -> SandboxScope {
+        self.sandbox_scope.clone()
     }
 
     /// Optional progress sender for modules that emit progress events.
@@ -90,6 +102,25 @@ impl ToolModule for CompressionToolModule {
 
     fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
         Some(Box::new(CompressionProvider::new()))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for external file delivery from sandbox files.
+#[cfg(feature = "tool-file-delivery")]
+pub struct FileDeliveryToolModule;
+
+#[cfg(feature = "tool-file-delivery")]
+impl ToolModule for FileDeliveryToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/file-delivery")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(FileHosterProvider::new(ctx.sandbox_scope())))
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
