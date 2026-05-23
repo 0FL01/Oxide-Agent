@@ -23,6 +23,9 @@ pub enum ManifestError {
         /// Second module that provided the capability.
         second_module: ModuleId,
     },
+    /// Runtime configuration referenced a module that is not compiled into this binary.
+    #[error("module config references a non-compiled or unknown module id: {0}")]
+    NonCompiledModuleConfig(String),
 }
 
 /// Manifest entry for one compiled module.
@@ -174,6 +177,36 @@ impl CompiledCapabilityManifest {
     #[must_use]
     pub fn capabilities(&self) -> &[CapabilityManifestEntry] {
         &self.capabilities
+    }
+
+    /// Returns whether the module ID is compiled into this manifest.
+    #[must_use]
+    pub fn contains_module_id(&self, module_id: &str) -> bool {
+        self.modules
+            .iter()
+            .any(|entry| entry.id().as_str() == module_id)
+    }
+
+    /// Validates runtime module config keys against the compiled manifest.
+    ///
+    /// This is the reusable primitive that the later config resolver will call
+    /// after parsing a `modules:` section. It intentionally does not select or
+    /// enable modules; it only rejects config for modules absent from this
+    /// binary.
+    pub fn validate_configured_module_ids<I, S>(&self, module_ids: I) -> Result<(), ManifestError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        for module_id in module_ids {
+            let module_id = module_id.as_ref();
+            if !self.contains_module_id(module_id) {
+                return Err(ManifestError::NonCompiledModuleConfig(
+                    module_id.to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Serializes the manifest as pretty JSON for CLI/debug output.
@@ -334,6 +367,31 @@ mod tests {
                 first_module: ModuleId::new("tool/a"),
                 second_module: ModuleId::new("tool/b"),
             }
+        );
+    }
+
+    #[test]
+    fn configured_module_ids_must_be_compiled() {
+        let modules = vec![boxed(StaticCapabilityModule::new(
+            ModuleId::new("tool/a"),
+            CapabilityKind::Tool,
+            "tool-a",
+            TOOL_A_READ,
+        ))];
+        let manifest =
+            CompiledCapabilityManifest::from_modules(&modules).expect("manifest should be valid");
+
+        manifest
+            .validate_configured_module_ids(["tool/a"])
+            .expect("compiled module config should validate");
+
+        let error = manifest
+            .validate_configured_module_ids(["tool/missing"])
+            .expect_err("non-compiled module config should fail");
+
+        assert_eq!(
+            error,
+            ManifestError::NonCompiledModuleConfig("tool/missing".to_string())
         );
     }
 
