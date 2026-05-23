@@ -2,9 +2,8 @@ use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
-    AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
-    ManagerControlPlaneProvider, ReminderProvider, SandboxProvider, TodoList, WikiMemoryProvider,
-    YtdlpProvider,
+    AgentsMdProvider, DelegationProvider, FileHosterProvider, ManagerControlPlaneProvider,
+    ReminderProvider, SandboxProvider, TodoList, WikiMemoryProvider, YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
@@ -39,6 +38,8 @@ use crate::agent::providers::StackLogsProvider;
 use crate::agent::providers::TavilyProvider;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::agent::providers::WebFetchMdProvider;
+#[cfg(feature = "tool-compression")]
+use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -51,6 +52,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate",
+    feature = "tool-compression",
     feature = "tool-todos"
 ))]
 use crate::agent::tool_runtime::ToolModule;
@@ -143,10 +145,13 @@ impl AgentExecutor {
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-sandbox-recreate",
+            feature = "tool-compression",
             feature = "tool-todos"
         )))]
         let _ = (registry, ctx);
 
+        #[cfg(feature = "tool-compression")]
+        self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
         #[cfg(feature = "tool-todos")]
         self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
         #[cfg(feature = "tool-sandbox-exec")]
@@ -161,6 +166,7 @@ impl AgentExecutor {
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
+        feature = "tool-compression",
         feature = "tool-todos"
     ))]
     fn register_tool_runtime_module<M>(
@@ -306,7 +312,6 @@ impl AgentExecutor {
         let sandbox_scope = self.session.sandbox_scope().clone();
         let module_ctx = self.build_tool_module_context(todos_arc, progress_tx);
         self.register_legacy_tool_modules(registry, &module_ctx);
-        registry.register(Box::new(CompressionProvider::new()));
         #[cfg(feature = "tool-stack-logs")]
         registry.register(Box::new(StackLogsProvider::new()));
         registry.register(Box::new(FileHosterProvider::new(sandbox_scope.clone())));
@@ -350,10 +355,13 @@ impl AgentExecutor {
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-sandbox-recreate",
+            feature = "tool-compression",
             feature = "tool-todos"
         )))]
         let _ = (registry, ctx);
 
+        #[cfg(feature = "tool-compression")]
+        self.register_legacy_tool_module(registry, &CompressionToolModule, ctx);
         #[cfg(feature = "tool-todos")]
         self.register_legacy_tool_module(registry, &TodosToolModule, ctx);
         #[cfg(feature = "tool-sandbox-exec")]
@@ -368,6 +376,7 @@ impl AgentExecutor {
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
+        feature = "tool-compression",
         feature = "tool-todos"
     ))]
     fn register_legacy_tool_module<M>(

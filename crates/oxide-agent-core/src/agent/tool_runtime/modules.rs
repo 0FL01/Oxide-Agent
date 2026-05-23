@@ -8,6 +8,8 @@ use crate::capabilities::ModuleId;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 
+#[cfg(feature = "tool-compression")]
+use crate::agent::providers::CompressionProvider;
 #[cfg(any(
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
@@ -74,6 +76,25 @@ pub trait ToolModule {
 
     /// Builds typed tool executors owned by this module.
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>>;
+}
+
+/// Capability module for the runner-handled `compress` tool.
+#[cfg(feature = "tool-compression")]
+pub struct CompressionToolModule;
+
+#[cfg(feature = "tool-compression")]
+impl ToolModule for CompressionToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/compression")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(CompressionProvider::new()))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
 }
 
 /// Capability module for the `write_todos` typed runtime tool.

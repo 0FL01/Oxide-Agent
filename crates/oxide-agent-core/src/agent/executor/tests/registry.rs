@@ -242,6 +242,27 @@ fn legacy_registry_skips_disabled_todos_module() {
 }
 
 #[test]
+fn legacy_registry_skips_disabled_compression_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/compression".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("compress"));
+    assert!(registry.can_handle("write_todos"));
+}
+
+#[test]
 fn legacy_registry_skips_disabled_sandbox_exec_module() {
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
