@@ -26,6 +26,12 @@ pub use history::{ToolHistoryError, ToolHistoryWriter};
 pub use invocation::{
     EnvironmentMetadata, ModelMetadata, ProviderMetadata, ToolExecutionContext, ToolInvocation,
 };
+#[cfg(feature = "tool-sandbox-exec")]
+pub use modules::SandboxExecToolRuntimeModule;
+#[cfg(feature = "tool-sandbox-fileops")]
+pub use modules::SandboxFileOpsToolRuntimeModule;
+#[cfg(feature = "tool-sandbox-recreate")]
+pub use modules::SandboxRecreateToolRuntimeModule;
 #[cfg(feature = "tool-todos")]
 pub use modules::TodosToolRuntimeModule;
 pub use modules::{ToolRuntimeModule, ToolRuntimeModuleContext};

@@ -39,9 +39,20 @@ use crate::agent::providers::StackLogsProvider;
 use crate::agent::providers::TavilyProvider;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::agent::providers::WebFetchMdProvider;
+#[cfg(feature = "tool-sandbox-exec")]
+use crate::agent::tool_runtime::SandboxExecToolRuntimeModule;
+#[cfg(feature = "tool-sandbox-fileops")]
+use crate::agent::tool_runtime::SandboxFileOpsToolRuntimeModule;
+#[cfg(feature = "tool-sandbox-recreate")]
+use crate::agent::tool_runtime::SandboxRecreateToolRuntimeModule;
 #[cfg(feature = "tool-todos")]
 use crate::agent::tool_runtime::TodosToolRuntimeModule;
-#[cfg(feature = "tool-todos")]
+#[cfg(any(
+    feature = "tool-sandbox-exec",
+    feature = "tool-sandbox-fileops",
+    feature = "tool-sandbox-recreate",
+    feature = "tool-todos"
+))]
 use crate::agent::tool_runtime::ToolRuntimeModule;
 
 impl AgentExecutor {
@@ -99,20 +110,13 @@ impl AgentExecutor {
     ) -> RuntimeToolRegistry {
         let mut registry = RuntimeToolRegistry::new();
 
-        let module_ctx =
-            ToolRuntimeModuleContext::new(Arc::clone(&todos_arc), progress_tx.cloned());
-        self.register_tool_runtime_modules(&mut registry, &module_ctx);
-
         let sandbox_scope = self.session.sandbox_scope().clone();
-        let sandbox_provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(sandbox_scope).with_progress_tx(tx.clone())
-        } else {
-            SandboxProvider::new(sandbox_scope)
-        };
-        self.register_tool_runtime_executors(
-            &mut registry,
-            Arc::new(sandbox_provider).tool_runtime_executors(),
+        let module_ctx = ToolRuntimeModuleContext::new(
+            Arc::clone(&todos_arc),
+            sandbox_scope,
+            progress_tx.cloned(),
         );
+        self.register_tool_runtime_modules(&mut registry, &module_ctx);
 
         self.register_topic_runtime_providers(&mut registry, progress_tx);
         self.register_wiki_memory_runtime_provider(&mut registry, progress_tx);
@@ -140,14 +144,30 @@ impl AgentExecutor {
         registry: &mut RuntimeToolRegistry,
         ctx: &ToolRuntimeModuleContext,
     ) {
-        #[cfg(not(feature = "tool-todos"))]
+        #[cfg(not(any(
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-sandbox-recreate",
+            feature = "tool-todos"
+        )))]
         let _ = (registry, ctx);
 
         #[cfg(feature = "tool-todos")]
         self.register_tool_runtime_module(registry, &TodosToolRuntimeModule, ctx);
+        #[cfg(feature = "tool-sandbox-exec")]
+        self.register_tool_runtime_module(registry, &SandboxExecToolRuntimeModule, ctx);
+        #[cfg(feature = "tool-sandbox-fileops")]
+        self.register_tool_runtime_module(registry, &SandboxFileOpsToolRuntimeModule, ctx);
+        #[cfg(feature = "tool-sandbox-recreate")]
+        self.register_tool_runtime_module(registry, &SandboxRecreateToolRuntimeModule, ctx);
     }
 
-    #[cfg(feature = "tool-todos")]
+    #[cfg(any(
+        feature = "tool-sandbox-exec",
+        feature = "tool-sandbox-fileops",
+        feature = "tool-sandbox-recreate",
+        feature = "tool-todos"
+    ))]
     fn register_tool_runtime_module<M>(
         &self,
         registry: &mut RuntimeToolRegistry,
