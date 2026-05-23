@@ -849,6 +849,59 @@ async fn browser_use_enabled_registry_registers_browser_tools() {
     assert!(registry.can_handle("browser_use_extract_content"));
     assert!(registry.can_handle("browser_use_screenshot"));
 
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    for tool_name in [
+        "browser_use_run_task",
+        "browser_use_get_session",
+        "browser_use_close_session",
+        "browser_use_extract_content",
+        "browser_use_screenshot",
+    ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+
+    std::env::remove_var("BROWSER_USE_ENABLED");
+    std::env::remove_var("BROWSER_USE_URL");
+}
+
+#[cfg(feature = "tool-browser-use")]
+#[tokio::test]
+async fn legacy_registry_skips_disabled_browser_use_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+    std::env::set_var("BROWSER_USE_ENABLED", "true");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/browser-use".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("browser_use_run_task"));
+    assert!(!registry.can_handle("browser_use_get_session"));
+    assert!(!registry.can_handle("browser_use_close_session"));
+    assert!(!registry.can_handle("browser_use_extract_content"));
+    assert!(!registry.can_handle("browser_use_screenshot"));
+
     std::env::remove_var("BROWSER_USE_ENABLED");
     std::env::remove_var("BROWSER_USE_URL");
 }

@@ -1,28 +1,15 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::SshMcpProvider;
 use crate::agent::providers::{
     AgentsMdProvider, DelegationProvider, ManagerControlPlaneProvider, ReminderProvider,
     SandboxProvider, TodoList, WikiMemoryProvider,
 };
 use crate::agent::registry::ToolRegistry;
-use crate::agent::tool_runtime::{
-    v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation,
-    ToolModuleContext, ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry,
-    ToolRuntimeConfig, ToolRuntimeError,
-};
-use crate::config::ModelInfo;
-use crate::llm::ToolDefinition;
-use crate::sandbox::SandboxScope;
-use async_trait::async_trait;
-use std::sync::Arc;
-use tokio::sync::{mpsc::Sender, Mutex};
-use tracing::warn;
-
 #[cfg(feature = "tool-browser-use")]
-use crate::agent::providers::BrowserUseProvider;
-#[cfg(feature = "integration-ssh-mcp")]
-use crate::agent::providers::SshMcpProvider;
+use crate::agent::tool_runtime::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-file-delivery")]
@@ -55,6 +42,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate",
+    feature = "tool-browser-use",
     feature = "tool-compression",
     feature = "tool-file-delivery",
     feature = "tool-media-audio",
@@ -74,6 +62,18 @@ use crate::agent::tool_runtime::ToolModule;
 use crate::agent::tool_runtime::WebFetchMdToolModule;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::tool_runtime::YtdlpToolModule;
+use crate::agent::tool_runtime::{
+    v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation,
+    ToolModuleContext, ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry,
+    ToolRuntimeConfig, ToolRuntimeError,
+};
+use crate::config::ModelInfo;
+use crate::llm::ToolDefinition;
+use crate::sandbox::SandboxScope;
+use async_trait::async_trait;
+use std::sync::Arc;
+use tokio::sync::{mpsc::Sender, Mutex};
+use tracing::warn;
 
 impl AgentExecutor {
     /// Build the currently exposed tool definitions for this executor state.
@@ -114,7 +114,7 @@ impl AgentExecutor {
         // Feature-gated MCP, search, and browser automation providers
         self.register_mcp_providers(&mut registry);
         self.register_search_providers(&mut registry, &module_ctx);
-        self.register_browser_providers(&mut registry);
+        self.register_browser_providers(&mut registry, &module_ctx);
 
         // Optional TTS providers.
         self.register_tts_providers(&mut registry, &module_ctx);
@@ -163,6 +163,7 @@ impl AgentExecutor {
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-sandbox-recreate",
+            feature = "tool-browser-use",
             feature = "tool-compression",
             feature = "tool-file-delivery",
             feature = "tool-media-audio",
@@ -179,6 +180,8 @@ impl AgentExecutor {
         )))]
         let _ = (registry, ctx);
 
+        #[cfg(feature = "tool-browser-use")]
+        self.register_tool_runtime_module(registry, &BrowserUseToolModule, ctx);
         #[cfg(feature = "tool-compression")]
         self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
         #[cfg(feature = "tool-file-delivery")]
@@ -217,6 +220,7 @@ impl AgentExecutor {
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
+        feature = "tool-browser-use",
         feature = "tool-compression",
         feature = "tool-file-delivery",
         feature = "tool-media-audio",
@@ -351,6 +355,8 @@ impl AgentExecutor {
             sandbox_scope.clone(),
             self.build_sandbox_provider(sandbox_scope, progress_tx),
             self.runner.llm_client(),
+            Arc::clone(&self.settings),
+            self.browser_use_profile_scope(),
             progress_tx.cloned(),
         )
     }
@@ -434,6 +440,7 @@ impl AgentExecutor {
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
+        feature = "tool-browser-use",
         feature = "tool-compression",
         feature = "tool-file-delivery",
         feature = "tool-media-audio",
@@ -641,36 +648,15 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &WebFetchMdToolModule, ctx);
     }
 
-    fn register_browser_providers(&self, _registry: &mut ToolRegistry) {
-        // NOTE: Browser Use is disabled until a quality vision-capable agent model
-        // is available at a reasonable price-per-token. To re-enable, set
-        // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
-        // `BROWSER_USE_MODEL_PROVIDER`). See `docs/browser-use.md`.
+    fn register_browser_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
         #[cfg(feature = "tool-browser-use")]
-        if crate::config::is_browser_use_enabled() {
-            if let Some(url) = crate::config::get_browser_use_url() {
-                if !url.trim().is_empty() {
-                    let mut provider = BrowserUseProvider::new(&url, Arc::clone(&self.settings));
-                    if let Some(profile_scope) = self.browser_use_profile_scope() {
-                        provider = provider.with_profile_scope(profile_scope);
-                    }
-                    provider = provider.with_sandbox_scope(self.session.sandbox_scope().clone());
-                    _registry.register(Box::new(provider));
-                } else {
-                    warn!(
-                        "Browser Use enabled but BROWSER_USE_URL is empty; provider not registered"
-                    );
-                }
-            } else {
-                warn!(
-                    "Browser Use enabled but BROWSER_USE_URL is not set; provider not registered"
-                );
-            }
-        }
+        self.register_legacy_tool_module(registry, &BrowserUseToolModule, ctx);
         #[cfg(not(feature = "tool-browser-use"))]
         if crate::config::is_browser_use_enabled() {
             tracing::warn!("Browser Use enabled but feature not compiled in");
         }
+        #[cfg(not(feature = "tool-browser-use"))]
+        let _ = (registry, ctx);
     }
 
     fn register_tts_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {

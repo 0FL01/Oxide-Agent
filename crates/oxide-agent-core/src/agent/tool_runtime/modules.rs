@@ -5,11 +5,14 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{SandboxProvider, TodoList};
 use crate::capabilities::ModuleId;
+use crate::config::AgentSettings;
 use crate::llm::LlmClient;
 use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 
+#[cfg(feature = "tool-browser-use")]
+use crate::agent::providers::BrowserUseProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::providers::CompressionProvider;
 #[cfg(feature = "tool-file-delivery")]
@@ -52,6 +55,8 @@ pub struct ToolModuleContext {
     sandbox_scope: SandboxScope,
     sandbox_provider: Arc<SandboxProvider>,
     llm_client: Arc<LlmClient>,
+    settings: Arc<AgentSettings>,
+    browser_use_profile_scope: Option<String>,
     progress_tx: Option<Sender<AgentEvent>>,
 }
 
@@ -63,6 +68,8 @@ impl ToolModuleContext {
         sandbox_scope: SandboxScope,
         sandbox_provider: Arc<SandboxProvider>,
         llm_client: Arc<LlmClient>,
+        settings: Arc<AgentSettings>,
+        browser_use_profile_scope: Option<String>,
         progress_tx: Option<Sender<AgentEvent>>,
     ) -> Self {
         Self {
@@ -70,6 +77,8 @@ impl ToolModuleContext {
             sandbox_scope,
             sandbox_provider,
             llm_client,
+            settings,
+            browser_use_profile_scope,
             progress_tx,
         }
     }
@@ -102,6 +111,18 @@ impl ToolModuleContext {
     #[must_use]
     pub fn llm_client(&self) -> Arc<LlmClient> {
         Arc::clone(&self.llm_client)
+    }
+
+    /// Shared agent settings for modules that need runtime policy/config access.
+    #[must_use]
+    pub fn settings(&self) -> Arc<AgentSettings> {
+        Arc::clone(&self.settings)
+    }
+
+    /// Optional Browser Use profile scope derived from topic/reminder context.
+    #[must_use]
+    pub fn browser_use_profile_scope(&self) -> Option<String> {
+        self.browser_use_profile_scope.clone()
     }
 
     /// Optional progress sender for modules that emit progress events.
@@ -232,6 +253,54 @@ impl ToolModule for MediaVideoToolModule {
             media_file_provider(ctx),
             &["describe_video_file"],
         )))
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Vec::new()
+    }
+}
+
+/// Capability module for the Browser Use sidecar tools.
+#[cfg(feature = "tool-browser-use")]
+pub struct BrowserUseToolModule;
+
+#[cfg(feature = "tool-browser-use")]
+impl ToolModule for BrowserUseToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/browser-use")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        // NOTE: Browser Use is disabled until a quality vision-capable agent model
+        // is available at a reasonable price-per-token. To re-enable, set
+        // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
+        // `BROWSER_USE_MODEL_PROVIDER`). See `docs/browser-use.md`.
+        if !crate::config::is_browser_use_enabled() {
+            return None;
+        }
+
+        match crate::config::get_browser_use_url() {
+            Some(url) if !url.trim().is_empty() => {
+                let mut provider = BrowserUseProvider::new(&url, ctx.settings());
+                if let Some(profile_scope) = ctx.browser_use_profile_scope() {
+                    provider = provider.with_profile_scope(profile_scope);
+                }
+                provider = provider.with_sandbox_scope(ctx.sandbox_scope());
+                Some(Box::new(provider))
+            }
+            Some(_) => {
+                tracing::warn!(
+                    "Browser Use enabled but BROWSER_USE_URL is empty; provider not registered"
+                );
+                None
+            }
+            None => {
+                tracing::warn!(
+                    "Browser Use enabled but BROWSER_USE_URL is not set; provider not registered"
+                );
+                None
+            }
+        }
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

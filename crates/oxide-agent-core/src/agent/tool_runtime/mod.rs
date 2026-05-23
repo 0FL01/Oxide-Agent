@@ -26,6 +26,8 @@ pub use history::{ToolHistoryError, ToolHistoryWriter};
 pub use invocation::{
     EnvironmentMetadata, ModelMetadata, ProviderMetadata, ToolExecutionContext, ToolInvocation,
 };
+#[cfg(feature = "tool-browser-use")]
+pub use modules::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-file-delivery")]
