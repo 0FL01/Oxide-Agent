@@ -13,6 +13,7 @@ pub mod minimax;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-mistral")]
 pub mod mistral;
+pub(crate) mod modules;
 #[allow(missing_docs)]
 #[cfg(feature = "llm-nvidia")]
 pub mod nvidia;
@@ -104,3 +105,5 @@ pub use opencode_go::OpenCodeGoProvider;
 pub use openrouter::OpenRouterProvider;
 #[cfg(feature = "llm-zai")]
 pub use zai::{parse_zai_flush_time, ZaiProvider};
+
+pub(crate) use modules::{build_configured_providers, provider_key};

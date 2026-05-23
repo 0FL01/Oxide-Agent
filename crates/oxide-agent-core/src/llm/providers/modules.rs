@@ -1,0 +1,432 @@
+//! Feature-gated LLM provider modules and factories.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::config::AgentSettings;
+use crate::llm::LlmProvider;
+
+#[cfg(feature = "llm-chatgpt")]
+use std::path::PathBuf;
+
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-mistral",
+    feature = "llm-zai",
+    feature = "llm-nvidia",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+use crate::llm::support;
+
+/// Context shared by provider module factories.
+pub(crate) struct LlmProviderBuildContext {
+    #[cfg(any(
+        feature = "llm-chatgpt",
+        feature = "llm-mistral",
+        feature = "llm-zai",
+        feature = "llm-nvidia",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter"
+    ))]
+    http_client: reqwest::Client,
+}
+
+impl LlmProviderBuildContext {
+    fn new() -> Self {
+        Self {
+            #[cfg(any(
+                feature = "llm-chatgpt",
+                feature = "llm-mistral",
+                feature = "llm-zai",
+                feature = "llm-nvidia",
+                feature = "llm-opencode-go",
+                feature = "llm-openrouter"
+            ))]
+            http_client: support::http::create_http_client(),
+        }
+    }
+}
+
+/// Provider module descriptor and factory.
+pub(crate) trait LlmProviderModule: Send + Sync {
+    /// Stable provider module ID from the compiled capability manifest.
+    fn provider_id(&self) -> &'static str;
+
+    /// Runtime provider aliases owned by the module.
+    fn aliases(&self) -> &'static [&'static str];
+
+    /// Builds a configured provider instance when required credentials are present.
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>>;
+}
+
+/// Normalizes provider lookup keys.
+#[must_use]
+pub(crate) fn provider_key(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+/// Builds all configured providers from compiled and enabled provider modules.
+#[must_use]
+pub(crate) fn build_configured_providers(
+    settings: &AgentSettings,
+) -> HashMap<String, Arc<dyn LlmProvider>> {
+    let ctx = LlmProviderBuildContext::new();
+    let mut providers = HashMap::new();
+
+    for module in compiled_provider_modules() {
+        if !settings.is_module_enabled(module.provider_id()) {
+            continue;
+        }
+
+        if let Some(provider) = module.build_provider(settings, &ctx) {
+            insert_provider_aliases(&mut providers, module.as_ref(), provider);
+        }
+    }
+
+    providers
+}
+
+fn insert_provider_aliases(
+    providers: &mut HashMap<String, Arc<dyn LlmProvider>>,
+    module: &dyn LlmProviderModule,
+    provider: Arc<dyn LlmProvider>,
+) {
+    insert_provider(providers, module.provider_id(), Arc::clone(&provider));
+    for alias in module.aliases() {
+        insert_provider(providers, alias, Arc::clone(&provider));
+    }
+}
+
+fn insert_provider(
+    providers: &mut HashMap<String, Arc<dyn LlmProvider>>,
+    name: &str,
+    provider: Arc<dyn LlmProvider>,
+) {
+    providers.insert(provider_key(name), provider);
+}
+
+fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
+    let mut modules: Vec<Box<dyn LlmProviderModule>> = Vec::new();
+    let _ = &mut modules;
+
+    #[cfg(feature = "llm-chatgpt")]
+    modules.push(Box::new(ChatGptProviderModule));
+    #[cfg(feature = "llm-gemini")]
+    modules.push(Box::new(GeminiProviderModule));
+    #[cfg(feature = "llm-groq")]
+    modules.push(Box::new(GroqProviderModule));
+    #[cfg(feature = "llm-mistral")]
+    modules.push(Box::new(MistralProviderModule));
+    #[cfg(feature = "llm-minimax")]
+    modules.push(Box::new(MiniMaxProviderModule));
+    #[cfg(feature = "llm-zai")]
+    modules.push(Box::new(ZaiProviderModule));
+    #[cfg(feature = "llm-nvidia")]
+    modules.push(Box::new(NvidiaProviderModule));
+    #[cfg(feature = "llm-opencode-go")]
+    modules.push(Box::new(OpenCodeGoProviderModule));
+    #[cfg(feature = "llm-openrouter")]
+    modules.push(Box::new(OpenRouterProviderModule));
+
+    modules
+}
+
+#[cfg(feature = "llm-chatgpt")]
+struct ChatGptProviderModule;
+
+#[cfg(feature = "llm-chatgpt")]
+impl LlmProviderModule for ChatGptProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/openai-chatgpt"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["chatgpt", "openai-chatgpt"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        let auth_path = settings
+            .chatgpt_auth_path
+            .as_ref()
+            .filter(|path| !path.trim().is_empty())?;
+        let resolved_auth_path = super::chatgpt::resolve_auth_file_path(Some(auth_path))
+            .unwrap_or_else(|_| PathBuf::from(auth_path));
+
+        if !resolved_auth_path.exists() {
+            return None;
+        }
+
+        Some(Arc::new(super::ChatGptProvider::new_with_client(
+            resolved_auth_path,
+            ctx.http_client.clone(),
+        )))
+    }
+}
+
+#[cfg(feature = "llm-gemini")]
+struct GeminiProviderModule;
+
+#[cfg(feature = "llm-gemini")]
+impl LlmProviderModule for GeminiProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/gemini"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["gemini"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        _ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        settings.gemini_api_key.as_ref().map(|api_key| {
+            Arc::new(super::GeminiProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
+        })
+    }
+}
+
+#[cfg(feature = "llm-groq")]
+struct GroqProviderModule;
+
+#[cfg(feature = "llm-groq")]
+impl LlmProviderModule for GroqProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/groq"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["groq"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        _ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        settings.groq_api_key.as_ref().map(|api_key| {
+            Arc::new(super::GroqProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
+        })
+    }
+}
+
+#[cfg(feature = "llm-mistral")]
+struct MistralProviderModule;
+
+#[cfg(feature = "llm-mistral")]
+impl LlmProviderModule for MistralProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/mistral"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["mistral"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        settings.mistral_api_key.as_ref().map(|api_key| {
+            Arc::new(super::MistralProvider::new_with_client(
+                api_key.clone(),
+                ctx.http_client.clone(),
+            )) as Arc<dyn LlmProvider>
+        })
+    }
+}
+
+#[cfg(feature = "llm-minimax")]
+struct MiniMaxProviderModule;
+
+#[cfg(feature = "llm-minimax")]
+impl LlmProviderModule for MiniMaxProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/minimax"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["minimax"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        _ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        settings.minimax_api_key.as_ref().map(|api_key| {
+            Arc::new(super::MiniMaxProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
+        })
+    }
+}
+
+#[cfg(feature = "llm-zai")]
+struct ZaiProviderModule;
+
+#[cfg(feature = "llm-zai")]
+impl LlmProviderModule for ZaiProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/zai"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["zai"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        settings.zai_api_key.as_ref().map(|api_key| {
+            Arc::new(super::ZaiProvider::new_with_client(
+                api_key.clone(),
+                settings.zai_api_base.clone(),
+                ctx.http_client.clone(),
+            )) as Arc<dyn LlmProvider>
+        })
+    }
+}
+
+#[cfg(feature = "llm-nvidia")]
+struct NvidiaProviderModule;
+
+#[cfg(feature = "llm-nvidia")]
+impl LlmProviderModule for NvidiaProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/nvidia"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["nvidia"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        settings.nvidia_api_key.as_ref().map(|api_key| {
+            Arc::new(super::NvidiaProvider::new_with_client(
+                api_key.clone(),
+                settings.nvidia_api_base.clone(),
+                ctx.http_client.clone(),
+            )) as Arc<dyn LlmProvider>
+        })
+    }
+}
+
+#[cfg(feature = "llm-opencode-go")]
+struct OpenCodeGoProviderModule;
+
+#[cfg(feature = "llm-opencode-go")]
+impl LlmProviderModule for OpenCodeGoProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/opencode-go"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["opencode-go", "opencode_go"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        settings.opencode_go_api_key.as_ref().map(|api_key| {
+            Arc::new(super::OpenCodeGoProvider::new_with_client(
+                api_key.clone(),
+                settings.opencode_go_api_base.clone(),
+                ctx.http_client.clone(),
+            )) as Arc<dyn LlmProvider>
+        })
+    }
+}
+
+#[cfg(feature = "llm-openrouter")]
+struct OpenRouterProviderModule;
+
+#[cfg(feature = "llm-openrouter")]
+impl LlmProviderModule for OpenRouterProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/openrouter"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["openrouter"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        settings.openrouter_api_key.as_ref().map(|api_key| {
+            Arc::new(super::OpenRouterProvider::new_with_client(
+                api_key.clone(),
+                settings.openrouter_site_url.clone(),
+                settings.openrouter_site_name.clone(),
+                ctx.http_client.clone(),
+            )) as Arc<dyn LlmProvider>
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_configured_providers, provider_key};
+    use crate::config::{AgentSettings, ModuleRuntimeConfig};
+
+    #[test]
+    fn provider_key_is_case_insensitive() {
+        assert_eq!(provider_key("OpenCode-Go"), "opencode-go");
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn opencode_go_module_registers_provider_id_and_aliases() {
+        let settings = AgentSettings {
+            opencode_go_api_key: Some("test-opencode-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let providers = build_configured_providers(&settings);
+
+        assert!(providers.contains_key("llm-provider/opencode-go"));
+        assert!(providers.contains_key("opencode-go"));
+        assert!(providers.contains_key("opencode_go"));
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn disabled_opencode_go_module_registers_no_aliases() {
+        let mut settings = AgentSettings {
+            opencode_go_api_key: Some("test-opencode-key".to_string()),
+            ..AgentSettings::default()
+        };
+        settings.modules.insert(
+            "llm-provider/opencode-go".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        );
+
+        let providers = build_configured_providers(&settings);
+
+        assert!(!providers.contains_key("llm-provider/opencode-go"));
+        assert!(!providers.contains_key("opencode-go"));
+        assert!(!providers.contains_key("opencode_go"));
+    }
+}

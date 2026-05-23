@@ -3,23 +3,11 @@ use std::sync::Arc;
 
 use tracing::{debug, info, instrument, trace, warn};
 
+use super::providers;
 use super::{
     capabilities, support, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
     ProviderCapabilities, ToolDefinition,
 };
-
-#[cfg(any(
-    feature = "llm-chatgpt",
-    feature = "llm-gemini",
-    feature = "llm-groq",
-    feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-zai",
-    feature = "llm-nvidia",
-    feature = "llm-opencode-go",
-    feature = "llm-openrouter"
-))]
-use super::providers;
 
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
@@ -38,26 +26,7 @@ pub struct LlmClient {
 
 impl LlmClient {
     fn provider_key(name: &str) -> String {
-        name.to_ascii_lowercase()
-    }
-
-    #[cfg(any(
-        feature = "llm-chatgpt",
-        feature = "llm-gemini",
-        feature = "llm-groq",
-        feature = "llm-mistral",
-        feature = "llm-minimax",
-        feature = "llm-zai",
-        feature = "llm-nvidia",
-        feature = "llm-opencode-go",
-        feature = "llm-openrouter"
-    ))]
-    fn insert_provider(
-        providers: &mut HashMap<String, Arc<dyn LlmProvider>>,
-        name: &str,
-        provider: Arc<dyn LlmProvider>,
-    ) {
-        providers.insert(Self::provider_key(name), provider);
+        providers::provider_key(name)
     }
 
     fn resolve_media_route_for_modality(
@@ -196,141 +165,7 @@ impl LlmClient {
         };
         let media_model_name = media_model_id.clone();
 
-        #[cfg(any(
-            feature = "llm-chatgpt",
-            feature = "llm-mistral",
-            feature = "llm-zai",
-            feature = "llm-nvidia",
-            feature = "llm-opencode-go",
-            feature = "llm-openrouter"
-        ))]
-        let http_client = support::http::create_http_client();
-
-        let providers = HashMap::new();
-
-        #[cfg(any(
-            feature = "llm-chatgpt",
-            feature = "llm-gemini",
-            feature = "llm-groq",
-            feature = "llm-mistral",
-            feature = "llm-minimax",
-            feature = "llm-zai",
-            feature = "llm-nvidia",
-            feature = "llm-opencode-go",
-            feature = "llm-openrouter"
-        ))]
-        let mut providers = providers;
-
-        #[cfg(feature = "llm-chatgpt")]
-        if let Some(auth_path) = settings
-            .chatgpt_auth_path
-            .as_ref()
-            .filter(|path| !path.trim().is_empty())
-        {
-            let resolved_auth_path = providers::chatgpt::resolve_auth_file_path(Some(auth_path))
-                .unwrap_or_else(|_| std::path::PathBuf::from(auth_path));
-            if resolved_auth_path.exists() {
-                Self::insert_provider(
-                    &mut providers,
-                    "chatgpt",
-                    Arc::new(providers::ChatGptProvider::new_with_client(
-                        resolved_auth_path,
-                        http_client.clone(),
-                    )),
-                );
-            }
-        }
-
-        #[cfg(feature = "llm-groq")]
-        if let Some(api_key) = settings.groq_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "groq",
-                Arc::new(providers::GroqProvider::new(api_key.clone())),
-            );
-        }
-
-        #[cfg(feature = "llm-mistral")]
-        if let Some(api_key) = settings.mistral_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "mistral",
-                Arc::new(providers::MistralProvider::new_with_client(
-                    api_key.clone(),
-                    http_client.clone(),
-                )),
-            );
-        }
-
-        #[cfg(feature = "llm-minimax")]
-        if let Some(api_key) = settings.minimax_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "minimax",
-                Arc::new(providers::MiniMaxProvider::new(api_key.clone())),
-            );
-        }
-
-        #[cfg(feature = "llm-zai")]
-        if let Some(api_key) = settings.zai_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "zai",
-                Arc::new(providers::ZaiProvider::new_with_client(
-                    api_key.clone(),
-                    settings.zai_api_base.clone(),
-                    http_client.clone(),
-                )),
-            );
-        }
-
-        #[cfg(feature = "llm-gemini")]
-        if let Some(api_key) = settings.gemini_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "gemini",
-                Arc::new(providers::GeminiProvider::new(api_key.clone())),
-            );
-        }
-
-        #[cfg(feature = "llm-nvidia")]
-        if let Some(api_key) = settings.nvidia_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "nvidia",
-                Arc::new(providers::NvidiaProvider::new_with_client(
-                    api_key.clone(),
-                    settings.nvidia_api_base.clone(),
-                    http_client.clone(),
-                )),
-            );
-        }
-
-        #[cfg(feature = "llm-opencode-go")]
-        if let Some(api_key) = settings.opencode_go_api_key.as_ref() {
-            let provider: Arc<dyn LlmProvider> =
-                Arc::new(providers::OpenCodeGoProvider::new_with_client(
-                    api_key.clone(),
-                    settings.opencode_go_api_base.clone(),
-                    http_client.clone(),
-                ));
-            Self::insert_provider(&mut providers, "opencode-go", Arc::clone(&provider));
-            Self::insert_provider(&mut providers, "opencode_go", provider);
-        }
-
-        #[cfg(feature = "llm-openrouter")]
-        if let Some(api_key) = settings.openrouter_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "openrouter",
-                Arc::new(providers::OpenRouterProvider::new_with_client(
-                    api_key.clone(),
-                    settings.openrouter_site_url.clone(),
-                    settings.openrouter_site_name.clone(),
-                    http_client,
-                )),
-            );
-        }
+        let providers = providers::build_configured_providers(settings);
 
         Self {
             providers,
