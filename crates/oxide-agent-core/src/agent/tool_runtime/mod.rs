@@ -8,6 +8,7 @@ pub mod config;
 pub mod executor;
 pub mod history;
 pub mod invocation;
+pub mod modules;
 pub mod normalizer;
 pub mod output;
 pub mod process;
@@ -25,6 +26,9 @@ pub use history::{ToolHistoryError, ToolHistoryWriter};
 pub use invocation::{
     EnvironmentMetadata, ModelMetadata, ProviderMetadata, ToolExecutionContext, ToolInvocation,
 };
+#[cfg(feature = "tool-todos")]
+pub use modules::TodosToolRuntimeModule;
+pub use modules::{ToolRuntimeModule, ToolRuntimeModuleContext};
 pub use normalizer::{OutputNormalizer, ToolRuntimeError};
 pub use output::{
     CancellationReason, CleanupStatus, OutputPreview, OutputTruncationMetadata, TimeoutReason,

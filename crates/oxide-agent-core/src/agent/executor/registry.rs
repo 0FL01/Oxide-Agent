@@ -10,6 +10,7 @@ use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
     v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
     ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
+    ToolRuntimeModuleContext,
 };
 use crate::config::ModelInfo;
 use crate::llm::ToolDefinition;
@@ -38,6 +39,10 @@ use crate::agent::providers::StackLogsProvider;
 use crate::agent::providers::TavilyProvider;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::agent::providers::WebFetchMdProvider;
+#[cfg(feature = "tool-todos")]
+use crate::agent::tool_runtime::TodosToolRuntimeModule;
+#[cfg(feature = "tool-todos")]
+use crate::agent::tool_runtime::ToolRuntimeModule;
 
 impl AgentExecutor {
     /// Build the currently exposed tool definitions for this executor state.
@@ -94,11 +99,9 @@ impl AgentExecutor {
     ) -> RuntimeToolRegistry {
         let mut registry = RuntimeToolRegistry::new();
 
-        let todos_provider = Arc::new(TodosProvider::new(todos_arc));
-        self.register_tool_runtime_executors(
-            &mut registry,
-            todos_provider.tool_runtime_executors(progress_tx.cloned()),
-        );
+        let module_ctx =
+            ToolRuntimeModuleContext::new(Arc::clone(&todos_arc), progress_tx.cloned());
+        self.register_tool_runtime_modules(&mut registry, &module_ctx);
 
         let sandbox_scope = self.session.sandbox_scope().clone();
         let sandbox_provider = if let Some(tx) = progress_tx {
@@ -130,6 +133,32 @@ impl AgentExecutor {
         }
 
         registry
+    }
+
+    fn register_tool_runtime_modules(
+        &self,
+        registry: &mut RuntimeToolRegistry,
+        ctx: &ToolRuntimeModuleContext,
+    ) {
+        #[cfg(not(feature = "tool-todos"))]
+        let _ = (registry, ctx);
+
+        #[cfg(feature = "tool-todos")]
+        self.register_tool_runtime_module(registry, &TodosToolRuntimeModule, ctx);
+    }
+
+    #[cfg(feature = "tool-todos")]
+    fn register_tool_runtime_module<M>(
+        &self,
+        registry: &mut RuntimeToolRegistry,
+        module: &M,
+        ctx: &ToolRuntimeModuleContext,
+    ) where
+        M: ToolRuntimeModule,
+    {
+        let module_id = module.module_id();
+        tracing::debug!(%module_id, "Registering typed tool runtime module");
+        self.register_tool_runtime_executors(registry, module.tool_runtime_executors(ctx));
     }
 
     fn register_tool_runtime_executors(
