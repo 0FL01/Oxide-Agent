@@ -36,8 +36,12 @@ pub use modules::SandboxExecToolModule;
 pub use modules::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
 pub use modules::SandboxRecreateToolModule;
+#[cfg(feature = "tool-searxng")]
+pub use modules::SearxngToolModule;
 #[cfg(feature = "tool-stack-logs")]
 pub use modules::StackLogsToolModule;
+#[cfg(feature = "tool-tavily")]
+pub use modules::TavilyToolModule;
 #[cfg(feature = "tool-todos")]
 pub use modules::TodosToolModule;
 #[cfg(feature = "tool-webfetch-md")]

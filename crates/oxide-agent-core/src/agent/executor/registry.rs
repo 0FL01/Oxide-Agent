@@ -29,12 +29,8 @@ use crate::agent::providers::KokoroTtsProvider;
     feature = "tool-media-video"
 ))]
 use crate::agent::providers::MediaFileProvider;
-#[cfg(feature = "tool-searxng")]
-use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::SshMcpProvider;
-#[cfg(feature = "tool-tavily")]
-use crate::agent::providers::TavilyProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-file-delivery")]
@@ -45,8 +41,12 @@ use crate::agent::tool_runtime::SandboxExecToolModule;
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
 use crate::agent::tool_runtime::SandboxRecreateToolModule;
+#[cfg(feature = "tool-searxng")]
+use crate::agent::tool_runtime::SearxngToolModule;
 #[cfg(feature = "tool-stack-logs")]
 use crate::agent::tool_runtime::StackLogsToolModule;
+#[cfg(feature = "tool-tavily")]
+use crate::agent::tool_runtime::TavilyToolModule;
 #[cfg(feature = "tool-todos")]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
@@ -55,10 +55,12 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-recreate",
     feature = "tool-compression",
     feature = "tool-file-delivery",
+    feature = "tool-searxng",
     feature = "tool-stack-logs",
+    feature = "tool-tavily",
     feature = "tool-todos",
     feature = "tool-webfetch-md",
-    feature = "tool-ytdlp"
+    feature = "tool-ytdlp",
 ))]
 use crate::agent::tool_runtime::ToolModule;
 #[cfg(feature = "tool-webfetch-md")]
@@ -157,7 +159,9 @@ impl AgentExecutor {
             feature = "tool-sandbox-recreate",
             feature = "tool-compression",
             feature = "tool-file-delivery",
+            feature = "tool-searxng",
             feature = "tool-stack-logs",
+            feature = "tool-tavily",
             feature = "tool-todos",
             feature = "tool-webfetch-md",
             feature = "tool-ytdlp"
@@ -168,8 +172,12 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
         #[cfg(feature = "tool-file-delivery")]
         self.register_tool_runtime_module(registry, &FileDeliveryToolModule, ctx);
+        #[cfg(feature = "tool-searxng")]
+        self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
         #[cfg(feature = "tool-stack-logs")]
         self.register_tool_runtime_module(registry, &StackLogsToolModule, ctx);
+        #[cfg(feature = "tool-tavily")]
+        self.register_tool_runtime_module(registry, &TavilyToolModule, ctx);
         #[cfg(feature = "tool-todos")]
         self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
         #[cfg(feature = "tool-webfetch-md")]
@@ -190,7 +198,9 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "tool-compression",
         feature = "tool-file-delivery",
+        feature = "tool-searxng",
         feature = "tool-stack-logs",
+        feature = "tool-tavily",
         feature = "tool-todos",
         feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
@@ -399,7 +409,9 @@ impl AgentExecutor {
         feature = "tool-sandbox-recreate",
         feature = "tool-compression",
         feature = "tool-file-delivery",
+        feature = "tool-searxng",
         feature = "tool-stack-logs",
+        feature = "tool-tavily",
         feature = "tool-todos",
         feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
@@ -572,9 +584,6 @@ impl AgentExecutor {
     }
 
     fn register_search_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
-        #[cfg(not(feature = "tool-webfetch-md"))]
-        let _ = ctx;
-
         #[cfg(not(any(
             feature = "tool-tavily",
             feature = "tool-searxng",
@@ -583,41 +592,14 @@ impl AgentExecutor {
         let _ = (registry, ctx);
 
         #[cfg(feature = "tool-tavily")]
-        if crate::config::is_tavily_enabled() {
-            if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
-                if !tavily_key.trim().is_empty() {
-                    if let Ok(provider) = TavilyProvider::new(&tavily_key) {
-                        registry.register(Box::new(provider));
-                    }
-                } else {
-                    warn!("Tavily enabled but TAVILY_API_KEY is empty; provider not registered");
-                }
-            } else {
-                warn!("Tavily enabled but TAVILY_API_KEY is not set; provider not registered");
-            }
-        }
+        self.register_legacy_tool_module(registry, &TavilyToolModule, ctx);
         #[cfg(not(feature = "tool-tavily"))]
         if crate::config::is_tavily_enabled() {
             tracing::warn!("Tavily enabled but feature not compiled in");
         }
 
         #[cfg(feature = "tool-searxng")]
-        if crate::config::is_searxng_enabled() {
-            if let Some(url) = crate::config::get_searxng_url() {
-                if !url.trim().is_empty() {
-                    match SearxngProvider::new(&url) {
-                        Ok(provider) => registry.register(Box::new(provider)),
-                        Err(error) => {
-                            warn!(error = %error, "SearXNG provider initialization failed")
-                        }
-                    }
-                } else {
-                    warn!("SearXNG enabled but SEARXNG_URL is empty; provider not registered");
-                }
-            } else {
-                warn!("SearXNG enabled but SEARXNG_URL is not set; provider not registered");
-            }
-        }
+        self.register_legacy_tool_module(registry, &SearxngToolModule, ctx);
         #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             tracing::warn!("SearXNG enabled but feature not compiled in");
