@@ -1452,6 +1452,11 @@ impl ManagerControlPlaneProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(
+        feature = "tool-media-audio",
+        feature = "tool-media-image",
+        feature = "tool-media-video"
+    ))]
     use std::sync::Arc;
 
     #[cfg(any(
