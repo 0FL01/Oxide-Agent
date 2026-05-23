@@ -32,7 +32,9 @@ pub mod scope;
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 ))]
-pub use broker::{SandboxBrokerClient, SandboxBrokerServer};
+pub use broker::SandboxBrokerClient;
+#[cfg(feature = "sandbox-backend-docker-direct")]
+pub use broker::SandboxBrokerServer;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",

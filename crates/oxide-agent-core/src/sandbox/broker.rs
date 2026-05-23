@@ -3,17 +3,27 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+#[cfg(feature = "sandbox-backend-docker-direct")]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "sandbox-backend-docker-direct")]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(feature = "sandbox-backend-docker-direct")]
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
+#[cfg(feature = "sandbox-backend-docker-direct")]
+use tokio::net::UnixListener;
+use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::debug;
+#[cfg(feature = "sandbox-backend-docker-direct")]
+use tracing::{info, warn};
 
 use crate::config::get_sandboxd_socket;
 
-use super::manager::{DockerSandboxManager, ExecResult, SandboxContainerRecord};
+#[cfg(feature = "sandbox-backend-docker-direct")]
+use super::manager::DockerSandboxManager;
+use super::manager::{ExecResult, SandboxContainerRecord};
 use super::scope::SandboxScope;
 
 const fn default_stack_logs_max_entries() -> u32 {
@@ -587,11 +597,13 @@ impl SandboxBrokerClient {
     }
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 pub struct SandboxBrokerServer {
     listener: UnixListener,
     socket_path: PathBuf,
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 impl SandboxBrokerServer {
     pub async fn bind(socket_path: impl AsRef<Path>) -> Result<Self> {
         let socket_path = socket_path.as_ref().to_path_buf();
@@ -663,6 +675,7 @@ impl SandboxBrokerServer {
     }
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_connection(mut stream: UnixStream) -> Result<()> {
     let request: SandboxBrokerRequest = read_frame(&mut stream).await?;
     let response = handle_request(request, &mut stream).await?;
@@ -672,10 +685,12 @@ async fn handle_connection(mut stream: UnixStream) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn docker_manager(scope: SandboxScope, image_name: String) -> Result<DockerSandboxManager> {
     DockerSandboxManager::new_with_image(scope, image_name).await
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 fn response_from_result<T>(
     result: Result<T>,
     map: impl FnOnce(T) -> SandboxBrokerResponse,
@@ -686,6 +701,7 @@ fn response_from_result<T>(
     }
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_create_sandbox(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -699,6 +715,7 @@ async fn handle_create_sandbox(scope: SandboxScope, image_name: String) -> Sandb
     })
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_write_file(
     scope: SandboxScope,
     image_name: String,
@@ -719,6 +736,7 @@ async fn handle_write_file(
     })
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_read_file(
     scope: SandboxScope,
     image_name: String,
@@ -732,6 +750,7 @@ async fn handle_read_file(
     response_from_result(manager.read_file(&path).await, SandboxBrokerResponse::Bytes)
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_upload_file(
     scope: SandboxScope,
     image_name: String,
@@ -752,6 +771,7 @@ async fn handle_upload_file(
     })
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_download_file(
     scope: SandboxScope,
     image_name: String,
@@ -772,6 +792,7 @@ async fn handle_download_file(
     )
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_get_uploads_size(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -781,6 +802,7 @@ async fn handle_get_uploads_size(scope: SandboxScope, image_name: String) -> San
     response_from_result(manager.get_uploads_size().await, SandboxBrokerResponse::U64)
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_cleanup_old_downloads(
     scope: SandboxScope,
     image_name: String,
@@ -796,6 +818,7 @@ async fn handle_cleanup_old_downloads(
     )
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_destroy(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -805,6 +828,7 @@ async fn handle_destroy(scope: SandboxScope, image_name: String) -> SandboxBroke
     response_from_result(manager.destroy().await, |_| SandboxBrokerResponse::Unit)
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_recreate(scope: SandboxScope, image_name: String) -> SandboxBrokerResponse {
     let mut manager = match docker_manager(scope, image_name).await {
         Ok(manager) => manager,
@@ -814,6 +838,7 @@ async fn handle_recreate(scope: SandboxScope, image_name: String) -> SandboxBrok
     response_from_result(manager.recreate().await, |_| SandboxBrokerResponse::Unit)
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_file_size_bytes(
     scope: SandboxScope,
     image_name: String,
@@ -830,6 +855,7 @@ async fn handle_file_size_bytes(
     )
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_exec_command(
     scope: SandboxScope,
     image_name: String,
@@ -865,6 +891,7 @@ async fn handle_exec_command(
     Ok(Some(response))
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn handle_request(
     request: SandboxBrokerRequest,
     stream: &mut UnixStream,
@@ -956,6 +983,7 @@ async fn handle_request(
     Ok(Some(response))
 }
 
+#[cfg(feature = "sandbox-backend-docker-direct")]
 async fn wait_for_peer_disconnect(stream: &mut UnixStream) -> Result<()> {
     let mut buf = [0_u8; 1];
     let read = stream
@@ -1007,19 +1035,26 @@ async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ResolvedStackLogsSelector, SandboxBrokerClient, SandboxBrokerRequest,
-        SandboxBrokerResponse, SandboxBrokerServer, StackLogCursor, StackLogEntry, StackLogSource,
-        StackLogSuppression, StackLogsFetchRequest, StackLogsFetchResponse,
-        StackLogsListSourcesRequest, StackLogsListSourcesResponse, StackLogsSelector,
-        StackLogsWindow,
+        ResolvedStackLogsSelector, SandboxBrokerRequest, SandboxBrokerResponse, StackLogCursor,
+        StackLogEntry, StackLogSource, StackLogSuppression, StackLogsFetchRequest,
+        StackLogsFetchResponse, StackLogsListSourcesRequest, StackLogsListSourcesResponse,
+        StackLogsSelector, StackLogsWindow,
     };
+    #[cfg(feature = "sandbox-backend-docker-direct")]
+    use super::{SandboxBrokerClient, SandboxBrokerServer};
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     use crate::config::get_sandbox_image;
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     use crate::sandbox::scope::SandboxScope;
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     use anyhow::{bail, Context, Result};
     use chrono::{TimeZone, Utc};
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     use std::path::PathBuf;
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     fn unique_socket_path(test_name: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1028,6 +1063,7 @@ mod tests {
         std::env::temp_dir().join(format!("oxide-agent-{test_name}-{nonce}.sock"))
     }
 
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     fn unique_scope(test_name: &str) -> SandboxScope {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1195,6 +1231,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     #[ignore = "Requires Docker daemon"]
     async fn broker_download_file_roundtrip_reads_existing_container_file() -> Result<()> {
         let socket_path = unique_socket_path("broker-download-roundtrip");
@@ -1247,6 +1284,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     #[ignore = "Requires Docker daemon"]
     async fn broker_write_file_roundtrip_persists_to_existing_container() -> Result<()> {
         let socket_path = unique_socket_path("broker-write-roundtrip");
@@ -1303,6 +1341,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "sandbox-backend-docker-direct")]
     #[ignore = "Requires Docker daemon"]
     async fn broker_upload_file_roundtrip_persists_to_existing_container() -> Result<()> {
         let socket_path = unique_socket_path("broker-upload-roundtrip");

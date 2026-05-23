@@ -31,6 +31,9 @@ if [[ ${#deny[@]} -eq 0 ]]; then
         profile-no-sandbox)
             deny=(bollard rmcp bincode serde_bytes tar)
             ;;
+        sandbox-backend-sandboxd-client)
+            deny=(bollard tar http-body-util)
+            ;;
         profile-search-only)
             deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius)
             ;;

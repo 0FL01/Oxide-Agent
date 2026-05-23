@@ -216,9 +216,9 @@ sandbox-backend-docker-direct = [
     "dep:http-body-util",
     "sandbox-broker-protocol",
 ]
-sandbox-backend-sandboxd-client = ["sandbox-broker-protocol", "sandbox-backend-docker-direct"]
+sandbox-backend-sandboxd-client = ["sandbox-broker-protocol"]
 sandbox-broker-protocol = ["dep:bincode", "dep:serde_bytes"]
-sandbox-daemon = ["sandbox-backend-docker-direct", "sandbox-backend-sandboxd-client"]
+sandbox-daemon = ["sandbox-backend-docker-direct"]
 integration-mcp-jira = ["dep:rmcp"]
 integration-mcp-mattermost = ["dep:rmcp"]
 integration-ssh-mcp = ["dep:rmcp"]
