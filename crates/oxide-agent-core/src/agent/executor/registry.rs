@@ -84,7 +84,7 @@ impl AgentExecutor {
         let todos_provider = Arc::new(TodosProvider::new(todos_arc));
         self.register_tool_runtime_executors(
             &mut registry,
-            todos_provider.tool_runtime_executors(),
+            todos_provider.tool_runtime_executors(progress_tx.cloned()),
         );
 
         let sandbox_scope = self.session.sandbox_scope().clone();

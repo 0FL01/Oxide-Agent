@@ -3,6 +3,7 @@
 //! Provides `write_todos` tool for creating and managing task lists,
 //! enabling proactive agent behavior for complex multi-step requests.
 
+use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
@@ -15,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::{debug, info};
 
 /// Status of a todo item
@@ -211,7 +212,10 @@ impl TodosProvider {
 
     /// Build typed runtime executors for todo tools.
     #[must_use]
-    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+    pub fn tool_runtime_executors(
+        self: &Arc<Self>,
+        progress_tx: Option<Sender<AgentEvent>>,
+    ) -> Vec<Arc<dyn ToolExecutor>> {
         self.tool_specs()
             .into_iter()
             .map(|spec| {
@@ -219,6 +223,7 @@ impl TodosProvider {
                     provider: Arc::clone(self),
                     name: ToolName::from(spec.name.clone()),
                     spec,
+                    progress_tx: progress_tx.clone(),
                 }) as Arc<dyn ToolExecutor>
             })
             .collect()
@@ -260,7 +265,11 @@ impl TodosProvider {
         }]
     }
 
-    async fn write_todos(&self, arguments: &str) -> Result<String> {
+    async fn write_todos(
+        &self,
+        arguments: &str,
+        progress_tx: Option<&Sender<AgentEvent>>,
+    ) -> Result<String> {
         let args: WriteTodosArgs = serde_json::from_str(arguments)?;
 
         // Convert to TodoItems with XML sanitization to prevent UI corruption
@@ -275,9 +284,10 @@ impl TodosProvider {
             .collect();
 
         // Update the shared todo list and get state for response
-        let (completed, total, active_task, is_all_complete) = {
+        let (snapshot, completed, total, active_task, is_all_complete) = {
             let mut todos = self.todos.lock().await;
             todos.update(items);
+            let snapshot = todos.clone();
             let completed = todos.completed_count();
             let total = todos.items.len();
             let active_task = todos
@@ -286,8 +296,12 @@ impl TodosProvider {
                 .or_else(|| todos.blocked_task().map(|t| (t.description.clone(), true)));
             let is_all_complete = todos.is_complete();
             drop(todos);
-            (completed, total, active_task, is_all_complete)
+            (snapshot, completed, total, active_task, is_all_complete)
         };
+
+        if let Some(tx) = progress_tx {
+            let _ = tx.send(AgentEvent::TodosUpdated { todos: snapshot }).await;
+        }
 
         info!(
             completed = completed,
@@ -338,7 +352,7 @@ impl ToolProvider for TodosProvider {
         &self,
         tool_name: &str,
         arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         debug!(tool = tool_name, "Executing todos tool");
@@ -347,7 +361,7 @@ impl ToolProvider for TodosProvider {
             anyhow::bail!("Unknown todos tool: {tool_name}");
         }
 
-        self.write_todos(arguments).await
+        self.write_todos(arguments, progress_tx).await
     }
 }
 
@@ -355,6 +369,7 @@ struct TodosRuntimeExecutor {
     provider: Arc<TodosProvider>,
     name: ToolName,
     spec: ToolDefinition,
+    progress_tx: Option<Sender<AgentEvent>>,
 }
 
 #[async_trait]
@@ -377,7 +392,7 @@ impl ToolExecutor for TodosRuntimeExecutor {
             ..ToolRuntimeConfig::default()
         });
         self.provider
-            .write_todos(&invocation.raw_arguments)
+            .write_todos(&invocation.raw_arguments, self.progress_tx.as_ref())
             .await
             .map(|message| normalizer.success(&invocation, &message, ""))
             .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
@@ -387,6 +402,58 @@ impl ToolExecutor for TodosRuntimeExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    async fn recv_todos_update(
+        rx: &mut tokio::sync::mpsc::Receiver<AgentEvent>,
+    ) -> Result<TodoList, Box<dyn std::error::Error>> {
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await?
+            .ok_or("progress channel closed before todos update")?;
+        match event {
+            AgentEvent::TodosUpdated { todos } => Ok(todos),
+            _ => Err("expected TodosUpdated progress event".into()),
+        }
+    }
+
+    fn runtime_invocation(raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(42),
+            turn_id: TurnId::from("turn-test"),
+            batch_id: ToolBatchId::from("batch-test"),
+            batch_index: 0,
+            invocation_id: InvocationId::from("invoke-write-todos"),
+            tool_call_id: ToolCallId::from("call-write-todos"),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from("write_todos"),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     #[test]
     fn test_todo_status_display() {
@@ -535,6 +602,58 @@ mod tests {
         assert_eq!(list.items.len(), 3);
         assert_eq!(list.pending_count(), 2);
         drop(list);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_todos_write_emits_progress_update() -> Result<(), Box<dyn std::error::Error>> {
+        let todos = Arc::new(Mutex::new(TodoList::new()));
+        let provider = TodosProvider::new(Arc::clone(&todos));
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(4);
+
+        let args = r#"{
+            "todos": [
+                {"description": "Task 1", "status": "completed"},
+                {"description": "Task 2", "status": "in_progress"}
+            ]
+        }"#;
+
+        provider
+            .execute("write_todos", args, Some(&progress_tx), None)
+            .await?;
+
+        let update = recv_todos_update(&mut progress_rx).await?;
+        assert_eq!(update.items.len(), 2);
+        assert_eq!(update.completed_count(), 1);
+        assert_eq!(update.items[1].status, TodoStatus::InProgress);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_todos_runtime_executor_emits_progress_update(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let todos = Arc::new(Mutex::new(TodoList::new()));
+        let provider = Arc::new(TodosProvider::new(Arc::clone(&todos)));
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(4);
+        let executor = provider
+            .tool_runtime_executors(Some(progress_tx))
+            .into_iter()
+            .find(|executor| executor.name().as_str() == "write_todos")
+            .ok_or("write_todos runtime executor missing")?;
+
+        let args = r#"{
+            "todos": [
+                {"description": "Runtime task", "status": "completed"}
+            ]
+        }"#;
+
+        let output = executor.execute(runtime_invocation(args)).await?;
+        assert!(output.success);
+
+        let update = recv_todos_update(&mut progress_rx).await?;
+        assert_eq!(update.items.len(), 1);
+        assert_eq!(update.completed_count(), 1);
+        assert_eq!(update.items[0].description, "Runtime task");
         Ok(())
     }
 }

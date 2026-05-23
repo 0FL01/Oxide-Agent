@@ -278,6 +278,7 @@ mod tests {
     use oxide_agent_core::agent::compaction::BudgetState;
     use oxide_agent_core::agent::loop_detection::LoopType;
     use oxide_agent_core::agent::progress::{AgentEvent, ProgressState, TokenSnapshot};
+    use oxide_agent_core::agent::providers::{TodoItem, TodoList, TodoStatus};
     use oxide_agent_core::llm::TokenUsage;
 
     use super::render_progress_html;
@@ -364,6 +365,33 @@ mod tests {
 
         assert!(output.contains("✅ web_search ×2"));
         assert!(output.contains("⏳ 🔧 ls -la"));
+    }
+
+    #[test]
+    fn renders_todos_after_todos_updated_event() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::TodosUpdated {
+            todos: TodoList {
+                items: vec![
+                    TodoItem {
+                        description: "Finished task".to_string(),
+                        status: TodoStatus::Completed,
+                    },
+                    TodoItem {
+                        description: "Active task".to_string(),
+                        status: TodoStatus::InProgress,
+                    },
+                ],
+                updated_at: None,
+            },
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("📋 <b>Tasks [1/2]:</b>"));
+        assert!(output.contains("✅ 1. Finished task"));
+        assert!(output.contains("🔄 2. Active task"));
     }
 
     #[test]
