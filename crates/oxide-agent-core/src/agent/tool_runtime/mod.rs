@@ -65,6 +65,10 @@ pub use modules::SandboxRecreateToolModule;
 pub use modules::SearxngToolModule;
 #[cfg(feature = "tool-tts-silero")]
 pub use modules::SileroTtsToolModule;
+#[cfg(feature = "integration-ssh-mcp")]
+pub use modules::SshMcpModuleContext;
+#[cfg(feature = "integration-ssh-mcp")]
+pub use modules::SshMcpToolModule;
 #[cfg(feature = "tool-stack-logs")]
 pub use modules::StackLogsToolModule;
 #[cfg(feature = "tool-tavily")]

@@ -29,6 +29,36 @@ fn registry_wiki_store() -> crate::agent::wiki_memory::WikiStore {
     crate::agent::wiki_memory::WikiStore::new(Arc::new(RegistryWikiBackend), "prod")
 }
 
+#[cfg(feature = "integration-ssh-mcp")]
+fn registry_topic_infra_config() -> crate::storage::TopicInfraConfigRecord {
+    crate::storage::TopicInfraConfigRecord {
+        schema_version: 1,
+        version: 1,
+        user_id: 77,
+        topic_id: "topic-a".to_string(),
+        target_name: "prod-app".to_string(),
+        host: "prod.example.test".to_string(),
+        port: 22,
+        remote_user: "deploy".to_string(),
+        auth_mode: crate::storage::TopicInfraAuthMode::PrivateKey,
+        secret_ref: Some("storage:ssh/key".to_string()),
+        sudo_secret_ref: None,
+        environment: Some("prod".to_string()),
+        tags: Vec::new(),
+        allowed_tool_modes: vec![
+            crate::storage::TopicInfraToolMode::Exec,
+            crate::storage::TopicInfraToolMode::SudoExec,
+            crate::storage::TopicInfraToolMode::ReadFile,
+            crate::storage::TopicInfraToolMode::ApplyFileEdit,
+            crate::storage::TopicInfraToolMode::CheckProcess,
+            crate::storage::TopicInfraToolMode::Transfer,
+        ],
+        approval_required_modes: Vec::new(),
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
 #[test]
 fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
@@ -143,6 +173,34 @@ fn typed_runtime_registry_exposes_manager_lifecycle_tools_when_lifecycle_is_atta
     }
 }
 
+#[cfg(feature = "integration-ssh-mcp")]
+#[test]
+fn typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured() {
+    let mut executor = build_executor();
+    executor.set_topic_infra(
+        Arc::new(MockStorageProvider::new()),
+        77,
+        "topic-a".to_string(),
+        Some(registry_topic_infra_config()),
+    );
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for tool_name in ["ssh_exec", "ssh_sudo_exec", "ssh_check_process"] {
+        assert!(
+            tool_names.contains(tool_name),
+            "missing typed runtime SSH MCP tool: {tool_name}"
+        );
+    }
+    assert!(!tool_names.contains("ssh_read_file"));
+    assert!(!tool_names.contains("ssh_apply_file_edit"));
+    assert!(!tool_names.contains("ssh_send_file_to_user"));
+}
+
 #[cfg(feature = "tool-wiki-memory")]
 #[test]
 fn typed_runtime_registry_exposes_wiki_memory_tools_when_store_configured() {
@@ -237,6 +295,40 @@ fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {
 
     assert!(!tool_names.contains("topic_binding_get"));
     assert!(!tool_names.contains("topic_agent_tools_get"));
+    assert!(tool_names.contains("write_todos"));
+}
+
+#[cfg(feature = "integration-ssh-mcp")]
+#[test]
+fn typed_runtime_registry_skips_disabled_ssh_mcp_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "integration/ssh-mcp".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let mut executor = AgentExecutor::new(llm, session, settings);
+    executor.set_topic_infra(
+        Arc::new(MockStorageProvider::new()),
+        77,
+        "topic-a".to_string(),
+        Some(registry_topic_infra_config()),
+    );
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("ssh_exec"));
+    assert!(!tool_names.contains("ssh_read_file"));
     assert!(tool_names.contains("write_todos"));
 }
 
@@ -338,6 +430,35 @@ fn legacy_registry_skips_disabled_manager_control_plane_module() {
 
     assert!(!registry.can_handle("topic_binding_get"));
     assert!(!registry.can_handle("topic_agent_tools_get"));
+    assert!(registry.can_handle("write_todos"));
+}
+
+#[cfg(feature = "integration-ssh-mcp")]
+#[test]
+fn legacy_registry_skips_disabled_ssh_mcp_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "integration/ssh-mcp".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let mut executor = AgentExecutor::new(llm, session, settings);
+    executor.set_topic_infra(
+        Arc::new(MockStorageProvider::new()),
+        77,
+        "topic-a".to_string(),
+        Some(registry_topic_infra_config()),
+    );
+
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+
+    assert!(!registry.can_handle("ssh_exec"));
+    assert!(!registry.can_handle("ssh_read_file"));
     assert!(registry.can_handle("write_todos"));
 }
 
@@ -1015,6 +1136,39 @@ fn legacy_registry_registers_manager_control_plane_module_once() {
         "topic_agent_tools_get",
         "agent_profile_upsert",
         "forum_topic_create",
+    ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+}
+
+#[cfg(feature = "integration-ssh-mcp")]
+#[test]
+fn legacy_registry_registers_ssh_mcp_module_once() {
+    let mut executor = build_executor();
+    executor.set_topic_infra(
+        Arc::new(MockStorageProvider::new()),
+        77,
+        "topic-a".to_string(),
+        Some(registry_topic_infra_config()),
+    );
+    let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .all_tools()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+
+    for tool_name in [
+        "ssh_exec",
+        "ssh_sudo_exec",
+        "ssh_read_file",
+        "ssh_apply_file_edit",
+        "ssh_check_process",
+        "ssh_send_file_to_user",
     ] {
         assert_eq!(
             tool_names.iter().filter(|name| *name == tool_name).count(),

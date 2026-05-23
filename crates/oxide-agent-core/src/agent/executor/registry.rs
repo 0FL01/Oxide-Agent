@@ -1,7 +1,5 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
-#[cfg(feature = "integration-ssh-mcp")]
-use crate::agent::providers::SshMcpProvider;
 use crate::agent::providers::{DelegationProvider, SandboxProvider, TodoList};
 use crate::agent::registry::ToolRegistry;
 #[cfg(feature = "tool-browser-use")]
@@ -49,6 +47,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate",
     feature = "manager-control-plane",
+    feature = "integration-ssh-mcp",
     feature = "integration-mcp-jira",
     feature = "integration-mcp-mattermost",
     feature = "tool-agents-md",
@@ -82,6 +81,8 @@ use crate::agent::tool_runtime::{
 };
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::tool_runtime::{AgentsMdModuleContext, AgentsMdToolModule};
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::tool_runtime::{SshMcpModuleContext, SshMcpToolModule};
 use crate::config::ModelInfo;
 use crate::sandbox::SandboxScope;
 use std::sync::Arc;
@@ -145,21 +146,6 @@ impl AgentExecutor {
         let module_ctx = self.build_tool_module_context(Arc::clone(&todos_arc), progress_tx);
         self.register_tool_runtime_modules(&mut registry, &module_ctx);
 
-        #[cfg(feature = "integration-ssh-mcp")]
-        if let Some(topic_infra) = &self.topic_infra {
-            let ssh_provider = Arc::new(SshMcpProvider::new(
-                Arc::clone(&topic_infra.storage),
-                topic_infra.user_id,
-                topic_infra.topic_id.clone(),
-                topic_infra.config.clone(),
-                topic_infra.approvals.clone(),
-            ));
-            self.register_tool_runtime_executors(
-                &mut registry,
-                ssh_provider.tool_runtime_executors(),
-            );
-        }
-
         registry
     }
 
@@ -173,6 +159,7 @@ impl AgentExecutor {
             feature = "tool-sandbox-fileops",
             feature = "tool-sandbox-recreate",
             feature = "manager-control-plane",
+            feature = "integration-ssh-mcp",
             feature = "integration-mcp-jira",
             feature = "integration-mcp-mattermost",
             feature = "tool-agents-md",
@@ -219,6 +206,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
         #[cfg(feature = "tool-searxng")]
         self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
+        #[cfg(feature = "integration-ssh-mcp")]
+        self.register_tool_runtime_module(registry, &SshMcpToolModule, ctx);
         #[cfg(feature = "tool-stack-logs")]
         self.register_tool_runtime_module(registry, &StackLogsToolModule, ctx);
         #[cfg(feature = "tool-tavily")]
@@ -248,6 +237,7 @@ impl AgentExecutor {
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
         feature = "manager-control-plane",
+        feature = "integration-ssh-mcp",
         feature = "integration-mcp-jira",
         feature = "integration-mcp-mattermost",
         feature = "tool-agents-md",
@@ -373,6 +363,16 @@ impl AgentExecutor {
                     context.topic_lifecycle.clone(),
                 )
             }),
+            #[cfg(feature = "integration-ssh-mcp")]
+            ssh_mcp_context: self.topic_infra.as_ref().map(|context| {
+                SshMcpModuleContext::new(
+                    Arc::clone(&context.storage),
+                    context.user_id,
+                    context.topic_id.clone(),
+                    context.config.clone(),
+                    context.approvals.clone(),
+                )
+            }),
             #[cfg(feature = "tool-reminder")]
             reminder_context: self.reminder_context.clone(),
             #[cfg(feature = "tool-wiki-memory")]
@@ -466,6 +466,7 @@ impl AgentExecutor {
         feature = "tool-sandbox-fileops",
         feature = "tool-sandbox-recreate",
         feature = "manager-control-plane",
+        feature = "integration-ssh-mcp",
         feature = "integration-mcp-jira",
         feature = "integration-mcp-mattermost",
         feature = "tool-agents-md",
@@ -552,15 +553,7 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &ManagerControlPlaneToolModule, ctx);
 
         #[cfg(feature = "integration-ssh-mcp")]
-        if let Some(topic_infra) = &self.topic_infra {
-            registry.register(Box::new(crate::agent::providers::SshMcpProvider::new(
-                Arc::clone(&topic_infra.storage),
-                topic_infra.user_id,
-                topic_infra.topic_id.clone(),
-                topic_infra.config.clone(),
-                topic_infra.approvals.clone(),
-            )));
-        }
+        self.register_legacy_tool_module(registry, &SshMcpToolModule, ctx);
 
         #[cfg(feature = "tool-reminder")]
         self.register_legacy_tool_module(registry, &ReminderToolModule, ctx);

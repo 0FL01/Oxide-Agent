@@ -71,8 +71,16 @@ use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
 use crate::agent::providers::{ReminderContext, ReminderProvider};
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
-#[cfg(any(feature = "tool-agents-md", feature = "manager-control-plane"))]
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::{SshApprovalRegistry, SshMcpProvider};
+#[cfg(any(
+    feature = "tool-agents-md",
+    feature = "manager-control-plane",
+    feature = "integration-ssh-mcp"
+))]
 use crate::storage::StorageProvider;
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::storage::TopicInfraConfigRecord;
 
 /// Topic-scoped context required by the AGENTS.md tools.
 #[cfg(feature = "tool-agents-md")]
@@ -122,6 +130,38 @@ impl ManagerControlPlaneModuleContext {
     }
 }
 
+/// Topic-scoped infrastructure context required by SSH MCP tools.
+#[cfg(feature = "integration-ssh-mcp")]
+#[derive(Clone)]
+pub struct SshMcpModuleContext {
+    storage: Arc<dyn StorageProvider>,
+    user_id: i64,
+    topic_id: String,
+    config: TopicInfraConfigRecord,
+    approvals: SshApprovalRegistry,
+}
+
+#[cfg(feature = "integration-ssh-mcp")]
+impl SshMcpModuleContext {
+    /// Create a context for topic-scoped SSH MCP tools.
+    #[must_use]
+    pub fn new(
+        storage: Arc<dyn StorageProvider>,
+        user_id: i64,
+        topic_id: String,
+        config: TopicInfraConfigRecord,
+        approvals: SshApprovalRegistry,
+    ) -> Self {
+        Self {
+            storage,
+            user_id,
+            topic_id,
+            config,
+            approvals,
+        }
+    }
+}
+
 /// Runtime context passed to tool capability modules.
 pub struct ToolModuleContext {
     todos: Arc<Mutex<TodoList>>,
@@ -134,6 +174,8 @@ pub struct ToolModuleContext {
     agents_md_context: Option<AgentsMdModuleContext>,
     #[cfg(feature = "manager-control-plane")]
     manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
+    #[cfg(feature = "integration-ssh-mcp")]
+    ssh_mcp_context: Option<SshMcpModuleContext>,
     #[cfg(feature = "tool-reminder")]
     reminder_context: Option<ReminderContext>,
     #[cfg(feature = "tool-wiki-memory")]
@@ -163,6 +205,9 @@ pub struct ToolModuleContextParts {
     /// Optional manager control-plane context.
     #[cfg(feature = "manager-control-plane")]
     pub manager_control_plane_context: Option<ManagerControlPlaneModuleContext>,
+    /// Optional topic infrastructure context for SSH MCP tools.
+    #[cfg(feature = "integration-ssh-mcp")]
+    pub ssh_mcp_context: Option<SshMcpModuleContext>,
     /// Optional reminder context.
     #[cfg(feature = "tool-reminder")]
     pub reminder_context: Option<ReminderContext>,
@@ -191,6 +236,8 @@ impl ToolModuleContext {
             agents_md_context: parts.agents_md_context,
             #[cfg(feature = "manager-control-plane")]
             manager_control_plane_context: parts.manager_control_plane_context,
+            #[cfg(feature = "integration-ssh-mcp")]
+            ssh_mcp_context: parts.ssh_mcp_context,
             #[cfg(feature = "tool-reminder")]
             reminder_context: parts.reminder_context,
             #[cfg(feature = "tool-wiki-memory")]
@@ -255,6 +302,13 @@ impl ToolModuleContext {
     #[must_use]
     pub fn manager_control_plane_context(&self) -> Option<ManagerControlPlaneModuleContext> {
         self.manager_control_plane_context.clone()
+    }
+
+    /// Optional context for topic-scoped SSH MCP tools.
+    #[cfg(feature = "integration-ssh-mcp")]
+    #[must_use]
+    pub fn ssh_mcp_context(&self) -> Option<SshMcpModuleContext> {
+        self.ssh_mcp_context.clone()
     }
 
     /// Optional context for reminder tools.
@@ -396,6 +450,42 @@ impl ToolModule for ManagerControlPlaneToolModule {
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
             .map(|provider| provider_runtime_executors(Arc::new(provider), ctx.progress_tx()))
+            .unwrap_or_default()
+    }
+}
+
+/// Capability module for topic-scoped SSH MCP tools.
+#[cfg(feature = "integration-ssh-mcp")]
+pub struct SshMcpToolModule;
+
+#[cfg(feature = "integration-ssh-mcp")]
+impl SshMcpToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<SshMcpProvider> {
+        let ssh = ctx.ssh_mcp_context()?;
+        Some(SshMcpProvider::new(
+            ssh.storage,
+            ssh.user_id,
+            ssh.topic_id,
+            ssh.config,
+            ssh.approvals,
+        ))
+    }
+}
+
+#[cfg(feature = "integration-ssh-mcp")]
+impl ToolModule for SshMcpToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("integration/ssh-mcp")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider(ctx)
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
             .unwrap_or_default()
     }
 }
