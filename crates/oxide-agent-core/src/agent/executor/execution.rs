@@ -209,7 +209,6 @@ impl AgentExecutor {
             &task_id,
             progress_tx.as_ref(),
             &mut self.session,
-            self.skill_registry.as_mut(),
             RunnerContextServices {
                 compaction_controller: &self.compaction_controller,
             },
@@ -365,7 +364,6 @@ impl AgentExecutor {
             task,
             &tools,
             structured_output,
-            self.skill_registry.as_mut(),
             &mut self.session,
             self.execution_profile.prompt_instructions(),
             wiki_context.as_deref(),

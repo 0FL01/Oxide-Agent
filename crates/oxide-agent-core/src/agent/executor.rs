@@ -1,7 +1,7 @@
 //! Agent executor module
 //!
 //! Handles orchestration around the core agent runner, including
-//! session lifecycle, skill prompts, and tool registry setup.
+//! session lifecycle and tool registry setup.
 
 mod compaction;
 mod config;
@@ -18,7 +18,6 @@ use crate::agent::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessP
 use crate::agent::providers::ReminderContext;
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::{AgentSession, PendingUserInput};
-use crate::agent::skills::SkillRegistry;
 use crate::agent::wiki_memory::WikiStore;
 use std::sync::{Arc, RwLock};
 
@@ -29,7 +28,6 @@ pub use super::recovery::sanitize_xml_tags as public_sanitize_xml_tags;
 pub struct AgentExecutor {
     runner: AgentRunner,
     session: AgentSession,
-    skill_registry: Option<SkillRegistry>,
     settings: Arc<crate::config::AgentSettings>,
     agents_md: Option<AgentsMdContext>,
     manager_control_plane: Option<ManagerControlPlaneContext>,

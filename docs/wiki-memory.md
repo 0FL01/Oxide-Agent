@@ -10,7 +10,7 @@ Oxide Agent durable memory is a bounded Markdown wiki stored in the existing S3/
 - Wiki writes are staged as validated patches in the session cache and flushed as bounded Markdown objects after successful runs.
 - Explicit remember requests and confident procedure/preference candidates create scoped `pages/*.md`; low-confidence facts go to `inbox/*.md`.
 - `index.md` and `log.md` are protected from planner edits and reconciled by runtime after patch validation, so new pages are discoverable without S3 `LIST`.
-- Skills embeddings are separate from durable memory and remain available for skills RAG.
+- The legacy skills/embeddings subsystem has been removed; durable context now comes from wiki memory, topic `AGENTS.md`, runtime injections, and enabled tools.
 
 ## Object Layout
 

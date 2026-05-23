@@ -39,8 +39,6 @@ pub mod registry;
 pub mod runner;
 /// Agent session management
 pub mod session;
-/// Skill system for modular prompts
-pub mod skills;
 /// Structured output parsing and validation
 pub mod structured_output;
 /// Task-local active model route metadata for tool providers.
@@ -93,5 +91,4 @@ pub use session::{
     AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingUserInput,
     RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
 };
-pub use skills::SkillRegistry;
 pub use wiki_memory::WikiStore;

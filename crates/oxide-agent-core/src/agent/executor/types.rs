@@ -6,7 +6,6 @@ use crate::agent::runner::{
     AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
 };
 use crate::agent::session::{AgentSession, PendingUserInput};
-use crate::agent::skills::SkillRegistry;
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::llm::{Message, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
@@ -58,7 +57,6 @@ impl PreparedExecution {
         task_id: &'a str,
         progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
         session: &'a mut AgentSession,
-        skill_registry: Option<&'a mut SkillRegistry>,
         services: RunnerContextServices<'a>,
     ) -> AgentRunnerContext<'a> {
         let session_id = Some(session.session_id.to_string());
@@ -80,7 +78,6 @@ impl PreparedExecution {
             self.runner_config.clone(),
         );
 
-        ctx.skill_registry = skill_registry;
         ctx.session_id = session_id;
         ctx.memory_scope = memory_scope;
         ctx.memory_behavior = memory_behavior;

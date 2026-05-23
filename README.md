@@ -42,7 +42,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Cold-Start Tool Drift Pruning:** Removes stale tool calls from persisted memories on startup.
     *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
     *   **📋 Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
-    *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (9 skills: core, delegation_manager, ffmpeg-conversion, file-hosting, file-management, html-report, task-planning, video-processing, web-search).
+    *   **Durable Context:** Topic `AGENTS.md`, wiki memory, runtime injections, and enabled tools provide deterministic prompt context.
     *   **📁 File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
     *   **🎬 Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
@@ -473,26 +473,14 @@ Legacy `text_to_speech` has been replaced by language-specific tools.
 
 
 <details>
-<summary>🏗 Internal Structure, Skills, Hooks, Compaction</summary>
+<summary>🏗 Internal Structure, Context, Hooks, Compaction</summary>
 
-### 🎯 Skills System
-The agent uses a RAG approach with embeddings to automatically provide relevant context:
-- **9 skills** as markdown documents (`skills/`)
-- **Semantic matching** of user requests with skills via cosine similarity (threshold: 0.6)
-- **Embeddings caching** for fast access
-- **Automatic injection** of relevant instructions into the system prompt
-- **Configuration:** `SKILL_TOKEN_BUDGET` (4096 tokens), `SKILL_SEMANTIC_THRESHOLD` (0.6), `SKILL_MAX_SELECTED` (3)
-
-**Available Skills:**
-- `core` - Basic agent rules (always loaded)
-- `delegation_manager` - Sub-agent delegation patterns
-- `file-management` - Sandbox operations
-- `file-hosting` - Large file uploads
-- `task-planning` - Todo management for multistep tasks
-- `web-search` - Web search and extraction tools
-- `video-processing` - YT-DLP integration
-- `ffmpeg-conversion` - Media conversion
-- `html-report` - Design style guide
+### Deterministic Context
+The legacy skills RAG subsystem has been removed. The agent prompt is assembled from explicit deterministic sources:
+- Topic-scoped `AGENTS.md`
+- S3/R2-backed wiki memory
+- Runtime context injections
+- Enabled tools and profile instructions
 
 ### 🔄 Loop Protection
 Three-level loop detection system (`agent/loop_detection/`):
@@ -674,7 +662,6 @@ crates/
 │       │   │   └── ...
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
-│       │   └── skills/         # Skills subsystem (RAG/embeddings)
 │       ├── llm/                # LLM provider integrations
 │       │   ├── providers/      # 5+ providers (zai, minimax, mistral, gemini, groq)
 │       │   └── tool_correlation.rs
@@ -701,7 +688,6 @@ crates/
 └── oxide-agent-telegram-bot/   # Binary entry point and configuration
     └── src/main.rs
 
-skills/                         # Skill definitions (markdown)
 tests/                          # Integration and functional tests
 ├── e2e/                        # E2E tests for web transport
 │   ├── session_tests.rs

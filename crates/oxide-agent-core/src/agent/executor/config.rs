@@ -57,8 +57,6 @@ impl AgentExecutor {
             Arc::clone(&hook_policy_state),
         );
 
-        let skill_registry = None;
-
         debug!(
             active_agent_routes = ?format_model_routes(&settings.get_configured_agent_model_routes()),
             codex_style_compaction_enabled = settings.codex_style_compaction_enabled(),
@@ -72,7 +70,6 @@ impl AgentExecutor {
         Self {
             runner,
             session,
-            skill_registry,
             settings,
             agents_md: None,
             manager_control_plane: None,

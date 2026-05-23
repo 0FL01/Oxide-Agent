@@ -7,7 +7,6 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
 use crate::agent::registry::ToolRegistry;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
-use crate::agent::skills::SkillRegistry;
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
     get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
@@ -136,8 +135,6 @@ pub struct AgentRunnerContext<'a> {
     pub messages: &'a mut Vec<Message>,
     /// Agent context abstraction (memory + cancellation).
     pub agent: &'a mut dyn AgentContext,
-    /// Optional skill registry for dynamic skill injection.
-    pub skill_registry: Option<&'a mut SkillRegistry>,
     /// Optional runtime/session-level compaction controller.
     pub compaction_controller: Option<&'a CompactionController>,
     /// Stable top-level session identity when available.
@@ -180,7 +177,6 @@ impl<'a> AgentRunnerContext<'a> {
             task_id: base.task_id,
             messages: base.messages,
             agent: base.agent,
-            skill_registry: None,
             compaction_controller,
             session_id: None,
             memory_scope: None,

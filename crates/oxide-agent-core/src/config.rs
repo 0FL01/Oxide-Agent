@@ -4,7 +4,6 @@
 //!
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 // LLM provider defaults
@@ -204,29 +203,6 @@ pub struct AgentSettings {
     /// Temporary migration switch for Codex-style runtime/session-level compaction.
     pub oxide_codex_style_compaction: Option<bool>,
 
-    /// Embedding provider name (mistral, openrouter, openai, gemini)
-    pub embedding_provider: Option<String>,
-    /// Embedding model ID
-    pub embedding_model_id: Option<String>,
-    /// Custom OpenAI-compatible embeddings base URL.
-    /// Used by the `openai-base` embedding provider.
-    pub embedding_openai_base_url: Option<String>,
-    /// Custom OpenAI-compatible embeddings API key.
-    /// Used by the `openai-base` embedding provider.
-    pub embedding_openai_api_key: Option<String>,
-    /// Output embedding dimensionality.
-    /// When set, the embedding provider will truncate vectors to this size via
-    /// `output_dimensionality` (Gemini) or equivalent. Must be in 128..=3072.
-    /// Recommended values: 1024, 1536, 3072. Defaults to 1024.
-    pub embedding_dimensions: Option<u32>,
-    /// Retrieval prompt style for embeddings sent to OpenAI-compatible endpoints.
-    #[serde(default)]
-    pub embedding_prompt_style: Option<EmbeddingPromptStyle>,
-    /// Custom prefix applied to retrieval queries when `embedding_prompt_style=custom`.
-    pub embedding_query_prefix: Option<String>,
-    /// Custom prefix applied to retrieval documents when `embedding_prompt_style=custom`.
-    pub embedding_document_prefix: Option<String>,
-
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
     /// Sub-agent timeout in seconds
@@ -235,34 +211,6 @@ pub struct AgentSettings {
 
 const fn default_openrouter_site_url() -> String {
     String::new()
-}
-
-/// Prompt adaptation style for retrieval-aware embedding models.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum EmbeddingPromptStyle {
-    /// Send the original text without any task prefix.
-    #[default]
-    None,
-    /// Prefix retrieval inputs for USER2-style asymmetric search models.
-    User2,
-    /// Prefix retrieval inputs for E5-style asymmetric search models.
-    E5,
-    /// Use explicit query/document prefixes from config.
-    Custom,
-}
-
-impl EmbeddingPromptStyle {
-    /// Return the canonical snake_case label used in env/config serialization.
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::User2 => "user2",
-            Self::E5 => "e5",
-            Self::Custom => "custom",
-        }
-    }
 }
 
 fn default_r2_region() -> String {
@@ -423,62 +371,6 @@ impl AgentSettings {
             ));
         }
         settings.validate_route_credentials()?;
-
-        // Fallback for embedding configuration
-        if settings.embedding_provider.is_none() {
-            if let Ok(val) = std::env::var("EMBEDDING_PROVIDER") {
-                if !val.is_empty() {
-                    settings.embedding_provider = Some(val);
-                }
-            }
-        }
-        if settings.embedding_model_id.is_none() {
-            if let Ok(val) = std::env::var("EMBEDDING_MODEL_ID") {
-                if !val.is_empty() {
-                    settings.embedding_model_id = Some(val);
-                }
-            }
-        }
-        if settings.embedding_openai_base_url.is_none() {
-            if let Ok(val) = std::env::var("EMBEDDING_OPENAI_BASE_URL") {
-                if !val.is_empty() {
-                    settings.embedding_openai_base_url = Some(val);
-                }
-            }
-        }
-        if settings.embedding_openai_api_key.is_none() {
-            if let Ok(val) = std::env::var("EMBEDDING_OPENAI_API_KEY") {
-                if !val.is_empty() {
-                    settings.embedding_openai_api_key = Some(val);
-                }
-            }
-        }
-        if settings.embedding_dimensions.is_none() {
-            if let Ok(val) = std::env::var("EMBEDDING_DIMENSIONS") {
-                if let Ok(parsed) = val.parse::<u32>() {
-                    settings.embedding_dimensions = Some(parsed);
-                }
-            }
-        }
-        if settings.embedding_prompt_style.is_none() {
-            if let Ok(val) = std::env::var("EMBEDDING_PROMPT_STYLE") {
-                settings.embedding_prompt_style = parse_embedding_prompt_style(&val);
-            }
-        }
-        if settings.embedding_query_prefix.is_none() {
-            if let Ok(val) = std::env::var("EMBEDDING_QUERY_PREFIX") {
-                if !val.is_empty() {
-                    settings.embedding_query_prefix = Some(val);
-                }
-            }
-        }
-        if settings.embedding_document_prefix.is_none() {
-            if let Ok(val) = std::env::var("EMBEDDING_DOCUMENT_PREFIX") {
-                if !val.is_empty() {
-                    settings.embedding_document_prefix = Some(val);
-                }
-            }
-        }
 
         Ok(settings)
     }
@@ -1035,19 +927,6 @@ impl AgentSettings {
         self.sub_agent_timeout_secs
             .unwrap_or(SUB_AGENT_TIMEOUT_SECS)
     }
-
-    /// Returns a stable embedding profile identifier for cache/index isolation.
-    #[must_use]
-    pub fn get_embedding_profile_id(&self) -> Option<String> {
-        build_embedding_profile_id(
-            self.embedding_provider.as_deref(),
-            self.embedding_model_id.as_deref(),
-            self.embedding_dimensions,
-            self.embedding_prompt_style.as_ref(),
-            self.embedding_query_prefix.as_deref(),
-            self.embedding_document_prefix.as_deref(),
-        )
-    }
 }
 
 #[cfg(test)]
@@ -1099,9 +978,6 @@ mod tests {
         env::set_var("CHAT_MODEL_ID", "test-model");
         env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
         env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
-        env::set_var("EMBEDDING_OPENAI_BASE_URL", "http://127.0.0.1:8002/v1");
-        env::set_var("EMBEDDING_OPENAI_API_KEY", "test-embedding-key");
-        env::set_var("EMBEDDING_PROMPT_STYLE", "user2");
 
         let settings = AgentSettings::new()?;
         assert_eq!(
@@ -1109,26 +985,11 @@ mod tests {
             Some("https://example.com".to_string())
         );
         assert_eq!(settings.get_configured_agent_temperature(), Some(0.42));
-        assert_eq!(
-            settings.embedding_openai_base_url,
-            Some("http://127.0.0.1:8002/v1".to_string())
-        );
-        assert_eq!(
-            settings.embedding_openai_api_key,
-            Some("test-embedding-key".to_string())
-        );
-        assert_eq!(
-            settings.embedding_prompt_style,
-            Some(EmbeddingPromptStyle::User2)
-        );
 
         env::remove_var("R2_ENDPOINT_URL");
         env::remove_var("CHAT_MODEL_ID");
         env::remove_var("CHAT_MODEL_PROVIDER");
         env::remove_var("AGENT_MODEL_TEMPERATURE");
-        env::remove_var("EMBEDDING_OPENAI_BASE_URL");
-        env::remove_var("EMBEDDING_OPENAI_API_KEY");
-        env::remove_var("EMBEDDING_PROMPT_STYLE");
 
         // 2. Test empty env var
         env::set_var("R2_ENDPOINT_URL", "");
@@ -1196,25 +1057,6 @@ mod tests {
         .codex_style_compaction_enabled());
 
         env::remove_var("OXIDE_CODEX_STYLE_COMPACTION");
-    }
-
-    #[test]
-    fn embedding_profile_id_changes_with_prompt_style() {
-        let base = AgentSettings {
-            embedding_provider: Some("openai-base".to_string()),
-            embedding_model_id: Some("user2-base".to_string()),
-            embedding_dimensions: Some(768),
-            ..AgentSettings::default()
-        };
-        let user2 = AgentSettings {
-            embedding_prompt_style: Some(EmbeddingPromptStyle::User2),
-            ..base.clone()
-        };
-
-        assert_ne!(
-            base.get_embedding_profile_id(),
-            user2.get_embedding_profile_id()
-        );
     }
 
     #[test]
@@ -1667,217 +1509,6 @@ pub const AGENT_SEARCH_LIMIT: usize = 10;
 pub const WIKI_MEMORY_WRITER_MAX_TOKENS: u32 = 4096;
 /// Default timeout for background Wiki Memory writer requests.
 pub const WIKI_MEMORY_WRITER_TIMEOUT_SECS: u64 = 60;
-
-// Skill system configuration
-/// Skills directory (contains modular prompt files)
-pub const SKILLS_DIR: &str = "skills";
-/// Maximum tokens allocated to selected skills
-pub const SKILL_TOKEN_BUDGET: usize = 4096;
-/// Minimum semantic similarity score to consider a skill relevant
-pub const SKILL_EMBEDDING_THRESHOLD: f32 = 0.6;
-/// Maximum number of non-core skills to select
-pub const SKILL_MAX_SELECTED: usize = 3;
-/// TTL for skill metadata cache (seconds)
-pub const SKILL_CACHE_TTL_SECS: u64 = 3600;
-/// Embedding cache directory
-pub const EMBEDDING_CACHE_DIR: &str = ".embeddings_cache/skills";
-
-/// Get skills directory path from env or default.
-#[must_use]
-pub fn get_skills_dir() -> String {
-    std::env::var("SKILLS_DIR").unwrap_or_else(|_| SKILLS_DIR.to_string())
-}
-
-/// Get skill token budget from env or default.
-#[must_use]
-pub fn get_skill_token_budget() -> usize {
-    std::env::var("SKILL_TOKEN_BUDGET")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(SKILL_TOKEN_BUDGET)
-}
-
-/// Get semantic threshold from env or default.
-#[must_use]
-pub fn get_skill_semantic_threshold() -> f32 {
-    std::env::var("SKILL_SEMANTIC_THRESHOLD")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(SKILL_EMBEDDING_THRESHOLD)
-}
-
-/// Get max selected skills from env or default.
-#[must_use]
-pub fn get_skill_max_selected() -> usize {
-    std::env::var("SKILL_MAX_SELECTED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(SKILL_MAX_SELECTED)
-}
-
-/// Get skill cache TTL (seconds) from env or default.
-#[must_use]
-pub fn get_skill_cache_ttl_secs() -> u64 {
-    std::env::var("SKILL_CACHE_TTL_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(SKILL_CACHE_TTL_SECS)
-}
-
-/// Get embedding provider from env.
-#[must_use]
-pub fn get_embedding_provider() -> Option<String> {
-    std::env::var("EMBEDDING_PROVIDER")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Get embedding model ID from env.
-#[must_use]
-pub fn get_embedding_model_id() -> Option<String> {
-    std::env::var("EMBEDDING_MODEL_ID")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Get custom OpenAI-compatible embeddings base URL from env.
-#[must_use]
-pub fn get_embedding_openai_base_url() -> Option<String> {
-    std::env::var("EMBEDDING_OPENAI_BASE_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Get custom OpenAI-compatible embeddings API key from env.
-#[must_use]
-pub fn get_embedding_openai_api_key() -> Option<String> {
-    std::env::var("EMBEDDING_OPENAI_API_KEY")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Default embedding output dimensionality.
-pub const DEFAULT_EMBEDDING_DIMENSIONS: u32 = 1024;
-
-/// Get embedding output dimensionality from env or default.
-#[must_use]
-pub fn get_embedding_dimensions() -> u32 {
-    std::env::var("EMBEDDING_DIMENSIONS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_EMBEDDING_DIMENSIONS)
-}
-
-/// Get embedding prompt style from env or default.
-#[must_use]
-pub fn get_embedding_prompt_style() -> EmbeddingPromptStyle {
-    std::env::var("EMBEDDING_PROMPT_STYLE")
-        .ok()
-        .and_then(|value| parse_embedding_prompt_style(&value))
-        .unwrap_or_default()
-}
-
-/// Get embedding query prefix from env.
-#[must_use]
-pub fn get_embedding_query_prefix() -> Option<String> {
-    std::env::var("EMBEDDING_QUERY_PREFIX")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Get embedding document prefix from env.
-#[must_use]
-pub fn get_embedding_document_prefix() -> Option<String> {
-    std::env::var("EMBEDDING_DOCUMENT_PREFIX")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Get stable embedding profile identifier from env/config primitives.
-#[must_use]
-pub fn get_embedding_profile_id() -> Option<String> {
-    build_embedding_profile_id(
-        get_embedding_provider().as_deref(),
-        get_embedding_model_id().as_deref(),
-        Some(get_embedding_dimensions()),
-        Some(&get_embedding_prompt_style()),
-        get_embedding_query_prefix().as_deref(),
-        get_embedding_document_prefix().as_deref(),
-    )
-}
-
-/// Get embedding cache directory from env or default.
-/// Appends provider/model subdirectory for cache isolation.
-#[must_use]
-pub fn get_embedding_cache_dir() -> String {
-    let base =
-        std::env::var("EMBEDDING_CACHE_DIR").unwrap_or_else(|_| EMBEDDING_CACHE_DIR.to_string());
-
-    match get_embedding_profile_id() {
-        Some(profile_id) => format!("{base}/{}", sanitize_embedding_profile_segment(&profile_id)),
-        None => base,
-    }
-}
-
-fn parse_embedding_prompt_style(value: &str) -> Option<EmbeddingPromptStyle> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "" => None,
-        "none" => Some(EmbeddingPromptStyle::None),
-        "user2" => Some(EmbeddingPromptStyle::User2),
-        "e5" => Some(EmbeddingPromptStyle::E5),
-        "custom" => Some(EmbeddingPromptStyle::Custom),
-        _ => None,
-    }
-}
-
-fn build_embedding_profile_id(
-    provider: Option<&str>,
-    model_id: Option<&str>,
-    dimensions: Option<u32>,
-    prompt_style: Option<&EmbeddingPromptStyle>,
-    query_prefix: Option<&str>,
-    document_prefix: Option<&str>,
-) -> Option<String> {
-    let provider = provider?.trim();
-    let model_id = model_id?.trim();
-    if provider.is_empty() || model_id.is_empty() {
-        return None;
-    }
-    let dimensions = dimensions.unwrap_or(DEFAULT_EMBEDDING_DIMENSIONS);
-    let prompt_style = prompt_style.cloned().unwrap_or_default();
-    let query_prefix = query_prefix.unwrap_or("");
-    let document_prefix = document_prefix.unwrap_or("");
-
-    let mut hasher = Sha256::new();
-    hasher.update(provider.as_bytes());
-    hasher.update([0]);
-    hasher.update(model_id.as_bytes());
-    hasher.update([0]);
-    hasher.update(dimensions.to_string().as_bytes());
-    hasher.update([0]);
-    hasher.update(prompt_style.as_str().as_bytes());
-    hasher.update([0]);
-    hasher.update(query_prefix.as_bytes());
-    hasher.update([0]);
-    hasher.update(document_prefix.as_bytes());
-    let digest = format!("{:x}", hasher.finalize());
-
-    Some(format!(
-        "{provider}:{model_id}:dim-{dimensions}:prompt-{}:{}",
-        prompt_style.as_str(),
-        &digest[..12]
-    ))
-}
-
-fn sanitize_embedding_profile_segment(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' => ch,
-            _ => '_',
-        })
-        .collect()
-}
 
 /// Get agent search limit from env or default.
 #[must_use]

@@ -657,10 +657,10 @@ impl AgentSession {
             .map(|message| message.content.clone());
     }
 
-    /// Reset loaded skills based on the active system prompt.
-    pub fn set_loaded_skills(&mut self, skills: &[crate::agent::skills::SkillContext]) {
-        self.loaded_skills = skills.iter().map(|skill| skill.name.clone()).collect();
-        self.skill_token_count = skills.iter().map(|skill| skill.token_count).sum();
+    /// Clear legacy loaded-skill accounting.
+    pub fn clear_loaded_skills(&mut self) {
+        self.loaded_skills.clear();
+        self.skill_token_count = 0;
     }
 
     /// Register a dynamically loaded skill, returns true if it was new.
