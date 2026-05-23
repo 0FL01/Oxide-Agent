@@ -157,6 +157,11 @@ impl AgentExecutor {
         M: ToolRuntimeModule,
     {
         let module_id = module.module_id();
+        if !self.settings.is_module_enabled(module_id.as_str()) {
+            tracing::debug!(%module_id, "Skipping disabled typed tool runtime module");
+            return;
+        }
+
         tracing::debug!(%module_id, "Registering typed tool runtime module");
         self.register_tool_runtime_executors(registry, module.tool_runtime_executors(ctx));
     }

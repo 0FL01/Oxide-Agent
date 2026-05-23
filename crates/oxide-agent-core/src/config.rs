@@ -1019,6 +1019,14 @@ impl AgentSettings {
         self.sub_agent_timeout_secs
             .unwrap_or(SUB_AGENT_TIMEOUT_SECS)
     }
+
+    /// Returns true unless the compiled module is explicitly disabled by config.
+    #[must_use]
+    pub fn is_module_enabled(&self, module_id: &str) -> bool {
+        self.modules
+            .get(module_id)
+            .is_none_or(ModuleRuntimeConfig::enabled_or_default)
+    }
 }
 
 #[cfg(test)]

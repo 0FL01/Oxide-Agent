@@ -1,6 +1,6 @@
 use super::*;
 use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
-use crate::config::ModelInfo;
+use crate::config::{ModelInfo, ModuleRuntimeConfig};
 use std::collections::HashSet;
 
 #[test]
@@ -137,6 +137,31 @@ fn typed_runtime_registry_applies_execution_profile_tool_policy() {
     assert!(tool_names.contains("execute_command"));
     assert!(!tool_names.contains("write_todos"));
     assert!(!tool_names.contains("topic_agent_tools_get"));
+}
+
+#[test]
+fn typed_runtime_registry_skips_disabled_todos_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/todos".to_string(),
+            ModuleRuntimeConfig {
+                enabled: Some(false),
+            },
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("write_todos"));
 }
 
 #[test]
