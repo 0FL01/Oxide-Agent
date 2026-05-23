@@ -77,6 +77,11 @@ pub(crate) trait LlmProviderModule: Send + Sync {
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>>;
 
+    /// Returns a startup config error when this provider is routed but incomplete.
+    fn missing_route_config_message(&self, _settings: &AgentSettings) -> Option<&'static str> {
+        None
+    }
+
     /// Base request capabilities for this provider.
     fn capabilities(&self) -> ProviderCapabilities;
 
@@ -128,6 +133,16 @@ pub(crate) fn provider_capabilities(provider_name: &str) -> Option<ProviderCapab
 #[must_use]
 pub(crate) fn provider_module_id(provider_name: &str) -> Option<&'static str> {
     find_provider_module(provider_name).map(|module| module.provider_id())
+}
+
+/// Returns the provider-owned startup config error for a routed provider.
+#[must_use]
+pub(crate) fn provider_missing_route_config_message(
+    provider_name: &str,
+    settings: &AgentSettings,
+) -> Option<&'static str> {
+    find_provider_module(provider_name)
+        .and_then(|module| module.missing_route_config_message(settings))
 }
 
 /// Returns media capabilities for a compiled provider module.
@@ -361,6 +376,14 @@ impl LlmProviderModule for ZaiProviderModule {
         })
     }
 
+    fn missing_route_config_message(&self, settings: &AgentSettings) -> Option<&'static str> {
+        settings
+            .zai_api_key
+            .as_ref()
+            .is_none_or(|key| key.trim().is_empty())
+            .then_some("Critical: ZAI_API_KEY is required for configured ZAI routes")
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
     }
@@ -437,6 +460,16 @@ impl LlmProviderModule for OpenCodeGoProviderModule {
                 ctx.http_client.clone(),
             )) as Arc<dyn LlmProvider>
         })
+    }
+
+    fn missing_route_config_message(&self, settings: &AgentSettings) -> Option<&'static str> {
+        settings
+            .opencode_go_api_key
+            .as_ref()
+            .is_none_or(|key| key.trim().is_empty())
+            .then_some(
+                "Critical: OPENCODE_GO_API_KEY is required for configured OpenCode Go routes",
+            )
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -517,7 +550,7 @@ fn zai_supports_structured_output(model_id: &str) -> bool {
 mod tests {
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
-        provider_key, provider_module_id,
+        provider_key, provider_missing_route_config_message, provider_module_id,
     };
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
 
@@ -568,6 +601,27 @@ mod tests {
         assert!(!providers.contains_key("llm-provider/opencode-go"));
         assert!(!providers.contains_key("opencode-go"));
         assert!(!providers.contains_key("opencode_go"));
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn opencode_go_module_owns_missing_route_config_message() {
+        let settings = AgentSettings::default();
+
+        assert_eq!(
+            provider_missing_route_config_message("opencode_go", &settings),
+            Some("Critical: OPENCODE_GO_API_KEY is required for configured OpenCode Go routes")
+        );
+
+        let settings = AgentSettings {
+            opencode_go_api_key: Some("test-opencode-key".to_string()),
+            ..AgentSettings::default()
+        };
+
+        assert_eq!(
+            provider_missing_route_config_message("opencode_go", &settings),
+            None
+        );
     }
 
     #[cfg(feature = "llm-opencode-go")]

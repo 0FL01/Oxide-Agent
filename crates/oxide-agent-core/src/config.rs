@@ -6,7 +6,7 @@ use crate::capabilities::{
     compiled_capability_manifest, CompiledCapabilityManifest, EnabledCapabilityManifest,
     ManifestError,
 };
-use crate::llm::providers::provider_module_id;
+use crate::llm::providers::{provider_missing_route_config_message, provider_module_id};
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -514,35 +514,21 @@ impl AgentSettings {
     }
 
     fn validate_route_credentials(&self) -> Result<(), ConfigError> {
-        if self.has_configured_provider_module("llm-provider/zai")
-            && self
-                .zai_api_key
-                .as_ref()
-                .is_none_or(|key| key.trim().is_empty())
-        {
-            return Err(ConfigError::Message(
-                "Critical: ZAI_API_KEY is required for configured ZAI routes".to_string(),
-            ));
-        }
+        let mut checked_module_ids = std::collections::BTreeSet::new();
 
-        if self.has_configured_provider_module("llm-provider/opencode-go")
-            && self
-                .opencode_go_api_key
-                .as_ref()
-                .is_none_or(|key| key.trim().is_empty())
-        {
-            return Err(ConfigError::Message(
-                "Critical: OPENCODE_GO_API_KEY is required for configured OpenCode Go routes"
-                    .to_string(),
-            ));
+        for provider in self.configured_route_provider_values() {
+            let Some(module_id) = provider_module_id(provider) else {
+                continue;
+            };
+            if !checked_module_ids.insert(module_id) {
+                continue;
+            }
+            if let Some(message) = provider_missing_route_config_message(provider, self) {
+                return Err(ConfigError::Message(message.to_string()));
+            }
         }
 
         Ok(())
-    }
-
-    fn has_configured_provider_module(&self, target_module_id: &str) -> bool {
-        self.configured_route_provider_values()
-            .any(|provider| provider_module_id(provider) == Some(target_module_id))
     }
 
     fn configured_route_provider_values(&self) -> impl Iterator<Item = &str> {
