@@ -3,14 +3,14 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::{
     AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
-    FilteredToolProvider, ManagerControlPlaneProvider, ReminderProvider, SandboxProvider, TodoList,
-    TodosProvider, WikiMemoryProvider, YtdlpProvider,
+    ManagerControlPlaneProvider, ReminderProvider, SandboxProvider, TodoList, WikiMemoryProvider,
+    YtdlpProvider,
 };
 use crate::agent::registry::ToolRegistry;
 use crate::agent::tool_runtime::{
-    v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
-    ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
-    ToolRuntimeModuleContext,
+    v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation,
+    ToolModuleContext, ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry,
+    ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::ModelInfo;
 use crate::llm::ToolDefinition;
@@ -18,16 +18,6 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::warn;
-
-const MODULE_TODOS: &str = "tool/todos";
-const MODULE_SANDBOX_EXEC: &str = "tool/sandbox-exec";
-const MODULE_SANDBOX_FILEOPS: &str = "tool/sandbox-fileops";
-const MODULE_SANDBOX_RECREATE: &str = "tool/sandbox-recreate";
-
-const SANDBOX_EXEC_TOOLS: &[&str] = &["execute_command"];
-const SANDBOX_FILEOPS_TOOLS: &[&str] =
-    &["write_file", "read_file", "send_file_to_user", "list_files"];
-const SANDBOX_RECREATE_TOOLS: &[&str] = &["recreate_sandbox"];
 
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::providers::BrowserUseProvider;
@@ -50,20 +40,20 @@ use crate::agent::providers::TavilyProvider;
 #[cfg(feature = "tool-webfetch-md")]
 use crate::agent::providers::WebFetchMdProvider;
 #[cfg(feature = "tool-sandbox-exec")]
-use crate::agent::tool_runtime::SandboxExecToolRuntimeModule;
+use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
-use crate::agent::tool_runtime::SandboxFileOpsToolRuntimeModule;
+use crate::agent::tool_runtime::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
-use crate::agent::tool_runtime::SandboxRecreateToolRuntimeModule;
+use crate::agent::tool_runtime::SandboxRecreateToolModule;
 #[cfg(feature = "tool-todos")]
-use crate::agent::tool_runtime::TodosToolRuntimeModule;
+use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate",
     feature = "tool-todos"
 ))]
-use crate::agent::tool_runtime::ToolRuntimeModule;
+use crate::agent::tool_runtime::ToolModule;
 
 impl AgentExecutor {
     /// Build the currently exposed tool definitions for this executor state.
@@ -120,12 +110,7 @@ impl AgentExecutor {
     ) -> RuntimeToolRegistry {
         let mut registry = RuntimeToolRegistry::new();
 
-        let sandbox_scope = self.session.sandbox_scope().clone();
-        let module_ctx = ToolRuntimeModuleContext::new(
-            Arc::clone(&todos_arc),
-            sandbox_scope,
-            progress_tx.cloned(),
-        );
+        let module_ctx = self.build_tool_module_context(Arc::clone(&todos_arc), progress_tx);
         self.register_tool_runtime_modules(&mut registry, &module_ctx);
 
         self.register_topic_runtime_providers(&mut registry, progress_tx);
@@ -152,7 +137,7 @@ impl AgentExecutor {
     fn register_tool_runtime_modules(
         &self,
         registry: &mut RuntimeToolRegistry,
-        ctx: &ToolRuntimeModuleContext,
+        ctx: &ToolModuleContext,
     ) {
         #[cfg(not(any(
             feature = "tool-sandbox-exec",
@@ -163,13 +148,13 @@ impl AgentExecutor {
         let _ = (registry, ctx);
 
         #[cfg(feature = "tool-todos")]
-        self.register_tool_runtime_module(registry, &TodosToolRuntimeModule, ctx);
+        self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
         #[cfg(feature = "tool-sandbox-exec")]
-        self.register_tool_runtime_module(registry, &SandboxExecToolRuntimeModule, ctx);
+        self.register_tool_runtime_module(registry, &SandboxExecToolModule, ctx);
         #[cfg(feature = "tool-sandbox-fileops")]
-        self.register_tool_runtime_module(registry, &SandboxFileOpsToolRuntimeModule, ctx);
+        self.register_tool_runtime_module(registry, &SandboxFileOpsToolModule, ctx);
         #[cfg(feature = "tool-sandbox-recreate")]
-        self.register_tool_runtime_module(registry, &SandboxRecreateToolRuntimeModule, ctx);
+        self.register_tool_runtime_module(registry, &SandboxRecreateToolModule, ctx);
     }
 
     #[cfg(any(
@@ -182,9 +167,9 @@ impl AgentExecutor {
         &self,
         registry: &mut RuntimeToolRegistry,
         module: &M,
-        ctx: &ToolRuntimeModuleContext,
+        ctx: &ToolModuleContext,
     ) where
-        M: ToolRuntimeModule,
+        M: ToolModule,
     {
         let module_id = module.module_id();
         if !self.settings.is_module_enabled(module_id.as_str()) {
@@ -287,23 +272,40 @@ impl AgentExecutor {
         v1_tool_runtime_enabled_for_model(model)
     }
 
+    fn build_tool_module_context(
+        &self,
+        todos_arc: Arc<Mutex<TodoList>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> ToolModuleContext {
+        ToolModuleContext::new(
+            todos_arc,
+            self.build_sandbox_provider(progress_tx),
+            progress_tx.cloned(),
+        )
+    }
+
+    fn build_sandbox_provider(
+        &self,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Arc<SandboxProvider> {
+        let sandbox_scope = self.session.sandbox_scope().clone();
+        let provider = if let Some(tx) = progress_tx {
+            SandboxProvider::new(sandbox_scope).with_progress_tx(tx.clone())
+        } else {
+            SandboxProvider::new(sandbox_scope)
+        };
+        Arc::new(provider)
+    }
+
     fn register_core_providers(
         &self,
         registry: &mut ToolRegistry,
         todos_arc: Arc<Mutex<TodoList>>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) {
-        if self.settings.is_module_enabled(MODULE_TODOS) {
-            registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
-        }
-
         let sandbox_scope = self.session.sandbox_scope().clone();
-        let sandbox_provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(sandbox_scope.clone()).with_progress_tx(tx.clone())
-        } else {
-            SandboxProvider::new(sandbox_scope.clone())
-        };
-        self.register_sandbox_provider_slices(registry, Arc::new(sandbox_provider));
+        let module_ctx = self.build_tool_module_context(todos_arc, progress_tx);
+        self.register_legacy_tool_modules(registry, &module_ctx);
         registry.register(Box::new(CompressionProvider::new()));
         #[cfg(feature = "tool-stack-logs")]
         registry.register(Box::new(StackLogsProvider::new()));
@@ -343,23 +345,48 @@ impl AgentExecutor {
         registry.register(Box::new(delegation_provider));
     }
 
-    fn register_sandbox_provider_slices(
+    fn register_legacy_tool_modules(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
+        #[cfg(not(any(
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-sandbox-recreate",
+            feature = "tool-todos"
+        )))]
+        let _ = (registry, ctx);
+
+        #[cfg(feature = "tool-todos")]
+        self.register_legacy_tool_module(registry, &TodosToolModule, ctx);
+        #[cfg(feature = "tool-sandbox-exec")]
+        self.register_legacy_tool_module(registry, &SandboxExecToolModule, ctx);
+        #[cfg(feature = "tool-sandbox-fileops")]
+        self.register_legacy_tool_module(registry, &SandboxFileOpsToolModule, ctx);
+        #[cfg(feature = "tool-sandbox-recreate")]
+        self.register_legacy_tool_module(registry, &SandboxRecreateToolModule, ctx);
+    }
+
+    #[cfg(any(
+        feature = "tool-sandbox-exec",
+        feature = "tool-sandbox-fileops",
+        feature = "tool-sandbox-recreate",
+        feature = "tool-todos"
+    ))]
+    fn register_legacy_tool_module<M>(
         &self,
         registry: &mut ToolRegistry,
-        sandbox_provider: Arc<SandboxProvider>,
-    ) {
-        let sandbox_provider: Arc<dyn ToolProvider> = sandbox_provider;
-        for (module_id, tool_names) in [
-            (MODULE_SANDBOX_EXEC, SANDBOX_EXEC_TOOLS),
-            (MODULE_SANDBOX_FILEOPS, SANDBOX_FILEOPS_TOOLS),
-            (MODULE_SANDBOX_RECREATE, SANDBOX_RECREATE_TOOLS),
-        ] {
-            if self.settings.is_module_enabled(module_id) {
-                registry.register(Box::new(FilteredToolProvider::new(
-                    Arc::clone(&sandbox_provider),
-                    tool_names,
-                )));
-            }
+        module: &M,
+        ctx: &ToolModuleContext,
+    ) where
+        M: ToolModule,
+    {
+        let module_id = module.module_id();
+        if !self.settings.is_module_enabled(module_id.as_str()) {
+            tracing::debug!(%module_id, "Skipping disabled legacy tool module");
+            return;
+        }
+
+        tracing::debug!(%module_id, "Registering legacy tool module");
+        if let Some(provider) = module.legacy_provider(ctx) {
+            registry.register(provider);
         }
     }
 

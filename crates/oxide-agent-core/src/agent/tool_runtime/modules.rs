@@ -1,10 +1,10 @@
-//! Capability-oriented typed tool runtime modules.
+//! Capability-oriented tool modules.
 
 use super::ToolExecutor;
 use crate::agent::progress::AgentEvent;
-use crate::agent::providers::TodoList;
+use crate::agent::provider::ToolProvider;
+use crate::agent::providers::{SandboxProvider, TodoList};
 use crate::capabilities::ModuleId;
-use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
 
@@ -13,28 +13,28 @@ use tokio::sync::{mpsc::Sender, Mutex};
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate"
 ))]
-use crate::agent::providers::SandboxProvider;
+use crate::agent::providers::FilteredToolProvider;
 #[cfg(feature = "tool-todos")]
 use crate::agent::providers::TodosProvider;
 
-/// Runtime context passed to typed tool capability modules.
-pub struct ToolRuntimeModuleContext {
+/// Runtime context passed to tool capability modules.
+pub struct ToolModuleContext {
     todos: Arc<Mutex<TodoList>>,
-    sandbox_scope: SandboxScope,
+    sandbox_provider: Arc<SandboxProvider>,
     progress_tx: Option<Sender<AgentEvent>>,
 }
 
-impl ToolRuntimeModuleContext {
-    /// Creates a typed runtime module context.
+impl ToolModuleContext {
+    /// Creates a tool module context.
     #[must_use]
     pub fn new(
         todos: Arc<Mutex<TodoList>>,
-        sandbox_scope: SandboxScope,
+        sandbox_provider: Arc<SandboxProvider>,
         progress_tx: Option<Sender<AgentEvent>>,
     ) -> Self {
         Self {
             todos,
-            sandbox_scope,
+            sandbox_provider,
             progress_tx,
         }
     }
@@ -45,10 +45,16 @@ impl ToolRuntimeModuleContext {
         Arc::clone(&self.todos)
     }
 
-    /// Sandbox scope for modules that own sandbox tools.
+    /// Shared sandbox provider for modules that own sandbox tools.
     #[must_use]
-    pub fn sandbox_scope(&self) -> SandboxScope {
-        self.sandbox_scope.clone()
+    pub fn sandbox_provider(&self) -> Arc<SandboxProvider> {
+        Arc::clone(&self.sandbox_provider)
+    }
+
+    /// Shared sandbox provider as a legacy provider trait object.
+    #[must_use]
+    pub fn sandbox_provider_dyn(&self) -> Arc<dyn ToolProvider> {
+        Arc::<SandboxProvider>::clone(&self.sandbox_provider)
     }
 
     /// Optional progress sender for modules that emit progress events.
@@ -58,56 +64,74 @@ impl ToolRuntimeModuleContext {
     }
 }
 
-/// Typed runtime capability module.
-pub trait ToolRuntimeModule {
+/// Tool capability module.
+pub trait ToolModule {
     /// Stable module ID corresponding to the compiled capability manifest.
     fn module_id(&self) -> ModuleId;
 
+    /// Builds the legacy provider owned by this module.
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>>;
+
     /// Builds typed tool executors owned by this module.
-    fn tool_runtime_executors(&self, ctx: &ToolRuntimeModuleContext) -> Vec<Arc<dyn ToolExecutor>>;
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>>;
 }
 
 /// Capability module for the `write_todos` typed runtime tool.
 #[cfg(feature = "tool-todos")]
-pub struct TodosToolRuntimeModule;
+pub struct TodosToolModule;
 
 #[cfg(feature = "tool-todos")]
-impl ToolRuntimeModule for TodosToolRuntimeModule {
+impl ToolModule for TodosToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/todos")
     }
 
-    fn tool_runtime_executors(&self, ctx: &ToolRuntimeModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        Some(Box::new(TodosProvider::new(ctx.todos())))
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(TodosProvider::new(ctx.todos())).tool_runtime_executors(ctx.progress_tx())
     }
 }
 
 /// Capability module for sandbox command execution.
 #[cfg(feature = "tool-sandbox-exec")]
-pub struct SandboxExecToolRuntimeModule;
+pub struct SandboxExecToolModule;
 
 #[cfg(feature = "tool-sandbox-exec")]
-impl ToolRuntimeModule for SandboxExecToolRuntimeModule {
+impl ToolModule for SandboxExecToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-exec")
     }
 
-    fn tool_runtime_executors(&self, ctx: &ToolRuntimeModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        sandbox_legacy_provider(ctx, &["execute_command"])
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         sandbox_tool_runtime_executors(ctx, &["execute_command"])
     }
 }
 
 /// Capability module for sandbox file operations and file delivery.
 #[cfg(feature = "tool-sandbox-fileops")]
-pub struct SandboxFileOpsToolRuntimeModule;
+pub struct SandboxFileOpsToolModule;
 
 #[cfg(feature = "tool-sandbox-fileops")]
-impl ToolRuntimeModule for SandboxFileOpsToolRuntimeModule {
+impl ToolModule for SandboxFileOpsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-fileops")
     }
 
-    fn tool_runtime_executors(&self, ctx: &ToolRuntimeModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        sandbox_legacy_provider(
+            ctx,
+            &["write_file", "read_file", "send_file_to_user", "list_files"],
+        )
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         sandbox_tool_runtime_executors(
             ctx,
             &["write_file", "read_file", "send_file_to_user", "list_files"],
@@ -117,15 +141,19 @@ impl ToolRuntimeModule for SandboxFileOpsToolRuntimeModule {
 
 /// Capability module for sandbox recreation.
 #[cfg(feature = "tool-sandbox-recreate")]
-pub struct SandboxRecreateToolRuntimeModule;
+pub struct SandboxRecreateToolModule;
 
 #[cfg(feature = "tool-sandbox-recreate")]
-impl ToolRuntimeModule for SandboxRecreateToolRuntimeModule {
+impl ToolModule for SandboxRecreateToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-recreate")
     }
 
-    fn tool_runtime_executors(&self, ctx: &ToolRuntimeModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        sandbox_legacy_provider(ctx, &["recreate_sandbox"])
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         sandbox_tool_runtime_executors(ctx, &["recreate_sandbox"])
     }
 }
@@ -135,17 +163,26 @@ impl ToolRuntimeModule for SandboxRecreateToolRuntimeModule {
     feature = "tool-sandbox-fileops",
     feature = "tool-sandbox-recreate"
 ))]
+fn sandbox_legacy_provider(
+    ctx: &ToolModuleContext,
+    owned_tool_names: &'static [&'static str],
+) -> Option<Box<dyn ToolProvider>> {
+    Some(Box::new(FilteredToolProvider::new(
+        ctx.sandbox_provider_dyn(),
+        owned_tool_names,
+    )))
+}
+
+#[cfg(any(
+    feature = "tool-sandbox-exec",
+    feature = "tool-sandbox-fileops",
+    feature = "tool-sandbox-recreate"
+))]
 fn sandbox_tool_runtime_executors(
-    ctx: &ToolRuntimeModuleContext,
+    ctx: &ToolModuleContext,
     owned_tool_names: &[&str],
 ) -> Vec<Arc<dyn ToolExecutor>> {
-    let provider = if let Some(tx) = ctx.progress_tx() {
-        SandboxProvider::new(ctx.sandbox_scope()).with_progress_tx(tx)
-    } else {
-        SandboxProvider::new(ctx.sandbox_scope())
-    };
-
-    Arc::new(provider)
+    ctx.sandbox_provider()
         .tool_runtime_executors()
         .into_iter()
         .filter(|executor| {

@@ -27,14 +27,14 @@ pub use invocation::{
     EnvironmentMetadata, ModelMetadata, ProviderMetadata, ToolExecutionContext, ToolInvocation,
 };
 #[cfg(feature = "tool-sandbox-exec")]
-pub use modules::SandboxExecToolRuntimeModule;
+pub use modules::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
-pub use modules::SandboxFileOpsToolRuntimeModule;
+pub use modules::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
-pub use modules::SandboxRecreateToolRuntimeModule;
+pub use modules::SandboxRecreateToolModule;
 #[cfg(feature = "tool-todos")]
-pub use modules::TodosToolRuntimeModule;
-pub use modules::{ToolRuntimeModule, ToolRuntimeModuleContext};
+pub use modules::TodosToolModule;
+pub use modules::{ToolModule, ToolModuleContext};
 pub use normalizer::{OutputNormalizer, ToolRuntimeError};
 pub use output::{
     CancellationReason, CleanupStatus, OutputPreview, OutputTruncationMetadata, TimeoutReason,
