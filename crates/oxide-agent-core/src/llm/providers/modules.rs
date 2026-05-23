@@ -3,16 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
 use crate::config::AgentSettings;
 use crate::config::ModelInfo;
 use crate::llm::LlmProvider;
-
-#[cfg(feature = "llm-chatgpt")]
-use super::super::capabilities::ToolHistoryMode;
-use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
-
-#[cfg(feature = "llm-chatgpt")]
-use std::path::PathBuf;
 
 #[cfg(any(
     feature = "llm-chatgpt",
@@ -190,7 +184,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     let _ = &mut modules;
 
     #[cfg(feature = "llm-chatgpt")]
-    modules.push(Box::new(ChatGptProviderModule));
+    modules.push(Box::new(super::chatgpt::ChatGptProviderModule));
     #[cfg(feature = "llm-groq")]
     modules.push(Box::new(super::groq::GroqProviderModule));
     #[cfg(feature = "llm-mistral")]
@@ -207,46 +201,6 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     modules.push(Box::new(super::openrouter::OpenRouterProviderModule));
 
     modules
-}
-
-#[cfg(feature = "llm-chatgpt")]
-struct ChatGptProviderModule;
-
-#[cfg(feature = "llm-chatgpt")]
-impl LlmProviderModule for ChatGptProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/openai-chatgpt"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["chatgpt", "openai-chatgpt"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        let auth_path = settings
-            .chatgpt_auth_path
-            .as_ref()
-            .filter(|path| !path.trim().is_empty())?;
-        let resolved_auth_path = super::chatgpt::resolve_auth_file_path(Some(auth_path))
-            .unwrap_or_else(|_| PathBuf::from(auth_path));
-
-        if !resolved_auth_path.exists() {
-            return None;
-        }
-
-        Some(Arc::new(super::ChatGptProvider::new_with_client(
-            resolved_auth_path,
-            ctx.http_client.clone(),
-        )))
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
-    }
 }
 
 #[cfg(test)]
@@ -501,5 +455,24 @@ mod tests {
         assert!(capabilities.supports_audio_transcription);
         assert!(!capabilities.supports_image_understanding);
         assert!(!capabilities.supports_video_understanding);
+    }
+
+    #[cfg(feature = "llm-chatgpt")]
+    #[test]
+    fn chatgpt_module_owns_aliases_and_base_capabilities() {
+        let capabilities =
+            provider_capabilities("llm-provider/openai-chatgpt").expect("provider should resolve");
+
+        assert_eq!(
+            provider_module_id("chatgpt"),
+            Some("llm-provider/openai-chatgpt")
+        );
+        assert_eq!(
+            provider_module_id("openai-chatgpt"),
+            Some("llm-provider/openai-chatgpt")
+        );
+        assert_eq!(capabilities.tool_history_label(), "best_effort");
+        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
     }
 }
