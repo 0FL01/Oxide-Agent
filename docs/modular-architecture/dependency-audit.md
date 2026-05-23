@@ -76,9 +76,8 @@ Optional-heavy or module-owned dependencies to isolate:
 
 ## Current Leakage Baseline
 
-Known leaks in `oxide-agent-core` after Phase 2b:
+Known leaks in `oxide-agent-core` after Phase 2c:
 
-- AWS SDK compiles whenever `oxide-agent-core` is compiled, instead of only behind `storage-s3-r2`.
 - Bollard and tar compile whenever `oxide-agent-core` is compiled, instead of only behind `sandbox-backend-docker-direct` or `sandbox-daemon`.
 - RMCP compiles whenever `oxide-agent-core` is compiled, instead of only behind `integration-mcp-*` or `integration-ssh-mcp`.
 - `reqwest` and `htmd` are shared across provider/tool paths and still need module ownership boundaries.
@@ -91,6 +90,12 @@ Resolved in Phase 2b:
 - `gemini-rust` compiles only with `llm-gemini`.
 - `zai-rs` compiles only with `llm-zai`.
 - `claudius` compiles only with `llm-minimax`.
+
+Resolved in Phase 2c:
+
+- AWS SDK crates (`aws-sdk-s3`, `aws-config`, `aws-credential-types`, `aws-types`) compile only with `storage-s3-r2`.
+- R2 storage implementation modules and the direct `R2Storage` export are gated behind `storage-s3-r2`.
+- Telegram's R2-backed runtime path forwards `storage-s3-r2` through the transport and binary package features.
 
 ## Verification Commands
 
@@ -115,8 +120,8 @@ The leakage script is expected to fail until later phases move dependencies behi
 
 ## Next Refactoring Targets
 
-1. Move AWS/R2 code behind `storage-s3-r2` without reintroducing local durable storage.
-2. Split sandbox direct Docker and sandboxd client dependencies.
-3. Split RMCP dependencies by Jira, Mattermost, and SSH MCP modules.
-4. Move web/search/browser dependencies to owned tool modules.
-5. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
+1. Split sandbox direct Docker and sandboxd client dependencies.
+2. Split RMCP dependencies by Jira, Mattermost, and SSH MCP modules.
+3. Move web/search/browser dependencies to owned tool modules.
+4. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
+5. Move concrete storage construction out of Telegram runner into application bootstrap per the PRD's final registry model.

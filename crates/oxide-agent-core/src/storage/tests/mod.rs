@@ -8,8 +8,9 @@ pub(super) use super::control_plane::{
     validate_topic_context_content, TOPIC_AGENTS_MD_MAX_LINES, TOPIC_CONTEXT_MAX_CHARS,
     TOPIC_CONTEXT_MAX_LINES,
 };
-pub(super) use super::r2_base::ControlPlaneLocks;
-pub(super) use super::utils::{select_audit_events_page, should_retry_control_plane_rmw};
+pub(super) use super::utils::{
+    select_audit_events_page, should_retry_control_plane_rmw, ControlPlaneLocks,
+};
 pub(super) use super::{
     agent_profile_key, audit_events_key, binding_is_active, compute_cron_next_run_at,
     compute_next_reminder_run_at, generate_chat_uuid, parse_reminder_timezone, private_secret_key,

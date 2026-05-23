@@ -1,5 +1,5 @@
-use super::r2_base::ControlPlaneLocks;
 use super::telemetry::StorageTelemetry;
+use super::utils::ControlPlaneLocks;
 use aws_sdk_s3::Client;
 use moka::future::Cache;
 use std::sync::Arc;

@@ -26,6 +26,15 @@ regex = "1.10"
 [features]
 default = []
 llm-chatgpt = ["oxide-agent-core/llm-chatgpt"]
+storage-s3-r2 = [
+    "oxide-agent-core/storage-s3-r2",
+    "oxide-agent-transport-telegram/storage-s3-r2",
+]
+profile-full = [
+    "oxide-agent-core/profile-full",
+    "llm-chatgpt",
+    "storage-s3-r2",
+]
 
 [dev-dependencies]
 aws-config = "1.8.12"

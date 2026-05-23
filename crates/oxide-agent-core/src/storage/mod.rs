@@ -2,23 +2,34 @@
 //!
 //! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
 
+#[cfg(any(feature = "storage-s3-r2", test))]
 mod builders;
 mod control_plane;
 mod error;
 mod flows;
 mod keys;
 mod provider;
+#[cfg(feature = "storage-s3-r2")]
 mod r2;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_base;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_control_plane;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_memory;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_provider;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_reminder;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_user;
 mod reminder;
+#[cfg(any(feature = "storage-s3-r2", test))]
 mod schema;
+#[cfg(any(feature = "storage-s3-r2", test))]
 mod telemetry;
 mod user;
+#[cfg(any(feature = "storage-s3-r2", test))]
 mod utils;
 
 #[cfg(test)]
@@ -48,6 +59,7 @@ pub use keys::{
 #[cfg(test)]
 pub use provider::MockStorageProvider;
 pub use provider::StorageProvider;
+#[cfg(feature = "storage-s3-r2")]
 pub use r2::{PersistedAgentMemoryRef, R2Storage};
 pub use reminder::{
     compute_cron_next_run_at, compute_next_reminder_run_at, format_reminder_unix_in_timezone,

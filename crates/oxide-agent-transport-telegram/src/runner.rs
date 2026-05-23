@@ -1,68 +1,96 @@
+#[cfg(feature = "storage-s3-r2")]
 use crate::bot;
+#[cfg(feature = "storage-s3-r2")]
 use crate::bot::handlers::Command;
+#[cfg(feature = "storage-s3-r2")]
 use crate::bot::state::State;
+#[cfg(feature = "storage-s3-r2")]
 use crate::bot::UnauthorizedCache;
+use crate::config::BotSettings;
+#[cfg(feature = "storage-s3-r2")]
 use crate::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
-    BotSettings,
 };
+#[cfg(feature = "storage-s3-r2")]
 use crate::startup_maintenance::run_startup_tool_drift_prune;
+#[cfg(feature = "storage-s3-r2")]
 use oxide_agent_core::storage::StorageProvider;
+#[cfg(feature = "storage-s3-r2")]
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
+#[cfg(feature = "storage-s3-r2")]
 use teloxide::dispatching::dialogue::InMemStorage;
+#[cfg(feature = "storage-s3-r2")]
 use teloxide::dispatching::UpdateHandler;
+#[cfg(feature = "storage-s3-r2")]
 use teloxide::prelude::*;
+#[cfg(feature = "storage-s3-r2")]
 use teloxide::types::{CallbackQuery, Message, User};
-use tracing::{error, info};
+use tracing::error;
+#[cfg(feature = "storage-s3-r2")]
+use tracing::info;
 
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
-    let storage = init_storage(&settings).await;
-    let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
-    info!("LLM Client initialized.");
+    #[cfg(not(feature = "storage-s3-r2"))]
+    {
+        let _ = settings;
+        error!("Telegram transport requires the storage-s3-r2 feature because R2 is the only durable storage backend");
+        std::process::exit(1);
+    }
 
-    let maintenance_storage = Arc::clone(&storage);
-    let maintenance_llm = Arc::clone(&llm_client);
-    let maintenance_settings = Arc::clone(&settings);
-    tokio::spawn(async move {
-        if let Err(error) =
-            run_startup_tool_drift_prune(maintenance_storage, maintenance_llm, maintenance_settings)
-                .await
-        {
-            error!(%error, "Startup tool drift prune failed");
-        }
-    });
+    #[cfg(feature = "storage-s3-r2")]
+    {
+        let storage = init_storage(&settings).await;
+        let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
+        info!("LLM Client initialized.");
 
-    let storage: Arc<dyn storage::StorageProvider> = storage;
+        let maintenance_storage = Arc::clone(&storage);
+        let maintenance_llm = Arc::clone(&llm_client);
+        let maintenance_settings = Arc::clone(&settings);
+        tokio::spawn(async move {
+            if let Err(error) = run_startup_tool_drift_prune(
+                maintenance_storage,
+                maintenance_llm,
+                maintenance_settings,
+            )
+            .await
+            {
+                error!(%error, "Startup tool drift prune failed");
+            }
+        });
 
-    let bot = Bot::new(settings.telegram.telegram_token.clone());
-    bot::agent_handlers::spawn_reminder_scheduler(
-        bot.clone(),
-        storage.clone(),
-        llm_client.clone(),
-        settings.clone(),
-    );
-    let bot_state = init_bot_state();
-    let unauthorized_cache = init_unauthorized_cache();
-    let handler = setup_handler();
+        let storage: Arc<dyn storage::StorageProvider> = storage;
 
-    info!("Bot is running with Telegram long polling...");
+        let bot = Bot::new(settings.telegram.telegram_token.clone());
+        bot::agent_handlers::spawn_reminder_scheduler(
+            bot.clone(),
+            storage.clone(),
+            llm_client.clone(),
+            settings.clone(),
+        );
+        let bot_state = init_bot_state();
+        let unauthorized_cache = init_unauthorized_cache();
+        let handler = setup_handler();
 
-    Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![
-            storage,
-            llm_client,
-            settings,
-            bot_state,
-            unauthorized_cache
-        ])
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
+        info!("Bot is running with Telegram long polling...");
+
+        Dispatcher::builder(bot, handler)
+            .dependencies(dptree::deps![
+                storage,
+                llm_client,
+                settings,
+                bot_state,
+                unauthorized_cache
+            ])
+            .enable_ctrlc_handler()
+            .build()
+            .dispatch()
+            .await;
+    }
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn init_storage(settings: &BotSettings) -> Arc<storage::R2Storage> {
     match storage::R2Storage::new(settings.agent.as_ref()).await {
         Ok(s) => {
@@ -81,10 +109,12 @@ async fn init_storage(settings: &BotSettings) -> Arc<storage::R2Storage> {
     }
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn init_bot_state() -> Arc<InMemStorage<State>> {
     InMemStorage::<State>::new()
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
     let cooldown = get_unauthorized_cooldown();
     let ttl = get_unauthorized_cache_ttl();
@@ -98,6 +128,7 @@ fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
     Arc::new(UnauthorizedCache::new(cooldown, ttl, max_size))
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
     dptree::entry()
         .branch(
@@ -193,14 +224,17 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
         )
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn access_control_user(message: &Message) -> Option<&User> {
     message.from.as_ref().filter(|user| !user.is_bot)
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn access_control_user_id(message: &Message) -> Option<i64> {
     access_control_user(message).map(|user| user.id.0.cast_signed())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_unauthorized(
     bot: Bot,
     msg: Message,
@@ -231,6 +265,7 @@ async fn handle_unauthorized(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_command(
     bot: Bot,
     msg: Message,
@@ -252,6 +287,7 @@ async fn handle_command(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_text(
     bot: Bot,
     msg: Message,
@@ -270,6 +306,7 @@ async fn handle_start_text(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_voice(
     bot: Bot,
     msg: Message,
@@ -288,6 +325,7 @@ async fn handle_start_voice(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_photo(
     bot: Bot,
     msg: Message,
@@ -302,6 +340,7 @@ async fn handle_start_photo(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_video(
     bot: Bot,
     msg: Message,
@@ -316,6 +355,7 @@ async fn handle_start_video(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_document(
     bot: Bot,
     msg: Message,
@@ -331,6 +371,7 @@ async fn handle_start_document(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_editing_prompt(
     bot: Bot,
     msg: Message,
@@ -343,6 +384,7 @@ async fn handle_editing_prompt(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_agent_message(
     bot: Bot,
     msg: Message,
@@ -361,6 +403,7 @@ async fn handle_agent_message(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_callback(
     bot: Bot,
     q: CallbackQuery,
@@ -421,6 +464,7 @@ async fn handle_callback(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,

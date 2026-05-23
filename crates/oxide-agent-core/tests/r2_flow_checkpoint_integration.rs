@@ -1,4 +1,5 @@
 // Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
+#![cfg(feature = "storage-s3-r2")]
 #![allow(clippy::clone_on_ref_ptr)]
 
 use anyhow::{anyhow, Result};

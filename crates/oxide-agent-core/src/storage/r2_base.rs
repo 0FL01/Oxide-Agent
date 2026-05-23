@@ -6,7 +6,7 @@ use super::{
     telemetry::StorageOperation,
     utils::{
         current_timestamp_unix_secs, is_precondition_failed_put_error,
-        should_retry_control_plane_rmw, CONTROL_PLANE_RMW_MAX_RETRIES,
+        should_retry_control_plane_rmw, ControlPlaneLocks, CONTROL_PLANE_RMW_MAX_RETRIES,
         CONTROL_PLANE_RMW_RETRY_BACKOFF_MS,
     },
     StorageError, TopicAgentsMdRecord, TopicContextRecord,
@@ -19,36 +19,10 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use aws_types::region::Region;
 use moka::future::Cache;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::sleep;
 use tracing::warn;
-
-/// Process-local per-key lock registry for control-plane RMW operations.
-///
-/// Limitation: this lock only serializes operations inside a single process.
-/// It does not provide cross-process or cross-instance mutual exclusion.
-#[derive(Default)]
-pub(super) struct ControlPlaneLocks {
-    locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
-}
-
-impl ControlPlaneLocks {
-    pub(super) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(super) async fn acquire(&self, key: String) -> OwnedMutexGuard<()> {
-        let lock = {
-            let mut locks = self.locks.lock().await;
-            Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
-        };
-
-        lock.lock_owned().await
-    }
-}
 
 #[derive(Clone, Copy)]
 pub(super) enum TopicPromptStoreKind {
@@ -297,7 +271,7 @@ impl R2Storage {
             Err(e) => {
                 self.telemetry
                     .record_operation(StorageOperation::Get, key, "error");
-                Err(StorageError::S3Get(Box::new(e)))
+                Err(StorageError::S3Get(e.to_string()))
             }
         }
     }
@@ -354,7 +328,7 @@ impl R2Storage {
             Err(e) => {
                 self.telemetry
                     .record_operation(StorageOperation::Get, key, "error");
-                Err(StorageError::S3Get(Box::new(e)))
+                Err(StorageError::S3Get(e.to_string()))
             }
         }
     }
@@ -399,7 +373,7 @@ impl R2Storage {
             Err(e) => {
                 self.telemetry
                     .record_operation(StorageOperation::Get, key, "error");
-                Err(StorageError::S3Get(Box::new(e)))
+                Err(StorageError::S3Get(e.to_string()))
             }
         }
     }
