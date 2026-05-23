@@ -1,3 +1,5 @@
+#![cfg(feature = "llm-zai")]
+
 use anyhow::Result;
 use dotenvy::dotenv;
 use oxide_agent_core::llm::providers::ZaiProvider;

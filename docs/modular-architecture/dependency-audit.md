@@ -76,15 +76,21 @@ Optional-heavy or module-owned dependencies to isolate:
 
 ## Current Leakage Baseline
 
-Known leaks in `oxide-agent-core` before module extraction:
+Known leaks in `oxide-agent-core` after Phase 2b:
 
 - AWS SDK compiles whenever `oxide-agent-core` is compiled, instead of only behind `storage-s3-r2`.
 - Bollard and tar compile whenever `oxide-agent-core` is compiled, instead of only behind `sandbox-backend-docker-direct` or `sandbox-daemon`.
 - RMCP compiles whenever `oxide-agent-core` is compiled, instead of only behind `integration-mcp-*` or `integration-ssh-mcp`.
-- `async-openai`, `gemini-rust`, `zai-rs`, and `claudius` compile regardless of selected provider feature.
 - `reqwest` and `htmd` are shared across provider/tool paths and still need module ownership boundaries.
 - `bincode` and `serde_bytes` are unconditional even when no sandbox broker/client profile is selected.
 - Telegram and web transport dependencies are in separate transport crates, but workspace builds still include those crates unconditionally until binary/profile composition is introduced.
+
+Resolved in Phase 2b:
+
+- `async-openai` compiles only with `llm-groq` or `llm-mistral`.
+- `gemini-rust` compiles only with `llm-gemini`.
+- `zai-rs` compiles only with `llm-zai`.
+- `claudius` compiles only with `llm-minimax`.
 
 ## Verification Commands
 
@@ -109,9 +115,8 @@ The leakage script is expected to fail until later phases move dependencies behi
 
 ## Next Refactoring Targets
 
-1. Move provider SDK dependencies to optional features and gate provider module imports.
-2. Move AWS/R2 code behind `storage-s3-r2` without reintroducing local durable storage.
-3. Split sandbox direct Docker and sandboxd client dependencies.
-4. Split RMCP dependencies by Jira, Mattermost, and SSH MCP modules.
-5. Move web/search/browser dependencies to owned tool modules.
-6. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
+1. Move AWS/R2 code behind `storage-s3-r2` without reintroducing local durable storage.
+2. Split sandbox direct Docker and sandboxd client dependencies.
+3. Split RMCP dependencies by Jira, Mattermost, and SSH MCP modules.
+4. Move web/search/browser dependencies to owned tool modules.
+5. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.

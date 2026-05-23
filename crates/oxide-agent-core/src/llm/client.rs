@@ -1,13 +1,25 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::{debug, info, instrument, trace, warn};
 
 use super::{
-    capabilities, providers, support, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider,
-    Message, ProviderCapabilities, ToolDefinition,
+    capabilities, support, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
+    ProviderCapabilities, ToolDefinition,
 };
+
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-gemini",
+    feature = "llm-groq",
+    feature = "llm-mistral",
+    feature = "llm-minimax",
+    feature = "llm-zai",
+    feature = "llm-nvidia",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
+use super::providers;
 
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
@@ -29,6 +41,17 @@ impl LlmClient {
         name.to_ascii_lowercase()
     }
 
+    #[cfg(any(
+        feature = "llm-chatgpt",
+        feature = "llm-gemini",
+        feature = "llm-groq",
+        feature = "llm-mistral",
+        feature = "llm-minimax",
+        feature = "llm-zai",
+        feature = "llm-nvidia",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter"
+    ))]
     fn insert_provider(
         providers: &mut HashMap<String, Arc<dyn LlmProvider>>,
         name: &str,
@@ -173,17 +196,39 @@ impl LlmClient {
         };
         let media_model_name = media_model_id.clone();
 
+        #[cfg(any(
+            feature = "llm-chatgpt",
+            feature = "llm-mistral",
+            feature = "llm-zai",
+            feature = "llm-nvidia",
+            feature = "llm-opencode-go",
+            feature = "llm-openrouter"
+        ))]
         let http_client = support::http::create_http_client();
 
-        let mut providers = HashMap::new();
+        let providers = HashMap::new();
 
+        #[cfg(any(
+            feature = "llm-chatgpt",
+            feature = "llm-gemini",
+            feature = "llm-groq",
+            feature = "llm-mistral",
+            feature = "llm-minimax",
+            feature = "llm-zai",
+            feature = "llm-nvidia",
+            feature = "llm-opencode-go",
+            feature = "llm-openrouter"
+        ))]
+        let mut providers = providers;
+
+        #[cfg(feature = "llm-chatgpt")]
         if let Some(auth_path) = settings
             .chatgpt_auth_path
             .as_ref()
             .filter(|path| !path.trim().is_empty())
         {
             let resolved_auth_path = providers::chatgpt::resolve_auth_file_path(Some(auth_path))
-                .unwrap_or_else(|_| PathBuf::from(auth_path));
+                .unwrap_or_else(|_| std::path::PathBuf::from(auth_path));
             if resolved_auth_path.exists() {
                 Self::insert_provider(
                     &mut providers,
@@ -196,6 +241,7 @@ impl LlmClient {
             }
         }
 
+        #[cfg(feature = "llm-groq")]
         if let Some(api_key) = settings.groq_api_key.as_ref() {
             Self::insert_provider(
                 &mut providers,
@@ -204,6 +250,7 @@ impl LlmClient {
             );
         }
 
+        #[cfg(feature = "llm-mistral")]
         if let Some(api_key) = settings.mistral_api_key.as_ref() {
             Self::insert_provider(
                 &mut providers,
@@ -215,6 +262,7 @@ impl LlmClient {
             );
         }
 
+        #[cfg(feature = "llm-minimax")]
         if let Some(api_key) = settings.minimax_api_key.as_ref() {
             Self::insert_provider(
                 &mut providers,
@@ -223,6 +271,7 @@ impl LlmClient {
             );
         }
 
+        #[cfg(feature = "llm-zai")]
         if let Some(api_key) = settings.zai_api_key.as_ref() {
             Self::insert_provider(
                 &mut providers,
@@ -235,6 +284,7 @@ impl LlmClient {
             );
         }
 
+        #[cfg(feature = "llm-gemini")]
         if let Some(api_key) = settings.gemini_api_key.as_ref() {
             Self::insert_provider(
                 &mut providers,
@@ -243,6 +293,7 @@ impl LlmClient {
             );
         }
 
+        #[cfg(feature = "llm-nvidia")]
         if let Some(api_key) = settings.nvidia_api_key.as_ref() {
             Self::insert_provider(
                 &mut providers,
@@ -255,6 +306,7 @@ impl LlmClient {
             );
         }
 
+        #[cfg(feature = "llm-opencode-go")]
         if let Some(api_key) = settings.opencode_go_api_key.as_ref() {
             let provider: Arc<dyn LlmProvider> =
                 Arc::new(providers::OpenCodeGoProvider::new_with_client(
@@ -266,6 +318,7 @@ impl LlmClient {
             Self::insert_provider(&mut providers, "opencode_go", provider);
         }
 
+        #[cfg(feature = "llm-openrouter")]
         if let Some(api_key) = settings.openrouter_api_key.as_ref() {
             Self::insert_provider(
                 &mut providers,

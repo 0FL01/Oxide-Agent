@@ -1,5 +1,6 @@
 use crate::config::ModelInfo;
 
+#[cfg(feature = "llm-nvidia")]
 use super::providers;
 
 /// Media modality types used for capability-based route resolution.
@@ -166,11 +167,15 @@ pub fn provider_media_capabilities_for_model(model_info: &ModelInfo) -> MediaCap
 pub fn provider_capabilities_for_model(model_info: &ModelInfo) -> ProviderCapabilities {
     let mut capabilities = provider_capabilities(&model_info.provider);
 
+    #[cfg(feature = "llm-nvidia")]
     if model_info.provider.eq_ignore_ascii_case("nvidia") {
         let model_capabilities = providers::nvidia::model_capabilities(&model_info.id);
         capabilities.supports_tool_calling = model_capabilities.supports_tool_calling;
         capabilities.supports_structured_output = model_capabilities.supports_structured_output;
-    } else if model_info.provider.eq_ignore_ascii_case("zai") {
+        return capabilities;
+    }
+
+    if model_info.provider.eq_ignore_ascii_case("zai") {
         capabilities.supports_structured_output = zai_supports_structured_output(&model_info.id);
     } else if is_opencode_go_provider(&model_info.provider) {
         capabilities.supports_structured_output =

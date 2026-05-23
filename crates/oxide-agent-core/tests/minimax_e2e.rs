@@ -1,3 +1,5 @@
+#![cfg(feature = "llm-minimax")]
+
 use anyhow::Result;
 use dotenvy::dotenv;
 use oxide_agent_core::llm::providers::MiniMaxProvider;

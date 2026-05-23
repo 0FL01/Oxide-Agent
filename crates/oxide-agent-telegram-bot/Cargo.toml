@@ -23,8 +23,17 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 regex = "1.10"
 
+[features]
+default = []
+llm-chatgpt = ["oxide-agent-core/llm-chatgpt"]
+
 [dev-dependencies]
 aws-config = "1.8.12"
 aws-credential-types = "1.2.11"
 aws-sdk-s3 = "1.119.0"
 aws-types = "1.3.11"
+
+[[bin]]
+name = "chatgpt-login"
+path = "src/bin/chatgpt-login.rs"
+required-features = ["llm-chatgpt"]
