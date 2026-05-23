@@ -1,2718 +1,2950 @@
-# PRD: Async Parallel Tool Runtime для Oxide Agent
+# PRD: Modular Architecture Refactor for Oxide Agent
 
-## 1. Summary
+## 1. Executive Summary
 
-Oxide Agent должен заменить текущую логику tool calls на единый async parallel runtime. В v1 поддерживаются только `opencode go provider` и модель `DeepSeek V4 Flash`; GLM, MiniMax, Gemini, старые fallback-paths, approval gates и policy restrictions не входят в scope.
+Oxide Agent must be refactored from the current monolithic/partially modular architecture into a capability-oriented modular architecture. Every provider, tool, storage backend, sandbox backend, transport, MCP integration, media feature, search/browser integration, and sidecar service must become an explicit capability that can be included or excluded at compile time and then enabled or disabled at runtime only if it was compiled into the binary.
 
-Новая модель выполнения:
+This is a clean-slate refactor inside the current repository. Backward compatibility is not required. Migrations are not required. Legacy registries, compatibility shims, deprecated wrappers, duplicated registration paths, old environment variable aliases, and “keep this just in case” execution paths must be removed rather than wrapped.
 
-```text
-LLM response / stream
-→ parse and validate tool calls
-→ record assistant tool-call item in conversation/history
-→ create ToolInvocation for every call
-→ execute batch asynchronously and in parallel
-→ enforce hard timeout / cancellation / hung detection / cleanup
-→ normalize every terminal state into exactly one ToolOutput
-→ record tool outputs in deterministic order
-→ continue next LLM turn only after all outputs are recorded
+The target architecture must satisfy these hard constraints:
+
+- no backward compatibility layer;
+- no deployment migration layer;
+- no legacy tool registry;
+- no duplicated typed/legacy/runtime registration;
+- no unused dependencies in minimal builds;
+- no unused LLM provider SDKs in provider-specific builds;
+- no AWS SDK in local-storage builds;
+- no Docker/Bollard dependency unless a Docker sandbox backend is selected;
+- no MCP binaries unless a specific MCP integration is selected;
+- no browser/search/media sidecars unless the selected profile requires them;
+- no fat sandbox image for lite or embedded profiles;
+- full modularity for tools, providers, transports, storage, sandbox, MCP, media, search, browser, memory, reminders, and file delivery.
+
+The final result must allow deterministic builds such as:
+
+```bash
+cargo build --release \
+  --no-default-features \
+  --features "profile-embedded-opencode-local"
 ```
 
-Ключевой инвариант: на каждый `tool_call_id` текущего batch должен быть записан ровно один валидный tool output. Timeout, hung, cancellation, unknown tool, invalid args, join error, process cleanup failure и provider protocol mismatch не должны оставлять историю без paired output.
-
-v1 работает в YOLO-режиме: runtime не блокирует destructive commands, не делает approval gates, не вводит per-tool allow/deny и не сериализует shell/SSH/DevOps-команды по умолчанию. YOLO относится только к policy layer. Технические предохранители обязательны: hard timeout, cancellation, process cleanup, hung detection, output truncation и artifact handling.
+and produce a binary/container that contains only the modules required by that profile.
 
 ## 2. Goals
 
-1. Полностью заменить текущие code paths выполнения tools в Oxide Agent на один runtime.
-2. Поддержать opencode go provider + DeepSeek V4 Flash как единственную обязательную provider/model-комбинацию v1.
-3. Выполнять все tool calls одного assistant response batch асинхронно и параллельно.
-4. Гарантировать paired history: каждый assistant tool call получает ровно один tool output с тем же `tool_call_id`.
-5. Применять per-tool hard timeout поверх любого executor-а.
-6. Пропагировать user cancellation во все in-flight tools текущего turn.
-7. Делать cleanup процессов после timeout/cancel/hung.
-8. Превращать любой runtime failure в нормализованный `ToolOutput`, пригодный для отправки модели.
-9. Ограничить stdout/stderr, попадающие в model context, и сохранять большие outputs как artifacts/logs.
-10. Удалить legacy/fallback execution paths, а не держать новый runtime рядом со старым.
-11. Оставить чистую extension point для будущего job/process API, не превращая v1 в background-job system.
-12. Сохранить general-purpose применимость: web/search-like tools, filesystem, shell/linux, codebase analysis, package managers, git, diagnostics, DevOps, long-running commands.
+The refactor has the following goals.
 
-## 3. Non-goals
-
-В v1 не реализуются и не поддерживаются:
-
-- GLM, MiniMax, Gemini и другие provider-specific форматы.
-- Generic multi-provider compatibility layer.
-- Fallback на старый `tool_bridge` или старый `execute_tools`.
-- Два runtime-а под feature flag.
-- Approval gates.
-- Per-tool allow/deny.
-- Safety classifier для команд.
-- Resource-aware scheduler.
-- Read/write locks для shell/SSH по умолчанию.
-- DevOps-specific lock model.
-- Запрет destructive commands.
-- Background job system, где модель продолжает думать, пока tool всё ещё выполняется.
-- “Model thinks while tools still running”.
-- User policy-level max parallelism как safety feature.
+### 2.1 Deterministic build profiles
 
-Опциональный глобальный технический лимит in-flight tools допускается только как защита процесса Oxide Agent от исчерпания ресурсов. Дефолт v1 должен быть effectively unlimited или высоким. Такой лимит не является policy restriction.
-
-## 4. Current Oxide Agent analysis
-
-### 4.1 Найденные текущие code paths в Oxide Agent
-
-Ниже перечислены конкретные файлы и code paths, которые нужно заменить, удалить или переподключить к новому runtime.
+A build profile must fully determine which Rust modules, dependencies, binaries, Docker sidecars, sandbox image packages, and runtime capabilities are available. Runtime configuration may disable compiled capabilities, but it must not enable capabilities that were not compiled.
 
-#### `crates/oxide-agent-core/src/agent/runner/mod.rs`
-
-Текущие обязанности:
+### 2.2 Minimal embedded builds
 
-- `AgentRunner` хранит `LlmClient`, hooks, loop detection и route failover.
-- `convert_memory_to_messages` конвертирует `AgentMessage` в `llm::Message`, включая `tool_call_id`, `tool_name`, `tool_calls`, `tool_call_correlations`.
-- `run_with_timeout` оборачивает весь `runner.run(ctx)` в `tokio::time::timeout` и возвращает `TimedRunResult::TimedOut`.
+The repository must support a small embedded/local profile with only a selected transport, one selected LLM provider, local storage, and a small selected tool set. The embedded profile must not compile unused LLM providers, AWS/R2 storage, MCP integrations, browser tools, searxng integrations, Docker sandbox execution, or media-heavy dependencies unless explicitly requested.
 
-Проблема:
+### 2.3 Arbitrary custom builds
 
-- Agent-level timeout не является per-tool hard timeout.
-- При timeout всего runner-а runtime не синтезирует missing tool outputs для уже записанных assistant tool calls.
-- Новый runtime должен иметь собственные per-tool timeout/cancel/cleanup гарантии и не полагаться на agent-level timeout.
+A downstream builder must be able to create a custom profile such as:
 
-Действие:
+- only OpenCode Go provider;
+- only local storage;
+- only Telegram transport;
+- no sandbox;
+- sandbox file operations but no command execution;
+- search tools but no browser sidecar;
+- Jira MCP but not Mattermost MCP;
+- image analysis but not audio/video processing;
+- R2 storage with no local storage;
+- CLI/API transport with no Telegram dependency.
 
-- Оставить `AgentRunner` как orchestration shell.
-- Убрать зависимость tool correctness от `run_with_timeout`.
-- Встроить новый `ToolCallRuntime` в основную turn loop.
+### 2.4 Single source of truth for module registration
 
-#### `crates/oxide-agent-core/src/agent/runner/execution.rs`
+Tool, provider, storage, sandbox, and transport registration must happen through one module registry. There must be no split between legacy provider registration and typed runtime registration. A module must register itself and its executors/providers in one place.
 
-Текущие обязанности:
+### 2.5 Compile-time dependency elimination
 
-- Основная agent loop в `run`.
-- Вызов `call_llm_with_tools`.
-- Обработка LLM response в `handle_llm_response`.
-- Обработка tool calls в `handle_tool_calls_response`.
-- Запись assistant tool-call message через `record_assistant_tool_call`.
-- Вызов `execute_tools`.
-- Structured-output path, где JSON преобразуется в один synthetic tool call.
-- Fallback parsing в `handle_unstructured_response`.
-- Route failover через `call_llm_with_tools_with_failover` и legacy path через `call_llm_with_tools_legacy`.
-- `repair_history_before_retry`, который вызывает provider-specific history repair.
+Every heavy or optional dependency must be behind an atomic Cargo feature. Profile features must be compositions of atomic features. Minimal builds must prove via `cargo tree` checks that excluded modules do not leak their dependencies.
 
-Проблемы:
+Heavy dependency groups include, but are not limited to:
 
-- `handle_tool_calls_response` передаёт batch в старый `execute_tools`, который не гарантирует per-tool hard timeout и cleanup.
-- Structured/unstructured fallback logic создаёт дополнительные tool-call paths и может обходить строгий provider protocol.
-- Route failover и legacy LLM path противоречат scope v1: только opencode go + DeepSeek V4 Flash.
-- History repair не должен быть механизмом корректности для tool calls. В v1 история должна быть валидной до следующего provider request.
+- AWS SDK / R2 storage;
+- Bollard / Docker sandbox management;
+- RMCP / child-process MCP clients;
+- Telegram / teloxide;
+- browser-use sidecar integration;
+- searxng integration;
+- Tavily SDK;
+- OpenAI-compatible SDKs;
+- Gemini SDK;
+- ZAI SDK;
+- Groq/Mistral/Minimax/Nvidia/OpenRouter provider code;
+- media/audio/image/video processing support;
+- yt-dlp / ffmpeg / browser / Chromium sidecars;
+- SSH MCP support;
+- Jira and Mattermost MCP binaries.
 
-Действие:
+### 2.6 Runtime config for compiled modules only
 
-- Заменить `handle_tool_calls_response` на вызов нового `ToolCallRuntime::execute_batch`.
-- Удалить fallback parsing для tool calls из unstructured text.
-- Удалить legacy/failover LLM paths из v1 execution flow.
-- Перевести history repair для tool messages в assert/diagnostics mode или полностью удалить из активного path v1.
+Configuration must be validated against the compiled capability manifest. Unknown module IDs and config for non-compiled modules must fail during startup with a clear error.
 
-#### `crates/oxide-agent-core/src/agent/runner/tools.rs`
+### 2.7 Clean provider and tool abstraction
 
-Текущие обязанности:
+LLM providers and tools must be independent modules with explicit IDs, config schemas, capabilities, dependencies, and registration functions. Global hardcoded provider match chains must be replaced with provider modules and factories.
 
-- `record_assistant_tool_call` записывает assistant tool-call message в память и provider-visible history.
-- `execute_tools` применяет skill context, before-tool hooks, approval-like blocking, compression special case.
-- `execute_approved_tools` запускает tools через `join_all`, сортирует результаты по index, затем пишет outputs.
-- `record_tool_execution_result` добавляет `Message::tool_with_correlation` и `AgentMessage::tool_with_correlation`.
+### 2.8 Modular Docker and Compose
 
-Проблемы:
+Dockerfiles and Compose files must reflect the selected module set. They must not be the source of architectural modularity. Docker must select Cargo features and runtime assets for a profile; it must not ship everything and rely on runtime flags.
 
-- `execute_approved_tools` действительно запускает futures параллельно, но это не полноценный runtime.
-- В основном path нет runtime-enforced per-tool hard timeout.
-- `join_all` ждёт все futures; один hung provider/executor может повесить batch и оставить tool outputs незаписанными.
-- Ошибка executor-а превращается в строку только после завершения future. Если future не завершается, output отсутствует.
-- `execute_tools` содержит gates/hooks/blocking behavior, несовместимые с v1 YOLO.
-- `TOOL_COMPRESS` выделен в отдельный sequential path.
-- `record_tool_execution_result` содержит approval-pending detection через строки `APPROVAL_PENDING` / `Waiting for approval`, что нужно удалить.
-- Tool output хранится как plain string, а не структурированный `ToolOutput` с timeout/cancel/cleanup/truncation metadata.
+### 2.9 Measurable size and dependency improvements
 
-Действие:
+The refactor must add CI checks that measure binary size, container image size, compiled capabilities, and dependency leakage for key profiles.
 
-- Переписать файл или заменить его новым `agent/tool_runtime/` module.
-- Оставить только thin history facade, если нужно.
-- Удалить before/after hook gating из tool execution path v1.
-- Удалить approval string detection.
-- Удалить sequential compression special path или переписать compression как обычный executor, если он нужен в v1.
+### 2.10 Easy module addition
 
-#### `crates/oxide-agent-core/src/agent/tool_bridge.rs`
+Adding a new tool must require adding one module and one feature, plus optional profile inclusion. It must not require editing multiple registries, typed wrappers, legacy wrappers, and global transport startup chains.
 
-Текущие обязанности:
+Adding a new provider must require adding one provider module and one feature, plus optional profile inclusion. It must not require editing multiple global match chains.
 
-- Старый bridge `ToolExecutionContext`.
-- `execute_tool_calls` выполняет tool calls последовательно.
-- `execute_single_tool_call` парсит JSON, вызывает `execute_tool_with_timeout`, нормализует string result и append-ит tool output.
-- `execute_tool_with_timeout` использует `AGENT_TOOL_TIMEOUT_SECS = 300` и cancellation select.
-- Есть approval-related dead code: pending SSH approval, approval payload parsing, disabled approval paths.
+## 3. Non-Goals
 
-Проблемы:
+The following are explicitly out of scope.
 
-- Это отдельный legacy execution path.
-- Timeout есть только в этом bridge, а не в основном `runner/tools.rs` path.
-- Последовательное выполнение несовместимо с required batch parallelism.
-- Cancellation может возвращать error до нормальной записи output в некоторых сценариях.
-- Tool result — string, не structured `ToolOutput`.
-- Наличие bridge создаёт риск fallback.
+- Preserving old config compatibility is not a goal.
+- Migrating existing deployments is not a goal.
+- Keeping legacy execution paths is not a goal.
+- Supporting old registry APIs is not a goal.
+- Hiding the old architecture behind adapters is not a goal.
+- Keeping old environment variable aliases is not a goal.
+- Keeping deprecated config fields is not a goal.
+- Keeping full Docker Compose as the default for all profiles is not a goal.
+- Keeping R2 as a hardcoded storage backend is not a goal.
+- Keeping all LLM providers compiled into every binary is not a goal.
+- Keeping sandbox command execution available by default is not a goal.
+- Keeping MCP binaries in the runtime image unless selected is not a goal.
+- Keeping a fat sandbox image for every deployment is not a goal.
+- Maintaining old tool names only for compatibility is not a goal.
+- Preserving current file layout is not a goal.
+- Preserving current Cargo feature names is not a goal.
+- Preserving current Dockerfile names or Compose topology is not a goal.
 
-Действие:
+## 4. Current Architecture RECON
 
-- Удалить `tool_bridge.rs` из активного runtime.
-- Не оставлять fallback на него.
-- Перенести только полезную идею per-tool timeout в новый runtime wrapper.
+This section describes the observed state of the current repository and the concrete architectural problems that must be removed.
 
-#### `crates/oxide-agent-core/src/agent/executor/execution.rs`
+### 4.1 Workspace and binaries
 
-Текущие обязанности:
+The current workspace contains these crates:
 
-- `run_execution` готовит execution, делает `replay_initial_tool_call`, затем вызывает `run_with_timeout`.
-- `apply_execution_transition` обрабатывает `TimedOut` через `session.timeout()` и error.
-- `resolve_execution_request` содержит `ResumeApproval` path.
-- `replay_initial_tool_call` использует legacy `ToolExecutionContext` и `execute_single_tool_call` из `tool_bridge`.
+- `crates/oxide-agent-core`
+  - Core domain crate.
+  - Contains agent execution, config, LLM providers, tool providers, sandbox management, storage, reminders, wiki memory, skill loading, hooks, compaction, and many provider-specific integrations.
+  - Currently carries too many responsibilities and too many unconditional dependencies.
 
-Проблемы:
+- `crates/oxide-agent-runtime`
+  - Runtime transport/session abstraction.
+  - Depends on `oxide-agent-core`.
+  - Provides reusable session/progress/runtime primitives for transports.
 
-- `replay_initial_tool_call` — отдельный legacy tool path.
-- Approval resume path противоречит v1.
-- Agent timeout не создаёт paired tool outputs.
+- `crates/oxide-agent-transport-telegram`
+  - Telegram transport implementation using `teloxide`.
+  - Contains bot handlers, routing, progress handling, reminder scheduling integration, manager topic handling, and application startup orchestration.
+  - Currently hardcodes R2 storage initialization and creates global runtime services from one transport-specific runner.
 
-Действие:
+- `crates/oxide-agent-transport-web`
+  - HTTP/SSE-style transport primarily useful for tests and in-memory scenarios.
+  - Uses in-memory storage and scripted LLM helpers.
+  - It shows that transport abstraction exists, but production startup is still dominated by Telegram and R2 assumptions.
 
-- Удалить `replay_initial_tool_call` как bridge path.
-- Удалить `ResumeApproval` execution path из v1.
-- Перевести initial tool call replay, если он нужен, через новый `ToolCallRuntime::execute_batch` с batch size 1.
+- `crates/oxide-agent-telegram-bot`
+  - Main Telegram bot binary crate.
+  - Loads `.env`, configures tracing, redacts secrets, performs SSH temp-file cleanup, creates `BotSettings`, and starts the Telegram runner.
+  - Also contains `src/bin/chatgpt-login.rs`.
 
-#### `crates/oxide-agent-core/src/agent/registry.rs`
+- `crates/oxide-agent-sandboxd`
+  - Sandbox broker daemon binary.
+  - Starts the sandbox broker server over Unix socket.
+  - Also performs SSH private key cleanup even though SSH cleanup is not a sandbox backend responsibility.
 
-Текущие обязанности:
+The workspace root excludes `vendor/gemini-rust` from the workspace and patches `gemini-rust` from the local vendor directory.
 
-- `ToolRegistry` хранит `Vec<Box<dyn ToolProvider>>`.
-- `all_tools()` flatten-ит provider tools.
-- `execute()` линейно сканирует providers через `can_handle` и возвращает `Err(anyhow!("Unknown tool"))`.
+Current binary-level problem:
 
-Проблемы:
+- `oxide-agent-telegram-bot` and `oxide-agent-sandboxd` are built together in the main Dockerfile.
+- The Docker image also copies `chatgpt-login`, MCP binaries, and skills into the same runtime image.
+- Binaries are not selected by module profile.
+- Transport startup currently acts as application composition.
 
-- Linear scan и `can_handle` дают менее deterministic dispatch, чем прямой lookup.
-- Unknown tool возвращается как runtime error, а не как paired tool output.
-- `ToolProvider` возвращает `Result<String>`, что не содержит structured status/cleanup/truncation.
+Target state:
 
-Действие:
+- The main application binary must be composed from selected capabilities.
+- Transports must not decide storage, provider, sandbox, or MCP topology.
+- Each binary must declare required features.
+- Optional binaries must not be built or copied unless selected.
 
-- Заменить registry на deterministic `BTreeMap<ToolName, Arc<dyn ToolExecutor>>` или `IndexMap` с explicit conflict detection.
-- Unknown tool должен превращаться в `ToolOutput { status: unknown_tool }`.
+### 4.2 Current Docker and Compose topology
 
-#### `crates/oxide-agent-core/src/agent/provider.rs`
+The current Docker topology is full-profile by default.
 
-Текущие обязанности:
+The root `Dockerfile`:
 
-- `ToolProvider` trait: `tools`, `can_handle`, `execute(...) -> Result<String>`.
+- uses cargo-chef for dependency caching;
+- builds `oxide-agent-telegram-bot` and `oxide-agent-sandboxd` together;
+- enables `oxide-agent-core/jira` and `oxide-agent-core/mattermost` during dependency and app builds;
+- downloads and copies `ssh-mcp`, `jira-mcp`, and `mattermost-mcp` binaries into the final image unconditionally;
+- installs runtime packages such as `openssh-client`, `libssl3`, `tzdata`, and CA certificates;
+- copies the Telegram bot binary, sandbox daemon binary, `chatgpt-login`, MCP binaries, and skills into one image;
+- uses a single runtime image for both the bot and sandbox daemon.
 
-Проблемы:
+The current `docker-compose.yml`:
 
-- `String` result не позволяет runtime корректно отражать status, exit code, cleanup, truncation, artifact refs.
-- Timeout/cancel awareness делегируется provider-ам, а должна быть enforced runtime wrapper-ом.
+- builds `sandbox/Dockerfile.sandbox` as `agent-sandbox:latest`;
+- starts `oxide_agent` from the full runtime image;
+- sets `SANDBOX_BACKEND=broker`;
+- starts `sandboxd` as a separate service with Docker socket access;
+- starts `searxng` unconditionally and wires `SEARXNG_ENABLED=true` into `oxide_agent`;
+- declares `oxide_agent` as depending on `sandboxd` and `searxng`;
+- contains a commented browser-use service rather than a selected module-driven service;
+- uses host networking for the main bot and sandbox daemon;
+- creates volumes even when a profile does not need the corresponding service.
 
-Действие:
+The current sandbox image `sandbox/Dockerfile.sandbox` is a fat universal image. It installs general networking tools, Python, pip, ffmpeg, yt-dlp, requests/httpx/BeautifulSoup/lxml, nmap, mtr, traceroute, ripgrep, fd, jq, git, zip/unzip, and related utilities regardless of which tools are enabled.
 
-- Ввести `ToolExecutor` trait, возвращающий `ToolOutput`.
-- Старые providers портировать на executors без compatibility bridge.
+The current browser sidecar under `services/browser_use_bridge` is also heavy. It installs Chromium, browser-use, FastAPI, and runtime dependencies. It is not currently selected by a capability manifest.
 
-#### `crates/oxide-agent-core/src/agent/executor/registry.rs`
+Current Docker/Compose problems:
 
-Текущие обязанности:
+- Docker always assumes full application topology.
+- Jira and Mattermost features are hardcoded into image builds.
+- MCP binaries are copied even when integrations are not used.
+- The same image is used for bot and sandbox daemon.
+- `searxng` is always present in compose.
+- `sandboxd` is always present in compose.
+- The sandbox image is heavy even when command execution/media tooling is not selected.
+- Docker/Compose express deployment assumptions rather than selected capabilities.
 
-- `build_tool_registry` регистрирует Todos, Sandbox, Compression, StackLogs, FileHoster, MediaFile, Ytdlp, Delegation, topic providers, WikiMemory, MCP, search/browser, TTS и другие tools.
-- `current_tool_definitions()` фильтрует tools через `execution_profile.tool_policy().filter_definitions(...)`.
+Target state:
 
-Проблемы:
+- Docker builds must accept a profile or explicit feature list.
+- Runtime images must contain only selected binaries/assets.
+- Compose files must be profile-specific or generated from module service requirements.
+- Sandbox image variants must match selected sandbox and media modules.
 
-- Tool policy filtering противоречит v1 YOLO без policy restrictions.
-- Registry строится вокруг `ToolProvider`/string output.
-- Много providers могут использовать свои собственные timeout/cancel assumptions.
+### 4.3 Current tool registration flow
 
-Действие:
+There are two distinct tool registration systems today.
 
-- Сформировать v1 registry только из tools, реально доступных в Oxide Agent v1.
-- Убрать policy filtering из v1 tool spec exposure.
-- Портировать providers в `ToolExecutor`.
+#### Legacy provider registry
 
-#### `crates/oxide-agent-core/src/agent/executor.rs`
+`oxide-agent-core/src/agent/registry.rs` defines a legacy `ToolRegistry` around `Vec<Box<dyn ToolProvider>>`.
 
-Текущие обязанности:
+`oxide-agent-core/src/agent/provider.rs` defines `ToolProvider`, which exposes:
 
-- `AgentExecutor` содержит `execution_profile`, `tool_policy_state`, `hook_policy_state` и другие policy/hook states.
+- provider name;
+- tool definitions;
+- `can_handle`;
+- `execute`.
 
-Проблемы:
+The legacy registry flattens provider tool definitions and dispatches tool execution by iterating providers.
 
-- Runtime v1 не должен принимать решения через policy gates.
-- Hook/policy state не должен влиять на возможность execute tool call.
+#### Typed runtime registry
 
-Действие:
+`oxide-agent-core/src/agent/tool_runtime/registry.rs` defines a separate typed `ToolRegistry` around `BTreeMap<ToolName, Arc<dyn ToolExecutor>>`.
 
-- Удалить policy/hook coupling из tool execution path v1.
-- Если hook events нужны для observability, они должны быть passive telemetry, не gate.
+The typed runtime has separate concepts for:
 
-#### `crates/oxide-agent-core/src/agent/providers/sandbox.rs`
+- `ToolExecutor`;
+- `ToolInvocation`;
+- `ToolOutput`;
+- normalization;
+- process/runtime execution;
+- provider-specific protocol conversion.
 
-Текущие обязанности:
+#### Registration glue and duplication
 
-- `SandboxProvider` реализует `execute_command`, `read_file`, `write_file`, `send_file_to_user`, `list_files`, `recreate_sandbox`.
-- `execution_gate: Arc<RwLock<()>>`: `recreate_sandbox` берёт write lock, остальные sandbox tools read lock.
-- `handle_execute_command` вызывает `sandbox.exec_command(&args.command, cancellation_token)` и возвращает JSON с `stdout`, `stderr`, `exit_code`.
+`oxide-agent-core/src/agent/executor/registry.rs` chooses between the typed runtime and the legacy registry depending on model/runtime checks.
 
-Проблемы:
+It contains separate flows:
 
-- `execute_command` возвращает полный stdout/stderr в JSON без truncation.
-- `read_file` возвращает полный file content без binary/output budget guard.
-- Locking вокруг sandbox может ограничить parallelism. В v1 shell/linux operations не должны сериализоваться по умолчанию.
+- `build_tool_registry(...)` for the legacy provider registry;
+- `build_tool_runtime_registry(...)` for the typed runtime registry.
 
-Действие:
+The legacy flow registers broad providers and integrations:
 
-- Портировать sandbox tools в executors.
-- `execute_command` должен идти через `ProcessManager`/container process manager с hard timeout, cleanup и output cap.
-- `read_file` должен применять output budget и binary detection.
+- core providers such as todos, sandbox, compression, stack logs, file hosting, media file, yt-dlp, and delegation;
+- topic providers such as agents.md, manager control plane, SSH MCP, and reminders;
+- wiki memory provider;
+- Jira and Mattermost MCP providers behind features and runtime config;
+- Tavily, SearXNG, and WebFetchMd search/fetch providers;
+- browser-use providers behind feature and runtime config;
+- Kokoro and Silero TTS providers based on URL env/config behavior.
 
-#### `crates/oxide-agent-core/src/sandbox/manager.rs`
+The typed runtime flow registers only part of the same surface:
 
-Текущие обязанности:
+- typed todos executors;
+- typed sandbox executors;
+- selected topic/runtime providers;
+- wiki memory executors;
+- SSH MCP executors.
 
-- `SandboxManager::exec_command` dispatch-ит Docker/Broker execution.
-- Docker path запускает command через Docker exec и собирает stdout/stderr.
-- `SANDBOX_EXEC_TIMEOUT_SECS = 60`.
-- На cancellation вызывается `kill_processes`.
-- На timeout возвращается error.
-- `run_exec` аккумулирует stdout/stderr в `String` без лимита.
-- `kill_processes` вызывает `killall5 -9` через docker exec.
+It also includes a `ProviderRuntimeExecutor` adapter that wraps a legacy `ToolProvider` as a typed `ToolExecutor`.
 
-Проблемы:
+Current tool registration problems:
 
-- На timeout Docker path не вызывает `kill_processes`; command/process может жить дальше.
-- stdout/stderr собираются целиком в память.
-- `killall5 -9` слишком грубый и не связан с конкретной process group invocation.
-- Container exec не даёт reliable paired process lifecycle metadata.
+- There are two registries.
+- Some tools are registered in both systems.
+- Some tools exist only in the legacy path.
+- Some tools are wrapped from legacy into typed runtime rather than being first-class typed modules.
+- Registration behavior depends on runtime model checks instead of compiled capability manifests.
+- Duplicate registration is handled by skipping duplicates instead of eliminating duplicate registration paths.
+- Tool availability is mostly runtime-filtered, not compile-time eliminated.
+- Broad providers mix unrelated capabilities.
 
-Действие:
+Tools and provider groups currently observed include:
 
-- Переписать command execution через `ProcessManager` semantics.
-- Если Docker exec остаётся, добавить invocation-scoped process group/session внутри container и cleanup конкретного process tree.
-- На timeout/cancel/hung всегда делать cleanup.
-- Всегда возвращать `ToolOutput`, не только error.
+- `SandboxToolProvider`
+  - `execute_command`
+  - `write_file`
+  - `read_file`
+  - `send_file_to_user`
+  - `list_files`
+  - `recreate_sandbox`
 
-#### `crates/oxide-agent-core/src/agent/providers/ssh_mcp.rs`
+- `TodosProvider`
+  - todo/list state tools.
 
-Текущие обязанности:
+- `CompressionToolProvider`
+  - `compress`.
 
-- SSH provider tools: `ssh_exec`, `ssh_sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_check_process`, `ssh_send_file_to_user`.
-- `UpstreamSshMcpBackend` использует `call_lock: Arc<Mutex<()>>`; upstream calls сериализуются.
-- Timeout/cancel в `call_tool` приводят к `reset_session().await` и error.
-- Approval registry и approval token paths присутствуют; `requires_approval` сейчас фактически отключён.
-- `spawn_session` запускает upstream binary с `--maxChars=none` и `--max-output-tokens=UPSTREAM_MAX_OUTPUT_TOKENS`.
+- `DelegationToolProvider`
+  - `spawn_sub_agents`
+  - `wait_sub_agents`
+  - `cancel_sub_agents`
 
-Проблемы:
+- `FileHosterProvider`
+  - `upload_file`.
 
-- `call_lock` прямо противоречит v1 YOLO parallel execution.
-- Timeout/cancel становятся error, а не structured tool output.
-- SSH approval remnants создают forbidden gate/fallback surface.
-- Remote stdout/stderr возвращаются JSON payload-ом без общей runtime-нормализации.
+- `MediaFileToolProvider`
+  - `transcribe_audio_file`
+  - `describe_image_file`
+  - `describe_video_file`
 
-Действие:
+- `YtdlpToolProvider`
+  - video metadata, transcript, search, video download, audio download.
 
-- Удалить global SSH serialization lock из v1 path.
-- Если upstream MCP не поддерживает concurrent calls in one session, создать отдельную upstream session per invocation или pool без shared serialization.
-- Удалить approval registry/path из v1.
-- Timeout/cancel/hung/cleanup нормализовать в `ToolOutput`.
+- `AgentsMdProvider`
+  - `agents_md_get`
+  - `agents_md_update`
 
-#### `crates/oxide-agent-core/src/agent/tool_runtime.rs`
+- `ReminderToolProvider`
+  - reminder schedule/list/cancel/pause/resume/retry tools.
 
-Текущие обязанности:
+- `WikiMemoryProvider`
+  - wiki memory list/read/delete tools.
 
-- Task-local model route metadata.
+- `WebFetchMdProvider`
+  - `web_markdown`.
 
-Проблемы:
+- `TavilyToolProvider`
+  - `web_search`
+  - `web_extract`.
 
-- Название похоже на runtime, но фактически это не tool runtime.
+- `SearxngToolProvider`
+  - `searxng_search`.
 
-Действие:
+- `BrowserUseToolProvider`
+  - browser task/session/content/screenshot tools.
 
-- Переименовать текущий файл, если он нужен, например в `tool_model_route.rs`.
-- Освободить namespace `agent/tool_runtime/` для нового runtime.
+- `JiraMcpProvider`
+  - Jira read/write/schema tools.
 
-#### `crates/oxide-agent-core/src/llm/types.rs`
+- `MattermostMcpProvider`
+  - Mattermost channel/post/team/user/file/reaction/search/status tools.
 
-Текущие обязанности:
+- `SshMcpProvider`
+  - SSH exec, sudo exec, read file, file edit, process check, send file tools.
 
-- `Message` содержит role/content/reasoning/tool fields.
-- `ToolCall` содержит `id`, optional `tool_call_correlation`, `function.name`, `function.arguments`, `is_recovered`.
-- `ToolCall::invocation_id()` возвращает internal invocation id.
-- `ToolCall::wire_tool_call_id()` возвращает provider wire id, если он есть.
-- `Message::tool_with_correlation` пишет role `tool` с correlation.
+- `ManagerControlPlane` providers
+  - forum topic tools;
+  - topic binding/context/agents.md/infra/sandbox tools;
+  - agent profile tools;
+  - tool/hook enable-disable tools;
+  - private secret probing.
 
-Вывод:
+- `KokoroTtsProvider`
+  - English TTS tools.
 
-- Correlation model полезна и должна сохраниться.
-- Новый runtime должен явно различать internal `invocation_id` и provider-visible `wire_tool_call_id`.
-- Для opencode go tool output должен использовать provider wire id, если он был в assistant tool call.
+- `SileroTtsProvider`
+  - Russian TTS tools.
 
-Действие:
+Target state:
 
-- Расширить/адаптировать `ToolCall` mapping в `ToolInvocation`.
-- Не терять `tool_call_correlation`.
+- Delete the legacy provider registry.
+- Delete the typed/legacy adapter.
+- Delete dual build paths.
+- Every tool must be registered by exactly one capability module.
+- A tool definition and its executor must live together.
+- Broad providers must be split into atomic capability modules.
 
-#### `crates/oxide-agent-core/src/llm/providers/opencode_go.rs`
+### 4.4 Current LLM provider flow
 
-Текущие обязанности:
+The current LLM provider architecture is centralized in `oxide-agent-core`.
 
-- OpenAI-compatible chat completions provider для opencode go.
-- Request body с tools включает `tools`, `tool_choice: "auto"`, `parallel_tool_calls: true`, `stream: false`.
-- JSON mode не включается, если есть tools.
-- Tool calls приходят как chat-like `tool_calls[]` с `id`, `type: "function"`, `function.name`, `function.arguments`.
-- Tool role message кодируется как `{ role: "tool", tool_call_id, content }`.
-- `parse_tool_calls` нормализует `function.arguments` в string.
-- При наличии provider `id` создаётся internal invocation id, а provider wire id сохраняется в correlation.
-- Если `id` отсутствует, текущий код создаёт uncorrelated internal id.
-- Если `function` или `name` отсутствуют, текущий код может silently skip элемент.
+`oxide-agent-core/src/llm/provider.rs` defines `LlmProvider`, with methods for:
 
-Проблемы:
+- chat completion;
+- audio transcription;
+- audio transcription with prompt;
+- image analysis;
+- video analysis;
+- tool calling.
 
-- Silent skip malformed tool calls может сломать paired output invariant.
-- Missing provider id нельзя silently превращать в нормальный successful call без явной protocol handling.
-- Для DeepSeek V4 Flash через opencode go strict history должен быть стабильным: tool output обязан ссылаться на тот же `tool_call_id`, который есть в assistant tool call message.
+`oxide-agent-core/src/llm/providers/mod.rs` imports and re-exports all provider implementations unconditionally:
 
-Действие:
+- ChatGPT/OpenAI-style provider;
+- Gemini provider;
+- Groq provider;
+- Minimax provider;
+- Mistral provider;
+- Nvidia provider;
+- OpenCode Go provider;
+- OpenRouter provider;
+- ZAI provider.
 
-- Сохранить request format: `parallel_tool_calls: true`, `tool_choice: "auto"`, chat-like function tools.
-- Убрать silent skip malformed tool calls.
-- Missing/duplicate/invalid `tool_call_id` обрабатывать как provider protocol error с synthetic repaired local id только внутри записанной assistant message; см. раздел 8.
+`oxide-agent-core/src/llm/client.rs` builds a `HashMap<String, Arc<dyn LlmProvider>>` from global settings. Provider inclusion is determined by runtime config and credential presence, not Cargo features.
 
-#### `crates/oxide-agent-core/src/llm/providers/protocol_profiles.rs`, `tool_call_adapter.rs`, `tool_result_encoder.rs`
+Observed runtime provider insertion behavior:
 
-Текущие обязанности:
+- ChatGPT provider is inserted if an auth path exists.
+- Groq provider is inserted if a Groq API key exists.
+- Mistral provider is inserted if a Mistral API key exists.
+- Minimax provider is inserted if a Minimax API key exists.
+- ZAI provider is inserted if a ZAI API key exists.
+- Gemini provider is inserted if a Gemini API key exists.
+- Nvidia provider is inserted if a Nvidia API key exists.
+- OpenCode Go provider is inserted if an OpenCode Go API key exists.
+- OpenCode Go aliases are registered globally.
+- OpenRouter provider is inserted if an OpenRouter API key exists.
 
-- Chat-like tool protocol.
-- `ProviderToolCallAdapter` создаёт internal `InvocationId` и сохраняет provider tool call id.
-- `ProviderToolResultEncoder` для ChatLike использует `message.resolved_tool_call_correlation().wire_tool_call_id()` и `message.content`.
+Embedding provider creation is also a centralized hardcoded match. It switches over provider strings such as Gemini, Google, Mistral, OpenRouter, and OpenAI-compatible provider names.
 
-Вывод:
+Global model capability and alias logic currently lives in shared code rather than provider modules.
 
-- Эти abstractions полезны, но v1 не должен становиться multi-provider project.
-- Для opencode go нужно оставить strict ChatLike pairing.
+Current LLM provider problems:
 
-Действие:
+- Provider modules and SDK dependencies are compiled even when unused.
+- There is no per-provider Cargo feature boundary.
+- Provider aliases are declared centrally rather than by provider modules.
+- Model capability routing is globally hardcoded.
+- Embedding provider creation is globally hardcoded.
+- Config validation checks runtime credentials but not compiled provider availability.
+- Runtime config determines availability even though dependency elimination requires compile-time gating.
 
-- Использовать только chat-like profile для opencode go.
-- Не добавлять compatibility branches для GLM/MiniMax/Gemini.
+Target state:
 
-#### `crates/oxide-agent-core/src/llm/capabilities.rs`
+- Each LLM provider must be an independent capability module.
+- Each provider must own its aliases, config schema, default model metadata, and factory.
+- No provider-specific dependency may compile unless the provider feature is enabled.
+- Model routing must reference provider IDs from the compiled capability manifest.
+- Config for a non-compiled provider must fail loudly.
 
-Текущие обязанности:
+### 4.5 Current storage architecture
 
-- Для `opencode-go` указаны tool calling, structured output и strict tool history.
-- `deepseek-v4-flash` распознаётся как model-specific structured output support.
+The current storage module is conceptually trait-based but operationally R2-first.
 
-Действие:
+`oxide-agent-core/src/storage/provider.rs` defines a broad `StorageProvider` trait for:
 
-- В v1 hardcode/validate active provider/model: opencode go + DeepSeek V4 Flash.
-- Если конфиг указывает другую provider/model combo, fail fast до turn execution.
+- user config;
+- chat history;
+- memory;
+- control plane data;
+- reminders;
+- wiki memory;
+- audits;
+- agent profiles;
+- manager topic state;
+- sandbox/topic metadata.
 
-#### `crates/oxide-agent-core/src/agent/memory.rs` и `crates/oxide-agent-core/src/agent/recovery.rs`
+`oxide-agent-core/src/storage/r2.rs`, `r2_base.rs`, and `r2_provider.rs` implement R2 storage using AWS SDK S3 client types. The storage module comments and key layout assume Cloudflare R2 / AWS S3 semantics.
 
-Текущие обязанности:
+`oxide-agent-transport-telegram/src/runner.rs` hardcodes storage startup through `R2Storage::new(settings)`. It exits startup if R2 initialization fails. It then passes the R2 instance as `Arc<dyn StorageProvider>` into later runtime code.
 
-- `AgentMemory::add_message` вызывает history repair после mutation.
-- `recovery.rs` может drop-ать orphan tool results, trim incomplete parallel batch, drop duplicate tool results и т.д.
+Startup maintenance also accepts `Arc<R2Storage>` directly, not `Arc<dyn StorageProvider>`, for persisted tool drift cleanup.
 
-Проблемы:
+Current storage problems:
 
-- Runtime не должен создавать историю, которую потом надо чинить.
-- Repair может скрыть bugs в paired tool-call invariant.
+- R2/AWS SDK dependencies are unconditional in `oxide-agent-core`.
+- Local/embedded builds cannot eliminate AWS SDK.
+- Production startup is hardcoded to R2.
+- The storage abstraction is too broad and not module-oriented.
+- Startup maintenance depends on the concrete R2 type.
+- There is no first-class local storage backend for minimal builds.
+- Storage backend selection is not part of the module registry.
 
-Действие:
+Target state:
 
-- Для v1 сделать repair assert-only для tool-message pairing в dev/test.
-- В production не полагаться на repair для нормального пути.
-- Если history write fail, runtime обязан логировать fatal и не продолжать следующий LLM request.
+- `storage-local` must be the minimal backend.
+- `storage-r2` must be optional.
+- Storage backends must register through the unified module registry.
+- Tools and transports must consume storage interfaces, not concrete R2 types.
+- AWS SDK must be absent from local-only builds.
 
-### 4.2 Главные текущие риски
+### 4.6 Current sandbox architecture
 
-1. Есть несколько execution paths: `runner/tools.rs`, `tool_bridge.rs`, `executor/execution.rs` replay path, structured/unstructured fallback paths.
-2. Timeout существует в legacy bridge и отдельных provider-ах, но не как единая runtime гарантия основного parallel path.
-3. Timeout Docker sandbox не делает cleanup процесса.
-4. Cancellation Rust task не гарантирует OS process cleanup во всех providers.
-5. SSH MCP serializes calls через `call_lock`.
-6. stdout/stderr/file contents могут попадать в prompt целиком.
-7. Unknown tool / invalid args / join error не всегда превращаются в paired tool output.
-8. History repair может скрывать missing/duplicate tool outputs.
-9. opencode go / DeepSeek V4 Flash требует strict chat-like pairing; silent skip malformed tool call опасен.
-10. `parallel_tool_calls: true` уже выставляется provider-ом, но runtime semantics не имеют hard timeout/cleanup guarantees.
+The current sandbox architecture mixes backend selection, file operations, command execution, file delivery, stack logs, and Docker-specific details.
 
-## 5. Codex CLI architecture findings
+`oxide-agent-core/src/sandbox/manager.rs` uses a `SandboxManager` wrapper with two runtime-selected modes:
 
-Codex CLI публично расположен в `openai/codex` и содержит Rust workspace `codex-rs`. Для Oxide Agent важны не UI-решения Codex, а runtime patterns: turn loop, tool router/registry/executor, cancellation tokens, output normalization и process lifecycle handling.
+- direct Docker backend via Bollard;
+- broker backend via `sandboxd` Unix socket.
 
-### 5.1 Turn loop
+Selection is controlled by `SANDBOX_BACKEND=broker`; otherwise Docker direct is used.
 
-В Codex Rust core turn loop концептуально устроен как repeated sampling loop:
+Direct Docker implementation currently compiles unconditionally and includes:
 
-- построить prompt из history и visible tool specs;
-- отправить sampling request;
-- обработать streamed/non-streamed response events;
-- если model возвращает function/tool calls, превратить их в internal tool calls;
-- выполнить tool call(s);
-- записать tool output response items;
-- повторить sampling request;
-- если assistant message без tool calls, завершить turn.
+- container creation;
+- command execution;
+- file upload/download;
+- file read/write;
+- sandbox recreation;
+- size inspection;
+- compose stack log access;
+- prune/list/inspect operations;
+- hardcoded resource defaults;
+- hardcoded image defaults;
+- Docker socket assumptions.
 
-Для Oxide Agent нужно перенести именно barrier semantics для v1: один assistant response может содержать несколько tool calls; runtime выполняет batch параллельно, но следующий LLM request стартует только после записи всех outputs.
+`oxide-agent-core/src/sandbox/broker.rs` defines a bincode/Unix-socket protocol for sandbox daemon requests.
 
-### 5.2 Tool router / registry / executor
+`oxide-agent-sandboxd` starts the broker server and also performs SSH temp-file cleanup.
 
-В Codex есть разделение:
+The current sandbox tool provider exposes all of these capabilities together:
 
-- `ToolRouter` строит `ToolCall` из provider response item и dispatch-ит через registry.
-- `ToolRegistry` хранит tools по canonical name, проверяет kind/payload compatibility и возвращает output item.
-- `ToolExecutor` реализуется конкретными tools.
-- `ToolInvocation` несёт session/turn/cancellation/call id/tool name/payload.
-- `ToolOutput` умеет превращаться в provider response item.
+- command execution;
+- file writing;
+- file reading;
+- file delivery to user;
+- file listing;
+- sandbox recreation.
 
-Для Oxide Agent это правильное направление, но v1 должен быть проще:
+The `execute_command` tool implies a heavy sandbox environment containing Python, ffmpeg, yt-dlp, networking tools, and other utilities. That environment is not appropriate for lite or embedded builds unless explicitly selected.
 
-- нет dynamic multi-provider scope;
-- нет approval/sandbox policy gates;
-- registry deterministic;
-- runtime wrapper, а не executor, отвечает за timeout/cancel/hung/cleanup guarantees;
-- error не должен оставаться `Err`, если provider ожидает tool output.
+Current sandbox problems:
 
-### 5.3 Parallel runtime
+- Bollard/Docker dependencies are unconditional.
+- Direct Docker and sandbox daemon client code are runtime-selected rather than compile-time selected.
+- Command execution and file operations are bundled into one tool provider.
+- File delivery is bundled with sandbox operations.
+- Stack logs are coupled to Docker Compose assumptions.
+- The sandbox image is fat and universal.
+- `execute_command` can leak into profiles that only need file read/write.
+- SSH cleanup is performed by main binaries outside an SSH module.
 
-Codex `ToolCallRuntime` использует `tokio::spawn`, cancellation token и `AbortOnDropHandle`. Он различает tools, поддерживающие parallel calls, и tools, которые требуют exclusive guard. При cancellation он либо сохраняет уже завершённый lifecycle/output, либо abort-ит task и создаёт aborted output.
+Target state:
 
-Для Oxide Agent v1 нужно взять:
+- Sandbox backend modules must be separate from sandbox tool modules.
+- File operations must be separate from command execution.
+- `execute_command` must not be present in embedded/lite profiles unless explicitly enabled.
+- Docker direct and sandboxd broker must be separate backend modules.
+- Sandbox image variants must be generated from or selected by module requirements.
 
-- per-call spawned task;
-- cancellation token per invocation;
-- terminal outcome detection;
-- fallback-to-output при tool task failure;
-- deterministic conversion в model response item.
+### 4.7 Current feature flags and dependency graph
 
-Нужно не переносить:
+The current `oxide-agent-core` feature layout is too coarse:
 
-- per-tool `supports_parallel_tool_calls` как serializing mechanism;
-- approval hooks;
-- policy/sandbox restrictions;
-- hidden compatibility branches.
+```toml
+[features]
+default = ["tavily", "searxng"]
+tavily = ["dep:tavily"]
+searxng = []
+browser_use = []
+jira = []
+mattermost = []
+```
 
-В v1 все calls batch-а запускаются параллельно. Исключения запрещены, кроме технического global max in-flight tools, если он задан config-ом.
+Most heavy dependencies are not optional in the current core crate.
 
-### 5.4 Timeout and process execution
+Unconditional dependency groups include:
 
-Codex exec layer имеет `ExecExpiration` с timeout/cancellation variants и default exec timeout. Также есть formatting output for model с wall time, exit code и truncation. Для Oxide Agent нужно взять:
+- AWS SDK / S3 storage dependencies;
+- Bollard Docker client;
+- RMCP client/child-process support;
+- OpenAI-compatible SDK;
+- Gemini SDK;
+- ZAI SDK;
+- HTTP client with multipart/stream/cookie features;
+- tokenization and model support dependencies;
+- caching and persistence support;
+- cron/timezone scheduling;
+- tar/bincode/serialization dependencies used by sandbox and broker features;
+- media-adjacent and provider-adjacent support libraries.
 
-- timeout как explicit expiration object;
-- cancellation as first-class signal;
-- model-facing output formatting with duration/exit metadata;
-- output truncation before model context.
+The existing optional features mainly control registration/runtime integration, not dependency elimination.
 
-Нужно усилить относительно текущего Oxide:
+Current feature problems:
 
-- hard timeout должен приводить к cleanup;
-- cleanup result должен быть частью `ToolOutput`;
-- timeout/hung/cancel должны быть output statuses, а не только errors;
-- executor panic/join error должен нормализоваться.
+- `default` enables search-related features.
+- There is no `default = []` minimal build.
+- Cargo features do not correspond to atomic capabilities.
+- Provider-specific dependencies are compiled even when provider credentials are absent.
+- Storage and sandbox dependencies are compiled even when no storage/sandbox profile needs them.
+- Dockerfile builds force selected full-profile features.
 
-### 5.5 Output normalization
+Target state:
 
-Codex tool outputs имеют typed conversion в response item. Для Oxide Agent v1 нужен более строгий нормализатор:
+- `default = []`.
+- Atomic features for every provider/tool/backend/integration.
+- Profile features composed from atomic features.
+- CI verifies dependency absence for selected profiles.
 
-- `ToolOutputStatus` обязателен;
-- stdout/stderr previews/head/tail separate;
-- artifact refs separate;
-- cleanup status separate;
-- provider wire id preserved;
-- model-facing content is JSON string or compact text generated by one encoder.
+### 4.8 Current architectural problems
 
-### 5.6 Что концептуально переносить из Codex
+The current architecture has these concrete problems:
 
-Переносить:
+- Runtime disabling does not remove dependencies from the binary.
+- Providers are compiled even when unused.
+- LLM provider registration is controlled by env/config rather than compiled module availability.
+- Storage startup is hardcoded to R2.
+- AWS SDK cannot be eliminated from local-only builds.
+- Docker sandbox support and Bollard cannot be eliminated from no-sandbox builds.
+- Tools are registered through duplicated legacy and typed runtime registries.
+- Legacy providers are wrapped into typed executors instead of being replaced by first-class modules.
+- Broad providers mix unrelated capabilities, especially sandbox and manager tools.
+- Docker profile does not define architecture; it ships a full runtime image.
+- Compose always starts sidecars that many profiles do not need.
+- Sandbox image is fat and universal.
+- MCP binaries are copied into images even when integrations are not selected.
+- Browser/search/media capabilities are not cleanly separated.
+- Transport startup performs application composition and storage initialization.
+- Some cleanup/migration/compatibility behavior is embedded in startup paths.
+- Config uses global fields and old env conventions rather than module-specific schemas.
+- Capability boundaries are unclear.
 
-- `ToolInvocation` as first-class object.
-- `ToolExecutor` trait with typed output.
-- `ToolRegistry` as deterministic dispatcher.
-- `ToolCallRuntime` as spawned async batch runner.
-- Cancellation token per tool call.
-- Provider response item generation from typed output.
-- Output truncation before model context.
-- Tracing spans per tool call.
+## 5. Target Architecture
 
-Не переносить в v1:
+The target architecture is a Capability Module System.
 
-- Approval policy.
-- Sandbox policy gates.
-- Per-tool parallel-support locks.
-- Multi-provider compatibility scope.
-- Background process/job API as mandatory behavior.
+A capability module is the first-class unit of compilation, registration, configuration, validation, runtime availability, Docker requirements, and Compose requirements.
 
-## 6. Target architecture
+Capability module kinds:
 
-### 6.1 New module layout
+- tool modules;
+- LLM provider modules;
+- embedding provider modules;
+- storage backend modules;
+- sandbox backend modules;
+- sandbox tool modules;
+- transport modules;
+- MCP integration modules;
+- search modules;
+- browser modules;
+- media modules;
+- memory/wiki modules;
+- reminder/task modules;
+- file delivery modules;
+- diagnostics/manager modules.
 
-Рекомендуемая структура:
+Every module must declare:
+
+- stable unique module ID;
+- module kind;
+- Cargo feature name;
+- optional dependencies;
+- registration function or factory;
+- config schema;
+- runtime validation hook if needed;
+- exported capabilities;
+- required capabilities;
+- conflicting capabilities if any;
+- required external services if any;
+- required Docker runtime assets if any;
+- required Compose services if any;
+- health check if it owns an external dependency.
+
+The registry must be assembled from compiled modules. Runtime config can enable or disable modules that exist in the compiled module list. Runtime config cannot make unavailable modules appear.
+
+High-level target flow:
+
+1. Binary starts.
+2. Compiled modules expose a static module list through feature-gated inventory functions.
+3. Config is loaded.
+4. Config is validated against the compiled capability manifest.
+5. The `RuntimeContext` is built from selected modules.
+6. Each enabled module registers itself into the unified registry.
+7. The selected transport starts using the `RuntimeContext`.
+
+The architecture must prefer explicit composition over global runtime discovery.
+
+## 6. Capability Model
+
+A capability is a typed, addressable unit of behavior exposed by a module.
+
+Capability ID format:
 
 ```text
-crates/oxide-agent-core/src/agent/tool_runtime/
-  mod.rs
-  invocation.rs
-  output.rs
-  executor.rs
-  registry.rs
-  runtime.rs
-  process.rs
-  hung.rs
-  normalizer.rs
-  history.rs
-  artifacts.rs
-  config.rs
-  provider_opencode_go.rs
+<kind>/<name>
 ```
 
-Текущий `agent/tool_runtime.rs`, который хранит task-local model route metadata, нужно переименовать или переместить, чтобы не конфликтовать с новым module namespace.
-
-### 6.2 Component responsibilities
-
-`ToolInvocation`:
-
-- canonical input для executor-а;
-- содержит provider payload, normalized args, execution context, timeout config, cancellation token, metadata и timestamps.
-
-`ToolOutput`:
-
-- canonical terminal state;
-- используется для history write, provider encoding, telemetry и artifacts.
-
-`ToolExecutor`:
-
-- tool-specific business logic;
-- не отвечает за final guarantee “output exactly once”; это делает runtime wrapper.
-
-`ToolRegistry`:
-
-- deterministic lookup by tool name;
-- exposes tool specs to opencode go;
-- unknown/mismatched calls превращает в `ToolOutput`, не panic/error.
-
-`ToolCallRuntime`:
-
-- принимает batch tool calls;
-- записывает assistant tool call item;
-- запускает tasks;
-- enforce-ит timeout/cancel/hung;
-- вызывает cleanup;
-- normalizes every terminal state;
-- записывает outputs;
-- возвращает deterministic Vec<ToolOutput>.
-
-`ProcessManager`:
-
-- отвечает за local/container/SSH-like process lifecycle;
-- process group/session;
-- stdout/stderr draining;
-- terminate/kill/reap;
-- cleanup result.
-
-`HungDetector`:
-
-- soft detector above hard timeout;
-- no-output/no-progress/process-liveness tracking;
-- initiates controlled cancellation/termination;
-- never replaces hard timeout.
-
-`OutputNormalizer`:
-
-- converts `Result<ToolOutput, ToolRuntimeError>`, `JoinError`, panic, timeout, cancel, cleanup failure, invalid args and protocol error into valid `ToolOutput`.
-
-`HistoryWriter`:
-
-- enforces history invariants;
-- writes assistant tool call before execution;
-- writes exactly one tool output for every call;
-- fails turn if history write fails after logging complete diagnostic state.
-
-`ArtifactStore`:
-
-- writes full stdout/stderr/large payloads to files when inline budget exceeded;
-- returns artifact refs for `ToolOutput`.
-
-### 6.3 Runtime flow
+Examples:
 
 ```text
-handle_llm_response(response):
-  if response.tool_calls.is_empty():
-      record assistant text and finish/continue existing non-tool flow
-  else:
-      normalized_batch = ProviderToolCallParser::parse_opencode_go(response.tool_calls)
-      outputs = ToolCallRuntime::execute_batch(normalized_batch, turn_ctx).await
-      continue next LLM request with updated history
+llm-provider/opencode-go
+llm-provider/openai-chatgpt
+llm-provider/gemini
+llm-provider/groq
+llm-provider/mistral
+llm-provider/minimax
+llm-provider/zai
+llm-provider/nvidia
+llm-provider/openrouter
+
+embedding-provider/gemini
+embedding-provider/openai-compatible
+embedding-provider/mistral
+embedding-provider/openrouter
+
+tool/tavily-search
+tool/tavily-extract
+tool/webfetch-md
+tool/searxng-search
+tool/browser-use
+tool/todos
+tool/agents-md
+tool/reminder
+tool/wiki-memory
+tool/compression
+tool/delegation
+tool/file-delivery
+tool/sandbox-fileops
+tool/sandbox-exec
+tool/sandbox-recreate
+tool/sandbox-list-files
+tool/stack-logs
+tool/media-audio-transcription
+tool/media-image-description
+tool/media-video-description
+tool/ytdlp-metadata
+tool/ytdlp-transcript
+tool/ytdlp-download
+tool/tts-kokoro
+tool/tts-silero
+
+storage/local
+storage/r2
+
+transport/telegram
+transport/web
+transport/cli
+transport/http-api
+
+sandbox-backend/docker-direct
+sandbox-backend/sandboxd-client
+sandbox-daemon/sandboxd
+
+integration/mcp-jira
+integration/mcp-mattermost
+integration/ssh-mcp
+
+manager/control-plane
+manager/topic-sandbox-admin
+manager/agent-profile-admin
 ```
 
-`ToolCallRuntime::execute_batch` owns all tool-call correctness guarantees. No other module should execute tools directly.
+Each capability must be independently includable when technically possible. If a capability depends on another capability, the dependency must be declared explicitly.
 
-## 7. Runtime flow
+Examples:
 
-### 7.1 Batch lifecycle
+- `tool/sandbox-fileops` requires one sandbox backend capability.
+- `tool/sandbox-exec` requires one sandbox backend with `exec` support.
+- `tool/file-delivery` requires a file delivery sink from the active transport or a storage-backed file hoster.
+- `tool/media-audio-transcription` requires an LLM provider that declares audio transcription support.
+- `tool/media-video-description` requires an LLM provider or media processor that declares video support.
+- `integration/mcp-jira` requires the RMCP client and the Jira MCP binary/service.
+- `tool/searxng-search` requires the searxng service URL and a Compose service in Docker deployments unless an external URL is configured.
+- `tool/browser-use` requires the browser-use bridge service unless configured to use an external bridge.
 
-1. Receive LLM response containing `tool_calls`.
-2. Validate provider/tool-call payloads for opencode go chat-like format.
-3. Create `ToolCallBatch` with stable batch id and per-call index.
-4. Repair only local missing/duplicate ids before writing assistant message, if allowed by section 8 rules.
-5. Record assistant tool-call message in history.
-6. Build `ToolInvocation` for each call.
-7. Spawn one task per invocation.
-8. Each task runs through runtime wrapper:
-   - parse args;
-   - registry dispatch;
-   - hard timeout;
-   - cancellation select;
-   - hung detector;
-   - process cleanup if applicable;
-   - output normalization.
-9. Collect outputs from all tasks.
-10. Normalize any task-level failure.
-11. Sort outputs by original batch index.
-12. Verify `output.tool_call_id == call.tool_call_id` for every call.
-13. Write tool outputs in deterministic order.
-14. Only then continue to next LLM request.
+Capability dependency declarations must be machine-readable. They must drive config validation, registry construction, generated manifests, Docker assets, and Compose service requirements.
 
-### 7.2 Pseudo-code: batch handling
+## 7. Cargo Feature Architecture
+
+Cargo features must be redesigned around atomic modules and profile compositions.
+
+### 7.1 Rules
+
+- `default = []`.
+- Every provider must have its own feature.
+- Every tool module must have its own feature or small atomic feature group.
+- Every storage backend must have its own feature.
+- Every sandbox backend must have its own feature.
+- Every transport must have its own feature.
+- Every MCP integration must have its own feature.
+- Every heavy dependency must be `optional = true`.
+- Profile features must be compositions of atomic features.
+- Runtime config must not enable capabilities that are absent from the compiled feature set.
+- Feature names must be stable, lowercase, kebab-case, and prefixed by module kind.
+
+### 7.2 Proposed feature naming convention
+
+```toml
+[features]
+default = []
+
+# Profile features
+profile-full = [
+  "transport-telegram",
+  "transport-web",
+  "storage-r2",
+  "storage-local",
+  "llm-chatgpt",
+  "llm-gemini",
+  "llm-groq",
+  "llm-mistral",
+  "llm-minimax",
+  "llm-zai",
+  "llm-nvidia",
+  "llm-opencode-go",
+  "llm-openrouter",
+  "embedding-gemini",
+  "embedding-openai-compatible",
+  "tool-todos",
+  "tool-compression",
+  "tool-delegation",
+  "tool-agents-md",
+  "tool-reminder",
+  "tool-wiki-memory",
+  "tool-webfetch-md",
+  "tool-tavily",
+  "tool-searxng",
+  "tool-browser-use",
+  "tool-sandbox-fileops",
+  "tool-sandbox-exec",
+  "tool-sandbox-recreate",
+  "tool-file-delivery",
+  "tool-media-audio",
+  "tool-media-image",
+  "tool-media-video",
+  "tool-ytdlp",
+  "tool-tts-kokoro",
+  "tool-tts-silero",
+  "tool-stack-logs",
+  "sandbox-backend-docker-direct",
+  "sandbox-backend-sandboxd-client",
+  "sandbox-daemon",
+  "integration-mcp-jira",
+  "integration-mcp-mattermost",
+  "integration-ssh-mcp",
+  "manager-control-plane",
+]
+
+profile-embedded-opencode-local = [
+  "transport-telegram",
+  "storage-local",
+  "llm-opencode-go",
+  "tool-todos",
+  "tool-agents-md",
+  "tool-reminder",
+  "tool-wiki-memory",
+  "tool-webfetch-md",
+  "tool-tavily",
+  "tool-sandbox-fileops",
+  "sandbox-backend-sandboxd-client",
+]
+
+profile-lite = [
+  "transport-telegram",
+  "storage-local",
+  "llm-opencode-go",
+  "tool-todos",
+  "tool-webfetch-md",
+  "tool-reminder",
+]
+
+profile-search-only = [
+  "transport-telegram",
+  "storage-local",
+  "llm-opencode-go",
+  "tool-webfetch-md",
+  "tool-tavily",
+]
+
+profile-no-sandbox = [
+  "transport-telegram",
+  "storage-local",
+  "llm-opencode-go",
+  "tool-todos",
+  "tool-webfetch-md",
+  "tool-reminder",
+  "tool-wiki-memory",
+]
+
+profile-media-enabled = [
+  "transport-telegram",
+  "storage-local",
+  "llm-opencode-go",
+  "tool-media-audio",
+  "tool-media-image",
+  "tool-media-video",
+  "tool-file-delivery",
+]
+
+# Transports
+transport-telegram = ["dep:teloxide"]
+transport-web = ["dep:axum"]
+transport-cli = []
+transport-http-api = ["dep:axum"]
+
+# Storage
+storage-local = []
+storage-r2 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types", "dep:aws-types"]
+
+# LLM providers
+llm-chatgpt = ["dep:async-openai"]
+llm-gemini = ["dep:gemini-rust"]
+llm-groq = []
+llm-mistral = []
+llm-minimax = []
+llm-zai = ["dep:zai-rs"]
+llm-nvidia = []
+llm-opencode-go = []
+llm-openrouter = []
+
+# Embeddings
+embedding-gemini = ["llm-gemini"]
+embedding-openai-compatible = ["dep:async-openai"]
+embedding-mistral = ["llm-mistral"]
+embedding-openrouter = ["llm-openrouter"]
+
+# Search and browser tools
+tool-webfetch-md = ["dep:reqwest", "dep:htmd"]
+tool-tavily = ["dep:tavily"]
+tool-searxng = ["dep:reqwest"]
+tool-browser-use = ["dep:reqwest"]
+
+# Sandbox
+tool-sandbox-fileops = []
+tool-sandbox-exec = []
+tool-sandbox-recreate = []
+tool-file-delivery = []
+tool-stack-logs = []
+sandbox-backend-docker-direct = ["dep:bollard", "dep:tar"]
+sandbox-backend-sandboxd-client = ["dep:bincode", "dep:serde_bytes"]
+sandbox-daemon = ["sandbox-backend-docker-direct", "dep:bincode", "dep:serde_bytes"]
+
+# MCP and SSH integrations
+integration-mcp-jira = ["dep:rmcp"]
+integration-mcp-mattermost = ["dep:rmcp"]
+integration-ssh-mcp = ["dep:rmcp"]
+```
+
+The exact dependency mappings must be finalized during Milestone 1, but the naming model and atomic structure are mandatory.
+
+### 7.3 Binary feature requirements
+
+Binaries must declare `required-features` where appropriate.
+
+Examples:
+
+```toml
+[[bin]]
+name = "oxide-agent"
+path = "src/bin/oxide-agent.rs"
+required-features = ["transport-telegram"]
+
+[[bin]]
+name = "oxide-agent-sandboxd"
+path = "src/bin/oxide-agent-sandboxd.rs"
+required-features = ["sandbox-daemon"]
+```
+
+A build that does not enable `sandbox-daemon` must not build or ship `oxide-agent-sandboxd`.
+
+## 8. Unified Module Registry
+
+The new architecture must have exactly one module registry and exactly one module registration path.
+
+### 8.1 Registry requirements
+
+- One registry builder.
+- One source of truth for compiled modules.
+- No legacy registry.
+- No separate typed registry that re-registers the same tools.
+- No adapter that wraps legacy providers into typed executors.
+- Each module registers its own tools/providers/backends/transports.
+- Registry construction starts from compile-time available modules.
+- Runtime config may disable compiled modules.
+- Runtime config cannot enable absent modules.
+- Registry must expose both compiled and enabled capabilities.
+- Duplicate IDs must be hard errors.
+- Capability dependency failures must be hard errors.
+
+### 8.2 Core traits
 
 ```rust
-pub async fn execute_tool_batch(
-    &self,
-    raw_calls: Vec<ProviderToolCall>,
-    ctx: TurnContext,
-) -> Result<Vec<ToolOutput>, ToolRuntimeFatal> {
-    let batch = self
-        .provider_parser
-        .parse_opencode_go_batch(raw_calls, &ctx)
-        .map_or_repair_protocol_errors()?;
+pub trait CapabilityModule: Send + Sync {
+    fn id(&self) -> ModuleId;
+    fn kind(&self) -> CapabilityKind;
+    fn cargo_feature(&self) -> &'static str;
 
-    self.history
-        .record_assistant_tool_calls(&batch.assistant_message)
-        .await
-        .map_err(ToolRuntimeFatal::history_write_failed)?;
+    fn provides(&self) -> &'static [CapabilityId];
+    fn requires(&self) -> &'static [CapabilityRequirement];
+    fn conflicts(&self) -> &'static [CapabilityId] { &[] }
 
-    let mut handles = Vec::with_capacity(batch.calls.len());
+    fn config_schema(&self) -> ModuleConfigSchema;
 
-    for call in batch.calls.iter().cloned() {
-        let invocation = ToolInvocation::from_call(call, ctx.child_for_tool());
-        let runtime = self.clone();
+    fn docker_requirements(&self) -> &'static [DockerRequirement] { &[] }
+    fn compose_requirements(&self) -> &'static [ComposeRequirement] { &[] }
 
-        handles.push(ToolTaskHandle {
-            batch_index: invocation.batch_index,
-            tool_call_id: invocation.tool_call_id.clone(),
-            handle: tokio::spawn(async move {
-                runtime.run_one_tool(invocation).await
-            }),
-        });
+    fn validate_config(&self, ctx: &ValidationContext, config: &ModuleConfig) -> Result<()>;
+
+    fn register(&self, ctx: &ModuleContext, registry: &mut ModuleRegistry) -> Result<()>;
+}
+```
+
+```rust
+pub struct ModuleRegistry {
+    pub manifest: CompiledCapabilityManifest,
+    pub enabled: EnabledCapabilityManifest,
+    pub tools: ToolRegistry,
+    pub llm_providers: LlmProviderRegistry,
+    pub embedding_providers: EmbeddingProviderRegistry,
+    pub storage_backends: StorageBackendRegistry,
+    pub sandbox_backends: SandboxBackendRegistry,
+    pub transports: TransportRegistry,
+    pub health_checks: HealthCheckRegistry,
+}
+```
+
+```rust
+pub struct ModuleContext {
+    pub app: Arc<AppContext>,
+    pub config: Arc<ResolvedConfig>,
+    pub storage: Option<Arc<dyn StorageProvider>>,
+    pub sandbox: Option<Arc<dyn SandboxBackend>>,
+    pub llm: Arc<LlmRouter>,
+    pub events: Arc<EventBus>,
+}
+```
+
+### 8.3 Compiled module list
+
+The compiled module list must be generated through feature-gated functions.
+
+```rust
+pub fn compiled_modules() -> Vec<Box<dyn CapabilityModule>> {
+    let mut modules: Vec<Box<dyn CapabilityModule>> = Vec::new();
+
+    #[cfg(feature = "llm-opencode-go")]
+    modules.push(Box::new(OpencodeGoLlmModule));
+
+    #[cfg(feature = "storage-local")]
+    modules.push(Box::new(LocalStorageModule));
+
+    #[cfg(feature = "tool-webfetch-md")]
+    modules.push(Box::new(WebFetchMdToolModule));
+
+    #[cfg(feature = "tool-sandbox-fileops")]
+    modules.push(Box::new(SandboxFileOpsModule));
+
+    modules
+}
+```
+
+A macro or inventory crate may be used only if it preserves deterministic output and compile-time feature gating. The generated manifest must be deterministic for snapshot tests.
+
+### 8.4 Registry build flow
+
+```rust
+pub fn build_runtime(config: RawConfig) -> Result<RuntimeContext> {
+    let modules = compiled_modules();
+    let compiled_manifest = CompiledCapabilityManifest::from_modules(&modules)?;
+
+    let resolved_config = ConfigResolver::new(compiled_manifest.clone())
+        .resolve(config)?
+        .validate()?;
+
+    let enabled_modules = ModuleSelector::new(&compiled_manifest, &resolved_config)
+        .enabled_modules(&modules)?;
+
+    let mut registry = ModuleRegistry::new(compiled_manifest, enabled_modules.manifest());
+    let app_ctx = AppContextBuilder::new(&resolved_config, &registry).build_base()?;
+    let module_ctx = ModuleContext::new(app_ctx, resolved_config);
+
+    for module in enabled_modules {
+        module.register(&module_ctx, &mut registry)?;
     }
 
-    let mut outputs = Vec::with_capacity(handles.len());
-
-    for task in handles {
-        let output = match task.handle.await {
-            Ok(output) => output,
-            Err(join_error) => self.normalizer.from_join_error(
-                task.tool_call_id,
-                task.batch_index,
-                join_error,
-            ),
-        };
-        outputs.push(output);
-    }
-
-    outputs.sort_by_key(|o| o.batch_index);
-    self.invariants.verify_exactly_one_output_per_call(&batch, &outputs)?;
-
-    for output in &outputs {
-        self.history
-            .record_tool_output(output)
-            .await
-            .map_err(ToolRuntimeFatal::history_write_failed)?;
-    }
-
-    Ok(outputs)
+    registry.validate_dependencies()?;
+    RuntimeContext::from_registry(registry)
 }
 ```
 
-### 7.3 Pseudo-code: one tool call with timeout/cancellation
+### 8.5 Manifest output
+
+Every binary must be able to print compiled capabilities for debugging and CI:
+
+```bash
+oxide-agent capabilities --compiled
+oxide-agent capabilities --enabled --config config/embedded.yml
+oxide-agent capabilities --json
+```
+
+This output is required for snapshot tests and Docker/Compose generation.
+
+## 9. Tool Architecture
+
+Tool modules must be atomic and self-contained. A tool definition and executor must live together.
+
+### 9.1 Tool module trait
 
 ```rust
-async fn run_one_tool(&self, invocation: ToolInvocation) -> ToolOutput {
-    let started_at = Instant::now();
-    let tool_call_id = invocation.tool_call_id.clone();
-    let tool_name = invocation.tool_name.clone();
-    let timeout = invocation.timeout.per_tool;
-    let cancel = invocation.cancellation_token.clone();
+pub trait ToolModule: CapabilityModule {
+    fn tools(&self) -> &'static [ToolSpec];
 
-    let parsed_args = match self.argument_parser.parse(&invocation) {
-        Ok(args) => args,
-        Err(err) => {
-            return self.normalizer.invalid_arguments(
-                invocation,
-                err,
-                started_at.elapsed(),
-            );
-        }
-    };
-
-    let executor = match self.registry.get(&tool_name) {
-        Some(executor) => executor,
-        None => {
-            return self.normalizer.unknown_tool(
-                invocation,
-                started_at.elapsed(),
-            );
-        }
-    };
-
-    let child_cancel = cancel.child_token();
-    let hung_signal = self.hung_detector.start(&invocation);
-
-    let execute_future = executor.execute(invocation.with_args(parsed_args));
-
-    let result = tokio::select! {
-        biased;
-
-        _ = cancel.cancelled() => {
-            ToolTerminal::Cancelled { reason: CancellationReason::User }
-        }
-
-        hung = hung_signal.wait() => {
-            ToolTerminal::Hung { detail: hung }
-        }
-
-        _ = tokio::time::sleep(timeout) => {
-            ToolTerminal::Timeout { timeout }
-        }
-
-        res = execute_future => {
-            ToolTerminal::ExecutorResult(res)
-        }
-    };
-
-    child_cancel.cancel();
-
-    let cleanup = if result.requires_cleanup() {
-        self.process_manager.cleanup_for_invocation(&tool_call_id).await
-    } else {
-        CleanupResult::not_needed()
-    };
-
-    self.normalizer.normalize_terminal(
-        tool_call_id,
-        tool_name,
-        result,
-        cleanup,
-        started_at.elapsed(),
-    )
+    fn register_tools(
+        &self,
+        ctx: &ModuleContext,
+        registry: &mut ToolRegistry,
+    ) -> Result<()>;
 }
 ```
-
-### 7.4 Barrier semantics
-
-v1 uses batch barrier semantics:
-
-- All tool calls from one assistant response start in parallel.
-- Runtime waits until every call reaches a terminal output state.
-- Next LLM request is blocked until all outputs are written.
-- Long-running commands are allowed, but bounded by timeout/cancel/hung/cleanup.
-- Future job/process API can be added behind `ProcessManager` and `ToolOutput.artifact_refs`, not by changing history invariants.
-
-## 8. Provider compatibility: opencode go + DeepSeek V4 Flash
-
-### 8.1 Provider/model scope
-
-v1 supports exactly:
-
-- provider: `opencode go` / `opencode-go`;
-- model: `deepseek-v4-flash` / normalized Oxide model id for DeepSeek V4 Flash;
-- tool protocol: chat-like function calling;
-- tool history mode: strict paired assistant tool calls and tool outputs.
-
-At session start or first turn, runtime must validate provider/model. If another provider/model is selected, fail fast with explicit config error. Do not fallback to GLM/MiniMax/Gemini or legacy provider paths.
-
-### 8.2 Request format
-
-Current opencode go provider already uses the correct shape. v1 must preserve:
-
-```json
-{
-  "model": "deepseek-v4-flash",
-  "messages": [...],
-  "tools": [
-    {
-      "type": "function",
-      "function": {
-        "name": "tool_name",
-        "description": "...",
-        "parameters": { "type": "object", "properties": {}, "required": [] }
-      }
-    }
-  ],
-  "tool_choice": "auto",
-  "parallel_tool_calls": true,
-  "stream": false
-}
-```
-
-Rules:
-
-- `parallel_tool_calls: true` must be set whenever tools are sent.
-- `response_format: { "type": "json_object" }` must not be set for tool-call turns.
-- Tool specs come from new deterministic `ToolRegistry`.
-- Tool names must match exactly the executor registry names.
-
-### 8.3 Incoming tool call format
-
-Expected chat-like response item:
-
-```json
-{
-  "id": "call_abc123",
-  "type": "function",
-  "function": {
-    "name": "execute_command",
-    "arguments": "{\"command\":\"kubectl get pods\"}"
-  }
-}
-```
-
-Provider parser must accept `function.arguments` as:
-
-- JSON string containing object JSON;
-- object value, serialized to canonical JSON string before arg parsing.
-
-Provider parser must reject or repair with protocol output:
-
-- missing `function`;
-- missing `function.name`;
-- empty tool name;
-- malformed `arguments`;
-- missing/empty `id`;
-- duplicate `id` in one batch;
-- non-array `tool_calls`.
-
-### 8.4 Tool call id handling
-
-Use two IDs:
-
-- `invocation_id`: internal Oxide id, unique even when provider id is missing or duplicated.
-- `wire_tool_call_id`: provider-visible id used in assistant tool-call history and tool output message.
-
-Rules:
-
-1. If provider sends a valid non-empty id, use it as `wire_tool_call_id`.
-2. If provider id is missing/empty, create a deterministic local wire id before recording assistant message:
-   ```text
-   oxide_missing_tool_call_id_{turn_id}_{batch_index}
-   ```
-   The output for this call must have status `provider_protocol_error` unless the call is otherwise executable and integration tests prove opencode accepts synthetic ids.
-3. If provider sends duplicate id, keep the first occurrence and rewrite later duplicates to:
-   ```text
-   oxide_duplicate_tool_call_id_{turn_id}_{batch_index}
-   ```
-   Later duplicate outputs must be `provider_protocol_error` unless explicitly allowed by integration tests.
-4. Never silently skip malformed provider tool calls after the assistant response has been accepted.
-5. Before next LLM request, the stored assistant message and tool messages must pair on the same `wire_tool_call_id` values.
-
-This approach is stricter than current code, where missing id can become an uncorrelated internal invocation and malformed calls can be skipped. In v1, the provider-visible history must remain pairable.
-
-### 8.5 Tool output format
-
-Current opencode go encoder sends tool output as chat-like message:
-
-```json
-{
-  "role": "tool",
-  "tool_call_id": "call_abc123",
-  "content": "..."
-}
-```
-
-v1 must keep that shape. `content` should be a compact JSON string generated by one encoder, not arbitrary provider strings. Recommended content shape:
-
-```json
-{
-  "tool_call_id": "call_abc123",
-  "tool_name": "execute_command",
-  "status": "success",
-  "success": true,
-  "duration_ms": 1234,
-  "exit_code": 0,
-  "stdout": {
-    "text": "...",
-    "truncated": false
-  },
-  "stderr": {
-    "text": "...",
-    "truncated": false
-  },
-  "artifacts": []
-}
-```
-
-For failure states:
-
-```json
-{
-  "tool_call_id": "call_abc123",
-  "tool_name": "execute_command",
-  "status": "timeout",
-  "success": false,
-  "duration_ms": 300000,
-  "error_message": "tool exceeded hard timeout of 300s",
-  "timeout_reason": "per_tool_hard_timeout",
-  "cleanup_status": "killed_process_group",
-  "stdout": { "head": "...", "tail": "...", "truncated": true },
-  "stderr": { "head": "...", "tail": "...", "truncated": true },
-  "artifacts": ["artifact://session/turn/call/stdout.log"]
-}
-```
-
-### 8.6 Multiple tool calls in one response
-
-If `tool_calls` contains N items:
-
-- parse all N;
-- record one assistant message containing all N calls;
-- execute all N in parallel;
-- write N tool output messages in original batch order;
-- continue next LLM turn after all N are recorded.
-
-If provider returns calls sequentially across multiple assistant responses, each response is its own batch. Runtime still applies same invariants to each batch.
-
-### 8.7 Invalid/malformed arguments
-
-Invalid JSON arguments are not provider errors if call id/name are present. They are tool invocation errors:
-
-- no executor is called;
-- output status: `invalid_arguments`;
-- output references original `tool_call_id`;
-- content includes concise parse error and expected schema summary if available;
-- next LLM turn continues after this output is recorded.
-
-### 8.8 Provider protocol mismatch
-
-Provider protocol mismatch examples:
-
-- missing call id;
-- duplicate call id;
-- missing function object;
-- missing function name;
-- non-array `tool_calls`;
-- tool output rejected by provider in integration tests.
-
-Behavior:
-
-- Convert to `ToolOutputStatus::provider_protocol_error` when a paired output can be generated.
-- If no pairable assistant message can be safely recorded, fail the turn before execution and log fatal provider protocol diagnostic. Do not continue to LLM with broken history.
-
-## 9. ToolInvocation / ToolOutput model
-
-### 9.1 ToolInvocation
-
-`ToolInvocation` is the only object passed to executors.
-
-Required fields:
 
 ```rust
-pub struct ToolInvocation {
-    pub session_id: SessionId,
-    pub turn_id: TurnId,
-    pub batch_id: ToolBatchId,
-    pub batch_index: usize,
-
-    pub invocation_id: InvocationId,
-    pub tool_call_id: ToolCallId,
-    pub provider_tool_call_id: Option<String>,
-
-    pub tool_name: ToolName,
-    pub raw_provider_payload: serde_json::Value,
-    pub raw_arguments: String,
-    pub normalized_arguments: serde_json::Value,
-
-    pub cancellation_token: CancellationToken,
-    pub timeout: ToolTimeoutConfig,
-    pub execution_context: ToolExecutionContext,
-
-    pub provider_metadata: ProviderMetadata,
-    pub model_metadata: ModelMetadata,
-
-    pub working_directory: Option<PathBuf>,
-    pub environment_metadata: Option<EnvironmentMetadata>,
-
-    pub created_at: DateTime<Utc>,
-    pub started_at: Option<DateTime<Utc>>,
-}
-```
-
-`ExecutionContext` must include:
-
-- current cwd;
-- sandbox/container/session reference;
-- environment variables allowed for execution;
-- artifact directory;
-- progress/event sender;
-- tracing span metadata;
-- optional process manager handle;
-- provider/tool correlation data.
-
-### 9.2 ToolOutput
-
-`ToolOutput` is the only object written as tool output.
-
-Required fields:
-
-```rust
-pub struct ToolOutput {
-    pub tool_call_id: ToolCallId,
-    pub provider_tool_call_id: Option<String>,
-    pub invocation_id: InvocationId,
-    pub tool_name: ToolName,
-    pub batch_index: usize,
-
-    pub status: ToolOutputStatus,
-    pub success: bool,
-
-    pub exit_code: Option<i32>,
-    pub stdout: OutputPreview,
-    pub stderr: OutputPreview,
-    pub structured_payload: Option<serde_json::Value>,
-
-    pub error_message: Option<String>,
-    pub timeout_reason: Option<TimeoutReason>,
-    pub cancellation_reason: Option<CancellationReason>,
-    pub cleanup_status: CleanupStatus,
-
-    pub started_at: DateTime<Utc>,
-    pub ended_at: DateTime<Utc>,
-    pub duration: Duration,
-
-    pub truncation: OutputTruncationMetadata,
-    pub artifacts: Vec<ArtifactRef>,
-}
-```
-
-### 9.3 ToolOutputStatus
-
-Required enum:
-
-```rust
-pub enum ToolOutputStatus {
-    Success,
-    Failure,
-    Timeout,
-    Cancelled,
-    HungTimeout,
-    ProcessCleanupFailed,
-    InvalidArguments,
-    UnknownTool,
-    ProviderProtocolError,
-    InternalRuntimeError,
-}
-```
-
-Rules:
-
-- Non-zero exit code is `Failure`, not `InternalRuntimeError`.
-- Tool-specific application errors are `Failure`.
-- Spawn failure is `Failure` with `error_message` and `cleanup_status = not_started`.
-- Join error/panic is `InternalRuntimeError`.
-- Cleanup failure after timeout can be encoded as `ProcessCleanupFailed` with `timeout_reason` preserved, or `Timeout` with cleanup error metadata. For model clarity, prefer `ProcessCleanupFailed` only when cleanup failure is the most important terminal state; otherwise keep `Timeout` and set `cleanup_status = failed`.
-- Hung detected before hard timeout is `HungTimeout`.
-
-### 9.4 OutputPreview
-
-```rust
-pub struct OutputPreview {
-    pub text: Option<String>,
-    pub head: Option<String>,
-    pub tail: Option<String>,
-    pub bytes_captured: usize,
-    pub bytes_total_known: Option<usize>,
-    pub truncated: bool,
-    pub binary: bool,
-    pub artifact: Option<ArtifactRef>,
-}
-```
-
-If output is binary:
-
-- do not inline raw bytes;
-- write artifact;
-- set `binary = true`;
-- include type/size/checksum if available.
-
-## 10. ToolRegistry / ToolExecutor
-
-### 10.1 ToolExecutor trait
-
-```rust
-#[async_trait::async_trait]
 pub trait ToolExecutor: Send + Sync {
     fn name(&self) -> ToolName;
-
     fn spec(&self) -> ToolSpec;
+    fn required_capabilities(&self) -> &'static [CapabilityId];
 
-    async fn execute(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<ToolOutput, ToolRuntimeError>;
+    async fn execute(&self, invocation: ToolInvocation, ctx: ToolExecutionContext) -> Result<ToolOutput>;
 }
 ```
 
-Executor contract:
-
-- Must not write to conversation/history.
-- Must not start next LLM turn.
-- Must not swallow cancellation forever.
-- Must accept cancellation token from `ToolInvocation`.
-- Should return `ToolOutput` on normal success/failure.
-- May return `ToolRuntimeError`; runtime must normalize it.
-- Should use `ProcessManager` for shell/linux/process commands.
-- Must not implement approval/policy restrictions in v1.
-
-### 10.2 ToolRegistry
-
-`ToolRegistry` requirements:
-
-- Store tools in deterministic map by canonical `ToolName`.
-- Detect duplicate registrations at startup and fail fast.
-- Expose specs for opencode go function tools.
-- Dispatch by exact name.
-- Unknown name returns `ToolOutputStatus::UnknownTool` through normalizer.
-- No `can_handle` linear scan in active v1 path.
-- No fallback bridge.
-- No provider-specific compatibility branching beyond opencode go tool spec encoding.
-
-Recommended structure:
+The new `ToolRegistry` must be typed. It must not support legacy provider dispatch.
 
 ```rust
 pub struct ToolRegistry {
-    tools: BTreeMap<ToolName, Arc<dyn ToolExecutor>>,
-}
-
-impl ToolRegistry {
-    pub fn get(&self, name: &ToolName) -> Option<Arc<dyn ToolExecutor>>;
-    pub fn specs_for_opencode_go(&self) -> Vec<OpenCodeGoToolSpec>;
-    pub fn register(&mut self, executor: Arc<dyn ToolExecutor>) -> Result<(), RegistryError>;
+    executors: BTreeMap<ToolName, Arc<dyn ToolExecutor>>,
 }
 ```
 
-### 10.3 Tool specs
+Duplicate tool names must fail registry construction.
 
-Tool specs must be generated from executor `spec()` and encoded as OpenAI-compatible function definitions for opencode go.
+### 9.2 Required tool decomposition
 
-Rules:
+The current broad providers must be split.
 
-- Names must be stable.
-- JSON schemas must be explicit.
-- No hidden policy filtering.
-- No dynamic removal of “dangerous” tools.
-- No approval annotations in v1 model-visible specs.
+#### Sandbox tools
 
-## 11. ToolCallRuntime
+Replace the current broad `SandboxToolProvider` with separate modules:
 
-### 11.1 Responsibilities
+- `SandboxFileOpsModule`
+  - `write_file`
+  - `read_file`
+  - optionally `list_files` if it only requires file operations;
 
-`ToolCallRuntime` is the only active execution path for tools.
+- `SandboxExecModule`
+  - `execute_command` only;
+  - requires an exec-capable sandbox backend;
+  - never enabled in lite/embedded profiles unless explicitly selected;
 
-It must:
+- `SandboxRecreateModule`
+  - `recreate_sandbox`;
+  - requires backend lifecycle management;
 
-- receive a parsed `ToolCallBatch`;
-- record assistant tool calls;
-- build `ToolInvocation`s;
-- spawn one task per call;
-- execute tasks in parallel;
-- enforce hard timeout;
-- listen for user cancellation;
-- run hung detector;
-- trigger process cleanup;
-- normalize every terminal state;
-- return outputs in deterministic order;
-- write exactly one output per call;
-- not leave orphan tasks or orphan processes.
+- `FileDeliveryModule`
+  - `send_file_to_user`;
+  - depends on transport/file delivery sink and optional storage backend;
 
-### 11.2 Internal state
+- `StackLogsModule`
+  - stack log tools;
+  - depends on Docker/Compose-aware sandbox diagnostics.
+
+#### Search and fetch tools
+
+- `WebFetchMdModule`
+  - `web_markdown`;
+  - no browser dependency;
+  - no searxng dependency.
+
+- `TavilySearchModule`
+  - `web_search`;
+  - `web_extract`;
+  - requires Tavily API key/config;
+  - compiles Tavily SDK only when enabled.
+
+- `SearxngSearchModule`
+  - `searxng_search`;
+  - requires service URL;
+  - declares Compose requirement if not using external URL.
+
+- `BrowserUseModule`
+  - browser task/session/content/screenshot tools;
+  - requires browser-use bridge service or external URL;
+  - no search dependency unless explicitly combined by a profile.
+
+#### Media tools
+
+Split media by capability:
+
+- `MediaAudioTranscriptionModule`
+  - `transcribe_audio_file`;
+  - requires audio-capable LLM provider or media processor.
+
+- `MediaImageDescriptionModule`
+  - `describe_image_file`;
+  - requires image-capable LLM provider.
+
+- `MediaVideoDescriptionModule`
+  - `describe_video_file`;
+  - requires video-capable LLM provider or video extraction pipeline.
+
+#### Yt-dlp tools
+
+Yt-dlp support must be separate from generic media tools:
+
+- `YtdlpMetadataModule`;
+- `YtdlpTranscriptModule`;
+- `YtdlpDownloadModule`.
+
+These modules must declare sandbox image package requirements if they need `yt-dlp`, Python, ffmpeg, or network tooling.
+
+#### MCP tools
+
+MCP tools must be isolated modules:
+
+- `McpJiraModule`;
+- `McpMattermostModule`;
+- `SshMcpModule`.
+
+Each module must own:
+
+- feature gate;
+- RMCP dependency;
+- child process binary requirement or service requirement;
+- config schema;
+- tool definitions;
+- health validation;
+- cleanup behavior if any.
+
+SSH cleanup must move into `SshMcpModule`. Main binaries and sandbox daemon must not run SSH cleanup unconditionally.
+
+#### Core utility tools
+
+These modules should remain lightweight and independent:
+
+- `TodosModule`;
+- `CompressionModule`;
+- `AgentsMdModule`;
+- `ReminderModule`;
+- `WikiMemoryModule`;
+- `DelegationModule`.
+
+`DelegationModule` must explicitly declare which sandbox/file/memory capabilities it requires. It must not assume all sandbox tools exist.
+
+#### Manager/control-plane tools
+
+Manager tools must be split into capability groups:
+
+- `ManagerForumTopicModule`;
+- `ManagerTopicBindingModule`;
+- `ManagerTopicContextModule`;
+- `ManagerTopicAgentsMdModule`;
+- `ManagerTopicInfraModule`;
+- `ManagerTopicSandboxAdminModule`;
+- `ManagerAgentProfileModule`;
+- `ManagerToolPolicyModule`;
+- `ManagerHookPolicyModule`;
+- `ManagerPrivateSecretProbeModule`.
+
+A profile may include the whole `manager-control-plane` composition feature, but the implementation must keep submodules internally separated.
+
+### 9.3 Tool dependencies
+
+Every tool spec must include dependency declarations.
 
 ```rust
-pub struct ToolCallRuntime {
-    registry: Arc<ToolRegistry>,
-    process_manager: Arc<ProcessManager>,
-    hung_detector: Arc<HungDetector>,
-    normalizer: Arc<OutputNormalizer>,
-    history: Arc<ToolHistoryWriter>,
-    artifacts: Arc<ArtifactStore>,
-    config: ToolRuntimeConfig,
+pub struct ToolSpec {
+    pub name: ToolName,
+    pub description: &'static str,
+    pub input_schema: JsonSchema,
+    pub output_schema: Option<JsonSchema>,
+    pub requires: &'static [CapabilityId],
+    pub risk: ToolRiskLevel,
 }
 ```
 
-### 11.3 No hidden fallback
-
-Forbidden:
-
-- `if new_runtime_failed { old_execute_tools(...) }`
-- `feature_flag_use_legacy_tools`
-- `tool_bridge` fallback
-- fallback parsing unstructured assistant text into tool calls
-- provider failover to non-opencode providers
-- route failover for tools or model provider in v1
-
-If runtime fails fatally before assistant tool calls are recorded, return turn error. If assistant tool calls are already recorded, runtime must produce outputs or fail the turn before next LLM call with a clear history-fatal error.
-
-### 11.4 Deterministic order
-
-Outputs must be written in original assistant `tool_calls[]` order, not completion order.
-
-Rationale:
-
-- deterministic history;
-- easier debugging;
-- stable tests;
-- strict provider pairing.
-
-### 11.5 Partial batch failure
-
-Partial failure is normal:
-
-- Some tools can succeed.
-- Some can timeout.
-- Some can fail args.
-- Some can be unknown.
-
-The batch completes when every call has a `ToolOutput`. Then all outputs are written. Next LLM turn continues unless history write or provider protocol fatal prevents valid continuation.
-
-## 12. ProcessManager
-
-### 12.1 Scope
-
-`ProcessManager` is mandatory for shell/linux/CLI tools and any executor that spawns local/container commands.
-
-It should also provide a contract for SSH/MCP process-like tools, even if actual remote cleanup is delegated to upstream service.
-
-### 12.2 Required behavior
-
-`ProcessManager` must:
-
-- start processes in a controllable process group/session where possible;
-- store process id and process group id;
-- stream/drain stdout and stderr concurrently;
-- cap model-facing output;
-- write full output artifacts if needed;
-- track last output/activity timestamp;
-- terminate gracefully;
-- force kill if terminate fails;
-- cleanup process tree;
-- wait/reap child processes;
-- return `CleanupResult`;
-- never leave processes after timeout/cancel/hung in tests.
-
-### 12.3 Unix/Linux implementation
-
-For local process execution:
-
-1. Spawn command via `tokio::process::Command`.
-2. Use `pre_exec` to create a new process group/session:
-   - preferred: `setsid()`;
-   - fallback: `setpgid(0, 0)`.
-3. Capture `pid` and `pgid`.
-4. Spawn stdout/stderr drain tasks immediately.
-5. On normal exit, wait/reap and drain final output.
-6. On timeout/cancel/hung:
-   - mark terminal reason;
-   - send SIGTERM to process group: `kill(-pgid, SIGTERM)`;
-   - wait `terminate_grace_period`;
-   - if still alive, send SIGKILL to process group: `kill(-pgid, SIGKILL)`;
-   - wait `kill_grace_period`;
-   - reap child;
-   - collect final stdout/stderr tail;
-   - return cleanup status.
-7. If group kill fails, try individual pid kill.
-8. If cleanup still fails, return `CleanupStatus::Failed` and include details in `ToolOutput`.
-
-### 12.4 Container execution
-
-For Docker/container sandbox execution:
-
-- Do not rely on container-global `killall5 -9` as the primary cleanup mechanism.
-- Wrap the command inside an invocation-scoped process group in the container.
-- Store the wrapper pid/pgid.
-- On timeout/cancel/hung, kill that group only.
-- If Docker exec API cannot expose process group, run a small managed wrapper script that writes pid/pgid metadata to a file in a known runtime directory.
-- As last resort, container reset can be used, but output status must reflect cleanup degradation.
-
-If the current sandbox broker is kept in v1, extend the broker protocol with a managed exec request/response instead of adding a background job API.
-
-Recommended broker contract:
+Example:
 
 ```rust
-ExecCommandManaged {
-    scope,
-    image_name,
-    invocation_id,
-    command,
-    timeout_ms,
-    stdout_cap_bytes,
-    stderr_cap_bytes,
-}
-
-ExecResultManaged {
-    invocation_id,
-    status,
-    exit_code,
-    stdout_preview,
-    stderr_preview,
-    stdout_artifact,
-    stderr_artifact,
-    timed_out,
-    cancelled,
-    hung_detected,
-    pid,
-    pgid,
-    cleanup_status,
+ToolSpec {
+    name: ToolName::new("execute_command"),
+    requires: &[cap!("sandbox/exec"), cap!("sandbox-backend/exec-capable")],
+    risk: ToolRiskLevel::High,
+    ..
 }
 ```
 
-The broker-side implementation must run the command through the same invocation-scoped wrapper and acknowledge cleanup status. The client must not infer cleanup success from socket disconnect or timeout.
+### 9.4 Tool runtime policy
 
-### 12.5 SSH/MCP execution
+Runtime tool policy may hide or disable compiled tools for a specific topic/session/model. It must not be used as a substitute for compile-time modularity.
 
-For SSH commands:
+Policy layers:
 
-- The runtime still creates `ToolInvocation` and timeout/cancel/hung guarantees.
-- Upstream session reset is not enough unless it guarantees remote process termination.
-- If upstream MCP cannot kill specific remote process trees, output must include `cleanup_status = best_effort_remote_cleanup` or `cleanup_status = failed_remote_cleanup`.
-- For v1 YOLO parallelism, do not serialize all SSH calls with one mutex.
-- Default v1 implementation: create one upstream SSH MCP session per invocation.
-- A bounded session pool is allowed later as an optimization, but not required for v1.
-- Reusing one shared upstream session is allowed only after an integration test proves true concurrent calls through that session.
+1. compile-time capability availability;
+2. config-enabled modules;
+3. transport/session/topic policy;
+4. model-specific tool compatibility.
 
-### 12.6 Pseudo-code: process cleanup
+A tool must pass all layers to appear in the final tool list.
+
+## 10. LLM Provider Architecture
+
+Each LLM provider must be a module with a feature gate, config schema, aliases, factory, and declared model capabilities.
+
+### 10.1 Provider module trait
 
 ```rust
-async fn cleanup_process_tree(
-    handle: ProcessHandle,
-    reason: CleanupReason,
-    cfg: CleanupConfig,
-) -> CleanupResult {
-    if handle.state().await == ProcessState::Exited {
-        return CleanupResult::already_exited(handle.final_status().await);
-    }
+pub trait LlmProviderModule: CapabilityModule {
+    fn provider_id(&self) -> ProviderId;
+    fn aliases(&self) -> &'static [&'static str];
+    fn supported_model_capabilities(&self) -> &'static [ModelCapability];
 
-    let mut result = CleanupResult::started(reason, handle.pid, handle.pgid);
-
-    match handle.pgid {
-        Some(pgid) => {
-            result.sigterm_sent = send_signal_to_group(pgid, Signal::Term).ok();
-        }
-        None => {
-            result.sigterm_sent = send_signal_to_pid(handle.pid, Signal::Term).ok();
-        }
-    }
-
-    if wait_for_exit(&handle, cfg.terminate_grace_period).await.is_ok() {
-        result.outcome = CleanupOutcome::TerminatedGracefully;
-        result.reaped = reap_child(&handle).await.ok();
-        return result;
-    }
-
-    match handle.pgid {
-        Some(pgid) => {
-            result.sigkill_sent = send_signal_to_group(pgid, Signal::Kill).ok();
-        }
-        None => {
-            result.sigkill_sent = send_signal_to_pid(handle.pid, Signal::Kill).ok();
-        }
-    }
-
-    if wait_for_exit(&handle, cfg.kill_grace_period).await.is_ok() {
-        result.outcome = CleanupOutcome::Killed;
-        result.reaped = reap_child(&handle).await.ok();
-        return result;
-    }
-
-    result.outcome = CleanupOutcome::Failed;
-    result.error_message = Some("process did not exit after SIGKILL grace period".into());
-    result
+    fn build_provider(
+        &self,
+        config: &ProviderConfig,
+        ctx: &ProviderBuildContext,
+    ) -> Result<Arc<dyn LlmProvider>>;
 }
 ```
 
-## 13. Timeout / Cancellation / Cleanup
-
-### 13.1 Hard timeout
-
-Hard timeout is per tool call and enforced by `ToolCallRuntime`, not by executor.
-
-Default v1:
-
-```text
-per_tool_hard_timeout_secs = 300
-```
-
-Rationale: current `AGENT_TOOL_TIMEOUT_SECS` already uses 300 seconds, so v1 keeps the same external expectation while making it universal and cleanup-safe.
-
-Rules:
-
-- Hard timeout applies to shell/linux process tools.
-- Hard timeout applies to async non-process tools.
-- Hard timeout starts when invocation execution starts, not when LLM response arrives.
-- On timeout, runtime cancels invocation token and triggers cleanup.
-- Output status: `timeout` unless cleanup failure dominates.
-- Timeout must never produce missing output.
-- Agent-level timeout does not replace per-tool timeout.
-
-### 13.2 Batch timeout
-
-v1 does not require a separate batch timeout by default.
-
-Reason:
-
-- With per-tool timeout, a batch of N parallel tools should finish after roughly max(per-tool timeout + cleanup), not sum.
-- Adding batch timeout can create ambiguous partial cleanup races.
-
-Optional config:
-
-```text
-batch_timeout_secs = none
-```
-
-If configured, batch timeout must:
-
-- cancel all incomplete tool invocations;
-- cleanup their processes;
-- return `cancelled` or `timeout` outputs for every incomplete call;
-- not drop already completed outputs.
-
-### 13.3 Total turn timeout
-
-Existing agent-level timeout may remain as a final guard, but it must not be the primary tool timeout.
-
-Conflict rules:
-
-- Earliest timeout/cancellation signal wins for each invocation.
-- If per-tool timeout fires first: output status `timeout`.
-- If user cancellation fires first: output status `cancelled`.
-- If hung detector fires first: output status `hung_timeout`.
-- If agent-level timeout fires while tool outputs are pending, runtime must enter emergency normalization and write outputs if history already has assistant tool calls. If this cannot be completed safely, fail the turn before next provider request and log history-fatal diagnostic.
-
-### 13.4 Cancellation
-
-User cancellation must cancel all in-flight tool calls of the current turn.
-
-Required behavior:
-
-- Runtime owns a turn-level cancellation token.
-- Each invocation gets child token.
-- User cancellation cancels turn token.
-- Each in-flight invocation receives cancellation.
-- Process invocations trigger cleanup.
-- Async non-process invocations are awaited for a short cancellation grace period, then their task is aborted.
-- Every unfinished invocation returns `ToolOutputStatus::Cancelled`.
-- Completed outputs are preserved.
-
-Cancellation cases:
-
-- During spawn: if process id is not available yet, output `cancelled` with `cleanup_status = not_started` or `spawn_interrupted`. If pid becomes available concurrently, cleanup it.
-- During active process: cancel token, SIGTERM group, grace, SIGKILL, wait/reap, output `cancelled`.
-- After process exits but before history write: preserve successful/failure output; cancellation must not replace a completed output.
-- During cleanup: continue cleanup until bounded by kill grace. If cleanup fails, output `process_cleanup_failed` with cancellation reason.
-- During join error: output `internal_runtime_error`; if process handle exists, cleanup first.
-
-### 13.5 Cleanup
-
-Cleanup is mandatory after timeout/cancel/hung.
-
-Required statuses:
-
 ```rust
-pub enum CleanupStatus {
-    NotNeeded,
-    NotStarted,
-    AlreadyExited,
-    TerminatedGracefully,
-    KilledProcessGroup,
-    KilledProcess,
-    BestEffortRemoteCleanup,
-    Failed,
+pub struct LlmProviderRegistry {
+    providers: BTreeMap<ProviderId, Arc<dyn LlmProviderFactory>>,
+    aliases: BTreeMap<String, ProviderId>,
 }
 ```
 
-If cleanup fails:
+### 10.2 Required provider modules
 
-- still return tool output;
-- include cleanup error message;
-- include pid/pgid if known;
-- log structured error;
-- increment metric `tool.cleanup.failure`.
+Create provider modules for the currently compiled providers:
 
-## 14. Hung detection
+- `ChatGptProviderModule` / `llm-chatgpt`;
+- `GeminiProviderModule` / `llm-gemini`;
+- `GroqProviderModule` / `llm-groq`;
+- `MistralProviderModule` / `llm-mistral`;
+- `MinimaxProviderModule` / `llm-minimax`;
+- `ZaiProviderModule` / `llm-zai`;
+- `NvidiaProviderModule` / `llm-nvidia`;
+- `OpencodeGoProviderModule` / `llm-opencode-go`;
+- `OpenRouterProviderModule` / `llm-openrouter`.
 
-### 14.1 Purpose
+Each provider module must own:
 
-Hung detection is a soft layer above hard timeout. It detects likely stuck invocations earlier than hard timeout, but hard timeout remains final protection.
+- provider ID;
+- aliases;
+- API endpoint defaults;
+- credential config fields;
+- model capability metadata;
+- chat/tool-call/media support declaration;
+- factory implementation;
+- health validation behavior.
 
-Hung detection must never be the only termination mechanism.
+### 10.3 Provider routing
 
-### 14.2 Signals
+Model routing must reference provider IDs, not global string heuristics.
 
-Detector may use:
+Example config:
 
-- no stdout/stderr for threshold duration;
-- no progress events for threshold duration;
-- process still alive but no output;
-- no heartbeat from remote/broker transport;
-- executor-specific heartbeat if available.
+```yaml
+routes:
+  chat:
+    provider: llm-provider/opencode-go
+    model: openai/gpt-oss-120b
 
-Absence of output alone is not always hung. Long commands like `pg_dump`, `terraform plan`, package builds, `grep`, backups and indexers can be quiet. Therefore detector must support tool/process metadata:
+  media_image:
+    provider: llm-provider/gemini
+    model: gemini-2.5-flash
 
-- `quiet_ok: bool`;
-- `expected_no_output_secs`;
-- `heartbeat_required: bool`;
-- command started vs command made progress.
-
-### 14.3 Defaults
-
-Recommended v1 defaults:
-
-```text
-hung_detection_enabled = true
-hung_startup_grace_secs = 30
-hung_no_output_threshold_secs = 120
-hung_no_progress_threshold_secs = 180
-hung_cleanup_on_detection = true
+  embedding:
+    provider: embedding-provider/gemini
+    model: text-embedding-004
 ```
 
-Rules:
+If `llm-provider/gemini` is configured but the binary was not built with `llm-gemini`, startup must fail.
 
-- If detector disabled, hard timeout still works.
-- If detector fires, runtime cancels invocation and starts cleanup.
-- Output status: `hung_timeout`.
-- `timeout_reason` should include `hung_no_output` or `hung_no_progress`.
-- If hard timeout fires during hung cleanup, output remains `hung_timeout` but cleanup metadata notes hard-timeout overlap.
+### 10.4 Provider aliases
 
-### 14.4 Pseudo-code: hung detector
+Aliases must be declared by provider modules.
+
+Example:
 
 ```rust
-async fn wait_for_hung(&self, invocation: &ToolInvocation) -> HungSignal {
-    let grace = invocation.timeout.hung_startup_grace;
-    tokio::time::sleep(grace).await;
+impl LlmProviderModule for OpencodeGoProviderModule {
+    fn provider_id(&self) -> ProviderId {
+        ProviderId::new("llm-provider/opencode-go")
+    }
 
-    loop {
-        let last_activity = self.activity_tracker.last_activity(&invocation.invocation_id).await;
-        let idle_for = Instant::now().saturating_duration_since(last_activity);
-
-        if idle_for >= invocation.timeout.hung_no_output_threshold
-            && self.process_manager.is_alive(&invocation.invocation_id).await
-            && !invocation.execution_context.quiet_ok
-        {
-            return HungSignal::NoOutput { idle_for };
-        }
-
-        if self.heartbeat_required(invocation)
-            && self.heartbeat_missing(invocation).await
-        {
-            return HungSignal::HeartbeatMissing;
-        }
-
-        tokio::time::sleep(Duration::from_secs(5)).await;
+    fn aliases(&self) -> &'static [&'static str] {
+        &["opencode-go", "opencode_go"]
     }
 }
 ```
 
-## 15. Parallel execution model
+Global alias lists must be removed.
 
-### 15.1 Scope v1
+### 10.5 Embeddings
 
-- All tool calls from one batch are scheduled immediately.
-- No per-tool restrictions.
-- No per-tool `supports_parallel` gates.
-- No shell/SSH serialization by default.
-- No read/write locks for resources as policy.
-- No DevOps-specific locks.
-- No approval gates.
+Embeddings must be separate capabilities because a build may need embeddings without a chat provider or vice versa.
 
-### 15.2 Optional global technical limit
+Required embedding modules:
 
-Config may include:
+- `EmbeddingGeminiModule`;
+- `EmbeddingOpenAiCompatibleModule`;
+- `EmbeddingMistralModule`;
+- `EmbeddingOpenRouterModule`.
 
-```text
-max_in_flight_tools = none
-```
+Embedding provider creation must be moved out of the global hardcoded match in `LlmClient` and into embedding provider modules.
 
-If set, it is a technical backpressure limit only. It must not be described as safety. If unset, runtime schedules the whole batch.
+### 10.6 LLM client target shape
 
-Recommended implementation:
-
-- use optional `Semaphore` only when config is present;
-- output ordering remains original batch order;
-- waiting for semaphore does not count against per-tool execution timeout until invocation starts;
-- cancellation while waiting returns `cancelled` output.
-
-### 15.3 No resource-aware scheduling v1
-
-Do not implement:
-
-- “kubectl calls serialize by cluster”; 
-- “git commands serialize by repository”; 
-- “filesystem writes lock paths”; 
-- “SSH commands lock host”; 
-- “terraform locks workspace”; 
-- “dangerous commands run alone”.
-
-These can be future scheduler features, but v1 must not include them.
-
-### 15.4 General-purpose examples
-
-Runtime must handle:
-
-- `kubectl get pods`, `kubectl get events`, `helm status` in parallel;
-- `journalctl` and `systemctl status` in parallel;
-- `terraform plan` while `kubectl` diagnostics run;
-- parallel HTTP/search queries;
-- parallel filesystem reads;
-- parallel `rg`/`grep` over codebase;
-- parallel package-manager metadata commands;
-- parallel git status/log/diff commands;
-- long-running build/test/indexing/export commands bounded by timeout.
-
-## 16. Output handling and artifacts
-
-### 16.1 Context budget
-
-stdout/stderr must not be placed into model context without limits.
-
-Default v1:
-
-```text
-max_captured_stdout_bytes = 65536
-max_captured_stderr_bytes = 65536
-output_head_bytes = 16384
-output_tail_bytes = 32768
-max_tool_output_content_bytes = 131072
-```
-
-Rules:
-
-- If output fits budget, inline as `text`.
-- If output exceeds budget, include head/tail and `truncated = true`.
-- Full output should be stored as artifact/log.
-- Binary output should not be inlined.
-- Tool output must state truncation explicitly.
-- stdout and stderr budgets are independent.
-- Structured payloads are also subject to max content bytes.
-
-### 16.2 ArtifactStore
-
-If current Oxide artifact mechanism is insufficient, implement minimal store:
-
-```text
-.oxide/tool-artifacts/{session_id}/{turn_id}/{tool_call_id}/stdout.log
-.oxide/tool-artifacts/{session_id}/{turn_id}/{tool_call_id}/stderr.log
-.oxide/tool-artifacts/{session_id}/{turn_id}/{tool_call_id}/payload.json
-```
-
-ArtifactRef fields:
+`LlmClient` should become a router over registered provider factories and configured routes.
 
 ```rust
-pub struct ArtifactRef {
-    pub uri: String,
-    pub local_path: PathBuf,
-    pub user_download_uri: Option<String>,
-    pub kind: ArtifactKind,
-    pub bytes: u64,
-    pub sha256: Option<String>,
-    pub expires_at: Option<DateTime<Utc>>,
+pub struct LlmRouter {
+    providers: BTreeMap<ProviderId, Arc<dyn LlmProvider>>,
+    embeddings: BTreeMap<EmbeddingProviderId, Arc<dyn EmbeddingProvider>>,
+    routes: ModelRoutes,
 }
 ```
 
-Artifact reference rules:
+`LlmRouter` must be built from enabled provider modules. It must not import all provider implementations directly.
 
-- Model-facing output uses internal refs such as `artifact://session/{session_id}/turn/{turn_id}/{tool_call_id}/stdout.log`.
-- Internal refs must be resolvable by Oxide Agent for follow-up tool calls and diagnostics.
-- User-downloadable links/files are optional and must be created only through an explicit delivery/upload path.
-- Do not make every artifact public by default.
-- When a user-downloadable URI exists, include it separately as `user_download_uri`; keep the internal `uri` stable for agent use.
+## 11. Storage Architecture
 
-Retention defaults for v1:
+Storage must become a modular subsystem with backend-specific modules and smaller service traits.
 
-- Artifacts: keep for 7 days.
-- Tool logs: keep for 30 days.
-- Soft storage cap: configurable, default 1 GiB per deployment or runtime data root.
-- Cleanup runs best-effort on startup and after turns that create artifacts.
-- Retention is a technical storage policy, not a tool safety/policy restriction.
+### 11.1 Required backend modules
 
-If artifact write fails:
+- `LocalStorageModule` / `storage-local`;
+- `R2StorageModule` / `storage-r2`.
 
-- output status stays as primary status if inline preview is available;
-- `artifact_write_failed` is recorded in metadata;
-- if artifact was required for binary/huge output and preview unavailable, output status `failure` or `internal_runtime_error` depending on source;
-- log structured error.
+Future backends must be addable without editing transport startup:
 
-### 16.3 Formatting for model
+- SQLite;
+- Postgres;
+- S3-compatible object storage;
+- memory-only test storage;
+- encrypted local storage.
 
-Model-facing `content` should be concise and structured. Recommended:
+### 11.2 Storage backend trait
 
-- JSON string for all tools.
-- Include `status`, `success`, `duration_ms`, `exit_code`, `stdout`, `stderr`, `error_message`, `cleanup_status`, `artifacts`.
-- Avoid dumping raw multiline text without metadata.
+The current giant `StorageProvider` can remain temporarily as an internal aggregate only if it is implemented by backend modules and not by startup code directly. The target should split it into smaller traits.
 
-### 16.4 Binary output
+Recommended target traits:
 
-Binary detection:
+```rust
+pub trait StorageProvider: Send + Sync {
+    fn id(&self) -> StorageBackendId;
+    fn capabilities(&self) -> &'static [StorageCapability];
+}
 
-- inspect at least the first 64 KiB when available;
-- binary if a NUL byte is present;
-- binary if invalid UTF-8 bytes exceed 5% of inspected bytes;
-- binary if non-whitespace control bytes exceed 2% of inspected bytes;
-- file magic for archive/image/database dump when available.
+pub trait ConversationStore: Send + Sync { /* chat history */ }
+pub trait UserConfigStore: Send + Sync { /* user config */ }
+pub trait MemoryStore: Send + Sync { /* memory */ }
+pub trait ReminderStore: Send + Sync { /* reminders */ }
+pub trait WikiStore: Send + Sync { /* wiki memory */ }
+pub trait ControlPlaneStore: Send + Sync { /* manager/control-plane */ }
+pub trait AuditStore: Send + Sync { /* audit records */ }
+pub trait FileBlobStore: Send + Sync { /* optional file/object storage */ }
+```
 
-Binary behavior:
+A backend module may provide multiple storage traits.
 
-- do not inline raw bytes;
-- store artifact;
-- include mime/type guess;
-- include size/hash;
-- include short note in output.
-- For mixed logs below the binary threshold, a lossy UTF-8 preview is allowed, but raw undecoded bytes must never be inlined.
+### 11.3 Local storage
 
-### 16.5 `pg_dump` scenario
+`storage-local` must be the minimal backend. It must not compile AWS SDK.
 
-`pg_dump` must not return dump data through stdout tool output by default.
+Open implementation choice:
 
-Correct command pattern:
+- filesystem JSON/CBOR files for simplicity;
+- SQLite for consistency and concurrency.
+
+The PRD recommends SQLite for production-grade local storage if the additional dependency is acceptable. If the team prioritizes minimum binary size, use filesystem storage first and add SQLite as `storage-sqlite` later.
+
+### 11.4 R2 storage
+
+`storage-r2` must own all AWS SDK dependencies and R2-specific config.
+
+R2 module config:
+
+```yaml
+modules:
+  storage/r2:
+    enabled: true
+    endpoint: https://...
+    bucket: oxide-agent
+    region: auto
+    credentials:
+      access_key_id: ${OXIDE_R2_ACCESS_KEY_ID}
+      secret_access_key: ${OXIDE_R2_SECRET_ACCESS_KEY}
+```
+
+No R2 fields should live in global app settings after the refactor.
+
+### 11.5 Startup ownership
+
+Transport runners must not instantiate `R2Storage` or any concrete backend. App startup must:
+
+1. select exactly one primary storage backend unless a profile explicitly supports multiple;
+2. build it through the selected storage module;
+3. inject storage trait objects into `RuntimeContext`.
+
+Startup maintenance must not accept concrete R2 types. Migration-oriented cleanup paths must be deleted unless they are reintroduced as explicit optional maintenance modules.
+
+## 12. Sandbox Architecture
+
+Sandbox must be modularized into backend modules and tool modules.
+
+### 12.1 Backend modules
+
+Required backend modules:
+
+- `DockerDirectSandboxBackendModule` / `sandbox-backend-docker-direct`;
+- `SandboxdClientBackendModule` / `sandbox-backend-sandboxd-client`;
+- `SandboxDaemonModule` / `sandbox-daemon`.
+
+The daemon is a deployable binary/service. The client backend is what the main agent uses to talk to the daemon.
+
+### 12.2 Backend traits
+
+```rust
+pub trait SandboxBackend: Send + Sync {
+    fn id(&self) -> SandboxBackendId;
+    fn capabilities(&self) -> &'static [SandboxCapability];
+}
+
+pub trait SandboxFileOps: SandboxBackend {
+    async fn write_file(&self, scope: SandboxScope, path: &str, bytes: Bytes) -> Result<()>;
+    async fn read_file(&self, scope: SandboxScope, path: &str) -> Result<Bytes>;
+    async fn list_files(&self, scope: SandboxScope, path: &str) -> Result<Vec<FileEntry>>;
+}
+
+pub trait SandboxExec: SandboxBackend {
+    async fn exec(&self, scope: SandboxScope, command: ExecCommand) -> Result<ExecOutput>;
+}
+
+pub trait SandboxLifecycle: SandboxBackend {
+    async fn recreate(&self, scope: SandboxScope) -> Result<()>;
+}
+
+pub trait SandboxDiagnostics: SandboxBackend {
+    async fn stack_logs(&self, query: StackLogQuery) -> Result<StackLogOutput>;
+}
+```
+
+Tool modules must require the smallest trait they need.
+
+### 12.3 Tool split
+
+- `tool-sandbox-fileops`
+  - requires `SandboxFileOps`;
+  - provides `write_file`, `read_file`, optionally `list_files`.
+
+- `tool-sandbox-exec`
+  - requires `SandboxExec`;
+  - provides `execute_command`;
+  - high-risk;
+  - disabled by default in embedded/lite profiles.
+
+- `tool-sandbox-recreate`
+  - requires `SandboxLifecycle`;
+  - provides `recreate_sandbox`.
+
+- `tool-stack-logs`
+  - requires `SandboxDiagnostics`;
+  - should not be part of minimal sandbox.
+
+- `tool-file-delivery`
+  - separate from sandbox backend;
+  - can read from sandbox through `SandboxFileOps` but sends through transport/file service.
+
+### 12.4 Sandbox image variants
+
+The fat universal image must be replaced by profile-specific variants.
+
+Required variants:
+
+- `sandbox-minimal`
+  - shell, coreutils, CA certificates, curl if required by selected tools;
+  - no Python, ffmpeg, yt-dlp, nmap, mtr, browser packages unless selected.
+
+- `sandbox-exec`
+  - adds packages required for command execution profiles.
+
+- `sandbox-media`
+  - adds ffmpeg, yt-dlp, Python packages, and media utilities.
+
+- `sandbox-dev`
+  - full diagnostic image for development.
+
+Modules must declare sandbox package requirements.
+
+Example:
+
+```rust
+DockerRequirement::SandboxPackages(&["python3", "python3-pip"])
+DockerRequirement::SandboxPackages(&["ffmpeg"])
+DockerRequirement::SandboxPackages(&["yt-dlp"])
+```
+
+The sandbox image selection/generation process must merge selected requirements for the active profile.
+
+### 12.5 Security posture
+
+`execute_command` must not be included by implication. Profiles that include it must state so explicitly.
+
+`embedded-opencode-local` must not include `tool-sandbox-exec` unless the profile is deliberately changed.
+
+## 13. Transport Architecture
+
+Transports must be modules. A transport must not hardcode storage, LLM providers, sandbox backends, or sidecars.
+
+Required transport modules:
+
+- `TelegramTransportModule` / `transport-telegram`;
+- `WebTransportModule` / `transport-web`;
+- `CliTransportModule` / `transport-cli`;
+- `HttpApiTransportModule` / `transport-http-api`.
+
+A transport module owns:
+
+- transport-specific config schema;
+- startup/serve implementation;
+- file delivery sink if supported;
+- progress/event rendering;
+- authentication/session mapping;
+- health checks.
+
+A transport consumes `RuntimeContext`:
+
+```rust
+pub trait TransportModule: CapabilityModule {
+    async fn run(&self, ctx: RuntimeContext) -> Result<()>;
+}
+```
+
+`RuntimeContext` provides:
+
+- tool registry;
+- LLM router;
+- storage interfaces;
+- sandbox interfaces if enabled;
+- reminder scheduler if enabled;
+- event bus;
+- configured policies.
+
+Telegram-specific startup must stop doing these tasks directly:
+
+- constructing R2 storage;
+- constructing all LLM providers;
+- deciding sandbox backend;
+- running migration/drift cleanup;
+- deciding which MCP integrations exist;
+- acting as the application composition root.
+
+The composition root must move into a profile-aware app bootstrap layer.
+
+## 14. Config Architecture
+
+Config must be module-driven and validated against compiled capabilities.
+
+### 14.1 Config rules
+
+- Config is loaded after the compiled capability manifest is known.
+- Unknown module IDs fail startup.
+- Config for a non-compiled module fails startup.
+- Config for a compiled but disabled module is allowed only under that module key with `enabled: false`.
+- Runtime-disabled modules cannot register tools/providers/backends.
+- Module dependencies must be validated before startup.
+- Exactly one primary transport must be selected unless the binary supports multi-transport mode.
+- Exactly one primary storage backend must be selected unless multi-storage mode is explicit.
+- Provider routes must reference compiled and enabled provider IDs.
+- Old env compatibility is not required.
+
+### 14.2 Proposed config shape
+
+```yaml
+profile: embedded-opencode-local
+
+modules:
+  transport/telegram:
+    enabled: true
+    bot_token: ${OXIDE_TELEGRAM_BOT_TOKEN}
+    manager_chat_id: ${OXIDE_TELEGRAM_MANAGER_CHAT_ID}
+
+  storage/local:
+    enabled: true
+    path: /data/oxide-agent
+
+  llm-provider/opencode-go:
+    enabled: true
+    base_url: http://opencode-go:8080/v1
+    api_key: ${OXIDE_OPENCODE_GO_API_KEY}
+
+  tool/webfetch-md:
+    enabled: true
+
+  tool/tavily-search:
+    enabled: true
+    api_key: ${OXIDE_TAVILY_API_KEY}
+
+  tool/sandbox-fileops:
+    enabled: true
+
+  tool/sandbox-exec:
+    enabled: false
+
+routes:
+  chat:
+    provider: llm-provider/opencode-go
+    model: openai/gpt-oss-120b
+```
+
+### 14.3 Env mapping
+
+Environment variables may remain supported, but they must map into module config rather than global settings fields.
+
+Recommended convention:
+
+```text
+OXIDE_MODULE__LLM_PROVIDER_OPENCODE_GO__API_KEY
+OXIDE_MODULE__LLM_PROVIDER_OPENCODE_GO__BASE_URL
+OXIDE_MODULE__STORAGE_LOCAL__PATH
+OXIDE_MODULE__TRANSPORT_TELEGRAM__BOT_TOKEN
+OXIDE_MODULE__TOOL_TAVILY_SEARCH__API_KEY
+```
+
+The exact convention may be simplified, but it must be deterministic and module-scoped.
+
+### 14.4 Config schema
+
+Each module must provide a schema object. The app must be able to emit a config schema for compiled modules:
 
 ```bash
-pg_dump "$DATABASE_URL" --format=custom --file /workspace/artifacts/pg_dump_2026-05-22.dump
+oxide-agent config schema --compiled --json
+oxide-agent config example --profile embedded-opencode-local
 ```
 
-Why stdout is wrong:
+### 14.5 Removed config behavior
 
-- database dumps can be huge;
-- dump can be binary/custom format;
-- dump can contain sensitive application data;
-- model context cannot handle it;
-- it blocks useful summary and can exhaust memory.
+Delete:
 
-Correct success output:
+- old env aliases;
+- deprecated fields;
+- temporary migration switches;
+- global R2 fields;
+- global provider key fields;
+- global sandbox backend fields not owned by sandbox modules;
+- full-profile sidecar assumptions;
+- startup migration cleanup flags.
 
-```json
-{
-  "tool_call_id": "call_pg_dump_1",
-  "tool_name": "execute_command",
-  "status": "success",
-  "success": true,
-  "exit_code": 0,
-  "duration_ms": 84231,
-  "stdout": { "text": "", "truncated": false },
-  "stderr": { "tail": "pg_dump: dumping contents of table ...", "truncated": true },
-  "artifacts": [
-    {
-      "uri": "artifact://session/turn/call_pg_dump_1/pg_dump_2026-05-22.dump",
-      "kind": "file",
-      "bytes": 734003200
-    }
-  ]
-}
-```
+## 15. Docker Architecture
 
-Timeout behavior:
+Docker must select a module profile. It must not ship every possible runtime asset.
 
-- per-tool hard timeout fires;
-- invocation token cancelled;
-- process group gets SIGTERM;
-- after grace, SIGKILL if still alive;
-- partial dump file remains artifact only if safe to reference with `partial = true`;
-- output status: `timeout`;
-- cleanup status included.
+### 15.1 App image
 
-Hung behavior:
-
-- no-output/no-progress detector fires before hard timeout;
-- cleanup starts;
-- output status: `hung_timeout`;
-- include last stderr tail and artifact refs for partial files if present.
-
-Cancellation behavior:
-
-- user cancellation cancels invocation;
-- process group cleanup runs;
-- output status: `cancelled`;
-- partial artifact marked partial.
-
-Cleanup failure behavior:
-
-```json
-{
-  "status": "process_cleanup_failed",
-  "success": false,
-  "timeout_reason": "per_tool_hard_timeout",
-  "cleanup_status": "failed",
-  "error_message": "process group 12345 did not exit after SIGKILL grace period"
-}
-```
-
-Even cleanup failure must produce a paired tool output.
-
-## 17. Conversation/history invariants
-
-### 17.1 Required invariants
-
-1. Every assistant tool call item is recorded before execution starts.
-2. Every recorded assistant tool call gets exactly one tool output.
-3. Tool output references the same provider-visible `tool_call_id` as the assistant tool call.
-4. Output order is deterministic by original batch index.
-5. Runtime errors never create missing tool outputs.
-6. Unknown tool gets a tool output.
-7. Invalid arguments get a tool output.
-8. Timeout/hung/cancel get a tool output.
-9. Duplicate/missing provider ids are handled before history write or become fatal before next provider request.
-10. Next LLM turn never starts until all batch outputs are recorded.
-11. History repair is not used as normal correctness mechanism.
-12. No tool executor writes history directly.
-
-### 17.2 History write sequence
+Create a profile-aware app Dockerfile, for example:
 
 ```text
-assistant(tool_calls=[call_1, call_2, call_3])
-tool(tool_call_id=call_1, content=output_1)
-tool(tool_call_id=call_2, content=output_2)
-tool(tool_call_id=call_3, content=output_3)
+docker/Dockerfile.app
 ```
 
-### 17.3 Pseudo-code: history write invariant
+Build arguments:
 
-```rust
-async fn record_history_pair(
-    &self,
-    batch: &ToolCallBatch,
-    outputs: &[ToolOutput],
-) -> Result<(), HistoryError> {
-    self.invariants.verify_batch_ids_unique(batch)?;
-    self.invariants.verify_outputs_match_calls(batch, outputs)?;
-
-    self.memory.add_message(batch.assistant_message.clone()).await?;
-
-    for (call, output) in batch.calls.iter().zip(outputs.iter()) {
-        debug_assert_eq!(call.wire_tool_call_id, output.tool_call_id);
-
-        let content = self.provider_encoder
-            .encode_tool_output_for_opencode_go(output)?;
-
-        self.memory.add_message(Message::tool_with_correlation(
-            call.wire_tool_call_id.clone(),
-            call.tool_call_correlation.clone(),
-            content,
-        )).await?;
-    }
-
-    self.invariants.verify_history_pairing_after_write(&self.memory).await?;
-    Ok(())
-}
+```Dockerfile
+ARG OXIDE_PROFILE=profile-embedded-opencode-local
+ARG CARGO_FEATURES="profile-embedded-opencode-local"
+ARG BINARIES="oxide-agent"
 ```
 
-If `record_tool_output` fails after assistant tool calls are already written:
-
-- do not call next LLM request;
-- emit fatal runtime error;
-- persist diagnostic snapshot if possible;
-- do not let recovery silently drop the incomplete batch.
-
-## 18. Failure modes
-
-### 18.1 Unknown tool
-
-Runtime behavior:
-
-- Registry lookup fails.
-- Executor is not called.
-- Output status: `unknown_tool`.
-- History: tool output with original `tool_call_id` and message listing available tool names or concise “unknown tool”.
-- Agent turn continues after output is recorded.
-- Log: warning with provider/model/session/turn/tool name.
-
-### 18.2 Invalid JSON arguments
-
-Runtime behavior:
-
-- Argument parser fails before executor.
-- Output status: `invalid_arguments`.
-- History: output includes parse error and expected schema summary.
-- Agent turn continues.
-- Log: warning with raw args preview.
-
-### 18.3 Provider returned malformed tool call
-
-Runtime behavior:
-
-- Provider parser detects malformed item.
-- If item can be represented with repaired id, create protocol-error output.
-- If item cannot be represented safely, fail before assistant tool-call history write.
-- Output status: `provider_protocol_error` when pairable.
-- Agent turn continues only with valid pairable history.
-- Log: error.
-
-### 18.4 Missing tool_call_id
-
-Runtime behavior:
-
-- Create deterministic synthetic id before assistant message write.
-- Output status: `provider_protocol_error` unless integration proves executable synthetic ids are accepted.
-- History: assistant call and tool output use same synthetic id.
-- Agent turn continues with caution after output recorded.
-- Log: error and metric.
-
-### 18.5 Duplicate tool_call_id
-
-Runtime behavior:
-
-- First call keeps id.
-- Later duplicates get synthetic ids before assistant message write.
-- Duplicate calls output `provider_protocol_error` unless explicitly repaired by parser rules.
-- History remains pairable.
-- Log: error.
-
-### 18.6 Executor panic
-
-Runtime behavior:
-
-- Spawned task join returns panic/join error.
-- Runtime normalizes.
-- Cleanup process handle if registered.
-- Output status: `internal_runtime_error`.
-- History: output contains concise panic/join message, not full backtrace in model context.
-- Agent turn continues after output recorded.
-- Log: error with backtrace/diagnostics.
-
-### 18.7 Tokio join error
-
-Same as executor panic:
-
-- status `internal_runtime_error`;
-- cleanup if process exists;
-- paired output required.
-
-### 18.8 Process spawn failed
-
-Runtime behavior:
-
-- ProcessManager returns spawn error.
-- Output status: `failure`.
-- Cleanup status: `not_started`.
-- History: error message includes command and spawn error preview.
-- Agent turn continues.
-- Log: error.
-
-### 18.9 Process exited non-zero
-
-Runtime behavior:
-
-- Normal terminal state.
-- Output status: `failure`.
-- Success false.
-- Include exit code, stdout/stderr previews.
-- Agent turn continues.
-- Log: info/warn depending exit code.
-
-### 18.10 stdout too large
-
-Runtime behavior:
-
-- Drain continues; model preview truncated.
-- Artifact written for full stdout.
-- Primary status remains success/failure/timeout/etc.
-- Truncation metadata set.
-- Agent turn continues.
-- Log: metric `tool.output.stdout_truncated`.
-
-### 18.11 stderr too large
-
-Same as stdout too large.
-
-### 18.12 Binary output
-
-Runtime behavior:
-
-- Binary not inlined.
-- Artifact written.
-- Output preview says binary output omitted.
-- Primary status preserved.
-- Agent turn continues.
-- Log: metric.
-
-### 18.13 Timeout
-
-Runtime behavior:
-
-- Per-tool timeout fires.
-- Cancellation token cancelled.
-- Process cleanup starts.
-- Output status: `timeout`.
-- History: paired output with cleanup status and output tails.
-- Agent turn continues after all batch outputs recorded.
-- Log: warning and metric.
-
-### 18.14 Hung detected
-
-Runtime behavior:
-
-- HungDetector fires before hard timeout.
-- Runtime cancels/cleans up invocation.
-- Output status: `hung_timeout`.
-- History: paired output with hung reason.
-- Agent turn continues.
-- Log: warning and metric.
-
-### 18.15 Cancellation
-
-Runtime behavior:
-
-- Turn cancellation cancels all in-flight tools.
-- Completed outputs are preserved.
-- Incomplete outputs become `cancelled` after cleanup.
-- History: every call gets one output.
-- Agent turn normally stops after recording outputs, depending outer cancellation semantics. It must not send next LLM request after user cancellation unless explicitly resumed.
-- Log: info.
-
-### 18.16 Cleanup failed
-
-Runtime behavior:
-
-- Cleanup failure captured.
-- Output status: `process_cleanup_failed` or primary status with failed cleanup metadata.
-- History: paired output.
-- Agent turn continues only after logging severe warning; if process is still running and dangerous to continue, outer session may be marked degraded, but no provider request should happen with missing output.
-- Log: error and metric.
-
-### 18.17 Artifact write failed
-
-Runtime behavior:
-
-- If inline preview is enough, primary status preserved and artifact failure metadata included.
-- If output cannot be represented without artifact, status `internal_runtime_error` or `failure` depending source.
-- History: paired output.
-- Agent turn continues if output content remains protocol-valid.
-- Log: error.
-
-### 18.18 History write failed
-
-Runtime behavior:
-
-- This is fatal for the turn.
-- Do not send next LLM request.
-- If assistant call already recorded and output write failed, persist diagnostic snapshot.
-- Output status cannot help if history write failed; runtime must stop.
-- Log: fatal error.
-
-### 18.19 Model/provider rejected tool output
-
-Runtime behavior:
-
-- Provider error on next LLM request.
-- Do not route to other provider.
-- Do not use history repair fallback silently.
-- Log full provider error and encoded message previews.
-- Integration tests should catch this for opencode go + DeepSeek V4 Flash.
-
-### 18.20 Partial batch failure
-
-Runtime behavior:
-
-- All calls receive outputs.
-- Success/failure mixed statuses allowed.
-- Next LLM turn continues with complete batch history.
-- Log per-call metrics and batch summary.
-
-## 19. Legacy removal plan
-
-### 19.1 Delete or remove from active path
-
-Remove these from active v1 execution:
-
-- `crates/oxide-agent-core/src/agent/tool_bridge.rs`
-- `execute_tool_calls`
-- `execute_single_tool_call`
-- `execute_tool_with_timeout`
-- `ToolExecutionContext`
-- `ToolExecutionResult` bridge type
-- `replay_initial_tool_call` in `agent/executor/execution.rs`
-- `ResumeApproval` execution path for tool replay
-- approval-pending string detection in `runner/tools.rs`
-- SSH approval registry and pending approval replay in v1 path
-- before-tool blocking and approval gates in `execute_tools`
-- route failover paths not targeting opencode go + DeepSeek V4 Flash
-- `call_llm_with_tools_legacy` active path
-- structured/unstructured fallback parser that creates tool calls from assistant text outside provider tool_call protocol
-
-### 19.2 Replace
-
-Replace:
-
-- `runner/tools.rs::execute_tools` → `ToolCallRuntime::execute_batch`
-- `runner/tools.rs::execute_approved_tools` → runtime batch scheduler
-- `runner/tools.rs::record_tool_execution_result` → `ToolHistoryWriter::record_tool_output`
-- `agent/registry.rs::ToolRegistry` → deterministic executor registry
-- `agent/provider.rs::ToolProvider` → `ToolExecutor`
-- `sandbox/manager.rs::exec_command` process behavior → `ProcessManager`/container process manager with cleanup
-- `providers/sandbox.rs::handle_execute_command` → executor returning structured `ToolOutput`
-- `providers/ssh_mcp.rs` execution/cancel path → executor returning structured `ToolOutput`, no global serialization lock
-
-### 19.3 Config flags to remove or ignore in v1
-
-Remove from v1 active behavior:
-
-- approval-related config for tool execution;
-- per-tool policy allow/deny;
-- provider compatibility switches for GLM/MiniMax/Gemini;
-- legacy bridge feature flags;
-- route failover config for this runtime;
-- hooks that block or rewrite tool invocation.
-
-Keep only passive observability hooks if they cannot change execution behavior.
-
-### 19.4 Tests to rewrite
-
-Rewrite tests that assume:
-
-- sequential tool execution;
-- approval pending strings;
-- old bridge timeout behavior;
-- provider fallback;
-- history repair as normal operation;
-- full stdout/stderr in model context;
-- SSH global serialization.
-
-Add tests listed in section 22.
-
-### 19.5 Old assumptions no longer valid
-
-- Tool output is not arbitrary string; it is encoded `ToolOutput`.
-- Timeout is not provider-specific; runtime enforces it.
-- Cancellation cannot just drop a future; process cleanup is required.
-- Unknown tool is not fatal missing output; it is a tool output status.
-- Large output is not safe to send to model.
-- Approval/policy gates are not part of v1.
-- History repair is not a substitute for runtime invariants.
-
-## 20. Configuration
-
-### 20.1 Minimal v1 config
-
-```rust
-pub struct ToolRuntimeConfig {
-    pub per_tool_hard_timeout: Duration,          // default 300s
-    pub cancellation_grace_period: Duration,      // default 2s
-    pub terminate_grace_period: Duration,         // default 5s
-    pub kill_grace_period: Duration,              // default 2s
-
-    pub hung_detection_enabled: bool,             // default true
-    pub hung_startup_grace: Duration,             // default 30s
-    pub hung_no_output_threshold: Duration,       // default 120s
-    pub hung_no_progress_threshold: Duration,     // default 180s
-
-    pub max_captured_stdout_bytes: usize,         // default 65536
-    pub max_captured_stderr_bytes: usize,         // default 65536
-    pub output_head_bytes: usize,                 // default 16384
-    pub output_tail_bytes: usize,                 // default 32768
-    pub max_tool_output_content_bytes: usize,     // default 131072
-
-    pub artifact_dir: PathBuf,                    // default .oxide/tool-artifacts
-    pub log_dir: PathBuf,                         // default .oxide/tool-logs
-    pub artifact_retention: Duration,             // default 7d
-    pub log_retention: Duration,                  // default 30d
-    pub storage_soft_cap_bytes: Option<u64>,      // default Some(1 GiB)
-
-    pub max_in_flight_tools: Option<usize>,       // default None
-}
+Build command:
+
+```bash
+docker build \
+  -f docker/Dockerfile.app \
+  --build-arg CARGO_FEATURES="profile-embedded-opencode-local" \
+  --build-arg BINARIES="oxide-agent" \
+  -t oxide-agent:embedded-opencode-local \
+  .
 ```
 
-### 20.2 Not allowed in v1 config
+The Dockerfile must:
 
-Do not add:
+- build with `--no-default-features`;
+- pass the exact profile feature list;
+- copy only selected binaries;
+- copy only selected external binaries/assets;
+- use a minimal runtime base;
+- not include MCP binaries unless selected;
+- not include sandbox daemon unless selected;
+- not include browser assets unless selected;
+- not install SSH client unless SSH MCP or selected transport requires it;
+- not rely on runtime env flags to hide unused capabilities.
 
-- GLM/MiniMax/Gemini provider compatibility config.
-- Per-tool safety config.
-- Approval config.
-- Dangerous command classifier config.
-- Resource-aware lock config.
-- Shell/SSH serialization config as default behavior.
+### 15.2 Full image
 
-### 20.3 Timeout conflict config
+A full image remains valid, but it is just a composition of modules:
 
-If multiple timeout values exist:
+```bash
+cargo build --release \
+  --no-default-features \
+  --features "profile-full"
+```
 
-- per-tool hard timeout is primary for tools;
-- existing agent timeout remains outer guard;
-- batch timeout defaults to none;
-- when conflict occurs, earliest terminal signal wins.
+Full is not the default architecture.
 
-## 21. Implementation plan
+### 15.3 Embedded image
 
-### Phase 1: Runtime types and config
+Embedded image requirements:
 
-Deliver:
+- selected app binary only;
+- local storage runtime path;
+- selected LLM provider dependencies only;
+- no AWS SDK if `storage-r2` is absent;
+- no RMCP binaries if MCP modules are absent;
+- no sandbox daemon if sandboxd client/backend is absent;
+- no searxng/browser-use sidecars;
+- no fat sandbox image unless selected.
 
-- `agent/tool_runtime/config.rs`
-- `invocation.rs`
-- `output.rs`
-- `normalizer.rs`
-- `artifacts.rs`
-- unit tests for status encoding, truncation metadata and provider content JSON.
+### 15.4 MCP binaries
 
-Acceptance for phase:
+MCP binary download/copy must move to module-specific Docker stages or profile-specific build logic.
 
-- `ToolOutput` can encode all required statuses.
-- `OutputNormalizer` can create valid output from every required failure mode.
+Examples:
 
-### Phase 2: Provider parser/encoder for opencode go
+- `integration-mcp-jira` downloads/copies Jira MCP binary;
+- `integration-mcp-mattermost` downloads/copies Mattermost MCP binary;
+- `integration-ssh-mcp` downloads/copies SSH MCP binary.
 
-Deliver:
+If the feature is absent, the binary must not exist in the final image.
 
-- strict parser for chat-like opencode go `tool_calls[]`;
-- parser handling string/object arguments;
-- duplicate/missing id handling;
-- output encoder for `{ role: "tool", tool_call_id, content }`;
-- integration fixture for DeepSeek V4 Flash format.
+### 15.5 Sandbox images
+
+Create sandbox Dockerfiles or generated Dockerfiles:
+
+```text
+docker/sandbox/Dockerfile.minimal
+docker/sandbox/Dockerfile.exec
+docker/sandbox/Dockerfile.media
+docker/sandbox/Dockerfile.dev
+```
+
+The selected profile chooses the image.
+
+No profile may silently use the fat image. Heavy packages must be tied to selected modules.
+
+## 16. Docker Compose Architecture
+
+Compose files must be profile-specific or generated from module service declarations.
+
+### 16.1 Required compose profiles
+
+Create at least:
+
+```text
+docker/compose.full.yml
+docker/compose.embedded-opencode-local.yml
+docker/compose.dev.yml
+docker/compose.search.yml
+docker/compose.media.yml
+```
+
+Alternatively, generate them from:
+
+```text
+profiles/*.toml
+```
+
+and module `ComposeRequirement` declarations.
+
+### 16.2 Compose rules
+
+- No `searxng` service unless `tool-searxng` is enabled.
+- No `browser-use` service unless `tool-browser-use` is enabled.
+- No `sandboxd` service unless `sandbox-backend-sandboxd-client` is enabled.
+- No Docker socket mount unless a Docker-based sandbox backend or sandbox daemon is enabled.
+- No MCP sidecar/binary unless the corresponding MCP integration is enabled.
+- No browser-use volume unless browser module is enabled.
+- No sandbox image build unless a sandbox backend/tool requires it.
+- No R2-related env/config unless `storage-r2` is enabled.
+- Persistent volumes must be declared only for selected storage/backend modules.
+
+### 16.3 Example embedded compose
+
+```yaml
+services:
+  oxide-agent:
+    image: oxide-agent:embedded-opencode-local
+    env_file: .env.embedded
+    volumes:
+      - oxide-agent-data:/data/oxide-agent
+
+volumes:
+  oxide-agent-data:
+```
+
+No searxng, no browser-use, no sandboxd, no Docker socket, no MCP services.
+
+### 16.4 Example full compose
+
+Full compose may include:
+
+- `oxide-agent`;
+- `sandboxd`;
+- sandbox image build;
+- `searxng`;
+- browser-use bridge;
+- selected MCP binaries/services;
+- selected volumes.
+
+Full compose must still be generated from module declarations or maintained as a profile-specific composition. It must not be the base for all profiles.
+
+## 17. Deletion Plan
+
+Because backward compatibility is not required, delete obsolete paths instead of wrapping them.
+
+### 17.1 Delete legacy registry paths
+
+Delete or fully replace:
+
+- `oxide-agent-core/src/agent/registry.rs` legacy provider registry;
+- legacy `ToolProvider` dispatch as the primary execution model;
+- `ProviderRuntimeExecutor` legacy-to-typed wrapper;
+- `build_tool_registry(...)` vs `build_tool_runtime_registry(...)` split;
+- duplicate typed/legacy registration code;
+- duplicate skip-on-conflict registration behavior.
+
+The new typed `ToolRegistry` must be the only tool registry.
+
+### 17.2 Delete hardcoded provider registration
+
+Delete:
+
+- global provider import/re-export as the registration mechanism;
+- global `LlmClient::new` hardcoded provider insertion chain;
+- global embedding provider match chain;
+- global provider alias lists;
+- config credential checks that assume all providers are compiled.
+
+Replace with provider modules.
+
+### 17.3 Delete hardcoded R2 startup
+
+Delete:
+
+- direct `R2Storage::new(settings)` from Telegram runner startup;
+- startup maintenance functions that require concrete `R2Storage`;
+- global R2 config fields from app settings;
+- unconditional AWS SDK dependencies.
+
+Replace with storage modules.
+
+### 17.4 Delete hardcoded sandbox assumptions
+
+Delete:
+
+- broad sandbox tool provider that mixes exec, fileops, delivery, list, and recreate;
+- runtime-only `SANDBOX_BACKEND` selection as the architectural mechanism;
+- unconditional Bollard dependency;
+- unconditional sandboxd build/copy;
+- fat sandbox image as default;
+- Docker Compose stack log coupling from minimal builds.
+
+Replace with sandbox backend and tool modules.
+
+### 17.5 Delete unconditional sidecars and binaries
+
+Delete:
+
+- unconditional searxng Compose service from non-search profiles;
+- unconditional sandboxd service from profiles that do not select it;
+- unconditional MCP binary downloads/copies from the app Dockerfile;
+- browser-use commented pseudo-profile from the base compose file.
+
+Replace with module-declared service requirements.
+
+### 17.6 Delete compatibility and migration code
+
+Delete:
+
+- old env compatibility aliases;
+- deprecated config fields;
+- temporary migration switches;
+- legacy fallback response shapes in SSH/file tools;
+- startup persisted tool drift cleanup if its only purpose is old deployment migration;
+- backward-compatibility re-exports;
+- unused wrappers/adapters;
+- unused default features.
+
+Do not keep compatibility shims.
+
+### 17.7 Delete transport composition responsibilities
+
+Delete from transport startup:
+
+- concrete storage backend construction;
+- provider-specific LLM construction;
+- sandbox backend selection;
+- MCP topology decisions;
+- global cleanup behavior unrelated to the transport.
+
+Transport modules must only start transports with a prepared `RuntimeContext`.
+
+## 18. Implementation Plan
+
+### Milestone 1: Dependency and Feature Audit
+
+Deliverables:
+
+- Inventory all crates and dependencies.
+- Mark each dependency as core, optional-light, optional-heavy, dev-only, or test-only.
+- Create the new atomic feature naming map.
+- Move heavy dependencies to `optional = true`.
+- Set `default = []` for core modular crates.
+- Add initial profile features.
+- Add CI jobs for minimal profile builds.
+- Add `cargo tree` deny checks for excluded dependency groups.
+
+Required checks:
+
+```bash
+cargo check --workspace --no-default-features --features profile-embedded-opencode-local
+cargo check --workspace --no-default-features --features profile-no-sandbox
+cargo check --workspace --no-default-features --features profile-search-only
+cargo tree -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local
+```
+
+Acceptance for this milestone:
+
+- Minimal profile does not include AWS SDK.
+- No-sandbox profile does not include Bollard.
+- No-MCP profile does not include RMCP.
+- Provider-specific profile does not include unrelated provider SDKs.
+
+### Milestone 2: New Capability Module System
+
+Deliverables:
+
+- Add `CapabilityModule`, `ModuleRegistry`, `CompiledCapabilityManifest`, and `EnabledCapabilityManifest`.
+- Add deterministic `compiled_modules()` feature-gated construction.
+- Add config validation against compiled modules.
+- Add CLI/API to print compiled and enabled capabilities.
+- Introduce one typed `ToolRegistry` as the only target registry.
+- Delete legacy registry paths once replacement modules exist.
 
 Acceptance:
 
-- `parallel_tool_calls: true` remains in request with tools.
-- Strict paired history fixture passes.
+- Registry construction is deterministic.
+- Duplicate capability IDs fail.
+- Duplicate tool names fail.
+- Unknown config module IDs fail.
+- Non-compiled module config fails.
 
-### Phase 3: Registry and executor interface
+### Milestone 3: LLM Provider Modularization
 
-Deliver:
+Deliverables:
 
-- `ToolExecutor` trait;
-- deterministic `ToolRegistry`;
-- adapter-free port of key existing tools;
-- startup duplicate-name detection.
-
-Acceptance:
-
-- Unknown tool returns `ToolOutputStatus::UnknownTool`.
-- No active dependency on `ToolProvider::execute -> String` for v1 path.
-
-### Phase 4: ToolCallRuntime batch scheduler
-
-Deliver:
-
-- `execute_batch`;
-- task spawn/join handling;
-- deterministic output ordering;
-- cancellation propagation;
-- invariant verification;
-- history writer.
+- Create provider module trait and provider registry.
+- Move each LLM provider behind its own feature.
+- Move provider aliases into provider modules.
+- Move model capability metadata into provider modules.
+- Move embedding providers into embedding modules.
+- Replace global provider insertion chain with module factories.
+- Add provider-specific config schemas.
 
 Acceptance:
 
-- Batch of 10+ test tools runs in parallel.
-- Hung task cannot block batch forever.
+- `llm-opencode-go` build compiles only OpenCode Go provider code and shared protocol code.
+- A config referencing Gemini fails if `llm-gemini` is not compiled.
+- Provider aliases are registered only when the provider module is compiled and enabled.
+- Global hardcoded provider match chains are removed.
 
-### Phase 5: ProcessManager
+### Milestone 4: Tool Modularization
 
-Deliver:
+Deliverables:
 
-- local Unix process group/session implementation;
-- stdout/stderr drain with caps;
-- SIGTERM/SIGKILL cleanup;
-- wait/reap;
-- process lifecycle tests.
+- Split broad providers into atomic tool modules.
+- Move tool definitions and executors together.
+- Replace legacy `ToolProvider` with typed `ToolExecutor` modules.
+- Remove `ProviderRuntimeExecutor`.
+- Remove typed/legacy dual registration.
+- Add capability dependency declarations to every tool.
+- Add snapshot tests for tool lists per profile.
 
-Acceptance:
+Required first split:
 
-- Infinite loop killed on timeout.
-- Child process killed on timeout.
-- Command ignoring SIGTERM killed via SIGKILL.
-- No orphan process in tests.
-
-### Phase 6: Sandbox and SSH tool ports
-
-Deliver:
-
-- sandbox `execute_command` through process/container manager;
-- `read_file` output budget/binary detection;
-- SSH executor with no global serialization lock;
-- remote cleanup status metadata.
+- sandbox fileops vs sandbox exec vs file delivery vs recreate;
+- webfetch vs Tavily vs SearXNG vs browser-use;
+- media audio vs image vs video;
+- MCP Jira vs Mattermost vs SSH;
+- manager/control-plane submodules.
 
 Acceptance:
 
-- sandbox timeout kills process;
-- SSH parallel test does not serialize by default unless upstream protocol physically cannot support it, in which case separate sessions are used.
+- There is exactly one tool registry.
+- There is exactly one registration path for each tool.
+- Embedded profile excludes `execute_command` unless `tool-sandbox-exec` is explicitly enabled.
+- Search-only profile excludes browser-use and MCP tools.
 
-### Phase 7: Remove legacy paths
+### Milestone 5: Storage Modularization
 
-Deliver:
+Deliverables:
 
-- delete/disable `tool_bridge.rs` active usage;
-- remove `replay_initial_tool_call` bridge path;
-- remove approval gating from tool runtime;
-- remove provider failover from v1 path;
-- remove unstructured fallback tool parser;
-- update tests.
-
-Acceptance:
-
-- Static grep confirms no active call to legacy bridge.
-- No feature flag can re-enable old runtime.
-
-### Phase 8: Integration tests
-
-Deliver:
-
-- opencode go + DeepSeek V4 Flash protocol tests;
-- full turn tests with multiple parallel tool calls;
-- timeout/cancel/hung/cleanup/history tests;
-- artifact tests.
+- Create `StorageBackendModule` trait.
+- Create `storage-local` backend.
+- Move R2/AWS code into `storage-r2` module.
+- Remove concrete `R2Storage` from transport startup.
+- Split or wrap storage traits into smaller capability-specific interfaces.
+- Update tools and runtime to consume storage interfaces.
 
 Acceptance:
 
-- v1 acceptance criteria pass.
+- Local-only build excludes AWS SDK.
+- Telegram transport can run with local storage.
+- R2 config appears only under `storage/r2`.
+- Storage backend selection is validated by module registry.
 
-## 22. Test plan
+### Milestone 6: Sandbox Modularization
 
-### 22.1 Unit tests
+Deliverables:
 
-Required:
+- Create sandbox backend traits.
+- Split Docker direct backend and sandboxd client backend.
+- Make Bollard optional.
+- Make broker protocol optional.
+- Move sandboxd binary behind `sandbox-daemon` feature.
+- Split sandbox tools into fileops, exec, recreate, file delivery, diagnostics.
+- Create minimal/exec/media/dev sandbox image variants.
+- Move SSH cleanup into SSH module.
 
-- One successful tool call produces one success output.
-- Multiple successful tool calls execute concurrently and output order is deterministic.
-- Mixed success/failure batch produces N outputs for N calls.
-- Unknown tool returns `unknown_tool` output.
-- Invalid args returns `invalid_arguments` output.
-- Timeout returns `timeout` output.
-- Hung returns `hung_timeout` output.
-- Cancellation returns `cancelled` output.
-- Executor panic returns `internal_runtime_error` output.
-- Tokio join error returns `internal_runtime_error` output.
-- Process spawn failed returns `failure` output.
-- Process exited non-zero returns `failure` output with exit code.
-- stdout truncation metadata is correct.
-- stderr truncation metadata is correct.
-- Binary output is not inlined.
-- Large artifact output writes artifact ref.
-- Deterministic output ordering by batch index.
-- Duplicate `tool_call_id` handling before history write.
-- Missing `tool_call_id` handling before history write.
-- Provider malformed tool call returns protocol output when pairable.
-- History writer rejects missing output.
-- History writer rejects duplicate output.
-- Next LLM turn only starts after all tool outputs are recorded.
-- No legacy fallback path is invoked.
+Acceptance:
 
-### 22.2 Process integration tests
+- No-sandbox build excludes Bollard and sandbox broker protocol.
+- Embedded fileops build excludes `execute_command`.
+- Exec profile includes exec intentionally and exposes it in manifest.
+- Minimal sandbox image excludes ffmpeg, Python, yt-dlp, nmap, and mtr unless selected.
 
-Required:
+### Milestone 7: Transport Decoupling
 
-- `sleep 600` times out and returns output.
-- `while true; do sleep 1; done` times out and is killed.
-- Command producing huge stdout is truncated and artifacted.
-- Command producing huge stderr is truncated and artifacted.
-- Command spawning child process then timeout leaves no child alive.
-- Command ignoring SIGTERM receives SIGKILL.
-- Command exits non-zero and still returns output.
-- Cancellation during active process kills process group.
-- Cancellation during spawn returns paired output.
-- Cleanup failure is represented in output.
+Deliverables:
 
-### 22.3 Sandbox tests
+- Move app composition into a profile-aware bootstrap crate/module.
+- Convert Telegram startup to consume `RuntimeContext`.
+- Convert web transport to consume the same `RuntimeContext` model.
+- Add CLI or HTTP transport module if selected by roadmap.
+- Move transport-specific file delivery into transport module capabilities.
 
-Required:
+Acceptance:
 
-- Docker/container command timeout kills invocation-specific process group.
-- Container command huge output does not exhaust memory.
-- `read_file` on large file returns head/tail/artifact.
-- `read_file` on binary file does not inline bytes.
-- Sandbox recreate does not create hidden serialization for normal commands in v1. If recreate remains special, document it as environment lifecycle operation outside normal tool batch execution.
+- Transports do not construct concrete storage backends.
+- Transports do not construct LLM providers directly.
+- Transports do not select sandbox backend directly.
+- Multiple transports can be included or excluded by feature profile.
 
-### 22.4 SSH/MCP tests
+### Milestone 8: Docker and Compose Profiles
 
-Required:
+Deliverables:
 
-- Parallel `ssh_exec` calls do not serialize through one mutex.
-- SSH timeout returns paired output.
-- SSH cancellation returns paired output.
-- Remote cleanup success/failure is reflected.
-- Upstream session crash returns `internal_runtime_error` output.
+- Create profile-aware app Dockerfile.
+- Remove hardcoded Jira/Mattermost feature build from base image.
+- Move MCP binary downloads to module/profile-specific stages.
+- Create profile-specific Compose files or generator.
+- Create sandbox image variants.
+- Add Docker build CI for core profiles.
+- Add `docker compose config` validation for profile compose files.
 
-### 22.5 Provider integration tests
+Acceptance:
 
-Required:
+- Embedded compose starts only selected services.
+- No searxng in embedded compose unless selected.
+- No sandboxd unless selected.
+- No MCP binaries in images unless selected.
+- Full profile remains buildable as module composition.
 
-- opencode go request includes `parallel_tool_calls: true` when tools exist.
-- Tool specs encode as chat-like function tools.
-- DeepSeek V4 Flash response with multiple tool calls parses correctly.
-- Tool output messages use role `tool`, exact `tool_call_id`, content string.
-- Strict history with assistant tool call + tool output is accepted by provider fixture.
-- Invalid/missing/duplicate tool ids handled as defined.
-- No JSON response format is sent in tool-call request.
+### Milestone 9: Tests, CI, and Size Budgets
 
-### 22.6 End-to-end turn tests
+Deliverables:
 
-Required:
+- Capability manifest snapshot tests.
+- Enabled module snapshot tests by config/profile.
+- Config validation tests.
+- Tool list snapshot tests.
+- Cargo dependency deny checks.
+- Binary size checks.
+- Docker image size checks.
+- Compose topology checks.
+- Smoke tests for key profiles.
 
-- One successful tool call.
-- Batch with 10+ parallel tools.
-- Batch with long-running and short-running tools together.
-- Mixed success/failure/timeout/unknown tool batch.
-- User cancellation while batch is running.
-- Hung long-running command.
-- `pg_dump`-like command writing to file/artifact.
-- Parallel `grep`/`ripgrep` commands.
-- Parallel Linux CLI commands.
-- DevOps diagnostics: `kubectl get pods`, `kubectl get events`, `helm status` in one batch.
+Required profile matrix:
 
-## 23. Acceptance criteria
+```bash
+cargo check --no-default-features --features profile-embedded-opencode-local
+cargo check --no-default-features --features profile-lite
+cargo check --no-default-features --features profile-search-only
+cargo check --no-default-features --features profile-no-sandbox
+cargo check --no-default-features --features profile-media-enabled
+cargo check --no-default-features --features profile-full
+```
 
-v1 is accepted only when all criteria pass:
+Acceptance:
 
-1. Old tool execution logic is removed from active path.
-2. New runtime is the only tool execution path.
-3. No fallback to `tool_bridge` exists.
-4. No feature flag can route back to old runtime.
-5. opencode go + DeepSeek V4 Flash is the only supported provider/model scope.
-6. GLM/MiniMax/Gemini are not part of v1 tool runtime.
-7. Batch tool calls execute in parallel.
-8. Every tool call receives exactly one tool output.
-9. Tool outputs preserve provider-visible `tool_call_id`.
-10. Unknown tool returns paired output.
-11. Invalid arguments return paired output.
-12. Timeout returns paired output.
-13. Cancellation returns paired output.
-14. Hung detection returns paired output.
-15. Process cleanup runs after timeout/cancel/hung.
-16. No orphan processes remain in timeout/cancel tests.
-17. stdout/stderr are bounded before model context.
-18. Large outputs are truncated and artifacted.
-19. Binary outputs are not inlined.
-20. Output order is deterministic.
-21. Next LLM turn never starts before all batch outputs are recorded.
-22. History repair is not required for normal paired tool-call correctness.
-23. Provider integration tests for opencode go + DeepSeek V4 Flash pass.
-24. `pg_dump` scenario returns artifact refs, not dump stdout.
-25. Observability emits per-tool spans, durations, statuses, timeout/cancel/hung/cleanup/truncation metrics.
+- CI blocks dependency leakage.
+- CI blocks accidental tool registry drift.
+- CI blocks binary/image size regressions beyond configured budget.
+- CI blocks compose service drift.
 
-## 24. Risks and mitigations
+## 19. Testing Strategy
 
-### 24.1 opencode go missing tool_call_id behavior
+### 19.1 Build tests
+
+Run profile builds in CI:
+
+```bash
+cargo check --workspace --no-default-features --features profile-embedded-opencode-local
+cargo check --workspace --no-default-features --features profile-lite
+cargo check --workspace --no-default-features --features profile-search-only
+cargo check --workspace --no-default-features --features profile-no-sandbox
+cargo check --workspace --no-default-features --features profile-media-enabled
+cargo check --workspace --no-default-features --features profile-full
+```
+
+Add release builds for size-tracked profiles:
+
+```bash
+cargo build --release -p oxide-agent --no-default-features --features profile-embedded-opencode-local
+cargo build --release -p oxide-agent --no-default-features --features profile-full
+```
+
+### 19.2 Dependency leakage tests
+
+Use `cargo tree` checks to ensure excluded dependencies are absent.
+
+Examples:
+
+```bash
+cargo tree -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local | grep -q aws-sdk-s3 && exit 1
+cargo tree -p oxide-agent-core --no-default-features --features profile-no-sandbox | grep -q bollard && exit 1
+cargo tree -p oxide-agent-core --no-default-features --features profile-search-only | grep -q rmcp && exit 1
+cargo tree -p oxide-agent-core --no-default-features --features llm-opencode-go | grep -q gemini-rust && exit 1
+```
+
+Replace grep scripts with a checked CI utility if needed.
+
+### 19.3 Registry snapshot tests
+
+For each profile, snapshot:
+
+- compiled module IDs;
+- compiled capability IDs;
+- enabled module IDs for default config;
+- registered tool names;
+- registered LLM provider IDs;
+- registered storage backend IDs;
+- registered sandbox backend IDs;
+- external service requirements.
+
+Tests must fail on accidental capability drift.
+
+### 19.4 Config validation tests
+
+Required cases:
+
+- unknown module ID fails;
+- non-compiled module config fails;
+- compiled but disabled module does not register;
+- missing required module dependency fails;
+- conflicting modules fail;
+- provider route references non-compiled provider fails;
+- provider route references disabled provider fails;
+- tool requiring sandbox exec fails without exec backend;
+- storage backend missing fails;
+- multiple primary storage backends fail unless explicitly allowed.
+
+### 19.5 Tool availability tests
+
+Required cases:
+
+- disabled tools are absent from final tool list;
+- non-compiled tools cannot be enabled by config;
+- `execute_command` absent in embedded/lite default profile;
+- MCP tools absent when MCP features are absent;
+- browser tools absent when browser feature is absent;
+- media tools absent unless media feature is selected;
+- Tavily tools absent unless `tool-tavily` is compiled and enabled.
+
+### 19.6 Docker tests
+
+Required cases:
+
+```bash
+docker build -f docker/Dockerfile.app \
+  --build-arg CARGO_FEATURES="profile-embedded-opencode-local" \
+  -t oxide-agent:test-embedded .
+
+docker build -f docker/Dockerfile.app \
+  --build-arg CARGO_FEATURES="profile-full" \
+  -t oxide-agent:test-full .
+```
+
+Image inspection tests must verify:
+
+- no MCP binaries in embedded image;
+- no sandboxd binary unless selected;
+- no unexpected runtime package groups;
+- selected binary exists;
+- capability manifest command runs.
+
+### 19.7 Compose tests
+
+Required cases:
+
+```bash
+docker compose -f docker/compose.embedded-opencode-local.yml config
+docker compose -f docker/compose.full.yml config
+docker compose -f docker/compose.search.yml config
+```
+
+Tests must assert service absence/presence:
+
+- embedded has no searxng;
+- embedded has no browser-use;
+- embedded has no sandboxd unless selected;
+- search has searxng only if `tool-searxng` profile uses internal searxng;
+- full has all selected services.
+
+### 19.8 Size budgets
+
+Add configured budgets per profile.
+
+Initial budgets should be established after the first successful modular build. They must then be enforced.
+
+Track:
+
+- release binary size;
+- compressed image size;
+- uncompressed image size;
+- number of compiled capabilities;
+- dependency count;
+- high-risk dependency count.
+
+## 20. Acceptance Criteria
+
+The refactor is complete when all criteria below are true.
+
+### 20.1 Architecture criteria
+
+- There is exactly one module registration path.
+- There is exactly one typed tool registry.
+- No legacy tool registry remains.
+- No legacy-to-typed tool wrapper remains.
+- No duplicated typed/legacy tool registration remains.
+- Adding a new tool requires adding one module and one feature, plus optional profile inclusion.
+- Adding a new provider requires adding one provider module and one feature, plus optional profile inclusion.
+- Global provider match chains are removed.
+- Global embedding provider match chains are removed.
+- Provider aliases are owned by provider modules.
+- Runtime config cannot enable absent compile-time modules.
+
+### 20.2 Minimal build criteria
+
+The embedded profile compiles and runs with:
+
+```bash
+cargo check --workspace --no-default-features --features profile-embedded-opencode-local
+```
+
+The embedded profile must not include:
+
+- AWS SDK;
+- R2 storage;
+- browser-use;
+- searxng sidecar requirement unless selected;
+- Jira MCP;
+- Mattermost MCP;
+- SSH MCP unless selected;
+- unused LLM SDKs;
+- Bollard unless a Docker sandbox backend is selected;
+- sandbox command execution unless explicitly selected;
+- media-heavy tooling unless selected.
+
+### 20.3 Provider criteria
+
+- Only selected LLM providers are compiled.
+- Only selected provider aliases are present.
+- Provider-specific config appears only under that provider module.
+- Config referencing a non-compiled provider fails at startup.
+- Config referencing a disabled provider fails route validation.
+
+### 20.4 Tool criteria
+
+- Only selected tools are present in the registry.
+- Disabled tools are not visible in the tool list.
+- Non-compiled tools cannot be enabled by config.
+- `execute_command` is absent from embedded/lite defaults.
+- Sandbox file operations can be enabled without sandbox command execution.
+- Search tools can be enabled without browser tools.
+- MCP tools can be enabled independently per integration.
+- Media audio/image/video can be enabled independently.
+
+### 20.5 Storage criteria
+
+- Local storage profile compiles without AWS SDK.
+- R2 storage profile compiles with AWS SDK only when `storage-r2` is selected.
+- Transport startup does not construct concrete `R2Storage`.
+- Tools consume storage traits/interfaces, not concrete backend types.
+
+### 20.6 Sandbox criteria
+
+- No-sandbox profile compiles without Bollard and sandbox broker protocol.
+- Sandboxd binary is built only with `sandbox-daemon`.
+- Docker socket is required only by Docker sandbox backend or sandbox daemon service.
+- Minimal sandbox image excludes ffmpeg, Python, yt-dlp, nmap, mtr, and browser packages unless selected.
+- Sandbox exec and sandbox file operations are separate modules.
+
+### 20.7 Docker and Compose criteria
+
+- Embedded Docker image contains only selected binaries and runtime assets.
+- Full Docker image remains possible as a module composition.
+- MCP binaries are absent unless corresponding MCP modules are enabled.
+- Compose embedded profile starts only required services.
+- Compose does not start searxng unless selected.
+- Compose does not start browser-use unless selected.
+- Compose does not start sandboxd unless selected.
+- Persistent volumes are declared only for selected modules.
+
+### 20.8 CI criteria
+
+- CI verifies all required profile builds.
+- CI verifies dependency absence for minimal/no-sandbox/no-MCP/provider-specific builds.
+- CI verifies registry snapshots.
+- CI verifies config validation behavior.
+- CI verifies Docker builds.
+- CI verifies Compose topology.
+- CI enforces binary and image size budgets.
+
+## 21. Risks and Tradeoffs
+
+### 21.1 Breaking all existing deployments
 
 Risk:
 
-- Provider may omit `tool_call_id`, and synthetic ids may or may not be accepted by opencode go / DeepSeek V4 Flash on next request.
-
-Mitigation:
-
-- Integration test exact behavior.
-- Default v1 behavior: treat missing/duplicate provider ids as `provider_protocol_error`, not as successful tool execution.
-- Insert a deterministic synthetic id into the local assistant message only when needed to keep local history pairable.
-- If provider rejects synthetic id history, fail turn before next request and log protocol error.
-- Executing the underlying tool after synthetic id repair is allowed only if live integration tests prove opencode go + DeepSeek V4 Flash accepts that history shape reliably.
-
-### 24.2 SSH upstream concurrency
-
-Risk:
-
-- Current SSH MCP upstream may not support concurrent calls through one session.
-
-Mitigation:
-
-- Use one independent upstream SSH MCP session per invocation in v1.
-- Do not use one global mutex in v1 path.
-- Add a bounded session pool later only after basic correctness is proven.
-- If upstream hard-limits concurrency, represent it as transport limitation with tests, not as policy serialization.
-
-### 24.3 Docker exec cleanup limitations
-
-Risk:
-
-- Docker exec may not expose enough process metadata to kill one invocation-specific process tree.
-
-Mitigation:
-
-- Run commands through a managed wrapper that creates process group and writes metadata.
-- Use invocation-scoped group kill.
-- Container reset only as last resort with cleanup status metadata.
-
-### 24.4 History write failure after assistant call recorded
-
-Risk:
-
-- Assistant tool call is recorded, but output write fails.
-
-Mitigation:
-
-- Treat as fatal turn error.
-- Do not call provider again.
-- Persist diagnostic snapshot.
-- Add tests that simulate memory write failure.
-
-### 24.5 Output artifact storage growth
-
-Risk:
-
-- Large outputs can fill disk.
-
-Mitigation:
-
-- Use per-session artifact directories.
-- Default retention: 7 days for artifacts and 30 days for tool logs.
-- Default soft cap: 1 GiB per deployment/runtime data root, configurable.
-- Run best-effort cleanup on startup and after turns that create artifacts.
-- Metrics and warnings for artifact bytes.
-- Future cleanup service can make retention stricter, but v1 does not need a separate daemon.
-
-### 24.6 Hidden legacy path remains
-
-Risk:
-
-- Some request type still calls `tool_bridge` or old provider path.
-
-Mitigation:
-
-- Static grep tests.
-- Runtime assertion that all tool execution goes through `ToolCallRuntime`.
-- Remove imports to old bridge.
-- Delete old tests or rewrite them.
-
-### 24.7 Cancellation aborts Rust task but not process
-
-Risk:
-
-- Aborted async task drops process handle without killing process tree.
-
-Mitigation:
-
-- ProcessManager registers handles before await points.
-- Runtime cleanup by invocation id is available even if executor task aborts.
-- Tests verify no orphan child processes.
-
-### 24.8 Large output still reaches model
-
-Risk:
-
-- Executor returns structured payload with huge nested strings bypassing stdout/stderr cap.
-
-Mitigation:
-
-- OutputNormalizer applies global `max_tool_output_content_bytes` to final provider content.
-- ArtifactStore handles large structured payloads too.
-- Provider encoder refuses oversized content.
-
-## 25. Resolved v1 decisions
-
-The following decisions close the previously open questions for v1. Some still require validation tests, but the runtime behavior is defined now.
-
-### 25.1 Missing or duplicate opencode go `tool_call_id`
+- Config names, env names, Docker topology, and binary behavior will break existing deployments.
 
 Decision:
 
-- Do not rely on locally synthesized `tool_call_id` as a normal successful path.
-- Missing/empty provider id produces a deterministic synthetic local wire id before history write:
-  ```text
-  oxide_missing_tool_call_id_{turn_id}_{batch_index}
-  ```
-- Duplicate provider ids keep the first occurrence and rewrite later duplicates to:
-  ```text
-  oxide_duplicate_tool_call_id_{turn_id}_{batch_index}
-  ```
-- Repaired calls default to `ToolOutputStatus::ProviderProtocolError`.
-- The underlying tool is not executed for repaired ids unless live integration tests prove opencode go + DeepSeek V4 Flash accepts synthetic-id paired history reliably.
-- If the provider rejects repaired history, fail the turn before the next LLM request and persist a protocol diagnostic snapshot.
+- This is acceptable. Backward compatibility and migrations are not goals.
 
-Validation:
+Mitigation:
 
-- Add a live/provider fixture test for synthetic id history acceptance.
-- Add unit tests for missing id, duplicate id and malformed call pairing.
+- Provide new example configs and profile-specific Compose files.
+- Provide `oxide-agent config example --profile ...`.
 
-### 25.2 SSH MCP concurrency
+### 21.2 Feature explosion
 
-Decision:
+Risk:
 
-- v1 uses one upstream SSH MCP session per invocation.
-- Remove the one-global-mutex execution model from the active v1 path.
-- Do not build a scheduler, lock model or resource-aware SSH pool in v1.
-- A session pool can be added later as an optimization after correctness tests pass.
-- Reusing one session concurrently is allowed only after an integration test proves the upstream MCP transport supports concurrent calls through one session.
+- Atomic modules can create many Cargo features.
 
-Validation:
+Mitigation:
 
-- Add a test with parallel `ssh_exec` calls proving they do not serialize through one shared mutex.
-- Add timeout/cancel tests showing paired outputs and remote cleanup metadata.
+- Use strict naming convention.
+- Keep atomic features for code/dependency boundaries.
+- Provide profile features for common combinations.
+- Generate capability manifests.
+- Add module templates.
 
-### 25.3 Artifact and log retention
+### 21.3 Config complexity
 
-Decision:
+Risk:
 
-- Store artifacts under per-session/per-turn/per-tool-call directories.
-- Default retention:
-  - `.oxide/tool-artifacts`: 7 days;
-  - `.oxide/tool-logs`: 30 days.
-- Default soft cap: 1 GiB per deployment/runtime data root, configurable.
-- Cleanup is best-effort on startup and after turns that create artifacts.
-- Retention is technical storage management and is not a tool safety/policy restriction.
+- Module-scoped config can become verbose.
 
-Validation:
+Mitigation:
 
-- Add tests for artifact path layout, expiry metadata and cleanup eligibility.
-- Emit metrics/warnings for artifact bytes written and soft-cap pressure.
+- Provide profile defaults.
+- Generate example config.
+- Validate config with clear errors.
+- Keep module IDs stable and predictable.
 
-### 25.4 Artifact references and user downloads
+### 21.4 Too many tiny modules
 
-Decision:
+Risk:
 
-- Tool outputs always include internal artifact refs for agent/model follow-up:
-  ```text
-  artifact://session/{session_id}/turn/{turn_id}/{tool_call_id}/{name}
-  ```
-- Internal refs must resolve to local/storage paths in Oxide Agent.
-- User-downloadable links/files are optional and must be created only through explicit delivery/upload paths such as file delivery or filehoster tools.
-- Do not make all tool artifacts public by default.
-- If a user-downloadable URI exists, include it separately from the internal artifact URI.
+- Over-splitting can make development harder.
 
-Validation:
+Mitigation:
 
-- Add tests that large stdout/stderr create internal artifact refs.
-- Add tests that user-downloadable refs are absent unless an explicit delivery/upload path created them.
+- Split by dependency/risk/runtime boundary, not every function blindly.
+- Allow profile composition features.
+- Allow a crate to contain multiple lightweight modules if dependencies are shared and boundaries stay clear.
 
-### 25.5 Binary-output detection threshold
+### 21.5 Optional dependency mistakes
 
-Decision:
+Risk:
 
-- Inspect at least the first 64 KiB when available.
-- Treat output as binary if any NUL byte is present.
-- Treat output as binary if invalid UTF-8 bytes exceed 5% of inspected bytes.
-- Treat output as binary if non-whitespace control bytes exceed 2% of inspected bytes.
-- Use file magic for common archive/image/database dump formats when available.
-- Mixed logs below those thresholds may use a lossy UTF-8 preview, but raw undecoded bytes are never inlined.
+- A heavy dependency can leak through a shared module.
 
-Validation:
+Mitigation:
 
-- Add fixtures for UTF-8 logs, mixed-encoding logs, archives, database dumps, image bytes and logs containing isolated control characters.
+- CI `cargo tree` deny checks.
+- Review feature graph in Milestone 1.
+- Avoid importing provider modules from shared `mod.rs` without cfg gates.
 
-### 25.6 Sandbox broker managed exec protocol
+### 21.6 Docker profile drift
 
-Decision:
+Risk:
 
-- If the broker backend remains enabled in v1, add a managed exec request/response instead of adding a background job system.
-- The request must include `invocation_id`, command, timeout and output caps.
-- The response must include the same `invocation_id`, terminal status, exit code, output previews/artifact refs, pid/pgid when available and cleanup status.
-- Broker-side execution must use an invocation-scoped process group/wrapper.
-- Timeout/cancel/hung cleanup success must be explicitly acknowledged by the broker response.
-- Socket disconnect, client-side timeout or broker error must not be interpreted as process cleanup success.
+- Cargo profiles, Dockerfiles, and Compose files can diverge.
 
-Validation:
+Mitigation:
 
-- Add broker roundtrip tests for managed exec.
-- Add timeout/cancel tests proving invocation-scoped process cleanup and no orphan processes.
+- Generate Docker/Compose metadata from module requirements where practical.
+- Snapshot service requirements per profile.
+- Keep profile definitions in one place.
+
+### 21.7 Hidden runtime dependency leakage
+
+Risk:
+
+- A tool may compile cleanly but require a sidecar/package not declared.
+
+Mitigation:
+
+- Require every module to declare Docker and Compose requirements.
+- Validate profile manifests against module requirements.
+- Add smoke tests for key tools per profile.
+
+### 21.8 Media tools are inherently heavy
+
+Risk:
+
+- Audio/image/video tools may drag in large runtime requirements.
+
+Mitigation:
+
+- Split audio, image, and video capabilities.
+- Keep media tools out of default embedded/lite profiles.
+- Use explicit `profile-media-enabled`.
+
+### 21.9 Manager/control-plane complexity
+
+Risk:
+
+- Manager tools currently span many domains and may resist clean separation.
+
+Mitigation:
+
+- Split internally by subdomain.
+- Keep `manager-control-plane` as a profile composition feature only.
+- Require submodules to declare dependencies like storage, sandbox admin, and topic policy.
+
+## 22. Open Questions
+
+The implementation team must decide the following.
+
+1. Should profile definitions live only in Cargo features, only in external `profiles/*.toml`, or both?
+
+   Recommendation: use both. Cargo features define compile-time capability sets. `profiles/*.toml` define runtime defaults and Docker/Compose generation inputs.
+
+2. Should Compose files be generated from module service declarations?
+
+   Recommendation: yes for long-term consistency. Initially, maintain profile-specific Compose files with snapshot tests.
+
+3. Should embedded default use docker-direct sandbox, sandboxd, or no sandbox backend?
+
+   Recommendation: embedded default should include no command execution. If file operations are required, prefer sandboxd client only when an external sandboxd is explicitly selected.
+
+4. Should media tools be split by audio/image/video?
+
+   Recommendation: yes. Their provider and runtime requirements differ.
+
+5. Should MCP integrations be separate crates?
+
+   Recommendation: yes if their dependencies or generated clients are heavy. At minimum, they must be feature-gated modules.
+
+6. Should transports live in separate binaries or one binary with feature-gated transports?
+
+   Recommendation: support both. The composition root can build one selected transport binary for minimal deployments and a multi-transport binary for full/dev deployments.
+
+7. Should local storage be filesystem or SQLite?
+
+  Decision: neither. Persistent local storage is not supported.
+
+  Oxide Agent must use S3/R2-compatible object storage as the single canonical durable storage backend. The agent is designed for stateless Linux nodes where the local disk can be destroyed at any time. A node must be recoverable by redeploying the binary/container and providing the required `.env` configuration for the S3/R2 backend.
+
+  Local filesystem usage is allowed only for transient runtime data: temporary files, sandbox workdirs, download buffers, upload staging, and disposable cache. No durable agent state may depend on local filesystem persistence.
+
+  SQLite must not be used as a required storage backend. Filesystem storage must not be used as a durable backend. All durable state, including conversations, todos, reminders, wiki/memory data, artifacts, sandbox inputs/outputs, generated files, and manifests, must be stored in S3/R2.
+
+  Required storage decision:
+
+  - `storage-s3-r2` is the only durable storage module.
+  - `storage-local-fs` is not a durable storage module; it is only transient runtime workspace.
+  - `storage-sqlite` is not part of the target architecture.
+  - Stateless recovery from `.env` + S3/R2 bucket is a hard acceptance criterion.
+
+The implementation must treat S3/R2 as the source of truth. Runtime startup must fail loudly if S3/R2 configuration is missing or invalid.
+
+8. Should stack log access be a sandbox diagnostic module or a manager diagnostic module?
+
+   Recommendation: model it as `tool-stack-logs` requiring `SandboxDiagnostics` and Docker/Compose metadata.
+
+9. Should `chatgpt-login` remain a separate binary?
+
+   Recommendation: keep it only behind a provider/auth feature that requires it. Do not copy it into images that do not use that auth flow.
+
+10. Should old persisted tool names be transformed?
+
+   Recommendation: no migration. Old persisted state can be discarded or ignored by clean deployments.
+
+## 23. Proposed Final Repository Shape
+
+Recommended target layout:
+
+```text
+crates/
+  oxide-agent-core/
+    src/
+      app/
+        bootstrap.rs
+        context.rs
+        runtime.rs
+      capabilities/
+        ids.rs
+        manifest.rs
+        module.rs
+        registry.rs
+        requirements.rs
+      config/
+        loader.rs
+        schema.rs
+        validation.rs
+        env.rs
+      llm/
+        router.rs
+        traits.rs
+        model_capabilities.rs
+      tools/
+        registry.rs
+        executor.rs
+        spec.rs
+      storage/
+        traits.rs
+      sandbox/
+        traits.rs
+      events/
+      policies/
+
+  oxide-agent-modules/
+    src/
+      lib.rs
+      llm/
+        chatgpt.rs
+        gemini.rs
+        groq.rs
+        mistral.rs
+        minimax.rs
+        zai.rs
+        nvidia.rs
+        opencode_go.rs
+        openrouter.rs
+      embeddings/
+        gemini.rs
+        openai_compatible.rs
+        mistral.rs
+        openrouter.rs
+      storage/
+        local.rs
+        r2.rs
+      sandbox/
+        docker_direct.rs
+        sandboxd_client.rs
+        daemon.rs
+      tools/
+        todos.rs
+        compression.rs
+        delegation.rs
+        agents_md.rs
+        reminder.rs
+        wiki_memory.rs
+        webfetch_md.rs
+        tavily.rs
+        searxng.rs
+        browser_use.rs
+        sandbox_fileops.rs
+        sandbox_exec.rs
+        sandbox_recreate.rs
+        file_delivery.rs
+        stack_logs.rs
+        media_audio.rs
+        media_image.rs
+        media_video.rs
+        ytdlp.rs
+        tts_kokoro.rs
+        tts_silero.rs
+      integrations/
+        mcp_jira.rs
+        mcp_mattermost.rs
+        ssh_mcp.rs
+      manager/
+        forum_topics.rs
+        topic_binding.rs
+        topic_context.rs
+        topic_agents_md.rs
+        topic_infra.rs
+        topic_sandbox.rs
+        agent_profiles.rs
+        tool_policy.rs
+        hook_policy.rs
+        private_secret_probe.rs
+
+  oxide-agent-runtime/
+    src/
+      session.rs
+      progress.rs
+      transport_runtime.rs
+
+  oxide-agent-transport-telegram/
+    src/
+      module.rs
+      runner.rs
+      handlers/
+
+  oxide-agent-transport-web/
+    src/
+      module.rs
+      server.rs
+
+  oxide-agent-bin/
+    src/
+      main.rs
+      commands/
+        capabilities.rs
+        config_schema.rs
+
+  oxide-agent-sandboxd/
+    src/
+      main.rs
+
+docker/
+  Dockerfile.app
+  compose.full.yml
+  compose.embedded-opencode-local.yml
+  compose.dev.yml
+  compose.search.yml
+  compose.media.yml
+  sandbox/
+    Dockerfile.minimal
+    Dockerfile.exec
+    Dockerfile.media
+    Dockerfile.dev
+
+profiles/
+  full.toml
+  embedded-opencode-local.toml
+  lite.toml
+  search-only.toml
+  no-sandbox.toml
+  media-enabled.toml
+
+scripts/
+  check-cargo-tree-deny.sh
+  generate-compose.rs
+  generate-config-example.rs
+
+xtask/
+  src/
+    main.rs
+    capabilities.rs
+    docker.rs
+    size.rs
+```
+
+Alternative acceptable layout:
+
+- split heavy modules into separate crates, such as `oxide-agent-storage-r2`, `oxide-agent-llm-gemini`, `oxide-agent-integration-mcp-jira`, if compile times or dependency isolation require it.
+
+Hard requirement:
+
+- shared core must not import heavy modules unconditionally.
+
+## 24. Example Profiles
+
+### 24.1 `full`
+
+Purpose:
+
+- development and maximum capability deployments.
+
+Includes:
+
+- Telegram transport;
+- web transport if needed;
+- R2 and local storage;
+- all LLM providers;
+- all embedding providers;
+- all search/fetch/browser tools;
+- sandbox fileops and exec;
+- sandboxd and Docker direct backends;
+- media tools;
+- yt-dlp;
+- TTS;
+- Jira MCP;
+- Mattermost MCP;
+- SSH MCP;
+- manager/control-plane tools;
+- full Compose sidecars.
+
+Command:
+
+```bash
+cargo build --release --no-default-features --features profile-full
+```
+
+### 24.2 `embedded-opencode-local`
+
+Purpose:
+
+- small deployment using OpenCode Go provider and local storage.
+
+Includes:
+
+- Telegram transport or selected lightweight transport;
+- local storage;
+- OpenCode Go LLM provider;
+- todos;
+- agents.md;
+- reminders;
+- wiki memory;
+- webfetch-md;
+- Tavily if configured;
+- sandbox file operations only if explicitly selected.
+
+Excludes by default:
+
+- R2/AWS SDK;
+- all unused LLM SDKs;
+- MCP integrations;
+- browser-use;
+- searxng sidecar;
+- sandbox command execution;
+- sandbox fat image;
+- media-heavy tools;
+- yt-dlp;
+- TTS sidecars;
+- sandboxd unless explicitly selected.
+
+Command:
+
+```bash
+cargo build --release --no-default-features --features profile-embedded-opencode-local
+```
+
+### 24.3 `search-only`
+
+Purpose:
+
+- agent with web search/fetch tools and one LLM provider.
+
+Includes:
+
+- selected transport;
+- local storage;
+- one selected LLM provider;
+- `webfetch-md`;
+- Tavily or SearXNG depending on profile variant.
+
+Excludes:
+
+- browser-use unless selected;
+- MCP;
+- sandbox;
+- media;
+- manager/control-plane;
+- R2 unless selected.
+
+### 24.4 `no-sandbox`
+
+Purpose:
+
+- deployments where sandboxing is disallowed, unnecessary, or externally managed.
+
+Includes:
+
+- selected transport;
+- selected storage;
+- selected LLM provider;
+- non-sandbox tools such as todos, reminders, webfetch, wiki memory.
+
+Excludes:
+
+- Bollard;
+- sandboxd;
+- Docker socket mounts;
+- sandbox image builds;
+- all sandbox tools;
+- stack logs.
+
+### 24.5 `media-enabled`
+
+Purpose:
+
+- deployments that intentionally enable media analysis/transcription.
+
+Includes:
+
+- selected transport;
+- selected storage;
+- media-capable LLM provider;
+- audio transcription module if selected;
+- image description module if selected;
+- video description module if selected;
+- media sandbox image packages only if required.
+
+Excludes unless explicitly selected:
+
+- browser-use;
+- MCP;
+- full sandbox exec;
+- unrelated search sidecars.
+
+### 24.6 `provider-specific-opencode-go`
+
+Purpose:
+
+- verify provider isolation and dependency elimination.
+
+Includes:
+
+- OpenCode Go provider;
+- minimal routing/config support;
+- optional local storage;
+- no unrelated provider SDKs.
+
+Acceptance:
+
+- `gemini-rust`, `zai-rs`, and `async-openai` are absent unless explicitly required by selected modules.
+
+## 25. Required Output Format
+
+The implementation agent or engineering team consuming this PRD must produce code and repository changes that preserve these output guarantees:
+
+- profile builds are reproducible from Cargo features;
+- compiled capabilities can be printed as deterministic JSON;
+- enabled capabilities can be printed as deterministic JSON for a config;
+- config schema can be generated for compiled modules;
+- Docker and Compose assets correspond to selected modules;
+- CI proves minimal dependency absence;
+- no legacy registry or compatibility path remains.
+
+The final implementation must not introduce migration layers, deprecated wrappers, compatibility aliases, or duplicate old/new registration systems. The correct resolution for old architecture is deletion and replacement with capability modules.
