@@ -13,7 +13,8 @@ use oxide_agent_core::agent::recovery::{prune_tool_history_by_availability, Hist
 use oxide_agent_core::agent::{AgentMemoryScope, AgentSession, SessionId};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::{
-    resolve_active_topic_binding, PersistedAgentMemoryRef, R2Storage, StorageProvider,
+    resolve_active_topic_binding, PersistedAgentMemoryRef, PersistedAgentMemoryStore,
+    StorageProvider,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -54,7 +55,7 @@ pub(crate) struct StartupToolDriftPruneStats {
 
 /// Run the cold-start tool drift cleanup pass for persisted Telegram agent memory.
 pub(crate) async fn run_startup_tool_drift_prune(
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn PersistedAgentMemoryStore>,
     llm_client: Arc<LlmClient>,
     settings: Arc<BotSettings>,
 ) -> Result<Option<StartupToolDriftPruneStats>> {
@@ -93,7 +94,7 @@ pub(crate) async fn run_startup_tool_drift_prune(
 }
 
 async fn run_startup_tool_drift_prune_inner(
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn PersistedAgentMemoryStore>,
     llm_client: Arc<LlmClient>,
     settings: Arc<BotSettings>,
     config: StartupToolDriftPruneConfig,
@@ -127,7 +128,7 @@ async fn run_startup_tool_drift_prune_inner(
 }
 
 async fn prune_single_memory_record(
-    storage: Arc<R2Storage>,
+    storage: Arc<dyn PersistedAgentMemoryStore>,
     llm_client: Arc<LlmClient>,
     settings: Arc<BotSettings>,
     reference: &PersistedAgentMemoryRef,

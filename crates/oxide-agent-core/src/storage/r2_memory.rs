@@ -5,19 +5,21 @@ use super::{
         user_context_agent_flow_prefix, user_context_agent_flows_prefix,
         user_context_agent_memory_key,
     },
-    r2::{PersistedAgentMemoryRef, R2Storage},
+    provider::{PersistedAgentMemoryRef, PersistedAgentMemoryStore},
+    r2::R2Storage,
     telemetry::with_storage_reason,
     utils::current_timestamp_unix_secs,
     AgentFlowRecord, StorageError,
 };
 use crate::agent::memory::AgentMemory;
+use async_trait::async_trait;
 use std::collections::BTreeSet;
 
 impl R2Storage {
     /// List all persisted topic-scoped agent memory records present in R2.
     ///
     /// This scans topic-level memory snapshots and detached flow memories for all users.
-    pub async fn list_persisted_agent_memories(
+    async fn list_persisted_agent_memories_inner(
         &self,
     ) -> Result<Vec<PersistedAgentMemoryRef>, StorageError> {
         with_storage_reason("list_persisted_agent_memories", async {
@@ -156,6 +158,15 @@ impl R2Storage {
         let record = build_agent_flow_record(user_id, context_key, flow_id, existing, now);
         self.save_json(&key, &record).await?;
         Ok(record)
+    }
+}
+
+#[async_trait]
+impl PersistedAgentMemoryStore for R2Storage {
+    async fn list_persisted_agent_memories(
+        &self,
+    ) -> Result<Vec<PersistedAgentMemoryRef>, StorageError> {
+        self.list_persisted_agent_memories_inner().await
     }
 }
 

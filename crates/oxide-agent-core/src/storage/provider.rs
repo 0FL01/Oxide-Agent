@@ -8,6 +8,17 @@ use super::{
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
 
+/// Reference to a persisted topic-scoped agent memory record.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PersistedAgentMemoryRef {
+    /// User owning the memory record.
+    pub user_id: i64,
+    /// Transport context key associated with the memory record.
+    pub context_key: String,
+    /// Optional flow identifier when the memory belongs to a detached flow.
+    pub flow_id: Option<String>,
+}
+
 /// Interface for storage providers.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
@@ -557,4 +568,13 @@ pub trait StorageProvider: Send + Sync {
             "reminder job deletion is not implemented for this storage provider".to_string(),
         ))
     }
+}
+
+/// Optional maintenance interface for enumerating persisted agent memories.
+#[async_trait]
+pub trait PersistedAgentMemoryStore: StorageProvider {
+    /// List all persisted topic-scoped agent memory records.
+    async fn list_persisted_agent_memories(
+        &self,
+    ) -> Result<Vec<PersistedAgentMemoryRef>, StorageError>;
 }

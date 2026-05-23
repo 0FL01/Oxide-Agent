@@ -14,8 +14,6 @@ use crate::config::{
 #[cfg(feature = "storage-s3-r2")]
 use crate::startup_maintenance::run_startup_tool_drift_prune;
 #[cfg(feature = "storage-s3-r2")]
-use oxide_agent_core::storage::StorageProvider;
-#[cfg(feature = "storage-s3-r2")]
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
 #[cfg(feature = "storage-s3-r2")]
@@ -28,7 +26,7 @@ use teloxide::prelude::*;
 use teloxide::types::{CallbackQuery, Message, User};
 use tracing::error;
 #[cfg(feature = "storage-s3-r2")]
-use tracing::info;
+use tracing::{info, warn};
 
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
@@ -41,26 +39,31 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
 
     #[cfg(feature = "storage-s3-r2")]
     {
-        let storage = init_storage(&settings).await;
+        let storage_services = init_storage(&settings).await;
+        let storage = Arc::clone(&storage_services.provider);
         let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
         info!("LLM Client initialized.");
 
-        let maintenance_storage = Arc::clone(&storage);
-        let maintenance_llm = Arc::clone(&llm_client);
-        let maintenance_settings = Arc::clone(&settings);
-        tokio::spawn(async move {
-            if let Err(error) = run_startup_tool_drift_prune(
-                maintenance_storage,
-                maintenance_llm,
-                maintenance_settings,
-            )
-            .await
-            {
-                error!(%error, "Startup tool drift prune failed");
-            }
-        });
-
-        let storage: Arc<dyn storage::StorageProvider> = storage;
+        if let Some(maintenance_storage) = storage_services.persisted_agent_memory {
+            let maintenance_llm = Arc::clone(&llm_client);
+            let maintenance_settings = Arc::clone(&settings);
+            tokio::spawn(async move {
+                if let Err(error) = run_startup_tool_drift_prune(
+                    maintenance_storage,
+                    maintenance_llm,
+                    maintenance_settings,
+                )
+                .await
+                {
+                    error!(%error, "Startup tool drift prune failed");
+                }
+            });
+        } else {
+            warn!(
+                storage_module = storage_services.module_id,
+                "Storage backend does not expose persisted-agent-memory maintenance"
+            );
+        }
 
         let bot = Bot::new(settings.telegram.telegram_token.clone());
         bot::agent_handlers::spawn_reminder_scheduler(
@@ -91,19 +94,25 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
 }
 
 #[cfg(feature = "storage-s3-r2")]
-async fn init_storage(settings: &BotSettings) -> Arc<storage::R2Storage> {
-    match storage::R2Storage::new(settings.agent.as_ref()).await {
-        Ok(s) => {
-            info!("R2 Storage initialized.");
-            if s.check_connection().await.is_ok() {
+async fn init_storage(settings: &BotSettings) -> storage::BuiltStorageBackend {
+    match storage::build_primary_storage(settings.agent.as_ref()).await {
+        Ok(services) => {
+            info!(
+                storage_module = services.module_id,
+                "Storage backend initialized."
+            );
+            if services.provider.check_connection().await.is_ok() {
                 // Success message already logged in check_connection
             } else {
-                error!("R2 Storage connection check returned error.");
+                error!(
+                    storage_module = services.module_id,
+                    "Storage backend connection check returned error."
+                );
             }
-            Arc::new(s)
+            services
         }
         Err(e) => {
-            error!("Failed to initialize R2 Storage: {}", e);
+            error!("Failed to initialize storage backend: {}", e);
             std::process::exit(1);
         }
     }
