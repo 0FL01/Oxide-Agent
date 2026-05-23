@@ -11,8 +11,7 @@ use crate::llm::LlmProvider;
     feature = "llm-chatgpt",
     feature = "llm-groq",
     feature = "llm-mistral",
-    feature = "llm-minimax",
-    feature = "llm-openrouter"
+    feature = "llm-minimax"
 ))]
 use super::super::capabilities::ToolHistoryMode;
 use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
@@ -210,7 +209,7 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     #[cfg(feature = "llm-opencode-go")]
     modules.push(Box::new(super::opencode_go::OpenCodeGoProviderModule));
     #[cfg(feature = "llm-openrouter")]
-    modules.push(Box::new(OpenRouterProviderModule));
+    modules.push(Box::new(super::openrouter::OpenRouterProviderModule));
 
     modules
 }
@@ -346,48 +345,12 @@ impl LlmProviderModule for MiniMaxProviderModule {
     }
 }
 
-#[cfg(feature = "llm-openrouter")]
-struct OpenRouterProviderModule;
-
-#[cfg(feature = "llm-openrouter")]
-impl LlmProviderModule for OpenRouterProviderModule {
-    fn provider_id(&self) -> &'static str {
-        "llm-provider/openrouter"
-    }
-
-    fn aliases(&self) -> &'static [&'static str] {
-        &["openrouter"]
-    }
-
-    fn build_provider(
-        &self,
-        settings: &AgentSettings,
-        ctx: &LlmProviderBuildContext,
-    ) -> Option<Arc<dyn LlmProvider>> {
-        settings.openrouter_api_key.as_ref().map(|api_key| {
-            Arc::new(super::OpenRouterProvider::new_with_client(
-                api_key.clone(),
-                settings.openrouter_site_url.clone(),
-                settings.openrouter_site_name.clone(),
-                ctx.http_client.clone(),
-            )) as Arc<dyn LlmProvider>
-        })
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, false)
-    }
-
-    fn media_capabilities(&self) -> MediaCapabilities {
-        MediaCapabilities::new(true, true, true)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
-        provider_key, provider_missing_route_config_message, provider_module_id,
+        provider_key, provider_media_capabilities, provider_missing_route_config_message,
+        provider_module_id,
     };
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
 
@@ -545,5 +508,16 @@ mod tests {
 
         assert!(!capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn openrouter_module_owns_media_capabilities() {
+        let capabilities = provider_media_capabilities("llm-provider/openrouter")
+            .expect("provider should resolve");
+
+        assert!(capabilities.supports_audio_transcription);
+        assert!(capabilities.supports_image_understanding);
+        assert!(capabilities.supports_video_understanding);
     }
 }

@@ -1,4 +1,7 @@
 mod helpers;
+pub(crate) mod module;
+
+pub(crate) use module::OpenRouterProviderModule;
 
 use crate::config::{
     OPENROUTER_AUDIO_TRANSCRIBE_PROMPT, OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE,
