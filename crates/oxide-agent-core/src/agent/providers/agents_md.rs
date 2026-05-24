@@ -1,6 +1,10 @@
 //! Lightweight topic-scoped `AGENTS.md` tools for the active agent context.
 
 use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use crate::storage::{
     validate_topic_agents_md_content, StorageProvider, UpsertTopicAgentsMdOptions,
@@ -10,6 +14,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 const TOOL_AGENTS_MD_GET: &str = "agents_md_get";
 const TOOL_AGENTS_MD_UPDATE: &str = "agents_md_update";
@@ -46,6 +51,23 @@ impl AgentsMdProvider {
             user_id,
             topic_id,
         }
+    }
+
+    /// Build native typed runtime executors for topic AGENTS.md tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tools_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(AgentsMdToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
     }
 
     fn tools_definitions() -> Vec<ToolDefinition> {
@@ -146,6 +168,14 @@ impl AgentsMdProvider {
         })
         .to_string())
     }
+
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
+        match tool_name {
+            TOOL_AGENTS_MD_GET => self.execute_get(arguments).await,
+            TOOL_AGENTS_MD_UPDATE => self.execute_update(arguments).await,
+            _ => Err(anyhow!("Unknown AGENTS.md tool: {tool_name}")),
+        }
+    }
 }
 
 #[async_trait]
@@ -169,19 +199,89 @@ impl ToolProvider for AgentsMdProvider {
         _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
-        match tool_name {
-            TOOL_AGENTS_MD_GET => self.execute_get(arguments).await,
-            TOOL_AGENTS_MD_UPDATE => self.execute_update(arguments).await,
-            _ => Err(anyhow!("Unknown AGENTS.md tool: {tool_name}")),
-        }
+        self.execute_tool(tool_name, arguments).await
+    }
+}
+
+struct AgentsMdToolExecutor {
+    provider: Arc<AgentsMdProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for AgentsMdToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
     use crate::storage::{MockStorageProvider, TopicAgentsMdRecord};
+    use chrono::Utc;
     use mockall::predicate::eq;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-agents-md"),
+            batch_id: ToolBatchId::from("batch-agents-md"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     #[tokio::test]
     async fn get_returns_current_topic_record() {
@@ -213,6 +313,48 @@ mod tests {
             parsed["topic_agents_md"]["agents_md"],
             "# Topic AGENTS\nStay focused."
         );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_gets_current_topic_record() {
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|user_id, topic_id| {
+                Ok(Some(TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 2,
+                    user_id,
+                    topic_id,
+                    agents_md: "# Topic AGENTS\nStay focused.".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_AGENTS_MD_GET)
+            .expect("typed AGENTS.md get executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(TOOL_AGENTS_MD_GET, "{}"))
+            .await
+            .expect("typed AGENTS.md get succeeds");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        assert!(output
+            .stdout
+            .text
+            .as_deref()
+            .expect("stdout text")
+            .contains("Stay focused"));
     }
 
     #[tokio::test]
