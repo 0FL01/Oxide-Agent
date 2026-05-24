@@ -674,6 +674,41 @@ mod tests {
         );
     }
 
+    #[cfg(all(
+        feature = "tool-ytdlp",
+        any(
+            feature = "sandbox-backend-docker-direct",
+            feature = "sandbox-backend-sandboxd-client"
+        )
+    ))]
+    #[test]
+    fn compiled_ytdlp_declares_exec_and_fileops_backend_requirements() {
+        let manifest =
+            compiled_capability_manifest().expect("compiled modules must have unique IDs");
+        let ytdlp = manifest
+            .modules()
+            .iter()
+            .find(|module| module.id().as_str() == "tool/ytdlp")
+            .expect("yt-dlp module should be compiled");
+
+        let requirement_options: BTreeSet<_> = ytdlp
+            .requires()
+            .iter()
+            .flat_map(|requirement| requirement.capability_options())
+            .map(|capability| capability.as_str())
+            .collect();
+
+        assert_eq!(
+            requirement_options,
+            BTreeSet::from([
+                "sandbox-backend/docker-direct/exec",
+                "sandbox-backend/docker-direct/fileops",
+                "sandbox-backend/sandboxd-client/exec",
+                "sandbox-backend/sandboxd-client/fileops",
+            ])
+        );
+    }
+
     #[test]
     fn compiled_manifest_is_valid_for_selected_features() {
         let manifest =

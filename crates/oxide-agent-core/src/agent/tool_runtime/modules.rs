@@ -1020,9 +1020,9 @@ impl ToolModule for YtdlpToolModule {
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
         let provider = if let Some(tx) = ctx.progress_tx() {
-            YtdlpProvider::new(ctx.sandbox_scope()).with_progress_tx(tx)
+            YtdlpProvider::from_runtime(ctx.sandbox_runtime()).with_progress_tx(tx)
         } else {
-            YtdlpProvider::new(ctx.sandbox_scope())
+            YtdlpProvider::from_runtime(ctx.sandbox_runtime())
         };
         Some(Box::new(provider))
     }

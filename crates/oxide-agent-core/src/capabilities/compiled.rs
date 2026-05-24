@@ -82,6 +82,11 @@ const SANDBOX_DIAGNOSTICS_BACKEND_REQUIREMENT: &[CapabilityRequirement] =
         SANDBOX_DIAGNOSTICS_BACKEND_CAPABILITIES,
     )];
 #[allow(dead_code)]
+const SANDBOX_EXEC_AND_FILEOPS_BACKEND_REQUIREMENT: &[CapabilityRequirement] = &[
+    CapabilityRequirement::any_of(SANDBOX_EXEC_BACKEND_CAPABILITIES),
+    CapabilityRequirement::any_of(SANDBOX_FILEOPS_BACKEND_CAPABILITIES),
+];
+#[allow(dead_code)]
 const SANDBOX_DOCKER_BACKEND_REQUIREMENT: &[CapabilityRequirement] = &[CapabilityRequirement::new(
     CapabilityId::new("sandbox-backend/docker-direct"),
 )];
@@ -332,7 +337,7 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         Media,
         ["tool/media-video-description"]
     );
-    push_module!(
+    push_module_with_requires!(
         modules,
         "tool-ytdlp",
         "tool/ytdlp",
@@ -341,7 +346,8 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
             "tool/ytdlp-metadata",
             "tool/ytdlp-transcript",
             "tool/ytdlp-download"
-        ]
+        ],
+        SANDBOX_EXEC_AND_FILEOPS_BACKEND_REQUIREMENT
     );
     push_module!(
         modules,
