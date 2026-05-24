@@ -25,6 +25,7 @@ expected = {
 
 seen = set()
 failures = []
+unexpected = []
 for package in metadata["packages"]:
     package_name = package["name"]
     for target in package["targets"]:
@@ -32,6 +33,7 @@ for package in metadata["packages"]:
             continue
         key = (package_name, target["name"])
         if key not in expected:
+            unexpected.append(key)
             continue
         seen.add(key)
         actual = sorted(target.get("required-features", []))
@@ -42,6 +44,8 @@ for package in metadata["packages"]:
 missing = sorted(set(expected) - seen)
 if missing:
     failures.append(f"missing expected binary targets: {missing}")
+if unexpected:
+    failures.append(f"unexpected binary targets must be added to the feature-gate contract: {sorted(unexpected)}")
 
 if failures:
     print("binary feature gate check failed:", file=sys.stderr)

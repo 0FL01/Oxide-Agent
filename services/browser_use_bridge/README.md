@@ -23,7 +23,7 @@
 - `reuse_profile=true` - создать reusable profile и привязать его к новой browser session
 - `profile_id` - reuse уже существующего profile
 
-Начиная со Stage 2 основной Rust provider уже прокидывает hidden `profile_scope` из реального topic/context runtime. Прямые/manual bridge вызовы без этого поля по-прежнему fallback-ятся в `bridge_local`.
+Начиная со Stage 2 основной Rust provider уже прокидывает hidden `profile_scope` из реального topic/context runtime. Прямые/manual bridge вызовы без этого поля получают изолированный default scope `bridge_local`.
 
 ## Environment
 

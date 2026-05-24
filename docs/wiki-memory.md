@@ -27,18 +27,10 @@ With an optional storage prefix, wiki objects live under:
 
 `context_id` is derived deterministically from the transport memory scope. It is intentionally not split by `flow_id`, so topic/project memory can survive individual agent flows.
 
-## Legacy Data Cleanup
+## Removed Persistent-Memory Data
 
-The old Postgres persistent-memory tables and R2 objects under `persistent_memory/` are no longer read. Postgres has been fully removed from the stack (`docker-compose.yml` postgres service deleted, `crates/oxide-agent-memory` removed).
+The old Postgres persistent-memory tables and R2 objects under `persistent_memory/` are no longer runtime inputs. Postgres has been fully removed from the stack (`docker-compose.yml` postgres service deleted, `crates/oxide-agent-memory` removed).
 
-If you still have legacy data, clean up manually:
+Oxide Agent does not provide a migration, compatibility reader, startup cleanup routine, or transformation path for these records. Clean deployments recover only from `.env` plus the S3/R2-backed wiki memory object layout described above.
 
-```bash
-# R2/S3: remove old typed durable-memory objects after verifying the bucket/prefix.
-aws s3 rm s3://<bucket>/<optional-prefix>/persistent_memory/ --recursive --endpoint-url <r2-endpoint>
-
-# Postgres: only if you still have a Postgres instance with old tables — the service is no longer in compose.
-# DROP TABLE IF EXISTS memory_embeddings, memory_episodes, memory_threads, memory_session_states, memories;
-```
-
-The runtime does not require cleanup to be correct; cleanup only removes orphaned legacy data.
+If obsolete `persistent_memory/` objects or old Postgres tables still exist outside the current stack, treat them as orphaned deployment leftovers and delete them out-of-band after separate operator verification. The Oxide runtime must not depend on that deletion to start or to assemble durable context.
