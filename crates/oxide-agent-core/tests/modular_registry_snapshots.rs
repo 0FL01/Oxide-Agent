@@ -9,11 +9,12 @@
 
 use oxide_agent_core::agent::{AgentExecutor, AgentSession};
 use oxide_agent_core::capabilities::{
-    compiled_capability_manifest, CapabilityKind, ModuleManifestEntry,
+    compiled_capability_manifest, CapabilityId, CapabilityKind, ModuleId, ModuleManifestEntry,
 };
 use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
 use oxide_agent_core::llm::LlmClient;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
 
@@ -62,6 +63,19 @@ fn modular_registry_snapshot_covers_manifest_and_tool_lists() {
             .filter(|module| module.kind() == CapabilityKind::LlmProvider),
     );
     let provider_client = LlmClient::new(&provider_settings);
+    let registered_tool_names_default_config: Vec<_> = executor
+        .current_tool_definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    assert_tool_availability_contract(
+        profile,
+        compiled_manifest.modules(),
+        enabled_manifest.modules(),
+        enabled_manifest.capabilities(),
+        &registered_tool_names_default_config,
+    );
 
     let snapshot = ModularRegistrySnapshot {
         profile,
@@ -77,11 +91,7 @@ fn modular_registry_snapshot_covers_manifest_and_tool_lists() {
                 .expect("enabled manifest should serialize"),
         )
         .expect("enabled manifest JSON should parse"),
-        registered_tool_names_default_config: executor
-            .current_tool_definitions()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect(),
+        registered_tool_names_default_config,
         registered_llm_provider_ids_dummy_config: provider_client
             .configured_provider_names()
             .into_iter()
@@ -190,6 +200,227 @@ fn external_service_requirements(
                 .collect(),
         })
         .collect()
+}
+
+fn assert_tool_availability_contract(
+    profile: &str,
+    compiled_modules: &[ModuleManifestEntry],
+    enabled_modules: &[ModuleId],
+    enabled_capabilities: &[CapabilityId],
+    registered_tool_names: &[String],
+) {
+    let compiled_module_ids: BTreeSet<_> = compiled_modules
+        .iter()
+        .map(|module| module.id().as_str())
+        .collect();
+    let enabled_module_ids: BTreeSet<_> = enabled_modules
+        .iter()
+        .map(|module_id| module_id.as_str())
+        .collect();
+    let enabled_capability_ids: BTreeSet<_> = enabled_capabilities
+        .iter()
+        .map(|capability_id| capability_id.as_str())
+        .collect();
+    let tool_names: BTreeSet<_> = registered_tool_names.iter().map(String::as_str).collect();
+
+    assert_tools_absent_when_module_unavailable(
+        &compiled_module_ids,
+        &enabled_module_ids,
+        &tool_names,
+        "tool/browser-use",
+        &[
+            "browser_use_run_task",
+            "browser_use_get_session",
+            "browser_use_close_session",
+            "browser_use_extract_content",
+            "browser_use_screenshot",
+        ],
+    );
+    assert_tools_absent_when_module_unavailable(
+        &compiled_module_ids,
+        &enabled_module_ids,
+        &tool_names,
+        "tool/media-audio",
+        &["transcribe_audio_file"],
+    );
+    assert_tools_absent_when_module_unavailable(
+        &compiled_module_ids,
+        &enabled_module_ids,
+        &tool_names,
+        "tool/media-image",
+        &["describe_image_file"],
+    );
+    assert_tools_absent_when_module_unavailable(
+        &compiled_module_ids,
+        &enabled_module_ids,
+        &tool_names,
+        "tool/media-video",
+        &["describe_video_file"],
+    );
+    assert_tools_absent_when_module_unavailable(
+        &compiled_module_ids,
+        &enabled_module_ids,
+        &tool_names,
+        "tool/tavily",
+        &["web_search", "web_extract"],
+    );
+    assert_tools_absent_when_module_unavailable(
+        &compiled_module_ids,
+        &enabled_module_ids,
+        &tool_names,
+        "integration/mcp-jira",
+        &["jira_read", "jira_write", "jira_schema"],
+    );
+    assert_tools_absent_when_module_unavailable(
+        &compiled_module_ids,
+        &enabled_module_ids,
+        &tool_names,
+        "integration/mcp-mattermost",
+        &[
+            "mattermost_list_teams",
+            "mattermost_get_team",
+            "mattermost_get_team_members",
+            "mattermost_list_channels",
+            "mattermost_get_channel",
+            "mattermost_get_channel_by_name",
+            "mattermost_create_channel",
+            "mattermost_join_channel",
+            "mattermost_create_direct_channel",
+            "mattermost_post_message",
+            "mattermost_get_channel_messages",
+            "mattermost_search_messages",
+            "mattermost_update_message",
+            "mattermost_get_thread",
+            "mattermost_get_me",
+            "mattermost_get_user",
+            "mattermost_get_user_by_username",
+            "mattermost_search_users",
+            "mattermost_upload_file",
+        ],
+    );
+    assert_tools_absent_when_module_unavailable(
+        &compiled_module_ids,
+        &enabled_module_ids,
+        &tool_names,
+        "integration/ssh-mcp",
+        &[
+            "ssh_exec",
+            "ssh_sudo_exec",
+            "ssh_read_file",
+            "ssh_apply_file_edit",
+            "ssh_check_process",
+            "ssh_send_file_to_user",
+        ],
+    );
+
+    match profile {
+        "profile-embedded-opencode-local" | "profile-lite" => {
+            assert_absent_tools(&tool_names, &["execute_command"], profile);
+            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
+            assert_absent_tool_prefix(&tool_names, "jira_", profile);
+            assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
+            assert_absent_tool_prefix(&tool_names, "ssh_", profile);
+        }
+        "profile-search-only" => {
+            assert!(
+                enabled_module_ids.contains("tool/tavily"),
+                "search-only profile must compile and enable Tavily search capabilities"
+            );
+            assert_present_capabilities(
+                &enabled_capability_ids,
+                &["tool/tavily-search", "tool/tavily-extract"],
+                profile,
+            );
+            assert_present_tools(&tool_names, &["web_markdown"], profile);
+            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
+            assert_absent_tool_prefix(&tool_names, "jira_", profile);
+            assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
+            assert_absent_tool_prefix(&tool_names, "ssh_", profile);
+        }
+        "profile-media-enabled" => {
+            assert_present_capabilities(
+                &enabled_capability_ids,
+                &[
+                    "tool/media-audio-transcription",
+                    "tool/media-image-description",
+                    "tool/media-video-description",
+                ],
+                profile,
+            );
+            assert_present_tools(
+                &tool_names,
+                &[
+                    "transcribe_audio_file",
+                    "describe_image_file",
+                    "describe_video_file",
+                ],
+                profile,
+            );
+            assert_absent_tools(&tool_names, &["execute_command"], profile);
+            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
+            assert!(
+                enabled_module_ids
+                    .iter()
+                    .all(|module_id| !module_id.starts_with("sandbox-backend/")),
+                "media-enabled profile must expose media tools without selecting a sandbox backend"
+            );
+        }
+        _ => {}
+    }
+}
+
+fn assert_tools_absent_when_module_unavailable(
+    compiled_module_ids: &BTreeSet<&str>,
+    enabled_module_ids: &BTreeSet<&str>,
+    tool_names: &BTreeSet<&str>,
+    module_id: &str,
+    unavailable_tools: &[&str],
+) {
+    if compiled_module_ids.contains(module_id) && enabled_module_ids.contains(module_id) {
+        return;
+    }
+
+    assert_absent_tools(tool_names, unavailable_tools, module_id);
+}
+
+fn assert_present_capabilities(
+    enabled_capability_ids: &BTreeSet<&str>,
+    capabilities: &[&str],
+    profile: &str,
+) {
+    for capability in capabilities {
+        assert!(
+            enabled_capability_ids.contains(capability),
+            "expected capability {capability} to be enabled for {profile}"
+        );
+    }
+}
+
+fn assert_present_tools(tool_names: &BTreeSet<&str>, expected_tools: &[&str], context: &str) {
+    for tool_name in expected_tools {
+        assert!(
+            tool_names.contains(tool_name),
+            "expected tool {tool_name} to be registered for {context}; registered={tool_names:?}"
+        );
+    }
+}
+
+fn assert_absent_tools(tool_names: &BTreeSet<&str>, forbidden_tools: &[&str], context: &str) {
+    for tool_name in forbidden_tools {
+        assert!(
+            !tool_names.contains(tool_name),
+            "tool {tool_name} must be absent for {context}; registered={tool_names:?}"
+        );
+    }
+}
+
+fn assert_absent_tool_prefix(tool_names: &BTreeSet<&str>, prefix: &str, context: &str) {
+    assert!(
+        tool_names
+            .iter()
+            .all(|tool_name| !tool_name.starts_with(prefix)),
+        "tool prefix {prefix} must be absent for {context}; registered={tool_names:?}"
+    );
 }
 
 fn compiled_profile_label() -> &'static str {
