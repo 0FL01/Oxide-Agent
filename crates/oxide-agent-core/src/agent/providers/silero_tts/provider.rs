@@ -1,6 +1,6 @@
 //! Silero TTS Tool Provider.
 //!
-//! Implements `ToolProvider` trait for Russian text-to-speech synthesis using Silero.
+//! Provides native typed runtime executors for Russian text-to-speech synthesis using Silero.
 //! Sends generated audio as voice messages via the progress channel.
 //! Supports SSML for enhanced speech control.
 
@@ -8,7 +8,6 @@ use super::client::SileroClient;
 use super::types::{SileroTtsConfig, TextToSpeechRuArgs};
 use crate::agent::progress::AgentEvent;
 use crate::agent::progress::FileDeliveryKind;
-use crate::agent::provider::ToolProvider;
 use crate::agent::providers::file_delivery::{
     deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus,
 };
@@ -481,34 +480,6 @@ async fn ensure_parent_dir(exec: &dyn SandboxExec, path: &str) -> Result<()> {
     }
 }
 
-#[async_trait]
-impl ToolProvider for SileroTtsProvider {
-    fn name(&self) -> &'static str {
-        "silero_tts"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_TEXT_TO_SPEECH_RU | TOOL_TEXT_TO_SPEECH_RU_FILE
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments, progress_tx).await
-    }
-}
-
 struct SileroTtsToolExecutor {
     provider: Arc<SileroTtsProvider>,
     name: ToolName,
@@ -592,30 +563,21 @@ mod tests {
     }
 
     #[test]
-    fn provider_creation() {
-        let provider = SileroTtsProvider::from_env();
-        assert_eq!(provider.name(), "silero_tts");
-    }
+    fn typed_runtime_specs_include_silero_tools() {
+        let provider = Arc::new(SileroTtsProvider::from_env());
+        let tools = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect::<Vec<_>>();
 
-    #[test]
-    fn provider_tools() {
-        let provider = SileroTtsProvider::from_env();
-        let tools = provider.tools();
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name, TOOL_TEXT_TO_SPEECH_RU);
         assert_eq!(tools[1].name, TOOL_TEXT_TO_SPEECH_RU_FILE);
     }
 
     #[test]
-    fn can_handle_check() {
-        let provider = SileroTtsProvider::from_env();
-        assert!(provider.can_handle(TOOL_TEXT_TO_SPEECH_RU));
-        assert!(provider.can_handle(TOOL_TEXT_TO_SPEECH_RU_FILE));
-        assert!(!provider.can_handle("other_tool"));
-    }
-
-    #[test]
-    fn typed_runtime_executors_register_silero_tools() {
+    fn typed_runtime_executors_register_only_silero_tools() {
         let provider = Arc::new(SileroTtsProvider::from_env());
         let names = provider
             .tool_runtime_executors()

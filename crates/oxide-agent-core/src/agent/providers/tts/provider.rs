@@ -1,11 +1,10 @@
 //! Kokoro TTS Tool Provider
 //!
-//! Implements `ToolProvider` trait for English text-to-speech synthesis.
+//! Provides native typed runtime executors for English text-to-speech synthesis.
 //! Sends generated audio as voice messages via the progress channel.
 
 use super::client::KokoroClient;
 use super::types::{TextToSpeechArgs, TtsConfig};
-use crate::agent::provider::ToolProvider;
 use crate::agent::providers::SandboxRuntime;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
@@ -428,34 +427,6 @@ async fn ensure_parent_dir(exec: &dyn SandboxExec, path: &str) -> Result<()> {
     }
 }
 
-#[async_trait]
-impl ToolProvider for KokoroTtsProvider {
-    fn name(&self) -> &'static str {
-        "kokoro_tts"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_TEXT_TO_SPEECH_EN | TOOL_TEXT_TO_SPEECH_EN_FILE
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments, progress_tx).await
-    }
-}
-
 struct KokoroTtsToolExecutor {
     provider: Arc<KokoroTtsProvider>,
     name: ToolName,
@@ -539,30 +510,21 @@ mod tests {
     }
 
     #[test]
-    fn provider_creation() {
-        let provider = KokoroTtsProvider::from_env();
-        assert_eq!(provider.name(), "kokoro_tts");
-    }
+    fn typed_runtime_specs_include_kokoro_tools() {
+        let provider = Arc::new(KokoroTtsProvider::from_env());
+        let tools = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect::<Vec<_>>();
 
-    #[test]
-    fn provider_tools() {
-        let provider = KokoroTtsProvider::from_env();
-        let tools = provider.tools();
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name, TOOL_TEXT_TO_SPEECH_EN);
         assert_eq!(tools[1].name, TOOL_TEXT_TO_SPEECH_EN_FILE);
     }
 
     #[test]
-    fn can_handle_check() {
-        let provider = KokoroTtsProvider::from_env();
-        assert!(provider.can_handle(TOOL_TEXT_TO_SPEECH_EN));
-        assert!(provider.can_handle(TOOL_TEXT_TO_SPEECH_EN_FILE));
-        assert!(!provider.can_handle("other_tool"));
-    }
-
-    #[test]
-    fn typed_runtime_executors_register_kokoro_tools() {
+    fn typed_runtime_executors_register_only_kokoro_tools() {
         let provider = Arc::new(KokoroTtsProvider::from_env());
         let names = provider
             .tool_runtime_executors()
