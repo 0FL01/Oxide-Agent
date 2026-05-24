@@ -149,3 +149,44 @@ jobs:
             --build-arg PACKAGES="${{ matrix.packages }}" \
             --build-arg BINARIES="${{ matrix.binaries }}" \
             .
+
+  profile-size-budget-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - embedded-opencode-local
+          - full
+        mode:
+          - binary
+          - image
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        if: matrix.mode == 'binary'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and index
+        if: matrix.mode == 'binary'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        if: matrix.mode == 'binary'
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-size-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Set up Docker Buildx
+        if: matrix.mode == 'image'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check profile size budget
+        run: scripts/check-profile-size-budget.sh "${{ matrix.profile }}" "${{ matrix.mode }}"
