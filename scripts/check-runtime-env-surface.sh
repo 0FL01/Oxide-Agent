@@ -20,6 +20,8 @@ forbidden_patterns=(
   '(^|[^A-Z0-9_])R2_REGION([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])GEMINI_API_KEY([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])GOOGLE_GEMINI_API_KEY([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])OPENROUTER_SITE_URL([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])OPENROUTER_SITE_NAME([^A-Z0-9_]|$)'
 )
 
 forbidden_rust_provider_settings=(
@@ -40,7 +42,9 @@ forbidden_rust_provider_settings=(
 
 failed=0
 for pattern in "${forbidden_patterns[@]}"; do
-  if rg -n --pcre2 "${pattern}" "${paths[@]}" --glob '!target/**'; then
+  if rg -n --pcre2 "${pattern}" "${paths[@]}" \
+    --glob '!target/**' \
+    --glob '!crates/oxide-agent-core/tests/tool_runtime_static_guards.rs'; then
     echo "forbidden legacy runtime env surface matched pattern: ${pattern}" >&2
     failed=1
   fi
