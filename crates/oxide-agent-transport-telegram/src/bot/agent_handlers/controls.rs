@@ -1,7 +1,7 @@
 use super::{
-    ensure_session_exists, remove_sessions_with_compat, save_memory_after_task,
-    spawn_manual_compaction_task, AgentDialogue, AgentModeSessionKeys, EnsureSessionContext,
-    RunManualCompactionContext, SessionTransportContext, SESSION_REGISTRY,
+    ensure_session_exists, remove_session, save_memory_after_task, spawn_manual_compaction_task,
+    AgentDialogue, AgentModeSessionKeys, EnsureSessionContext, RunManualCompactionContext,
+    SessionTransportContext, SESSION_REGISTRY,
 };
 use crate::bot::context::{ensure_current_agent_flow_id, reset_current_agent_flow_id};
 use crate::bot::resilient;
@@ -653,7 +653,7 @@ pub(crate) async fn exit_agent_mode(
         .await
         .unwrap_or(session_keys.primary);
     save_memory_after_task(session_id, user_id, &context_key, &agent_flow_id, &storage).await;
-    remove_sessions_with_compat(session_keys).await;
+    remove_session(session_keys).await;
 
     let _ = crate::bot::context::set_current_context_state(
         &storage,

@@ -390,6 +390,49 @@ fn transport_flow_memory_migration_path_is_removed() {
 }
 
 #[test]
+fn telegram_agent_sessions_use_only_scoped_primary_identity() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+    let targets = [
+        "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/session.rs",
+        "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/callbacks.rs",
+        "crates/oxide-agent-transport-telegram/src/bot/agent_handlers/controls.rs",
+    ];
+    let forbidden_patterns = [
+        "legacy: SessionId",
+        "distinct_legacy",
+        "keys.legacy",
+        "SessionId::from(user_id)",
+        "reset_sessions_with_compat",
+        "cancel_and_clear_with_compat",
+        "remove_sessions_with_compat",
+        "migrate_to_primary",
+    ];
+
+    let offenders = targets
+        .iter()
+        .flat_map(|target| {
+            let source = fs::read_to_string(workspace_root.join(target))
+                .unwrap_or_else(|error| panic!("read {target}: {error}"));
+            forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{target}: {pattern}"))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "Telegram Agent Mode sessions must not fall back to unscoped legacy user-id sessions; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn ssh_cleanup_is_owned_by_ssh_module_not_binaries() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

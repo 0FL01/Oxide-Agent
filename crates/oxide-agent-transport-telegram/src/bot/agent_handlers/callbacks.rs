@@ -1,10 +1,10 @@
 use super::{
-    agent_mode_session_keys, automatic_agent_control_markup, cancel_and_clear_with_compat,
+    agent_mode_session_keys, automatic_agent_control_markup, cancel_and_clear_session,
     cancel_status_inline_markup, cancel_status_reply_markup, cleanup_abandoned_empty_flow,
     clear_cancel_confirmation_message, clear_pending_cancel_message, confirm_destructive_action,
     ensure_session_exists, exit_agent_mode, handle_clear_memory_confirmation,
     handle_recreate_container_confirmation, is_agent_task_running, manager_default_chat_id,
-    outbound_thread_from_callback, renew_cancellation_token, reset_sessions_with_compat,
+    outbound_thread_from_callback, renew_cancellation_token, reset_session,
     resolve_existing_session_id, run_agent_task_with_text, run_approved_ssh_resume,
     save_memory_after_task, send_agent_message, send_agent_message_with_optional_keyboard,
     send_or_update_cancel_confirmation, send_or_update_pending_cancel_message,
@@ -277,10 +277,10 @@ async fn handle_loop_retry(
 }
 
 async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
-    let _ = cancel_and_clear_with_compat(ctx.session_keys).await;
+    let _ = cancel_and_clear_session(ctx.session_keys).await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    match reset_sessions_with_compat(ctx.session_keys).await {
+    match reset_session(ctx.session_keys).await {
         ResetSessionOutcome::Reset => {
             let reply_markup = automatic_agent_control_markup(ctx.thread_spec);
             send_agent_message_with_optional_keyboard(
@@ -845,7 +845,7 @@ pub async fn cancel_agent_task(
         .unwrap_or(session_keys.primary);
     let reply_markup = automatic_agent_control_markup(thread_spec);
 
-    let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
+    let (cancelled, cleared_todos) = cancel_and_clear_session(session_keys).await;
 
     if !cancelled && !cleared_todos {
         clear_pending_cancel_message(session_id).await;
@@ -893,7 +893,7 @@ async fn cancel_agent_task_by_id(
     let session_id = resolve_existing_session_id(session_keys)
         .await
         .unwrap_or(session_keys.primary);
-    let (cancelled, cleared_todos) = cancel_and_clear_with_compat(session_keys).await;
+    let (cancelled, cleared_todos) = cancel_and_clear_session(session_keys).await;
     let outbound_thread = OutboundThreadParams { message_thread_id };
     let reply_markup = automatic_agent_control_markup(thread_spec);
 
