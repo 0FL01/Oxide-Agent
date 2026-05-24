@@ -359,6 +359,37 @@ fn startup_persisted_tool_drift_cleanup_is_removed() {
 }
 
 #[test]
+fn transport_flow_memory_migration_path_is_removed() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+    let session = fs::read_to_string(
+        workspace_root
+            .join("crates/oxide-agent-transport-telegram/src/bot/agent_handlers/session.rs"),
+    )
+    .expect("read Telegram agent session handlers");
+
+    let forbidden_patterns = [
+        "migrate_legacy_agent_memory_into_flow",
+        "Migrated legacy agent memory",
+        "Failed to migrate legacy agent memory",
+        "load_agent_memory_for_context(ctx.user_id",
+    ];
+    let offenders = forbidden_patterns
+        .iter()
+        .copied()
+        .filter(|pattern| session.contains(pattern))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "flow bootstrap must not migrate old context-level memory into flow-scoped storage; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn ssh_cleanup_is_owned_by_ssh_module_not_binaries() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

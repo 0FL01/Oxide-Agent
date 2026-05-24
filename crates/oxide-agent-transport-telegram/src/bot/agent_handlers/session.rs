@@ -376,15 +376,10 @@ async fn load_agent_memory_into_session(
         return;
     }
 
-    if ctx.agent_flow_created {
-        migrate_legacy_agent_memory_into_flow(ctx, session).await;
-        session.restore_last_task_from_memory();
-    } else {
-        info!(
-            user_id = ctx.user_id,
-            "No saved agent memory found, starting fresh"
-        );
-    }
+    info!(
+        user_id = ctx.user_id,
+        "No saved flow-scoped agent memory found, starting fresh"
+    );
 }
 
 async fn inject_topic_agents_md_for_flow(
@@ -470,47 +465,6 @@ async fn load_flow_agent_memory(
             );
             None
         }
-    }
-}
-
-async fn migrate_legacy_agent_memory_into_flow(
-    ctx: &EnsureSessionContext<'_>,
-    session: &mut AgentSession,
-) {
-    if let Ok(Some(saved_memory)) = ctx
-        .storage
-        .load_agent_memory_for_context(ctx.user_id, ctx.context_key.clone())
-        .await
-    {
-        session.memory = saved_memory;
-        if let Err(error) = ctx
-            .storage
-            .save_agent_memory_for_flow(
-                ctx.user_id,
-                ctx.context_key.clone(),
-                ctx.agent_flow_id.clone(),
-                &session.memory,
-            )
-            .await
-        {
-            warn!(
-                error = %error,
-                user_id = ctx.user_id,
-                topic_id = %ctx.context_key,
-                flow_id = %ctx.agent_flow_id,
-                "Failed to migrate legacy agent memory into flow-scoped storage"
-            );
-        }
-        info!(
-            user_id = ctx.user_id,
-            messages_count = session.memory.get_messages().len(),
-            "Migrated legacy agent memory into flow-scoped storage"
-        );
-    } else {
-        info!(
-            user_id = ctx.user_id,
-            "No saved agent memory found, starting fresh"
-        );
     }
 }
 
