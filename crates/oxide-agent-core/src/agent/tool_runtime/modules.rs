@@ -814,7 +814,7 @@ impl ToolModule for StackLogsToolModule {
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+        Arc::new(StackLogsProvider::new()).tool_runtime_executors()
     }
 }
 

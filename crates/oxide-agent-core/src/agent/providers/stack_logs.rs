@@ -1,6 +1,10 @@
 //! Stack logs provider for compose-stack log discovery and retrieval.
 
 use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use crate::sandbox::broker::{StackLogsFetchRequest, StackLogsListSourcesRequest};
 use crate::sandbox::{SandboxDiagnostics, SandboxDiagnosticsRuntime};
@@ -9,6 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 const TOOL_STACK_LOGS_LIST_SOURCES: &str = "stack_logs_list_sources";
 const TOOL_STACK_LOGS_FETCH: &str = "stack_logs_fetch";
@@ -35,6 +40,27 @@ impl StackLogsProvider {
     #[must_use]
     pub fn with_diagnostics(diagnostics: Arc<dyn SandboxDiagnostics>) -> Self {
         Self { diagnostics }
+    }
+
+    /// Build native typed runtime executors for stack log tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(StackLogsToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![Self::list_sources_definition(), Self::fetch_definition()]
     }
 
     fn list_sources_definition() -> ToolDefinition {
@@ -166,6 +192,14 @@ impl StackLogsProvider {
             .map_err(Into::into),
         }
     }
+
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
+        match tool_name {
+            TOOL_STACK_LOGS_LIST_SOURCES => self.handle_list_sources(arguments).await,
+            TOOL_STACK_LOGS_FETCH => self.handle_fetch(arguments).await,
+            _ => anyhow::bail!("Unknown stack logs tool: {tool_name}"),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -255,7 +289,7 @@ impl ToolProvider for StackLogsProvider {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![Self::list_sources_definition(), Self::fetch_definition()]
+        Self::tool_definitions()
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
@@ -272,17 +306,145 @@ impl ToolProvider for StackLogsProvider {
         _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
-        match tool_name {
-            TOOL_STACK_LOGS_LIST_SOURCES => self.handle_list_sources(arguments).await,
-            TOOL_STACK_LOGS_FETCH => self.handle_fetch(arguments).await,
-            _ => anyhow::bail!("Unknown stack logs tool: {tool_name}"),
-        }
+        self.execute_tool(tool_name, arguments).await
+    }
+}
+
+struct StackLogsToolExecutor {
+    provider: Arc<StackLogsProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for StackLogsToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use crate::sandbox::broker::{
+        ResolvedStackLogsSelector, StackLogSource, StackLogsFetchResponse,
+        StackLogsListSourcesResponse, StackLogsWindow,
+    };
+    use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability};
+    use chrono::Utc;
+    use tokio_util::sync::CancellationToken;
+
+    struct FakeDiagnostics;
+
+    impl SandboxBackend for FakeDiagnostics {
+        fn id(&self) -> SandboxBackendId {
+            SandboxBackendId::new("sandbox/fake-diagnostics")
+        }
+
+        fn capabilities(&self) -> &'static [SandboxCapability] {
+            &[SandboxCapability::Diagnostics]
+        }
+    }
+
+    #[async_trait]
+    impl SandboxDiagnostics for FakeDiagnostics {
+        async fn list_stack_log_sources(
+            &self,
+            request: StackLogsListSourcesRequest,
+        ) -> Result<StackLogsListSourcesResponse> {
+            Ok(StackLogsListSourcesResponse {
+                stack_selector: ResolvedStackLogsSelector {
+                    compose_project: request
+                        .selector
+                        .compose_project
+                        .unwrap_or_else(|| "oxide".to_string()),
+                },
+                containers: vec![StackLogSource {
+                    service: "api".to_string(),
+                    container_name: "oxide-api-1".to_string(),
+                    container_id: "container-api".to_string(),
+                    state: "running".to_string(),
+                    started_at: None,
+                }],
+            })
+        }
+
+        async fn fetch_stack_logs(
+            &self,
+            _request: StackLogsFetchRequest,
+        ) -> Result<StackLogsFetchResponse> {
+            Ok(StackLogsFetchResponse {
+                window: StackLogsWindow {
+                    since: None,
+                    until: None,
+                },
+                entries: Vec::new(),
+                suppressed: Vec::new(),
+                truncated: false,
+                next_cursor: None,
+                warnings: Vec::new(),
+            })
+        }
+    }
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-stack-logs"),
+            batch_id: ToolBatchId::from("batch-stack-logs"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     #[test]
     fn provider_registers_stack_log_tools() {
@@ -295,6 +457,31 @@ mod tests {
         assert!(tools.iter().any(|tool| tool.name == TOOL_STACK_LOGS_FETCH));
         assert!(provider.can_handle(TOOL_STACK_LOGS_LIST_SOURCES));
         assert!(provider.can_handle(TOOL_STACK_LOGS_FETCH));
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_lists_stack_log_sources() {
+        let provider = Arc::new(StackLogsProvider::with_diagnostics(Arc::new(
+            FakeDiagnostics,
+        )));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_STACK_LOGS_LIST_SOURCES)
+            .expect("typed stack logs list executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(
+                TOOL_STACK_LOGS_LIST_SOURCES,
+                r#"{"selector":{"compose_project":"oxide-test"}}"#,
+            ))
+            .await
+            .expect("typed stack logs list succeeds");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let stdout = output.stdout.text.as_deref().expect("stdout text");
+        assert!(stdout.contains("oxide-test"));
+        assert!(stdout.contains("oxide-api-1"));
     }
 
     #[test]
