@@ -36,8 +36,6 @@ pub enum AgentMessageKind {
     AssistantToolCall,
     /// Raw tool result retained in hot memory.
     ToolResult,
-    /// Dynamically loaded skill instructions.
-    SkillContext,
     /// System replay instruction after operator approval.
     ApprovalReplay,
     /// System status about topic-scoped infra / approvals.
@@ -74,7 +72,6 @@ impl AgentMessageKind {
             Self::SystemContext
             | Self::UserTask
             | Self::RuntimeContext
-            | Self::SkillContext
             | Self::ApprovalReplay
             | Self::InfraStatus => CompactionRetention::ProtectedLive,
             Self::ToolResult => CompactionRetention::PrunableArtifact,
@@ -310,8 +307,6 @@ pub struct HotMemoryBudget {
     pub prunable_artifact_tokens: usize,
     /// Tokens belonging to compactable history messages.
     pub compactable_history_tokens: usize,
-    /// Tokens specifically attributed to skill context messages.
-    pub skill_context_tokens: usize,
     /// Tokens specifically attributed to runtime context messages.
     pub runtime_context_tokens: usize,
 }
@@ -426,7 +421,7 @@ mod tests {
             CompactionRetention::ProtectedLive
         );
         assert_eq!(
-            AgentMessageKind::SkillContext.retention(),
+            AgentMessageKind::RuntimeContext.retention(),
             CompactionRetention::ProtectedLive
         );
     }

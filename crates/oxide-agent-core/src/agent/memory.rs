@@ -431,14 +431,6 @@ impl AgentMessage {
         }
     }
 
-    /// Create a message carrying dynamically loaded skill instructions.
-    pub fn skill_context(content: impl Into<String>) -> Self {
-        Self {
-            kind: AgentMessageKind::SkillContext,
-            ..Self::system_context(content)
-        }
-    }
-
     /// Create a system message instructing the agent to replay an approved action.
     pub fn approval_replay(content: impl Into<String>) -> Self {
         Self {
@@ -1164,7 +1156,6 @@ mod tests {
         let topic_agents_md = AgentMessage::topic_agents_md("# Topic AGENTS");
         let task = AgentMessage::user_task("Investigate failure");
         let runtime = AgentMessage::runtime_context("User added a new constraint");
-        let skill = AgentMessage::skill_context("[Loaded skill: deploy]\nUse checklist");
         let tool = AgentMessage::tool("call-1", "execute_command", "cargo check");
         let summary = AgentMessage::summary("[Previous context compressed]\n...");
         let breadcrumb = AgentMessage::from_breadcrumb_card(BreadcrumbCard {
@@ -1184,9 +1175,6 @@ mod tests {
 
         assert_eq!(runtime.resolved_kind(), AgentMessageKind::RuntimeContext);
         assert_eq!(runtime.retention(), CompactionRetention::ProtectedLive);
-
-        assert_eq!(skill.resolved_kind(), AgentMessageKind::SkillContext);
-        assert_eq!(skill.retention(), CompactionRetention::ProtectedLive);
 
         assert_eq!(tool.resolved_kind(), AgentMessageKind::ToolResult);
         assert_eq!(tool.retention(), CompactionRetention::PrunableArtifact);

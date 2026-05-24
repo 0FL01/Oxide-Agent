@@ -163,7 +163,6 @@ fn is_pinned(message: &AgentMessage) -> bool {
         AgentMessageKind::TopicAgentsMd
             | AgentMessageKind::UserTask
             | AgentMessageKind::RuntimeContext
-            | AgentMessageKind::SkillContext
             | AgentMessageKind::ApprovalReplay
             | AgentMessageKind::InfraStatus
             | AgentMessageKind::ArchiveReference

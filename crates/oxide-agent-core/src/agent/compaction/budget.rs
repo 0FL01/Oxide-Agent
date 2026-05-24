@@ -87,7 +87,6 @@ fn estimate_hot_memory(messages: &[AgentMessage]) -> HotMemoryBudget {
         protected_live_tokens: 0,
         prunable_artifact_tokens: 0,
         compactable_history_tokens: 0,
-        skill_context_tokens: 0,
         runtime_context_tokens: 0,
     };
 
@@ -112,15 +111,8 @@ fn estimate_hot_memory(messages: &[AgentMessage]) -> HotMemoryBudget {
             }
         }
 
-        match message.resolved_kind() {
-            AgentMessageKind::SkillContext => {
-                budget.skill_context_tokens = budget.skill_context_tokens.saturating_add(tokens);
-            }
-            AgentMessageKind::RuntimeContext => {
-                budget.runtime_context_tokens =
-                    budget.runtime_context_tokens.saturating_add(tokens);
-            }
-            _ => {}
+        if message.resolved_kind() == AgentMessageKind::RuntimeContext {
+            budget.runtime_context_tokens = budget.runtime_context_tokens.saturating_add(tokens);
         }
     }
 
