@@ -1282,6 +1282,35 @@ mod tests {
     }
 
     #[test]
+    fn route_provider_validation_rejects_removed_direct_gemini_provider() {
+        for provider in [
+            "gemini",
+            "google-gemini",
+            "google_gemini",
+            "llm-provider/gemini",
+            "llm-provider/google-gemini",
+            "llm-provider/google-gemini-direct",
+        ] {
+            let settings = AgentSettings {
+                chat_model_id: Some("google/gemini-3-flash-preview".to_string()),
+                chat_model_provider: Some(provider.to_string()),
+                ..AgentSettings::default()
+            };
+
+            let error = settings
+                .validate_route_providers()
+                .expect_err("removed direct Gemini provider should fail");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("no compiled LLM provider module owns that provider alias or ID"),
+                "unexpected error for provider {provider}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn route_provider_validation_rejects_non_compiled_weighted_route() {
         let settings = AgentSettings {
             agent_model_routes: Some(vec![ModelInfo {
