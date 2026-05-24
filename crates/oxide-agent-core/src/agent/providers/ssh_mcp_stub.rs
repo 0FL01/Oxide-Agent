@@ -334,10 +334,6 @@ pub fn inject_approval_credentials(
     serde_json::to_string(&value).map_err(Into::into)
 }
 
-pub fn cleanup_stale_private_key_tempfiles() -> Result<usize> {
-    Ok(0)
-}
-
 pub fn inject_ssh_approval_system_message(grant: &SshApprovalGrant) -> AgentMessage {
     AgentMessage::approval_replay(format!(
         "A human operator approved the pending SSH action for target '{}' in topic '{}'. Retry the exact same SSH tool call and include approval_request_id='{}' and approval_token='{}'. Do not change any other tool arguments.",

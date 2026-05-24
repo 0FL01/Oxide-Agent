@@ -18,8 +18,12 @@ use crate::config::AgentSettings;
 use crate::llm::LlmClient;
 use crate::sandbox::SandboxScope;
 use std::sync::Arc;
+#[cfg(feature = "integration-ssh-mcp")]
+use std::sync::OnceLock;
 use tokio::sync::{mpsc::Sender, Mutex};
 
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::providers::AgentsMdProvider;
 #[cfg(feature = "tool-browser-use")]
@@ -462,9 +466,13 @@ impl ToolModule for ManagerControlPlaneToolModule {
 pub struct SshMcpToolModule;
 
 #[cfg(feature = "integration-ssh-mcp")]
+static SSH_PRIVATE_KEY_CLEANUP_RESULT: OnceLock<Result<usize, String>> = OnceLock::new();
+
+#[cfg(feature = "integration-ssh-mcp")]
 impl SshMcpToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<SshMcpProvider> {
         let ssh = ctx.ssh_mcp_context()?;
+        self.cleanup_stale_private_key_tempfiles_once();
         Some(SshMcpProvider::new(
             ssh.storage,
             ssh.user_id,
@@ -472,6 +480,21 @@ impl SshMcpToolModule {
             ssh.config,
             ssh.approvals,
         ))
+    }
+
+    fn cleanup_stale_private_key_tempfiles_once(&self) {
+        let result = SSH_PRIVATE_KEY_CLEANUP_RESULT.get_or_init(|| {
+            cleanup_stale_private_key_tempfiles().map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(removed) if *removed > 0 => {
+                tracing::info!(removed, "Removed stale SSH private key temp files");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "Failed to clean up stale SSH private key temp files");
+            }
+        }
     }
 }
 

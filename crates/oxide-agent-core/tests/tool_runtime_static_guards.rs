@@ -76,6 +76,41 @@ fn legacy_tool_provider_trait_is_removed() {
 }
 
 #[test]
+fn ssh_cleanup_is_owned_by_ssh_module_not_binaries() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+
+    for binary_main in [
+        "crates/oxide-agent-telegram-bot/src/main.rs",
+        "crates/oxide-agent-sandboxd/src/main.rs",
+    ] {
+        let source =
+            fs::read_to_string(workspace_root.join(binary_main)).expect("read binary main");
+        assert!(
+            !source.contains("cleanup_stale_private_key_tempfiles"),
+            "{binary_main} must not run SSH private-key cleanup unconditionally"
+        );
+    }
+
+    let modules = fs::read_to_string(manifest_dir.join("src/agent/tool_runtime/modules.rs"))
+        .expect("read tool runtime modules");
+    assert!(
+        modules.contains("cleanup_stale_private_key_tempfiles().map_err"),
+        "SSH private-key cleanup must be owned by SshMcpToolModule"
+    );
+
+    let provider_exports = fs::read_to_string(manifest_dir.join("src/agent/providers/mod.rs"))
+        .expect("read provider exports");
+    assert!(
+        !provider_exports.contains("cleanup_stale_private_key_tempfiles"),
+        "SSH cleanup must not be exported through the generic providers surface"
+    );
+}
+
+#[test]
 fn sandbox_manager_usage_stays_inside_sandbox_facades() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let agent_dir = manifest_dir.join("src/agent");

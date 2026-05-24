@@ -2462,7 +2462,7 @@ fn now_unix_secs() -> i64 {
 }
 
 /// Remove any stale SSH private key temp files left from previous process runs.
-pub fn cleanup_stale_private_key_tempfiles() -> Result<usize> {
+pub(crate) fn cleanup_stale_private_key_tempfiles() -> Result<usize> {
     cleanup_stale_private_key_tempfiles_in(&std::env::temp_dir())
 }
 
