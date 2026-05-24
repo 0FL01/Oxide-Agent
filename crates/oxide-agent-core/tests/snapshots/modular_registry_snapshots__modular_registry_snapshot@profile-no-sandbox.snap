@@ -159,6 +159,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "registered_llm_provider_ids_dummy_config": [
     "llm-provider/opencode-go"
   ],
+  "registered_llm_provider_aliases_dummy_config": [
+    "opencode-go",
+    "opencode_go"
+  ],
   "storage_backend_module_ids": [
     "storage/r2"
   ],

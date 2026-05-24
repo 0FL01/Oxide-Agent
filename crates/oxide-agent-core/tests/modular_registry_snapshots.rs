@@ -25,6 +25,7 @@ struct ModularRegistrySnapshot {
     enabled_manifest_default_config: serde_json::Value,
     registered_tool_names_default_config: Vec<String>,
     registered_llm_provider_ids_dummy_config: Vec<String>,
+    registered_llm_provider_aliases_dummy_config: Vec<String>,
     storage_backend_module_ids: Vec<&'static str>,
     sandbox_backend_module_ids: Vec<&'static str>,
     external_service_requirements: Vec<ExternalServiceRequirementSnapshot>,
@@ -76,6 +77,12 @@ fn modular_registry_snapshot_covers_manifest_and_tool_lists() {
         enabled_manifest.capabilities(),
         &registered_tool_names_default_config,
     );
+    let registered_provider_names = provider_client.configured_provider_names();
+    assert_provider_alias_contract(
+        profile,
+        enabled_manifest.modules(),
+        &registered_provider_names,
+    );
 
     let snapshot = ModularRegistrySnapshot {
         profile,
@@ -92,10 +99,14 @@ fn modular_registry_snapshot_covers_manifest_and_tool_lists() {
         )
         .expect("enabled manifest JSON should parse"),
         registered_tool_names_default_config,
-        registered_llm_provider_ids_dummy_config: provider_client
-            .configured_provider_names()
-            .into_iter()
+        registered_llm_provider_ids_dummy_config: registered_provider_names
+            .iter()
             .filter(|provider| provider.starts_with("llm-provider/"))
+            .cloned()
+            .collect(),
+        registered_llm_provider_aliases_dummy_config: registered_provider_names
+            .into_iter()
+            .filter(|provider| !provider.starts_with("llm-provider/"))
             .collect(),
         storage_backend_module_ids: module_ids_by_kind(
             compiled_manifest.modules(),
@@ -367,6 +378,92 @@ fn assert_tool_availability_contract(
         }
         _ => {}
     }
+}
+
+fn assert_provider_alias_contract(
+    profile: &str,
+    enabled_modules: &[ModuleId],
+    registered_provider_names: &[String],
+) {
+    let enabled_module_ids: BTreeSet<_> = enabled_modules
+        .iter()
+        .map(|module_id| module_id.as_str())
+        .collect();
+    let provider_names: BTreeSet<_> = registered_provider_names
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let allowed_provider_names = allowed_provider_names_for_enabled_modules(&enabled_module_ids);
+
+    for direct_gemini_name in [
+        "gemini",
+        "google-gemini",
+        "google_gemini",
+        "llm-provider/gemini",
+        "llm-provider/google-gemini",
+        "llm-provider/google-gemini-direct",
+    ] {
+        assert!(
+            !provider_names.contains(direct_gemini_name),
+            "direct Gemini provider name must stay absent for {profile}: {direct_gemini_name}"
+        );
+    }
+
+    for provider_name in &provider_names {
+        assert!(
+            allowed_provider_names.contains(provider_name),
+            "registered provider name {provider_name} is not owned by an enabled provider module for {profile}; allowed={allowed_provider_names:?}"
+        );
+    }
+
+    for module_id in enabled_module_ids
+        .iter()
+        .copied()
+        .filter(|module_id| module_id.starts_with("llm-provider/"))
+    {
+        assert!(
+            provider_names.contains(module_id),
+            "enabled provider module {module_id} must register its canonical provider ID for {profile}"
+        );
+    }
+}
+
+fn allowed_provider_names_for_enabled_modules(
+    enabled_module_ids: &BTreeSet<&str>,
+) -> BTreeSet<&'static str> {
+    let mut allowed = BTreeSet::new();
+
+    for module_id in enabled_module_ids {
+        match *module_id {
+            "llm-provider/groq" => {
+                allowed.extend(["llm-provider/groq", "groq"]);
+            }
+            "llm-provider/minimax" => {
+                allowed.extend(["llm-provider/minimax", "minimax"]);
+            }
+            "llm-provider/mistral" => {
+                allowed.extend(["llm-provider/mistral", "mistral"]);
+            }
+            "llm-provider/nvidia" => {
+                allowed.extend(["llm-provider/nvidia", "nvidia"]);
+            }
+            "llm-provider/openai-chatgpt" => {
+                allowed.extend(["llm-provider/openai-chatgpt", "chatgpt", "openai-chatgpt"]);
+            }
+            "llm-provider/opencode-go" => {
+                allowed.extend(["llm-provider/opencode-go", "opencode-go", "opencode_go"]);
+            }
+            "llm-provider/openrouter" => {
+                allowed.extend(["llm-provider/openrouter", "openrouter"]);
+            }
+            "llm-provider/zai" => {
+                allowed.extend(["llm-provider/zai", "zai"]);
+            }
+            _ => {}
+        }
+    }
+
+    allowed
 }
 
 fn assert_tools_absent_when_module_unavailable(
