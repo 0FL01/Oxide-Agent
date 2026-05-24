@@ -4,7 +4,6 @@
 //! `recreate_sandbox` tools.
 
 use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     CleanupStatus, OutputNormalizer, OutputPreview, ToolExecutor, ToolInvocation, ToolName,
     ToolOutput, ToolRuntimeConfig, ToolRuntimeError,
@@ -185,120 +184,6 @@ impl SandboxLifecycle for SandboxRuntime {
 struct SandboxToolHandlers;
 
 impl SandboxToolHandlers {
-    async fn handle_execute_command(
-        exec: &dyn SandboxExec,
-        arguments: &str,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
-
-        match exec.exec(&args.command, cancellation_token).await {
-            Ok(result) => serialize_json(json!({
-                "ok": result.success(),
-                "command": args.command,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "exit_code": result.exit_code,
-            })),
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "command": args.command,
-                "error": error.to_string(),
-            })),
-        }
-    }
-
-    async fn handle_write_file(fileops: &dyn SandboxFileOps, arguments: &str) -> Result<String> {
-        let args: WriteFileArgs = serde_json::from_str(arguments)?;
-        match fileops
-            .write_file(&args.path, args.content.as_bytes())
-            .await
-        {
-            Ok(()) => serialize_json(json!({
-                "ok": true,
-                "path": args.path,
-                "bytes_written": args.content.len(),
-            })),
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "path": args.path,
-                "error": error.to_string(),
-            })),
-        }
-    }
-
-    async fn handle_read_file(fileops: &dyn SandboxFileOps, arguments: &str) -> Result<String> {
-        let args: ReadFileArgs = serde_json::from_str(arguments)?;
-        match fileops.read_file(&args.path).await {
-            Ok(content) => serialize_json(json!({
-                "ok": true,
-                "path": args.path,
-                "content": String::from_utf8_lossy(&content).to_string(),
-            })),
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "path": args.path,
-                "error": error.to_string(),
-            })),
-        }
-    }
-
-    async fn handle_list_files(fileops: &dyn SandboxFileOps, arguments: &str) -> Result<String> {
-        let args: ListFilesArgs = serde_json::from_str(arguments)?;
-
-        match fileops.list_files(&args.path).await {
-            Ok(listing) => {
-                if listing.success() {
-                    serialize_json(json!({
-                        "ok": true,
-                        "path": listing.path,
-                        "listing": listing.listing,
-                        "stderr": listing.stderr,
-                        "exit_code": listing.exit_code,
-                        "is_empty": listing.is_empty(),
-                    }))
-                } else {
-                    serialize_json(json!({
-                        "ok": false,
-                        "path": listing.path,
-                        "listing": listing.listing,
-                        "stderr": listing.stderr,
-                        "exit_code": listing.exit_code,
-                    }))
-                }
-            }
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "path": args.path,
-                "error": error.to_string(),
-            })),
-        }
-    }
-
-    async fn handle_recreate_sandbox(
-        lifecycle: &dyn SandboxLifecycle,
-        arguments: &str,
-    ) -> Result<String> {
-        let _: RecreateSandboxArgs = if arguments.trim().is_empty() {
-            RecreateSandboxArgs::default()
-        } else {
-            serde_json::from_str(arguments)?
-        };
-
-        match lifecycle.recreate().await {
-            Ok(()) => serialize_json(json!({
-                "ok": true,
-                "status": "recreated",
-                "message": "Sandbox recreated successfully. Previous workspace contents were removed.",
-            })),
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "status": "recreate_failed",
-                "error": error.to_string(),
-            })),
-        }
-    }
-
     async fn execute_typed_exec_tool(
         exec: &dyn SandboxExec,
         invocation: &ToolInvocation,
@@ -686,10 +571,6 @@ impl ToolExecutor for SandboxToolExecutor {
     }
 }
 
-fn serialize_json(value: serde_json::Value) -> Result<String> {
-    serde_json::to_string(&value).map_err(Into::into)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -705,19 +586,26 @@ mod tests {
 
     #[test]
     fn recreate_sandbox_is_registered() {
-        let provider = SandboxLifecycleProvider::new(Arc::new(SandboxRuntime::new(1)));
-        let tools = provider.tools();
+        let provider = Arc::new(SandboxLifecycleProvider::new(Arc::new(
+            SandboxRuntime::new(1),
+        )));
+        let executors = provider.tool_runtime_executors();
 
-        assert!(tools.iter().any(|tool| tool.name == "recreate_sandbox"));
-        assert!(provider.can_handle("recreate_sandbox"));
+        assert!(executors
+            .iter()
+            .any(|executor| executor.name().as_str() == "recreate_sandbox"));
+        assert!(executors
+            .iter()
+            .any(|executor| executor.spec().name == "recreate_sandbox"));
     }
 
     #[test]
     fn execute_command_tool_description_mentions_json_response() {
-        let provider = SandboxExecProvider::new(Arc::new(SandboxRuntime::new(1)));
-        let tools = provider.tools();
-        let execute_command = tools
-            .iter()
+        let provider = Arc::new(SandboxExecProvider::new(Arc::new(SandboxRuntime::new(1))));
+        let execute_command = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
             .find(|tool| tool.name == "execute_command")
             .expect("execute_command registered");
 
@@ -735,23 +623,6 @@ mod tests {
         assert!(capabilities.contains(&SandboxCapability::Exec));
         assert!(capabilities.contains(&SandboxCapability::FileOps));
         assert!(capabilities.contains(&SandboxCapability::Lifecycle));
-    }
-
-    #[test]
-    fn serialize_json_preserves_command_fields() {
-        let payload = serialize_json(json!({
-            "ok": true,
-            "command": "pwd",
-            "stdout": "/workspace\n",
-            "stderr": "",
-            "exit_code": 0,
-        }))
-        .expect("json serialization succeeds");
-        let parsed: Value = serde_json::from_str(&payload).expect("valid json payload");
-
-        assert_eq!(parsed["ok"], Value::Bool(true));
-        assert_eq!(parsed["command"], Value::String("pwd".to_string()));
-        assert_eq!(parsed["exit_code"], Value::Number(0.into()));
     }
 
     #[test]
@@ -792,24 +663,24 @@ mod tests {
         let lifecycle_provider = Arc::new(SandboxLifecycleProvider::new(runtime));
 
         let exec_tools: Vec<_> = exec_provider
-            .tools()
+            .tool_runtime_executors()
             .into_iter()
-            .map(|tool| tool.name)
+            .map(|executor| executor.spec().name)
             .collect();
         let fileops_tools: Vec<_> = fileops_provider
-            .tools()
+            .tool_runtime_executors()
             .into_iter()
-            .map(|tool| tool.name)
+            .map(|executor| executor.spec().name)
             .collect();
         let lifecycle_tools: Vec<_> = lifecycle_provider
-            .tools()
+            .tool_runtime_executors()
             .into_iter()
-            .map(|tool| tool.name)
+            .map(|executor| executor.spec().name)
             .collect();
         let fileops_without_delivery_tools: Vec<_> = fileops_without_delivery_provider
-            .tools()
+            .tool_runtime_executors()
             .into_iter()
-            .map(|tool| tool.name)
+            .map(|executor| executor.spec().name)
             .collect();
 
         assert_eq!(exec_tools, ["execute_command"]);
@@ -939,45 +810,6 @@ impl SandboxExecProvider {
     }
 }
 
-#[async_trait]
-impl ToolProvider for SandboxExecProvider {
-    fn name(&self) -> &'static str {
-        "sandbox_exec"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        sandbox_tool_definitions_for(SANDBOX_EXEC_TOOL_NAMES)
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        SANDBOX_EXEC_TOOL_NAMES.contains(&tool_name)
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        if !self.can_handle(tool_name) {
-            anyhow::bail!("Unknown sandbox exec tool: {tool_name}");
-        }
-        let _ = progress_tx;
-        match tool_name {
-            "execute_command" => {
-                SandboxToolHandlers::handle_execute_command(
-                    self.exec.as_ref(),
-                    arguments,
-                    cancellation_token,
-                )
-                .await
-            }
-            _ => unreachable!("validated sandbox exec tool name"),
-        }
-    }
-}
-
 /// Provider for sandbox file operation tools.
 pub struct SandboxFileOpsProvider {
     fileops: Arc<dyn SandboxFileOps>,
@@ -1016,47 +848,6 @@ impl SandboxFileOpsProvider {
     }
 }
 
-#[async_trait]
-impl ToolProvider for SandboxFileOpsProvider {
-    fn name(&self) -> &'static str {
-        "sandbox_fileops"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        sandbox_tool_definitions_for(self.tool_names)
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        self.tool_names.contains(&tool_name)
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        if !self.can_handle(tool_name) {
-            anyhow::bail!("Unknown sandbox fileops tool: {tool_name}");
-        }
-        let _ = progress_tx;
-        let _ = cancellation_token;
-        match tool_name {
-            "write_file" => {
-                SandboxToolHandlers::handle_write_file(self.fileops.as_ref(), arguments).await
-            }
-            "read_file" => {
-                SandboxToolHandlers::handle_read_file(self.fileops.as_ref(), arguments).await
-            }
-            "list_files" => {
-                SandboxToolHandlers::handle_list_files(self.fileops.as_ref(), arguments).await
-            }
-            _ => unreachable!("validated sandbox fileops tool name"),
-        }
-    }
-}
-
 /// Provider for sandbox lifecycle tools.
 pub struct SandboxLifecycleProvider {
     lifecycle: Arc<dyn SandboxLifecycle>,
@@ -1079,41 +870,5 @@ impl SandboxLifecycleProvider {
             SandboxToolExecutorBackend::Lifecycle(Arc::clone(&self.lifecycle)),
             sandbox_tool_definitions_for(SANDBOX_LIFECYCLE_TOOL_NAMES),
         )
-    }
-}
-
-#[async_trait]
-impl ToolProvider for SandboxLifecycleProvider {
-    fn name(&self) -> &'static str {
-        "sandbox_lifecycle"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        sandbox_tool_definitions_for(SANDBOX_LIFECYCLE_TOOL_NAMES)
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        SANDBOX_LIFECYCLE_TOOL_NAMES.contains(&tool_name)
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        if !self.can_handle(tool_name) {
-            anyhow::bail!("Unknown sandbox lifecycle tool: {tool_name}");
-        }
-        let _ = progress_tx;
-        let _ = cancellation_token;
-        match tool_name {
-            "recreate_sandbox" => {
-                SandboxToolHandlers::handle_recreate_sandbox(self.lifecycle.as_ref(), arguments)
-                    .await
-            }
-            _ => unreachable!("validated sandbox lifecycle tool name"),
-        }
     }
 }
