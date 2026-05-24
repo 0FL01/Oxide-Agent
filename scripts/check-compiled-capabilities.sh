@@ -30,7 +30,11 @@ case "${profile}" in
 esac
 
 tmp_manifest="$(mktemp)"
-trap 'rm -f "${tmp_manifest}"' EXIT
+tmp_enabled_config="$(mktemp --suffix=.yaml)"
+tmp_enabled_manifest="$(mktemp)"
+tmp_invalid_config="$(mktemp --suffix=.yaml)"
+tmp_invalid_stderr="$(mktemp)"
+trap 'rm -f "${tmp_manifest}" "${tmp_enabled_config}" "${tmp_enabled_manifest}" "${tmp_invalid_config}" "${tmp_invalid_stderr}"' EXIT
 
 cargo run -q \
   -p oxide-agent-telegram-bot \
@@ -252,3 +256,63 @@ for prefix in rules.get("forbidden_prefixes", ()):
 
 print(f"compiled capability check passed for {profile}: {len(module_ids)} modules, {len(capability_ids)} capabilities")
 PY
+
+cat >"${tmp_enabled_config}" <<'YAML'
+modules:
+  transport/telegram:
+    enabled: false
+YAML
+
+cargo run -q \
+  -p oxide-agent-telegram-bot \
+  --bin oxide-agent-telegram-bot \
+  --no-default-features \
+  --features "${cargo_feature}" \
+  -- capabilities --enabled --config "${tmp_enabled_config}" --json >"${tmp_enabled_manifest}"
+
+python3 - "${profile}" "${tmp_enabled_manifest}" <<'PY'
+import json
+import sys
+
+profile = sys.argv[1]
+manifest_path = sys.argv[2]
+
+with open(manifest_path, "r", encoding="utf-8") as fh:
+    manifest = json.load(fh)
+
+module_ids = set(manifest.get("modules", []))
+capability_ids = set(manifest.get("capabilities", []))
+
+if "transport/telegram" in module_ids or "transport/telegram" in capability_ids:
+    print(
+        f"enabled capability check failed for {profile}: disabled transport/telegram is still present",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print(f"enabled capability check passed for {profile}: disabled transport/telegram removed")
+PY
+
+cat >"${tmp_invalid_config}" <<'YAML'
+modules:
+  tool/not-compiled:
+    enabled: false
+YAML
+
+if cargo run -q \
+  -p oxide-agent-telegram-bot \
+  --bin oxide-agent-telegram-bot \
+  --no-default-features \
+  --features "${cargo_feature}" \
+  -- capabilities --enabled --config "${tmp_invalid_config}" --json 2>"${tmp_invalid_stderr}"; then
+  echo "enabled capability check failed for ${profile}: non-compiled module config unexpectedly succeeded" >&2
+  exit 1
+fi
+
+if ! grep -q "non-compiled or unknown module id: tool/not-compiled" "${tmp_invalid_stderr}"; then
+  echo "enabled capability check failed for ${profile}: unexpected error for non-compiled module config" >&2
+  cat "${tmp_invalid_stderr}" >&2
+  exit 1
+fi
+
+echo "enabled capability validation check passed for ${profile}: non-compiled module config rejected"
