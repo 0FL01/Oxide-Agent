@@ -14,7 +14,8 @@ The target architecture must satisfy these hard constraints:
 - no duplicated typed/legacy/runtime registration;
 - no unused dependencies in minimal builds;
 - no unused LLM provider SDKs in provider-specific builds;
-- no AWS SDK in local-storage builds;
+- no AWS SDK unless the selected `storage-s3-r2` module requires it;
+- no durable local-storage target;
 - no Docker/Bollard dependency unless a Docker sandbox backend is selected;
 - no MCP binaries unless a specific MCP integration is selected;
 - no browser/search/media sidecars unless the selected profile requires them;
@@ -41,21 +42,21 @@ A build profile must fully determine which Rust modules, dependencies, binaries,
 
 ### 2.2 Minimal embedded builds
 
-The repository must support a small embedded/local profile with only a selected transport, one selected LLM provider, local storage, and a small selected tool set. The embedded profile must not compile unused LLM providers, AWS/R2 storage, MCP integrations, browser tools, searxng integrations, Docker sandbox execution, or media-heavy dependencies unless explicitly requested.
+The repository must support a small embedded profile with only a selected transport, one selected LLM provider, the canonical S3/R2 durable storage backend, and a small selected tool set. The embedded profile must not compile unused LLM providers, unselected storage backends, MCP integrations, browser tools, searxng integrations, Docker sandbox execution, or media-heavy dependencies unless explicitly requested.
 
 ### 2.3 Arbitrary custom builds
 
 A downstream builder must be able to create a custom profile such as:
 
 - only OpenCode Go provider;
-- only local storage;
+- only the canonical S3/R2 durable storage backend;
 - only Telegram transport;
 - no sandbox;
 - sandbox file operations but no command execution;
 - search tools but no browser sidecar;
 - Jira MCP but not Mattermost MCP;
 - image analysis but not audio/video processing;
-- R2 storage with no local storage;
+- transient local workspace with no durable local storage;
 - CLI/API transport with no Telegram dependency.
 
 ### 2.4 Single source of truth for module registration
@@ -68,7 +69,7 @@ Every heavy or optional dependency must be behind an atomic Cargo feature. Profi
 
 Heavy dependency groups include, but are not limited to:
 
-- AWS SDK / R2 storage;
+- AWS SDK / S3/R2 storage module;
 - Bollard / Docker sandbox management;
 - RMCP / child-process MCP clients;
 - Telegram / teloxide;
@@ -476,16 +477,16 @@ Current storage problems:
 - Production startup is hardcoded to R2.
 - The storage abstraction is too broad and not module-oriented.
 - Startup maintenance depends on the concrete R2 type.
-- There is no first-class local storage backend for minimal builds.
+- Earlier minimal-build examples depended on a local durable backend, but the later storage decision rejects durable local storage.
 - Storage backend selection is not part of the module registry.
 
 Target state:
 
-- `storage-local` must be the minimal backend.
-- `storage-r2` must be optional.
+- `storage-s3-r2` must be the only durable storage backend.
+- `storage-local-fs` may exist only for transient runtime workspace data, not durable state.
 - Storage backends must register through the unified module registry.
 - Tools and transports must consume storage interfaces, not concrete R2 types.
-- AWS SDK must be absent from local-only builds.
+- AWS SDK must be absent unless `storage-s3-r2` is selected.
 
 ### 4.6 Current sandbox architecture
 
@@ -602,7 +603,7 @@ The current architecture has these concrete problems:
 - Providers are compiled even when unused.
 - LLM provider registration is controlled by env/config rather than compiled module availability.
 - Storage startup is hardcoded to R2.
-- AWS SDK cannot be eliminated from local-only builds.
+- AWS SDK cannot be eliminated from builds that do not select `storage-s3-r2`.
 - Docker sandbox support and Bollard cannot be eliminated from no-sandbox builds.
 - Tools are registered through duplicated legacy and typed runtime registries.
 - Legacy providers are wrapped into typed executors instead of being replaced by first-class modules.
@@ -783,8 +784,7 @@ default = []
 profile-full = [
   "transport-telegram",
   "transport-web",
-  "storage-r2",
-  "storage-local",
+  "storage-s3-r2",
   "llm-chatgpt",
   "llm-groq",
   "llm-mistral",
@@ -825,7 +825,7 @@ profile-full = [
 
 profile-embedded-opencode-local = [
   "transport-telegram",
-  "storage-local",
+  "storage-s3-r2",
   "llm-opencode-go",
   "tool-todos",
   "tool-agents-md",
@@ -839,7 +839,7 @@ profile-embedded-opencode-local = [
 
 profile-lite = [
   "transport-telegram",
-  "storage-local",
+  "storage-s3-r2",
   "llm-opencode-go",
   "tool-todos",
   "tool-webfetch-md",
@@ -848,7 +848,7 @@ profile-lite = [
 
 profile-search-only = [
   "transport-telegram",
-  "storage-local",
+  "storage-s3-r2",
   "llm-opencode-go",
   "tool-webfetch-md",
   "tool-tavily",
@@ -856,7 +856,7 @@ profile-search-only = [
 
 profile-no-sandbox = [
   "transport-telegram",
-  "storage-local",
+  "storage-s3-r2",
   "llm-opencode-go",
   "tool-todos",
   "tool-webfetch-md",
@@ -866,7 +866,7 @@ profile-no-sandbox = [
 
 profile-media-enabled = [
   "transport-telegram",
-  "storage-local",
+  "storage-s3-r2",
   "llm-opencode-go",
   "tool-media-audio",
   "tool-media-image",
@@ -881,8 +881,8 @@ transport-cli = []
 transport-http-api = ["dep:axum"]
 
 # Storage
-storage-local = []
-storage-r2 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types", "dep:aws-types"]
+storage-s3-r2 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:aws-credential-types", "dep:aws-types"]
+storage-local-fs = []
 
 # LLM providers
 llm-chatgpt = ["dep:async-openai"]
@@ -1015,8 +1015,8 @@ pub fn compiled_modules() -> Vec<Box<dyn CapabilityModule>> {
     #[cfg(feature = "llm-opencode-go")]
     modules.push(Box::new(OpencodeGoLlmModule));
 
-    #[cfg(feature = "storage-local")]
-    modules.push(Box::new(LocalStorageModule));
+    #[cfg(feature = "storage-s3-r2")]
+    modules.push(Box::new(S3R2StorageModule));
 
     #[cfg(feature = "tool-webfetch-md")]
     modules.push(Box::new(WebFetchMdToolModule));
@@ -1393,16 +1393,14 @@ Storage must become a modular subsystem with backend-specific modules and smalle
 
 ### 11.1 Required backend modules
 
-- `LocalStorageModule` / `storage-local`;
-- `R2StorageModule` / `storage-r2`.
+- `S3R2StorageModule` / `storage-s3-r2`.
 
 Future backends must be addable without editing transport startup:
 
-- SQLite;
 - Postgres;
-- S3-compatible object storage;
 - memory-only test storage;
-- encrypted local storage.
+
+Future durable local filesystem or SQLite storage is out of scope and would require a new PRD decision that supersedes section 22.7.
 
 ### 11.2 Storage backend trait
 
@@ -1428,20 +1426,19 @@ pub trait FileBlobStore: Send + Sync { /* optional file/object storage */ }
 
 A backend module may provide multiple storage traits.
 
-### 11.3 Local storage
+### 11.3 Transient local filesystem workspace
 
-`storage-local` must be the minimal backend. It must not compile AWS SDK.
+`storage-local-fs` is not a durable storage backend. It may provide only transient runtime workspace paths for temporary files, sandbox workdirs, download buffers, upload staging, and disposable cache. It must not be accepted as the source of truth for conversations, todos, reminders, wiki/memory data, artifacts, generated files, manifests, or any other durable agent state.
 
-Open implementation choice:
+Rules:
 
-- filesystem JSON/CBOR files for simplicity;
-- SQLite for consistency and concurrency.
+- no durable agent state may depend on local filesystem persistence;
+- persistent startup must fail loudly if `storage-s3-r2` configuration is missing or invalid;
+- tests may use memory/noop storage helpers, but production profiles must use `storage-s3-r2`.
 
-The PRD recommends SQLite for production-grade local storage if the additional dependency is acceptable. If the team prioritizes minimum binary size, use filesystem storage first and add SQLite as `storage-sqlite` later.
+### 11.4 S3/R2 storage
 
-### 11.4 R2 storage
-
-`storage-r2` must own all AWS SDK dependencies and R2-specific config.
+`storage-s3-r2` must own all AWS SDK dependencies and S3/R2-specific config. The runtime module ID may remain `storage/r2` while Cloudflare R2 is the configured S3-compatible target, but the Cargo feature and architecture label are `storage-s3-r2`.
 
 R2 module config:
 
@@ -1777,9 +1774,9 @@ Full is not the default architecture.
 Embedded image requirements:
 
 - selected app binary only;
-- local storage runtime path;
+- S3/R2 durable storage runtime path;
 - selected LLM provider dependencies only;
-- no AWS SDK if `storage-r2` is absent;
+- no AWS SDK unless `storage-s3-r2` is selected;
 - no RMCP binaries if MCP modules are absent;
 - no sandbox daemon if sandboxd client/backend is absent;
 - no searxng/browser-use sidecars;
@@ -1845,8 +1842,8 @@ and module `ComposeRequirement` declarations.
 - No MCP sidecar/binary unless the corresponding MCP integration is enabled.
 - No browser-use volume unless browser module is enabled.
 - No sandbox image build unless a sandbox backend/tool requires it.
-- No R2-related env/config unless `storage-r2` is enabled.
-- Persistent volumes must be declared only for selected storage/backend modules.
+- No S3/R2-related env/config unless `storage-s3-r2` is enabled.
+- Local persistent volumes must not be used for durable agent state; volumes are allowed only for selected transient workspace, socket, cache, or sidecar modules.
 
 ### 16.3 Example embedded compose
 
@@ -1856,10 +1853,7 @@ services:
     image: oxide-agent:embedded-opencode-local
     env_file: .env.embedded
     volumes:
-      - oxide-agent-data:/data/oxide-agent
-
-volumes:
-  oxide-agent-data:
+      - ./config:/app/config:ro
 ```
 
 No searxng, no browser-use, no sandboxd, no Docker socket, no MCP services.
@@ -1994,7 +1988,7 @@ cargo tree -p oxide-agent-core --no-default-features --features profile-embedded
 
 Acceptance for this milestone:
 
-- Minimal profile does not include AWS SDK.
+- Minimal profile includes AWS SDK only through the selected `storage-s3-r2` module and does not include unselected storage dependencies.
 - No-sandbox profile does not include Bollard.
 - No-MCP profile does not include RMCP.
 - Provider-specific profile does not include unrelated provider SDKs.
@@ -2069,17 +2063,18 @@ Acceptance:
 Deliverables:
 
 - Create `StorageBackendModule` trait.
-- Create `storage-local` backend.
-- Move R2/AWS code into `storage-r2` module.
+- Keep local filesystem storage out of the durable backend set; local filesystem may be used only for transient runtime workspace data.
+- Move R2/AWS code into the `storage-s3-r2` module.
 - Remove concrete `R2Storage` from transport startup.
 - Split or wrap storage traits into smaller capability-specific interfaces.
 - Update tools and runtime to consume storage interfaces.
 
 Acceptance:
 
-- Local-only build excludes AWS SDK.
-- Telegram transport can run with local storage.
-- R2 config appears only under `storage/r2`.
+- `storage-s3-r2` is the only durable storage backend.
+- Builds without `storage-s3-r2` exclude AWS SDK but do not provide a production durable storage startup path.
+- Telegram transport runs with storage supplied by the module registry, not by direct R2 construction.
+- S3/R2 config appears only under `storage/r2` or its module-owned environment variables.
 - Storage backend selection is validated by module registry.
 
 ### Milestone 6: Sandbox Modularization
@@ -2331,8 +2326,8 @@ cargo check --workspace --no-default-features --features profile-embedded-openco
 
 The embedded profile must not include:
 
-- AWS SDK;
-- R2 storage;
+- AWS SDK except through the selected `storage-s3-r2` module;
+- unselected durable storage backends;
 - browser-use;
 - searxng sidecar requirement unless selected;
 - Jira MCP;
@@ -2364,8 +2359,10 @@ The embedded profile must not include:
 
 ### 20.5 Storage criteria
 
-- Local storage profile compiles without AWS SDK.
-- R2 storage profile compiles with AWS SDK only when `storage-r2` is selected.
+- Persistent local storage is not an acceptance target.
+- `storage-s3-r2` is the only production durable storage module.
+- AWS SDK appears only when `storage-s3-r2` is selected.
+- Builds without `storage-s3-r2` may compile core/runtime helpers and tests without AWS SDK, but they must not expose a production durable storage startup path.
 - Transport startup does not construct concrete `R2Storage`.
 - Tools consume storage traits/interfaces, not concrete backend types.
 
@@ -2782,7 +2779,7 @@ Includes:
 
 - Telegram transport;
 - web transport if needed;
-- R2 and local storage;
+- S3/R2 durable storage;
 - all LLM providers;
 - all search/fetch/browser tools;
 - sandbox fileops and exec;
@@ -2806,12 +2803,12 @@ cargo build --release --no-default-features --features profile-full
 
 Purpose:
 
-- small deployment using OpenCode Go provider and local storage.
+- small deployment using OpenCode Go provider and S3/R2 durable storage.
 
 Includes:
 
 - Telegram transport or selected lightweight transport;
-- local storage;
+- S3/R2 durable storage;
 - OpenCode Go LLM provider;
 - todos;
 - agents.md;
@@ -2823,8 +2820,8 @@ Includes:
 
 Excludes by default:
 
-- R2/AWS SDK;
 - all unused LLM SDKs;
+- unselected storage backends;
 - MCP integrations;
 - browser-use;
 - searxng sidecar;
@@ -2850,7 +2847,7 @@ Purpose:
 Includes:
 
 - selected transport;
-- local storage;
+- S3/R2 durable storage;
 - one selected LLM provider;
 - `webfetch-md`;
 - Tavily or SearXNG depending on profile variant.
@@ -2862,7 +2859,7 @@ Excludes:
 - sandbox;
 - media;
 - manager/control-plane;
-- R2 unless selected.
+- non-selected storage backends.
 
 ### 24.4 `no-sandbox`
 
@@ -2873,7 +2870,7 @@ Purpose:
 Includes:
 
 - selected transport;
-- selected storage;
+- S3/R2 durable storage;
 - selected LLM provider;
 - non-sandbox tools such as todos, reminders, webfetch, wiki memory.
 
@@ -2895,7 +2892,7 @@ Purpose:
 Includes:
 
 - selected transport;
-- selected storage;
+- S3/R2 durable storage;
 - media-capable LLM provider;
 - audio transcription module if selected;
 - image description module if selected;
@@ -2919,7 +2916,7 @@ Includes:
 
 - OpenCode Go provider;
 - minimal routing/config support;
-- optional local storage;
+- optional test/noop storage helpers only for non-production checks;
 - no unrelated provider SDKs.
 
 Acceptance:
