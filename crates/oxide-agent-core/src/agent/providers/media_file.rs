@@ -1,6 +1,10 @@
 //! Explicit media-analysis tools for files already stored in the sandbox.
 
 use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::{LlmClient, ToolDefinition};
 use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::{anyhow, Result};
@@ -13,6 +17,7 @@ use shell_escape::escape;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::path::resolve_file_path;
@@ -92,6 +97,116 @@ impl MediaFileProvider {
             llm_client,
             fileops,
             exec,
+        }
+    }
+
+    /// Build native typed runtime executors for all media-file tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        self.tool_runtime_executors_for(&[
+            TOOL_TRANSCRIBE_AUDIO_FILE,
+            TOOL_DESCRIBE_IMAGE_FILE,
+            TOOL_DESCRIBE_VIDEO_FILE,
+        ])
+    }
+
+    /// Build native typed runtime executors for a module-owned media tool subset.
+    #[must_use]
+    pub fn tool_runtime_executors_for(
+        self: &Arc<Self>,
+        tool_names: &[&str],
+    ) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .filter(|spec| tool_names.contains(&spec.name.as_str()))
+            .map(|spec| {
+                Arc::new(MediaFileToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            Self::transcribe_audio_tool(),
+            Self::describe_image_tool(),
+            Self::describe_video_tool(),
+        ]
+    }
+
+    fn transcribe_audio_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_TRANSCRIBE_AUDIO_FILE.to_string(),
+            description: "Transcribe an audio file that already exists in the sandbox. Use this when you need explicit audio understanding for a preserved upload instead of automatic preprocessing.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the audio file in the sandbox (relative or absolute)"
+                    },
+                    "mime_type": {
+                        "type": "string",
+                        "description": "Optional MIME type override, for example audio/ogg or audio/wav"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional task-specific prompt that explains what transcription format or details you need, for example timestamps, speakers, or translation-ready text"
+                    }
+                },
+                "required": ["path"]
+            }),
+        }
+    }
+
+    fn describe_image_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_DESCRIBE_IMAGE_FILE.to_string(),
+            description: "Analyze an image file stored in the sandbox or fetched from a direct URL and return a detailed description. Use this only when you explicitly need image understanding.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the image file in the sandbox (relative or absolute) or an http(s) URL to a remote image"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional task-specific prompt that explains what to focus on"
+                    }
+                },
+                "required": ["path"]
+            }),
+        }
+    }
+
+    fn describe_video_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_DESCRIBE_VIDEO_FILE.to_string(),
+            description: "Analyze a video file stored in the sandbox or fetched from a direct URL and return a detailed description of the clip. Use this only when you explicitly need video understanding.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the video file in the sandbox (relative or absolute) or an http(s) URL to a remote video"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional task-specific prompt that explains what to focus on"
+                    },
+                    "mime_type": {
+                        "type": "string",
+                        "description": "Optional MIME type override, for example video/mp4 or video/webm"
+                    }
+                },
+                "required": ["path"]
+            }),
         }
     }
 
@@ -352,6 +467,16 @@ impl MediaFileProvider {
             "description": description,
         }))?)
     }
+
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
+        debug!(tool = tool_name, "Executing media_file tool");
+        match tool_name {
+            TOOL_TRANSCRIBE_AUDIO_FILE => self.handle_transcribe_audio_file(arguments).await,
+            TOOL_DESCRIBE_IMAGE_FILE => self.handle_describe_image_file(arguments).await,
+            TOOL_DESCRIBE_VIDEO_FILE => self.handle_describe_video_file(arguments).await,
+            _ => anyhow::bail!("Unknown media_file tool: {tool_name}"),
+        }
+    }
 }
 
 fn infer_audio_mime_type(path: &str) -> &'static str {
@@ -533,70 +658,7 @@ impl ToolProvider for MediaFileProvider {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: TOOL_TRANSCRIBE_AUDIO_FILE.to_string(),
-                description: "Transcribe an audio file that already exists in the sandbox. Use this when you need explicit audio understanding for a preserved upload instead of automatic preprocessing.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the audio file in the sandbox (relative or absolute)"
-                        },
-                        "mime_type": {
-                            "type": "string",
-                            "description": "Optional MIME type override, for example audio/ogg or audio/wav"
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Optional task-specific prompt that explains what transcription format or details you need, for example timestamps, speakers, or translation-ready text"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_DESCRIBE_IMAGE_FILE.to_string(),
-                description: "Analyze an image file stored in the sandbox or fetched from a direct URL and return a detailed description. Use this only when you explicitly need image understanding.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the image file in the sandbox (relative or absolute) or an http(s) URL to a remote image"
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Optional task-specific prompt that explains what to focus on"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_DESCRIBE_VIDEO_FILE.to_string(),
-                description: "Analyze a video file stored in the sandbox or fetched from a direct URL and return a detailed description of the clip. Use this only when you explicitly need video understanding.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the video file in the sandbox (relative or absolute) or an http(s) URL to a remote video"
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Optional task-specific prompt that explains what to focus on"
-                        },
-                        "mime_type": {
-                            "type": "string",
-                            "description": "Optional MIME type override, for example video/mp4 or video/webm"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
-        ]
+        Self::tool_definitions()
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
@@ -613,21 +675,96 @@ impl ToolProvider for MediaFileProvider {
         _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
-        debug!(tool = tool_name, "Executing media_file tool");
-        match tool_name {
-            TOOL_TRANSCRIBE_AUDIO_FILE => self.handle_transcribe_audio_file(arguments).await,
-            TOOL_DESCRIBE_IMAGE_FILE => self.handle_describe_image_file(arguments).await,
-            TOOL_DESCRIBE_VIDEO_FILE => self.handle_describe_video_file(arguments).await,
-            _ => anyhow::bail!("Unknown media_file tool: {tool_name}"),
-        }
+        self.execute_tool(tool_name, arguments).await
+    }
+}
+
+struct MediaFileToolExecutor {
+    provider: Arc<MediaFileProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for MediaFileToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(media_file_runtime_error)
+    }
+}
+
+fn media_file_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    if error.downcast_ref::<serde_json::Error>().is_some() {
+        ToolRuntimeError::InvalidArguments(error.to_string())
+    } else {
+        ToolRuntimeError::Failure(error.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, OutputNormalizer, ProviderMetadata, ToolBatchId, ToolCallId,
+        ToolExecutionContext, ToolOutputStatus, ToolRuntimeConfig, ToolTimeoutConfig, TurnId,
+    };
     use crate::config::AgentSettings;
-    use crate::llm::LlmClient;
+    use crate::llm::{InvocationId, LlmClient};
+    use chrono::Utc;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-media-file"),
+            batch_id: ToolBatchId::from("batch-media-file"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     #[test]
     fn infers_audio_mime_type_from_extension() {
@@ -724,6 +861,62 @@ mod tests {
         assert!(video_tool.parameters["properties"]["path"]["description"]
             .as_str()
             .is_some_and(|text| text.contains("URL")));
+    }
+
+    #[test]
+    fn typed_runtime_executors_register_media_tools() {
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
+
+        let names = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(names.contains(TOOL_TRANSCRIBE_AUDIO_FILE));
+        assert!(names.contains(TOOL_DESCRIBE_IMAGE_FILE));
+        assert!(names.contains(TOOL_DESCRIBE_VIDEO_FILE));
+    }
+
+    #[test]
+    fn typed_runtime_executors_for_filters_media_tools() {
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
+
+        let names = provider
+            .tool_runtime_executors_for(&[TOOL_DESCRIBE_IMAGE_FILE])
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec![TOOL_DESCRIBE_IMAGE_FILE.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_rejects_missing_path_before_sandbox() {
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
+        let executor = provider
+            .tool_runtime_executors_for(&[TOOL_DESCRIBE_IMAGE_FILE])
+            .into_iter()
+            .next()
+            .expect("image executor");
+
+        let error = executor
+            .execute(runtime_invocation(TOOL_DESCRIBE_IMAGE_FILE, "{}"))
+            .await
+            .expect_err("missing path must be invalid arguments");
+
+        let output = OutputNormalizer::new(ToolRuntimeConfig::default())
+            .executor_error(&runtime_invocation(TOOL_DESCRIBE_IMAGE_FILE, "{}"), error);
+        assert_eq!(output.status, ToolOutputStatus::InvalidArguments);
     }
 
     mod media_resolver_tests {

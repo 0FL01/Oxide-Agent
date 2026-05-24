@@ -293,6 +293,35 @@ fn typed_runtime_registry_exposes_tts_tools() {
     std::env::remove_var("KOKORO_TTS_URL");
 }
 
+#[cfg(all(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
+#[test]
+fn typed_runtime_registry_exposes_media_tools() {
+    let executor = build_executor();
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry.tool_names();
+
+    for tool_name in [
+        "transcribe_audio_file",
+        "describe_image_file",
+        "describe_video_file",
+    ] {
+        assert!(
+            tool_names.iter().any(|name| name == tool_name),
+            "missing typed runtime media tool: {tool_name}"
+        );
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one registration for {tool_name}"
+        );
+    }
+}
+
 #[test]
 fn typed_runtime_registry_applies_execution_profile_tool_policy() {
     let mut executor =
@@ -396,6 +425,81 @@ fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
     assert!(tool_names.contains("write_todos"));
 
     std::env::remove_var("KOKORO_TTS_URL");
+}
+
+#[cfg(feature = "tool-media-audio")]
+#[test]
+fn typed_runtime_registry_skips_disabled_media_audio_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/media-audio".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("transcribe_audio_file"));
+    assert!(tool_names.contains("write_todos"));
+}
+
+#[cfg(feature = "tool-media-image")]
+#[test]
+fn typed_runtime_registry_skips_disabled_media_image_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/media-image".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("describe_image_file"));
+    assert!(tool_names.contains("write_todos"));
+}
+
+#[cfg(feature = "tool-media-video")]
+#[test]
+fn typed_runtime_registry_skips_disabled_media_video_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/media-video".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("describe_video_file"));
+    assert!(tool_names.contains("write_todos"));
 }
 
 #[cfg(feature = "tool-tts-silero")]

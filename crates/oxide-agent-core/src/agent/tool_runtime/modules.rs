@@ -596,11 +596,8 @@ impl ToolModule for WikiMemoryToolModule {
     feature = "tool-media-image",
     feature = "tool-media-video"
 ))]
-fn media_file_provider(ctx: &ToolModuleContext) -> Arc<dyn ToolProvider> {
-    Arc::new(MediaFileProvider::from_runtime(
-        ctx.llm_client(),
-        ctx.sandbox_runtime(),
-    ))
+fn media_file_provider(ctx: &ToolModuleContext) -> MediaFileProvider {
+    MediaFileProvider::from_runtime(ctx.llm_client(), ctx.sandbox_runtime())
 }
 
 /// Capability module for audio file transcription.
@@ -614,14 +611,15 @@ impl ToolModule for MediaAudioToolModule {
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        let provider: Arc<dyn ToolProvider> = Arc::new(media_file_provider(ctx));
         Some(Box::new(FilteredToolProvider::new(
-            media_file_provider(ctx),
+            provider,
             &["transcribe_audio_file"],
         )))
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Arc::new(media_file_provider(ctx)).tool_runtime_executors_for(&["transcribe_audio_file"])
     }
 }
 
@@ -636,14 +634,15 @@ impl ToolModule for MediaImageToolModule {
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        let provider: Arc<dyn ToolProvider> = Arc::new(media_file_provider(ctx));
         Some(Box::new(FilteredToolProvider::new(
-            media_file_provider(ctx),
+            provider,
             &["describe_image_file"],
         )))
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Arc::new(media_file_provider(ctx)).tool_runtime_executors_for(&["describe_image_file"])
     }
 }
 
@@ -658,14 +657,15 @@ impl ToolModule for MediaVideoToolModule {
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        let provider: Arc<dyn ToolProvider> = Arc::new(media_file_provider(ctx));
         Some(Box::new(FilteredToolProvider::new(
-            media_file_provider(ctx),
+            provider,
             &["describe_video_file"],
         )))
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Arc::new(media_file_provider(ctx)).tool_runtime_executors_for(&["describe_video_file"])
     }
 }
 
