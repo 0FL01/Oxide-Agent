@@ -701,7 +701,7 @@ mod tests {
         ModelMetadata, OutputNormalizer, ProviderMetadata, ToolBatchId, ToolCallId,
         ToolExecutionContext, ToolOutputStatus, ToolRuntimeConfig, ToolTimeoutConfig, TurnId,
     };
-    use crate::config::AgentSettings;
+    use crate::config::{AgentSettings, ModuleRuntimeConfig};
     use crate::llm::{InvocationId, LlmClient};
     use chrono::Utc;
     use tokio_util::sync::CancellationToken;
@@ -902,14 +902,29 @@ mod tests {
     mod media_resolver_tests {
         use super::*;
 
+        fn with_provider_key(
+            mut settings: AgentSettings,
+            module_id: &str,
+            api_key: &str,
+        ) -> AgentSettings {
+            settings.modules.insert(
+                module_id.to_string(),
+                ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+            );
+            settings
+        }
+
         #[test]
         fn resolve_audio_model_name_supports_mistral_stt_route() {
-            let settings = AgentSettings {
-                chat_model_id: Some("chat-mistral".to_string()),
-                chat_model_provider: Some("mistral".to_string()),
-                mistral_api_key: Some("test-mistral-key".to_string()),
-                ..AgentSettings::default()
-            };
+            let settings = with_provider_key(
+                AgentSettings {
+                    chat_model_id: Some("chat-mistral".to_string()),
+                    chat_model_provider: Some("mistral".to_string()),
+                    ..AgentSettings::default()
+                },
+                "llm-provider/mistral",
+                "test-mistral-key",
+            );
             let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
             assert_eq!(
@@ -920,15 +935,21 @@ mod tests {
 
         #[test]
         fn resolve_video_model_name_falls_back_to_chat_route() {
-            let settings = AgentSettings {
-                chat_model_id: Some("chat-openrouter".to_string()),
-                chat_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("media-mistral".to_string()),
-                media_model_provider: Some("mistral".to_string()),
-                openrouter_api_key: Some("test-openrouter-key".to_string()),
-                mistral_api_key: Some("test-mistral-key".to_string()),
-                ..AgentSettings::default()
-            };
+            let settings = with_provider_key(
+                with_provider_key(
+                    AgentSettings {
+                        chat_model_id: Some("chat-openrouter".to_string()),
+                        chat_model_provider: Some("openrouter".to_string()),
+                        media_model_id: Some("media-mistral".to_string()),
+                        media_model_provider: Some("mistral".to_string()),
+                        ..AgentSettings::default()
+                    },
+                    "llm-provider/openrouter",
+                    "test-openrouter-key",
+                ),
+                "llm-provider/mistral",
+                "test-mistral-key",
+            );
             let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
             assert_eq!(
@@ -939,12 +960,15 @@ mod tests {
 
         #[test]
         fn resolve_image_model_name_reports_unavailable_route() {
-            let settings = AgentSettings {
-                chat_model_id: Some("chat-mistral".to_string()),
-                chat_model_provider: Some("mistral".to_string()),
-                mistral_api_key: Some("test-mistral-key".to_string()),
-                ..AgentSettings::default()
-            };
+            let settings = with_provider_key(
+                AgentSettings {
+                    chat_model_id: Some("chat-mistral".to_string()),
+                    chat_model_provider: Some("mistral".to_string()),
+                    ..AgentSettings::default()
+                },
+                "llm-provider/mistral",
+                "test-mistral-key",
+            );
             let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
             let error = provider

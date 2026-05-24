@@ -59,28 +59,6 @@ pub struct AgentSettings {
     #[serde(default)]
     pub modules: BTreeMap<String, ModuleRuntimeConfig>,
 
-    /// ChatGPT OAuth auth file path.
-    pub chatgpt_auth_path: Option<String>,
-    /// Groq API key
-    pub groq_api_key: Option<String>,
-    /// Mistral API key
-    pub mistral_api_key: Option<String>,
-    /// MiniMax API key
-    pub minimax_api_key: Option<String>,
-    /// `ZAI` (Zhipu AI) API key
-    pub zai_api_key: Option<String>,
-    /// `ZAI` (Zhipu AI) API base URL
-    #[serde(default = "default_zai_api_base")]
-    pub zai_api_base: String,
-    /// `OpenRouter` API key
-    pub openrouter_api_key: Option<String>,
-    /// OpenCode Go API key.
-    pub opencode_go_api_key: Option<String>,
-    /// OpenCode Go Chat Completions endpoint.
-    #[serde(default = "default_opencode_go_api_base")]
-    pub opencode_go_api_base: String,
-    /// `NVIDIA NIM` API key
-    pub nvidia_api_key: Option<String>,
     /// Tavily API key
     pub tavily_api_key: Option<String>,
     /// Enable Tavily tool provider registration.
@@ -107,16 +85,6 @@ pub struct AgentSettings {
 
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
-
-    /// Site URL for `OpenRouter` identification
-    #[serde(default = "default_openrouter_site_url")]
-    pub openrouter_site_url: String,
-    /// Site name for `OpenRouter` identification
-    #[serde(default = "default_openrouter_site_name")]
-    pub openrouter_site_name: String,
-    /// `NVIDIA NIM` API base URL
-    #[serde(default = "default_nvidia_api_base")]
-    pub nvidia_api_base: String,
 
     /// Default system message
     pub system_message: Option<String>,
@@ -210,6 +178,19 @@ impl ModuleRuntimeConfig {
         }
     }
 
+    /// Adds or replaces a module-local JSON config value.
+    #[must_use]
+    pub fn with_value(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.raw_config.insert(key.into(), value);
+        self
+    }
+
+    /// Adds or replaces a module-local string config value.
+    #[must_use]
+    pub fn with_string_value(self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.with_value(key, serde_json::Value::String(value.into()))
+    }
+
     /// Returns true unless the module is explicitly disabled.
     #[must_use]
     pub const fn enabled_or_default(&self) -> bool {
@@ -261,26 +242,6 @@ impl ModuleRuntimeSettings {
                 .map(|(module_id, config)| (module_id.as_str(), config.enabled_or_default())),
         )
     }
-}
-
-const fn default_openrouter_site_url() -> String {
-    String::new()
-}
-
-fn default_zai_api_base() -> String {
-    "https://api.z.ai/api/coding/paas/v4/chat/completions".to_string()
-}
-
-fn default_opencode_go_api_base() -> String {
-    "https://opencode.ai/zen/go/v1/chat/completions".to_string()
-}
-
-fn default_nvidia_api_base() -> String {
-    "https://integrate.api.nvidia.com/v1".to_string()
-}
-
-fn default_openrouter_site_name() -> String {
-    "Oxide Agent Bot".to_string()
 }
 
 /// Build the base configuration loader.
@@ -342,6 +303,51 @@ fn capability_config_error(error: ManifestError) -> ConfigError {
 }
 
 impl AgentSettings {
+    /// Returns module-scoped runtime config by stable module ID.
+    #[must_use]
+    pub fn module_config(&self, module_id: &str) -> Option<&ModuleRuntimeConfig> {
+        self.modules.get(module_id)
+    }
+
+    /// Returns a non-empty module-local string value.
+    #[must_use]
+    pub fn module_string_value(&self, module_id: &str, key: &str) -> Option<String> {
+        self.module_config(module_id)
+            .and_then(|config| config.string_value(key))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
+    /// Returns a module-local string value, falling back to a provider-owned env var.
+    #[must_use]
+    pub fn module_string_value_or_env(
+        &self,
+        module_id: &str,
+        key: &str,
+        env_name: &str,
+    ) -> Option<String> {
+        self.module_string_value(module_id, key).or_else(|| {
+            std::env::var(env_name)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+    }
+
+    /// Returns a module-local string value, provider-owned env var, or default.
+    #[must_use]
+    pub fn module_string_value_or_env_or_default(
+        &self,
+        module_id: &str,
+        key: &str,
+        env_name: &str,
+        default: &str,
+    ) -> String {
+        self.module_string_value_or_env(module_id, key, env_name)
+            .unwrap_or_else(|| default.to_string())
+    }
+
     /// Create new settings by loading from environment and files
     ///
     /// # Examples
@@ -362,26 +368,6 @@ impl AgentSettings {
 
         if settings.agent_model_temperature.is_none() {
             settings.agent_model_temperature = parse_optional_env_f32("AGENT_MODEL_TEMPERATURE");
-        }
-
-        if settings.chatgpt_auth_path.is_none() {
-            if let Ok(val) = std::env::var("CHATGPT_AUTH_PATH") {
-                if !val.is_empty() {
-                    settings.chatgpt_auth_path = Some(val);
-                }
-            }
-        }
-        if settings.opencode_go_api_key.is_none() {
-            if let Ok(val) = std::env::var("OPENCODE_GO_API_KEY") {
-                if !val.is_empty() {
-                    settings.opencode_go_api_key = Some(val);
-                }
-            }
-        }
-        if let Ok(val) = std::env::var("OPENCODE_GO_API_BASE") {
-            if !val.is_empty() {
-                settings.opencode_go_api_base = val;
-            }
         }
 
         settings.apply_tool_provider_env_fallbacks();
@@ -1631,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_load_opencode_go_api_key_and_base() -> Result<(), ConfigError> {
+    fn settings_resolves_opencode_go_module_env_config() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1649,11 +1635,22 @@ mod tests {
         let settings = AgentSettings::new()?;
 
         assert_eq!(
-            settings.opencode_go_api_key.as_deref(),
+            settings
+                .module_string_value_or_env(
+                    "llm-provider/opencode-go",
+                    "api_key",
+                    "OPENCODE_GO_API_KEY"
+                )
+                .as_deref(),
             Some("opencode-key")
         );
         assert_eq!(
-            settings.opencode_go_api_base,
+            settings.module_string_value_or_env_or_default(
+                "llm-provider/opencode-go",
+                "api_base",
+                "OPENCODE_GO_API_BASE",
+                "https://opencode.ai/zen/go/v1/chat/completions",
+            ),
             "https://opencode.example.test/v1/chat/completions"
         );
 
@@ -1688,7 +1685,12 @@ mod tests {
         assert_eq!(primary.id, "deepseek-v4-flash");
         assert_eq!(primary.provider, "opencode-go");
         assert_eq!(
-            settings.opencode_go_api_base,
+            settings.module_string_value_or_env_or_default(
+                "llm-provider/opencode-go",
+                "api_base",
+                "OPENCODE_GO_API_BASE",
+                "https://opencode.ai/zen/go/v1/chat/completions",
+            ),
             "https://opencode.ai/zen/go/v1/chat/completions"
         );
 

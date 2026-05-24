@@ -8,6 +8,12 @@ use crate::llm::LlmProvider;
 /// Capability module for Nvidia hosted model routes.
 pub(crate) struct NvidiaProviderModule;
 
+const API_KEY_CONFIG_KEY: &str = "api_key";
+const API_KEY_ENV: &str = "NVIDIA_API_KEY";
+const API_BASE_CONFIG_KEY: &str = "api_base";
+const API_BASE_ENV: &str = "NVIDIA_API_BASE";
+const DEFAULT_API_BASE: &str = "https://integrate.api.nvidia.com/v1";
+
 impl LlmProviderModule for NvidiaProviderModule {
     fn provider_id(&self) -> &'static str {
         "llm-provider/nvidia"
@@ -22,13 +28,21 @@ impl LlmProviderModule for NvidiaProviderModule {
         settings: &AgentSettings,
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>> {
-        settings.nvidia_api_key.as_ref().map(|api_key| {
-            Arc::new(super::NvidiaProvider::new_with_client(
-                api_key.clone(),
-                settings.nvidia_api_base.clone(),
-                ctx.http_client.clone(),
-            )) as Arc<dyn LlmProvider>
-        })
+        settings
+            .module_string_value_or_env(self.provider_id(), API_KEY_CONFIG_KEY, API_KEY_ENV)
+            .map(|api_key| {
+                let api_base = settings.module_string_value_or_env_or_default(
+                    self.provider_id(),
+                    API_BASE_CONFIG_KEY,
+                    API_BASE_ENV,
+                    DEFAULT_API_BASE,
+                );
+                Arc::new(super::NvidiaProvider::new_with_client(
+                    api_key,
+                    api_base,
+                    ctx.http_client.clone(),
+                )) as Arc<dyn LlmProvider>
+            })
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

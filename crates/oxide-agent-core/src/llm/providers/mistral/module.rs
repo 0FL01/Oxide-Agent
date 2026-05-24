@@ -8,6 +8,9 @@ use crate::llm::LlmProvider;
 /// Capability module for Mistral routes.
 pub(crate) struct MistralProviderModule;
 
+const API_KEY_CONFIG_KEY: &str = "api_key";
+const API_KEY_ENV: &str = "MISTRAL_API_KEY";
+
 impl LlmProviderModule for MistralProviderModule {
     fn provider_id(&self) -> &'static str {
         "llm-provider/mistral"
@@ -22,12 +25,14 @@ impl LlmProviderModule for MistralProviderModule {
         settings: &AgentSettings,
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>> {
-        settings.mistral_api_key.as_ref().map(|api_key| {
-            Arc::new(super::MistralProvider::new_with_client(
-                api_key.clone(),
-                ctx.http_client.clone(),
-            )) as Arc<dyn LlmProvider>
-        })
+        settings
+            .module_string_value_or_env(self.provider_id(), API_KEY_CONFIG_KEY, API_KEY_ENV)
+            .map(|api_key| {
+                Arc::new(super::MistralProvider::new_with_client(
+                    api_key,
+                    ctx.http_client.clone(),
+                )) as Arc<dyn LlmProvider>
+            })
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

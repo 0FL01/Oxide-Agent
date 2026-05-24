@@ -9,6 +9,9 @@ use crate::llm::LlmProvider;
 /// Capability module for ChatGPT/Codex OAuth routes.
 pub(crate) struct ChatGptProviderModule;
 
+const AUTH_PATH_CONFIG_KEY: &str = "auth_path";
+const AUTH_PATH_ENV: &str = "CHATGPT_AUTH_PATH";
+
 impl LlmProviderModule for ChatGptProviderModule {
     fn provider_id(&self) -> &'static str {
         "llm-provider/openai-chatgpt"
@@ -23,11 +26,12 @@ impl LlmProviderModule for ChatGptProviderModule {
         settings: &AgentSettings,
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>> {
-        let auth_path = settings
-            .chatgpt_auth_path
-            .as_ref()
-            .filter(|path| !path.trim().is_empty())?;
-        let resolved_auth_path = super::resolve_auth_file_path(Some(auth_path))
+        let auth_path = settings.module_string_value_or_env(
+            self.provider_id(),
+            AUTH_PATH_CONFIG_KEY,
+            AUTH_PATH_ENV,
+        )?;
+        let resolved_auth_path = super::resolve_auth_file_path(Some(auth_path.as_str()))
             .unwrap_or_else(|_| PathBuf::from(auth_path));
 
         if !resolved_auth_path.exists() {

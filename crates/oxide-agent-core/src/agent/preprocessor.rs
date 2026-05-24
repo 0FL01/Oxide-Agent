@@ -456,7 +456,7 @@ pub enum AgentInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AgentSettings;
+    use crate::config::{AgentSettings, ModuleRuntimeConfig};
     use crate::llm::MockLlmProvider;
     use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability, SandboxFileListing};
     use std::sync::Arc;
@@ -699,14 +699,17 @@ mod tests {
 
     #[tokio::test]
     async fn preprocess_video_uses_media_model() {
-        let settings = AgentSettings {
+        let mut settings = AgentSettings {
             chat_model_id: Some("chat-model".to_string()),
             chat_model_provider: Some("openrouter".to_string()),
             media_model_id: Some("video-model".to_string()),
             media_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-key".to_string()),
             ..AgentSettings::default()
         };
+        settings.modules.insert(
+            "llm-provider/openrouter".to_string(),
+            ModuleRuntimeConfig::default().with_string_value("api_key", "test-key"),
+        );
         let mut provider = MockLlmProvider::new();
         provider
             .expect_analyze_video()

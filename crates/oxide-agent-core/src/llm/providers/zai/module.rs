@@ -8,6 +8,12 @@ use crate::llm::LlmProvider;
 /// Capability module for ZAI/Zhipu routes.
 pub(crate) struct ZaiProviderModule;
 
+const API_KEY_CONFIG_KEY: &str = "api_key";
+const API_KEY_ENV: &str = "ZAI_API_KEY";
+const API_BASE_CONFIG_KEY: &str = "api_base";
+const API_BASE_ENV: &str = "ZAI_API_BASE";
+const DEFAULT_API_BASE: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+
 impl LlmProviderModule for ZaiProviderModule {
     fn provider_id(&self) -> &'static str {
         "llm-provider/zai"
@@ -22,20 +28,27 @@ impl LlmProviderModule for ZaiProviderModule {
         settings: &AgentSettings,
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>> {
-        settings.zai_api_key.as_ref().map(|api_key| {
-            Arc::new(super::ZaiProvider::new_with_client(
-                api_key.clone(),
-                settings.zai_api_base.clone(),
-                ctx.http_client.clone(),
-            )) as Arc<dyn LlmProvider>
-        })
+        settings
+            .module_string_value_or_env(self.provider_id(), API_KEY_CONFIG_KEY, API_KEY_ENV)
+            .map(|api_key| {
+                let api_base = settings.module_string_value_or_env_or_default(
+                    self.provider_id(),
+                    API_BASE_CONFIG_KEY,
+                    API_BASE_ENV,
+                    DEFAULT_API_BASE,
+                );
+                Arc::new(super::ZaiProvider::new_with_client(
+                    api_key,
+                    api_base,
+                    ctx.http_client.clone(),
+                )) as Arc<dyn LlmProvider>
+            })
     }
 
     fn missing_route_config_message(&self, settings: &AgentSettings) -> Option<&'static str> {
         settings
-            .zai_api_key
-            .as_ref()
-            .is_none_or(|key| key.trim().is_empty())
+            .module_string_value_or_env(self.provider_id(), API_KEY_CONFIG_KEY, API_KEY_ENV)
+            .is_none()
             .then_some("Critical: ZAI_API_KEY is required for configured ZAI routes")
     }
 

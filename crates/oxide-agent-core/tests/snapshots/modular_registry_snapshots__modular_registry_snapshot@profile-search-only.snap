@@ -34,6 +34,24 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "modules": [
       {
         "cargo_feature": "llm-opencode-go",
+        "config_properties": [
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/chat/completions",
+            "description": "OpenCode Go Chat Completions endpoint.",
+            "env": "OPENCODE_GO_API_BASE",
+            "name": "api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenCode Go API key.",
+            "env": "OPENCODE_GO_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          }
+        ],
         "conflicts": [],
         "id": "llm-provider/opencode-go",
         "kind": "llm-provider",
@@ -44,6 +62,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       },
       {
         "cargo_feature": "storage-s3-r2",
+        "config_properties": [],
         "conflicts": [],
         "id": "storage/r2",
         "kind": "storage-backend",
@@ -54,6 +73,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       },
       {
         "cargo_feature": "tool-tavily",
+        "config_properties": [],
         "conflicts": [],
         "id": "tool/tavily",
         "kind": "search",
@@ -65,6 +85,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       },
       {
         "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
         "conflicts": [],
         "id": "tool/webfetch-md",
         "kind": "search",
@@ -75,6 +96,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       },
       {
         "cargo_feature": "transport-telegram",
+        "config_properties": [],
         "conflicts": [],
         "id": "transport/telegram",
         "kind": "transport",

@@ -381,6 +381,29 @@ for module in manifest.get("modules", []):
         fail(f"{module_id} cargo feature metadata mismatch")
     if entry.get("x-oxide-provides") != module["provides"]:
         fail(f"{module_id} provided capability metadata mismatch")
+    declared_properties = module.get("config_properties", [])
+    if entry.get("x-oxide-config-properties") != declared_properties:
+        fail(f"{module_id} config property metadata mismatch")
+    schema_properties = entry.get("properties", {})
+    for prop in declared_properties:
+        name = prop["name"]
+        prop_schema = schema_properties.get(name)
+        if prop_schema is None:
+            fail(f"{module_id} missing declared config property schema: {name}")
+        if prop_schema.get("type") != "string":
+            fail(f"{module_id}.{name} must be a string config property")
+        if prop.get("env") and prop_schema.get("x-oxide-env") != prop["env"]:
+            fail(f"{module_id}.{name} env metadata mismatch")
+        if prop.get("secret") and prop_schema.get("x-oxide-secret") is not True:
+            fail(f"{module_id}.{name} secret metadata mismatch")
+        if prop.get("default_value") is not None and prop_schema.get("default") != prop["default_value"]:
+            fail(f"{module_id}.{name} default metadata mismatch")
+    if module_id.startswith("llm-provider/") and module_id != "llm-provider/openai-chatgpt":
+        if not any(prop["name"] == "api_key" for prop in declared_properties):
+            fail(f"{module_id} provider schema must declare module-owned api_key")
+    if module_id == "llm-provider/openai-chatgpt":
+        if not any(prop["name"] == "auth_path" for prop in declared_properties):
+            fail("llm-provider/openai-chatgpt schema must declare module-owned auth_path")
 
 print(f"config schema check passed for {profile}: {len(schema_modules)} module schemas")
 PY

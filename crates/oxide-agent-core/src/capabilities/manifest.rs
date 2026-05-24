@@ -1,6 +1,9 @@
 //! Deterministic compiled and enabled capability manifests.
 
-use super::{CapabilityId, CapabilityKind, CapabilityModule, CapabilityRequirement, ModuleId};
+use super::{
+    CapabilityId, CapabilityKind, CapabilityModule, CapabilityRequirement, ModuleConfigProperty,
+    ModuleId,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,6 +61,7 @@ pub struct ModuleManifestEntry {
     provides: Vec<CapabilityId>,
     requires: Vec<CapabilityRequirement>,
     conflicts: Vec<CapabilityId>,
+    config_properties: Vec<ModuleConfigProperty>,
 }
 
 impl ModuleManifestEntry {
@@ -97,6 +101,12 @@ impl ModuleManifestEntry {
         &self.conflicts
     }
 
+    /// Module-owned runtime config properties.
+    #[must_use]
+    pub fn config_properties(&self) -> &[ModuleConfigProperty] {
+        &self.config_properties
+    }
+
     fn from_module(module: &dyn CapabilityModule) -> Self {
         let mut provides = module.provides().to_vec();
         provides.sort_unstable();
@@ -110,6 +120,10 @@ impl ModuleManifestEntry {
         conflicts.sort_unstable();
         conflicts.dedup();
 
+        let mut config_properties = module.config_properties().to_vec();
+        config_properties.sort_by_key(|property| property.name());
+        config_properties.dedup_by_key(|property| property.name());
+
         Self {
             id: module.id(),
             kind: module.kind(),
@@ -117,6 +131,7 @@ impl ModuleManifestEntry {
             provides,
             requires,
             conflicts,
+            config_properties,
         }
     }
 }
@@ -278,6 +293,22 @@ impl CompiledCapabilityManifest {
     pub fn config_schema(&self) -> Value {
         let mut module_properties = serde_json::Map::new();
         for module in &self.modules {
+            let mut properties = serde_json::Map::new();
+            properties.insert(
+                "enabled".to_string(),
+                json!({
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Disable this compiled module at runtime when set to false."
+                }),
+            );
+            for property in module.config_properties() {
+                properties.insert(
+                    property.name().to_string(),
+                    config_property_schema(*property),
+                );
+            }
+
             module_properties.insert(
                 module.id().as_str().to_string(),
                 json!({
@@ -286,19 +317,14 @@ impl CompiledCapabilityManifest {
                         "Runtime config for compiled module {}",
                         module.id().as_str()
                     ),
-                    "additionalProperties": true,
-                    "properties": {
-                        "enabled": {
-                            "type": "boolean",
-                            "default": true,
-                            "description": "Disable this compiled module at runtime when set to false."
-                        }
-                    },
+                    "additionalProperties": module.config_properties().is_empty(),
+                    "properties": properties,
                     "x-oxide-kind": module.kind(),
                     "x-oxide-cargo-feature": module.cargo_feature(),
                     "x-oxide-provides": module.provides(),
                     "x-oxide-requires": module.requires(),
-                    "x-oxide-conflicts": module.conflicts()
+                    "x-oxide-conflicts": module.conflicts(),
+                    "x-oxide-config-properties": module.config_properties()
                 }),
             );
         }
@@ -344,6 +370,27 @@ impl CompiledCapabilityManifest {
 
         Ok(())
     }
+}
+
+fn config_property_schema(property: ModuleConfigProperty) -> Value {
+    let mut schema = serde_json::Map::new();
+    schema.insert(
+        "type".to_string(),
+        json!(property.value_kind().json_schema_type()),
+    );
+    schema.insert("description".to_string(), json!(property.description()));
+    if let Some(env) = property.env() {
+        schema.insert("x-oxide-env".to_string(), json!(env));
+    }
+    if property.is_secret() {
+        schema.insert("format".to_string(), json!("password"));
+        schema.insert("writeOnly".to_string(), json!(true));
+        schema.insert("x-oxide-secret".to_string(), json!(true));
+    }
+    if let Some(default_value) = property.default_value() {
+        schema.insert("default".to_string(), json!(default_value));
+    }
+    Value::Object(schema)
 }
 
 /// Deterministic manifest for modules enabled by runtime configuration.
@@ -472,6 +519,8 @@ mod tests {
     const SANDBOX_FILEOPS_REQUIRES: &[CapabilityRequirement] = &[CapabilityRequirement::any_of(
         SANDBOX_FILEOPS_BACKEND_OPTIONS,
     )];
+    const TOOL_A_CONFIG: &[ModuleConfigProperty] =
+        &[ModuleConfigProperty::string("endpoint", "Test endpoint.").with_env("TOOL_A_ENDPOINT")];
 
     fn boxed(module: StaticCapabilityModule) -> Box<dyn CapabilityModule> {
         Box::new(module)
@@ -599,12 +648,15 @@ mod tests {
     #[test]
     fn config_schema_lists_only_compiled_module_ids() {
         let modules = vec![
-            boxed(StaticCapabilityModule::new(
-                ModuleId::new("tool/a"),
-                CapabilityKind::Tool,
-                "tool-a",
-                TOOL_A_READ,
-            )),
+            boxed(
+                StaticCapabilityModule::new(
+                    ModuleId::new("tool/a"),
+                    CapabilityKind::Tool,
+                    "tool-a",
+                    TOOL_A_READ,
+                )
+                .with_config_properties(TOOL_A_CONFIG),
+            ),
             boxed(StaticCapabilityModule::new(
                 ModuleId::new("tool/z"),
                 CapabilityKind::Tool,
@@ -631,6 +683,15 @@ mod tests {
         assert_eq!(
             module_properties["tool/a"]["properties"]["enabled"]["type"],
             "boolean"
+        );
+        assert_eq!(module_properties["tool/a"]["additionalProperties"], false);
+        assert_eq!(
+            module_properties["tool/a"]["properties"]["endpoint"]["type"],
+            "string"
+        );
+        assert_eq!(
+            module_properties["tool/a"]["properties"]["endpoint"]["x-oxide-env"],
+            "TOOL_A_ENDPOINT"
         );
         assert_eq!(
             module_properties["tool/a"]["x-oxide-cargo-feature"],

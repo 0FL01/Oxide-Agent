@@ -737,20 +737,35 @@ impl LlmClient {
 #[cfg(test)]
 mod tests {
     use super::LlmClient;
-    use crate::config::AgentSettings;
+    use crate::config::{AgentSettings, ModuleRuntimeConfig};
     use crate::llm::{ChatResponse, Message, MockLlmProvider};
     use std::sync::Arc;
 
+    fn with_provider_key(
+        mut settings: AgentSettings,
+        module_id: &str,
+        api_key: &str,
+    ) -> AgentSettings {
+        settings.modules.insert(
+            module_id.to_string(),
+            ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+        );
+        settings
+    }
+
     #[test]
     fn media_resolver_prefers_explicit_media_route_for_video() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-gemini".to_string()),
-            media_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                media_model_id: Some("media-gemini".to_string()),
+                media_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let llm = LlmClient::new(&settings);
         let route = llm
@@ -763,15 +778,21 @@ mod tests {
 
     #[test]
     fn media_resolver_falls_back_to_chat_route_when_media_is_stt_only() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-mistral".to_string()),
-            media_model_provider: Some("mistral".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            with_provider_key(
+                AgentSettings {
+                    chat_model_id: Some("chat-openrouter".to_string()),
+                    chat_model_provider: Some("openrouter".to_string()),
+                    media_model_id: Some("media-mistral".to_string()),
+                    media_model_provider: Some("mistral".to_string()),
+                    ..AgentSettings::default()
+                },
+                "llm-provider/openrouter",
+                "test-openrouter-key",
+            ),
+            "llm-provider/mistral",
+            "test-mistral-key",
+        );
 
         let llm = LlmClient::new(&settings);
         let image_route = llm
@@ -784,12 +805,15 @@ mod tests {
 
     #[test]
     fn media_resolver_allows_mistral_for_audio_stt_only() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-mistral".to_string()),
-            chat_model_provider: Some("mistral".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-mistral".to_string()),
+                chat_model_provider: Some("mistral".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/mistral",
+            "test-mistral-key",
+        );
 
         let llm = LlmClient::new(&settings);
         let audio_route = llm
@@ -803,14 +827,17 @@ mod tests {
 
     #[test]
     fn media_resolver_skips_unconfigured_provider_routes() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-mistral".to_string()),
-            media_model_provider: Some("mistral".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                media_model_id: Some("media-mistral".to_string()),
+                media_model_provider: Some("mistral".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let llm = LlmClient::new(&settings);
         let route = llm
@@ -823,14 +850,17 @@ mod tests {
 
     #[test]
     fn media_model_name_resolvers_return_selected_route_names() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-gemini".to_string()),
-            media_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                media_model_id: Some("media-gemini".to_string()),
+                media_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let llm = LlmClient::new(&settings);
         assert_eq!(
@@ -852,15 +882,21 @@ mod tests {
 
     #[test]
     fn media_name_resolver_falls_back_to_chat_for_non_stt_modalities() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-mistral".to_string()),
-            media_model_provider: Some("mistral".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            with_provider_key(
+                AgentSettings {
+                    chat_model_id: Some("chat-openrouter".to_string()),
+                    chat_model_provider: Some("openrouter".to_string()),
+                    media_model_id: Some("media-mistral".to_string()),
+                    media_model_provider: Some("mistral".to_string()),
+                    ..AgentSettings::default()
+                },
+                "llm-provider/openrouter",
+                "test-openrouter-key",
+            ),
+            "llm-provider/mistral",
+            "test-mistral-key",
+        );
 
         let llm = LlmClient::new(&settings);
         assert_eq!(
@@ -882,12 +918,15 @@ mod tests {
 
     #[test]
     fn multimodal_availability_is_modality_specific() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-mistral".to_string()),
-            chat_model_provider: Some("mistral".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-mistral".to_string()),
+                chat_model_provider: Some("mistral".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/mistral",
+            "test-mistral-key",
+        );
 
         let llm = LlmClient::new(&settings);
         assert!(llm.is_multimodal_available());
@@ -898,12 +937,15 @@ mod tests {
 
     #[test]
     fn multimodal_is_unavailable_when_no_supported_media_routes_exist() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-groq".to_string()),
-            chat_model_provider: Some("groq".to_string()),
-            groq_api_key: Some("test-groq-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-groq".to_string()),
+                chat_model_provider: Some("groq".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/groq",
+            "test-groq-key",
+        );
 
         let llm = LlmClient::new(&settings);
         assert!(!llm.is_multimodal_available());
@@ -924,13 +966,15 @@ mod tests {
 
     #[test]
     fn llm_client_registers_opencode_go_when_key_present() {
-        let settings = AgentSettings {
-            chat_model_id: Some("deepseek-v4-flash".to_string()),
-            chat_model_provider: Some("opencode-go".to_string()),
-            opencode_go_api_key: Some("test-opencode-key".to_string()),
-            opencode_go_api_base: "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("deepseek-v4-flash".to_string()),
+                chat_model_provider: Some("opencode-go".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/opencode-go",
+            "test-opencode-key",
+        );
 
         let llm = LlmClient::new(&settings);
 
@@ -943,12 +987,15 @@ mod tests {
 
     #[tokio::test]
     async fn main_agent_tool_request_uses_configured_temperature() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let mut llm = LlmClient::new(&settings);
         let mut provider = MockLlmProvider::new();
@@ -989,12 +1036,15 @@ mod tests {
 
     #[tokio::test]
     async fn chat_completion_folds_system_history_into_prompt() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let mut llm = LlmClient::new(&settings);
         let mut provider = MockLlmProvider::new();
@@ -1041,12 +1091,15 @@ mod tests {
 
     #[tokio::test]
     async fn tool_requests_fold_system_history_into_prompt() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let mut llm = LlmClient::new(&settings);
         let mut provider = MockLlmProvider::new();

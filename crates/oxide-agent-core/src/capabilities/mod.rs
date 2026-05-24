@@ -15,7 +15,7 @@ pub use manifest::{
     ModuleManifestEntry,
 };
 pub use module::{
-    CapabilityId, CapabilityKind, CapabilityModule, CapabilityRequirement, ModuleId,
-    StaticCapabilityModule,
+    CapabilityId, CapabilityKind, CapabilityModule, CapabilityRequirement, ModuleConfigProperty,
+    ModuleConfigValueKind, ModuleId, StaticCapabilityModule,
 };
 pub use registry::ModuleRegistry;

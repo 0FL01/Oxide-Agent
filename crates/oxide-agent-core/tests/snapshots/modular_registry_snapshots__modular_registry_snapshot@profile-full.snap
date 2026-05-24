@@ -14,7 +14,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "integration/mcp-jira"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "integration/mcp-mattermost",
@@ -24,7 +25,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "integration/mcp-mattermost"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "integration/ssh-mcp",
@@ -34,7 +36,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "integration/ssh-mcp"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "llm-provider/groq",
@@ -44,7 +47,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "llm-provider/groq"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "Groq API key.",
+            "env": "GROQ_API_KEY",
+            "secret": true,
+            "default_value": null
+          }
+        ]
       },
       {
         "id": "llm-provider/minimax",
@@ -54,7 +67,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "llm-provider/minimax"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "MiniMax API key.",
+            "env": "MINIMAX_API_KEY",
+            "secret": true,
+            "default_value": null
+          }
+        ]
       },
       {
         "id": "llm-provider/mistral",
@@ -64,7 +87,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "llm-provider/mistral"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "Mistral API key.",
+            "env": "MISTRAL_API_KEY",
+            "secret": true,
+            "default_value": null
+          }
+        ]
       },
       {
         "id": "llm-provider/nvidia",
@@ -74,7 +107,25 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "llm-provider/nvidia"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_base",
+            "value_kind": "string",
+            "description": "NVIDIA NIM OpenAI-compatible API base URL.",
+            "env": "NVIDIA_API_BASE",
+            "secret": false,
+            "default_value": "https://integrate.api.nvidia.com/v1"
+          },
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "NVIDIA NIM API key.",
+            "env": "NVIDIA_API_KEY",
+            "secret": true,
+            "default_value": null
+          }
+        ]
       },
       {
         "id": "llm-provider/openai-chatgpt",
@@ -84,7 +135,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "llm-provider/openai-chatgpt"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "auth_path",
+            "value_kind": "string",
+            "description": "Path to the ChatGPT/Codex OAuth auth record.",
+            "env": "CHATGPT_AUTH_PATH",
+            "secret": false,
+            "default_value": null
+          }
+        ]
       },
       {
         "id": "llm-provider/opencode-go",
@@ -94,7 +155,25 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "llm-provider/opencode-go"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_base",
+            "value_kind": "string",
+            "description": "OpenCode Go Chat Completions endpoint.",
+            "env": "OPENCODE_GO_API_BASE",
+            "secret": false,
+            "default_value": "https://opencode.ai/zen/go/v1/chat/completions"
+          },
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "OpenCode Go API key.",
+            "env": "OPENCODE_GO_API_KEY",
+            "secret": true,
+            "default_value": null
+          }
+        ]
       },
       {
         "id": "llm-provider/openrouter",
@@ -104,7 +183,33 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "llm-provider/openrouter"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "OpenRouter API key.",
+            "env": "OPENROUTER_API_KEY",
+            "secret": true,
+            "default_value": null
+          },
+          {
+            "name": "site_name",
+            "value_kind": "string",
+            "description": "Optional OpenRouter site name attribution.",
+            "env": "OPENROUTER_SITE_NAME",
+            "secret": false,
+            "default_value": "Oxide Agent Bot"
+          },
+          {
+            "name": "site_url",
+            "value_kind": "string",
+            "description": "Optional OpenRouter site URL attribution.",
+            "env": "OPENROUTER_SITE_URL",
+            "secret": false,
+            "default_value": ""
+          }
+        ]
       },
       {
         "id": "llm-provider/zai",
@@ -114,7 +219,25 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "llm-provider/zai"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_base",
+            "value_kind": "string",
+            "description": "ZAI/Zhipu Chat Completions API endpoint.",
+            "env": "ZAI_API_BASE",
+            "secret": false,
+            "default_value": "https://api.z.ai/api/coding/paas/v4/chat/completions"
+          },
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "ZAI/Zhipu API key.",
+            "env": "ZAI_API_KEY",
+            "secret": true,
+            "default_value": null
+          }
+        ]
       },
       {
         "id": "manager/control-plane",
@@ -126,7 +249,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "manager/topic-sandbox-admin"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "sandbox-backend/docker-direct",
@@ -140,7 +264,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "sandbox-backend/docker-direct/lifecycle"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "sandbox-backend/sandboxd-client",
@@ -154,7 +279,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "sandbox-backend/sandboxd-client/lifecycle"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "sandbox-daemon/sandboxd",
@@ -169,7 +295,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "capability": "sandbox-backend/docker-direct"
           }
         ],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "storage/r2",
@@ -179,7 +306,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "storage/r2"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/agents-md",
@@ -189,7 +317,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/agents-md"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/browser-use",
@@ -199,7 +328,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/browser-use"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/compression",
@@ -209,7 +339,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/compression"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/delegation",
@@ -219,7 +350,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/delegation"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/file-delivery",
@@ -229,7 +361,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/file-delivery"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/media-audio",
@@ -239,7 +372,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/media-audio-transcription"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/media-image",
@@ -249,7 +383,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/media-image-description"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/media-video",
@@ -259,7 +394,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/media-video-description"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/reminder",
@@ -269,7 +405,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/reminder"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/sandbox-exec",
@@ -287,7 +424,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             ]
           }
         ],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/sandbox-fileops",
@@ -306,7 +444,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             ]
           }
         ],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/sandbox-recreate",
@@ -324,7 +463,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             ]
           }
         ],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/searxng",
@@ -334,7 +474,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/searxng-search"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/stack-logs",
@@ -352,7 +493,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             ]
           }
         ],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/tavily",
@@ -363,7 +505,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/tavily-search"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/todos",
@@ -373,7 +516,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/todos"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/tts-kokoro",
@@ -383,7 +527,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/tts-kokoro"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/tts-silero",
@@ -393,7 +538,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/tts-silero"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/webfetch-md",
@@ -403,7 +549,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/webfetch-md"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/wiki-memory",
@@ -413,7 +560,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "tool/wiki-memory"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "tool/ytdlp",
@@ -440,7 +588,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             ]
           }
         ],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "transport/telegram",
@@ -450,7 +599,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "transport/telegram"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       },
       {
         "id": "transport/web",
@@ -460,7 +610,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "transport/web"
         ],
         "requires": [],
-        "conflicts": []
+        "conflicts": [],
+        "config_properties": []
       }
     ],
     "capabilities": [

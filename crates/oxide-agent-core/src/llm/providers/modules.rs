@@ -212,6 +212,15 @@ mod tests {
     };
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
 
+    fn settings_with_provider_key(module_id: &str, api_key: &str) -> AgentSettings {
+        let mut settings = AgentSettings::default();
+        settings.modules.insert(
+            module_id.to_string(),
+            ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+        );
+        settings
+    }
+
     #[test]
     fn provider_key_is_case_insensitive() {
         assert_eq!(provider_key("OpenCode-Go"), "opencode-go");
@@ -238,10 +247,7 @@ mod tests {
     #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn opencode_go_module_registers_provider_id_and_aliases() {
-        let settings = AgentSettings {
-            opencode_go_api_key: Some("test-opencode-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = settings_with_provider_key("llm-provider/opencode-go", "test-opencode-key");
 
         let providers = build_configured_providers(&settings);
 
@@ -261,10 +267,8 @@ mod tests {
     #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn disabled_opencode_go_module_registers_no_aliases() {
-        let mut settings = AgentSettings {
-            opencode_go_api_key: Some("test-opencode-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let mut settings =
+            settings_with_provider_key("llm-provider/opencode-go", "test-opencode-key");
         settings.modules.insert(
             "llm-provider/opencode-go".to_string(),
             ModuleRuntimeConfig::disabled(),
@@ -287,10 +291,7 @@ mod tests {
             Some("Critical: OPENCODE_GO_API_KEY is required for configured OpenCode Go routes")
         );
 
-        let settings = AgentSettings {
-            opencode_go_api_key: Some("test-opencode-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = settings_with_provider_key("llm-provider/opencode-go", "test-opencode-key");
 
         assert_eq!(
             provider_missing_route_config_message("opencode_go", &settings),
@@ -338,10 +339,7 @@ mod tests {
             Some("Critical: ZAI_API_KEY is required for configured ZAI routes")
         );
 
-        let settings = AgentSettings {
-            zai_api_key: Some("test-zai-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = settings_with_provider_key("llm-provider/zai", "test-zai-key");
 
         assert_eq!(
             provider_missing_route_config_message("llm-provider/zai", &settings),
@@ -398,10 +396,7 @@ mod tests {
     #[cfg(feature = "llm-groq")]
     #[test]
     fn groq_module_registers_provider_id_and_aliases() {
-        let settings = AgentSettings {
-            groq_api_key: Some("test-groq-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = settings_with_provider_key("llm-provider/groq", "test-groq-key");
 
         let providers = build_configured_providers(&settings);
 
@@ -424,10 +419,7 @@ mod tests {
     #[cfg(feature = "llm-minimax")]
     #[test]
     fn minimax_module_registers_provider_id_and_aliases() {
-        let settings = AgentSettings {
-            minimax_api_key: Some("test-minimax-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = settings_with_provider_key("llm-provider/minimax", "test-minimax-key");
 
         let providers = build_configured_providers(&settings);
 
@@ -450,10 +442,7 @@ mod tests {
     #[cfg(feature = "llm-mistral")]
     #[test]
     fn mistral_module_registers_provider_id_and_aliases() {
-        let settings = AgentSettings {
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = settings_with_provider_key("llm-provider/mistral", "test-mistral-key");
 
         let providers = build_configured_providers(&settings);
 

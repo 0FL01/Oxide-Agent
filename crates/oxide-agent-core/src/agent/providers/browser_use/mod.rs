@@ -46,6 +46,10 @@ const TOOL_EXTRACT_CONTENT: &str = "browser_use_extract_content";
 const TOOL_SCREENSHOT: &str = "browser_use_screenshot";
 const MINIMAX_DEFAULT_API_BASE: &str = "https://api.minimax.io/anthropic";
 const OPENROUTER_DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
+const MINIMAX_PROVIDER_MODULE_ID: &str = "llm-provider/minimax";
+const ZAI_PROVIDER_MODULE_ID: &str = "llm-provider/zai";
+const OPENROUTER_PROVIDER_MODULE_ID: &str = "llm-provider/openrouter";
+const ZAI_DEFAULT_API_BASE: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
 const OXIDE_BROWSER_LLM_API_KEY_HEADER: &str = "x-oxide-browser-llm-api-key";
 const BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV: &str = "BROWSER_USE_UNSTABLE_VISUAL_ROUTES";
 
@@ -444,19 +448,32 @@ impl BrowserUseProvider {
             "llm-provider/minimax" | "minimax" => (
                 "minimax",
                 Some(MINIMAX_DEFAULT_API_BASE.to_string()),
-                self.require_route_api_key("minimax", self.settings.minimax_api_key.as_deref())?,
+                self.require_route_api_key_for_module(
+                    "minimax",
+                    MINIMAX_PROVIDER_MODULE_ID,
+                    "MINIMAX_API_KEY",
+                )?,
             ),
             "llm-provider/zai" | "zai" => (
                 "zai",
-                Some(self.settings.zai_api_base.clone()),
-                self.require_route_api_key("zai", self.settings.zai_api_key.as_deref())?,
+                Some(self.route_api_base_for_module(
+                    ZAI_PROVIDER_MODULE_ID,
+                    "ZAI_API_BASE",
+                    ZAI_DEFAULT_API_BASE,
+                )),
+                self.require_route_api_key_for_module(
+                    "zai",
+                    ZAI_PROVIDER_MODULE_ID,
+                    "ZAI_API_KEY",
+                )?,
             ),
             "llm-provider/openrouter" | "openrouter" => (
                 "openrouter",
                 Some(OPENROUTER_DEFAULT_API_BASE.to_string()),
-                self.require_route_api_key(
+                self.require_route_api_key_for_module(
                     "openrouter",
-                    self.settings.openrouter_api_key.as_deref(),
+                    OPENROUTER_PROVIDER_MODULE_ID,
+                    "OPENROUTER_API_KEY",
                 )?,
             ),
             unsupported => {
@@ -482,6 +499,23 @@ impl BrowserUseProvider {
             },
             api_key,
         ))
+    }
+
+    fn require_route_api_key_for_module(
+        &self,
+        provider: &str,
+        module_id: &str,
+        env_name: &str,
+    ) -> Result<String> {
+        let api_key = self
+            .settings
+            .module_string_value_or_env(module_id, "api_key", env_name);
+        self.require_route_api_key(provider, api_key.as_deref())
+    }
+
+    fn route_api_base_for_module(&self, module_id: &str, env_name: &str, default: &str) -> String {
+        self.settings
+            .module_string_value_or_env_or_default(module_id, "api_base", env_name, default)
     }
 
     fn require_route_api_key(&self, provider: &str, api_key: Option<&str>) -> Result<String> {

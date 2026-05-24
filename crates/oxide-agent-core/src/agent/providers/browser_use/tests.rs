@@ -48,23 +48,35 @@ fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
 }
 
 fn test_settings() -> Arc<crate::config::AgentSettings> {
-    Arc::new(crate::config::AgentSettings {
-        minimax_api_key: Some("minimax-secret".to_string()),
-        zai_api_key: Some("zai-secret".to_string()),
-        openrouter_api_key: Some("openrouter-secret".to_string()),
-        ..crate::config::AgentSettings::default()
-    })
+    Arc::new(settings_with_browser_route_keys(
+        crate::config::AgentSettings::default(),
+    ))
 }
 
 fn test_settings_with_dedicated_browser_use_model() -> Arc<crate::config::AgentSettings> {
-    Arc::new(crate::config::AgentSettings {
-        minimax_api_key: Some("minimax-secret".to_string()),
-        zai_api_key: Some("zai-secret".to_string()),
-        openrouter_api_key: Some("openrouter-secret".to_string()),
-        browser_use_model_id: Some("GLM-4.6V".to_string()),
-        browser_use_model_provider: Some("zai".to_string()),
-        ..crate::config::AgentSettings::default()
-    })
+    Arc::new(settings_with_browser_route_keys(
+        crate::config::AgentSettings {
+            browser_use_model_id: Some("GLM-4.6V".to_string()),
+            browser_use_model_provider: Some("zai".to_string()),
+            ..crate::config::AgentSettings::default()
+        },
+    ))
+}
+
+fn settings_with_browser_route_keys(
+    mut settings: crate::config::AgentSettings,
+) -> crate::config::AgentSettings {
+    for (module_id, api_key) in [
+        ("llm-provider/minimax", "minimax-secret"),
+        ("llm-provider/zai", "zai-secret"),
+        ("llm-provider/openrouter", "openrouter-secret"),
+    ] {
+        settings.modules.insert(
+            module_id.to_string(),
+            crate::config::ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+        );
+    }
+    settings
 }
 
 #[test]

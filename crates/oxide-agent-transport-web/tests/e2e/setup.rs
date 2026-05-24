@@ -1,6 +1,6 @@
 //! Test infrastructure setup: AppState factory functions and task execution helpers.
 
-use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::{SandboxManager, SandboxScope};
 use oxide_agent_runtime::SessionRegistry;
@@ -129,16 +129,19 @@ pub fn setup_live_zai_test() -> anyhow::Result<AppState> {
         agent_model_max_output_tokens: Some(32_000),
         agent_model_context_window_tokens: Some(200_000),
         agent_timeout_secs: Some(900),
-        zai_api_key: Some(api_key),
         ..AgentSettings::default()
     };
+    let mut zai_config = ModuleRuntimeConfig::default().with_string_value("api_key", api_key);
     if let Ok(base) = env::var("ZAI_API_BASE") {
         if !base.is_empty() {
-            settings.zai_api_base = base;
+            zai_config = zai_config.with_string_value("api_base", base);
         }
     } else {
-        settings.zai_api_base = ZAI_API_BASE.to_string();
+        zai_config = zai_config.with_string_value("api_base", ZAI_API_BASE);
     }
+    settings
+        .modules
+        .insert("llm-provider/zai".to_string(), zai_config);
     let agent_settings = Arc::new(settings);
 
     let llm = Arc::new(LlmClient::new(&agent_settings));

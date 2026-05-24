@@ -2,7 +2,7 @@
 
 use super::{
     CapabilityId, CapabilityModule, CapabilityRequirement, CompiledCapabilityManifest,
-    ManifestError,
+    ManifestError, ModuleConfigProperty,
 };
 
 macro_rules! push_module {
@@ -35,6 +35,25 @@ macro_rules! push_module_with_requires {
                     PROVIDES,
                 )
                 .with_requires($requires),
+            ));
+        }
+    };
+}
+
+macro_rules! push_module_with_config {
+    ($modules:ident, $feature:literal, $id:literal, $kind:ident, [$($capability:literal),+ $(,)?], $config_properties:expr) => {
+        #[cfg(feature = $feature)]
+        {
+            const PROVIDES: &[$crate::capabilities::CapabilityId] =
+                &[$($crate::capabilities::CapabilityId::new($capability)),+];
+            $modules.push(Box::new(
+                $crate::capabilities::StaticCapabilityModule::new(
+                    $crate::capabilities::ModuleId::new($id),
+                    $crate::capabilities::CapabilityKind::$kind,
+                    $feature,
+                    PROVIDES,
+                )
+                .with_config_properties($config_properties),
             ));
         }
     };
@@ -90,6 +109,67 @@ const SANDBOX_EXEC_AND_FILEOPS_BACKEND_REQUIREMENT: &[CapabilityRequirement] = &
 const SANDBOX_DOCKER_BACKEND_REQUIREMENT: &[CapabilityRequirement] = &[CapabilityRequirement::new(
     CapabilityId::new("sandbox-backend/docker-direct"),
 )];
+
+#[allow(dead_code)]
+const CHATGPT_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
+    &[
+        ModuleConfigProperty::string("auth_path", "Path to the ChatGPT/Codex OAuth auth record.")
+            .with_env("CHATGPT_AUTH_PATH"),
+    ];
+#[allow(dead_code)]
+const GROQ_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
+    &[ModuleConfigProperty::string("api_key", "Groq API key.")
+        .with_env("GROQ_API_KEY")
+        .secret()];
+#[allow(dead_code)]
+const MISTRAL_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
+    &[ModuleConfigProperty::string("api_key", "Mistral API key.")
+        .with_env("MISTRAL_API_KEY")
+        .secret()];
+#[allow(dead_code)]
+const MINIMAX_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
+    &[ModuleConfigProperty::string("api_key", "MiniMax API key.")
+        .with_env("MINIMAX_API_KEY")
+        .secret()];
+#[allow(dead_code)]
+const ZAI_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string("api_key", "ZAI/Zhipu API key.")
+        .with_env("ZAI_API_KEY")
+        .secret(),
+    ModuleConfigProperty::string("api_base", "ZAI/Zhipu Chat Completions API endpoint.")
+        .with_env("ZAI_API_BASE")
+        .with_default("https://api.z.ai/api/coding/paas/v4/chat/completions"),
+];
+#[allow(dead_code)]
+const NVIDIA_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string("api_key", "NVIDIA NIM API key.")
+        .with_env("NVIDIA_API_KEY")
+        .secret(),
+    ModuleConfigProperty::string("api_base", "NVIDIA NIM OpenAI-compatible API base URL.")
+        .with_env("NVIDIA_API_BASE")
+        .with_default("https://integrate.api.nvidia.com/v1"),
+];
+#[allow(dead_code)]
+const OPENCODE_GO_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string("api_key", "OpenCode Go API key.")
+        .with_env("OPENCODE_GO_API_KEY")
+        .secret(),
+    ModuleConfigProperty::string("api_base", "OpenCode Go Chat Completions endpoint.")
+        .with_env("OPENCODE_GO_API_BASE")
+        .with_default("https://opencode.ai/zen/go/v1/chat/completions"),
+];
+#[allow(dead_code)]
+const OPENROUTER_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string("api_key", "OpenRouter API key.")
+        .with_env("OPENROUTER_API_KEY")
+        .secret(),
+    ModuleConfigProperty::string("site_url", "Optional OpenRouter site URL attribution.")
+        .with_env("OPENROUTER_SITE_URL")
+        .with_default(""),
+    ModuleConfigProperty::string("site_name", "Optional OpenRouter site name attribution.")
+        .with_env("OPENROUTER_SITE_NAME")
+        .with_default("Oxide Agent Bot"),
+];
 
 /// Returns the deterministic list of modules compiled into this build.
 #[must_use]
@@ -154,61 +234,69 @@ fn push_transport_and_storage_modules(modules: &mut Vec<Box<dyn CapabilityModule
 
 fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     let _ = &modules;
-    push_module!(
+    push_module_with_config!(
         modules,
         "llm-chatgpt",
         "llm-provider/openai-chatgpt",
         LlmProvider,
-        ["llm-provider/openai-chatgpt"]
+        ["llm-provider/openai-chatgpt"],
+        CHATGPT_CONFIG_PROPERTIES
     );
-    push_module!(
+    push_module_with_config!(
         modules,
         "llm-groq",
         "llm-provider/groq",
         LlmProvider,
-        ["llm-provider/groq"]
+        ["llm-provider/groq"],
+        GROQ_CONFIG_PROPERTIES
     );
-    push_module!(
+    push_module_with_config!(
         modules,
         "llm-mistral",
         "llm-provider/mistral",
         LlmProvider,
-        ["llm-provider/mistral"]
+        ["llm-provider/mistral"],
+        MISTRAL_CONFIG_PROPERTIES
     );
-    push_module!(
+    push_module_with_config!(
         modules,
         "llm-minimax",
         "llm-provider/minimax",
         LlmProvider,
-        ["llm-provider/minimax"]
+        ["llm-provider/minimax"],
+        MINIMAX_CONFIG_PROPERTIES
     );
-    push_module!(
+    push_module_with_config!(
         modules,
         "llm-zai",
         "llm-provider/zai",
         LlmProvider,
-        ["llm-provider/zai"]
+        ["llm-provider/zai"],
+        ZAI_CONFIG_PROPERTIES
     );
-    push_module!(
+    push_module_with_config!(
         modules,
         "llm-nvidia",
         "llm-provider/nvidia",
         LlmProvider,
-        ["llm-provider/nvidia"]
+        ["llm-provider/nvidia"],
+        NVIDIA_CONFIG_PROPERTIES
     );
-    push_module!(
+    push_module_with_config!(
         modules,
         "llm-opencode-go",
         "llm-provider/opencode-go",
         LlmProvider,
-        ["llm-provider/opencode-go"]
+        ["llm-provider/opencode-go"],
+        OPENCODE_GO_CONFIG_PROPERTIES
     );
-    push_module!(
+    push_module_with_config!(
         modules,
         "llm-openrouter",
         "llm-provider/openrouter",
         LlmProvider,
-        ["llm-provider/openrouter"]
+        ["llm-provider/openrouter"],
+        OPENROUTER_CONFIG_PROPERTIES
     );
 }
 
@@ -458,6 +546,26 @@ mod tests {
                 .iter()
                 .all(|capability| capability.id().as_str() != "storage/local-fs-transient"),
             "storage-local-fs must not expose a durable storage capability"
+        );
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn openrouter_module_declares_provider_config_schema() {
+        let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
+        let schema = manifest.config_schema();
+        let openrouter = &schema["properties"]["modules"]["properties"]["llm-provider/openrouter"];
+
+        assert_eq!(openrouter["additionalProperties"], false);
+        assert_eq!(openrouter["properties"]["api_key"]["type"], "string");
+        assert_eq!(
+            openrouter["properties"]["api_key"]["x-oxide-env"],
+            "OPENROUTER_API_KEY"
+        );
+        assert_eq!(openrouter["properties"]["api_key"]["x-oxide-secret"], true);
+        assert_eq!(
+            openrouter["properties"]["site_name"]["default"],
+            "Oxide Agent Bot"
         );
     }
 }

@@ -128,6 +128,107 @@ impl CapabilityRequirement {
     }
 }
 
+/// JSON-compatible scalar type for a module-local config property.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModuleConfigValueKind {
+    /// UTF-8 string config value.
+    String,
+}
+
+impl ModuleConfigValueKind {
+    /// Returns the JSON Schema type name.
+    #[must_use]
+    pub const fn json_schema_type(self) -> &'static str {
+        match self {
+            Self::String => "string",
+        }
+    }
+}
+
+/// Module-owned config property exposed in generated config schemas.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct ModuleConfigProperty {
+    name: &'static str,
+    value_kind: ModuleConfigValueKind,
+    description: &'static str,
+    env: Option<&'static str>,
+    secret: bool,
+    default_value: Option<&'static str>,
+}
+
+impl ModuleConfigProperty {
+    /// Creates a string property descriptor.
+    #[must_use]
+    pub const fn string(name: &'static str, description: &'static str) -> Self {
+        Self {
+            name,
+            value_kind: ModuleConfigValueKind::String,
+            description,
+            env: None,
+            secret: false,
+            default_value: None,
+        }
+    }
+
+    /// Attaches the provider-owned environment variable fallback.
+    #[must_use]
+    pub const fn with_env(mut self, env: &'static str) -> Self {
+        self.env = Some(env);
+        self
+    }
+
+    /// Marks the property as secret-bearing.
+    #[must_use]
+    pub const fn secret(mut self) -> Self {
+        self.secret = true;
+        self
+    }
+
+    /// Attaches the default value used when module config and env are both absent.
+    #[must_use]
+    pub const fn with_default(mut self, default_value: &'static str) -> Self {
+        self.default_value = Some(default_value);
+        self
+    }
+
+    /// Property name inside the module config object.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    /// JSON-compatible scalar type.
+    #[must_use]
+    pub const fn value_kind(self) -> ModuleConfigValueKind {
+        self.value_kind
+    }
+
+    /// Human-readable property description.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        self.description
+    }
+
+    /// Provider-owned environment variable fallback, if any.
+    #[must_use]
+    pub const fn env(self) -> Option<&'static str> {
+        self.env
+    }
+
+    /// Whether this property carries a secret value.
+    #[must_use]
+    pub const fn is_secret(self) -> bool {
+        self.secret
+    }
+
+    /// Default value used when module config and env are both absent.
+    #[must_use]
+    pub const fn default_value(self) -> Option<&'static str> {
+        self.default_value
+    }
+}
+
 /// Compile-time module descriptor used to build manifests and registries.
 pub trait CapabilityModule: Send + Sync {
     /// Stable module identifier.
@@ -151,6 +252,11 @@ pub trait CapabilityModule: Send + Sync {
     fn conflicts(&self) -> &'static [CapabilityId] {
         &[]
     }
+
+    /// Module-owned runtime config properties for generated schemas.
+    fn config_properties(&self) -> &'static [ModuleConfigProperty] {
+        &[]
+    }
 }
 
 /// Static module descriptor for modules that do not need custom behavior yet.
@@ -162,6 +268,7 @@ pub struct StaticCapabilityModule {
     provides: &'static [CapabilityId],
     requires: &'static [CapabilityRequirement],
     conflicts: &'static [CapabilityId],
+    config_properties: &'static [ModuleConfigProperty],
 }
 
 impl StaticCapabilityModule {
@@ -180,6 +287,7 @@ impl StaticCapabilityModule {
             provides,
             requires: &[],
             conflicts: &[],
+            config_properties: &[],
         }
     }
 
@@ -194,6 +302,16 @@ impl StaticCapabilityModule {
     #[must_use]
     pub const fn with_conflicts(mut self, conflicts: &'static [CapabilityId]) -> Self {
         self.conflicts = conflicts;
+        self
+    }
+
+    /// Adds module-owned config properties to the descriptor.
+    #[must_use]
+    pub const fn with_config_properties(
+        mut self,
+        config_properties: &'static [ModuleConfigProperty],
+    ) -> Self {
+        self.config_properties = config_properties;
         self
     }
 }
@@ -221,5 +339,9 @@ impl CapabilityModule for StaticCapabilityModule {
 
     fn conflicts(&self) -> &'static [CapabilityId] {
         self.conflicts
+    }
+
+    fn config_properties(&self) -> &'static [ModuleConfigProperty] {
+        self.config_properties
     }
 }

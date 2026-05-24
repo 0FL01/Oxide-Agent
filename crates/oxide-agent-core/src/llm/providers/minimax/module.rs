@@ -8,6 +8,9 @@ use crate::llm::LlmProvider;
 /// Capability module for MiniMax routes.
 pub(crate) struct MiniMaxProviderModule;
 
+const API_KEY_CONFIG_KEY: &str = "api_key";
+const API_KEY_ENV: &str = "MINIMAX_API_KEY";
+
 impl LlmProviderModule for MiniMaxProviderModule {
     fn provider_id(&self) -> &'static str {
         "llm-provider/minimax"
@@ -22,9 +25,9 @@ impl LlmProviderModule for MiniMaxProviderModule {
         settings: &AgentSettings,
         _ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>> {
-        settings.minimax_api_key.as_ref().map(|api_key| {
-            Arc::new(super::MiniMaxProvider::new(api_key.clone())) as Arc<dyn LlmProvider>
-        })
+        settings
+            .module_string_value_or_env(self.provider_id(), API_KEY_CONFIG_KEY, API_KEY_ENV)
+            .map(|api_key| Arc::new(super::MiniMaxProvider::new(api_key)) as Arc<dyn LlmProvider>)
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

@@ -6,10 +6,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 fn settings_without_llm_providers() -> AgentSettings {
-    AgentSettings {
-        openrouter_site_name: "Oxide Agent Bot".to_string(),
-        ..AgentSettings::default()
-    }
+    AgentSettings::default()
 }
 
 #[tokio::test]
