@@ -1,6 +1,14 @@
 name: Modular Architecture Checks
 
 on:
+  push:
+    branches:
+      - testing
+      - modular-arch
+  pull_request:
+    branches:
+      - testing
+      - modular-arch
   workflow_dispatch:
 
 jobs:
