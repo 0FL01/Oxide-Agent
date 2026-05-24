@@ -1111,6 +1111,194 @@ fn legacy_registry_registers_search_modules_once() {
 
 #[cfg(feature = "integration-mcp-jira")]
 #[test]
+fn typed_runtime_registry_exposes_jira_mcp_tools_when_configured() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("JIRA_URL", "https://jira.example.test");
+    std::env::set_var("JIRA_EMAIL", "bot@example.test");
+    std::env::set_var("JIRA_API_TOKEN", "dummy-token");
+    std::env::set_var("JIRA_MCP_BINARY_PATH", "jira-mcp");
+
+    let executor = build_executor();
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for tool_name in ["jira_read", "jira_write", "jira_schema"] {
+        assert!(
+            tool_names.contains(tool_name),
+            "missing typed runtime Jira MCP tool: {tool_name}"
+        );
+    }
+
+    std::env::remove_var("JIRA_MCP_BINARY_PATH");
+    std::env::remove_var("JIRA_API_TOKEN");
+    std::env::remove_var("JIRA_EMAIL");
+    std::env::remove_var("JIRA_URL");
+}
+
+#[cfg(feature = "integration-mcp-mattermost")]
+#[test]
+fn typed_runtime_registry_exposes_mattermost_mcp_tools_when_configured() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("MATTERMOST_URL", "https://mattermost.example.test");
+    std::env::set_var("MATTERMOST_TOKEN", "dummy-token");
+    std::env::set_var("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
+
+    let executor = build_executor();
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for tool_name in [
+        "mattermost_list_teams",
+        "mattermost_post_message",
+        "mattermost_upload_file",
+    ] {
+        assert!(
+            tool_names.contains(tool_name),
+            "missing typed runtime Mattermost MCP tool: {tool_name}"
+        );
+    }
+
+    std::env::remove_var("MATTERMOST_MCP_BINARY_PATH");
+    std::env::remove_var("MATTERMOST_TOKEN");
+    std::env::remove_var("MATTERMOST_URL");
+}
+
+#[cfg(feature = "integration-mcp-jira")]
+#[test]
+fn typed_runtime_registry_skips_disabled_jira_mcp_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("JIRA_URL", "https://jira.example.test");
+    std::env::set_var("JIRA_EMAIL", "bot@example.test");
+    std::env::set_var("JIRA_API_TOKEN", "dummy-token");
+    std::env::set_var("JIRA_MCP_BINARY_PATH", "jira-mcp");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "integration/mcp-jira".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("jira_read"));
+    assert!(!tool_names.contains("jira_write"));
+    assert!(!tool_names.contains("jira_schema"));
+    assert!(tool_names.contains("write_todos"));
+
+    std::env::remove_var("JIRA_MCP_BINARY_PATH");
+    std::env::remove_var("JIRA_API_TOKEN");
+    std::env::remove_var("JIRA_EMAIL");
+    std::env::remove_var("JIRA_URL");
+}
+
+#[cfg(feature = "integration-mcp-mattermost")]
+#[test]
+fn typed_runtime_registry_skips_disabled_mattermost_mcp_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("MATTERMOST_URL", "https://mattermost.example.test");
+    std::env::set_var("MATTERMOST_TOKEN", "dummy-token");
+    std::env::set_var("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "integration/mcp-mattermost".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("mattermost_list_teams"));
+    assert!(!tool_names.contains("mattermost_post_message"));
+    assert!(tool_names.contains("write_todos"));
+
+    std::env::remove_var("MATTERMOST_MCP_BINARY_PATH");
+    std::env::remove_var("MATTERMOST_TOKEN");
+    std::env::remove_var("MATTERMOST_URL");
+}
+
+#[cfg(all(
+    feature = "integration-mcp-jira",
+    feature = "integration-mcp-mattermost"
+))]
+#[test]
+fn typed_runtime_registry_registers_mcp_modules_once() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("JIRA_URL", "https://jira.example.test");
+    std::env::set_var("JIRA_EMAIL", "bot@example.test");
+    std::env::set_var("JIRA_API_TOKEN", "dummy-token");
+    std::env::set_var("JIRA_MCP_BINARY_PATH", "jira-mcp");
+    std::env::set_var("MATTERMOST_URL", "https://mattermost.example.test");
+    std::env::set_var("MATTERMOST_TOKEN", "dummy-token");
+    std::env::set_var("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
+
+    let executor = build_executor();
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry.tool_names();
+
+    for tool_name in [
+        "jira_read",
+        "jira_write",
+        "jira_schema",
+        "mattermost_list_teams",
+        "mattermost_post_message",
+    ] {
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one typed registration for {tool_name}"
+        );
+    }
+
+    std::env::remove_var("MATTERMOST_MCP_BINARY_PATH");
+    std::env::remove_var("MATTERMOST_TOKEN");
+    std::env::remove_var("MATTERMOST_URL");
+    std::env::remove_var("JIRA_MCP_BINARY_PATH");
+    std::env::remove_var("JIRA_API_TOKEN");
+    std::env::remove_var("JIRA_EMAIL");
+    std::env::remove_var("JIRA_URL");
+}
+
+#[cfg(feature = "integration-mcp-jira")]
+#[test]
 fn legacy_registry_skips_disabled_jira_mcp_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()

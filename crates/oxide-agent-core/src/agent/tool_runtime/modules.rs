@@ -722,12 +722,8 @@ impl ToolModule for BrowserUseToolModule {
 pub struct JiraMcpToolModule;
 
 #[cfg(feature = "integration-mcp-jira")]
-impl ToolModule for JiraMcpToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("integration/mcp-jira")
-    }
-
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+impl JiraMcpToolModule {
+    fn provider(&self) -> Option<JiraMcpProvider> {
         match JiraMcpConfig::from_env() {
             Some(config) => {
                 let binary_path = config.binary_path.clone();
@@ -740,7 +736,7 @@ impl ToolModule for JiraMcpToolModule {
                 );
                 let provider = JiraMcpProvider::new(config);
                 tracing::debug!(binary_path = %binary_path, "Jira MCP provider registered");
-                Some(Box::new(provider))
+                Some(provider)
             }
             None => {
                 tracing::warn!(
@@ -751,9 +747,23 @@ impl ToolModule for JiraMcpToolModule {
             }
         }
     }
+}
+
+#[cfg(feature = "integration-mcp-jira")]
+impl ToolModule for JiraMcpToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("integration/mcp-jira")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider()
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
@@ -762,12 +772,8 @@ impl ToolModule for JiraMcpToolModule {
 pub struct MattermostMcpToolModule;
 
 #[cfg(feature = "integration-mcp-mattermost")]
-impl ToolModule for MattermostMcpToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("integration/mcp-mattermost")
-    }
-
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+impl MattermostMcpToolModule {
+    fn provider(&self) -> Option<MattermostMcpProvider> {
         match MattermostMcpConfig::from_env() {
             Some(config) => {
                 let binary_path = config.binary_path.clone();
@@ -782,7 +788,7 @@ impl ToolModule for MattermostMcpToolModule {
                 );
                 let provider = MattermostMcpProvider::new(config);
                 tracing::debug!(binary_path = %binary_path, "Mattermost MCP provider registered");
-                Some(Box::new(provider))
+                Some(provider)
             }
             None => {
                 tracing::warn!(
@@ -793,9 +799,23 @@ impl ToolModule for MattermostMcpToolModule {
             }
         }
     }
+}
+
+#[cfg(feature = "integration-mcp-mattermost")]
+impl ToolModule for MattermostMcpToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("integration/mcp-mattermost")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider()
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
