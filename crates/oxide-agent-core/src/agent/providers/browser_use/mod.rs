@@ -7,7 +7,6 @@ mod response;
 #[cfg(test)]
 mod tests;
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::providers::SandboxRuntime;
 use crate::agent::tool_model_route::current_tool_model_route;
 use crate::agent::tool_runtime::{
@@ -1805,39 +1804,6 @@ where
         }
     } else {
         Ok(future.await)
-    }
-}
-
-#[async_trait]
-impl ToolProvider for BrowserUseProvider {
-    fn name(&self) -> &'static str {
-        "browser_use"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_RUN_TASK
-                | TOOL_GET_SESSION
-                | TOOL_CLOSE_SESSION
-                | TOOL_EXTRACT_CONTENT
-                | TOOL_SCREENSHOT
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments, cancellation_token)
-            .await
     }
 }
 

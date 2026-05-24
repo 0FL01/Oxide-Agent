@@ -171,10 +171,9 @@ async fn run_task_rejects_profile_reuse_without_runtime_scope() {
     let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
 
     let error = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open docs","reuse_profile":true}"#,
-            None,
             None,
         )
         .await
@@ -243,7 +242,7 @@ async fn run_task_posts_to_bridge() {
     );
 
     let result = provider
-        .execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None)
+        .execute_tool(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None)
         .await;
 
     assert!(result.is_ok());
@@ -280,10 +279,9 @@ async fn run_task_rewrites_screenshot_focused_requests_and_adds_follow_up_guidan
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open the dashboard and take a screenshot"}"#,
-            None,
             None,
         )
         .await
@@ -322,10 +320,9 @@ async fn run_task_replaces_follow_up_guidance_when_bridge_reports_dead_runtime()
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open the dashboard and take a screenshot"}"#,
-            None,
             None,
         )
         .await
@@ -365,10 +362,9 @@ async fn run_task_rewrites_extract_focused_requests_and_adds_follow_up_guidance(
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Открой документацию и извлеки текст страницы"}"#,
-            None,
             None,
         )
         .await
@@ -408,10 +404,9 @@ async fn get_session_reads_bridge_json() {
     );
 
     let result = provider
-        .execute(
+        .execute_tool(
             TOOL_GET_SESSION,
             r#"{"session_id":"browser-use-123"}"#,
-            None,
             None,
         )
         .await;
@@ -445,10 +440,9 @@ async fn extract_content_posts_to_bridge() {
     );
 
     let result = provider
-        .execute(
+        .execute_tool(
             TOOL_EXTRACT_CONTENT,
             r#"{"session_id":"browser-use-123","format":"html","max_chars":2048}"#,
-            None,
             None,
         )
         .await;
@@ -483,10 +477,9 @@ async fn screenshot_posts_to_bridge() {
     );
 
     let result = provider
-        .execute(
+        .execute_tool(
             TOOL_SCREENSHOT,
             r#"{"session_id":"browser-use-123","full_page":true}"#,
-            None,
             None,
         )
         .await;
@@ -627,7 +620,7 @@ async fn run_task_posts_inherited_browser_llm_config() {
 
     let result = scope_tool_model_route(
         route,
-        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+        provider.execute_tool(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None),
     )
     .await;
 
@@ -669,7 +662,7 @@ async fn run_task_prefers_dedicated_browser_use_model_over_active_route() {
 
     let result = scope_tool_model_route(
         active_route,
-        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+        provider.execute_tool(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None),
     )
     .await;
 
@@ -704,10 +697,9 @@ async fn run_task_posts_runtime_profile_scope_for_reuse() {
     .with_profile_scope("topic-a");
 
     provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open example","reuse_profile":true}"#,
-            None,
             None,
         )
         .await
@@ -744,10 +736,9 @@ async fn run_task_warns_for_ui_heavy_text_only_route() {
 
     let output = scope_tool_model_route(
         route,
-        provider.execute(
+        provider.execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Click the login button and submit the form"}"#,
-            None,
             None,
         ),
     )
@@ -784,10 +775,9 @@ async fn run_task_warns_for_russian_ui_heavy_text_only_route() {
 
     let output = scope_tool_model_route(
         route,
-        provider.execute(
+        provider.execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Нажми кнопку входа и отправь форму"}"#,
-            None,
             None,
         ),
     )
@@ -824,10 +814,9 @@ async fn run_task_splits_visual_description_into_navigation_only_follow_up_on_te
 
     let output = scope_tool_model_route(
         route,
-        provider.execute(
+        provider.execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Describe the visual layout and colors of the homepage"}"#,
-            None,
             None,
         ),
     )
@@ -870,10 +859,9 @@ async fn run_task_splits_russian_visual_description_on_text_only_route() {
 
     let output = scope_tool_model_route(
         route,
-        provider.execute(
+        provider.execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Опиши визуально, как выглядит главная страница и какие там цвета"}"#,
-            None,
             None,
         ),
     )
@@ -908,10 +896,9 @@ async fn run_task_allows_russian_visual_analysis_on_dedicated_glm_4_6v_route() {
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Опиши визуально, как выглядит главная страница и какие там цвета"}"#,
-            None,
             None,
         )
         .await
@@ -937,10 +924,9 @@ async fn run_task_fast_fails_autonomous_visual_task_on_unstable_glm_4_6v_route()
     );
 
     let error = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open the login page and solve the captcha to continue"}"#,
-            None,
             None,
         )
         .await
@@ -974,10 +960,9 @@ async fn run_task_allows_autonomous_visual_task_when_unstable_routes_disabled() 
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open the login page and solve the captcha to continue"}"#,
-            None,
             None,
         )
         .await
@@ -1027,7 +1012,7 @@ async fn run_task_rejects_unsupported_inherited_route() {
 
     let error = scope_tool_model_route(
         route,
-        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+        provider.execute_tool(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None),
     )
     .await
     .expect_err("unsupported route should fail");
