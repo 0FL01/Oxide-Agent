@@ -1,6 +1,5 @@
 //! Stack logs provider for compose-stack log discovery and retrieval.
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -282,34 +281,6 @@ impl From<StackLogsFetchArgs> for StackLogsFetchRequest {
     }
 }
 
-#[async_trait]
-impl ToolProvider for StackLogsProvider {
-    fn name(&self) -> &'static str {
-        "stack_logs"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_STACK_LOGS_LIST_SOURCES | TOOL_STACK_LOGS_FETCH
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
-    }
-}
-
 struct StackLogsToolExecutor {
     provider: Arc<StackLogsProvider>,
     name: ToolName,
@@ -447,16 +418,16 @@ mod tests {
     }
 
     #[test]
-    fn provider_registers_stack_log_tools() {
-        let provider = StackLogsProvider::new();
-        let tools = provider.tools();
+    fn typed_runtime_registers_stack_log_tools() {
+        let provider = Arc::new(StackLogsProvider::new());
+        let tools = provider.tool_runtime_executors();
 
         assert!(tools
             .iter()
-            .any(|tool| tool.name == TOOL_STACK_LOGS_LIST_SOURCES));
-        assert!(tools.iter().any(|tool| tool.name == TOOL_STACK_LOGS_FETCH));
-        assert!(provider.can_handle(TOOL_STACK_LOGS_LIST_SOURCES));
-        assert!(provider.can_handle(TOOL_STACK_LOGS_FETCH));
+            .any(|tool| tool.name().as_str() == TOOL_STACK_LOGS_LIST_SOURCES));
+        assert!(tools
+            .iter()
+            .any(|tool| tool.name().as_str() == TOOL_STACK_LOGS_FETCH));
     }
 
     #[tokio::test]
@@ -498,13 +469,14 @@ mod tests {
 
     #[test]
     fn fetch_schema_mentions_cursor_and_suppression_oriented_usage() {
-        let tool = StackLogsProvider::new()
-            .tools()
+        let tool = Arc::new(StackLogsProvider::new())
+            .tool_runtime_executors()
             .into_iter()
-            .find(|tool| tool.name == TOOL_STACK_LOGS_FETCH)
+            .find(|tool| tool.name().as_str() == TOOL_STACK_LOGS_FETCH)
             .expect("stack_logs_fetch registered");
+        let spec = tool.spec();
 
-        assert!(tool.description.contains("cursor"));
-        assert!(tool.description.contains("suppression"));
+        assert!(spec.description.contains("cursor"));
+        assert!(spec.description.contains("suppression"));
     }
 }

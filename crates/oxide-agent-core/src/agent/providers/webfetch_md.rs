@@ -3,7 +3,6 @@
 //! Provides `web_markdown`: one HTTP GET for a known URL plus optional HTML to Markdown
 //! conversion. It is intentionally not a crawler, browser, or PDF exporter.
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -234,32 +233,6 @@ impl WebFetchMdProvider {
 impl Default for WebFetchMdProvider {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[async_trait]
-impl ToolProvider for WebFetchMdProvider {
-    fn name(&self) -> &'static str {
-        "webfetch_md"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![Self::tool_definition()]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == TOOL_WEB_MARKDOWN
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments, cancellation_token)
-            .await
     }
 }
 
@@ -526,7 +499,6 @@ fn truncate_chars(input: String, max_chars: usize) -> TruncatedOutput {
 mod tests {
     use super::*;
     use crate::agent::identity::SessionId;
-    use crate::agent::provider::ToolProvider;
     use crate::agent::tool_runtime::{
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
         ToolOutputStatus, ToolTimeoutConfig, TurnId,
@@ -602,15 +574,12 @@ mod tests {
     }
 
     #[test]
-    fn lists_only_web_markdown_tool() {
-        let provider = WebFetchMdProvider::new();
-        let tools = provider.tools();
+    fn typed_runtime_lists_only_web_markdown_tool() {
+        let provider = Arc::new(WebFetchMdProvider::new());
+        let tools = provider.tool_runtime_executors();
 
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, TOOL_WEB_MARKDOWN);
-        assert!(provider.can_handle(TOOL_WEB_MARKDOWN));
-        assert!(!provider.can_handle("web_search"));
-        assert!(!provider.can_handle("web_extract"));
+        assert_eq!(tools[0].name().as_str(), TOOL_WEB_MARKDOWN);
     }
 
     #[tokio::test]
