@@ -50,6 +50,14 @@ pub enum ManifestError {
         /// Capability IDs that could satisfy the requirement.
         capabilities: Vec<CapabilityId>,
     },
+    /// A runtime-enabled module conflicts with an enabled capability.
+    #[error("enabled module {module} conflicts with enabled capability {capability}")]
+    ConflictingEnabledCapability {
+        /// Module declaring the conflict.
+        module: ModuleId,
+        /// Enabled capability that conflicts with the module.
+        capability: CapabilityId,
+    },
 }
 
 /// Manifest entry for one compiled module.
@@ -491,6 +499,14 @@ impl EnabledCapabilityManifest {
                     });
                 }
             }
+            for capability in module.conflicts() {
+                if enabled_capabilities.contains(capability) {
+                    return Err(ManifestError::ConflictingEnabledCapability {
+                        module: module.id(),
+                        capability: *capability,
+                    });
+                }
+            }
         }
 
         Ok(Self {
@@ -873,6 +889,45 @@ mod tests {
                 capabilities: SANDBOX_FILEOPS_BACKEND_OPTIONS.to_vec(),
             }
         );
+    }
+
+    #[test]
+    fn enabled_manifest_rejects_conflicting_enabled_capabilities() {
+        let modules = vec![
+            boxed(
+                StaticCapabilityModule::new(
+                    ModuleId::new("tool/a"),
+                    CapabilityKind::Tool,
+                    "tool-a",
+                    TOOL_A_READ,
+                )
+                .with_conflicts(TOOL_A_WRITE),
+            ),
+            boxed(StaticCapabilityModule::new(
+                ModuleId::new("tool/b"),
+                CapabilityKind::Tool,
+                "tool-b",
+                TOOL_A_WRITE,
+            )),
+        ];
+        let manifest =
+            CompiledCapabilityManifest::from_modules(&modules).expect("manifest should be valid");
+
+        let error = manifest
+            .enabled_manifest_from_configured_modules(std::iter::empty::<(&str, bool)>())
+            .expect_err("conflicting enabled capabilities must fail");
+
+        assert_eq!(
+            error,
+            ManifestError::ConflictingEnabledCapability {
+                module: ModuleId::new("tool/a"),
+                capability: CapabilityId::new("tool/a-write"),
+            }
+        );
+
+        manifest
+            .enabled_manifest_from_configured_modules([("tool/b", false)])
+            .expect("disabling the conflicting module should resolve the conflict");
     }
 
     #[cfg(all(
