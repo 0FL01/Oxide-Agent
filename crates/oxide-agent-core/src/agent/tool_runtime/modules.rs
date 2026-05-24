@@ -604,9 +604,9 @@ impl ToolModule for WikiMemoryToolModule {
     feature = "tool-media-video"
 ))]
 fn media_file_provider(ctx: &ToolModuleContext) -> Arc<dyn ToolProvider> {
-    Arc::new(MediaFileProvider::new(
+    Arc::new(MediaFileProvider::from_runtime(
         ctx.llm_client(),
-        ctx.sandbox_scope(),
+        ctx.sandbox_runtime(),
     ))
 }
 

@@ -1,6 +1,6 @@
 //! Shared helpers for providers that work with sandbox file paths.
 
-use crate::sandbox::SandboxManager;
+use crate::sandbox::SandboxExec;
 use anyhow::Result;
 use shell_escape::escape;
 use tracing::{info, warn};
@@ -15,7 +15,7 @@ use tracing::{info, warn};
 /// # Errors
 ///
 /// Returns an error if the file is not found or if multiple matches exist.
-pub(super) async fn resolve_file_path(sandbox: &mut SandboxManager, path: &str) -> Result<String> {
+pub(super) async fn resolve_file_path(exec: &dyn SandboxExec, path: &str) -> Result<String> {
     if path.starts_with('/') {
         return Ok(path.to_string());
     }
@@ -25,7 +25,7 @@ pub(super) async fn resolve_file_path(sandbox: &mut SandboxManager, path: &str) 
         "test -f {} && echo 'exists'",
         escape(workspace_path.as_str().into())
     );
-    let check = sandbox.exec_command(&check_cmd, None).await?;
+    let check = exec.exec(&check_cmd, None).await?;
 
     if check.stdout.contains("exists") {
         info!(original_path = %path, resolved_path = %workspace_path, "Resolved file path");
@@ -34,7 +34,7 @@ pub(super) async fn resolve_file_path(sandbox: &mut SandboxManager, path: &str) 
 
     info!(path = %path, "File not found at /workspace/{path}, searching...");
     let find_cmd = format!("find /workspace -name {} -type f", escape(path.into()));
-    let result = sandbox.exec_command(&find_cmd, None).await?;
+    let result = exec.exec(&find_cmd, None).await?;
 
     let found_paths: Vec<&str> = result.stdout.lines().filter(|l| !l.is_empty()).collect();
 

@@ -2,7 +2,7 @@
 
 use crate::agent::provider::ToolProvider;
 use crate::llm::{LlmClient, ToolDefinition};
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::header::CONTENT_TYPE;
@@ -13,10 +13,10 @@ use shell_escape::escape;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::path::resolve_file_path;
+use super::sandbox::SandboxRuntime;
 
 const TOOL_TRANSCRIBE_AUDIO_FILE: &str = "transcribe_audio_file";
 const TOOL_DESCRIBE_IMAGE_FILE: &str = "describe_image_file";
@@ -34,8 +34,8 @@ enum MediaKind {
 /// Provider for explicit media analysis on sandbox files.
 pub struct MediaFileProvider {
     llm_client: Arc<LlmClient>,
-    sandbox: Arc<Mutex<Option<SandboxManager>>>,
-    sandbox_scope: SandboxScope,
+    fileops: Arc<dyn SandboxFileOps>,
+    exec: Arc<dyn SandboxExec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,61 +67,54 @@ impl MediaFileProvider {
     /// Create a new provider with lazy sandbox initialization.
     #[must_use]
     pub fn new(llm_client: Arc<LlmClient>, sandbox_scope: impl Into<SandboxScope>) -> Self {
-        Self {
+        Self::from_runtime(
             llm_client,
-            sandbox: Arc::new(Mutex::new(None)),
-            sandbox_scope: sandbox_scope.into(),
-        }
+            Arc::new(SandboxRuntime::new(sandbox_scope.into())),
+        )
     }
 
-    async fn ensure_sandbox(&self) -> Result<()> {
-        if self
-            .sandbox
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(SandboxManager::is_running)
-        {
-            return Ok(());
-        }
+    /// Create a new provider from the shared sandbox runtime.
+    #[must_use]
+    pub fn from_runtime(llm_client: Arc<LlmClient>, runtime: Arc<SandboxRuntime>) -> Self {
+        let fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
+        let exec: Arc<dyn SandboxExec> = runtime;
+        Self::with_sandbox_backends(llm_client, fileops, exec)
+    }
 
-        let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
-        sandbox.create_sandbox().await?;
-        *self.sandbox.lock().await = Some(sandbox);
-        Ok(())
+    /// Create a provider from narrow sandbox capability traits.
+    #[must_use]
+    pub fn with_sandbox_backends(
+        llm_client: Arc<LlmClient>,
+        fileops: Arc<dyn SandboxFileOps>,
+        exec: Arc<dyn SandboxExec>,
+    ) -> Self {
+        Self {
+            llm_client,
+            fileops,
+            exec,
+        }
     }
 
     async fn read_media_source(
         &self,
         path: &str,
         kind: Option<MediaKind>,
-    ) -> Result<(SandboxManager, String, Vec<u8>, Option<String>)> {
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-        };
-
+    ) -> Result<(String, Vec<u8>, Option<String>)> {
         if is_remote_url(path) {
             let media_kind = kind.ok_or_else(|| anyhow!("Remote media kind is required"))?;
-            let resolved_path = self
-                .download_remote_media_file(&mut sandbox, path, media_kind)
-                .await?;
-            let bytes = sandbox.read_file(&resolved_path).await?;
-            return Ok((sandbox, resolved_path.clone(), bytes, Some(resolved_path)));
+            let resolved_path = self.download_remote_media_file(path, media_kind).await?;
+            let bytes = self.fileops.read_file(&resolved_path).await?;
+            return Ok((resolved_path.clone(), bytes, Some(resolved_path)));
         }
 
-        let resolved_path = resolve_file_path(&mut sandbox, path).await?;
-        let bytes = sandbox.read_file(&resolved_path).await?;
-        Ok((sandbox, resolved_path, bytes, None))
+        let resolved_path = resolve_file_path(self.exec.as_ref(), path).await?;
+        let bytes = self.fileops.read_file(&resolved_path).await?;
+        Ok((resolved_path, bytes, None))
     }
 
-    async fn read_media_file(&self, path: &str) -> Result<(SandboxManager, String, Vec<u8>)> {
-        let (sandbox, resolved_path, bytes, _) = self.read_media_source(path, None).await?;
-        Ok((sandbox, resolved_path, bytes))
+    async fn read_media_file(&self, path: &str) -> Result<(String, Vec<u8>)> {
+        let (resolved_path, bytes, _) = self.read_media_source(path, None).await?;
+        Ok((resolved_path, bytes))
     }
 
     fn resolve_audio_model_name(&self) -> Result<String> {
@@ -161,12 +154,7 @@ impl MediaFileProvider {
             .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
     }
 
-    async fn download_remote_media_file(
-        &self,
-        sandbox: &mut SandboxManager,
-        source: &str,
-        kind: MediaKind,
-    ) -> Result<String> {
+    async fn download_remote_media_file(&self, source: &str, kind: MediaKind) -> Result<String> {
         let url = normalize_remote_media_url(source)?;
         let content_type = self.probe_remote_media_content_type(&url).await;
 
@@ -184,8 +172,8 @@ impl MediaFileProvider {
             }
         }
 
-        sandbox
-            .exec_command(
+        self.exec
+            .exec(
                 &format!("mkdir -p {}", escape(REMOTE_MEDIA_DIR.into())),
                 None,
             )
@@ -200,7 +188,7 @@ impl MediaFileProvider {
             url = escape(url.as_str().into()),
         );
 
-        let result = sandbox.exec_command(&download_cmd, None).await?;
+        let result = self.exec.exec(&download_cmd, None).await?;
         if !result.success() {
             return Err(anyhow!(
                 "Failed to download remote media: {}",
@@ -208,7 +196,7 @@ impl MediaFileProvider {
             ));
         }
 
-        let size = sandbox.file_size_bytes(&resolved_path, None).await?;
+        let size = self.fileops.file_size_bytes(&resolved_path, None).await?;
         if size == 0 {
             return Err(anyhow!("Downloaded remote media is empty"));
         }
@@ -216,9 +204,10 @@ impl MediaFileProvider {
         Ok(resolved_path)
     }
 
-    async fn cleanup_downloaded_media(&self, sandbox: &mut SandboxManager, path: &str) {
-        if let Err(error) = sandbox
-            .exec_command(&format!("rm -f {}", escape(path.into())), None)
+    async fn cleanup_downloaded_media(&self, path: &str) {
+        if let Err(error) = self
+            .exec
+            .exec(&format!("rm -f {}", escape(path.into())), None)
             .await
         {
             warn!(path = %path, error = %error, "Failed to clean up remote media download");
@@ -247,17 +236,8 @@ impl MediaFileProvider {
             return Ok(None);
         };
 
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-        };
-
         let stable_path = format!("/workspace/browser_use/{session_id}/latest.png");
-        match sandbox.read_file(&stable_path).await {
+        match self.fileops.read_file(&stable_path).await {
             Ok(bytes) => {
                 warn!(
                     requested_path = %original_path,
@@ -272,7 +252,7 @@ impl MediaFileProvider {
 
     async fn handle_transcribe_audio_file(&self, arguments: &str) -> Result<String> {
         let args: AudioFileArgs = serde_json::from_str(arguments)?;
-        let (_sandbox, resolved_path, audio_bytes) = self.read_media_file(&args.path).await?;
+        let (resolved_path, audio_bytes) = self.read_media_file(&args.path).await?;
         let mime_type = args
             .mime_type
             .unwrap_or_else(|| infer_audio_mime_type(&resolved_path).to_string());
@@ -299,7 +279,7 @@ impl MediaFileProvider {
 
     async fn handle_describe_image_file(&self, arguments: &str) -> Result<String> {
         let args: ImageFileArgs = serde_json::from_str(arguments)?;
-        let (mut sandbox, resolved_path, image_bytes, cleanup_path) = match self
+        let (resolved_path, image_bytes, cleanup_path) = match self
             .read_media_source(&args.path, Some(MediaKind::Image))
             .await
         {
@@ -308,15 +288,7 @@ impl MediaFileProvider {
                 if let Some((fallback_path, bytes)) =
                     self.read_browser_use_latest_screenshot(&args.path).await?
                 {
-                    self.ensure_sandbox().await?;
-                    let sandbox = {
-                        let guard = self.sandbox.lock().await;
-                        guard
-                            .as_ref()
-                            .cloned()
-                            .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-                    };
-                    (sandbox, fallback_path, bytes, None)
+                    (fallback_path, bytes, None)
                 } else {
                     return Err(error);
                 }
@@ -336,7 +308,7 @@ impl MediaFileProvider {
             .map_err(|error| anyhow!("Image analysis failed: {error}"))?;
 
         if let Some(path) = cleanup_path {
-            self.cleanup_downloaded_media(&mut sandbox, &path).await;
+            self.cleanup_downloaded_media(&path).await;
         }
 
         Ok(serde_json::to_string(&json!({
@@ -349,7 +321,7 @@ impl MediaFileProvider {
 
     async fn handle_describe_video_file(&self, arguments: &str) -> Result<String> {
         let args: VideoFileArgs = serde_json::from_str(arguments)?;
-        let (mut sandbox, resolved_path, video_bytes, cleanup_path) = self
+        let (resolved_path, video_bytes, cleanup_path) = self
             .read_media_source(&args.path, Some(MediaKind::Video))
             .await?;
         let mime_type = args
@@ -369,7 +341,7 @@ impl MediaFileProvider {
             .map_err(|error| anyhow!("Video analysis failed: {error}"))?;
 
         if let Some(path) = cleanup_path {
-            self.cleanup_downloaded_media(&mut sandbox, &path).await;
+            self.cleanup_downloaded_media(&path).await;
         }
 
         Ok(serde_json::to_string(&json!({
