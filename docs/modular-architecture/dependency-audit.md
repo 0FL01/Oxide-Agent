@@ -6,9 +6,9 @@ Goal: `docs/goals/2026-05-23-modular-architecture-refactor.md`
 
 ## Phase 1 Scope
 
-This document is the Milestone 1 dependency and feature audit baseline. It records current dependency ownership, target feature names, and known leakage that later phases must remove.
+This document started as the Milestone 1 dependency and feature audit baseline. It now records the historical baseline plus the current dependency-ownership evidence that later PRD acceptance checks build on.
 
-The feature map in `crates/oxide-agent-core/Cargo.toml` now uses PRD-style atomic feature names and profile compositions. Heavy dependencies that still compile unconditionally are tracked below and by `scripts/check-cargo-tree-deny.sh`.
+The feature map in `crates/oxide-agent-core/Cargo.toml` uses PRD-style atomic feature names and profile compositions. Heavy dependency ownership is enforced by `scripts/check-cargo-tree-deny.sh`, `scripts/check-compiled-capabilities.sh`, and `.github/workflows/modular-architecture.yml`.
 
 ## Storage Decision
 
@@ -76,10 +76,13 @@ Optional-heavy or module-owned dependencies to isolate:
 
 ## Current Leakage Baseline
 
-Known leaks in `oxide-agent-core` after Phase 2f:
+The early Phase 2 leakage baseline is now resolved. Current blocking evidence lives in CI and in the scripts listed below:
 
-- Telegram and web transport dependencies are in separate transport crates, but workspace builds still include those crates unconditionally until binary/profile composition is introduced.
-- Some tool registrations are still feature-aware inside the legacy registry rather than generated from capability manifests.
+- `profile-checks` builds all required PRD profiles without default features.
+- `dependency-leakage-check` runs `scripts/check-cargo-tree-deny.sh` for embedded, lite, no-sandbox, media-enabled, search-only, and OpenCode-only feature sets.
+- `compiled-capability-manifest-checks` runs deterministic manifest/schema/example validation for all PRD profiles.
+- `registry-snapshot-checks` snapshots compiled/enabled manifests, tool availability, and LLM provider IDs/aliases for all PRD profiles.
+- `static-guard-tests` keeps removed legacy registry, compatibility, direct Gemini, and stale env/config surfaces absent.
 
 Resolved in Phase 2b:
 
@@ -137,12 +140,11 @@ scripts/check-cargo-tree-deny.sh profile-embedded-opencode-local
 scripts/check-cargo-tree-deny.sh llm-opencode-go
 ```
 
-These leakage checks are now expected to pass. Add new deny-list entries as later slices define ownership for additional optional boundaries.
+These leakage checks are expected to pass. Add new deny-list entries whenever a module gains a heavy dependency or a profile boundary becomes stricter.
 
 ## Next Refactoring Targets
 
-1. Add capability manifests so `cargo tree` checks can be tied to compiled module IDs.
-2. Move concrete storage construction out of Telegram runner into application bootstrap per the PRD's final registry model.
-3. Refine broker-only sandbox client support so it no longer shares the direct Docker implementation boundary.
-4. Continue replacing legacy provider registration with feature-aware capability registration.
-5. Split remaining always-compiled low-risk tool modules only when their dependencies or runtime availability justify it.
+1. Keep the final PRD acceptance audit focused on evidence gaps rather than reintroducing compatibility paths.
+2. Add or tighten static guards when a sweep finds stale docs/config/env/code surfaces.
+3. Keep Docker/Compose profile checks aligned with `profiles/*.toml` and compiled capability manifests.
+4. Split any remaining always-compiled low-risk tool modules only when their dependencies or runtime availability justify it.
