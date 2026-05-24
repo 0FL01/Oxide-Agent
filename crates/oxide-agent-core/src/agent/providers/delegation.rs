@@ -12,9 +12,15 @@ use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
 use crate::agent::provider::ToolProvider;
-use crate::agent::providers::{
-    FileHosterProvider, SandboxProvider, TodoList, TodosProvider, YtdlpProvider,
-};
+#[cfg(feature = "tool-sandbox-exec")]
+use crate::agent::providers::SandboxExecProvider;
+#[cfg(feature = "tool-sandbox-fileops")]
+use crate::agent::providers::SandboxFileOpsProvider;
+#[cfg(any(feature = "tool-sandbox-exec", feature = "tool-sandbox-fileops"))]
+use crate::agent::providers::SandboxRuntime;
+#[cfg(feature = "tool-ytdlp")]
+use crate::agent::providers::YtdlpProvider;
+use crate::agent::providers::{TodoList, TodosProvider};
 use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{
     run_with_timeout, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
@@ -61,6 +67,7 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     TOOL_WAIT_SUB_AGENTS,
     TOOL_CANCEL_SUB_AGENTS,
     "send_file_to_user",
+    "upload_file",
     "ssh_send_file_to_user",
     "transcribe_audio_file",
     "describe_image_file",
@@ -119,6 +126,15 @@ const TOPIC_AGENTS_MD_LOAD_TIMEOUT_SECS: u64 = 5;
 /// Provider for sub-agent delegation tool.
 pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
+    #[cfg_attr(
+        not(any(
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-ytdlp",
+            feature = "tool-browser-use"
+        )),
+        allow(dead_code)
+    )]
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
     browser_use_profile_scope: Option<String>,
@@ -543,26 +559,49 @@ impl DelegationProvider {
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Vec<Box<dyn ToolProvider>> {
-        let sandbox_provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone())
+        let mut providers: Vec<Box<dyn ToolProvider>> =
+            vec![Box::new(TodosProvider::new(todos_arc))];
+
+        #[cfg(any(feature = "tool-sandbox-exec", feature = "tool-sandbox-fileops"))]
+        let sandbox_runtime = if let Some(tx) = progress_tx {
+            Arc::new(SandboxRuntime::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone()))
         } else {
-            SandboxProvider::new(self.sandbox_scope.clone())
-        };
-        let ytdlp_provider = if let Some(tx) = progress_tx {
-            YtdlpProvider::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone())
-        } else {
-            YtdlpProvider::new(self.sandbox_scope.clone())
+            Arc::new(SandboxRuntime::new(self.sandbox_scope.clone()))
         };
 
-        let mut providers: Vec<Box<dyn ToolProvider>> = vec![
-            Box::new(TodosProvider::new(todos_arc)),
-            Box::new(sandbox_provider),
-            Box::new(FileHosterProvider::new(self.sandbox_scope.clone())),
-            Box::new(ytdlp_provider),
-        ];
+        #[cfg(feature = "tool-sandbox-exec")]
+        providers.push(Box::new(SandboxExecProvider::new(Arc::clone(
+            &sandbox_runtime,
+        ))));
+
+        #[cfg(feature = "tool-sandbox-fileops")]
+        providers.push(Box::new(SandboxFileOpsProvider::without_delivery(
+            Arc::clone(&sandbox_runtime),
+        )));
+
+        self.push_sub_agent_media_providers(&mut providers, progress_tx);
         self.push_optional_sub_agent_providers(&mut providers);
 
         providers
+    }
+
+    fn push_sub_agent_media_providers(
+        &self,
+        providers: &mut Vec<Box<dyn ToolProvider>>,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) {
+        #[cfg(not(feature = "tool-ytdlp"))]
+        let _ = (providers, progress_tx);
+
+        #[cfg(feature = "tool-ytdlp")]
+        {
+            let ytdlp_provider = if let Some(tx) = progress_tx {
+                YtdlpProvider::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone())
+            } else {
+                YtdlpProvider::new(self.sandbox_scope.clone())
+            };
+            providers.push(Box::new(ytdlp_provider));
+        }
     }
 
     fn push_optional_sub_agent_providers(&self, providers: &mut Vec<Box<dyn ToolProvider>>) {
@@ -1490,6 +1529,7 @@ mod tests {
             "text_to_speech_en_file",
             "text_to_speech_ru",
             "text_to_speech_ru_file",
+            "upload_file",
             "recreate_sandbox",
             "stack_logs_list_sources",
             "stack_logs_fetch",
@@ -1855,6 +1895,31 @@ mod tests {
             .collect();
 
         assert!(!tools.contains("compress"));
+    }
+
+    #[test]
+    fn build_sub_agent_providers_use_narrow_sandbox_surface() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
+        let providers = provider.build_sub_agent_providers(todos, None);
+        let tools: HashSet<String> = providers
+            .iter()
+            .flat_map(|provider| provider.tools())
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(!tools.contains("send_file_to_user"));
+        assert!(!tools.contains("upload_file"));
+        assert!(!tools.contains("recreate_sandbox"));
+
+        #[cfg(feature = "tool-sandbox-exec")]
+        assert!(tools.contains("execute_command"));
+        #[cfg(feature = "tool-sandbox-fileops")]
+        for tool in ["write_file", "read_file", "list_files"] {
+            assert!(tools.contains(tool), "missing sandbox fileops tool: {tool}");
+        }
     }
 
     #[test]

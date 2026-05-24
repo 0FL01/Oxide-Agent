@@ -31,6 +31,7 @@ use super::file_delivery::{
 use super::path::resolve_file_path;
 
 const SANDBOX_EXEC_TOOL_NAMES: &[&str] = &["execute_command"];
+const SANDBOX_FILEOPS_CORE_TOOL_NAMES: &[&str] = &["write_file", "read_file", "list_files"];
 const SANDBOX_FILEOPS_TOOL_NAMES: &[&str] =
     &["write_file", "read_file", "send_file_to_user", "list_files"];
 const SANDBOX_LIFECYCLE_TOOL_NAMES: &[&str] = &["recreate_sandbox"];
@@ -946,6 +947,9 @@ mod tests {
         let runtime = Arc::new(SandboxRuntime::new(1));
         let exec_provider = Arc::new(SandboxExecProvider::new(Arc::clone(&runtime)));
         let fileops_provider = Arc::new(SandboxFileOpsProvider::new(Arc::clone(&runtime)));
+        let fileops_without_delivery_provider = Arc::new(SandboxFileOpsProvider::without_delivery(
+            Arc::clone(&runtime),
+        ));
         let lifecycle_provider = Arc::new(SandboxLifecycleProvider::new(runtime));
 
         let exec_tools: Vec<_> = exec_provider
@@ -963,11 +967,20 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name)
             .collect();
+        let fileops_without_delivery_tools: Vec<_> = fileops_without_delivery_provider
+            .tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
 
         assert_eq!(exec_tools, ["execute_command"]);
         assert_eq!(
             fileops_tools,
             ["write_file", "read_file", "send_file_to_user", "list_files"]
+        );
+        assert_eq!(
+            fileops_without_delivery_tools,
+            ["write_file", "read_file", "list_files"]
         );
         assert_eq!(lifecycle_tools, ["recreate_sandbox"]);
     }
@@ -1126,13 +1139,26 @@ impl ToolProvider for SandboxExecProvider {
 /// Provider for sandbox file operation tools.
 pub struct SandboxFileOpsProvider {
     runtime: Arc<SandboxRuntime>,
+    tool_names: &'static [&'static str],
 }
 
 impl SandboxFileOpsProvider {
     /// Create a fileops-only provider backed by shared sandbox runtime state.
     #[must_use]
     pub fn new(runtime: Arc<SandboxRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            tool_names: SANDBOX_FILEOPS_TOOL_NAMES,
+        }
+    }
+
+    /// Create a fileops provider without chat/file-delivery tools.
+    #[must_use]
+    pub fn without_delivery(runtime: Arc<SandboxRuntime>) -> Self {
+        Self {
+            runtime,
+            tool_names: SANDBOX_FILEOPS_CORE_TOOL_NAMES,
+        }
     }
 
     /// Build typed runtime executors for file operation tools.
@@ -1140,7 +1166,7 @@ impl SandboxFileOpsProvider {
     pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
         sandbox_tool_runtime_executors(
             Arc::clone(&self.runtime),
-            sandbox_tool_definitions_for(SANDBOX_FILEOPS_TOOL_NAMES),
+            sandbox_tool_definitions_for(self.tool_names),
         )
     }
 }
@@ -1152,11 +1178,11 @@ impl ToolProvider for SandboxFileOpsProvider {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        sandbox_tool_definitions_for(SANDBOX_FILEOPS_TOOL_NAMES)
+        sandbox_tool_definitions_for(self.tool_names)
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
-        SANDBOX_FILEOPS_TOOL_NAMES.contains(&tool_name)
+        self.tool_names.contains(&tool_name)
     }
 
     async fn execute(
