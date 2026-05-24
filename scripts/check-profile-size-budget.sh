@@ -33,6 +33,7 @@ declare -a packages
 declare -a binaries
 entrypoint_binary="oxide-agent-telegram-bot"
 runtime_apt_packages=""
+mcp_binaries=""
 
 case "${profile}" in
   embedded-opencode-local)
@@ -44,6 +45,7 @@ case "${profile}" in
     cargo_features="oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full"
     packages=(oxide-agent-telegram-bot oxide-agent-sandboxd)
     binaries=(oxide-agent-telegram-bot oxide-agent-sandboxd)
+    mcp_binaries="ssh-mcp jira-mcp mattermost-mcp"
     ;;
   *)
     echo "unknown size budget profile '${profile}'" >&2
@@ -163,6 +165,7 @@ check_image_budgets() {
     --build-arg CARGO_FEATURES="${cargo_features}" \
     --build-arg PACKAGES="${package_arg}" \
     --build-arg BINARIES="${binary_arg}" \
+    --build-arg MCP_BINARIES="${mcp_binaries}" \
     --build-arg RUNTIME_APT_PACKAGES="${runtime_apt_packages}" \
     --build-arg ENTRYPOINT_BINARY="${entrypoint_binary}" \
     -t "${tag}" \

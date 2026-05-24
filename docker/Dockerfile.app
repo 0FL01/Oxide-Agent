@@ -43,6 +43,46 @@ RUN set -eux; \
       cp "/app/target/release/${binary}" "/runtime/bin/${binary}"; \
     done
 
+FROM debian:trixie-slim AS external-runtime-binaries
+
+ARG MCP_BINARIES=""
+ARG SSH_MCP_VERSION=v2.0.4
+ARG SSH_MCP_LINUX_X86_64_SHA256=ac77c6b0908fbc2e41b9d300432f32e4ccfe9174df5b6a0ed92274fc76f83ca2
+ARG JIRA_MCP_VERSION=0.1.2
+ARG MATTERMOST_MCP_VERSION=0.1.2
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    tar \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    mkdir -p /runtime/bin; \
+    for binary in ${MCP_BINARIES}; do \
+      case "${binary}" in \
+        ssh-mcp) \
+          curl -fsSL "https://github.com/0FL01/ssh-mcp-rs/releases/download/${SSH_MCP_VERSION}/ssh-mcp-linux-x86_64" -o /runtime/bin/ssh-mcp; \
+          echo "${SSH_MCP_LINUX_X86_64_SHA256}  /runtime/bin/ssh-mcp" | sha256sum -c -; \
+          chmod +x /runtime/bin/ssh-mcp; \
+          ;; \
+        jira-mcp) \
+          curl -fsSL "https://github.com/0FL01/jira-mcp/releases/download/${JIRA_MCP_VERSION}/jira-mcp_linux_amd64.tar.gz" -o /tmp/jira-mcp.tar.gz; \
+          tar -xzf /tmp/jira-mcp.tar.gz -C /runtime/bin jira-mcp; \
+          rm /tmp/jira-mcp.tar.gz; \
+          chmod +x /runtime/bin/jira-mcp; \
+          ;; \
+        mattermost-mcp) \
+          curl -fsSL "https://github.com/0FL01/mcp-server-mattermost/releases/download/${MATTERMOST_MCP_VERSION}/mcp-server-mattermost" -o /runtime/bin/mattermost-mcp; \
+          chmod +x /runtime/bin/mattermost-mcp; \
+          ;; \
+        *) \
+          echo "unknown MCP binary '${binary}'" >&2; \
+          exit 1; \
+          ;; \
+      esac; \
+    done
+
 FROM debian:trixie-slim AS runtime
 
 ARG RUNTIME_APT_PACKAGES=""
@@ -63,6 +103,7 @@ RUN groupadd --system --gid 10001 oxide \
 
 WORKDIR /app
 COPY --from=builder /runtime/bin/ /app/
+COPY --from=external-runtime-binaries /runtime/bin/ /app/
 RUN chown -R oxide:oxide /app /home/oxide
 
 ENV TZ=Europe/Moscow

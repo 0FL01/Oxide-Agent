@@ -19,6 +19,7 @@ services:
         CARGO_FEATURES: oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full
         PACKAGES: oxide-agent-telegram-bot oxide-agent-sandboxd
         BINARIES: oxide-agent-telegram-bot oxide-agent-sandboxd
+        MCP_BINARIES: ssh-mcp jira-mcp mattermost-mcp
         ENTRYPOINT_BINARY: oxide-agent-telegram-bot
         RUNTIME_APT_PACKAGES: openssh-client
     image: oxide-agent:dev

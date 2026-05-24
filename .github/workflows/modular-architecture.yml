@@ -129,10 +129,12 @@ jobs:
             cargo_features: oxide-agent-telegram-bot/profile-embedded-opencode-local
             packages: oxide-agent-telegram-bot
             binaries: oxide-agent-telegram-bot
+            mcp_binaries: ""
           - profile: full
             cargo_features: oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full
             packages: oxide-agent-telegram-bot oxide-agent-sandboxd
             binaries: oxide-agent-telegram-bot oxide-agent-sandboxd
+            mcp_binaries: ssh-mcp jira-mcp mattermost-mcp
 
     steps:
       - name: Checkout code
@@ -148,6 +150,7 @@ jobs:
             --build-arg CARGO_FEATURES="${{ matrix.cargo_features }}" \
             --build-arg PACKAGES="${{ matrix.packages }}" \
             --build-arg BINARIES="${{ matrix.binaries }}" \
+            --build-arg MCP_BINARIES="${{ matrix.mcp_binaries }}" \
             .
 
   profile-size-budget-checks:
