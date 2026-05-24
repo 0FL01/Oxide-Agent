@@ -22,6 +22,9 @@ forbidden_patterns=(
   '(^|[^A-Z0-9_])GOOGLE_GEMINI_API_KEY([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])OPENROUTER_SITE_URL([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])OPENROUTER_SITE_NAME([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])CHAT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])AGENT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])SUB_AGENT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
 )
 
 forbidden_rust_provider_settings=(
