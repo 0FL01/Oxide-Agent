@@ -154,6 +154,50 @@ default_image_budget() {
   esac
 }
 
+check_image_contents() {
+  local tag="$1"
+  local -a expected_names
+  expected_names=("${binaries[@]}")
+  if [[ -n "${mcp_binaries}" ]]; then
+    local -a mcp_binary_names
+    read -r -a mcp_binary_names <<<"${mcp_binaries}"
+    expected_names+=("${mcp_binary_names[@]}")
+  fi
+
+  local expected actual
+  expected="$(printf '%s\n' "${expected_names[@]}" | sort | xargs)"
+  actual="$(
+    docker run --rm --entrypoint /bin/sh "${tag}" -c \
+      "find /app -maxdepth 1 -type f -perm /111 -printf '%f\n' | sort | xargs"
+  )"
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "image content check failed for ${profile}: executable /app files '${actual}' != expected '${expected}'" >&2
+    exit 1
+  fi
+
+  docker run --rm --entrypoint /bin/sh "${tag}" -c \
+    "test ! -e /app/skills && test ! -e /app/sandbox && test ! -e /app/config"
+
+  docker run --rm --entrypoint /bin/sh "${tag}" -c \
+    "/app/${entrypoint_binary} capabilities --compiled --json >/tmp/compiled-capabilities.json && grep -q '\"modules\"' /tmp/compiled-capabilities.json && grep -q '\"capabilities\"' /tmp/compiled-capabilities.json"
+
+  docker run --rm --entrypoint /bin/sh "${tag}" -c \
+    "/app/${entrypoint_binary} config example --profile '${profile}' --json >/tmp/config-example.json && grep -q '\"modules\"' /tmp/config-example.json"
+
+  if [[ "${profile}" == "embedded-opencode-local" ]]; then
+    docker run --rm --entrypoint /bin/sh "${tag}" -c '
+      for tool in ssh scp ffmpeg python3 yt-dlp nmap mtr chromium chromium-browser google-chrome firefox; do
+        if command -v "${tool}" >/dev/null 2>&1; then
+          echo "unexpected runtime command in embedded image: ${tool}" >&2
+          exit 1
+        fi
+      done
+    '
+  fi
+
+  echo "image content check passed for ${profile}: ${expected}"
+}
+
 check_image_budgets() {
   local tag="oxide-agent:size-${profile}"
   local package_arg binary_arg uncompressed compressed env_name budget
@@ -170,6 +214,8 @@ check_image_budgets() {
     --build-arg ENTRYPOINT_BINARY="${entrypoint_binary}" \
     -t "${tag}" \
     .
+
+  check_image_contents "${tag}"
 
   uncompressed="$(docker image inspect "${tag}" --format '{{.Size}}')"
   env_name="$(image_env_name UNCOMPRESSED)"
