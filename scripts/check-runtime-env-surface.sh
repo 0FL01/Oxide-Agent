@@ -10,6 +10,7 @@ paths=(
   docker-compose.yml
   README.md
   README-ru.md
+  services/browser_use_bridge
 )
 
 forbidden_patterns=(
@@ -22,6 +23,8 @@ forbidden_patterns=(
   '(^|[^A-Z0-9_])GOOGLE_GEMINI_API_KEY([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])OPENROUTER_SITE_URL([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])OPENROUTER_SITE_NAME([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])BROWSER_USE_BRIDGE_LLM_PROVIDER([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])BROWSER_USE_BRIDGE_LLM_MODEL([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])CHAT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])AGENT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])SUB_AGENT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
