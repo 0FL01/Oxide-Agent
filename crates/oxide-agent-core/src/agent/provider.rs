@@ -1,7 +1,7 @@
 //! Tool Provider trait for extensible agent tools
 //!
 //! This trait provides a unified interface for all tool providers.
-//! Implementations include `SandboxProvider`, `TavilyProvider`, and future MCP providers.
+//! Implementations include sandbox tool slices, `TavilyProvider`, and future MCP providers.
 
 use crate::agent::progress::AgentEvent;
 use crate::llm::ToolDefinition;
