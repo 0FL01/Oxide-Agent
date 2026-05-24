@@ -210,14 +210,6 @@ impl AgentRunner {
         }
 
         if ctx.config.model_routes.is_empty() {
-            if ctx.tool_runtime_registry.is_some() {
-                let error = LlmError::ApiError(
-                    "typed tool runtime v1 requires an explicit opencode-go/deepseek-v4-flash route"
-                        .to_string(),
-                );
-                Self::emit_llm_error(ctx.progress_tx, &error).await;
-                return Err(anyhow!("LLM call failed: {error}"));
-            }
             return self.call_llm_with_tools_legacy(ctx, state, iteration).await;
         }
 
@@ -336,21 +328,6 @@ impl AgentRunner {
         iteration: usize,
     ) -> Result<ChatResponse> {
         let max_retries = LlmClient::MAX_RETRIES;
-
-        if ctx.tool_runtime_registry.is_some()
-            && !ctx
-                .config
-                .model_routes
-                .iter()
-                .any(v1_tool_runtime_enabled_for_model)
-        {
-            let error = LlmError::ApiError(
-                "typed tool runtime v1 only supports opencode-go/deepseek-v4-flash routes"
-                    .to_string(),
-            );
-            Self::emit_llm_error(ctx.progress_tx, &error).await;
-            return Err(anyhow!("LLM call failed: {error}"));
-        }
 
         let mut exhausted_routes = std::collections::HashSet::new();
         let mut pending_failover_from: Option<ModelInfo> = None;
@@ -679,7 +656,12 @@ impl AgentRunner {
     ) -> Option<usize> {
         let now = Instant::now();
         let json_mode = self.structured_output_required_for_config(&ctx.config);
-        let require_v1_tool_route = ctx.tool_runtime_registry.is_some();
+        let require_v1_tool_route = ctx.tool_runtime_registry.is_some()
+            && ctx
+                .config
+                .model_routes
+                .iter()
+                .any(v1_tool_runtime_enabled_for_model);
         self.route_failover_state
             .route_quarantine
             .retain(|_, until| *until > now);
