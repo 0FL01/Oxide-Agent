@@ -405,6 +405,7 @@ impl AgentSettings {
             ));
         }
         settings.validate_route_providers()?;
+        settings.canonicalize_route_provider_ids()?;
         settings.validate_route_credentials()?;
 
         Ok(settings)
@@ -507,6 +508,96 @@ impl AgentSettings {
             }
         }
 
+        Ok(())
+    }
+
+    fn canonicalize_route_provider_ids(&mut self) -> Result<(), ConfigError> {
+        Self::canonicalize_optional_provider_field(
+            "CHAT_MODEL_PROVIDER",
+            &mut self.chat_model_provider,
+        )?;
+        Self::canonicalize_optional_provider_field(
+            "AGENT_MODEL_PROVIDER",
+            &mut self.agent_model_provider,
+        )?;
+        Self::canonicalize_optional_provider_field(
+            "SUB_AGENT_MODEL_PROVIDER",
+            &mut self.sub_agent_model_provider,
+        )?;
+        Self::canonicalize_optional_provider_field(
+            "MEDIA_MODEL_PROVIDER",
+            &mut self.media_model_provider,
+        )?;
+        Self::canonicalize_optional_provider_field(
+            "BROWSER_USE_MODEL_PROVIDER",
+            &mut self.browser_use_model_provider,
+        )?;
+        Self::canonicalize_optional_provider_field(
+            "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
+            &mut self.wiki_memory_writer_model_provider,
+        )?;
+
+        if let Some(routes) = self.agent_model_routes.as_mut() {
+            for (index, route) in routes.iter_mut().enumerate() {
+                Self::canonicalize_model_route_provider(
+                    &format!("AGENT_MODEL_ROUTES[{index}].provider"),
+                    route,
+                )?;
+            }
+        }
+
+        if let Some(routes) = self.sub_agent_model_routes.as_mut() {
+            for (index, route) in routes.iter_mut().enumerate() {
+                Self::canonicalize_model_route_provider(
+                    &format!("SUB_AGENT_MODEL_ROUTES[{index}].provider"),
+                    route,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn canonicalize_optional_provider_field(
+        source: &str,
+        provider: &mut Option<String>,
+    ) -> Result<(), ConfigError> {
+        let Some(value) = provider.as_deref().map(str::trim) else {
+            return Ok(());
+        };
+
+        if value.is_empty() {
+            *provider = None;
+            return Ok(());
+        }
+
+        let Some(module_id) = provider_module_id(value) else {
+            return Err(ConfigError::Message(format!(
+                "Critical: {source} references provider '{value}', but no compiled LLM provider module owns that provider alias or ID"
+            )));
+        };
+
+        *provider = Some(module_id.to_string());
+        Ok(())
+    }
+
+    fn canonicalize_model_route_provider(
+        source: &str,
+        route: &mut ModelInfo,
+    ) -> Result<(), ConfigError> {
+        let provider = route.provider.trim();
+        if provider.is_empty() {
+            route.provider.clear();
+            return Ok(());
+        }
+
+        let Some(module_id) = provider_module_id(provider) else {
+            return Err(ConfigError::Message(format!(
+                "Critical: {source} references provider '{provider}', but no compiled LLM provider module owns that provider alias or ID"
+            )));
+        };
+
+        route.provider = module_id.to_string();
         Ok(())
     }
 
@@ -1248,6 +1339,70 @@ mod tests {
         assert!(error.to_string().contains(
             "CHAT_MODEL_PROVIDER references provider 'openrouter', but module 'llm-provider/openrouter' is disabled"
         ));
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn route_provider_canonicalization_rewrites_aliases_to_module_ids() {
+        let mut settings = AgentSettings {
+            chat_model_id: Some("chat-model".to_string()),
+            chat_model_provider: Some(" OpenRouter ".to_string()),
+            media_model_id: Some("media-model".to_string()),
+            media_model_provider: Some("llm-provider/openrouter".to_string()),
+            browser_use_model_provider: Some(" ".to_string()),
+            agent_model_routes: Some(vec![ModelInfo {
+                id: "agent-route".to_string(),
+                provider: "openrouter".to_string(),
+                max_output_tokens: 10_000,
+                context_window_tokens: 20_000,
+                weight: 1,
+            }]),
+            sub_agent_model_routes: Some(vec![ModelInfo {
+                id: "sub-agent-route".to_string(),
+                provider: "llm-provider/openrouter".to_string(),
+                max_output_tokens: 10_000,
+                context_window_tokens: 20_000,
+                weight: 1,
+            }]),
+            ..AgentSettings::default()
+        };
+
+        settings
+            .validate_route_providers()
+            .expect("aliases should validate before canonicalization");
+        settings
+            .canonicalize_route_provider_ids()
+            .expect("aliases should canonicalize");
+
+        assert_eq!(
+            settings.chat_model_provider.as_deref(),
+            Some("llm-provider/openrouter")
+        );
+        assert_eq!(
+            settings.media_model_provider.as_deref(),
+            Some("llm-provider/openrouter")
+        );
+        assert_eq!(settings.browser_use_model_provider, None);
+        assert_eq!(
+            settings
+                .agent_model_routes
+                .as_ref()
+                .expect("agent routes should stay configured")[0]
+                .provider,
+            "llm-provider/openrouter"
+        );
+        assert_eq!(
+            settings
+                .sub_agent_model_routes
+                .as_ref()
+                .expect("sub-agent routes should stay configured")[0]
+                .provider,
+            "llm-provider/openrouter"
+        );
+        assert_eq!(
+            settings.get_available_models()[0].1.provider,
+            "llm-provider/openrouter"
+        );
     }
 
     #[cfg(feature = "llm-opencode-go")]
