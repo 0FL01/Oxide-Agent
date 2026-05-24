@@ -17,6 +17,24 @@ if [[ -f "${sandbox_dir}/Dockerfile.sandbox" ]]; then
   exit 1
 fi
 
+legacy_surface_paths=(
+  .github/workflows
+  docker
+  docker-compose.yml
+  README.md
+  README-ru.md
+)
+
+if rg -n 'Dockerfile\.sandbox' "${legacy_surface_paths[@]}" --glob '!target/**'; then
+  echo "legacy fat sandbox Dockerfile must not be referenced by active deploy or runtime surfaces" >&2
+  exit 1
+fi
+
+if ! rg -q 'dockerfile: sandbox/Dockerfile\.dev' .github/workflows/ci-cd.yml; then
+  echo "production deploy workflow must build the selected dev sandbox image variant" >&2
+  exit 1
+fi
+
 normalized_dockerfile() {
   sed 's/#.*//' "$1" | tr '[:upper:]' '[:lower:]'
 }

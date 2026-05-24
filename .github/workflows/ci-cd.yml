@@ -305,6 +305,15 @@ jobs:
             echo "Creating docker-compose.yml..."
             echo "name: \\${COMPOSE_PROJECT_NAME:-oxide-agent}
             services:
+              sandbox_image:
+                build:
+                  context: ./build_context
+                  dockerfile: sandbox/Dockerfile.dev
+                image: ${SANDBOX_IMAGE:-agent-sandbox:latest}
+                command: [\"true\"]
+                restart: \"no\"
+                environment:
+                  - TZ=Europe/Moscow
               sandboxd:
                 build:
                   context: ./build_context
@@ -325,6 +334,9 @@ jobs:
                   - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
                   - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
                   - STACK_LOGS_PROJECT=\\${COMPOSE_PROJECT_NAME:-oxide-agent}
+                depends_on:
+                  sandbox_image:
+                    condition: service_completed_successfully
                 volumes:
                   - /var/run/docker.sock:/var/run/docker.sock
                   - sandboxd-run:/run/sandboxd
@@ -367,11 +379,4 @@ jobs:
             echo "Services started successfully."
             docker compose ps
 
-            # Build agent sandbox image for pre-warming (fish shell syntax)
-            if test -d "build_context/sandbox"
-              echo "Building agent sandbox image..."
-              docker build -t agent-sandbox:latest -f build_context/sandbox/Dockerfile.sandbox build_context/sandbox/
-              echo "Agent sandbox image built successfully."
-            else
-              echo "Warning: sandbox directory not found, skipping sandbox image build."
-            end
+            echo "Selected sandbox image variant is built through docker compose."
