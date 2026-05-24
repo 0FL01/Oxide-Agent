@@ -80,4 +80,27 @@ mod tests {
 
         assert_eq!(R2StorageModule.module_id(), "storage/r2");
     }
+
+    #[cfg(feature = "storage-s3-r2")]
+    #[tokio::test]
+    async fn primary_storage_fails_when_r2_module_is_disabled() {
+        use crate::config::{AgentSettings, ModuleRuntimeConfig};
+
+        let mut settings = AgentSettings::default();
+        settings
+            .modules
+            .insert("storage/r2".to_string(), ModuleRuntimeConfig::disabled());
+
+        let result = super::build_primary_storage(&settings).await;
+        let Err(error) = result else {
+            panic!("disabled primary storage module must fail before backend construction");
+        };
+
+        assert!(
+            error.to_string().contains(
+                "storage/r2 is required because S3/R2 is the only durable storage backend"
+            ),
+            "unexpected storage error: {error}"
+        );
+    }
 }

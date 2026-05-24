@@ -557,6 +557,7 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
 #[cfg(test)]
 mod tests {
     use super::compiled_capability_manifest;
+    use crate::capabilities::CapabilityKind;
 
     #[test]
     fn transient_local_fs_is_not_registered_as_durable_storage_backend() {
@@ -575,6 +576,24 @@ mod tests {
                 .iter()
                 .all(|capability| capability.id().as_str() != "storage/local-fs-transient"),
             "storage-local-fs must not expose a durable storage capability"
+        );
+    }
+
+    #[cfg(feature = "storage-s3-r2")]
+    #[test]
+    fn compiled_manifest_exposes_only_r2_as_durable_storage_backend() {
+        let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
+        let storage_backend_ids: Vec<_> = manifest
+            .modules()
+            .iter()
+            .filter(|module| module.kind() == CapabilityKind::StorageBackend)
+            .map(|module| module.id().as_str())
+            .collect();
+
+        assert_eq!(
+            storage_backend_ids,
+            ["storage/r2"],
+            "S3/R2 must stay the single production durable storage backend"
         );
     }
 
