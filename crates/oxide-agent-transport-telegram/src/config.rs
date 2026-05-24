@@ -59,31 +59,25 @@ pub struct TelegramSettings {
     #[serde(rename = "manager_allowed_users")]
     pub manager_allowed_users_str: Option<String>,
     /// Forum chat id where the manager control-plane agent lives.
-    #[serde(default, alias = "managerHomeChatId")]
+    #[serde(default)]
     pub manager_home_chat_id: Option<i64>,
     /// Forum thread id for the manager control-plane home topic.
-    #[serde(default, alias = "managerHomeThreadId")]
+    #[serde(default)]
     pub manager_home_thread_id: Option<i32>,
     /// Enables Attach/Detach flow controls in Agent Mode and Chat Mode.
-    #[serde(
-        default = "default_attach_detach_enabled",
-        alias = "attachDetachEnabled"
-    )]
+    #[serde(default = "default_attach_detach_enabled")]
     pub attach_detach_enabled: bool,
     /// Enables progress/status messages for reminder-triggered agent runs.
-    #[serde(
-        default = "default_reminder_agent_progress_enabled",
-        alias = "reminderAgentProgressEnabled"
-    )]
+    #[serde(default = "default_reminder_agent_progress_enabled")]
     pub reminder_agent_progress_enabled: bool,
     /// Allows reminder-triggered agent runs to return a no-change sentinel without notifying chat.
-    #[serde(default, alias = "reminderSilentNoChangeEnabled")]
+    #[serde(default)]
     pub reminder_silent_no_change_enabled: bool,
     /// Agent profile id used in the manager control-plane home topic.
-    #[serde(default, alias = "managerHomeAgentId")]
+    #[serde(default)]
     pub manager_home_agent_id: Option<String>,
     /// Per-topic overrides loaded from structured config.
-    #[serde(default, rename = "topicConfigs", alias = "topic_configs")]
+    #[serde(default)]
     pub topic_configs: Vec<TelegramTopicSettings>,
 }
 
@@ -345,11 +339,11 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_topic_configs_with_camel_case_keys() {
+    fn deserializes_topic_configs_with_canonical_keys() {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "topicConfigs": [
+          "topic_configs": [
             {
               "chatId": -10001,
               "threadId": 42,
@@ -414,7 +408,7 @@ mod tests {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "topicConfigs": [
+          "topic_configs": [
             {"chatId": -10001, "threadId": 10, "agentId": "forum-agent"},
             {"chatId": -10001, "agentId": "default-chat-agent"}
           ]
@@ -454,7 +448,7 @@ mod tests {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "topicConfigs": [
+          "topic_configs": [
             {"chatId": -30003, "threadId": 5}
           ]
         }
@@ -588,8 +582,8 @@ mod tests {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "reminderAgentProgressEnabled": false,
-          "reminderSilentNoChangeEnabled": true
+          "reminder_agent_progress_enabled": false,
+          "reminder_silent_no_change_enabled": true
         }
         "#;
 
@@ -614,7 +608,7 @@ mod tests {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "attachDetachEnabled": false
+          "attach_detach_enabled": false
         }
         "#;
 

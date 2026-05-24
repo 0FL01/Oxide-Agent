@@ -305,6 +305,15 @@ fn deprecated_config_compatibility_surfaces_are_removed() {
         "old config aliases, deprecated fields, and migration switches must stay removed; offenders: {config_offenders:?}"
     );
 
+    let telegram_config = fs::read_to_string(
+        workspace_root.join("crates/oxide-agent-transport-telegram/src/config.rs"),
+    )
+    .expect("read telegram config");
+    assert!(
+        !telegram_config.contains("#[serde(alias") && !telegram_config.contains("alias ="),
+        "transport config must not keep serde compatibility aliases"
+    );
+
     let env_example = fs::read_to_string(workspace_root.join(".env.example"))
         .expect("read workspace .env.example");
     for forbidden in [
