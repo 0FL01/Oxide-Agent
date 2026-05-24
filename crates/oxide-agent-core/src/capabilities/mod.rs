@@ -9,7 +9,7 @@ mod manifest;
 mod module;
 mod registry;
 
-pub use compiled::{compiled_capability_manifest, compiled_modules};
+pub use compiled::{compiled_capability_manifest, compiled_modules, compiled_profile_name};
 pub use manifest::{
     CapabilityManifestEntry, CompiledCapabilityManifest, EnabledCapabilityManifest, ManifestError,
     ModuleManifestEntry,

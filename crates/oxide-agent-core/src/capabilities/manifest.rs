@@ -350,6 +350,40 @@ impl CompiledCapabilityManifest {
         serde_json::to_string_pretty(&self.config_schema())
     }
 
+    /// Builds a deterministic example config for the compiled module set.
+    #[must_use]
+    pub fn config_example(&self, profile: &str) -> Value {
+        let mut module_properties = serde_json::Map::new();
+        for module in &self.modules {
+            let mut config = serde_json::Map::new();
+            config.insert("enabled".to_string(), json!(true));
+            for property in module.config_properties() {
+                if property.is_secret() {
+                    continue;
+                }
+                if let Some(default_value) = property.default_value() {
+                    config.insert(property.name().to_string(), json!(default_value));
+                }
+            }
+            module_properties.insert(module.id().as_str().to_string(), Value::Object(config));
+        }
+
+        json!({
+            "profile": profile,
+            "modules": module_properties,
+        })
+    }
+
+    /// Serializes the compiled module example config as pretty JSON.
+    pub fn config_example_json_pretty(&self, profile: &str) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.config_example(profile))
+    }
+
+    /// Serializes the compiled module example config as YAML.
+    pub fn config_example_yaml(&self, profile: &str) -> Result<String, serde_yaml::Error> {
+        serde_yaml::to_string(&self.config_example(profile))
+    }
+
     fn validate_compiled_requirements(&self) -> Result<(), ManifestError> {
         let compiled_capabilities: BTreeSet<CapabilityId> = self
             .capabilities
@@ -521,6 +555,11 @@ mod tests {
     )];
     const TOOL_A_CONFIG: &[ModuleConfigProperty] =
         &[ModuleConfigProperty::string("endpoint", "Test endpoint.").with_env("TOOL_A_ENDPOINT")];
+    const SECRET_PROVIDER_CONFIG: &[ModuleConfigProperty] = &[
+        ModuleConfigProperty::string("api_key", "Secret key.").secret(),
+        ModuleConfigProperty::string("api_base", "API base.")
+            .with_default("https://example.test/v1"),
+    ];
 
     fn boxed(module: StaticCapabilityModule) -> Box<dyn CapabilityModule> {
         Box::new(module)
@@ -696,6 +735,46 @@ mod tests {
         assert_eq!(
             module_properties["tool/a"]["x-oxide-cargo-feature"],
             "tool-a"
+        );
+    }
+
+    #[test]
+    fn config_example_lists_compiled_modules_and_non_secret_defaults() {
+        let modules = vec![
+            boxed(
+                StaticCapabilityModule::new(
+                    ModuleId::new("tool/a"),
+                    CapabilityKind::Tool,
+                    "tool-a",
+                    TOOL_A_READ,
+                )
+                .with_config_properties(TOOL_A_CONFIG),
+            ),
+            boxed(
+                StaticCapabilityModule::new(
+                    ModuleId::new("llm-provider/secret"),
+                    CapabilityKind::LlmProvider,
+                    "llm-secret",
+                    TOOL_Z_WRITE,
+                )
+                .with_config_properties(SECRET_PROVIDER_CONFIG),
+            ),
+        ];
+        let manifest =
+            CompiledCapabilityManifest::from_modules(&modules).expect("manifest should be valid");
+
+        let example = manifest.config_example("test-profile");
+
+        assert_eq!(example["profile"], "test-profile");
+        assert_eq!(example["modules"]["tool/a"]["enabled"], true);
+        assert_eq!(example["modules"]["llm-provider/secret"]["enabled"], true);
+        assert_eq!(
+            example["modules"]["llm-provider/secret"]["api_base"],
+            "https://example.test/v1"
+        );
+        assert!(
+            example["modules"]["llm-provider/secret"]["api_key"].is_null(),
+            "secret values must not be emitted into generated examples"
         );
     }
 

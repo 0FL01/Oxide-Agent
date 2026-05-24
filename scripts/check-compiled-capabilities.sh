@@ -31,11 +31,12 @@ esac
 
 tmp_manifest="$(mktemp)"
 tmp_config_schema="$(mktemp)"
+tmp_config_example="$(mktemp)"
 tmp_enabled_config="$(mktemp --suffix=.yaml)"
 tmp_enabled_manifest="$(mktemp)"
 tmp_invalid_config="$(mktemp --suffix=.yaml)"
 tmp_invalid_stderr="$(mktemp)"
-trap 'rm -f "${tmp_manifest}" "${tmp_config_schema}" "${tmp_enabled_config}" "${tmp_enabled_manifest}" "${tmp_invalid_config}" "${tmp_invalid_stderr}"' EXIT
+trap 'rm -f "${tmp_manifest}" "${tmp_config_schema}" "${tmp_config_example}" "${tmp_enabled_config}" "${tmp_enabled_manifest}" "${tmp_invalid_config}" "${tmp_invalid_stderr}"' EXIT
 
 cargo run -q \
   -p oxide-agent-telegram-bot \
@@ -46,7 +47,9 @@ cargo run -q \
 
 python3 - "${profile}" "${tmp_manifest}" <<'PY'
 import json
+import pathlib
 import sys
+import tomllib
 
 profile = sys.argv[1]
 manifest_path = sys.argv[2]
@@ -79,6 +82,24 @@ if len(capability_ids) != len(set(capability_ids)):
 
 module_set = set(module_ids)
 capability_set = set(capability_ids)
+
+profile_path = pathlib.Path("profiles") / f"{profile}.toml"
+if not profile_path.exists():
+    fail(f"profile defaults file is missing: {profile_path}")
+with profile_path.open("rb") as fh:
+    profile_doc = tomllib.load(fh)
+if profile_doc.get("profile") != profile:
+    fail(f"profile defaults file has wrong profile name: {profile_doc.get('profile')!r}")
+if profile_doc.get("cargo_features") != [f"profile-{profile}"]:
+    fail(f"profile defaults file has wrong cargo_features: {profile_doc.get('cargo_features')!r}")
+profile_module_ids = set(profile_doc.get("modules", {}).keys())
+if profile_module_ids != module_set:
+    missing = sorted(module_set - profile_module_ids)
+    unexpected = sorted(profile_module_ids - module_set)
+    fail(
+        "profile defaults module IDs drifted from compiled manifest; "
+        f"missing={missing}; unexpected={unexpected}"
+    )
 
 common_forbidden_ids = {
     "llm-provider/gemini",
@@ -334,7 +355,7 @@ cargo run -q \
   --bin oxide-agent-telegram-bot \
   --no-default-features \
   --features "${cargo_feature}" \
-  -- capabilities --config-schema --json >"${tmp_config_schema}"
+  -- config schema --compiled --json >"${tmp_config_schema}"
 
 python3 - "${profile}" "${tmp_manifest}" "${tmp_config_schema}" <<'PY'
 import json
@@ -406,6 +427,59 @@ for module in manifest.get("modules", []):
             fail("llm-provider/openai-chatgpt schema must declare module-owned auth_path")
 
 print(f"config schema check passed for {profile}: {len(schema_modules)} module schemas")
+PY
+
+cargo run -q \
+  -p oxide-agent-telegram-bot \
+  --bin oxide-agent-telegram-bot \
+  --no-default-features \
+  --features "${cargo_feature}" \
+  -- config example --profile "${profile}" --json >"${tmp_config_example}"
+
+python3 - "${profile}" "${tmp_manifest}" "${tmp_config_example}" <<'PY'
+import json
+import sys
+
+profile = sys.argv[1]
+manifest_path = sys.argv[2]
+example_path = sys.argv[3]
+
+with open(manifest_path, "r", encoding="utf-8") as fh:
+    manifest = json.load(fh)
+with open(example_path, "r", encoding="utf-8") as fh:
+    example = json.load(fh)
+
+module_ids = [module["id"] for module in manifest.get("modules", [])]
+example_modules = example.get("modules", {})
+
+
+def fail(message: str) -> None:
+    print(f"config example check failed for {profile}: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+if example.get("profile") != profile:
+    fail(f"example profile mismatch: {example.get('profile')!r}")
+if list(example_modules.keys()) != module_ids:
+    fail(
+        "example module IDs do not match compiled manifest; "
+        f"example={list(example_modules.keys())}; manifest={module_ids}"
+    )
+
+for module in manifest.get("modules", []):
+    module_id = module["id"]
+    config = example_modules[module_id]
+    if config.get("enabled") is not True:
+        fail(f"{module_id} example must enable compiled module by default")
+    for prop in module.get("config_properties", []):
+        name = prop["name"]
+        if prop.get("secret") and name in config:
+            fail(f"{module_id}.{name} secret value must not be emitted in config examples")
+        if not prop.get("secret") and prop.get("default_value") is not None:
+            if config.get(name) != prop["default_value"]:
+                fail(f"{module_id}.{name} default value missing from config example")
+
+print(f"config example check passed for {profile}: {len(example_modules)} module configs")
 PY
 
 cat >"${tmp_enabled_config}" <<'YAML'

@@ -185,6 +185,35 @@ pub fn compiled_capability_manifest() -> Result<CompiledCapabilityManifest, Mani
     CompiledCapabilityManifest::from_modules(&modules)
 }
 
+/// Returns the selected named profile when exactly one PRD profile feature is active.
+#[must_use]
+pub fn compiled_profile_name() -> Option<&'static str> {
+    let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize
+        + cfg!(feature = "profile-lite") as usize
+        + cfg!(feature = "profile-search-only") as usize
+        + cfg!(feature = "profile-no-sandbox") as usize
+        + cfg!(feature = "profile-media-enabled") as usize
+        + cfg!(feature = "profile-full") as usize;
+
+    if active_profile_count != 1 {
+        return None;
+    }
+
+    if cfg!(feature = "profile-embedded-opencode-local") {
+        Some("embedded-opencode-local")
+    } else if cfg!(feature = "profile-lite") {
+        Some("lite")
+    } else if cfg!(feature = "profile-search-only") {
+        Some("search-only")
+    } else if cfg!(feature = "profile-no-sandbox") {
+        Some("no-sandbox")
+    } else if cfg!(feature = "profile-media-enabled") {
+        Some("media-enabled")
+    } else {
+        Some("full")
+    }
+}
+
 fn push_declared_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     push_transport_and_storage_modules(modules);
     push_llm_modules(modules);

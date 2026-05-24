@@ -1,5 +1,5 @@
 use dotenvy::dotenv;
-use oxide_agent_core::capabilities::compiled_capability_manifest;
+use oxide_agent_core::capabilities::{compiled_capability_manifest, compiled_profile_name};
 use oxide_agent_core::config::{load_module_runtime_settings, AgentSettings};
 use oxide_agent_transport_telegram::config::{BotSettings, TelegramSettings};
 use oxide_agent_transport_telegram::runner::run_bot;
@@ -131,6 +131,7 @@ enum StartupCommand {
     PrintCompiledCapabilitiesJson,
     PrintEnabledCapabilitiesJson { config_path: Option<String> },
     PrintCompiledConfigSchemaJson,
+    PrintConfigExample { profile: String, json: bool },
 }
 
 #[tokio::main]
@@ -154,6 +155,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         StartupCommand::PrintCompiledConfigSchemaJson => {
             let manifest = compiled_capability_manifest()?;
             println!("{}", manifest.config_schema_json_pretty()?);
+            return Ok(());
+        }
+        StartupCommand::PrintConfigExample { profile, json } => {
+            validate_requested_profile_matches_compiled(&profile)?;
+            let manifest = compiled_capability_manifest()?;
+            if json {
+                println!("{}", manifest.config_example_json_pretty(&profile)?);
+            } else {
+                print!("{}", manifest.config_example_yaml(&profile)?);
+            }
             return Ok(());
         }
     }
@@ -189,13 +200,23 @@ where
     let Some(first) = args.next() else {
         return Ok(StartupCommand::RunBot);
     };
-    if first.as_ref() != "capabilities" {
-        return Ok(StartupCommand::RunBot);
-    }
 
+    match first.as_ref() {
+        "capabilities" => parse_capabilities_command(args),
+        "config" => parse_config_command(args),
+        _ => Ok(StartupCommand::RunBot),
+    }
+}
+
+fn parse_capabilities_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut mode = None;
     let mut config_path = None;
     let mut json = false;
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_ref() {
             "--compiled" => set_capability_mode(&mut mode, CapabilityMode::Compiled)?,
@@ -232,6 +253,93 @@ where
     }
 }
 
+fn parse_config_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    let Some(subcommand) = args.next() else {
+        return Err(config_usage_error());
+    };
+
+    match subcommand.as_ref() {
+        "schema" => parse_config_schema_command(args),
+        "example" => parse_config_example_command(args),
+        _ => Err(config_usage_error()),
+    }
+}
+
+fn parse_config_schema_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut compiled = false;
+    let mut json = false;
+    for arg in args {
+        match arg.as_ref() {
+            "--compiled" => compiled = true,
+            "--json" => json = true,
+            _ => return Err(config_usage_error()),
+        }
+    }
+
+    if compiled && json {
+        Ok(StartupCommand::PrintCompiledConfigSchemaJson)
+    } else {
+        Err(config_usage_error())
+    }
+}
+
+fn parse_config_example_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    let mut profile = None;
+    let mut json = false;
+    while let Some(arg) = args.next() {
+        match arg.as_ref() {
+            "--profile" => {
+                let Some(value) = args.next() else {
+                    return Err(config_usage_error());
+                };
+                profile = Some(value.as_ref().to_string());
+            }
+            "--json" => json = true,
+            _ => return Err(config_usage_error()),
+        }
+    }
+
+    let Some(profile) = profile else {
+        return Err(config_usage_error());
+    };
+
+    Ok(StartupCommand::PrintConfigExample { profile, json })
+}
+
+fn validate_requested_profile_matches_compiled(profile: &str) -> io::Result<()> {
+    let Some(compiled_profile) = compiled_profile_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "config example requires exactly one profile feature to be compiled",
+        ));
+    };
+
+    if profile == compiled_profile {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "config example profile '{profile}' does not match compiled profile '{compiled_profile}'"
+            ),
+        ))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CapabilityMode {
     Compiled,
@@ -257,6 +365,13 @@ fn capabilities_usage_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
         "Usage: oxide-agent-telegram-bot capabilities (--compiled | --enabled [--config PATH] | --config-schema) --json",
+    )
+}
+
+fn config_usage_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "Usage: oxide-agent-telegram-bot config schema --compiled --json | config example --profile PROFILE [--json]",
     )
 }
 
@@ -352,6 +467,34 @@ mod tests {
             .expect("config schema command should parse");
 
         assert_eq!(command, StartupCommand::PrintCompiledConfigSchemaJson);
+    }
+
+    #[test]
+    fn startup_command_parses_prd_config_schema_alias() {
+        let command = parse_startup_command(["config", "schema", "--compiled", "--json"])
+            .expect("PRD config schema command should parse");
+
+        assert_eq!(command, StartupCommand::PrintCompiledConfigSchemaJson);
+    }
+
+    #[test]
+    fn startup_command_parses_profile_config_example_json() {
+        let command = parse_startup_command([
+            "config",
+            "example",
+            "--profile",
+            "embedded-opencode-local",
+            "--json",
+        ])
+        .expect("profile config example command should parse");
+
+        assert_eq!(
+            command,
+            StartupCommand::PrintConfigExample {
+                profile: "embedded-opencode-local".to_string(),
+                json: true
+            }
+        );
     }
 
     #[test]

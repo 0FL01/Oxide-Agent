@@ -3,9 +3,9 @@ cargo_features = ["profile-media-enabled"]
 
 [modules]
 "transport/telegram" = { enabled = true }
-"storage/s3-r2" = { enabled = true }
+"storage/r2" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
-"tool/media-audio-transcription" = { enabled = true }
-"tool/media-image-description" = { enabled = true }
-"tool/media-video-description" = { enabled = true }
+"tool/media-audio" = { enabled = true }
+"tool/media-image" = { enabled = true }
+"tool/media-video" = { enabled = true }
 "tool/file-delivery" = { enabled = true }
