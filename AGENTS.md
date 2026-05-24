@@ -45,6 +45,8 @@ Default branch: `dev`.
 
 - `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; transport crates depend on core/runtime.
 - `teloxide` is used only in `oxide-agent-transport-telegram` and binaries that include it.
+- Build and runtime composition are capability-module based. Canonical module and capability manifests live in `crates/oxide-agent-core/src/capabilities/`; typed tool registration lives in `crates/oxide-agent-core/src/agent/tool_runtime/`.
+- Cargo `default` features are intentionally empty. Use profile features such as `profile-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, and `profile-full`.
 - Keep explicit `mod.rs` files and predictable public exports.
 - Use `thiserror` for library crates, `anyhow` for app/binary crates.
 - Agent Mode and manager/topic functions are designed to be topic-aware and thread-aware.
@@ -53,6 +55,8 @@ Default branch: `dev`.
 - Sandbox runs either directly through the Docker backend or through the broker backend; with `SANDBOX_BACKEND=broker`, access to `docker.sock` stays only with `oxide-agent-sandboxd`.
 - Manager CRUD goes through the `manager_control_plane` provider with an audit trail and RBAC at the Telegram transport level (`manager_allowed_users`).
 - Wiki memory lives entirely in `crates/oxide-agent-core/src/agent/wiki_memory/`; no separate memory crate exists.
+- `storage-s3-r2` / `storage/r2` is the only production durable storage module. Local filesystem use is transient workspace/cache/staging only.
+- Direct Google Gemini provider code must stay absent. Gemini-family model IDs are valid only through OpenRouter routes.
 
 ## Key subsystems
 
@@ -103,7 +107,7 @@ Default branch: `dev`.
 - ChatGPT uses OAuth/Codex Responses streaming and must fail over for structured-output/json-mode routes.
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), webfetch_md, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP (native upstream file tools + legacy fallback), yt-dlp, reminders, agents_md, **wiki memory** (list, read, delete), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose logs; disabled by default for topic agents, blocked for sub-agents).
+- sandbox, todos, tavily, searxng (self-hosted), webfetch_md, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md, **wiki memory** (list, read, delete), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose logs; disabled by default for topic agents, blocked for sub-agents).
 - Extend in `agent/providers/`; keep the transport-agnostic contract.
 
 ## Telegram transport
@@ -122,15 +126,30 @@ Default branch: `dev`.
 
 ## Configuration
 
-- Layered config: `config/default.yaml`, `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
+- Layered config: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Config files are optional (`required(false)`).
-- Key items: `CHATGPT_AUTH_PATH`, search/embedding provider, SearXNG (`SEARXNG_URL`), sub-agent model, `AGENT_MODEL_ROUTES__N__*`, `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`), wiki memory writer (`WIKI_MEMORY_WRITER_ENABLED`, model config).
+- Provider secrets/config are module-owned under `modules.<module-id>` with env fallbacks, for example `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `CHATGPT_AUTH_PATH`, `ZAI_API_KEY`, `MINIMAX_API_KEY`.
+- Key runtime items: SearXNG (`SEARXNG_URL`), model routes (`AGENT_MODEL_ROUTES__N__*`, `SUB_AGENT_MODEL_ROUTES__N__*`), `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`), wiki memory writer (`WIKI_MEMORY_WRITER_ENABLED`, model config).
 - Telegram transport config: `ATTACH_DETACH_ENABLED` (default true).
 
 ## Development practice
 
+### Modular architecture references
+- `docs/modular-architecture/final-completion-audit.md` - full modular architecture completion audit and final verification command set.
+- `docs/modular-architecture/final-acceptance-audit.md` - acceptance matrix for architecture, profiles, providers, tools, storage, sandbox, Docker/Compose, CI, and output guarantees.
+- `docs/modular-architecture/dependency-audit.md` - dependency ownership, feature/profile map, and leakage-check context.
+- `profiles/*.toml` - runtime/profile defaults that must stay aligned with compiled capability manifests.
+
 ### Build and dependencies
 - Use `cargo check` for quick verification; use `cargo build` only when you need the final binary.
+- Minimal embedded profile: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
+- Full profile: `cargo build --release --no-default-features --features profile-full`.
+- Other profile checks: `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`.
+- Capability output:
+  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- capabilities --compiled --json`
+  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- capabilities --enabled --json`
+  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- config schema --compiled --json`
+  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- config example --profile lite --json`
 - Use `cargo add`, `cargo remove`, `cargo update` for dependencies.
 - Use `workspace info` and `cargo info` for workspace metadata.
 
@@ -143,6 +162,15 @@ Default branch: `dev`.
 - Main categories: hermetic tests, integration tests, snapshot tests (`insta`), property/fuzz tests (`proptest`).
 - E2E tests: `crates/oxide-agent-transport-web/tests/e2e.rs` — 6 E2E tests (session lifecycle, task execution, SSE streaming, latency milestones).
 - Useful references: `tests/hermetic_agent.rs`, `tests/snapshot_prompts.rs`, `tests/proptest_recovery.rs`.
+- Modular checks:
+  - `scripts/check-runtime-env-surface.sh`
+  - `scripts/check-binary-feature-gates.sh`
+  - `scripts/check-cargo-tree-deny.sh <feature-or-profile>`
+  - `scripts/check-compiled-capabilities.sh <profile>`
+  - `scripts/check-registry-snapshots.sh <profile>`
+  - `scripts/check-compose-profile.sh <profile>`
+  - `scripts/check-sandbox-image-variants.sh`
+  - `scripts/check-profile-size-budget.sh <profile> <binary|metrics|image>`
 
 ### Commit style
 - Use full commit messages, not short one-line commits.
@@ -167,6 +195,7 @@ feat(sources): add bybit proof of reserves source
 
 - `docs/hooks/` - hook lifecycle and managed hook behavior.
 - `docs/browser-use.md` - disabled browser-use bridge details.
+- `docs/modular-architecture/` - modular architecture completion, acceptance, and dependency audit docs.
 - `README.md` / `README-ru.md` - product overview and user-facing setup notes.
 - `config/` and `.env.example` - runtime configuration examples.
 
