@@ -113,6 +113,7 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
         "read_file",
         "recreate_sandbox",
         "send_file_to_user",
+        "upload_file",
         "write_todos",
         "write_file",
     ] {
@@ -371,11 +372,40 @@ fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
 
-    for file_tool in ["write_file", "read_file", "send_file_to_user", "list_files"] {
+    for file_tool in ["write_file", "read_file", "list_files"] {
         assert!(!tool_names.contains(file_tool));
     }
+    assert!(tool_names.contains("send_file_to_user"));
+    assert!(tool_names.contains("upload_file"));
     assert!(tool_names.contains("execute_command"));
     assert!(tool_names.contains("recreate_sandbox"));
+}
+
+#[test]
+fn typed_runtime_registry_skips_disabled_file_delivery_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/file-delivery".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("send_file_to_user"));
+    assert!(!tool_names.contains("upload_file"));
+    assert!(tool_names.contains("write_file"));
+    assert!(tool_names.contains("read_file"));
+    assert!(tool_names.contains("list_files"));
 }
 
 #[test]
@@ -503,6 +533,10 @@ fn legacy_registry_skips_disabled_file_delivery_module() {
     let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
 
     assert!(!registry.can_handle("upload_file"));
+    assert!(!registry.can_handle("send_file_to_user"));
+    assert!(registry.can_handle("write_file"));
+    assert!(registry.can_handle("read_file"));
+    assert!(registry.can_handle("list_files"));
     assert!(registry.can_handle("write_todos"));
 }
 
@@ -997,9 +1031,11 @@ fn legacy_registry_skips_disabled_sandbox_fileops_module() {
 
     let registry = executor.build_tool_registry(Arc::new(Mutex::new(TodoList::new())), None);
 
-    for file_tool in ["write_file", "read_file", "send_file_to_user", "list_files"] {
+    for file_tool in ["write_file", "read_file", "list_files"] {
         assert!(!registry.can_handle(file_tool));
     }
+    assert!(registry.can_handle("send_file_to_user"));
+    assert!(registry.can_handle("upload_file"));
     assert!(registry.can_handle("execute_command"));
     assert!(registry.can_handle("recreate_sandbox"));
 }

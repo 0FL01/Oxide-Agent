@@ -369,7 +369,7 @@ impl ToolModule for CompressionToolModule {
     }
 }
 
-/// Capability module for external file delivery from sandbox files.
+/// Capability module for chat and external file delivery from sandbox files.
 #[cfg(feature = "tool-file-delivery")]
 pub struct FileDeliveryToolModule;
 
@@ -380,11 +380,14 @@ impl ToolModule for FileDeliveryToolModule {
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(FileHosterProvider::new(ctx.sandbox_scope())))
+        Some(Box::new(FileHosterProvider::from_runtime(
+            ctx.sandbox_runtime(),
+        )))
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Arc::new(FileHosterProvider::from_runtime(ctx.sandbox_runtime()))
+            .tool_runtime_executors(ctx.progress_tx())
     }
 }
 
@@ -1067,7 +1070,7 @@ impl ToolModule for SandboxExecToolModule {
     }
 }
 
-/// Capability module for sandbox file operations and file delivery.
+/// Capability module for sandbox file operations.
 #[cfg(feature = "tool-sandbox-fileops")]
 pub struct SandboxFileOpsToolModule;
 

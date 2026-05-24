@@ -1,10 +1,9 @@
 //! Sandbox Provider - executes tools in Docker sandbox
 //!
-//! Provides `execute_command`, `read_file`, `write_file`, `send_file_to_user`,
-//! `list_files`, and `recreate_sandbox` tools.
+//! Provides `execute_command`, `read_file`, `write_file`, `list_files`, and
+//! `recreate_sandbox` tools.
 
 use crate::agent::progress::AgentEvent;
-use crate::agent::progress::FileDeliveryKind;
 use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     CleanupStatus, OutputNormalizer, OutputPreview, ToolExecutor, ToolInvocation, ToolName,
@@ -22,24 +21,15 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
-
-use super::file_delivery::{
-    deliver_file_via_progress, format_generic_delivery_report, FileDeliveryReport,
-    FileDeliveryRequest, FileDeliveryStatus, CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
-};
-use super::path::resolve_file_path;
+use tracing::debug;
 
 const SANDBOX_EXEC_TOOL_NAMES: &[&str] = &["execute_command"];
-const SANDBOX_FILEOPS_CORE_TOOL_NAMES: &[&str] = &["write_file", "read_file", "list_files"];
-const SANDBOX_FILEOPS_TOOL_NAMES: &[&str] =
-    &["write_file", "read_file", "send_file_to_user", "list_files"];
+const SANDBOX_FILEOPS_TOOL_NAMES: &[&str] = &["write_file", "read_file", "list_files"];
 const SANDBOX_LIFECYCLE_TOOL_NAMES: &[&str] = &["recreate_sandbox"];
 const SANDBOX_ALL_TOOL_NAMES: &[&str] = &[
     "execute_command",
     "write_file",
     "read_file",
-    "send_file_to_user",
     "list_files",
     "recreate_sandbox",
 ];
@@ -86,7 +76,7 @@ impl SandboxRuntime {
         *guard = Some(sandbox);
     }
 
-    async fn get_or_create_sandbox(&self) -> Result<SandboxManager> {
+    pub(crate) async fn get_or_create_sandbox(&self) -> Result<SandboxManager> {
         let mut guard = self.sandbox.lock().await;
 
         if guard.as_ref().is_none_or(|sandbox| !sandbox.is_running()) {
@@ -100,6 +90,17 @@ impl SandboxRuntime {
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
+    }
+
+    /// Acquires the shared sandbox execution guard used by non-lifecycle tools.
+    pub(crate) async fn shared_execution_guard(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
+        self.execution_gate.read().await
+    }
+
+    /// Returns the progress channel associated with this runtime, if any.
+    #[must_use]
+    pub(crate) fn progress_tx(&self) -> Option<&Sender<AgentEvent>> {
+        self.progress_tx.as_ref()
     }
 
     async fn get_or_init_sandbox_manager(&self) -> Result<SandboxManager> {
@@ -224,95 +225,6 @@ impl SandboxProvider {
                 "path": args.path,
                 "error": error.to_string(),
             })),
-        }
-    }
-
-    async fn handle_send_file(
-        progress_tx: Option<&Sender<AgentEvent>>,
-        sandbox: &mut SandboxManager,
-        arguments: &str,
-    ) -> Result<String> {
-        let args: SendFileArgs = serde_json::from_str(arguments)?;
-        info!(path = %args.path, "send_file_to_user called");
-
-        let resolved_path = match resolve_file_path(sandbox, &args.path).await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(path = %args.path, error = %e, "Failed to resolve file path");
-                return serialize_json(json!({
-                    "ok": false,
-                    "path": args.path,
-                    "status": "resolve_failed",
-                    "error": e.to_string(),
-                }));
-            }
-        };
-
-        let file_name = std::path::Path::new(&resolved_path)
-            .file_name()
-            .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
-
-        let file_size = match sandbox.file_size_bytes(&resolved_path, None).await {
-            Ok(size) => size,
-            Err(e) => {
-                error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
-                return serialize_json(json!({
-                    "ok": false,
-                    "path": resolved_path,
-                    "status": "size_check_failed",
-                    "error": e.to_string(),
-                }));
-            }
-        };
-
-        if file_size == 0 {
-            return serialize_json(json!({
-                "ok": false,
-                "path": resolved_path,
-                "file_name": file_name,
-                "size_bytes": file_size,
-                "status": "empty_content",
-                "message": format!(
-                    "❌ ERROR: File '{file_name}' is empty (0 bytes) and cannot be sent.\nSource path: {resolved_path}"
-                ),
-            }));
-        }
-
-        if file_size > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
-            return serialize_json(json!({
-                "ok": false,
-                "path": resolved_path,
-                "file_name": file_name,
-                "size_bytes": file_size,
-                "status": "too_large",
-                "message": "⚠️ ERROR: File too large for chat delivery (>50 MB). Please use the upload_file tool to upload it to the cloud.",
-            }));
-        }
-
-        match sandbox.download_file(&resolved_path).await {
-            Ok(content) => {
-                let report = deliver_file_via_progress(
-                    progress_tx,
-                    FileDeliveryRequest {
-                        kind: FileDeliveryKind::Auto,
-                        file_name: file_name.clone(),
-                        content,
-                        source_path: resolved_path.clone(),
-                    },
-                )
-                .await;
-                serialize_json(build_send_file_response(&resolved_path, &report))
-            }
-            Err(e) => {
-                error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
-                serialize_json(json!({
-                    "ok": false,
-                    "path": resolved_path,
-                    "file_name": file_name,
-                    "status": "download_failed",
-                    "error": e.to_string(),
-                }))
-            }
         }
     }
 
@@ -473,22 +385,6 @@ impl SandboxProvider {
                     ),
                 })
             }
-            "send_file_to_user" => {
-                let _shared = self.runtime.execution_gate.read().await;
-                let args: SendFileArgs = parse_invocation_args(invocation)?;
-                let mut sandbox = self
-                    .runtime
-                    .get_or_create_sandbox()
-                    .await
-                    .map_err(tool_failure)?;
-                let result = Self::handle_send_file(
-                    self.runtime.progress_tx.as_ref(),
-                    &mut sandbox,
-                    &args.to_json(),
-                )
-                .await;
-                Ok(typed_json_string_result(invocation, result))
-            }
             "list_files" => {
                 let _shared = self.runtime.execution_gate.read().await;
                 let args: ListFilesRuntimeArgs = parse_invocation_args(invocation)?;
@@ -526,12 +422,6 @@ struct ListFilesRuntimeArgs {
 
 fn default_workspace_path() -> String {
     "/workspace".to_string()
-}
-
-impl SendFileArgs {
-    fn to_json(&self) -> String {
-        json!({ "path": self.path }).to_string()
-    }
 }
 
 fn parse_invocation_args<T>(invocation: &ToolInvocation) -> std::result::Result<T, ToolRuntimeError>
@@ -617,19 +507,6 @@ fn typed_read_file_result(invocation: &ToolInvocation, path: &str, content: &[u8
     };
     output.truncation.stdout_truncated = output.stdout.truncated;
     output
-}
-
-fn typed_json_string_result(invocation: &ToolInvocation, result: Result<String>) -> ToolOutput {
-    match result {
-        Ok(json_string) => match serde_json::from_str::<Value>(&json_string) {
-            Ok(value) => typed_simple_result(invocation, Ok(value)),
-            Err(error) => typed_simple_result::<Value>(
-                invocation,
-                Err(anyhow::anyhow!("sandbox returned invalid JSON: {error}")),
-            ),
-        },
-        Err(error) => typed_simple_result::<Value>(invocation, Err(error)),
-    }
 }
 
 fn typed_simple_result<T>(invocation: &ToolInvocation, result: Result<T>) -> ToolOutput
@@ -729,22 +606,8 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "send_file_to_user".to_string(),
-            description: "Send a file from the sandbox to the user via the chat transport. Returns JSON with ok, status, file_name, size_bytes, and message. Supports both absolute paths (/workspace/file.txt) and relative paths (file.txt) - will automatically search in /workspace if not found.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file in the sandbox to send to the user (relative or absolute)"
-                    }
-                },
-                "required": ["path"]
-            }),
-        },
-        ToolDefinition {
             name: "list_files".to_string(),
-            description: "List files in the sandbox workspace. Returns JSON with ok, path, listing, and exit_code. Useful for finding file paths before using send_file_to_user.".to_string(),
+            description: "List files in the sandbox workspace. Returns JSON with ok, path, listing, and exit_code. Useful for finding file paths before file operations.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -803,43 +666,6 @@ fn serialize_json(value: serde_json::Value) -> Result<String> {
     serde_json::to_string(&value).map_err(Into::into)
 }
 
-fn file_delivery_status_code(status: &FileDeliveryStatus) -> &'static str {
-    match status {
-        FileDeliveryStatus::Delivered => "delivered",
-        FileDeliveryStatus::DeliveryFailed(_) => "delivery_failed",
-        FileDeliveryStatus::ConfirmationChannelClosed => "confirmation_channel_closed",
-        FileDeliveryStatus::TimedOut => "timed_out",
-        FileDeliveryStatus::QueueUnavailable(_) => "queue_unavailable",
-        FileDeliveryStatus::EmptyContent => "empty_content",
-    }
-}
-
-fn build_send_file_response(path: &str, report: &FileDeliveryReport) -> serde_json::Value {
-    let mut payload = json!({
-        "ok": matches!(report.status, FileDeliveryStatus::Delivered),
-        "status": file_delivery_status_code(&report.status),
-        "path": path,
-        "file_name": report.file_name,
-        "size_bytes": report.size_bytes,
-        "message": format_generic_delivery_report(report),
-    });
-
-    if let Some(object) = payload.as_object_mut() {
-        match &report.status {
-            FileDeliveryStatus::DeliveryFailed(error)
-            | FileDeliveryStatus::QueueUnavailable(error) => {
-                object.insert("error".to_string(), json!(error));
-            }
-            FileDeliveryStatus::ConfirmationChannelClosed
-            | FileDeliveryStatus::TimedOut
-            | FileDeliveryStatus::Delivered
-            | FileDeliveryStatus::EmptyContent => {}
-        }
-    }
-
-    payload
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,33 +703,6 @@ mod tests {
     }
 
     #[test]
-    fn build_send_file_response_serializes_delivery_status() {
-        let payload = build_send_file_response(
-            "/workspace/report.txt",
-            &FileDeliveryReport {
-                file_name: "report.txt".to_string(),
-                source_path: "/workspace/report.txt".to_string(),
-                size_bytes: 12,
-                status: FileDeliveryStatus::DeliveryFailed("upload refused".to_string()),
-            },
-        );
-
-        assert_eq!(payload["ok"], Value::Bool(false));
-        assert_eq!(
-            payload["status"],
-            Value::String("delivery_failed".to_string())
-        );
-        assert_eq!(
-            payload["error"],
-            Value::String("upload refused".to_string())
-        );
-        assert_eq!(
-            payload["file_name"],
-            Value::String("report.txt".to_string())
-        );
-    }
-
-    #[test]
     fn serialize_json_preserves_command_fields() {
         let payload = serialize_json(json!({
             "ok": true,
@@ -935,7 +734,6 @@ mod tests {
                 "execute_command",
                 "write_file",
                 "read_file",
-                "send_file_to_user",
                 "list_files",
                 "recreate_sandbox"
             ]
@@ -974,10 +772,7 @@ mod tests {
             .collect();
 
         assert_eq!(exec_tools, ["execute_command"]);
-        assert_eq!(
-            fileops_tools,
-            ["write_file", "read_file", "send_file_to_user", "list_files"]
-        );
+        assert_eq!(fileops_tools, ["write_file", "read_file", "list_files"]);
         assert_eq!(
             fileops_without_delivery_tools,
             ["write_file", "read_file", "list_files"]
@@ -1074,12 +869,6 @@ struct ReadFileArgs {
     path: String,
 }
 
-/// Arguments for `send_file_to_user` tool
-#[derive(Debug, Deserialize)]
-struct SendFileArgs {
-    path: String,
-}
-
 /// Arguments for `recreate_sandbox` tool
 #[derive(Debug, Default, Deserialize)]
 struct RecreateSandboxArgs {}
@@ -1155,10 +944,7 @@ impl SandboxFileOpsProvider {
     /// Create a fileops provider without chat/file-delivery tools.
     #[must_use]
     pub fn without_delivery(runtime: Arc<SandboxRuntime>) -> Self {
-        Self {
-            runtime,
-            tool_names: SANDBOX_FILEOPS_CORE_TOOL_NAMES,
-        }
+        Self::new(runtime)
     }
 
     /// Build typed runtime executors for file operation tools.
@@ -1276,7 +1062,6 @@ impl ToolProvider for SandboxProvider {
     ) -> Result<String> {
         debug!(tool = tool_name, "Executing sandbox tool");
 
-        let progress_tx = self.runtime.progress_tx.clone();
         match tool_name {
             "recreate_sandbox" => {
                 let _exclusive = self.runtime.execution_gate.write().await;
@@ -1299,11 +1084,6 @@ impl ToolProvider for SandboxProvider {
                 let _shared = self.runtime.execution_gate.read().await;
                 let mut sandbox = self.runtime.get_or_create_sandbox().await?;
                 Self::handle_read_file(&mut sandbox, arguments).await
-            }
-            "send_file_to_user" => {
-                let _shared = self.runtime.execution_gate.read().await;
-                let mut sandbox = self.runtime.get_or_create_sandbox().await?;
-                Self::handle_send_file(progress_tx.as_ref(), &mut sandbox, arguments).await
             }
             "list_files" => {
                 let _shared = self.runtime.execution_gate.read().await;
