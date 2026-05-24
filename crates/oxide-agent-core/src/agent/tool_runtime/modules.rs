@@ -1026,22 +1026,28 @@ impl ToolModule for SileroTtsToolModule {
 pub struct YtdlpToolModule;
 
 #[cfg(feature = "tool-ytdlp")]
+impl YtdlpToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> YtdlpProvider {
+        if let Some(tx) = ctx.progress_tx() {
+            YtdlpProvider::from_runtime(ctx.sandbox_runtime()).with_progress_tx(tx)
+        } else {
+            YtdlpProvider::from_runtime(ctx.sandbox_runtime())
+        }
+    }
+}
+
+#[cfg(feature = "tool-ytdlp")]
 impl ToolModule for YtdlpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/ytdlp")
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        let provider = if let Some(tx) = ctx.progress_tx() {
-            YtdlpProvider::from_runtime(ctx.sandbox_runtime()).with_progress_tx(tx)
-        } else {
-            YtdlpProvider::from_runtime(ctx.sandbox_runtime())
-        };
-        Some(Box::new(provider))
+        Some(Box::new(self.provider(ctx)))
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Arc::new(self.provider(ctx)).tool_runtime_executors()
     }
 }
 

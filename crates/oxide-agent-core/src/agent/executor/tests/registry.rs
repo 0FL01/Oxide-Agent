@@ -235,6 +235,31 @@ fn typed_runtime_registry_exposes_webfetch_tool() {
     assert!(tool_names.contains("web_markdown"));
 }
 
+#[cfg(feature = "tool-ytdlp")]
+#[test]
+fn typed_runtime_registry_exposes_ytdlp_tools() {
+    let executor = build_executor();
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for tool_name in [
+        "ytdlp_get_video_metadata",
+        "ytdlp_download_transcript",
+        "ytdlp_search_videos",
+        "ytdlp_download_video",
+        "ytdlp_download_audio",
+    ] {
+        assert!(
+            tool_names.contains(tool_name),
+            "missing typed runtime yt-dlp tool: {tool_name}"
+        );
+    }
+}
+
 #[test]
 fn typed_runtime_registry_applies_execution_profile_tool_policy() {
     let mut executor =
@@ -304,6 +329,32 @@ fn typed_runtime_registry_skips_disabled_webfetch_module() {
         .collect::<std::collections::BTreeSet<_>>();
 
     assert!(!tool_names.contains("web_markdown"));
+    assert!(tool_names.contains("write_todos"));
+}
+
+#[cfg(feature = "tool-ytdlp")]
+#[test]
+fn typed_runtime_registry_skips_disabled_ytdlp_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/ytdlp".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("ytdlp_get_video_metadata"));
+    assert!(!tool_names.contains("ytdlp_download_video"));
     assert!(tool_names.contains("write_todos"));
 }
 
