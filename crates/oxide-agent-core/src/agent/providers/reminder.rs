@@ -1,6 +1,5 @@
 //! Reminder scheduling provider.
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -516,39 +515,6 @@ impl ReminderProvider {
             TOOL_REMINDER_RETRY => self.execute_retry(arguments).await,
             _ => bail!("Unknown reminder tool: {tool_name}"),
         }
-    }
-}
-
-#[async_trait]
-impl ToolProvider for ReminderProvider {
-    fn name(&self) -> &'static str {
-        "reminder"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        self.tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_REMINDER_SCHEDULE
-                | TOOL_REMINDER_LIST
-                | TOOL_REMINDER_CANCEL
-                | TOOL_REMINDER_PAUSE
-                | TOOL_REMINDER_RESUME
-                | TOOL_REMINDER_RETRY
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
     }
 }
 
