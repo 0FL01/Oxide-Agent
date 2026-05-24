@@ -305,6 +305,60 @@ fn legacy_compaction_archive_compatibility_surfaces_are_removed() {
 }
 
 #[test]
+fn startup_persisted_tool_drift_cleanup_is_removed() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+
+    assert!(
+        !workspace_root
+            .join("crates/oxide-agent-transport-telegram/src/startup_maintenance.rs")
+            .exists(),
+        "startup persisted-memory drift cleanup was a deployment migration path and must stay removed"
+    );
+
+    let targets = [
+        "crates/oxide-agent-transport-telegram/src/lib.rs",
+        "crates/oxide-agent-transport-telegram/src/runner.rs",
+        "crates/oxide-agent-core/src/storage/mod.rs",
+        "crates/oxide-agent-core/src/storage/modules.rs",
+        "crates/oxide-agent-core/src/storage/provider.rs",
+        "crates/oxide-agent-core/src/storage/r2_memory.rs",
+    ];
+    let forbidden_patterns = [
+        "startup_maintenance",
+        "run_startup_tool_drift_prune",
+        "startup-tool-drift-prune",
+        "STARTUP_TOOL_DRIFT_PRUNE",
+        "PersistedAgentMemoryStore",
+        "PersistedAgentMemoryRef",
+        "list_persisted_agent_memories",
+        "persisted_agent_memory",
+    ];
+
+    let offenders = targets
+        .iter()
+        .flat_map(|target| {
+            let source = fs::read_to_string(workspace_root.join(target))
+                .unwrap_or_else(|error| panic!("read {target}: {error}"));
+            forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{target}: {pattern}"))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "startup persisted-memory migration cleanup surfaces must stay removed; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn ssh_cleanup_is_owned_by_ssh_module_not_binaries() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

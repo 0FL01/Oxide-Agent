@@ -64,7 +64,7 @@ pub use keys::{
 pub use modules::{build_primary_storage, BuiltStorageBackend, StorageBackendModule};
 #[cfg(test)]
 pub use provider::MockStorageProvider;
-pub use provider::{PersistedAgentMemoryRef, PersistedAgentMemoryStore, StorageProvider};
+pub use provider::StorageProvider;
 #[cfg(feature = "storage-s3-r2")]
 pub use r2::R2Storage;
 #[cfg(feature = "storage-s3-r2")]

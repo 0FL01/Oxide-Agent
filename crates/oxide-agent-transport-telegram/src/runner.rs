@@ -12,8 +12,6 @@ use crate::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
 };
 #[cfg(feature = "storage-s3-r2")]
-use crate::startup_maintenance::run_startup_tool_drift_prune;
-#[cfg(feature = "storage-s3-r2")]
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
 #[cfg(feature = "storage-s3-r2")]
@@ -26,7 +24,7 @@ use teloxide::prelude::*;
 use teloxide::types::{CallbackQuery, Message, User};
 use tracing::error;
 #[cfg(feature = "storage-s3-r2")]
-use tracing::{info, warn};
+use tracing::info;
 
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
@@ -43,27 +41,6 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
         let storage = Arc::clone(&storage_services.provider);
         let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
         info!("LLM Client initialized.");
-
-        if let Some(maintenance_storage) = storage_services.persisted_agent_memory {
-            let maintenance_llm = Arc::clone(&llm_client);
-            let maintenance_settings = Arc::clone(&settings);
-            tokio::spawn(async move {
-                if let Err(error) = run_startup_tool_drift_prune(
-                    maintenance_storage,
-                    maintenance_llm,
-                    maintenance_settings,
-                )
-                .await
-                {
-                    error!(%error, "Startup tool drift prune failed");
-                }
-            });
-        } else {
-            warn!(
-                storage_module = storage_services.module_id,
-                "Storage backend does not expose persisted-agent-memory maintenance"
-            );
-        }
 
         let bot = Bot::new(settings.telegram.telegram_token.clone());
         bot::agent_handlers::spawn_reminder_scheduler(

@@ -11,6 +11,3 @@ pub mod config;
 pub mod reminder_scheduler;
 /// Telegram runtime entrypoint.
 pub mod runner;
-
-#[cfg(feature = "storage-s3-r2")]
-mod startup_maintenance;
