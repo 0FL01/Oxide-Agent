@@ -2,7 +2,6 @@
 //!
 //! Provides `web_search` and `web_extract` tools using native Tavily Rust SDK.
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -188,31 +187,6 @@ const fn default_max_results() -> u8 {
 #[derive(Debug, Deserialize)]
 struct WebExtractArgs {
     urls: Vec<String>,
-}
-
-#[async_trait]
-impl ToolProvider for TavilyProvider {
-    fn name(&self) -> &'static str {
-        "tavily"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(tool_name, TOOL_WEB_SEARCH | TOOL_WEB_EXTRACT)
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
-    }
 }
 
 struct TavilyToolExecutor {

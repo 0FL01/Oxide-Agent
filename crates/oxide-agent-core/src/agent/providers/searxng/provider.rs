@@ -2,7 +2,6 @@ use super::backoff::MAX_RETRIES;
 use super::client::SearxngClient;
 use super::format::format_search_results;
 use super::types::{SearxngSearchArgs, TOOL_NAME};
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -138,31 +137,6 @@ impl SearxngProvider {
             }
             _ => anyhow::bail!("Unknown SearXNG tool: {tool_name}"),
         }
-    }
-}
-
-#[async_trait]
-impl ToolProvider for SearxngProvider {
-    fn name(&self) -> &'static str {
-        "searxng"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![Self::tool_definition()]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == TOOL_NAME
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
     }
 }
 

@@ -1,7 +1,6 @@
 #[cfg(feature = "tool-searxng")]
 mod searxng_tests {
     use oxide_agent_core::agent::identity::SessionId;
-    use oxide_agent_core::agent::provider::ToolProvider;
     use oxide_agent_core::agent::providers::SearxngProvider;
     use oxide_agent_core::agent::tool_runtime::{
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
@@ -82,22 +81,48 @@ mod searxng_tests {
     }
 
     #[test]
-    fn searxng_can_handle_tool() {
-        let provider = SearxngProvider::new("http://localhost:8080")
-            .expect("provider should construct with valid base URL");
+    fn searxng_typed_runtime_registers_only_search_tool() {
+        let provider = std::sync::Arc::new(
+            SearxngProvider::new("http://localhost:8080")
+                .expect("provider should construct with valid base URL"),
+        );
+        let tools = provider.tool_runtime_executors();
 
-        assert!(provider.can_handle("searxng_search"));
-        assert!(!provider.can_handle("web_search"));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name().as_str(), "searxng_search");
     }
 
     #[test]
-    fn searxng_tools_listed() {
-        let provider = SearxngProvider::new("http://localhost:8080")
-            .expect("provider should construct with valid base URL");
-        let tools = provider.tools();
+    fn searxng_typed_runtime_spec_uses_search_tool_name() {
+        let provider = std::sync::Arc::new(
+            SearxngProvider::new("http://localhost:8080")
+                .expect("provider should construct with valid base URL"),
+        );
+        let spec = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .next()
+            .expect("typed SearXNG executor registered")
+            .spec();
 
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "searxng_search");
+        assert_eq!(spec.name, "searxng_search");
+        assert!(spec.description.contains("SearXNG"));
+    }
+
+    #[test]
+    fn searxng_typed_runtime_spec_requires_query() {
+        let provider = std::sync::Arc::new(
+            SearxngProvider::new("http://localhost:8080")
+                .expect("provider should construct with valid base URL"),
+        );
+        let spec = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .next()
+            .expect("typed SearXNG executor registered")
+            .spec();
+
+        assert_eq!(spec.parameters["required"], serde_json::json!(["query"]));
     }
 
     #[tokio::test]
