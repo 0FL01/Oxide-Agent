@@ -35,6 +35,26 @@ profile-full = [
     "llm-chatgpt",
     "storage-s3-r2",
 ]
+profile-embedded-opencode-local = [
+    "oxide-agent-core/profile-embedded-opencode-local",
+    "storage-s3-r2",
+]
+profile-lite = [
+    "oxide-agent-core/profile-lite",
+    "storage-s3-r2",
+]
+profile-search-only = [
+    "oxide-agent-core/profile-search-only",
+    "storage-s3-r2",
+]
+profile-no-sandbox = [
+    "oxide-agent-core/profile-no-sandbox",
+    "storage-s3-r2",
+]
+profile-media-enabled = [
+    "oxide-agent-core/profile-media-enabled",
+    "storage-s3-r2",
+]
 
 [dev-dependencies]
 aws-config = "1.8.12"

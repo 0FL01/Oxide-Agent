@@ -1,0 +1,29 @@
+name: ${COMPOSE_PROJECT_NAME:-oxide-agent-embedded}
+
+services:
+  oxide_agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+      args:
+        CARGO_FEATURES: oxide-agent-telegram-bot/profile-embedded-opencode-local
+        PACKAGES: oxide-agent-telegram-bot
+        BINARIES: oxide-agent-telegram-bot
+        ENTRYPOINT_BINARY: oxide-agent-telegram-bot
+    image: oxide-agent:embedded-opencode-local
+    container_name: oxide_agent_embedded
+    restart: unless-stopped
+    env_file:
+      - path: ../.env.embedded
+        required: false
+    environment:
+      TZ: Europe/Moscow
+      RUST_LOG: oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
+      DEBUG_MODE: "false"
+    volumes:
+      - ../config:/app/config:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
