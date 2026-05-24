@@ -6,6 +6,7 @@ use super::broker::{
     StackLogsListSourcesResponse,
 };
 use super::ExecResult;
+use super::{SandboxContainerRecord, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,8 @@ pub enum SandboxCapability {
     Lifecycle,
     /// Operational diagnostics support, such as stack logs.
     Diagnostics,
+    /// User/topic-level sandbox inventory and lifecycle administration.
+    Admin,
 }
 
 /// Shared metadata for sandbox backend capability traits.
@@ -113,6 +116,32 @@ pub trait SandboxFileOps: SandboxBackend {
 pub trait SandboxLifecycle: SandboxBackend {
     /// Recreate the current sandbox scope.
     async fn recreate(&self) -> Result<()>;
+}
+
+/// Sandbox inventory and lifecycle administration capability.
+#[async_trait]
+pub trait SandboxAdmin: SandboxBackend {
+    /// Destroy sandbox resources for a logical scope.
+    async fn destroy_scope(&self, scope: SandboxScope) -> Result<()>;
+
+    /// List all sandbox containers owned by a user.
+    async fn list_user_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>>;
+
+    /// Inspect a user-owned sandbox container by backend container name.
+    async fn inspect_sandbox_by_name(
+        &self,
+        user_id: i64,
+        container_name: &str,
+    ) -> Result<Option<SandboxContainerRecord>>;
+
+    /// Ensure a sandbox exists for a logical scope.
+    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord>;
+
+    /// Recreate the sandbox for a logical scope.
+    async fn recreate_scope_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord>;
+
+    /// Delete a user-owned sandbox by backend container name.
+    async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> Result<bool>;
 }
 
 /// Sandbox diagnostics capability.

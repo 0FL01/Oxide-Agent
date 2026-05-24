@@ -9,7 +9,7 @@ use crate::agent::profile::{
 };
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxContainerRecord, SandboxManager, SandboxScope};
+use crate::sandbox::{SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxScope};
 use crate::storage::{
     validate_topic_agents_md_content, validate_topic_context_content, AgentProfileRecord,
     AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider, TopicAgentsMdRecord,
@@ -414,14 +414,40 @@ pub trait ManagerTopicSandboxControl: Send + Sync {
     ) -> Result<bool>;
 }
 
-#[derive(Default)]
-struct DockerTopicSandboxCleanup;
+struct SandboxAdminTopicSandboxCleanup {
+    admin: Arc<dyn SandboxAdmin>,
+}
 
-#[derive(Default)]
-struct DockerTopicSandboxControl;
+struct SandboxAdminTopicSandboxControl {
+    admin: Arc<dyn SandboxAdmin>,
+}
+
+impl Default for SandboxAdminTopicSandboxCleanup {
+    fn default() -> Self {
+        Self::new(Arc::new(SandboxAdminRuntime::new()))
+    }
+}
+
+impl SandboxAdminTopicSandboxCleanup {
+    fn new(admin: Arc<dyn SandboxAdmin>) -> Self {
+        Self { admin }
+    }
+}
+
+impl Default for SandboxAdminTopicSandboxControl {
+    fn default() -> Self {
+        Self::new(Arc::new(SandboxAdminRuntime::new()))
+    }
+}
+
+impl SandboxAdminTopicSandboxControl {
+    fn new(admin: Arc<dyn SandboxAdmin>) -> Self {
+        Self { admin }
+    }
+}
 
 #[async_trait]
-impl ManagerTopicSandboxCleanup for DockerTopicSandboxCleanup {
+impl ManagerTopicSandboxCleanup for SandboxAdminTopicSandboxCleanup {
     async fn cleanup_topic_sandbox(
         &self,
         user_id: i64,
@@ -432,15 +458,14 @@ impl ManagerTopicSandboxCleanup for DockerTopicSandboxCleanup {
             ManagerControlPlaneProvider::forum_topic_context_key(topic.chat_id, topic.thread_id),
         )
         .with_transport_metadata(Some(topic.chat_id), Some(topic.thread_id));
-        let mut sandbox = SandboxManager::new(scope).await?;
-        sandbox.destroy().await
+        self.admin.destroy_scope(scope).await
     }
 }
 
 #[async_trait]
-impl ManagerTopicSandboxControl for DockerTopicSandboxControl {
+impl ManagerTopicSandboxControl for SandboxAdminTopicSandboxControl {
     async fn list_topic_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
-        SandboxManager::list_user_sandboxes(user_id).await
+        self.admin.list_user_sandboxes(user_id).await
     }
 
     async fn get_topic_sandbox(
@@ -448,19 +473,23 @@ impl ManagerTopicSandboxControl for DockerTopicSandboxControl {
         user_id: i64,
         container_name: &str,
     ) -> Result<Option<SandboxContainerRecord>> {
-        SandboxManager::inspect_sandbox_by_name(user_id, container_name).await
+        self.admin
+            .inspect_sandbox_by_name(user_id, container_name)
+            .await
     }
 
     async fn ensure_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        SandboxManager::ensure_scope_sandbox(scope).await
+        self.admin.ensure_scope_sandbox(scope).await
     }
 
     async fn recreate_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        SandboxManager::recreate_scope_sandbox(scope).await
+        self.admin.recreate_scope_sandbox(scope).await
     }
 
     async fn delete_topic_sandbox_by_scope(&self, scope: SandboxScope) -> Result<bool> {
-        SandboxManager::delete_sandbox_by_name(scope.owner_id(), &scope.container_name()).await
+        self.admin
+            .delete_sandbox_by_name(scope.owner_id(), &scope.container_name())
+            .await
     }
 
     async fn delete_topic_sandbox_by_name(
@@ -468,7 +497,9 @@ impl ManagerTopicSandboxControl for DockerTopicSandboxControl {
         user_id: i64,
         container_name: &str,
     ) -> Result<bool> {
-        SandboxManager::delete_sandbox_by_name(user_id, container_name).await
+        self.admin
+            .delete_sandbox_by_name(user_id, container_name)
+            .await
     }
 }
 
@@ -485,12 +516,15 @@ impl ManagerControlPlaneProvider {
     /// Creates a manager control-plane provider bound to a specific user.
     #[must_use]
     pub fn new(storage: Arc<dyn StorageProvider>, user_id: i64) -> Self {
+        let sandbox_admin: Arc<dyn SandboxAdmin> = Arc::new(SandboxAdminRuntime::new());
         Self {
             storage,
             user_id,
             topic_lifecycle: None,
-            sandbox_cleanup: Arc::new(DockerTopicSandboxCleanup),
-            sandbox_control: Arc::new(DockerTopicSandboxControl),
+            sandbox_cleanup: Arc::new(SandboxAdminTopicSandboxCleanup::new(Arc::clone(
+                &sandbox_admin,
+            ))),
+            sandbox_control: Arc::new(SandboxAdminTopicSandboxControl::new(sandbox_admin)),
         }
     }
 

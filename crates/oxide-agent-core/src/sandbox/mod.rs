@@ -2,6 +2,7 @@
 //!
 //! Provides isolated execution environments for agents using Docker containers.
 
+pub mod admin;
 /// Unix-socket sandbox broker protocol, client, and server.
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
@@ -29,6 +30,7 @@ mod manager_stub;
 pub mod scope;
 pub mod traits;
 
+pub use admin::SandboxAdminRuntime;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
@@ -55,6 +57,7 @@ pub use manager::{ExecResult, SandboxContainerRecord, SandboxManager};
 )))]
 pub use manager_stub::{ExecResult, SandboxContainerRecord, SandboxManager};
 pub use scope::SandboxScope;
+pub use traits::SandboxAdmin;
 #[cfg(feature = "tool-stack-logs")]
 pub use traits::SandboxDiagnostics;
 pub use traits::{
