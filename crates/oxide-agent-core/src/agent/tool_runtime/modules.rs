@@ -4,7 +4,6 @@
     feature = "tool-agents-md",
     feature = "manager-control-plane",
     feature = "tool-reminder",
-    feature = "tool-wiki-memory"
 ))]
 use super::provider_runtime_executors;
 use super::ToolExecutor;
@@ -593,7 +592,7 @@ impl ToolModule for WikiMemoryToolModule {
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
-            .map(|provider| provider_runtime_executors(Arc::new(provider), ctx.progress_tx()))
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
             .unwrap_or_default()
     }
 }
