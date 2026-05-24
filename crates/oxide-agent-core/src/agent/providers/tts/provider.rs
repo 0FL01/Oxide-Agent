@@ -6,15 +6,15 @@
 use super::client::KokoroClient;
 use super::types::{TextToSpeechArgs, TtsConfig};
 use crate::agent::provider::ToolProvider;
+use crate::agent::providers::SandboxRuntime;
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
 use shell_escape::escape;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
@@ -28,8 +28,8 @@ use crate::agent::providers::file_delivery::{
 pub struct KokoroTtsProvider {
     client: KokoroClient,
     progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-    sandbox: Arc<Mutex<Option<SandboxManager>>>,
-    sandbox_scope: Option<SandboxScope>,
+    fileops: Option<Arc<dyn SandboxFileOps>>,
+    exec: Option<Arc<dyn SandboxExec>>,
 }
 
 impl KokoroTtsProvider {
@@ -39,8 +39,8 @@ impl KokoroTtsProvider {
         Self {
             client: KokoroClient::new(config),
             progress_tx: None,
-            sandbox: Arc::new(Mutex::new(None)),
-            sandbox_scope: None,
+            fileops: None,
+            exec: None,
         }
     }
 
@@ -71,44 +71,42 @@ impl KokoroTtsProvider {
 
     /// Attach sandbox scope for file-writing workflows.
     #[must_use]
-    pub fn with_sandbox_scope(mut self, scope: impl Into<SandboxScope>) -> Self {
-        self.sandbox_scope = Some(scope.into());
+    pub fn with_sandbox_scope(self, scope: impl Into<SandboxScope>) -> Self {
+        self.with_sandbox_runtime(Arc::new(SandboxRuntime::new(scope.into())))
+    }
+
+    /// Attach shared sandbox runtime for file-writing workflows.
+    #[must_use]
+    pub fn with_sandbox_runtime(self, runtime: Arc<SandboxRuntime>) -> Self {
+        let fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
+        let exec: Arc<dyn SandboxExec> = runtime;
+        self.with_sandbox_backends(fileops, exec)
+    }
+
+    /// Attach narrow sandbox capabilities for file-writing workflows.
+    #[must_use]
+    pub fn with_sandbox_backends(
+        mut self,
+        fileops: Arc<dyn SandboxFileOps>,
+        exec: Arc<dyn SandboxExec>,
+    ) -> Self {
+        self.fileops = Some(fileops);
+        self.exec = Some(exec);
         self
     }
 
-    async fn ensure_sandbox(&self) -> Result<()> {
-        if self
-            .sandbox
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(SandboxManager::is_running)
-        {
-            return Ok(());
-        }
-
-        let sandbox_scope = self
-            .sandbox_scope
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Sandbox scope is not configured for Kokoro TTS"))?;
-        let mut sandbox = SandboxManager::new(sandbox_scope).await?;
-        sandbox.create_sandbox().await?;
-        *self.sandbox.lock().await = Some(sandbox);
-        Ok(())
-    }
-
     async fn write_audio_file(&self, path: &str, content: &[u8]) -> Result<()> {
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))?
-        };
+        let exec = self
+            .exec
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox exec is not configured for Kokoro TTS"))?;
+        let fileops = self
+            .fileops
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Sandbox fileops is not configured for Kokoro TTS"))?;
 
-        ensure_parent_dir(&mut sandbox, path).await?;
-        sandbox.write_file(path, content).await
+        ensure_parent_dir(exec, path).await?;
+        fileops.write_file(path, content).await
     }
 
     /// Execute English text-to-speech synthesis and send to user
@@ -268,13 +266,13 @@ fn build_output_path(output_path: Option<&str>, prefix: &str, extension: &str) -
     }
 }
 
-async fn ensure_parent_dir(sandbox: &mut SandboxManager, path: &str) -> Result<()> {
+async fn ensure_parent_dir(exec: &dyn SandboxExec, path: &str) -> Result<()> {
     let parent = Path::new(path).parent().map_or_else(
         || "/workspace".to_string(),
         |value| value.to_string_lossy().to_string(),
     );
     let command = format!("mkdir -p {}", escape(parent.as_str().into()));
-    let result = sandbox.exec_command(&command, None).await?;
+    let result = exec.exec(&command, None).await?;
     if result.success() {
         Ok(())
     } else {

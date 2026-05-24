@@ -954,7 +954,7 @@ impl ToolModule for KokoroTtsToolModule {
 
         tracing::debug!(url = %config.base_url, "Registering TTS provider");
         let mut provider =
-            KokoroTtsProvider::from_config(config).with_sandbox_scope(ctx.sandbox_scope());
+            KokoroTtsProvider::from_config(config).with_sandbox_runtime(ctx.sandbox_runtime());
         if let Some(tx) = ctx.progress_tx() {
             provider = provider.with_progress_tx(tx);
         }
@@ -993,7 +993,7 @@ impl ToolModule for SileroTtsToolModule {
 
         tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");
         let mut provider =
-            SileroTtsProvider::from_config(config).with_sandbox_scope(ctx.sandbox_scope());
+            SileroTtsProvider::from_config(config).with_sandbox_runtime(ctx.sandbox_runtime());
         if let Some(tx) = ctx.progress_tx() {
             provider = provider.with_progress_tx(tx);
         }
