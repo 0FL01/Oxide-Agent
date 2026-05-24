@@ -137,6 +137,32 @@ fn legacy_tool_registry_and_wrappers_are_removed() {
 }
 
 #[test]
+fn runner_has_no_legacy_tool_execution_path_labels() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let execution = fs::read_to_string(manifest_dir.join("src/agent/runner/execution.rs"))
+        .expect("read runner execution");
+
+    let forbidden_patterns = [
+        "call_llm_with_tools_legacy",
+        "legacy_tool_execution_disabled_error",
+        "legacy path has no routes",
+        "legacy tool execution is disabled",
+        "legacy fallback disabled",
+        "legacy fallback must not write",
+    ];
+    let offenders = forbidden_patterns
+        .iter()
+        .copied()
+        .filter(|pattern| execution.contains(pattern))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "runner must describe the current typed-runtime contract without legacy execution path labels; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn typed_tool_registry_has_single_production_definition() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
 

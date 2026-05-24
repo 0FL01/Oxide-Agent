@@ -210,14 +210,16 @@ impl AgentRunner {
         }
 
         if ctx.config.model_routes.is_empty() {
-            return self.call_llm_with_tools_legacy(ctx, state, iteration).await;
+            return self
+                .call_llm_with_tools_single_route(ctx, state, iteration)
+                .await;
         }
 
         self.call_llm_with_tools_with_failover(ctx, state, iteration)
             .await
     }
 
-    async fn call_llm_with_tools_legacy(
+    async fn call_llm_with_tools_single_route(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
@@ -316,7 +318,9 @@ impl AgentRunner {
                     attempt = attempt.saturating_add(1);
                     continue;
                 }
-                AttemptOutcome::FailoverToNextRoute(_) => unreachable!("legacy path has no routes"),
+                AttemptOutcome::FailoverToNextRoute(_) => {
+                    unreachable!("single-route path has no failover route")
+                }
             }
         }
     }
@@ -926,7 +930,7 @@ impl AgentRunner {
         }
 
         if ctx.tool_runtime_registry.is_none() {
-            return Err(Self::legacy_tool_execution_disabled_error(ctx));
+            return Err(Self::missing_tool_runtime_registry_error(ctx));
         }
         self.execute_tools_with_runtime(
             ctx,
@@ -1329,12 +1333,12 @@ impl AgentRunner {
                 .await;
         }
 
-        Err(Self::legacy_tool_execution_disabled_error(ctx))
+        Err(Self::missing_tool_runtime_registry_error(ctx))
     }
 
-    fn legacy_tool_execution_disabled_error(ctx: &AgentRunnerContext<'_>) -> anyhow::Error {
+    fn missing_tool_runtime_registry_error(ctx: &AgentRunnerContext<'_>) -> anyhow::Error {
         anyhow!(
-            "legacy tool execution is disabled; active tool calls require typed runtime route opencode-go/deepseek-v4-flash, current provider={}, model={}",
+            "tool runtime registry is required for active tool calls; current provider={}, model={}",
             ctx.config.model_provider.as_deref().unwrap_or("unknown"),
             ctx.config.model_name,
         )
@@ -2511,7 +2515,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_calls_without_typed_runtime_do_not_fallback_to_legacy_execution() {
+    async fn tool_calls_without_typed_runtime_fail_without_history_mutation() {
         let llm_client = build_llm_client(single_final_response_provider());
         let mut runner = AgentRunner::new(llm_client);
         let mut session = EphemeralSession::new(2048);
@@ -2519,13 +2523,13 @@ mod tests {
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
-            task: "legacy fallback disabled",
+            task: "tool runtime missing",
             system_prompt: "system prompt",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
-            task_id: "legacy-fallback-disabled",
+            task_id: "tool-runtime-missing",
             messages: &mut messages,
             agent: &mut session,
             compaction_controller: None,
@@ -2539,7 +2543,7 @@ mod tests {
         let response = ChatResponse {
             content: Some("assistant raw".to_string()),
             tool_calls: vec![ToolCall::new(
-                "invoke-legacy-disabled",
+                "invoke-runtime-missing",
                 ToolCallFunction {
                     name: "read_file".to_string(),
                     arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
@@ -2561,10 +2565,10 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("legacy tool execution is disabled"));
+            .contains("tool runtime registry is required for active tool calls"));
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
-            "legacy fallback must not write partial assistant/tool history"
+            "missing tool runtime must not write partial assistant/tool history"
         );
         assert!(ctx.messages.is_empty());
     }
