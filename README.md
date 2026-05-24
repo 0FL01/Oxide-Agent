@@ -582,13 +582,13 @@ Enhanced reminder scheduling with pause/resume/retry support.
     - One-shot build service used during `docker compose up --build`
 
 2. **oxide_agent** (main bot)
-   - Builds from root Dockerfile
+   - Builds from `docker/Dockerfile.app` with the full profile by default
    - Network mode: `host`
    - Mounts: `./config:/app/config`, `sandboxd-run:/run/sandboxd`
    - Environment: `SANDBOX_BACKEND=broker`, `SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock`
 
 3. **sandboxd** (broker daemon)
-   - Builds from root Dockerfile
+   - Uses the same full-profile `docker/Dockerfile.app` image
    - Command: `./oxide-agent-sandboxd`
    - Runs as user 0 (privileged for Docker access)
    - Mounts: `/var/run/docker.sock:/var/run/docker.sock` (only sandboxd has Docker access)

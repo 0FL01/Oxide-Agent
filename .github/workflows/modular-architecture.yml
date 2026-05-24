@@ -111,6 +111,7 @@ jobs:
           - media
           - dev
           - full
+          - root-full
 
     steps:
       - name: Checkout code

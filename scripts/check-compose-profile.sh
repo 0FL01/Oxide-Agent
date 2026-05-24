@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-profile="${1:?usage: scripts/check-compose-profile.sh <embedded-opencode-local|search|media|dev|full>}"
-compose_file="docker/compose.${profile}.yml"
+profile="${1:?usage: scripts/check-compose-profile.sh <embedded-opencode-local|search|media|dev|full|root-full>}"
+
+if [[ -f Dockerfile ]]; then
+  echo "root Dockerfile must stay removed; use docker/Dockerfile.app with explicit profile args" >&2
+  exit 1
+fi
+
+case "${profile}" in
+  root-full) compose_file="docker-compose.yml" ;;
+  *) compose_file="docker/compose.${profile}.yml" ;;
+esac
 
 if [[ ! -f "${compose_file}" ]]; then
   echo "compose profile '${profile}' not found at ${compose_file}" >&2
@@ -61,7 +70,7 @@ case "${profile}" in
     forbid_config_text "sandboxd-run"
     forbid_config_text "browser-use-data"
     ;;
-  dev | full)
+  dev | full | root-full)
     require_service oxide_agent
     require_service sandboxd
     require_service sandbox_image
