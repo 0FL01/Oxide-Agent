@@ -358,7 +358,7 @@ impl ToolModule for CompressionToolModule {
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+        Arc::new(CompressionProvider::new()).tool_runtime_executors()
     }
 }
 

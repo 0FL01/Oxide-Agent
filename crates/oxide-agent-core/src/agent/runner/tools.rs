@@ -6,6 +6,7 @@ use crate::agent::compaction::CompactionTrigger;
 use crate::agent::identity::SessionId;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
+use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_runtime::{
     v1_tool_runtime_enabled_for_model, ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata,
@@ -278,6 +279,9 @@ impl AgentRunner {
         }
 
         self.apply_after_tool_hooks(ctx, state, &tool_name, &content);
+        if output.success && tool_name == TOOL_COMPRESS {
+            state.request_manual_compaction();
+        }
 
         let correlation = ToolCallCorrelation::new(output.invocation_id.clone())
             .with_provider_tool_call_id(output.tool_call_id.as_str())
@@ -316,6 +320,7 @@ mod tests {
     use super::*;
     use crate::agent::compaction::AgentMessageKind;
     use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::providers::CompressionProvider;
     use crate::agent::runner::AgentRunnerConfig;
     use crate::agent::tool_runtime::{
         OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
@@ -485,6 +490,91 @@ mod tests {
                 .map(ToolCallCorrelation::wire_tool_call_id),
             Some("call-read-1")
         );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_compress_output_requests_manual_compaction() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let legacy_registry = crate::agent::registry::ToolRegistry::new();
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        let compress_executor = Arc::new(CompressionProvider::new())
+            .tool_runtime_executors()
+            .into_iter()
+            .next()
+            .expect("compress executor registered");
+        runtime_registry
+            .register(compress_executor)
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "compress through runtime",
+            system_prompt: "system prompt",
+            tools: &tools,
+            registry: &legacy_registry,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-compress-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-compress-1",
+            ToolCallFunction {
+                name: TOOL_COMPRESS.to_string(),
+                arguments: "{}".to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-compress-1")
+                .with_provider_tool_call_id("call-compress-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                "assistant raw",
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        assert!(state.force_manual_compaction);
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 2);
+        assert_eq!(memory[1].tool_name.as_deref(), Some(TOOL_COMPRESS));
+        assert!(memory[1].content.contains("scheduled"));
     }
 
     #[tokio::test]

@@ -122,6 +122,9 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
             "missing typed runtime tool: {tool_name}"
         );
     }
+    #[cfg(feature = "tool-compression")]
+    assert!(tool_names.contains("compress"));
+    #[cfg(not(feature = "tool-compression"))]
     assert!(!tool_names.contains("compress"));
 }
 
@@ -448,6 +451,31 @@ fn typed_runtime_registry_skips_disabled_webfetch_module() {
         .collect::<std::collections::BTreeSet<_>>();
 
     assert!(!tool_names.contains("web_markdown"));
+    assert!(tool_names.contains("write_todos"));
+}
+
+#[cfg(feature = "tool-compression")]
+#[test]
+fn typed_runtime_registry_skips_disabled_compression_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/compression".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("compress"));
     assert!(tool_names.contains("write_todos"));
 }
 
@@ -1800,6 +1828,9 @@ fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     assert!(tool_names.contains("read_file"));
     assert!(tool_names.contains("write_todos"));
     assert!(tool_names.contains("write_file"));
+    #[cfg(feature = "tool-compression")]
+    assert!(tool_names.contains("compress"));
+    #[cfg(not(feature = "tool-compression"))]
     assert!(!tool_names.contains("compress"));
 }
 
