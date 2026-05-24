@@ -1,0 +1,138 @@
+---
+source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
+expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
+---
+{
+  "profile": "profile-media-enabled",
+  "compiled_manifest": {
+    "capabilities": [
+      {
+        "id": "llm-provider/opencode-go",
+        "module": "llm-provider/opencode-go"
+      },
+      {
+        "id": "storage/r2",
+        "module": "storage/r2"
+      },
+      {
+        "id": "tool/file-delivery",
+        "module": "tool/file-delivery"
+      },
+      {
+        "id": "tool/media-audio-transcription",
+        "module": "tool/media-audio"
+      },
+      {
+        "id": "tool/media-image-description",
+        "module": "tool/media-image"
+      },
+      {
+        "id": "tool/media-video-description",
+        "module": "tool/media-video"
+      },
+      {
+        "id": "transport/telegram",
+        "module": "transport/telegram"
+      }
+    ],
+    "modules": [
+      {
+        "cargo_feature": "llm-opencode-go",
+        "conflicts": [],
+        "id": "llm-provider/opencode-go",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-go"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "storage-s3-r2",
+        "conflicts": [],
+        "id": "storage/r2",
+        "kind": "storage-backend",
+        "provides": [
+          "storage/r2"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-file-delivery",
+        "conflicts": [],
+        "id": "tool/file-delivery",
+        "kind": "file-delivery",
+        "provides": [
+          "tool/file-delivery"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-audio",
+        "conflicts": [],
+        "id": "tool/media-audio",
+        "kind": "media",
+        "provides": [
+          "tool/media-audio-transcription"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-image",
+        "conflicts": [],
+        "id": "tool/media-image",
+        "kind": "media",
+        "provides": [
+          "tool/media-image-description"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-video",
+        "conflicts": [],
+        "id": "tool/media-video",
+        "kind": "media",
+        "provides": [
+          "tool/media-video-description"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "transport-telegram",
+        "conflicts": [],
+        "id": "transport/telegram",
+        "kind": "transport",
+        "provides": [
+          "transport/telegram"
+        ],
+        "requires": []
+      }
+    ]
+  },
+  "enabled_manifest_default_config": {
+    "capabilities": [
+      "llm-provider/opencode-go",
+      "storage/r2",
+      "tool/file-delivery",
+      "tool/media-audio-transcription",
+      "tool/media-image-description",
+      "tool/media-video-description",
+      "transport/telegram"
+    ],
+    "modules": [
+      "llm-provider/opencode-go",
+      "storage/r2",
+      "tool/file-delivery",
+      "tool/media-audio",
+      "tool/media-image",
+      "tool/media-video",
+      "transport/telegram"
+    ]
+  },
+  "registered_tool_names_default_config": [
+    "describe_image_file",
+    "describe_video_file",
+    "send_file_to_user",
+    "transcribe_audio_file",
+    "upload_file"
+  ]
+}

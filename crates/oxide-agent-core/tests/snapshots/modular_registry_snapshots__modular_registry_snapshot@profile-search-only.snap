@@ -1,0 +1,108 @@
+---
+source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
+expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
+---
+{
+  "profile": "profile-search-only",
+  "compiled_manifest": {
+    "capabilities": [
+      {
+        "id": "llm-provider/opencode-go",
+        "module": "llm-provider/opencode-go"
+      },
+      {
+        "id": "storage/r2",
+        "module": "storage/r2"
+      },
+      {
+        "id": "tool/tavily-extract",
+        "module": "tool/tavily"
+      },
+      {
+        "id": "tool/tavily-search",
+        "module": "tool/tavily"
+      },
+      {
+        "id": "tool/webfetch-md",
+        "module": "tool/webfetch-md"
+      },
+      {
+        "id": "transport/telegram",
+        "module": "transport/telegram"
+      }
+    ],
+    "modules": [
+      {
+        "cargo_feature": "llm-opencode-go",
+        "conflicts": [],
+        "id": "llm-provider/opencode-go",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-go"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "storage-s3-r2",
+        "conflicts": [],
+        "id": "storage/r2",
+        "kind": "storage-backend",
+        "provides": [
+          "storage/r2"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-tavily",
+        "conflicts": [],
+        "id": "tool/tavily",
+        "kind": "search",
+        "provides": [
+          "tool/tavily-extract",
+          "tool/tavily-search"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "conflicts": [],
+        "id": "tool/webfetch-md",
+        "kind": "search",
+        "provides": [
+          "tool/webfetch-md"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "transport-telegram",
+        "conflicts": [],
+        "id": "transport/telegram",
+        "kind": "transport",
+        "provides": [
+          "transport/telegram"
+        ],
+        "requires": []
+      }
+    ]
+  },
+  "enabled_manifest_default_config": {
+    "capabilities": [
+      "llm-provider/opencode-go",
+      "storage/r2",
+      "tool/tavily-extract",
+      "tool/tavily-search",
+      "tool/webfetch-md",
+      "transport/telegram"
+    ],
+    "modules": [
+      "llm-provider/opencode-go",
+      "storage/r2",
+      "tool/tavily",
+      "tool/webfetch-md",
+      "transport/telegram"
+    ]
+  },
+  "registered_tool_names_default_config": [
+    "web_markdown"
+  ]
+}

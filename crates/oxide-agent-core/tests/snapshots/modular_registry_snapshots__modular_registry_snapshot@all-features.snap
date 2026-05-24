@@ -1,0 +1,856 @@
+---
+source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
+expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
+---
+{
+  "profile": "all-features",
+  "compiled_manifest": {
+    "modules": [
+      {
+        "id": "integration/mcp-jira",
+        "kind": "mcp-integration",
+        "cargo_feature": "integration-mcp-jira",
+        "provides": [
+          "integration/mcp-jira"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "integration/mcp-mattermost",
+        "kind": "mcp-integration",
+        "cargo_feature": "integration-mcp-mattermost",
+        "provides": [
+          "integration/mcp-mattermost"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "integration/ssh-mcp",
+        "kind": "mcp-integration",
+        "cargo_feature": "integration-ssh-mcp",
+        "provides": [
+          "integration/ssh-mcp"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "llm-provider/groq",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-groq",
+        "provides": [
+          "llm-provider/groq"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "llm-provider/minimax",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-minimax",
+        "provides": [
+          "llm-provider/minimax"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "llm-provider/mistral",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-mistral",
+        "provides": [
+          "llm-provider/mistral"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "llm-provider/nvidia",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-nvidia",
+        "provides": [
+          "llm-provider/nvidia"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "llm-provider/openai-chatgpt",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-chatgpt",
+        "provides": [
+          "llm-provider/openai-chatgpt"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "llm-provider/opencode-go",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-opencode-go",
+        "provides": [
+          "llm-provider/opencode-go"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "llm-provider/openrouter",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-openrouter",
+        "provides": [
+          "llm-provider/openrouter"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "llm-provider/zai",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-zai",
+        "provides": [
+          "llm-provider/zai"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "manager/control-plane",
+        "kind": "manager",
+        "cargo_feature": "manager-control-plane",
+        "provides": [
+          "manager/agent-profile-admin",
+          "manager/control-plane",
+          "manager/topic-sandbox-admin"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "sandbox-backend/docker-direct",
+        "kind": "sandbox-backend",
+        "cargo_feature": "sandbox-backend-docker-direct",
+        "provides": [
+          "sandbox-backend/docker-direct",
+          "sandbox-backend/docker-direct/diagnostics",
+          "sandbox-backend/docker-direct/exec",
+          "sandbox-backend/docker-direct/fileops",
+          "sandbox-backend/docker-direct/lifecycle"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client",
+        "kind": "sandbox-backend",
+        "cargo_feature": "sandbox-backend-sandboxd-client",
+        "provides": [
+          "sandbox-backend/sandboxd-client",
+          "sandbox-backend/sandboxd-client/diagnostics",
+          "sandbox-backend/sandboxd-client/exec",
+          "sandbox-backend/sandboxd-client/fileops",
+          "sandbox-backend/sandboxd-client/lifecycle"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "sandbox-daemon/sandboxd",
+        "kind": "service",
+        "cargo_feature": "sandbox-daemon",
+        "provides": [
+          "sandbox-daemon/sandboxd"
+        ],
+        "requires": [
+          {
+            "kind": "capability",
+            "capability": "sandbox-backend/docker-direct"
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "id": "storage/local-fs-transient",
+        "kind": "storage-backend",
+        "cargo_feature": "storage-local-fs",
+        "provides": [
+          "storage/local-fs-transient"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "storage/r2",
+        "kind": "storage-backend",
+        "cargo_feature": "storage-s3-r2",
+        "provides": [
+          "storage/r2"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/agents-md",
+        "kind": "tool",
+        "cargo_feature": "tool-agents-md",
+        "provides": [
+          "tool/agents-md"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/browser-use",
+        "kind": "browser",
+        "cargo_feature": "tool-browser-use",
+        "provides": [
+          "tool/browser-use"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/compression",
+        "kind": "tool",
+        "cargo_feature": "tool-compression",
+        "provides": [
+          "tool/compression"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/delegation",
+        "kind": "tool",
+        "cargo_feature": "tool-delegation",
+        "provides": [
+          "tool/delegation"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/file-delivery",
+        "kind": "file-delivery",
+        "cargo_feature": "tool-file-delivery",
+        "provides": [
+          "tool/file-delivery"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/media-audio",
+        "kind": "media",
+        "cargo_feature": "tool-media-audio",
+        "provides": [
+          "tool/media-audio-transcription"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/media-image",
+        "kind": "media",
+        "cargo_feature": "tool-media-image",
+        "provides": [
+          "tool/media-image-description"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/media-video",
+        "kind": "media",
+        "cargo_feature": "tool-media-video",
+        "provides": [
+          "tool/media-video-description"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/reminder",
+        "kind": "reminder",
+        "cargo_feature": "tool-reminder",
+        "provides": [
+          "tool/reminder"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/sandbox-exec",
+        "kind": "sandbox-tool",
+        "cargo_feature": "tool-sandbox-exec",
+        "provides": [
+          "tool/sandbox-exec"
+        ],
+        "requires": [
+          {
+            "kind": "any-of",
+            "capabilities": [
+              "sandbox-backend/docker-direct/exec",
+              "sandbox-backend/sandboxd-client/exec"
+            ]
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "id": "tool/sandbox-fileops",
+        "kind": "sandbox-tool",
+        "cargo_feature": "tool-sandbox-fileops",
+        "provides": [
+          "tool/sandbox-fileops",
+          "tool/sandbox-list-files"
+        ],
+        "requires": [
+          {
+            "kind": "any-of",
+            "capabilities": [
+              "sandbox-backend/docker-direct/fileops",
+              "sandbox-backend/sandboxd-client/fileops"
+            ]
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "id": "tool/sandbox-recreate",
+        "kind": "sandbox-tool",
+        "cargo_feature": "tool-sandbox-recreate",
+        "provides": [
+          "tool/sandbox-recreate"
+        ],
+        "requires": [
+          {
+            "kind": "any-of",
+            "capabilities": [
+              "sandbox-backend/docker-direct/lifecycle",
+              "sandbox-backend/sandboxd-client/lifecycle"
+            ]
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "id": "tool/searxng",
+        "kind": "search",
+        "cargo_feature": "tool-searxng",
+        "provides": [
+          "tool/searxng-search"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/stack-logs",
+        "kind": "diagnostics",
+        "cargo_feature": "tool-stack-logs",
+        "provides": [
+          "tool/stack-logs"
+        ],
+        "requires": [
+          {
+            "kind": "any-of",
+            "capabilities": [
+              "sandbox-backend/docker-direct/diagnostics",
+              "sandbox-backend/sandboxd-client/diagnostics"
+            ]
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "id": "tool/tavily",
+        "kind": "search",
+        "cargo_feature": "tool-tavily",
+        "provides": [
+          "tool/tavily-extract",
+          "tool/tavily-search"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/todos",
+        "kind": "tool",
+        "cargo_feature": "tool-todos",
+        "provides": [
+          "tool/todos"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/tts-kokoro",
+        "kind": "media",
+        "cargo_feature": "tool-tts-kokoro",
+        "provides": [
+          "tool/tts-kokoro"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/tts-silero",
+        "kind": "media",
+        "cargo_feature": "tool-tts-silero",
+        "provides": [
+          "tool/tts-silero"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/webfetch-md",
+        "kind": "search",
+        "cargo_feature": "tool-webfetch-md",
+        "provides": [
+          "tool/webfetch-md"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/wiki-memory",
+        "kind": "memory",
+        "cargo_feature": "tool-wiki-memory",
+        "provides": [
+          "tool/wiki-memory"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "tool/ytdlp",
+        "kind": "media",
+        "cargo_feature": "tool-ytdlp",
+        "provides": [
+          "tool/ytdlp-download",
+          "tool/ytdlp-metadata",
+          "tool/ytdlp-transcript"
+        ],
+        "requires": [
+          {
+            "kind": "any-of",
+            "capabilities": [
+              "sandbox-backend/docker-direct/exec",
+              "sandbox-backend/sandboxd-client/exec"
+            ]
+          },
+          {
+            "kind": "any-of",
+            "capabilities": [
+              "sandbox-backend/docker-direct/fileops",
+              "sandbox-backend/sandboxd-client/fileops"
+            ]
+          }
+        ],
+        "conflicts": []
+      },
+      {
+        "id": "transport/cli",
+        "kind": "transport",
+        "cargo_feature": "transport-cli",
+        "provides": [
+          "transport/cli"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "transport/http-api",
+        "kind": "transport",
+        "cargo_feature": "transport-http-api",
+        "provides": [
+          "transport/http-api"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "transport/telegram",
+        "kind": "transport",
+        "cargo_feature": "transport-telegram",
+        "provides": [
+          "transport/telegram"
+        ],
+        "requires": [],
+        "conflicts": []
+      },
+      {
+        "id": "transport/web",
+        "kind": "transport",
+        "cargo_feature": "transport-web",
+        "provides": [
+          "transport/web"
+        ],
+        "requires": [],
+        "conflicts": []
+      }
+    ],
+    "capabilities": [
+      {
+        "id": "integration/mcp-jira",
+        "module": "integration/mcp-jira"
+      },
+      {
+        "id": "integration/mcp-mattermost",
+        "module": "integration/mcp-mattermost"
+      },
+      {
+        "id": "integration/ssh-mcp",
+        "module": "integration/ssh-mcp"
+      },
+      {
+        "id": "llm-provider/groq",
+        "module": "llm-provider/groq"
+      },
+      {
+        "id": "llm-provider/minimax",
+        "module": "llm-provider/minimax"
+      },
+      {
+        "id": "llm-provider/mistral",
+        "module": "llm-provider/mistral"
+      },
+      {
+        "id": "llm-provider/nvidia",
+        "module": "llm-provider/nvidia"
+      },
+      {
+        "id": "llm-provider/openai-chatgpt",
+        "module": "llm-provider/openai-chatgpt"
+      },
+      {
+        "id": "llm-provider/opencode-go",
+        "module": "llm-provider/opencode-go"
+      },
+      {
+        "id": "llm-provider/openrouter",
+        "module": "llm-provider/openrouter"
+      },
+      {
+        "id": "llm-provider/zai",
+        "module": "llm-provider/zai"
+      },
+      {
+        "id": "manager/agent-profile-admin",
+        "module": "manager/control-plane"
+      },
+      {
+        "id": "manager/control-plane",
+        "module": "manager/control-plane"
+      },
+      {
+        "id": "manager/topic-sandbox-admin",
+        "module": "manager/control-plane"
+      },
+      {
+        "id": "sandbox-backend/docker-direct",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/docker-direct/diagnostics",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/docker-direct/exec",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/docker-direct/fileops",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/docker-direct/lifecycle",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/diagnostics",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/exec",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/fileops",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/lifecycle",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-daemon/sandboxd",
+        "module": "sandbox-daemon/sandboxd"
+      },
+      {
+        "id": "storage/local-fs-transient",
+        "module": "storage/local-fs-transient"
+      },
+      {
+        "id": "storage/r2",
+        "module": "storage/r2"
+      },
+      {
+        "id": "tool/agents-md",
+        "module": "tool/agents-md"
+      },
+      {
+        "id": "tool/browser-use",
+        "module": "tool/browser-use"
+      },
+      {
+        "id": "tool/compression",
+        "module": "tool/compression"
+      },
+      {
+        "id": "tool/delegation",
+        "module": "tool/delegation"
+      },
+      {
+        "id": "tool/file-delivery",
+        "module": "tool/file-delivery"
+      },
+      {
+        "id": "tool/media-audio-transcription",
+        "module": "tool/media-audio"
+      },
+      {
+        "id": "tool/media-image-description",
+        "module": "tool/media-image"
+      },
+      {
+        "id": "tool/media-video-description",
+        "module": "tool/media-video"
+      },
+      {
+        "id": "tool/reminder",
+        "module": "tool/reminder"
+      },
+      {
+        "id": "tool/sandbox-exec",
+        "module": "tool/sandbox-exec"
+      },
+      {
+        "id": "tool/sandbox-fileops",
+        "module": "tool/sandbox-fileops"
+      },
+      {
+        "id": "tool/sandbox-list-files",
+        "module": "tool/sandbox-fileops"
+      },
+      {
+        "id": "tool/sandbox-recreate",
+        "module": "tool/sandbox-recreate"
+      },
+      {
+        "id": "tool/searxng-search",
+        "module": "tool/searxng"
+      },
+      {
+        "id": "tool/stack-logs",
+        "module": "tool/stack-logs"
+      },
+      {
+        "id": "tool/tavily-extract",
+        "module": "tool/tavily"
+      },
+      {
+        "id": "tool/tavily-search",
+        "module": "tool/tavily"
+      },
+      {
+        "id": "tool/todos",
+        "module": "tool/todos"
+      },
+      {
+        "id": "tool/tts-kokoro",
+        "module": "tool/tts-kokoro"
+      },
+      {
+        "id": "tool/tts-silero",
+        "module": "tool/tts-silero"
+      },
+      {
+        "id": "tool/webfetch-md",
+        "module": "tool/webfetch-md"
+      },
+      {
+        "id": "tool/wiki-memory",
+        "module": "tool/wiki-memory"
+      },
+      {
+        "id": "tool/ytdlp-download",
+        "module": "tool/ytdlp"
+      },
+      {
+        "id": "tool/ytdlp-metadata",
+        "module": "tool/ytdlp"
+      },
+      {
+        "id": "tool/ytdlp-transcript",
+        "module": "tool/ytdlp"
+      },
+      {
+        "id": "transport/cli",
+        "module": "transport/cli"
+      },
+      {
+        "id": "transport/http-api",
+        "module": "transport/http-api"
+      },
+      {
+        "id": "transport/telegram",
+        "module": "transport/telegram"
+      },
+      {
+        "id": "transport/web",
+        "module": "transport/web"
+      }
+    ]
+  },
+  "enabled_manifest_default_config": {
+    "modules": [
+      "integration/mcp-jira",
+      "integration/mcp-mattermost",
+      "integration/ssh-mcp",
+      "llm-provider/groq",
+      "llm-provider/minimax",
+      "llm-provider/mistral",
+      "llm-provider/nvidia",
+      "llm-provider/openai-chatgpt",
+      "llm-provider/opencode-go",
+      "llm-provider/openrouter",
+      "llm-provider/zai",
+      "manager/control-plane",
+      "sandbox-backend/docker-direct",
+      "sandbox-backend/sandboxd-client",
+      "sandbox-daemon/sandboxd",
+      "storage/local-fs-transient",
+      "storage/r2",
+      "tool/agents-md",
+      "tool/browser-use",
+      "tool/compression",
+      "tool/delegation",
+      "tool/file-delivery",
+      "tool/media-audio",
+      "tool/media-image",
+      "tool/media-video",
+      "tool/reminder",
+      "tool/sandbox-exec",
+      "tool/sandbox-fileops",
+      "tool/sandbox-recreate",
+      "tool/searxng",
+      "tool/stack-logs",
+      "tool/tavily",
+      "tool/todos",
+      "tool/tts-kokoro",
+      "tool/tts-silero",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "tool/ytdlp",
+      "transport/cli",
+      "transport/http-api",
+      "transport/telegram",
+      "transport/web"
+    ],
+    "capabilities": [
+      "integration/mcp-jira",
+      "integration/mcp-mattermost",
+      "integration/ssh-mcp",
+      "llm-provider/groq",
+      "llm-provider/minimax",
+      "llm-provider/mistral",
+      "llm-provider/nvidia",
+      "llm-provider/openai-chatgpt",
+      "llm-provider/opencode-go",
+      "llm-provider/openrouter",
+      "llm-provider/zai",
+      "manager/agent-profile-admin",
+      "manager/control-plane",
+      "manager/topic-sandbox-admin",
+      "sandbox-backend/docker-direct",
+      "sandbox-backend/docker-direct/diagnostics",
+      "sandbox-backend/docker-direct/exec",
+      "sandbox-backend/docker-direct/fileops",
+      "sandbox-backend/docker-direct/lifecycle",
+      "sandbox-backend/sandboxd-client",
+      "sandbox-backend/sandboxd-client/diagnostics",
+      "sandbox-backend/sandboxd-client/exec",
+      "sandbox-backend/sandboxd-client/fileops",
+      "sandbox-backend/sandboxd-client/lifecycle",
+      "sandbox-daemon/sandboxd",
+      "storage/local-fs-transient",
+      "storage/r2",
+      "tool/agents-md",
+      "tool/browser-use",
+      "tool/compression",
+      "tool/delegation",
+      "tool/file-delivery",
+      "tool/media-audio-transcription",
+      "tool/media-image-description",
+      "tool/media-video-description",
+      "tool/reminder",
+      "tool/sandbox-exec",
+      "tool/sandbox-fileops",
+      "tool/sandbox-list-files",
+      "tool/sandbox-recreate",
+      "tool/searxng-search",
+      "tool/stack-logs",
+      "tool/tavily-extract",
+      "tool/tavily-search",
+      "tool/todos",
+      "tool/tts-kokoro",
+      "tool/tts-silero",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "tool/ytdlp-download",
+      "tool/ytdlp-metadata",
+      "tool/ytdlp-transcript",
+      "transport/cli",
+      "transport/http-api",
+      "transport/telegram",
+      "transport/web"
+    ]
+  },
+  "registered_tool_names_default_config": [
+    "cancel_sub_agents",
+    "compress",
+    "describe_image_file",
+    "describe_video_file",
+    "execute_command",
+    "list_files",
+    "read_file",
+    "recreate_sandbox",
+    "send_file_to_user",
+    "spawn_sub_agents",
+    "stack_logs_fetch",
+    "stack_logs_list_sources",
+    "text_to_speech_en",
+    "text_to_speech_en_file",
+    "text_to_speech_ru",
+    "text_to_speech_ru_file",
+    "transcribe_audio_file",
+    "upload_file",
+    "wait_sub_agents",
+    "web_markdown",
+    "write_file",
+    "write_todos",
+    "ytdlp_download_audio",
+    "ytdlp_download_transcript",
+    "ytdlp_download_video",
+    "ytdlp_get_video_metadata",
+    "ytdlp_search_videos"
+  ]
+}

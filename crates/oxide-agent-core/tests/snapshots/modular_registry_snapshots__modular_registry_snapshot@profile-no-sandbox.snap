@@ -1,0 +1,135 @@
+---
+source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
+expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
+---
+{
+  "profile": "profile-no-sandbox",
+  "compiled_manifest": {
+    "capabilities": [
+      {
+        "id": "llm-provider/opencode-go",
+        "module": "llm-provider/opencode-go"
+      },
+      {
+        "id": "storage/r2",
+        "module": "storage/r2"
+      },
+      {
+        "id": "tool/reminder",
+        "module": "tool/reminder"
+      },
+      {
+        "id": "tool/todos",
+        "module": "tool/todos"
+      },
+      {
+        "id": "tool/webfetch-md",
+        "module": "tool/webfetch-md"
+      },
+      {
+        "id": "tool/wiki-memory",
+        "module": "tool/wiki-memory"
+      },
+      {
+        "id": "transport/telegram",
+        "module": "transport/telegram"
+      }
+    ],
+    "modules": [
+      {
+        "cargo_feature": "llm-opencode-go",
+        "conflicts": [],
+        "id": "llm-provider/opencode-go",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-go"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "storage-s3-r2",
+        "conflicts": [],
+        "id": "storage/r2",
+        "kind": "storage-backend",
+        "provides": [
+          "storage/r2"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-reminder",
+        "conflicts": [],
+        "id": "tool/reminder",
+        "kind": "reminder",
+        "provides": [
+          "tool/reminder"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-todos",
+        "conflicts": [],
+        "id": "tool/todos",
+        "kind": "tool",
+        "provides": [
+          "tool/todos"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "conflicts": [],
+        "id": "tool/webfetch-md",
+        "kind": "search",
+        "provides": [
+          "tool/webfetch-md"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-wiki-memory",
+        "conflicts": [],
+        "id": "tool/wiki-memory",
+        "kind": "memory",
+        "provides": [
+          "tool/wiki-memory"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "transport-telegram",
+        "conflicts": [],
+        "id": "transport/telegram",
+        "kind": "transport",
+        "provides": [
+          "transport/telegram"
+        ],
+        "requires": []
+      }
+    ]
+  },
+  "enabled_manifest_default_config": {
+    "capabilities": [
+      "llm-provider/opencode-go",
+      "storage/r2",
+      "tool/reminder",
+      "tool/todos",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "transport/telegram"
+    ],
+    "modules": [
+      "llm-provider/opencode-go",
+      "storage/r2",
+      "tool/reminder",
+      "tool/todos",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "transport/telegram"
+    ]
+  },
+  "registered_tool_names_default_config": [
+    "web_markdown",
+    "write_todos"
+  ]
+}
