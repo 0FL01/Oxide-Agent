@@ -20,7 +20,7 @@ use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 #[cfg(feature = "integration-ssh-mcp")]
 use std::sync::OnceLock;
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::{mpsc::Sender, Mutex, Semaphore};
 
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
@@ -165,6 +165,7 @@ pub struct ToolModuleContext {
     llm_client: Arc<LlmClient>,
     settings: Arc<AgentSettings>,
     browser_use_profile_scope: Option<String>,
+    browser_use_semaphore: Option<Arc<Semaphore>>,
     #[cfg(feature = "tool-agents-md")]
     agents_md_context: Option<AgentsMdModuleContext>,
     #[cfg(feature = "manager-control-plane")]
@@ -194,6 +195,8 @@ pub struct ToolModuleContextParts {
     pub settings: Arc<AgentSettings>,
     /// Optional Browser Use profile scope.
     pub browser_use_profile_scope: Option<String>,
+    /// Optional Browser Use concurrency limiter.
+    pub browser_use_semaphore: Option<Arc<Semaphore>>,
     /// Optional AGENTS.md context.
     #[cfg(feature = "tool-agents-md")]
     pub agents_md_context: Option<AgentsMdModuleContext>,
@@ -227,6 +230,7 @@ impl ToolModuleContext {
             llm_client: parts.llm_client,
             settings: parts.settings,
             browser_use_profile_scope: parts.browser_use_profile_scope,
+            browser_use_semaphore: parts.browser_use_semaphore,
             #[cfg(feature = "tool-agents-md")]
             agents_md_context: parts.agents_md_context,
             #[cfg(feature = "manager-control-plane")]
@@ -277,6 +281,12 @@ impl ToolModuleContext {
     #[must_use]
     pub fn browser_use_profile_scope(&self) -> Option<String> {
         self.browser_use_profile_scope.clone()
+    }
+
+    /// Optional Browser Use concurrency limiter.
+    #[must_use]
+    pub fn browser_use_semaphore(&self) -> Option<Arc<Semaphore>> {
+        self.browser_use_semaphore.clone()
     }
 
     /// Optional context for topic-scoped AGENTS.md tools.
@@ -636,7 +646,11 @@ impl BrowserUseToolModule {
 
         match crate::config::get_browser_use_url() {
             Some(url) if !url.trim().is_empty() => {
-                let mut provider = BrowserUseProvider::new(&url, ctx.settings());
+                let mut provider = if let Some(semaphore) = ctx.browser_use_semaphore() {
+                    BrowserUseProvider::new_with_semaphore(&url, ctx.settings(), semaphore)
+                } else {
+                    BrowserUseProvider::new(&url, ctx.settings())
+                };
                 if let Some(profile_scope) = ctx.browser_use_profile_scope() {
                     provider = provider.with_profile_scope(profile_scope);
                 }

@@ -11,22 +11,15 @@ use crate::agent::hooks::{
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
-#[cfg(feature = "tool-sandbox-exec")]
-use crate::agent::providers::SandboxExecProvider;
-#[cfg(feature = "tool-sandbox-fileops")]
-use crate::agent::providers::SandboxFileOpsProvider;
-#[cfg(any(feature = "tool-sandbox-exec", feature = "tool-sandbox-fileops"))]
-use crate::agent::providers::SandboxRuntime;
-#[cfg(feature = "tool-ytdlp")]
-use crate::agent::providers::YtdlpProvider;
-use crate::agent::providers::{TodoList, TodosProvider};
+use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::runner::{
     run_with_timeout, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
     TimedRunResult,
 };
+use crate::agent::session::AgentMemoryScope;
 use crate::agent::tool_runtime::{
-    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
-    ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolModuleContext, ToolModuleContextParts,
+    ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::{
     get_agent_search_limit, get_sub_agent_max_iterations, AgentSettings, AGENT_CONTINUATION_LIMIT,
@@ -48,13 +41,32 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 #[cfg(feature = "tool-browser-use")]
-use crate::agent::providers::BrowserUseProvider;
+use crate::agent::tool_runtime::BrowserUseToolModule;
+#[cfg(feature = "tool-sandbox-exec")]
+use crate::agent::tool_runtime::SandboxExecToolModule;
+#[cfg(feature = "tool-sandbox-fileops")]
+use crate::agent::tool_runtime::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-searxng")]
-use crate::agent::providers::SearxngProvider;
+use crate::agent::tool_runtime::SearxngToolModule;
 #[cfg(feature = "tool-tavily")]
-use crate::agent::providers::TavilyProvider;
+use crate::agent::tool_runtime::TavilyToolModule;
+#[cfg(feature = "tool-todos")]
+use crate::agent::tool_runtime::TodosToolModule;
+#[cfg(any(
+    feature = "tool-browser-use",
+    feature = "tool-sandbox-exec",
+    feature = "tool-sandbox-fileops",
+    feature = "tool-searxng",
+    feature = "tool-tavily",
+    feature = "tool-todos",
+    feature = "tool-webfetch-md",
+    feature = "tool-ytdlp"
+))]
+use crate::agent::tool_runtime::ToolModule;
 #[cfg(feature = "tool-webfetch-md")]
-use crate::agent::providers::WebFetchMdProvider;
+use crate::agent::tool_runtime::WebFetchMdToolModule;
+#[cfg(feature = "tool-ytdlp")]
+use crate::agent::tool_runtime::YtdlpToolModule;
 use tokio::sync::Semaphore;
 
 const TOOL_SPAWN_SUB_AGENTS: &str = "spawn_sub_agents";
@@ -660,162 +672,130 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     fn build_sub_agent_tool_runtime_executors(
         &self,
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
+        memory_scope: AgentMemoryScope,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Vec<Arc<dyn ToolExecutor>> {
         let mut executors: Vec<Arc<dyn ToolExecutor>> = Vec::new();
+        let module_ctx =
+            self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
 
-        if self.settings.is_module_enabled("tool/todos") {
-            executors.extend(
-                Arc::new(TodosProvider::new(todos_arc))
-                    .tool_runtime_executors(progress_tx.cloned()),
-            );
-        }
+        #[cfg(not(any(
+            feature = "tool-browser-use",
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-searxng",
+            feature = "tool-tavily",
+            feature = "tool-todos",
+            feature = "tool-webfetch-md",
+            feature = "tool-ytdlp"
+        )))]
+        let _ = (&module_ctx, &mut executors);
 
-        #[cfg(any(feature = "tool-sandbox-exec", feature = "tool-sandbox-fileops"))]
+        #[cfg(feature = "tool-todos")]
+        self.push_sub_agent_tool_module(&mut executors, &TodosToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-sandbox-exec")]
+        self.push_sub_agent_tool_module(&mut executors, &SandboxExecToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-sandbox-fileops")]
+        self.push_sub_agent_tool_module(&mut executors, &SandboxFileOpsToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-ytdlp")]
+        self.push_sub_agent_tool_module(&mut executors, &YtdlpToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-webfetch-md")]
+        self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-tavily")]
+        self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-searxng")]
+        self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-browser-use")]
+        self.push_sub_agent_tool_module(&mut executors, &BrowserUseToolModule, &module_ctx);
+
+        self.warn_for_uncompiled_sub_agent_tool_modules();
+
+        executors
+    }
+
+    fn build_sub_agent_tool_module_context(
+        &self,
+        todos_arc: Arc<Mutex<TodoList>>,
+        _memory_scope: AgentMemoryScope,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> ToolModuleContext {
         let sandbox_runtime = if let Some(tx) = progress_tx {
             Arc::new(SandboxRuntime::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone()))
         } else {
             Arc::new(SandboxRuntime::new(self.sandbox_scope.clone()))
         };
 
-        #[cfg(feature = "tool-sandbox-exec")]
-        if self.settings.is_module_enabled("tool/sandbox-exec") {
-            executors.extend(
-                Arc::new(SandboxExecProvider::new(Arc::clone(&sandbox_runtime)))
-                    .tool_runtime_executors(),
-            );
-        }
-
-        #[cfg(feature = "tool-sandbox-fileops")]
-        if self.settings.is_module_enabled("tool/sandbox-fileops") {
-            executors.extend(
-                Arc::new(SandboxFileOpsProvider::without_delivery(Arc::clone(
-                    &sandbox_runtime,
-                )))
-                .tool_runtime_executors(),
-            );
-        }
-
-        self.push_sub_agent_media_executors(&mut executors, progress_tx);
-        self.push_optional_sub_agent_tool_executors(&mut executors);
-
-        executors
+        ToolModuleContext::new(ToolModuleContextParts {
+            todos: todos_arc,
+            sandbox_scope: self.sandbox_scope.clone(),
+            sandbox_runtime,
+            llm_client: Arc::clone(&self.llm_client),
+            settings: Arc::clone(&self.settings),
+            browser_use_profile_scope: self.browser_use_profile_scope.clone(),
+            browser_use_semaphore: Some(Arc::clone(&self.browser_use_semaphore)),
+            #[cfg(feature = "tool-agents-md")]
+            agents_md_context: None,
+            #[cfg(feature = "manager-control-plane")]
+            manager_control_plane_context: None,
+            #[cfg(feature = "integration-ssh-mcp")]
+            ssh_mcp_context: None,
+            #[cfg(feature = "tool-reminder")]
+            reminder_context: None,
+            #[cfg(feature = "tool-wiki-memory")]
+            wiki_memory_store: None,
+            #[cfg(feature = "tool-wiki-memory")]
+            memory_scope: _memory_scope,
+            progress_tx: progress_tx.cloned(),
+        })
     }
 
-    fn push_sub_agent_media_executors(
+    #[cfg(any(
+        feature = "tool-browser-use",
+        feature = "tool-sandbox-exec",
+        feature = "tool-sandbox-fileops",
+        feature = "tool-searxng",
+        feature = "tool-tavily",
+        feature = "tool-todos",
+        feature = "tool-webfetch-md",
+        feature = "tool-ytdlp"
+    ))]
+    fn push_sub_agent_tool_module<M>(
         &self,
         executors: &mut Vec<Arc<dyn ToolExecutor>>,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        #[cfg(not(feature = "tool-ytdlp"))]
-        let _ = (executors, progress_tx);
-
-        #[cfg(feature = "tool-ytdlp")]
-        {
-            if !self.settings.is_module_enabled("tool/ytdlp") {
-                return;
-            }
-            let ytdlp_provider = if let Some(tx) = progress_tx {
-                YtdlpProvider::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone())
-            } else {
-                YtdlpProvider::new(self.sandbox_scope.clone())
-            };
-            executors.extend(Arc::new(ytdlp_provider).tool_runtime_executors());
+        module: &M,
+        ctx: &ToolModuleContext,
+    ) where
+        M: ToolModule,
+    {
+        let module_id = module.module_id();
+        if !self.settings.is_module_enabled(module_id.as_str()) {
+            return;
         }
+
+        executors.extend(module.tool_runtime_executors(ctx));
     }
 
-    fn push_optional_sub_agent_tool_executors(&self, executors: &mut Vec<Arc<dyn ToolExecutor>>) {
-        #[cfg(not(any(
-            feature = "tool-webfetch-md",
-            feature = "tool-tavily",
-            feature = "tool-searxng",
-            feature = "tool-browser-use"
-        )))]
-        let _ = executors;
-
-        #[cfg(feature = "tool-webfetch-md")]
-        if self.settings.is_module_enabled("tool/webfetch-md") {
-            executors.extend(Arc::new(WebFetchMdProvider::new()).tool_runtime_executors());
-        }
-
-        #[cfg(feature = "tool-tavily")]
-        if self.settings.is_module_enabled("tool/tavily") && crate::config::is_tavily_enabled() {
-            if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
-                if !tavily_key.trim().is_empty() {
-                    if let Ok(provider) = TavilyProvider::new(&tavily_key) {
-                        executors.extend(Arc::new(provider).tool_runtime_executors());
-                    }
-                } else {
-                    warn!("Tavily enabled but TAVILY_API_KEY is empty; sub-agent provider not registered");
-                }
-            } else {
-                warn!("Tavily enabled but TAVILY_API_KEY is not set; sub-agent provider not registered");
-            }
-        }
+    fn warn_for_uncompiled_sub_agent_tool_modules(&self) {
         #[cfg(not(feature = "tool-tavily"))]
         if crate::config::is_tavily_enabled() {
             warn!("Tavily enabled but feature not compiled in");
         }
 
-        #[cfg(feature = "tool-searxng")]
-        if self.settings.is_module_enabled("tool/searxng") && crate::config::is_searxng_enabled() {
-            if let Some(url) = crate::config::get_searxng_url() {
-                if !url.trim().is_empty() {
-                    match SearxngProvider::new(&url) {
-                        Ok(provider) => {
-                            executors.extend(Arc::new(provider).tool_runtime_executors())
-                        }
-                        Err(error) => {
-                            warn!(error = %error, "SearXNG sub-agent provider initialization failed")
-                        }
-                    }
-                } else {
-                    warn!("SearXNG enabled but SEARXNG_URL is empty; sub-agent provider not registered");
-                }
-            } else {
-                warn!(
-                    "SearXNG enabled but SEARXNG_URL is not set; sub-agent provider not registered"
-                );
-            }
-        }
         #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             warn!("SearXNG enabled but feature not compiled in");
         }
 
-        #[cfg(feature = "tool-browser-use")]
-        self.maybe_push_browser_use_executors(executors);
         #[cfg(not(feature = "tool-browser-use"))]
         if crate::config::is_browser_use_enabled() {
             warn!("Browser Use enabled but feature not compiled in");
-        }
-    }
-
-    #[cfg(feature = "tool-browser-use")]
-    fn maybe_push_browser_use_executors(&self, executors: &mut Vec<Arc<dyn ToolExecutor>>) {
-        // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
-        // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
-        if !self.settings.is_module_enabled("tool/browser-use")
-            || !crate::config::is_browser_use_enabled()
-        {
-            return;
-        }
-
-        if let Some(url) = crate::config::get_browser_use_url() {
-            if !url.trim().is_empty() {
-                let sem = Arc::clone(&self.browser_use_semaphore);
-                let mut provider =
-                    BrowserUseProvider::new_with_semaphore(&url, Arc::clone(&self.settings), sem);
-                if let Some(profile_scope) = &self.browser_use_profile_scope {
-                    provider = provider.with_profile_scope(profile_scope.clone());
-                }
-                provider = provider.with_sandbox_scope(self.sandbox_scope.clone());
-                executors.extend(Arc::new(provider).tool_runtime_executors());
-            } else {
-                warn!("Browser Use enabled but BROWSER_USE_URL is empty; sub-agent provider not registered");
-            }
-        } else {
-            warn!("Browser Use enabled but BROWSER_USE_URL is not set; sub-agent provider not registered");
         }
     }
 
@@ -1021,6 +1001,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             spawn_sub_agent_progress_relay(progress_tx);
         let executors = self.build_sub_agent_tool_runtime_executors(
             Arc::clone(&todos_arc),
+            AgentMemoryScope::new(0, "sub-agent", task_id.clone()),
             sub_agent_progress_tx.as_ref(),
         );
         let available_tools: HashSet<String> = executors
@@ -1551,7 +1532,7 @@ mod tests {
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
     use crate::agent::providers::TodoList;
     use crate::agent::runner::TimedRunResult;
-    use crate::agent::session::{PendingUserInput, UserInputKind};
+    use crate::agent::session::{AgentMemoryScope, PendingUserInput, UserInputKind};
     use crate::agent::tool_runtime::{
         ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
         ToolInvocation, ToolName, ToolOutputStatus, ToolRuntimeError, ToolTimeoutConfig, TurnId,
@@ -1596,6 +1577,10 @@ mod tests {
             created_at: now,
             started_at: Some(now),
         }
+    }
+
+    fn test_memory_scope() -> AgentMemoryScope {
+        AgentMemoryScope::new(77, "test-topic", "sub-agent-test")
     }
 
     #[test]
@@ -2043,7 +2028,8 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors = provider.build_sub_agent_tool_runtime_executors(todos, None);
+        let executors =
+            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
         let tools: HashSet<String> = executors
             .iter()
             .map(|executor| executor.name().into_inner())
@@ -2065,7 +2051,8 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors = provider.build_sub_agent_tool_runtime_executors(todos, None);
+        let executors =
+            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
         let tools: HashSet<String> = executors
             .iter()
             .map(|executor| executor.name().into_inner())
@@ -2080,7 +2067,8 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors = provider.build_sub_agent_tool_runtime_executors(todos, None);
+        let executors =
+            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
         let tools: HashSet<String> = executors
             .iter()
             .map(|executor| executor.name().into_inner())

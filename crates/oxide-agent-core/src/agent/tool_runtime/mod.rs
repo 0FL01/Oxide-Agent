@@ -1,7 +1,7 @@
 //! Async parallel tool runtime.
 //!
-//! Phase 1 contains typed foundations only. Later phases wire the active
-//! runner path through this module and remove legacy execution paths.
+//! Tool capability modules own typed executor construction; callers register
+//! executors through the runtime registry rather than provider-specific paths.
 
 pub mod artifacts;
 pub mod config;

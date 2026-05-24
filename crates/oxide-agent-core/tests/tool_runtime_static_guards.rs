@@ -137,6 +137,76 @@ fn legacy_tool_registry_and_wrappers_are_removed() {
 }
 
 #[test]
+fn typed_tool_registry_has_single_production_definition() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let mut files = Vec::new();
+    collect_rust_files(&manifest_dir.join("src"), &mut files);
+
+    let mut registry_definitions = Vec::new();
+    let mut registry_aliases = Vec::new();
+    for path in files {
+        let source = fs::read_to_string(&path).expect("read source file");
+        let relative = path
+            .strip_prefix(manifest_dir)
+            .expect("source path under manifest dir")
+            .display()
+            .to_string();
+
+        if source.contains("pub struct ToolRegistry") {
+            registry_definitions.push(relative.clone());
+        }
+        if source.contains("type ToolRegistry") {
+            registry_aliases.push(relative);
+        }
+    }
+
+    assert_eq!(
+        registry_definitions,
+        vec!["src/agent/tool_runtime/registry.rs"],
+        "typed runtime must keep exactly one production ToolRegistry definition"
+    );
+    assert!(
+        registry_aliases.is_empty(),
+        "typed runtime must not add ToolRegistry type aliases or shadow registries; offenders: {registry_aliases:?}"
+    );
+}
+
+#[test]
+fn delegation_sub_agent_tools_use_tool_modules_not_provider_constructors() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let delegation_path = manifest_dir.join("src/agent/providers/delegation.rs");
+    let delegation = fs::read_to_string(delegation_path).expect("read delegation provider");
+
+    assert!(
+        delegation.contains("ToolModuleContextParts")
+            && delegation.contains("push_sub_agent_tool_module"),
+        "sub-agent tools must be assembled through ToolModule context and module registration"
+    );
+
+    let forbidden_provider_paths = [
+        "TodosProvider::new",
+        "SandboxExecProvider::new",
+        "SandboxFileOpsProvider::",
+        "YtdlpProvider::",
+        "WebFetchMdProvider::new",
+        "TavilyProvider::new",
+        "SearxngProvider::new",
+        "BrowserUseProvider::",
+    ];
+    let offenders = forbidden_provider_paths
+        .iter()
+        .copied()
+        .filter(|pattern| delegation.contains(pattern))
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "sub-agent tool registration must not duplicate ToolModule provider construction; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn ssh_cleanup_is_owned_by_ssh_module_not_binaries() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

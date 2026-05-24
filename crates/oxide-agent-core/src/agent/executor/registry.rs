@@ -318,6 +318,7 @@ impl AgentExecutor {
             llm_client: self.runner.llm_client(),
             settings: Arc::clone(&self.settings),
             browser_use_profile_scope: self.browser_use_profile_scope(),
+            browser_use_semaphore: None,
             #[cfg(feature = "tool-agents-md")]
             agents_md_context: self.agents_md.as_ref().map(|context| {
                 AgentsMdModuleContext::new(
