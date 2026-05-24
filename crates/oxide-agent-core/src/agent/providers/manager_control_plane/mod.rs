@@ -7,7 +7,6 @@ use crate::agent::profile::{
     parse_agent_profile, topic_agent_all_hooks, topic_agent_default_blocked_tools,
     topic_agent_manageable_hooks, topic_agent_protected_hooks, HookAccessPolicy, ToolAccessPolicy,
 };
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -702,23 +701,19 @@ impl ManagerControlPlaneProvider {
             _ => Err(anyhow!("Unknown manager control-plane tool: {tool_name}")),
         }
     }
-}
 
-#[async_trait]
-impl ToolProvider for ManagerControlPlaneProvider {
-    fn name(&self) -> &'static str {
-        "manager_control_plane"
-    }
-
+    #[cfg(test)]
     fn tools(&self) -> Vec<ToolDefinition> {
         self.tools_definitions()
     }
 
+    #[cfg(test)]
     fn can_handle(&self, tool_name: &str) -> bool {
         BASE_TOOL_NAMES.contains(&tool_name)
             || (self.topic_lifecycle.is_some() && LIFECYCLE_TOOL_NAMES.contains(&tool_name))
     }
 
+    #[cfg(test)]
     async fn execute(
         &self,
         tool_name: &str,

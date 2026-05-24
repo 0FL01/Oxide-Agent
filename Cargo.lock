@@ -3299,6 +3299,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "config",
  "html-escape",
  "lazy-regex",
@@ -3310,6 +3311,7 @@ dependencies = [
  "serde_json",
  "teloxide",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

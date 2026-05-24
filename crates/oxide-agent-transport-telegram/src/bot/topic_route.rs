@@ -401,7 +401,11 @@ mod tests {
         ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
         ManagerControlPlaneProvider, ManagerTopicLifecycle,
     };
-    use oxide_agent_core::agent::ToolProvider;
+    use oxide_agent_core::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolInvocation, ToolName, ToolTimeoutConfig, TurnId,
+    };
+    use oxide_agent_core::llm::InvocationId;
     use oxide_agent_core::storage::{
         AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
         Message as StoredMessage, OptionalMetadataPatch, StorageError, StorageProvider,
@@ -482,6 +486,58 @@ mod tests {
         ) -> anyhow::Result<ForumTopicActionResult> {
             anyhow::bail!("forum_topic_delete is not exercised in topic_route tests")
         }
+    }
+
+    fn test_tool_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        ToolInvocation {
+            session_id: 1_i64.into(),
+            turn_id: TurnId::new("turn-test"),
+            batch_id: ToolBatchId::new("batch-test"),
+            batch_index: 0,
+            invocation_id: InvocationId::from("invocation-test"),
+            tool_call_id: ToolCallId::new("call-test"),
+            provider_tool_call_id: None,
+            tool_name: ToolName::new(tool_name),
+            raw_provider_payload: serde_json::json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::from_str(raw_arguments)
+                .unwrap_or(serde_json::Value::Null),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "test".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: chrono::Utc::now(),
+            started_at: None,
+        }
+    }
+
+    async fn execute_manager_tool(
+        provider: &Arc<ManagerControlPlaneProvider>,
+        tool_name: &str,
+        arguments: &str,
+    ) -> String {
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} executor must be registered"));
+        let output = executor
+            .execute(test_tool_invocation(tool_name, arguments))
+            .await
+            .expect("manager control-plane typed executor must run");
+        assert!(
+            output.success,
+            "manager control-plane typed executor failed: {output:?}"
+        );
+        output.stdout.text.unwrap_or_default()
     }
 
     #[derive(Default)]
@@ -1108,28 +1164,24 @@ mod tests {
     async fn auto_binding_workflow_routes_thread_to_dynamic_binding() {
         let storage: Arc<dyn StorageProvider> = Arc::new(TestStorage::default());
         let lifecycle = Arc::new(RecordingLifecycle::new());
-        let provider = ManagerControlPlaneProvider::new(storage.clone(), 77)
-            .with_topic_lifecycle(lifecycle.clone());
+        let provider = Arc::new(
+            ManagerControlPlaneProvider::new(storage.clone(), 77)
+                .with_topic_lifecycle(lifecycle.clone()),
+        );
 
-        let created = provider
-            .execute(
-                "forum_topic_create",
-                r#"{"chat_id":-1001,"name":"ops-thread"}"#,
-                None,
-                None,
-            )
-            .await;
-        assert!(created.is_ok());
+        execute_manager_tool(
+            &provider,
+            "forum_topic_create",
+            r#"{"chat_id":-1001,"name":"ops-thread"}"#,
+        )
+        .await;
 
-        let applied = provider
-            .execute(
-                "topic_binding_set",
-                r#"{"topic_id":"-1001:313","agent_id":"dynamic-agent","binding_kind":"runtime","chat_id":-1001,"thread_id":313}"#,
-                None,
-                None,
-            )
-            .await;
-        assert!(applied.is_ok());
+        execute_manager_tool(
+            &provider,
+            "topic_binding_set",
+            r#"{"topic_id":"-1001:313","agent_id":"dynamic-agent","binding_kind":"runtime","chat_id":-1001,"thread_id":313}"#,
+        )
+        .await;
 
         let stored = storage.get_topic_binding(77, "-1001:313".to_string()).await;
         assert!(stored.is_ok());

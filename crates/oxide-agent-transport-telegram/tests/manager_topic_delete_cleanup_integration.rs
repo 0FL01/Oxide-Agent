@@ -4,7 +4,12 @@ use oxide_agent_core::agent::providers::{
     ForumTopicEditResult, ForumTopicThreadRequest, ManagerControlPlaneProvider,
     ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
 };
-use oxide_agent_core::agent::{AgentMemory, ToolProvider};
+use oxide_agent_core::agent::tool_runtime::{
+    ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext, ToolInvocation,
+    ToolName, ToolTimeoutConfig, TurnId,
+};
+use oxide_agent_core::agent::AgentMemory;
+use oxide_agent_core::llm::InvocationId;
 use oxide_agent_core::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
     Message as StoredMessage, StorageError, StorageProvider, TopicBindingRecord,
@@ -393,6 +398,57 @@ impl ManagerTopicSandboxCleanup for RecordingSandboxCleanup {
     }
 }
 
+fn test_tool_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+    ToolInvocation {
+        session_id: 1_i64.into(),
+        turn_id: TurnId::new("turn-test"),
+        batch_id: ToolBatchId::new("batch-test"),
+        batch_index: 0,
+        invocation_id: InvocationId::from("invocation-test"),
+        tool_call_id: ToolCallId::new("call-test"),
+        provider_tool_call_id: None,
+        tool_name: ToolName::new(tool_name),
+        raw_provider_payload: serde_json::json!({}),
+        raw_arguments: raw_arguments.to_string(),
+        normalized_arguments: serde_json::from_str(raw_arguments)
+            .unwrap_or(serde_json::Value::Null),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        timeout: ToolTimeoutConfig::default(),
+        execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+        provider_metadata: ProviderMetadata {
+            provider: "test".to_string(),
+            protocol: "test".to_string(),
+        },
+        model_metadata: ModelMetadata {
+            model: "test-model".to_string(),
+        },
+        working_directory: None,
+        environment_metadata: None,
+        created_at: chrono::Utc::now(),
+        started_at: None,
+    }
+}
+
+async fn execute_manager_tool(
+    provider: &std::sync::Arc<ManagerControlPlaneProvider>,
+    tool_name: &str,
+    arguments: &str,
+) -> anyhow::Result<String> {
+    let executor = provider
+        .tool_runtime_executors()
+        .into_iter()
+        .find(|executor| executor.name().as_str() == tool_name)
+        .unwrap_or_else(|| panic!("{tool_name} executor must be registered"));
+    let output = executor
+        .execute(test_tool_invocation(tool_name, arguments))
+        .await?;
+    anyhow::ensure!(
+        output.success,
+        "manager control-plane typed executor failed: {output:?}"
+    );
+    Ok(output.stdout.text.unwrap_or_default())
+}
+
 #[tokio::test]
 async fn manager_forum_topic_delete_cleans_transport_topic_scope() -> anyhow::Result<()> {
     let user_id = 77;
@@ -401,18 +457,18 @@ async fn manager_forum_topic_delete_cleans_transport_topic_scope() -> anyhow::Re
     let storage = std::sync::Arc::new(IntegrationStorage::with_topic_context(&context_key));
     let lifecycle = std::sync::Arc::new(RecordingLifecycle::default());
     let sandbox_cleanup = std::sync::Arc::new(RecordingSandboxCleanup::default());
-    let provider = ManagerControlPlaneProvider::new(storage.clone(), user_id)
-        .with_topic_lifecycle(lifecycle.clone())
-        .with_topic_sandbox_cleanup(sandbox_cleanup.clone());
+    let provider = std::sync::Arc::new(
+        ManagerControlPlaneProvider::new(storage.clone(), user_id)
+            .with_topic_lifecycle(lifecycle.clone())
+            .with_topic_sandbox_cleanup(sandbox_cleanup.clone()),
+    );
 
-    let response = provider
-        .execute(
-            "forum_topic_delete",
-            r#"{"chat_id":-100123,"thread_id":77}"#,
-            None,
-            None,
-        )
-        .await?;
+    let response = execute_manager_tool(
+        &provider,
+        "forum_topic_delete",
+        r#"{"chat_id":-100123,"thread_id":77}"#,
+    )
+    .await?;
 
     let parsed: serde_json::Value = serde_json::from_str(&response)?;
     assert_eq!(parsed["ok"], json!(true));
