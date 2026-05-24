@@ -125,6 +125,27 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
     assert!(!tool_names.contains("compress"));
 }
 
+#[cfg(feature = "tool-delegation")]
+#[test]
+fn typed_runtime_registry_exposes_delegation_tools() {
+    let executor = build_executor();
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry.tool_names();
+
+    for tool_name in ["spawn_sub_agents", "wait_sub_agents", "cancel_sub_agents"] {
+        assert!(
+            tool_names.iter().any(|name| name == tool_name),
+            "missing typed runtime delegation tool: {tool_name}"
+        );
+        assert_eq!(
+            tool_names.iter().filter(|name| *name == tool_name).count(),
+            1,
+            "expected one typed registration for {tool_name}"
+        );
+    }
+}
+
 #[cfg(feature = "manager-control-plane")]
 #[test]
 fn typed_runtime_registry_exposes_manager_tools_when_manager_enabled() {
@@ -655,6 +676,33 @@ fn typed_runtime_registry_skips_browser_use_tools_when_disabled() {
     assert!(!tool_names.contains("browser_use_close_session"));
     assert!(!tool_names.contains("browser_use_extract_content"));
     assert!(!tool_names.contains("browser_use_screenshot"));
+    assert!(tool_names.contains("write_todos"));
+}
+
+#[cfg(feature = "tool-delegation")]
+#[test]
+fn typed_runtime_registry_skips_disabled_delegation_module() {
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/delegation".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("spawn_sub_agents"));
+    assert!(!tool_names.contains("wait_sub_agents"));
+    assert!(!tool_names.contains("cancel_sub_agents"));
     assert!(tool_names.contains("write_todos"));
 }
 

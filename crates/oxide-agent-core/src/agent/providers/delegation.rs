@@ -26,6 +26,10 @@ use crate::agent::runner::{
     run_with_timeout, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
     TimedRunResult,
 };
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::config::{
     get_agent_search_limit, get_sub_agent_max_iterations, AgentSettings, AGENT_CONTINUATION_LIMIT,
 };
@@ -545,6 +549,107 @@ impl DelegationProvider {
             });
         }
         self
+    }
+
+    /// Build native typed runtime executors for sub-agent delegation tools.
+    #[must_use]
+    pub fn tool_runtime_executors(
+        self: &Arc<Self>,
+        progress_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Vec<Arc<dyn ToolExecutor>> {
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(DelegationToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    progress_tx: progress_tx.clone(),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_SPAWN_SUB_AGENTS.to_string(),
+                description: "Start one or more stateless sub-agents in the background. \
+Use this for independent, atomic tasks. Returns sub-agent ids immediately; use wait_sub_agents only when results are needed. \
+At most five sub-agents may run concurrently."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": SUB_AGENT_MAX_CONCURRENT_JOBS,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task": {
+                                        "type": "string",
+                                        "description": "Short, clear task for one sub-agent"
+                                    },
+                                    "tools": {
+                                        "type": "array",
+                                        "description": "Whitelist of allowed tools for this sub-agent",
+                                        "items": {"type": "string"}
+                                    },
+                                    "context": {
+                                        "type": "string",
+                                        "description": "Additional task context (optional)"
+                                    }
+                                },
+                                "required": ["task", "tools"]
+                            }
+                        }
+                    },
+                    "required": ["tasks"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_WAIT_SUB_AGENTS.to_string(),
+                description: "Wait for one or more background sub-agents. \
+Returns as soon as any requested sub-agent reaches a final status or the timeout expires."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sub-agent ids returned by spawn_sub_agents"
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Optional wait timeout in milliseconds. Defaults to 30000 and is capped at 3600000."
+                        }
+                    },
+                    "required": ["ids"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_CANCEL_SUB_AGENTS.to_string(),
+                description: "Cancel selected background sub-agents, or all sub-agents for this parent run with all=true."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sub-agent ids to cancel"
+                        },
+                        "all": {
+                            "type": "boolean",
+                            "description": "Cancel all sub-agents owned by this parent run"
+                        }
+                    }
+                }),
+            },
+        ]
     }
 
     fn blocked_tool_set() -> HashSet<String> {
@@ -1155,6 +1260,24 @@ impl DelegationProvider {
         })))
     }
 
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        match tool_name {
+            TOOL_SPAWN_SUB_AGENTS => {
+                self.spawn_sub_agents(arguments, progress_tx, cancellation_token)
+                    .await
+            }
+            TOOL_WAIT_SUB_AGENTS => self.wait_sub_agents(arguments).await,
+            TOOL_CANCEL_SUB_AGENTS => self.cancel_sub_agents(arguments),
+            _ => Err(anyhow!("Unknown delegation tool: {tool_name}")),
+        }
+    }
+
     async fn run_prepared_sub_agent_execution(
         llm_client: Arc<crate::llm::LlmClient>,
         settings: Arc<AgentSettings>,
@@ -1197,85 +1320,7 @@ impl ToolProvider for DelegationProvider {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: TOOL_SPAWN_SUB_AGENTS.to_string(),
-                description: "Start one or more stateless sub-agents in the background. \
-Use this for independent, atomic tasks. Returns sub-agent ids immediately; use wait_sub_agents only when results are needed. \
-At most five sub-agents may run concurrently."
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "tasks": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": SUB_AGENT_MAX_CONCURRENT_JOBS,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "task": {
-                                        "type": "string",
-                                        "description": "Short, clear task for one sub-agent"
-                                    },
-                                    "tools": {
-                                        "type": "array",
-                                        "description": "Whitelist of allowed tools for this sub-agent",
-                                        "items": {"type": "string"}
-                                    },
-                                    "context": {
-                                        "type": "string",
-                                        "description": "Additional task context (optional)"
-                                    }
-                                },
-                                "required": ["task", "tools"]
-                            }
-                        }
-                    },
-                    "required": ["tasks"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_WAIT_SUB_AGENTS.to_string(),
-                description: "Wait for one or more background sub-agents. \
-Returns as soon as any requested sub-agent reaches a final status or the timeout expires."
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Sub-agent ids returned by spawn_sub_agents"
-                        },
-                        "timeout_ms": {
-                            "type": "integer",
-                            "description": "Optional wait timeout in milliseconds. Defaults to 30000 and is capped at 3600000."
-                        }
-                    },
-                    "required": ["ids"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_CANCEL_SUB_AGENTS.to_string(),
-                description: "Cancel selected background sub-agents, or all sub-agents for this parent run with all=true."
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Sub-agent ids to cancel"
-                        },
-                        "all": {
-                            "type": "boolean",
-                            "description": "Cancel all sub-agents owned by this parent run"
-                        }
-                    }
-                }),
-            },
-        ]
+        Self::tool_definitions()
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
@@ -1291,15 +1336,63 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
-        match tool_name {
-            TOOL_SPAWN_SUB_AGENTS => {
-                self.spawn_sub_agents(arguments, progress_tx, cancellation_token)
-                    .await
-            }
-            TOOL_WAIT_SUB_AGENTS => self.wait_sub_agents(arguments).await,
-            TOOL_CANCEL_SUB_AGENTS => self.cancel_sub_agents(arguments),
-            _ => Err(anyhow!("Unknown delegation tool: {tool_name}")),
-        }
+        self.execute_tool(tool_name, arguments, progress_tx, cancellation_token)
+            .await
+    }
+}
+
+struct DelegationToolExecutor {
+    provider: Arc<DelegationProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    progress_tx: Option<mpsc::Sender<AgentEvent>>,
+}
+
+#[async_trait]
+impl ToolExecutor for DelegationToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(
+                self.name.as_str(),
+                &invocation.raw_arguments,
+                self.progress_tx.as_ref(),
+                Some(&invocation.cancellation_token),
+            )
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(delegation_runtime_error)
+    }
+}
+
+fn delegation_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    let message = error.to_string();
+    if error.downcast_ref::<serde_json::Error>().is_some()
+        || message.contains("tasks must contain")
+        || message.contains("cannot spawn more than")
+        || message.contains("Sub-agent task cannot be empty")
+        || message.contains("Sub-agent tools whitelist cannot be empty")
+        || message.contains("ids must contain")
+        || message.contains("No allowed tools left")
+    {
+        ToolRuntimeError::InvalidArguments(message)
+    } else {
+        ToolRuntimeError::Failure(message)
     }
 }
 
@@ -1497,22 +1590,61 @@ mod tests {
     use super::{
         should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay,
         DelegationProvider, SubAgentJobStatus, SubAgentJobStore, SUB_AGENT_MAX_CONCURRENT_JOBS,
+        TOOL_CANCEL_SUB_AGENTS, TOOL_SPAWN_SUB_AGENTS, TOOL_WAIT_SUB_AGENTS,
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::identity::SessionId;
     use crate::agent::memory::AgentMessage;
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
     use crate::agent::providers::TodoList;
     use crate::agent::runner::TimedRunResult;
     use crate::agent::session::{PendingUserInput, UserInputKind};
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolInvocation, ToolName, ToolOutputStatus, ToolRuntimeError, ToolTimeoutConfig, TurnId,
+    };
     use crate::config::AgentSettings;
-    use crate::llm::LlmClient;
+    use crate::llm::{InvocationId, LlmClient};
     use crate::storage::MockStorageProvider;
+    use chrono::Utc;
     use mockall::predicate::eq;
     use serde_json::json;
     use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-delegation"),
+            batch_id: ToolBatchId::from("batch-delegation"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     #[test]
     fn sub_agent_blocklist_includes_sensitive_tools() {
@@ -1600,6 +1732,90 @@ mod tests {
         assert_eq!(lookup.found[0].status, SubAgentJobStatus::Cancelled);
         assert!(lookup.found[0].completed);
         assert_eq!(store.active_count(), 0);
+    }
+
+    #[test]
+    fn typed_runtime_executors_register_delegation_tools() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider = Arc::new(DelegationProvider::new(
+            Arc::new(LlmClient::new(&settings)),
+            1_i64,
+            settings,
+        ));
+        let executors = provider.tool_runtime_executors(None);
+        let tool_names = executors
+            .iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<Vec<_>>();
+
+        for tool_name in [
+            TOOL_SPAWN_SUB_AGENTS,
+            TOOL_WAIT_SUB_AGENTS,
+            TOOL_CANCEL_SUB_AGENTS,
+        ] {
+            assert!(
+                tool_names.iter().any(|name| name == tool_name),
+                "missing typed delegation executor: {tool_name}"
+            );
+            assert_eq!(
+                tool_names
+                    .iter()
+                    .filter(|name| name.as_str() == tool_name)
+                    .count(),
+                1,
+                "expected one typed delegation executor for {tool_name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_rejects_empty_spawn_tasks_before_runner() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider = Arc::new(DelegationProvider::new(
+            Arc::new(LlmClient::new(&settings)),
+            1_i64,
+            settings,
+        ));
+        let executor = provider
+            .tool_runtime_executors(None)
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_SPAWN_SUB_AGENTS)
+            .expect("spawn_sub_agents typed executor registered");
+
+        let error = executor
+            .execute(runtime_invocation(TOOL_SPAWN_SUB_AGENTS, r#"{"tasks":[]}"#))
+            .await
+            .expect_err("empty spawn tasks must be invalid arguments");
+
+        assert!(matches!(error, ToolRuntimeError::InvalidArguments(_)));
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_cancels_all_without_jobs() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider = Arc::new(DelegationProvider::new(
+            Arc::new(LlmClient::new(&settings)),
+            1_i64,
+            settings,
+        ));
+        let executor = provider
+            .tool_runtime_executors(None)
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_CANCEL_SUB_AGENTS)
+            .expect("cancel_sub_agents typed executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(
+                TOOL_CANCEL_SUB_AGENTS,
+                r#"{"all":true}"#,
+            ))
+            .await
+            .expect("cancel all succeeds without active jobs");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let stdout = output.stdout.text.as_deref().expect("stdout text");
+        assert!(stdout.contains(r#""ok": true"#));
+        assert!(stdout.contains(r#""active_count": 0"#));
     }
 
     #[test]

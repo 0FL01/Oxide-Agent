@@ -452,8 +452,8 @@ impl ToolModule for DelegationToolModule {
         Some(Box::new(self.provider(ctx)))
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Arc::new(self.provider(ctx)).tool_runtime_executors(ctx.progress_tx())
     }
 }
 
