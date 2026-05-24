@@ -1,11 +1,51 @@
 use super::response::{format_http_error, is_retryable_error};
 use super::*;
+use crate::agent::identity::SessionId;
 use crate::agent::tool_model_route::scope_tool_model_route;
+use crate::agent::tool_runtime::{
+    ModelMetadata, OutputNormalizer, ProviderMetadata, ToolBatchId, ToolCallId,
+    ToolExecutionContext, ToolInvocation, ToolName, ToolOutputStatus, ToolRuntimeConfig,
+    ToolTimeoutConfig, TurnId,
+};
+use crate::llm::InvocationId;
+use chrono::Utc;
 use reqwest::StatusCode;
 use std::env;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
+
+fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+    let now = Utc::now();
+    ToolInvocation {
+        session_id: SessionId::from(77),
+        turn_id: TurnId::from("turn-browser-use"),
+        batch_id: ToolBatchId::from("batch-browser-use"),
+        batch_index: 0,
+        invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+        tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+        provider_tool_call_id: None,
+        tool_name: ToolName::from(tool_name),
+        raw_provider_payload: json!({}),
+        raw_arguments: raw_arguments.to_string(),
+        normalized_arguments: serde_json::Value::Null,
+        cancellation_token: CancellationToken::new(),
+        timeout: ToolTimeoutConfig::default(),
+        execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+        provider_metadata: ProviderMetadata {
+            provider: "test".to_string(),
+            protocol: "chat_like".to_string(),
+        },
+        model_metadata: ModelMetadata {
+            model: "test-model".to_string(),
+        },
+        working_directory: None,
+        environment_metadata: None,
+        created_at: now,
+        started_at: Some(now),
+    }
+}
 
 fn test_settings() -> Arc<crate::config::AgentSettings> {
     Arc::new(crate::config::AgentSettings {
@@ -44,6 +84,48 @@ fn test_args_deserialize() {
     let screenshot: Result<ScreenshotArgs, _> =
         serde_json::from_str(r#"{"session_id":"s1","full_page":true}"#);
     assert!(screenshot.is_ok());
+}
+
+#[test]
+fn typed_runtime_executors_register_browser_use_tools() {
+    let provider = Arc::new(BrowserUseProvider::new(
+        "http://localhost:8002",
+        test_settings(),
+    ));
+
+    let names = provider
+        .tool_runtime_executors()
+        .into_iter()
+        .map(|executor| executor.name().into_inner())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(names.contains(TOOL_RUN_TASK));
+    assert!(names.contains(TOOL_GET_SESSION));
+    assert!(names.contains(TOOL_CLOSE_SESSION));
+    assert!(names.contains(TOOL_EXTRACT_CONTENT));
+    assert!(names.contains(TOOL_SCREENSHOT));
+}
+
+#[tokio::test]
+async fn typed_runtime_executor_rejects_missing_task_before_http() {
+    let provider = Arc::new(BrowserUseProvider::new(
+        "http://localhost:8002",
+        test_settings(),
+    ));
+    let executor = provider
+        .tool_runtime_executors()
+        .into_iter()
+        .find(|executor| executor.name().as_str() == TOOL_RUN_TASK)
+        .expect("browser_use_run_task executor");
+
+    let error = executor
+        .execute(runtime_invocation(TOOL_RUN_TASK, "{}"))
+        .await
+        .expect_err("missing task must be invalid arguments");
+
+    let output = OutputNormalizer::new(ToolRuntimeConfig::default())
+        .executor_error(&runtime_invocation(TOOL_RUN_TASK, "{}"), error);
+    assert_eq!(output.status, ToolOutputStatus::InvalidArguments);
 }
 
 #[test]

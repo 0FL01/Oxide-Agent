@@ -674,12 +674,8 @@ impl ToolModule for MediaVideoToolModule {
 pub struct BrowserUseToolModule;
 
 #[cfg(feature = "tool-browser-use")]
-impl ToolModule for BrowserUseToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/browser-use")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+impl BrowserUseToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<BrowserUseProvider> {
         // NOTE: Browser Use is disabled until a quality vision-capable agent model
         // is available at a reasonable price-per-token. To re-enable, set
         // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
@@ -695,7 +691,7 @@ impl ToolModule for BrowserUseToolModule {
                     provider = provider.with_profile_scope(profile_scope);
                 }
                 provider = provider.with_sandbox_runtime(ctx.sandbox_runtime());
-                Some(Box::new(provider))
+                Some(provider)
             }
             Some(_) => {
                 tracing::warn!(
@@ -711,9 +707,23 @@ impl ToolModule for BrowserUseToolModule {
             }
         }
     }
+}
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+#[cfg(feature = "tool-browser-use")]
+impl ToolModule for BrowserUseToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/browser-use")
+    }
+
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider(ctx)
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 

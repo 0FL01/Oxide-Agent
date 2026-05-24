@@ -10,6 +10,10 @@ mod tests;
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::SandboxRuntime;
 use crate::agent::tool_model_route::current_tool_model_route;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::config::{
     get_browser_use_initial_backoff, get_browser_use_max_backoff, get_browser_use_max_concurrent,
     get_browser_use_max_retries, get_browser_use_timeout,
@@ -27,7 +31,7 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -223,6 +227,16 @@ impl BrowserUseProvider {
         }
     }
 
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            Self::run_task_definition(),
+            Self::get_session_definition(),
+            Self::close_session_definition(),
+            Self::extract_content_definition(),
+            Self::screenshot_definition(),
+        ]
+    }
+
     /// Create a new Browser Use provider with default config and shared semaphore.
     #[must_use]
     pub fn new_with_semaphore(
@@ -361,6 +375,23 @@ impl BrowserUseProvider {
         self.fileops = Some(fileops);
         self.exec = Some(exec);
         self
+    }
+
+    /// Build native typed runtime executors for Browser Use tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(BrowserUseToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
     }
 
     fn endpoint_url(&self, path: &str) -> String {
@@ -1153,6 +1184,44 @@ impl BrowserUseProvider {
             .await?;
         Ok(format_tool_output(payload))
     }
+
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
+            return Err(anyhow!("Browser Use request cancelled"));
+        }
+
+        let _permit = if let Some(semaphore) = &self.semaphore {
+            let permit = semaphore.acquire().await.map_err(|_| {
+                anyhow!("Browser Use semaphore acquisition failed (shutdown in progress)")
+            })?;
+            Some(permit)
+        } else {
+            None
+        };
+
+        match tool_name {
+            TOOL_RUN_TASK => self.execute_run_task(arguments, cancellation_token).await,
+            TOOL_GET_SESSION => {
+                self.execute_get_session(arguments, cancellation_token)
+                    .await
+            }
+            TOOL_CLOSE_SESSION => {
+                self.execute_close_session(arguments, cancellation_token)
+                    .await
+            }
+            TOOL_EXTRACT_CONTENT => {
+                self.execute_extract_content(arguments, cancellation_token)
+                    .await
+            }
+            TOOL_SCREENSHOT => self.execute_screenshot(arguments, cancellation_token).await,
+            _ => Err(anyhow!("Unknown Browser Use tool: {tool_name}")),
+        }
+    }
 }
 
 async fn ensure_parent_dir(exec: &dyn SandboxExec, path: &str) -> Result<()> {
@@ -1746,13 +1815,7 @@ impl ToolProvider for BrowserUseProvider {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            Self::run_task_definition(),
-            Self::get_session_definition(),
-            Self::close_session_definition(),
-            Self::extract_content_definition(),
-            Self::screenshot_definition(),
-        ]
+        Self::tool_definitions()
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
@@ -1773,35 +1836,59 @@ impl ToolProvider for BrowserUseProvider {
         _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<String> {
-        if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
-            return Err(anyhow!("Browser Use request cancelled"));
-        }
+        self.execute_tool(tool_name, arguments, cancellation_token)
+            .await
+    }
+}
 
-        let _permit = if let Some(semaphore) = &self.semaphore {
-            let permit = semaphore.acquire().await.map_err(|_| {
-                anyhow!("Browser Use semaphore acquisition failed (shutdown in progress)")
-            })?;
-            Some(permit)
-        } else {
-            None
-        };
+struct BrowserUseToolExecutor {
+    provider: Arc<BrowserUseProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
 
-        match tool_name {
-            TOOL_RUN_TASK => self.execute_run_task(arguments, cancellation_token).await,
-            TOOL_GET_SESSION => {
-                self.execute_get_session(arguments, cancellation_token)
-                    .await
-            }
-            TOOL_CLOSE_SESSION => {
-                self.execute_close_session(arguments, cancellation_token)
-                    .await
-            }
-            TOOL_EXTRACT_CONTENT => {
-                self.execute_extract_content(arguments, cancellation_token)
-                    .await
-            }
-            TOOL_SCREENSHOT => self.execute_screenshot(arguments, cancellation_token).await,
-            _ => Err(anyhow!("Unknown Browser Use tool: {tool_name}")),
-        }
+#[async_trait]
+impl ToolExecutor for BrowserUseToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(
+                self.name.as_str(),
+                &invocation.raw_arguments,
+                Some(&invocation.cancellation_token),
+            )
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(browser_use_runtime_error)
+    }
+}
+
+fn browser_use_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    let message = error.to_string();
+    if error.downcast_ref::<serde_json::Error>().is_some()
+        || message.contains("requires a non-empty task")
+        || message.contains("requires a session_id")
+        || message.contains("format must be either 'text' or 'html'")
+    {
+        ToolRuntimeError::InvalidArguments(message)
+    } else {
+        ToolRuntimeError::Failure(message)
     }
 }
