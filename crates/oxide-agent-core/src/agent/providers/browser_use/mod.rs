@@ -8,13 +8,14 @@ mod response;
 mod tests;
 
 use crate::agent::provider::ToolProvider;
+use crate::agent::providers::SandboxRuntime;
 use crate::agent::tool_model_route::current_tool_model_route;
 use crate::config::{
     get_browser_use_initial_backoff, get_browser_use_max_backoff, get_browser_use_max_concurrent,
     get_browser_use_max_retries, get_browser_use_timeout,
 };
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use lazy_regex::lazy_regex;
@@ -26,7 +27,7 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -89,8 +90,8 @@ pub struct BrowserUseProvider {
     client: reqwest::Client,
     settings: Arc<crate::config::AgentSettings>,
     profile_scope: Option<String>,
-    sandbox: Arc<Mutex<Option<SandboxManager>>>,
-    sandbox_scope: Option<SandboxScope>,
+    fileops: Option<Arc<dyn SandboxFileOps>>,
+    exec: Option<Arc<dyn SandboxExec>>,
     timeout: Duration,
     max_retries: usize,
     initial_backoff: Duration,
@@ -283,8 +284,8 @@ impl BrowserUseProvider {
             client,
             settings,
             profile_scope: None,
-            sandbox: Arc::new(Mutex::new(None)),
-            sandbox_scope: None,
+            fileops: None,
+            exec: None,
             timeout,
             max_retries,
             initial_backoff,
@@ -338,8 +339,27 @@ impl BrowserUseProvider {
 
     /// Attach sandbox scope so screenshot artifacts can be materialized for file tools.
     #[must_use]
-    pub fn with_sandbox_scope(mut self, scope: impl Into<SandboxScope>) -> Self {
-        self.sandbox_scope = Some(scope.into());
+    pub fn with_sandbox_scope(self, scope: impl Into<SandboxScope>) -> Self {
+        self.with_sandbox_runtime(Arc::new(SandboxRuntime::new(scope.into())))
+    }
+
+    /// Attach shared sandbox runtime so screenshot artifacts can be materialized for file tools.
+    #[must_use]
+    pub fn with_sandbox_runtime(self, runtime: Arc<SandboxRuntime>) -> Self {
+        let fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
+        let exec: Arc<dyn SandboxExec> = runtime;
+        self.with_sandbox_backends(fileops, exec)
+    }
+
+    /// Attach narrow sandbox capabilities for Browser Use artifact hydration.
+    #[must_use]
+    pub fn with_sandbox_backends(
+        mut self,
+        fileops: Arc<dyn SandboxFileOps>,
+        exec: Arc<dyn SandboxExec>,
+    ) -> Self {
+        self.fileops = Some(fileops);
+        self.exec = Some(exec);
         self
     }
 
@@ -668,25 +688,8 @@ impl BrowserUseProvider {
         Ok(bytes.to_vec())
     }
 
-    async fn ensure_sandbox(&self) -> Result<()> {
-        if self
-            .sandbox
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(SandboxManager::is_running)
-        {
-            return Ok(());
-        }
-
-        let sandbox_scope = self
-            .sandbox_scope
-            .clone()
-            .ok_or_else(|| anyhow!("Sandbox scope is not configured for Browser Use"))?;
-        let mut sandbox = SandboxManager::new(sandbox_scope).await?;
-        sandbox.create_sandbox().await?;
-        *self.sandbox.lock().await = Some(sandbox);
-        Ok(())
+    fn sandbox_backends(&self) -> Option<(&dyn SandboxFileOps, &dyn SandboxExec)> {
+        Some((self.fileops.as_deref()?, self.exec.as_deref()?))
     }
 
     async fn write_screenshot_file(
@@ -695,14 +698,9 @@ impl BrowserUseProvider {
         file_name: &str,
         content: &[u8],
     ) -> Result<HydratedScreenshotPaths> {
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-        };
+        let (fileops, exec) = self
+            .sandbox_backends()
+            .ok_or_else(|| anyhow!("Sandbox backends are not configured for Browser Use"))?;
 
         let sanitized_name = Path::new(file_name)
             .file_name()
@@ -711,10 +709,9 @@ impl BrowserUseProvider {
             .ok_or_else(|| anyhow!("Browser Use screenshot is missing a valid file name"))?;
         let captured_path = format!("/workspace/browser_use/{session_id}/{sanitized_name}");
         let stable_path = format!("/workspace/browser_use/{session_id}/latest.png");
-        ensure_parent_dir(&mut sandbox, &captured_path).await?;
-        sandbox.write_file(&captured_path, content).await?;
-        sandbox.write_file(&stable_path, content).await?;
-        *self.sandbox.lock().await = Some(sandbox);
+        ensure_parent_dir(exec, &captured_path).await?;
+        fileops.write_file(&captured_path, content).await?;
+        fileops.write_file(&stable_path, content).await?;
         Ok(HydratedScreenshotPaths {
             captured_path,
             stable_path,
@@ -727,14 +724,9 @@ impl BrowserUseProvider {
         file_name: &str,
         content: &[u8],
     ) -> Result<HydratedArtifactPath> {
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-        };
+        let (fileops, exec) = self
+            .sandbox_backends()
+            .ok_or_else(|| anyhow!("Sandbox backends are not configured for Browser Use"))?;
 
         let sanitized_name = Path::new(file_name)
             .file_name()
@@ -742,9 +734,8 @@ impl BrowserUseProvider {
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow!("Browser Use artifact is missing a valid file name"))?;
         let sandbox_path = format!("/workspace/browser_use/{session_id}/{sanitized_name}");
-        ensure_parent_dir(&mut sandbox, &sandbox_path).await?;
-        sandbox.write_file(&sandbox_path, content).await?;
-        *self.sandbox.lock().await = Some(sandbox);
+        ensure_parent_dir(exec, &sandbox_path).await?;
+        fileops.write_file(&sandbox_path, content).await?;
         Ok(HydratedArtifactPath { sandbox_path })
     }
 
@@ -753,7 +744,7 @@ impl BrowserUseProvider {
         payload: ResponsePayload,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<ResponsePayload> {
-        if self.sandbox_scope.is_none() {
+        if self.sandbox_backends().is_none() {
             return Ok(payload);
         }
 
@@ -835,7 +826,7 @@ impl BrowserUseProvider {
         payload: ResponsePayload,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<ResponsePayload> {
-        if self.sandbox_scope.is_none() {
+        if self.sandbox_backends().is_none() {
             return Ok(payload);
         }
 
@@ -1164,13 +1155,13 @@ impl BrowserUseProvider {
     }
 }
 
-async fn ensure_parent_dir(sandbox: &mut SandboxManager, path: &str) -> Result<()> {
+async fn ensure_parent_dir(exec: &dyn SandboxExec, path: &str) -> Result<()> {
     let parent = Path::new(path).parent().map_or_else(
         || "/workspace".to_string(),
         |value| value.to_string_lossy().to_string(),
     );
     let command = format!("mkdir -p {}", escape(parent.as_str().into()));
-    let result = sandbox.exec_command(&command, None).await?;
+    let result = exec.exec(&command, None).await?;
     if result.success() {
         Ok(())
     } else {

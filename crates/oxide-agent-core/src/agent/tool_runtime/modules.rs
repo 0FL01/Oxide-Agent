@@ -701,7 +701,7 @@ impl ToolModule for BrowserUseToolModule {
                 if let Some(profile_scope) = ctx.browser_use_profile_scope() {
                     provider = provider.with_profile_scope(profile_scope);
                 }
-                provider = provider.with_sandbox_scope(ctx.sandbox_scope());
+                provider = provider.with_sandbox_runtime(ctx.sandbox_runtime());
                 Some(Box::new(provider))
             }
             Some(_) => {
