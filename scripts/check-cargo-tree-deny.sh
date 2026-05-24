@@ -29,7 +29,7 @@ deny=("$@")
 if [[ ${#deny[@]} -eq 0 ]]; then
     case "$features" in
         profile-no-sandbox)
-            deny=(bollard rmcp bincode serde_bytes tar)
+            deny=(bollard rmcp bincode serde_bytes tar tavily)
             ;;
         sandbox-backend-sandboxd-client)
             deny=(bollard tar http-body-util)
@@ -38,10 +38,13 @@ if [[ ${#deny[@]} -eq 0 ]]; then
             deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius)
             ;;
         profile-lite | profile-embedded-opencode-local)
-            deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius)
+            deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius tavily)
+            ;;
+        profile-media-enabled)
+            deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius tavily htmd)
             ;;
         llm-opencode-go)
-            deny=(zai-rs async-openai claudius aws-sdk-s3 aws-config aws-credential-types aws-types bollard rmcp htmd)
+            deny=(zai-rs async-openai claudius aws-sdk-s3 aws-config aws-credential-types aws-types bollard rmcp htmd tavily)
             ;;
         *)
             echo "No default deny list for feature/profile '$features'." >&2

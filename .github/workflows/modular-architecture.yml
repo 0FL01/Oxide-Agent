@@ -58,6 +58,7 @@ jobs:
           - profile-embedded-opencode-local
           - profile-lite
           - profile-no-sandbox
+          - profile-media-enabled
           - profile-search-only
           - llm-opencode-go
 
