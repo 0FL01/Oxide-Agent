@@ -9,7 +9,7 @@ use super::memory::AgentMemory;
 use super::memory_behavior::MemoryBehaviorRuntime;
 // use super::providers::TodoList;
 use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{SandboxAdmin, SandboxAdminRuntime, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -276,10 +276,10 @@ pub struct AgentSession {
     pub session_id: SessionId,
     /// Conversation memory for the active agent hot context
     pub memory: AgentMemory,
-    /// Docker sandbox for code execution (lazily initialized)
-    sandbox: Option<SandboxManager>,
     /// Stable scope used to resolve this session's persistent sandbox container.
     sandbox_scope: SandboxScope,
+    /// Sandbox administration facade for session-level lifecycle controls.
+    sandbox_admin: Arc<dyn SandboxAdmin>,
     /// Stable scope used by long-term memory and archive persistence.
     memory_scope: AgentMemoryScope,
     /// When the current task started
@@ -343,8 +343,8 @@ impl AgentSession {
         Self {
             session_id,
             memory: AgentMemory::new(DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS),
-            sandbox: None,
             sandbox_scope,
+            sandbox_admin: Arc::new(SandboxAdminRuntime::new()),
             memory_scope,
             started_at: None,
             current_task_id: None,
@@ -696,73 +696,31 @@ impl AgentSession {
         matches!(self.status, AgentStatus::Processing { .. })
     }
 
-    /// Check if sandbox is available
-    #[must_use]
-    pub fn has_sandbox(&self) -> bool {
-        self.sandbox
-            .as_ref()
-            .is_some_and(SandboxManager::is_running)
-    }
-
-    /// Ensure sandbox is running, creating it if necessary
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if sandbox creation fails.
-    pub async fn ensure_sandbox(&mut self) -> Result<&mut SandboxManager> {
-        let needs_new = self.sandbox.as_ref().is_none_or(|s| !s.is_running());
-
-        if needs_new {
-            debug!(session_id = %self.session_id, "Creating new sandbox");
-            let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
-            sandbox.create_sandbox().await?;
-            self.sandbox = Some(sandbox);
-            info!(session_id = %self.session_id, "Sandbox created for session");
-        }
-
-        self.sandbox
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
-    }
-
     /// Force sandbox recreation, wiping previous container state.
     ///
     /// # Errors
     ///
-    /// Returns an error if sandbox manager initialization or recreation fails.
+    /// Returns an error if sandbox recreation fails.
     pub async fn force_recreate_sandbox(&mut self) -> Result<()> {
-        if self.sandbox.is_none() {
-            self.sandbox = Some(SandboxManager::new(self.sandbox_scope.clone()).await?);
-        }
-
-        if let Some(sandbox) = self.sandbox.as_mut() {
-            sandbox.recreate().await?;
-            info!(session_id = %self.session_id, "Sandbox force recreated for session");
-            return Ok(());
-        }
-
-        Err(anyhow::anyhow!("Sandbox not initialized"))
+        self.sandbox_admin
+            .recreate_scope_sandbox(self.sandbox_scope.clone())
+            .await?;
+        info!(session_id = %self.session_id, "Sandbox force recreated for session");
+        Ok(())
     }
 
-    /// Get sandbox reference if running
-    #[must_use]
-    pub fn sandbox(&self) -> Option<&SandboxManager> {
-        self.sandbox.as_ref().filter(|s| s.is_running())
-    }
-
-    /// Get mutable sandbox reference if running
-    pub fn sandbox_mut(&mut self) -> Option<&mut SandboxManager> {
-        self.sandbox.as_mut().filter(|s| s.is_running())
-    }
-
-    /// Destroy sandbox if running
+    /// Destroy the session sandbox if it exists.
     ///
     /// # Errors
     ///
     /// Returns an error if sandbox destruction fails.
     pub async fn destroy_sandbox(&mut self) -> Result<()> {
-        if let Some(mut sandbox) = self.sandbox.take() {
-            sandbox.destroy().await?;
+        let container_name = self.sandbox_scope.container_name();
+        let deleted = self
+            .sandbox_admin
+            .delete_sandbox_by_name(self.sandbox_scope.owner_id(), &container_name)
+            .await?;
+        if deleted {
             info!(session_id = %self.session_id, "Sandbox destroyed");
         }
         Ok(())

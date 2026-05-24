@@ -3,8 +3,9 @@
 //! Handles voice, image, and video preprocessing using the configured
 //! multimodal model before passing to the agent for execution.
 
+use super::providers::SandboxRuntime;
 use crate::llm::LlmClient;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{ExecResult, SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;
@@ -15,7 +16,8 @@ const UPLOAD_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
 /// Preprocessor for converting multimodal inputs to text
 pub struct Preprocessor {
     llm_client: Arc<LlmClient>,
-    sandbox_scope: SandboxScope,
+    sandbox_fileops: Arc<dyn SandboxFileOps>,
+    sandbox_exec: Arc<dyn SandboxExec>,
 }
 
 impl Preprocessor {
@@ -35,9 +37,23 @@ impl Preprocessor {
     /// ```
     #[must_use]
     pub fn new(llm_client: Arc<LlmClient>, sandbox_scope: impl Into<SandboxScope>) -> Self {
+        let runtime = Arc::new(SandboxRuntime::new(sandbox_scope.into()));
+        let sandbox_fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
+        let sandbox_exec: Arc<dyn SandboxExec> = runtime;
+        Self::with_sandbox_backends(llm_client, sandbox_fileops, sandbox_exec)
+    }
+
+    /// Create a preprocessor with explicit sandbox backends.
+    #[must_use]
+    pub fn with_sandbox_backends(
+        llm_client: Arc<LlmClient>,
+        sandbox_fileops: Arc<dyn SandboxFileOps>,
+        sandbox_exec: Arc<dyn SandboxExec>,
+    ) -> Self {
         Self {
             llm_client,
-            sandbox_scope: sandbox_scope.into(),
+            sandbox_fileops,
+            sandbox_exec,
         }
     }
 
@@ -211,14 +227,8 @@ impl Preprocessor {
     ) -> Result<String> {
         let upload_path = format!("/workspace/uploads/{}", Self::sanitize_filename(&file_name));
 
-        // Lazy-create sandbox
-        let mut manager = SandboxManager::new(self.sandbox_scope.clone()).await?;
-        if !manager.is_running() {
-            manager.create_sandbox().await?;
-        }
-
         // Check upload limit
-        let current_size = manager.get_uploads_size().await.unwrap_or(0);
+        let current_size = self.current_uploads_size().await.unwrap_or(0);
         let new_size = current_size + bytes.len() as u64;
 
         if new_size > UPLOAD_LIMIT_BYTES {
@@ -228,7 +238,9 @@ impl Preprocessor {
             );
         }
 
-        manager.upload_file(&upload_path, &bytes).await?;
+        self.sandbox_fileops
+            .write_file(&upload_path, &bytes)
+            .await?;
 
         let size_str = Self::format_file_size(bytes.len());
         let hint = Self::get_file_type_hint(&file_name);
@@ -254,6 +266,21 @@ impl Preprocessor {
         }
 
         Ok(parts.join("\n"))
+    }
+
+    async fn current_uploads_size(&self) -> Result<u64> {
+        let result = self
+            .sandbox_exec
+            .exec("du -sb /workspace/uploads 2>/dev/null || echo '0'", None)
+            .await?;
+        Self::parse_uploads_size(&result)
+    }
+
+    fn parse_uploads_size(result: &ExecResult) -> Result<u64> {
+        let size_str = result.stdout.split_whitespace().next().unwrap_or("0");
+        size_str
+            .parse::<u64>()
+            .map_err(|error| anyhow::anyhow!("Failed to parse uploads size: {error}"))
     }
 
     /// Sanitize a filename by replacing dangerous characters
@@ -431,7 +458,118 @@ mod tests {
     use super::*;
     use crate::config::AgentSettings;
     use crate::llm::MockLlmProvider;
+    use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability, SandboxFileListing};
     use std::sync::Arc;
+    use std::sync::Mutex;
+
+    const TEST_FILEOPS_BACKEND_ID: SandboxBackendId =
+        SandboxBackendId::new("test/preprocessor-fileops");
+    const TEST_EXEC_BACKEND_ID: SandboxBackendId = SandboxBackendId::new("test/preprocessor-exec");
+    const TEST_FILEOPS_CAPABILITIES: &[SandboxCapability] = &[SandboxCapability::FileOps];
+    const TEST_EXEC_CAPABILITIES: &[SandboxCapability] = &[SandboxCapability::Exec];
+
+    #[derive(Default)]
+    struct RecordingSandboxFileOps {
+        writes: Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl RecordingSandboxFileOps {
+        fn writes(&self) -> Vec<(String, Vec<u8>)> {
+            self.writes.lock().expect("writes mutex poisoned").clone()
+        }
+    }
+
+    impl SandboxBackend for RecordingSandboxFileOps {
+        fn id(&self) -> SandboxBackendId {
+            TEST_FILEOPS_BACKEND_ID
+        }
+
+        fn capabilities(&self) -> &'static [SandboxCapability] {
+            TEST_FILEOPS_CAPABILITIES
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SandboxFileOps for RecordingSandboxFileOps {
+        async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.writes
+                .lock()
+                .expect("writes mutex poisoned")
+                .push((path.to_string(), bytes.to_vec()));
+            Ok(())
+        }
+
+        async fn read_file(&self, _path: &str) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        async fn file_size_bytes(
+            &self,
+            _path: &str,
+            _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        ) -> Result<u64> {
+            Ok(0)
+        }
+
+        async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {
+            Ok(SandboxFileListing {
+                path: path.to_string(),
+                listing: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+            })
+        }
+    }
+
+    struct RecordingSandboxExec {
+        result: ExecResult,
+        commands: Mutex<Vec<String>>,
+    }
+
+    impl RecordingSandboxExec {
+        fn new(stdout: &str) -> Self {
+            Self {
+                result: ExecResult {
+                    stdout: stdout.to_string(),
+                    stderr: String::new(),
+                    exit_code: 0,
+                },
+                commands: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn commands(&self) -> Vec<String> {
+            self.commands
+                .lock()
+                .expect("commands mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl SandboxBackend for RecordingSandboxExec {
+        fn id(&self) -> SandboxBackendId {
+            TEST_EXEC_BACKEND_ID
+        }
+
+        fn capabilities(&self) -> &'static [SandboxCapability] {
+            TEST_EXEC_CAPABILITIES
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SandboxExec for RecordingSandboxExec {
+        async fn exec(
+            &self,
+            command: &str,
+            _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+        ) -> Result<ExecResult> {
+            self.commands
+                .lock()
+                .expect("commands mutex poisoned")
+                .push(command.to_string());
+            Ok(self.result.clone())
+        }
+    }
 
     #[test]
     fn test_sanitize_filename_basic() {
@@ -499,12 +637,64 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_uploads_size() {
+        let result = ExecResult {
+            stdout: "1536\t/workspace/uploads\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+
+        assert_eq!(
+            Preprocessor::parse_uploads_size(&result).expect("uploads size should parse"),
+            1536
+        );
+    }
+
+    #[test]
     fn test_get_file_type_hint() {
         assert!(Preprocessor::get_file_type_hint("script.py").contains("Source code"));
         assert!(Preprocessor::get_file_type_hint("data.csv").contains("pandas"));
         assert!(Preprocessor::get_file_type_hint("archive.zip").contains("Archive"));
         assert!(Preprocessor::get_file_type_hint("image.png").contains("PIL"));
         assert!(Preprocessor::get_file_type_hint("unknown.xyz").contains("tools"));
+    }
+
+    #[tokio::test]
+    async fn process_document_uses_narrow_sandbox_backends() {
+        let settings = AgentSettings::default();
+        let llm = Arc::new(crate::llm::LlmClient::new(&settings));
+        let fileops = Arc::new(RecordingSandboxFileOps::default());
+        let exec = Arc::new(RecordingSandboxExec::new("12\t/workspace/uploads\n"));
+        let sandbox_fileops: Arc<dyn SandboxFileOps> =
+            Arc::<RecordingSandboxFileOps>::clone(&fileops);
+        let sandbox_exec: Arc<dyn SandboxExec> = Arc::<RecordingSandboxExec>::clone(&exec);
+        let preprocessor = Preprocessor::with_sandbox_backends(llm, sandbox_fileops, sandbox_exec);
+
+        let processed = preprocessor
+            .process_document(
+                b"abc".to_vec(),
+                "../my file.txt".to_string(),
+                Some("text/plain".to_string()),
+                Some("caption".to_string()),
+            )
+            .await
+            .expect("document processing should succeed");
+
+        assert_eq!(
+            fileops.writes(),
+            vec![(
+                "/workspace/uploads/my_file.txt".to_string(),
+                b"abc".to_vec()
+            )]
+        );
+        assert_eq!(
+            exec.commands(),
+            vec!["du -sb /workspace/uploads 2>/dev/null || echo '0'".to_string()]
+        );
+        assert!(processed.contains("Path: `/workspace/uploads/my_file.txt`"));
+        assert!(processed.contains("Size: 3 B"));
+        assert!(processed.contains("Type: text/plain"));
+        assert!(processed.contains("**Message:** caption"));
     }
 
     #[tokio::test]
