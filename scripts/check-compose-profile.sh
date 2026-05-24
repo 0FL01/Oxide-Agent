@@ -19,7 +19,8 @@ if [[ ! -f "${compose_file}" ]]; then
 fi
 
 services="$(docker compose -f "${compose_file}" config --services | sort)"
-config="$(docker compose -f "${compose_file}" config)"
+config="$(docker compose -f "${compose_file}" config --no-env-resolution)"
+config_json="$(docker compose -f "${compose_file}" config --no-env-resolution --format json)"
 
 has_service() {
   grep -qx "$1" <<<"${services}"
@@ -54,6 +55,62 @@ require_config_text() {
     exit 1
   fi
 }
+
+check_structural_topology() {
+  COMPOSE_CONFIG_JSON="${config_json}" python3 - "${profile}" "${compose_file}" <<'PY'
+import json
+import os
+import sys
+
+profile = sys.argv[1]
+compose_file = sys.argv[2]
+config = json.loads(os.environ["COMPOSE_CONFIG_JSON"])
+services = config.get("services", {})
+declared_volumes = set((config.get("volumes") or {}).keys())
+
+
+def fail(message: str) -> None:
+    print(f"compose profile '{profile}' check failed for {compose_file}: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+docker_socket_mounts = []
+for service_name, service in services.items():
+    for volume in service.get("volumes") or []:
+        if not isinstance(volume, dict):
+            continue
+        source = volume.get("source")
+        target = volume.get("target")
+        if source == "/var/run/docker.sock" or target == "/var/run/docker.sock":
+            docker_socket_mounts.append((service_name, source, target))
+
+if profile in {"embedded-opencode-local", "search", "media"}:
+    if docker_socket_mounts:
+        fail(f"Docker socket must be absent from minimal profiles; mounts={docker_socket_mounts}")
+else:
+    expected = [("sandboxd", "/var/run/docker.sock", "/var/run/docker.sock")]
+    if docker_socket_mounts != expected:
+        fail(f"Docker socket must be mounted only into sandboxd; mounts={docker_socket_mounts}")
+
+module_volume_owners = {
+    "browser-use-data": "browser_use",
+    "sandboxd-run": "sandboxd",
+}
+for volume_name, owner_service in module_volume_owners.items():
+    if volume_name in declared_volumes and owner_service not in services:
+        fail(f"volume {volume_name!r} declared without selected service {owner_service!r}")
+
+if "sandboxd" in services and "sandboxd-run" not in declared_volumes:
+    fail("sandboxd service requires sandboxd-run volume")
+
+if "browser_use" in services and "browser-use-data" not in declared_volumes:
+    fail("browser_use service requires browser-use-data volume")
+
+print(f"compose profile '{profile}' structural topology check passed")
+PY
+}
+
+check_structural_topology
 
 case "${profile}" in
   embedded-opencode-local | search | media)

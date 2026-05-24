@@ -145,5 +145,4 @@ services:
         max-file: "3"
 
 volumes:
-  browser-use-data:
   sandboxd-run:
