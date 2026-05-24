@@ -2,8 +2,6 @@
 #![allow(clippy::clone_on_ref_ptr)]
 
 mod basics;
-#[cfg(feature = "manager-control-plane")]
-mod manager;
 mod registry;
 mod resume;
 
@@ -19,13 +17,8 @@ pub(super) use crate::agent::providers::{
 pub(super) use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
 pub(super) use crate::config::AgentSettings;
 pub(super) use crate::llm::LlmClient;
-pub(super) use crate::storage::{
-    AppendAuditEventOptions, AuditEventRecord, MockStorageProvider, TopicBindingKind,
-    TopicBindingRecord,
-};
+pub(super) use crate::storage::MockStorageProvider;
 pub(super) use anyhow::{bail, Result};
-pub(super) use mockall::predicate::eq;
-pub(super) use serde_json::json;
 pub(super) use std::sync::{Arc, Mutex as StdMutex};
 pub(super) use tokio::sync::Mutex;
 
@@ -37,13 +30,6 @@ impl RecordingTopicLifecycle {
     pub(super) fn new() -> Self {
         Self {
             create_calls: StdMutex::new(Vec::new()),
-        }
-    }
-
-    pub(super) fn create_calls(&self) -> Vec<ForumTopicCreateRequest> {
-        match self.create_calls.lock() {
-            Ok(calls) => calls.clone(),
-            Err(_) => Vec::new(),
         }
     }
 }
@@ -143,20 +129,6 @@ pub(super) fn build_executor_with_mock_response(response_text: &'static str) -> 
     llm.register_provider("mock".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
     AgentExecutor::new(Arc::new(llm), session, settings)
-}
-
-pub(super) fn build_audit_record(options: AppendAuditEventOptions) -> AuditEventRecord {
-    AuditEventRecord {
-        schema_version: 1,
-        version: 1,
-        event_id: "evt-1".to_string(),
-        user_id: options.user_id,
-        topic_id: options.topic_id,
-        agent_id: options.agent_id,
-        action: options.action,
-        payload: options.payload,
-        created_at: 100,
-    }
 }
 
 pub(super) struct BlockingTestHook;

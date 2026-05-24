@@ -8,7 +8,6 @@ pub mod compression;
 pub mod delegation;
 mod file_delivery;
 pub mod filehoster;
-pub mod filter;
 pub mod manager_control_plane;
 #[cfg(any(
     feature = "tool-media-audio",
@@ -59,7 +58,6 @@ pub use agents_md::{agents_md_tool_names, AgentsMdProvider};
 pub use compression::{compress_tool_names, CompressionProvider, TOOL_COMPRESS};
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
-pub use filter::FilteredToolProvider;
 pub use manager_control_plane::{
     manager_control_plane_tool_names, ForumTopicActionResult, ForumTopicCreateRequest,
     ForumTopicCreateResult, ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,

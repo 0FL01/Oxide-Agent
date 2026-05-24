@@ -2,8 +2,6 @@ use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{SandboxRuntime, TodoList};
 #[cfg(test)]
-use crate::agent::registry::ToolRegistry;
-#[cfg(test)]
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::tool_runtime::BrowserUseToolModule;
@@ -101,32 +99,6 @@ impl AgentExecutor {
     pub fn current_tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
         self.build_tool_runtime_registry(todos_arc, None).specs()
-    }
-
-    #[cfg(test)]
-    pub(super) fn build_tool_registry(
-        &self,
-        todos_arc: Arc<Mutex<TodoList>>,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> ToolRegistry {
-        let mut registry = ToolRegistry::new();
-        let module_ctx = self.build_tool_module_context(todos_arc, progress_tx);
-
-        // Core providers: module-owned tools, media file analysis, and delegation
-        self.register_core_providers(&mut registry, &module_ctx);
-
-        // Topic-scoped providers: agents_md, manager, ssh, reminders
-        self.register_topic_providers(&mut registry, &module_ctx);
-
-        // Feature-gated MCP, search, and browser automation providers
-        self.register_mcp_providers(&mut registry, &module_ctx);
-        self.register_search_providers(&mut registry, &module_ctx);
-        self.register_browser_providers(&mut registry, &module_ctx);
-
-        // Optional TTS providers.
-        self.register_tts_providers(&mut registry, &module_ctx);
-
-        registry
     }
 
     #[must_use]
@@ -395,106 +367,6 @@ impl AgentExecutor {
         Arc::new(runtime)
     }
 
-    #[cfg(test)]
-    fn register_core_providers(&self, registry: &mut ToolRegistry, module_ctx: &ToolModuleContext) {
-        self.register_legacy_tool_modules(registry, module_ctx);
-    }
-
-    #[cfg(test)]
-    fn register_legacy_tool_modules(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
-        #[cfg(not(any(
-            feature = "tool-sandbox-exec",
-            feature = "tool-sandbox-fileops",
-            feature = "tool-sandbox-recreate",
-            feature = "tool-compression",
-            feature = "tool-delegation",
-            feature = "tool-file-delivery",
-            feature = "tool-media-audio",
-            feature = "tool-media-image",
-            feature = "tool-media-video",
-            feature = "tool-stack-logs",
-            feature = "tool-todos",
-            feature = "tool-wiki-memory",
-            feature = "tool-ytdlp"
-        )))]
-        let _ = (registry, ctx);
-
-        #[cfg(feature = "tool-compression")]
-        self.register_legacy_tool_module(registry, &CompressionToolModule, ctx);
-        #[cfg(feature = "tool-delegation")]
-        self.register_legacy_tool_module(registry, &DelegationToolModule, ctx);
-        #[cfg(feature = "tool-file-delivery")]
-        self.register_legacy_tool_module(registry, &FileDeliveryToolModule, ctx);
-        #[cfg(feature = "tool-stack-logs")]
-        self.register_legacy_tool_module(registry, &StackLogsToolModule, ctx);
-        #[cfg(feature = "tool-todos")]
-        self.register_legacy_tool_module(registry, &TodosToolModule, ctx);
-        #[cfg(feature = "tool-ytdlp")]
-        self.register_legacy_tool_module(registry, &YtdlpToolModule, ctx);
-        #[cfg(feature = "tool-sandbox-exec")]
-        self.register_legacy_tool_module(registry, &SandboxExecToolModule, ctx);
-        #[cfg(feature = "tool-sandbox-fileops")]
-        self.register_legacy_tool_module(registry, &SandboxFileOpsToolModule, ctx);
-        #[cfg(feature = "tool-sandbox-recreate")]
-        self.register_legacy_tool_module(registry, &SandboxRecreateToolModule, ctx);
-        #[cfg(feature = "tool-media-audio")]
-        self.register_legacy_tool_module(registry, &MediaAudioToolModule, ctx);
-        #[cfg(feature = "tool-media-image")]
-        self.register_legacy_tool_module(registry, &MediaImageToolModule, ctx);
-        #[cfg(feature = "tool-media-video")]
-        self.register_legacy_tool_module(registry, &MediaVideoToolModule, ctx);
-        #[cfg(feature = "tool-wiki-memory")]
-        self.register_legacy_tool_module(registry, &WikiMemoryToolModule, ctx);
-    }
-
-    #[cfg(any(
-        feature = "tool-sandbox-exec",
-        feature = "tool-sandbox-fileops",
-        feature = "tool-sandbox-recreate",
-        feature = "manager-control-plane",
-        feature = "integration-ssh-mcp",
-        feature = "integration-mcp-jira",
-        feature = "integration-mcp-mattermost",
-        feature = "tool-agents-md",
-        feature = "tool-browser-use",
-        feature = "tool-compression",
-        feature = "tool-delegation",
-        feature = "tool-file-delivery",
-        feature = "tool-media-audio",
-        feature = "tool-media-image",
-        feature = "tool-media-video",
-        feature = "tool-reminder",
-        feature = "tool-searxng",
-        feature = "tool-stack-logs",
-        feature = "tool-tavily",
-        feature = "tool-todos",
-        feature = "tool-tts-kokoro",
-        feature = "tool-tts-silero",
-        feature = "tool-webfetch-md",
-        feature = "tool-wiki-memory",
-        feature = "tool-ytdlp"
-    ))]
-    #[cfg(test)]
-    fn register_legacy_tool_module<M>(
-        &self,
-        registry: &mut ToolRegistry,
-        module: &M,
-        ctx: &ToolModuleContext,
-    ) where
-        M: ToolModule,
-    {
-        let module_id = module.module_id();
-        if !self.settings.is_module_enabled(module_id.as_str()) {
-            tracing::debug!(%module_id, "Skipping disabled legacy tool module");
-            return;
-        }
-
-        tracing::debug!(%module_id, "Registering legacy tool module");
-        if let Some(provider) = module.legacy_provider(ctx) {
-            registry.register(provider);
-        }
-    }
-
     #[cfg(feature = "tool-browser-use")]
     pub(super) fn browser_use_profile_scope(&self) -> Option<String> {
         self.reminder_context
@@ -531,93 +403,5 @@ impl AgentExecutor {
             })
             .map(|scope| scope.trim().to_string())
             .filter(|scope| !scope.is_empty())
-    }
-
-    #[cfg(test)]
-    fn register_topic_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
-        #[cfg(feature = "tool-agents-md")]
-        self.register_legacy_tool_module(registry, &AgentsMdToolModule, ctx);
-
-        #[cfg(feature = "manager-control-plane")]
-        self.register_legacy_tool_module(registry, &ManagerControlPlaneToolModule, ctx);
-
-        #[cfg(feature = "integration-ssh-mcp")]
-        self.register_legacy_tool_module(registry, &SshMcpToolModule, ctx);
-
-        #[cfg(feature = "tool-reminder")]
-        self.register_legacy_tool_module(registry, &ReminderToolModule, ctx);
-
-        #[cfg(not(any(
-            feature = "tool-agents-md",
-            feature = "manager-control-plane",
-            feature = "integration-ssh-mcp",
-            feature = "tool-reminder"
-        )))]
-        let _ = (registry, ctx);
-    }
-
-    #[cfg(test)]
-    fn register_mcp_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
-        #[cfg(not(any(
-            feature = "integration-mcp-jira",
-            feature = "integration-mcp-mattermost"
-        )))]
-        let _ = (registry, ctx);
-
-        #[cfg(feature = "integration-mcp-jira")]
-        self.register_legacy_tool_module(registry, &JiraMcpToolModule, ctx);
-
-        #[cfg(feature = "integration-mcp-mattermost")]
-        self.register_legacy_tool_module(registry, &MattermostMcpToolModule, ctx);
-    }
-
-    #[cfg(test)]
-    fn register_search_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
-        #[cfg(not(any(
-            feature = "tool-tavily",
-            feature = "tool-searxng",
-            feature = "tool-webfetch-md"
-        )))]
-        let _ = (registry, ctx);
-
-        #[cfg(feature = "tool-tavily")]
-        self.register_legacy_tool_module(registry, &TavilyToolModule, ctx);
-        #[cfg(not(feature = "tool-tavily"))]
-        if crate::config::is_tavily_enabled() {
-            tracing::warn!("Tavily enabled but feature not compiled in");
-        }
-
-        #[cfg(feature = "tool-searxng")]
-        self.register_legacy_tool_module(registry, &SearxngToolModule, ctx);
-        #[cfg(not(feature = "tool-searxng"))]
-        if crate::config::is_searxng_enabled() {
-            tracing::warn!("SearXNG enabled but feature not compiled in");
-        }
-
-        #[cfg(feature = "tool-webfetch-md")]
-        self.register_legacy_tool_module(registry, &WebFetchMdToolModule, ctx);
-    }
-
-    #[cfg(test)]
-    fn register_browser_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
-        #[cfg(feature = "tool-browser-use")]
-        self.register_legacy_tool_module(registry, &BrowserUseToolModule, ctx);
-        #[cfg(not(feature = "tool-browser-use"))]
-        if crate::config::is_browser_use_enabled() {
-            tracing::warn!("Browser Use enabled but feature not compiled in");
-        }
-        #[cfg(not(feature = "tool-browser-use"))]
-        let _ = (registry, ctx);
-    }
-
-    #[cfg(test)]
-    fn register_tts_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
-        #[cfg(not(any(feature = "tool-tts-kokoro", feature = "tool-tts-silero")))]
-        let _ = (registry, ctx);
-
-        #[cfg(feature = "tool-tts-kokoro")]
-        self.register_legacy_tool_module(registry, &KokoroTtsToolModule, ctx);
-        #[cfg(feature = "tool-tts-silero")]
-        self.register_legacy_tool_module(registry, &SileroTtsToolModule, ctx);
     }
 }

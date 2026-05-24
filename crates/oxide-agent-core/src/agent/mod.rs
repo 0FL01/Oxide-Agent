@@ -33,8 +33,6 @@ pub mod provider;
 pub mod providers;
 /// Recovery module for malformed LLM responses
 pub mod recovery;
-/// Registry for managing available tools
-pub mod registry;
 /// Core agent runner (execution loop)
 pub mod runner;
 /// Agent session management
@@ -85,7 +83,6 @@ pub use provider::ToolProvider;
 pub use providers::{SshApprovalGrant, SshApprovalRequestView};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
-pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{
     AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingUserInput,

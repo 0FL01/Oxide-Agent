@@ -2,7 +2,6 @@
 
 use super::ToolExecutor;
 use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::providers::SandboxExecProvider;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -31,12 +30,6 @@ use crate::agent::providers::CompressionProvider;
 use crate::agent::providers::DelegationProvider;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::providers::FileHosterProvider;
-#[cfg(any(
-    feature = "tool-media-audio",
-    feature = "tool-media-image",
-    feature = "tool-media-video"
-))]
-use crate::agent::providers::FilteredToolProvider;
 #[cfg(any(
     feature = "tool-media-audio",
     feature = "tool-media-image",
@@ -336,9 +329,6 @@ pub trait ToolModule {
     /// Stable module ID corresponding to the compiled capability manifest.
     fn module_id(&self) -> ModuleId;
 
-    /// Builds the legacy provider owned by this module.
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>>;
-
     /// Builds typed tool executors owned by this module.
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>>;
 }
@@ -351,10 +341,6 @@ pub struct CompressionToolModule;
 impl ToolModule for CompressionToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/compression")
-    }
-
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(CompressionProvider::new()))
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -370,12 +356,6 @@ pub struct FileDeliveryToolModule;
 impl ToolModule for FileDeliveryToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/file-delivery")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(FileHosterProvider::from_runtime(
-            ctx.sandbox_runtime(),
-        )))
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -401,11 +381,6 @@ impl AgentsMdToolModule {
 impl ToolModule for AgentsMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/agents-md")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider(ctx)
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -448,10 +423,6 @@ impl ToolModule for DelegationToolModule {
         ModuleId::new("tool/delegation")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(self.provider(ctx)))
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(self.provider(ctx)).tool_runtime_executors(ctx.progress_tx())
     }
@@ -477,11 +448,6 @@ impl ManagerControlPlaneToolModule {
 impl ToolModule for ManagerControlPlaneToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("manager/control-plane")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider(ctx)
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -515,11 +481,6 @@ impl ToolModule for SshMcpToolModule {
         ModuleId::new("integration/ssh-mcp")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider(ctx)
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -542,11 +503,6 @@ impl ReminderToolModule {
 impl ToolModule for ReminderToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/reminder")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider(ctx)
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -579,11 +535,6 @@ impl ToolModule for WikiMemoryToolModule {
         ModuleId::new("tool/wiki-memory")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider(ctx)
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -610,14 +561,6 @@ impl ToolModule for MediaAudioToolModule {
         ModuleId::new("tool/media-audio")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        let provider: Arc<dyn ToolProvider> = Arc::new(media_file_provider(ctx));
-        Some(Box::new(FilteredToolProvider::new(
-            provider,
-            &["transcribe_audio_file"],
-        )))
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(media_file_provider(ctx)).tool_runtime_executors_for(&["transcribe_audio_file"])
     }
@@ -633,14 +576,6 @@ impl ToolModule for MediaImageToolModule {
         ModuleId::new("tool/media-image")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        let provider: Arc<dyn ToolProvider> = Arc::new(media_file_provider(ctx));
-        Some(Box::new(FilteredToolProvider::new(
-            provider,
-            &["describe_image_file"],
-        )))
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(media_file_provider(ctx)).tool_runtime_executors_for(&["describe_image_file"])
     }
@@ -654,14 +589,6 @@ pub struct MediaVideoToolModule;
 impl ToolModule for MediaVideoToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/media-video")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        let provider: Arc<dyn ToolProvider> = Arc::new(media_file_provider(ctx));
-        Some(Box::new(FilteredToolProvider::new(
-            provider,
-            &["describe_video_file"],
-        )))
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -715,11 +642,6 @@ impl ToolModule for BrowserUseToolModule {
         ModuleId::new("tool/browser-use")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider(ctx)
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -763,11 +685,6 @@ impl JiraMcpToolModule {
 impl ToolModule for JiraMcpToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("integration/mcp-jira")
-    }
-
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider()
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -817,11 +734,6 @@ impl ToolModule for MattermostMcpToolModule {
         ModuleId::new("integration/mcp-mattermost")
     }
 
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider()
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
-    }
-
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -839,10 +751,6 @@ impl ToolModule for StackLogsToolModule {
         ModuleId::new("tool/stack-logs")
     }
 
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(StackLogsProvider::new()))
-    }
-
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(StackLogsProvider::new()).tool_runtime_executors()
     }
@@ -856,10 +764,6 @@ pub struct WebFetchMdToolModule;
 impl ToolModule for WebFetchMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/webfetch-md")
-    }
-
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(WebFetchMdProvider::new()))
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -910,11 +814,6 @@ impl ToolModule for TavilyToolModule {
         ModuleId::new("tool/tavily")
     }
 
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider()
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
-    }
-
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -961,11 +860,6 @@ impl ToolModule for SearxngToolModule {
         ModuleId::new("tool/searxng")
     }
 
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider()
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
-    }
-
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider()
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -1008,11 +902,6 @@ impl KokoroTtsToolModule {
 impl ToolModule for KokoroTtsToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tts-kokoro")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider(ctx)
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -1059,11 +948,6 @@ impl ToolModule for SileroTtsToolModule {
         ModuleId::new("tool/tts-silero")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        self.provider(ctx)
-            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
             .map(|provider| Arc::new(provider).tool_runtime_executors())
@@ -1092,10 +976,6 @@ impl ToolModule for YtdlpToolModule {
         ModuleId::new("tool/ytdlp")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(self.provider(ctx)))
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(self.provider(ctx)).tool_runtime_executors()
     }
@@ -1109,10 +989,6 @@ pub struct TodosToolModule;
 impl ToolModule for TodosToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/todos")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(TodosProvider::new(ctx.todos())))
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
@@ -1130,10 +1006,6 @@ impl ToolModule for SandboxExecToolModule {
         ModuleId::new("tool/sandbox-exec")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(SandboxExecProvider::new(ctx.sandbox_runtime())))
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(SandboxExecProvider::new(ctx.sandbox_runtime())).tool_runtime_executors()
     }
@@ -1149,10 +1021,6 @@ impl ToolModule for SandboxFileOpsToolModule {
         ModuleId::new("tool/sandbox-fileops")
     }
 
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(SandboxFileOpsProvider::new(ctx.sandbox_runtime())))
-    }
-
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(SandboxFileOpsProvider::new(ctx.sandbox_runtime())).tool_runtime_executors()
     }
@@ -1166,12 +1034,6 @@ pub struct SandboxRecreateToolModule;
 impl ToolModule for SandboxRecreateToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/sandbox-recreate")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        Some(Box::new(SandboxLifecycleProvider::new(
-            ctx.sandbox_runtime(),
-        )))
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
