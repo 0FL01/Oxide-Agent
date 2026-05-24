@@ -1,6 +1,5 @@
 //! Explicit media-analysis tools for files already stored in the sandbox.
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -651,34 +650,6 @@ fn remote_media_nonce() -> u128 {
         .as_nanos()
 }
 
-#[async_trait]
-impl ToolProvider for MediaFileProvider {
-    fn name(&self) -> &'static str {
-        "media_file"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_TRANSCRIBE_AUDIO_FILE | TOOL_DESCRIBE_IMAGE_FILE | TOOL_DESCRIBE_VIDEO_FILE
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
-    }
-}
-
 struct MediaFileToolExecutor {
     provider: Arc<MediaFileProvider>,
     name: ToolName,
@@ -802,13 +773,16 @@ mod tests {
 
     #[test]
     fn transcribe_audio_tool_accepts_custom_prompt() {
-        let provider =
-            MediaFileProvider::new(Arc::new(LlmClient::new(&AgentSettings::default())), 42_i64);
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
         let tool = provider
-            .tools()
+            .tool_runtime_executors()
             .into_iter()
-            .find(|tool| tool.name == TOOL_TRANSCRIBE_AUDIO_FILE)
-            .expect("transcribe_audio_file tool must exist");
+            .find(|executor| executor.name().as_str() == TOOL_TRANSCRIBE_AUDIO_FILE)
+            .expect("transcribe_audio_file executor must exist")
+            .spec();
 
         assert_eq!(
             tool.parameters["properties"]["prompt"]["type"],
@@ -842,9 +816,15 @@ mod tests {
 
     #[test]
     fn media_tool_descriptions_mention_urls() {
-        let provider =
-            MediaFileProvider::new(Arc::new(LlmClient::new(&AgentSettings::default())), 42_i64);
-        let tools = provider.tools();
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
+        let tools = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect::<Vec<_>>();
 
         let image_tool = tools
             .iter()
