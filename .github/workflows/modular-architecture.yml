@@ -47,6 +47,8 @@ jobs:
       fail-fast: false
       matrix:
         features:
+          - profile-embedded-opencode-local
+          - profile-lite
           - profile-no-sandbox
           - profile-search-only
           - llm-opencode-go
