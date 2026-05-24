@@ -65,13 +65,60 @@ check_structural_topology() {
   COMPOSE_CONFIG_JSON="${config_json}" python3 - "${profile}" "${compose_file}" <<'PY'
 import json
 import os
+import pathlib
 import sys
+import tomllib
 
 profile = sys.argv[1]
 compose_file = sys.argv[2]
 config = json.loads(os.environ["COMPOSE_CONFIG_JSON"])
 services = config.get("services", {})
 declared_volumes = set((config.get("volumes") or {}).keys())
+
+profile_to_defaults = {
+    "embedded-opencode-local": "embedded-opencode-local",
+    "search": "search-only",
+    "media": "media-enabled",
+    "dev": "full",
+    "full": "full",
+    "root-full": "full",
+}
+defaults_profile = profile_to_defaults[profile]
+profile_path = pathlib.Path("profiles") / f"{defaults_profile}.toml"
+with profile_path.open("rb") as fh:
+    profile_doc = tomllib.load(fh)
+module_ids = set((profile_doc.get("modules") or {}).keys())
+
+uses_sandboxd = "sandbox-daemon/sandboxd" in module_ids
+uses_searxng = "tool/searxng" in module_ids
+uses_browser_use = False  # Browser Use bridge is intentionally dormant until a cost-effective vision model is selected.
+uses_ssh_mcp = "integration/ssh-mcp" in module_ids
+
+expected_cargo_features = [
+    f"oxide-agent-telegram-bot/profile-{defaults_profile}",
+]
+if uses_sandboxd:
+    expected_cargo_features.append("oxide-agent-sandboxd/profile-full")
+expected_cargo_features_text = ",".join(expected_cargo_features)
+
+expected_packages = ["oxide-agent-telegram-bot"]
+expected_binaries = ["oxide-agent-telegram-bot"]
+if uses_sandboxd:
+    expected_packages.append("oxide-agent-sandboxd")
+    expected_binaries.append("oxide-agent-sandboxd")
+expected_packages_text = " ".join(expected_packages)
+expected_binaries_text = " ".join(expected_binaries)
+
+mcp_binary_by_module = [
+    ("integration/ssh-mcp", "ssh-mcp"),
+    ("integration/mcp-jira", "jira-mcp"),
+    ("integration/mcp-mattermost", "mattermost-mcp"),
+]
+expected_mcp_binaries = [
+    binary for module_id, binary in mcp_binary_by_module if module_id in module_ids
+]
+expected_mcp_binaries_text = " ".join(expected_mcp_binaries)
+expected_runtime_apt_packages = "openssh-client" if uses_ssh_mcp else ""
 
 
 def fail(message: str) -> None:
@@ -110,6 +157,87 @@ if "sandboxd" in services and "sandboxd-run" not in declared_volumes:
 
 if "browser_use" in services and "browser-use-data" not in declared_volumes:
     fail("browser_use service requires browser-use-data volume")
+
+if ("sandboxd" in services) != uses_sandboxd:
+    fail(
+        "sandboxd service selection does not match profile modules; "
+        f"service_present={'sandboxd' in services}; module_selected={uses_sandboxd}"
+    )
+
+if ("sandbox_image" in services) != uses_sandboxd:
+    fail(
+        "sandbox image service selection does not match sandbox daemon module; "
+        f"service_present={'sandbox_image' in services}; module_selected={uses_sandboxd}"
+    )
+
+if ("searxng" in services) != uses_searxng:
+    fail(
+        "searxng service selection does not match tool/searxng module; "
+        f"service_present={'searxng' in services}; module_selected={uses_searxng}"
+    )
+
+if "browser_use" in services and not uses_browser_use:
+    fail("browser_use service must stay absent while the bridge is intentionally dormant")
+
+oxide_agent = services.get("oxide_agent")
+if not oxide_agent:
+    fail("oxide_agent service is required")
+
+def normalized_args(service_name: str) -> dict[str, str]:
+    service = services[service_name]
+    build = service.get("build")
+    if not build:
+        fail(f"{service_name} must declare a profile-aware app build")
+    dockerfile = build.get("dockerfile")
+    if dockerfile != "docker/Dockerfile.app":
+        fail(f"{service_name} must build docker/Dockerfile.app, got {dockerfile!r}")
+    return {str(key): str(value) for key, value in (build.get("args") or {}).items()}
+
+
+def assert_app_build_args(service_name: str) -> None:
+    args = normalized_args(service_name)
+    expected = {
+        "CARGO_FEATURES": expected_cargo_features_text,
+        "PACKAGES": expected_packages_text,
+        "BINARIES": expected_binaries_text,
+        "ENTRYPOINT_BINARY": "oxide-agent-telegram-bot",
+    }
+    if expected_mcp_binaries_text:
+        expected["MCP_BINARIES"] = expected_mcp_binaries_text
+    if expected_runtime_apt_packages:
+        expected["RUNTIME_APT_PACKAGES"] = expected_runtime_apt_packages
+
+    for key, expected_value in expected.items():
+        if args.get(key) != expected_value:
+            fail(
+                f"{service_name} build arg {key} mismatch: "
+                f"actual={args.get(key)!r}; expected={expected_value!r}"
+            )
+
+    forbidden_when_empty = {
+        "MCP_BINARIES": expected_mcp_binaries_text,
+        "RUNTIME_APT_PACKAGES": expected_runtime_apt_packages,
+    }
+    for key, expected_value in forbidden_when_empty.items():
+        if not expected_value and args.get(key, "") not in {"", None}:
+            fail(f"{service_name} build arg {key} must be absent or empty for this profile")
+
+
+assert_app_build_args("oxide_agent")
+
+if "sandboxd" in services:
+    sandboxd = services["sandboxd"]
+    build = sandboxd.get("build")
+    if build:
+        assert_app_build_args("sandboxd")
+    elif sandboxd.get("image") != oxide_agent.get("image"):
+        fail("sandboxd without its own build must reuse the oxide_agent image")
+    command = sandboxd.get("command") or []
+    if "./oxide-agent-sandboxd" not in command:
+        fail("sandboxd service must run the oxide-agent-sandboxd binary")
+
+if not uses_sandboxd and expected_mcp_binaries:
+    fail("MCP binaries require the full sandbox-capable app image profile")
 
 print(f"compose profile '{profile}' structural topology check passed")
 PY
