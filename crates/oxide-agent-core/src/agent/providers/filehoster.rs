@@ -4,7 +4,6 @@
 //! for chat delivery.
 
 use crate::agent::progress::{AgentEvent, FileDeliveryKind};
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     CleanupStatus, OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput,
     ToolRuntimeConfig, ToolRuntimeError,
@@ -29,8 +28,6 @@ use super::sandbox::SandboxRuntime;
 const MAX_UPLOAD_SIZE_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB (safety limit)
 const GOFILE_UPLOAD_URL: &str = "https://upload.gofile.io/uploadfile";
 const GOFILE_DOWNLOAD_PAGE_PREFIX: &str = "https://gofile.io/d/";
-
-const FILE_DELIVERY_TOOL_NAMES: &[&str] = &["send_file_to_user", "upload_file"];
 
 /// Provider for file delivery tools backed by shared sandbox runtime state.
 pub struct FileHosterProvider {
@@ -257,6 +254,29 @@ impl FileHosterProvider {
 
         Ok(download_page)
     }
+
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        progress_tx: Option<&Sender<AgentEvent>>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        debug!(tool = tool_name, "Executing filehoster tool");
+
+        match tool_name {
+            "send_file_to_user" => {
+                self.handle_send_file(
+                    self.progress_tx.as_ref().or(progress_tx),
+                    arguments,
+                    cancellation_token,
+                )
+                .await
+            }
+            "upload_file" => self.handle_upload_file(arguments, cancellation_token).await,
+            _ => anyhow::bail!("Unknown file delivery tool: {tool_name}"),
+        }
+    }
 }
 
 struct ResolvedSandboxFile {
@@ -444,7 +464,7 @@ impl ToolExecutor for FileDeliveryToolExecutor {
     ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
         let output = self
             .provider
-            .execute(
+            .execute_tool(
                 self.name.as_str(),
                 &invocation.raw_arguments,
                 self.progress_tx.as_ref(),
@@ -564,48 +584,6 @@ fn build_send_file_response(path: &str, report: &FileDeliveryReport) -> serde_js
     payload
 }
 
-#[async_trait]
-impl ToolProvider for FileHosterProvider {
-    fn name(&self) -> &'static str {
-        "filehoster"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        file_delivery_tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        FILE_DELIVERY_TOOL_NAMES.contains(&tool_name)
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&Sender<AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        debug!(tool = tool_name, "Executing filehoster tool");
-
-        if !self.can_handle(tool_name) {
-            anyhow::bail!("Unknown file delivery tool: {tool_name}");
-        }
-
-        match tool_name {
-            "send_file_to_user" => {
-                self.handle_send_file(
-                    self.progress_tx.as_ref().or(progress_tx),
-                    arguments,
-                    cancellation_token,
-                )
-                .await
-            }
-            "upload_file" => self.handle_upload_file(arguments, cancellation_token).await,
-            _ => unreachable!("validated file delivery tool name"),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,13 +591,14 @@ mod tests {
 
     #[test]
     fn provider_exposes_file_delivery_tools() {
-        let provider = FileHosterProvider::new(1);
-        let tool_names: Vec<_> = provider.tools().into_iter().map(|tool| tool.name).collect();
+        let provider = Arc::new(FileHosterProvider::new(1));
+        let tool_names: Vec<_> = provider
+            .tool_runtime_executors(None)
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect();
 
         assert_eq!(tool_names, ["send_file_to_user", "upload_file"]);
-        assert!(provider.can_handle("send_file_to_user"));
-        assert!(provider.can_handle("upload_file"));
-        assert!(!provider.can_handle("read_file"));
     }
 
     #[test]

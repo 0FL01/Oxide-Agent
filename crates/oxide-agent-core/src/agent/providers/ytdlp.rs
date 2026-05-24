@@ -6,7 +6,6 @@
 //! All operations execute inside the Docker sandbox where yt-dlp is installed.
 
 use crate::agent::progress::{AgentEvent, FileDeliveryKind};
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -891,43 +890,6 @@ impl YtdlpProvider {
             }
             _ => anyhow::bail!("Unknown ytdlp tool: {tool_name}"),
         }
-    }
-}
-
-// ============================================================================
-// ToolProvider implementation
-// ============================================================================
-
-#[async_trait]
-impl ToolProvider for YtdlpProvider {
-    fn name(&self) -> &'static str {
-        "ytdlp"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_YTDLP_GET_METADATA
-                | TOOL_YTDLP_DOWNLOAD_TRANSCRIPT
-                | TOOL_YTDLP_SEARCH_VIDEOS
-                | TOOL_YTDLP_DOWNLOAD_VIDEO
-                | TOOL_YTDLP_DOWNLOAD_AUDIO
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments, cancellation_token)
-            .await
     }
 }
 
