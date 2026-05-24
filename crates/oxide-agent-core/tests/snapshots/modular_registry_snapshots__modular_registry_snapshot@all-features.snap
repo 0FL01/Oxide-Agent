@@ -172,16 +172,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "conflicts": []
       },
       {
-        "id": "storage/local-fs-transient",
-        "kind": "storage-backend",
-        "cargo_feature": "storage-local-fs",
-        "provides": [
-          "storage/local-fs-transient"
-        ],
-        "requires": [],
-        "conflicts": []
-      },
-      {
         "id": "storage/r2",
         "kind": "storage-backend",
         "cargo_feature": "storage-s3-r2",
@@ -595,10 +585,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "sandbox-daemon/sandboxd"
       },
       {
-        "id": "storage/local-fs-transient",
-        "module": "storage/local-fs-transient"
-      },
-      {
         "id": "storage/r2",
         "module": "storage/r2"
       },
@@ -737,7 +723,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/docker-direct",
       "sandbox-backend/sandboxd-client",
       "sandbox-daemon/sandboxd",
-      "storage/local-fs-transient",
       "storage/r2",
       "tool/agents-md",
       "tool/browser-use",
@@ -791,7 +776,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client/fileops",
       "sandbox-backend/sandboxd-client/lifecycle",
       "sandbox-daemon/sandboxd",
-      "storage/local-fs-transient",
       "storage/r2",
       "tool/agents-md",
       "tool/browser-use",

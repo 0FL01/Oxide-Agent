@@ -150,13 +150,6 @@ fn push_transport_and_storage_modules(modules: &mut Vec<Box<dyn CapabilityModule
         StorageBackend,
         ["storage/r2"]
     );
-    push_module!(
-        modules,
-        "storage-local-fs",
-        "storage/local-fs-transient",
-        StorageBackend,
-        ["storage/local-fs-transient"]
-    );
 }
 
 fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
@@ -442,4 +435,29 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
             "manager/agent-profile-admin"
         ]
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compiled_capability_manifest;
+
+    #[test]
+    fn transient_local_fs_is_not_registered_as_durable_storage_backend() {
+        let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
+
+        assert!(
+            manifest
+                .modules()
+                .iter()
+                .all(|module| module.id().as_str() != "storage/local-fs-transient"),
+            "storage-local-fs is transient workspace only and must not register a storage backend module"
+        );
+        assert!(
+            manifest
+                .capabilities()
+                .iter()
+                .all(|capability| capability.id().as_str() != "storage/local-fs-transient"),
+            "storage-local-fs must not expose a durable storage capability"
+        );
+    }
 }
