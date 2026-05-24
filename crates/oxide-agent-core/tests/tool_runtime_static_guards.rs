@@ -163,6 +163,47 @@ fn runner_has_no_legacy_tool_execution_path_labels() {
 }
 
 #[test]
+fn tool_call_correlation_api_uses_wire_and_invocation_terms() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let targets = [
+        "src/llm/types.rs",
+        "src/llm/mod.rs",
+        "src/agent/memory.rs",
+        "src/llm/providers/tool_result_encoder.rs",
+    ];
+    let forbidden_patterns = [
+        "from_legacy_tool_call_id",
+        "legacy_tool_call_id",
+        "legacy tool call id",
+        "persisted for compatibility",
+        "legacy_and_canonical",
+        "legacy_tool_message",
+        "legacy_assistant_tool_batch",
+        "legacy-call",
+        "call-legacy",
+    ];
+
+    let offenders = targets
+        .iter()
+        .flat_map(|target| {
+            let source = fs::read_to_string(manifest_dir.join(target))
+                .unwrap_or_else(|error| panic!("read {target}: {error}"));
+            forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{target}: {pattern}"))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "tool-call correlation API should use current wire/invocation terminology; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn typed_tool_registry_has_single_production_definition() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
 

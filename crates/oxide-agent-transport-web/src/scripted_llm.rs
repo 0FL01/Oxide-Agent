@@ -229,7 +229,7 @@ mod tests {
         let correlation = tool_call.correlation();
 
         assert_eq!(tool_call.invocation_id().as_str(), "call_1");
-        assert_eq!(correlation.legacy_tool_call_id(), "call_1");
+        assert_eq!(correlation.invocation_id.as_str(), "call_1");
         assert_eq!(correlation.wire_tool_call_id(), "scripted-call_1");
     }
 }

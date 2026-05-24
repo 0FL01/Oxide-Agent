@@ -28,7 +28,7 @@ pub struct AgentMessage {
     /// Optional reasoning/thinking content (for models that support it, e.g., GLM-4.7)
     /// This is counted towards token limits but not shown to user
     pub reasoning: Option<String>,
-    /// Legacy tool call id echoed by chat-like providers and persisted for compatibility.
+    /// Provider-facing tool call id echoed by chat-like providers.
     pub tool_call_id: Option<String>,
     /// Canonical correlation metadata for a tool result message.
     #[serde(default)]
@@ -251,7 +251,7 @@ impl AgentMessage {
     pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
         Self::tool_with_correlation(
             tool_call_id,
-            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            ToolCallCorrelation::new(tool_call_id),
             name,
             content,
         )
@@ -288,7 +288,7 @@ impl AgentMessage {
     ) -> Self {
         Self::externalized_tool_with_correlation(
             tool_call_id,
-            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            ToolCallCorrelation::new(tool_call_id),
             name,
             content,
             externalized_payload,
@@ -328,7 +328,7 @@ impl AgentMessage {
     ) -> Self {
         Self::pruned_tool_with_correlation(
             tool_call_id,
-            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            ToolCallCorrelation::new(tool_call_id),
             name,
             content,
             pruned_artifact,
@@ -459,11 +459,9 @@ impl AgentMessage {
     /// Resolve the canonical correlation for a tool result message.
     #[must_use]
     pub fn resolved_tool_call_correlation(&self) -> Option<ToolCallCorrelation> {
-        self.tool_call_correlation.clone().or_else(|| {
-            self.tool_call_id
-                .as_deref()
-                .map(ToolCallCorrelation::from_legacy_tool_call_id)
-        })
+        self.tool_call_correlation
+            .clone()
+            .or_else(|| self.tool_call_id.as_deref().map(ToolCallCorrelation::new))
     }
 
     /// Resolve canonical correlations for an assistant tool call batch.
@@ -977,24 +975,24 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_tool_message_resolves_correlation_from_tool_call_id() {
-        let legacy = json!({
+    fn test_tool_message_resolves_correlation_from_tool_call_id() {
+        let value = json!({
             "kind": "ToolResult",
             "role": "Tool",
             "content": "stdout",
             "reasoning": null,
-            "tool_call_id": "call-legacy",
+            "tool_call_id": "call-wire",
             "tool_name": "execute_command",
             "tool_calls": null,
             "externalized_payload": null,
             "pruned_artifact": null
         });
-        let message: AgentMessage = serde_json::from_value(legacy).expect("message deserializes");
+        let message: AgentMessage = serde_json::from_value(value).expect("message deserializes");
 
         assert_eq!(message.tool_call_correlation, None);
         assert_eq!(
             message.resolved_tool_call_correlation(),
-            Some(ToolCallCorrelation::from_legacy_tool_call_id("call-legacy"))
+            Some(ToolCallCorrelation::new("call-wire"))
         );
     }
 
@@ -1027,8 +1025,8 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
-        let legacy = json!({
+    fn test_assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
+        let value = json!({
             "kind": "AssistantToolCall",
             "role": "Assistant",
             "content": "Calling tools",
@@ -1036,7 +1034,7 @@ mod tests {
             "tool_call_id": null,
             "tool_name": null,
             "tool_calls": [{
-                "id": "call-legacy",
+                "id": "call-wire",
                 "function": {
                     "name": "search",
                     "arguments": "{}"
@@ -1046,14 +1044,12 @@ mod tests {
             "externalized_payload": null,
             "pruned_artifact": null
         });
-        let message: AgentMessage = serde_json::from_value(legacy).expect("message deserializes");
+        let message: AgentMessage = serde_json::from_value(value).expect("message deserializes");
 
         assert_eq!(message.tool_call_correlations, None);
         assert_eq!(
             message.resolved_tool_call_correlations(),
-            Some(vec![ToolCallCorrelation::from_legacy_tool_call_id(
-                "call-legacy"
-            )])
+            Some(vec![ToolCallCorrelation::new("call-wire")])
         );
     }
 
