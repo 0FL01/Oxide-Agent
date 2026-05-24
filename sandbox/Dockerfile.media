@@ -1,0 +1,38 @@
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    dnsutils \
+    fd-find \
+    ffmpeg \
+    git \
+    iputils-ping \
+    jq \
+    net-tools \
+    procps \
+    python3 \
+    python3-pip \
+    ripgrep \
+    telnet \
+    traceroute \
+    tzdata \
+    unzip \
+    whois \
+    zip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -snf /usr/share/zoneinfo/Europe/Moscow /etc/localtime \
+    && echo "Europe/Moscow" > /etc/timezone \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd
+
+RUN pip install --no-cache-dir --break-system-packages \
+    beautifulsoup4 \
+    httpx \
+    lxml \
+    requests \
+    yt-dlp
+
+WORKDIR /workspace
+
+CMD ["sleep", "infinity"]

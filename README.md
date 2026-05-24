@@ -578,7 +578,7 @@ Enhanced reminder scheduling with pause/resume/retry support.
 ### Services
 
 1. **sandbox_image**
-    - Builds agent-sandbox image from `sandbox/Dockerfile.sandbox`
+    - Builds the selected sandbox image variant, with full/dev using `sandbox/Dockerfile.dev`
     - One-shot build service used during `docker compose up --build`
 
 2. **oxide_agent** (main bot)

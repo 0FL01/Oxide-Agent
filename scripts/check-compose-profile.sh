@@ -8,6 +8,11 @@ if [[ -f Dockerfile ]]; then
   exit 1
 fi
 
+if [[ -f sandbox/Dockerfile.sandbox ]]; then
+  echo "legacy fat sandbox/Dockerfile.sandbox must stay removed; use explicit sandbox image variants" >&2
+  exit 1
+fi
+
 case "${profile}" in
   root-full) compose_file="docker-compose.yml" ;;
   *) compose_file="docker/compose.${profile}.yml" ;;
@@ -132,6 +137,8 @@ case "${profile}" in
     require_service sandboxd
     require_service sandbox_image
     require_service searxng
+    require_config_text "sandbox/Dockerfile.dev"
+    forbid_config_text "sandbox/Dockerfile.sandbox"
     if ! grep -q "/var/run/docker.sock" <<<"${config}"; then
       echo "full compose must mount Docker socket only into sandboxd" >&2
       exit 1

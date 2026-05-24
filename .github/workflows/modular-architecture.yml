@@ -201,6 +201,19 @@ jobs:
             --build-arg MCP_BINARIES="${{ matrix.mcp_binaries }}" \
             .
 
+  sandbox-image-variant-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check sandbox image variants
+        run: scripts/check-sandbox-image-variants.sh
+
   profile-size-budget-checks:
     runs-on: ubuntu-latest
     strategy:

@@ -4,7 +4,7 @@ services:
   sandbox_image:
     build:
       context: ..
-      dockerfile: sandbox/Dockerfile.sandbox
+      dockerfile: sandbox/Dockerfile.dev
     image: ${SANDBOX_IMAGE:-agent-sandbox:latest}
     command: ["true"]
     restart: "no"

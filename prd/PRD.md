@@ -1799,10 +1799,10 @@ If the feature is absent, the binary must not exist in the final image.
 Create sandbox Dockerfiles or generated Dockerfiles:
 
 ```text
-docker/sandbox/Dockerfile.minimal
-docker/sandbox/Dockerfile.exec
-docker/sandbox/Dockerfile.media
-docker/sandbox/Dockerfile.dev
+sandbox/Dockerfile.minimal
+sandbox/Dockerfile.exec
+sandbox/Dockerfile.media
+sandbox/Dockerfile.dev
 ```
 
 The selected profile chooses the image.
