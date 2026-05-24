@@ -11,7 +11,6 @@ use crate::agent::hooks::{
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
-use crate::agent::provider::ToolProvider;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::providers::SandboxExecProvider;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -1341,34 +1340,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         );
 
         CompletedSubAgentExecution { status, output }
-    }
-}
-
-#[async_trait]
-impl ToolProvider for DelegationProvider {
-    fn name(&self) -> &'static str {
-        "delegation"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == TOOL_SPAWN_SUB_AGENTS
-            || tool_name == TOOL_WAIT_SUB_AGENTS
-            || tool_name == TOOL_CANCEL_SUB_AGENTS
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments, progress_tx, cancellation_token)
-            .await
     }
 }
 
