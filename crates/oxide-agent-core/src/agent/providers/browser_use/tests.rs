@@ -554,6 +554,26 @@ fn browser_llm_config_marks_vision_openrouter_models() {
 }
 
 #[test]
+fn browser_llm_config_accepts_canonical_openrouter_provider_id() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "google/gemini-3-flash-preview".to_string(),
+        provider: "llm-provider/openrouter".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, api_key) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("canonical OpenRouter route config");
+
+    assert_eq!(config.provider, "openrouter");
+    assert_eq!(api_key, "openrouter-secret");
+    assert!(config.supports_vision);
+}
+
+#[test]
 fn browser_llm_config_marks_glm_4_6v_as_vision_capable() {
     let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
     let route = crate::config::ModelInfo {
@@ -568,6 +588,26 @@ fn browser_llm_config_marks_glm_4_6v_as_vision_capable() {
         .browser_llm_config_for_route(&route)
         .expect("zai route config");
 
+    assert!(config.supports_vision);
+}
+
+#[test]
+fn browser_llm_config_accepts_canonical_zai_provider_id() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "GLM-4.6V".to_string(),
+        provider: "llm-provider/zai".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, api_key) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("canonical ZAI route config");
+
+    assert_eq!(config.provider, "zai");
+    assert_eq!(api_key, "zai-secret");
     assert!(config.supports_vision);
 }
 

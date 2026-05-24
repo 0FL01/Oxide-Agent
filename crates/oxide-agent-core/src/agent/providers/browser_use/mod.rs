@@ -17,7 +17,7 @@ use crate::config::{
     get_browser_use_initial_backoff, get_browser_use_max_backoff, get_browser_use_max_concurrent,
     get_browser_use_max_retries, get_browser_use_timeout,
 };
-use crate::llm::ToolDefinition;
+use crate::llm::{providers::provider_module_id, ToolDefinition};
 use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -435,22 +435,23 @@ impl BrowserUseProvider {
         &self,
         route: &crate::config::ModelInfo,
     ) -> Result<(BrowserLlmConfig, String)> {
-        let provider = route.provider.to_ascii_lowercase();
+        let configured_provider = route.provider.trim();
+        let provider = canonical_browser_route_provider(configured_provider);
         let supports_vision = route_supports_vision(&provider, &route.id);
-        let supports_tools = !matches!(provider.as_str(), "groq");
+        let supports_tools = !matches!(provider.as_str(), "llm-provider/groq" | "groq");
 
         let (bridge_provider, api_base, api_key) = match provider.as_str() {
-            "minimax" => (
+            "llm-provider/minimax" | "minimax" => (
                 "minimax",
                 Some(MINIMAX_DEFAULT_API_BASE.to_string()),
                 self.require_route_api_key("minimax", self.settings.minimax_api_key.as_deref())?,
             ),
-            "zai" => (
+            "llm-provider/zai" | "zai" => (
                 "zai",
                 Some(self.settings.zai_api_base.clone()),
                 self.require_route_api_key("zai", self.settings.zai_api_key.as_deref())?,
             ),
-            "openrouter" => (
+            "llm-provider/openrouter" | "openrouter" => (
                 "openrouter",
                 Some(OPENROUTER_DEFAULT_API_BASE.to_string()),
                 self.require_route_api_key(
@@ -460,7 +461,12 @@ impl BrowserUseProvider {
             ),
             unsupported => {
                 return Err(anyhow!(
-                    "Browser Use route inheritance does not support provider `{unsupported}` yet; supported routes: minimax, zai, openrouter"
+                    "Browser Use route inheritance does not support provider `{}` yet; supported routes: minimax, zai, openrouter",
+                    if configured_provider.is_empty() {
+                        unsupported
+                    } else {
+                        configured_provider
+                    }
                 ));
             }
         };
@@ -1290,6 +1296,13 @@ fn execution_mode_for_steering(steering: RunTaskSteering) -> RunTaskExecutionMod
     }
 }
 
+fn canonical_browser_route_provider(provider: &str) -> String {
+    let provider = provider.trim();
+    provider_module_id(provider)
+        .unwrap_or(provider)
+        .to_ascii_lowercase()
+}
+
 #[derive(Debug, Deserialize)]
 struct ExtractContentArgs {
     session_id: String,
@@ -1317,8 +1330,8 @@ struct ScreenshotRequestBody {
 
 fn route_supports_vision(provider: &str, model: &str) -> bool {
     match provider {
-        "zai" => is_zai_vision_model(model),
-        "openrouter" => is_openrouter_vision_model(model),
+        "llm-provider/zai" | "zai" => is_zai_vision_model(model),
+        "llm-provider/openrouter" | "openrouter" => is_openrouter_vision_model(model),
         _ => false,
     }
 }
