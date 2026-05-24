@@ -4,11 +4,11 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/check-profile-size-budget.sh <embedded-opencode-local|full> [binary|image|all]
+  scripts/check-profile-size-budget.sh <embedded-opencode-local|full> [binary|image|metrics|all]
 
-Checks configured release binary and Docker image size budgets for selected
-modular architecture profiles. Budgets can be overridden with the env vars
-printed on failure.
+Checks configured release binary, Docker image, and profile metric budgets for
+selected modular architecture profiles. Budgets can be overridden with the env
+vars printed on failure.
 USAGE
 }
 
@@ -21,7 +21,7 @@ profile="$1"
 mode="${2:-binary}"
 
 case "${mode}" in
-  binary | image | all) ;;
+  binary | image | metrics | all) ;;
   *)
     echo "unknown size budget mode '${mode}'" >&2
     usage
@@ -31,6 +31,7 @@ esac
 
 declare -a packages
 declare -a binaries
+declare -a high_risk_dependencies
 entrypoint_binary="oxide-agent-telegram-bot"
 runtime_apt_packages=""
 mcp_binaries=""
@@ -38,11 +39,13 @@ mcp_binaries=""
 case "${profile}" in
   embedded-opencode-local)
     cargo_features="oxide-agent-telegram-bot/profile-embedded-opencode-local"
+    manifest_features="oxide-agent-telegram-bot/profile-embedded-opencode-local"
     packages=(oxide-agent-telegram-bot)
     binaries=(oxide-agent-telegram-bot)
     ;;
   full)
     cargo_features="oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full"
+    manifest_features="oxide-agent-telegram-bot/profile-full"
     packages=(oxide-agent-telegram-bot oxide-agent-sandboxd)
     binaries=(oxide-agent-telegram-bot oxide-agent-sandboxd)
     mcp_binaries="ssh-mcp jira-mcp mattermost-mcp"
@@ -53,6 +56,24 @@ case "${profile}" in
     exit 2
     ;;
 esac
+
+high_risk_dependencies=(
+  aws-sdk-s3
+  aws-config
+  aws-credential-types
+  aws-types
+  bollard
+  rmcp
+  bincode
+  serde_bytes
+  tar
+  zai-rs
+  async-openai
+  claudius
+  htmd
+  reqwest
+  teloxide
+)
 
 profile_env="${profile^^}"
 profile_env="${profile_env//-/_}"
@@ -115,6 +136,21 @@ check_budget() {
   echo "size budget passed for ${label}: actual $(human_bytes "${actual}") <= budget $(human_bytes "${budget}")"
 }
 
+check_count_budget() {
+  local label="$1"
+  local actual="$2"
+  local budget="$3"
+  local env_name="$4"
+
+  if (( actual > budget )); then
+    echo "count budget exceeded for ${label}: actual ${actual} > budget ${budget}" >&2
+    echo "override with ${env_name}=${actual} after intentionally accepting the new baseline" >&2
+    exit 1
+  fi
+
+  echo "count budget passed for ${label}: actual ${actual} <= budget ${budget}"
+}
+
 check_binary_budgets() {
   local package_args=()
   local package
@@ -138,6 +174,87 @@ check_binary_budgets() {
     budget="${!env_name:-${default_budget}}"
     check_budget "${profile}/${binary}" "${actual}" "${budget}" "${env_name}"
   done
+}
+
+metric_env_name() {
+  local metric_env="${1^^}"
+  metric_env="${metric_env//-/_}"
+  printf 'OXIDE_SIZE_BUDGET_%s_%s' "${profile_env}" "${metric_env}"
+}
+
+default_metric_budget() {
+  case "${profile}:$1" in
+    embedded-opencode-local:MODULES) echo 8 ;;
+    embedded-opencode-local:CAPABILITIES) echo 8 ;;
+    embedded-opencode-local:DEPENDENCIES) echo 400 ;;
+    embedded-opencode-local:HIGH_RISK_DEPENDENCIES) echo 7 ;;
+    full:MODULES) echo 39 ;;
+    full:CAPABILITIES) echo 53 ;;
+    full:DEPENDENCIES) echo 470 ;;
+    full:HIGH_RISK_DEPENDENCIES) echo 15 ;;
+    *) echo 500 ;;
+  esac
+}
+
+check_profile_metric_budgets() {
+  local tmp_manifest tmp_tree
+  tmp_manifest="$(mktemp)"
+  tmp_tree="$(mktemp)"
+  trap 'rm -f "${tmp_manifest}" "${tmp_tree}"' RETURN
+
+  cargo run -q \
+    -p oxide-agent-telegram-bot \
+    --bin oxide-agent-telegram-bot \
+    --no-default-features \
+    --features "${manifest_features}" \
+    -- capabilities --compiled --json >"${tmp_manifest}"
+
+  local module_count capability_count
+  read -r module_count capability_count < <(
+    python3 - "${tmp_manifest}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    manifest = json.load(fh)
+print(len(manifest["modules"]), len(manifest["capabilities"]))
+PY
+  )
+
+  cargo tree --workspace --no-default-features --features "${cargo_features}" --prefix none >"${tmp_tree}"
+
+  local dependency_count high_risk_count
+  dependency_count="$(
+    sed -n 's/^\([A-Za-z0-9_.-][A-Za-z0-9_.-]*\) v[0-9].*/\1/p' "${tmp_tree}" \
+      | sort -u \
+      | wc -l \
+      | tr -d '[:space:]'
+  )"
+
+  high_risk_count=0
+  local dependency
+  for dependency in "${high_risk_dependencies[@]}"; do
+    if grep -Eq "^${dependency//+/\\+} v[0-9]" "${tmp_tree}"; then
+      high_risk_count=$((high_risk_count + 1))
+    fi
+  done
+
+  local env_name budget
+  env_name="$(metric_env_name MODULES)"
+  budget="${!env_name:-$(default_metric_budget MODULES)}"
+  check_count_budget "${profile}/compiled-modules" "${module_count}" "${budget}" "${env_name}"
+
+  env_name="$(metric_env_name CAPABILITIES)"
+  budget="${!env_name:-$(default_metric_budget CAPABILITIES)}"
+  check_count_budget "${profile}/compiled-capabilities" "${capability_count}" "${budget}" "${env_name}"
+
+  env_name="$(metric_env_name DEPENDENCIES)"
+  budget="${!env_name:-$(default_metric_budget DEPENDENCIES)}"
+  check_count_budget "${profile}/unique-dependencies" "${dependency_count}" "${budget}" "${env_name}"
+
+  env_name="$(metric_env_name HIGH_RISK_DEPENDENCIES)"
+  budget="${!env_name:-$(default_metric_budget HIGH_RISK_DEPENDENCIES)}"
+  check_count_budget "${profile}/high-risk-dependencies" "${high_risk_count}" "${budget}" "${env_name}"
 }
 
 image_env_name() {
@@ -235,8 +352,12 @@ case "${mode}" in
   image)
     check_image_budgets
     ;;
+  metrics)
+    check_profile_metric_budgets
+    ;;
   all)
     check_binary_budgets
+    check_profile_metric_budgets
     check_image_budgets
     ;;
 esac

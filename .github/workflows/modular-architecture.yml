@@ -266,6 +266,7 @@ jobs:
           - full
         mode:
           - binary
+          - metrics
           - image
 
     steps:
@@ -273,18 +274,18 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        if: matrix.mode == 'binary'
+        if: matrix.mode != 'image'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry and index
-        if: matrix.mode == 'binary'
+        if: matrix.mode != 'image'
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
       - name: Cache cargo build
-        if: matrix.mode == 'binary'
+        if: matrix.mode != 'image'
         uses: actions/cache@v4
         with:
           path: target
