@@ -10,7 +10,13 @@ use super::provider_runtime_executors;
 use super::ToolExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
-use crate::agent::providers::{SandboxProvider, TodoList};
+#[cfg(feature = "tool-sandbox-exec")]
+use crate::agent::providers::SandboxExecProvider;
+#[cfg(feature = "tool-sandbox-fileops")]
+use crate::agent::providers::SandboxFileOpsProvider;
+#[cfg(feature = "tool-sandbox-recreate")]
+use crate::agent::providers::SandboxLifecycleProvider;
+use crate::agent::providers::{SandboxRuntime, TodoList};
 #[cfg(feature = "tool-wiki-memory")]
 use crate::agent::session::AgentMemoryScope;
 #[cfg(feature = "tool-wiki-memory")]
@@ -35,10 +41,7 @@ use crate::agent::providers::FileHosterProvider;
 #[cfg(any(
     feature = "tool-media-audio",
     feature = "tool-media-image",
-    feature = "tool-media-video",
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-fileops",
-    feature = "tool-sandbox-recreate"
+    feature = "tool-media-video"
 ))]
 use crate::agent::providers::FilteredToolProvider;
 #[cfg(any(
@@ -168,7 +171,7 @@ impl SshMcpModuleContext {
 pub struct ToolModuleContext {
     todos: Arc<Mutex<TodoList>>,
     sandbox_scope: SandboxScope,
-    sandbox_provider: Arc<SandboxProvider>,
+    sandbox_runtime: Arc<SandboxRuntime>,
     llm_client: Arc<LlmClient>,
     settings: Arc<AgentSettings>,
     browser_use_profile_scope: Option<String>,
@@ -193,8 +196,8 @@ pub struct ToolModuleContextParts {
     pub todos: Arc<Mutex<TodoList>>,
     /// Current sandbox scope.
     pub sandbox_scope: SandboxScope,
-    /// Shared sandbox provider.
-    pub sandbox_provider: Arc<SandboxProvider>,
+    /// Shared sandbox runtime.
+    pub sandbox_runtime: Arc<SandboxRuntime>,
     /// Shared LLM client.
     pub llm_client: Arc<LlmClient>,
     /// Shared agent settings.
@@ -230,7 +233,7 @@ impl ToolModuleContext {
         Self {
             todos: parts.todos,
             sandbox_scope: parts.sandbox_scope,
-            sandbox_provider: parts.sandbox_provider,
+            sandbox_runtime: parts.sandbox_runtime,
             llm_client: parts.llm_client,
             settings: parts.settings,
             browser_use_profile_scope: parts.browser_use_profile_scope,
@@ -256,16 +259,10 @@ impl ToolModuleContext {
         Arc::clone(&self.todos)
     }
 
-    /// Shared sandbox provider for modules that own sandbox tools.
+    /// Shared sandbox runtime for modules that own sandbox tools.
     #[must_use]
-    pub fn sandbox_provider(&self) -> Arc<SandboxProvider> {
-        Arc::clone(&self.sandbox_provider)
-    }
-
-    /// Shared sandbox provider as a legacy provider trait object.
-    #[must_use]
-    pub fn sandbox_provider_dyn(&self) -> Arc<dyn ToolProvider> {
-        Arc::<SandboxProvider>::clone(&self.sandbox_provider)
+    pub fn sandbox_runtime(&self) -> Arc<SandboxRuntime> {
+        Arc::clone(&self.sandbox_runtime)
     }
 
     /// Sandbox scope for modules that need their own sandbox-backed provider.
@@ -1062,11 +1059,11 @@ impl ToolModule for SandboxExecToolModule {
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        sandbox_legacy_provider(ctx, &["execute_command"])
+        Some(Box::new(SandboxExecProvider::new(ctx.sandbox_runtime())))
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        sandbox_tool_runtime_executors(ctx, &["execute_command"])
+        Arc::new(SandboxExecProvider::new(ctx.sandbox_runtime())).tool_runtime_executors()
     }
 }
 
@@ -1081,17 +1078,11 @@ impl ToolModule for SandboxFileOpsToolModule {
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        sandbox_legacy_provider(
-            ctx,
-            &["write_file", "read_file", "send_file_to_user", "list_files"],
-        )
+        Some(Box::new(SandboxFileOpsProvider::new(ctx.sandbox_runtime())))
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        sandbox_tool_runtime_executors(
-            ctx,
-            &["write_file", "read_file", "send_file_to_user", "list_files"],
-        )
+        Arc::new(SandboxFileOpsProvider::new(ctx.sandbox_runtime())).tool_runtime_executors()
     }
 }
 
@@ -1106,44 +1097,12 @@ impl ToolModule for SandboxRecreateToolModule {
     }
 
     fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
-        sandbox_legacy_provider(ctx, &["recreate_sandbox"])
+        Some(Box::new(SandboxLifecycleProvider::new(
+            ctx.sandbox_runtime(),
+        )))
     }
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        sandbox_tool_runtime_executors(ctx, &["recreate_sandbox"])
+        Arc::new(SandboxLifecycleProvider::new(ctx.sandbox_runtime())).tool_runtime_executors()
     }
-}
-
-#[cfg(any(
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-fileops",
-    feature = "tool-sandbox-recreate"
-))]
-fn sandbox_legacy_provider(
-    ctx: &ToolModuleContext,
-    owned_tool_names: &'static [&'static str],
-) -> Option<Box<dyn ToolProvider>> {
-    Some(Box::new(FilteredToolProvider::new(
-        ctx.sandbox_provider_dyn(),
-        owned_tool_names,
-    )))
-}
-
-#[cfg(any(
-    feature = "tool-sandbox-exec",
-    feature = "tool-sandbox-fileops",
-    feature = "tool-sandbox-recreate"
-))]
-fn sandbox_tool_runtime_executors(
-    ctx: &ToolModuleContext,
-    owned_tool_names: &[&str],
-) -> Vec<Arc<dyn ToolExecutor>> {
-    ctx.sandbox_provider()
-        .tool_runtime_executors()
-        .into_iter()
-        .filter(|executor| {
-            let name = executor.name();
-            owned_tool_names.iter().any(|owned| *owned == name.as_str())
-        })
-        .collect()
 }

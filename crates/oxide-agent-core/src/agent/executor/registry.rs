@@ -1,6 +1,6 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
-use crate::agent::providers::{SandboxProvider, TodoList};
+use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::registry::ToolRegistry;
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::tool_runtime::BrowserUseToolModule;
@@ -350,7 +350,7 @@ impl AgentExecutor {
         ToolModuleContext::new(ToolModuleContextParts {
             todos: todos_arc,
             sandbox_scope: sandbox_scope.clone(),
-            sandbox_provider: self.build_sandbox_provider(sandbox_scope, progress_tx),
+            sandbox_runtime: self.build_sandbox_runtime(sandbox_scope, progress_tx),
             llm_client: self.runner.llm_client(),
             settings: Arc::clone(&self.settings),
             browser_use_profile_scope: self.browser_use_profile_scope(),
@@ -390,17 +390,17 @@ impl AgentExecutor {
         })
     }
 
-    fn build_sandbox_provider(
+    fn build_sandbox_runtime(
         &self,
         sandbox_scope: SandboxScope,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Arc<SandboxProvider> {
-        let provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(sandbox_scope).with_progress_tx(tx.clone())
+    ) -> Arc<SandboxRuntime> {
+        let runtime = if let Some(tx) = progress_tx {
+            SandboxRuntime::new(sandbox_scope).with_progress_tx(tx.clone())
         } else {
-            SandboxProvider::new(sandbox_scope)
+            SandboxRuntime::new(sandbox_scope)
         };
-        Arc::new(provider)
+        Arc::new(runtime)
     }
 
     fn register_core_providers(&self, registry: &mut ToolRegistry, module_ctx: &ToolModuleContext) {

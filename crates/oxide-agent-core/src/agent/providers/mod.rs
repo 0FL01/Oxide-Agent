@@ -71,7 +71,10 @@ pub use reminder::{
     reminder_tool_names, ReminderContext, ReminderProvider, ReminderScheduleEvent,
     ReminderScheduleNotifier,
 };
-pub use sandbox::SandboxProvider;
+pub use sandbox::{
+    SandboxExecProvider, SandboxFileOpsProvider, SandboxLifecycleProvider, SandboxProvider,
+    SandboxRuntime,
+};
 #[cfg(feature = "tool-tts-silero")]
 pub use silero_tts::{
     SileroSampleRate, SileroTtsConfig, SileroTtsFormat, SileroTtsProvider, SileroTtsRequest,
