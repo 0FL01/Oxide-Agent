@@ -10,7 +10,10 @@ use crate::agent::tool_runtime::{
     ToolOutput, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::llm::ToolDefinition;
-use crate::sandbox::{ExecResult, SandboxManager, SandboxScope};
+use crate::sandbox::{
+    ExecResult, SandboxBackend, SandboxBackendId, SandboxCapability, SandboxExec,
+    SandboxFileListing, SandboxFileOps, SandboxLifecycle, SandboxManager, SandboxScope,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -26,6 +29,12 @@ use tracing::debug;
 const SANDBOX_EXEC_TOOL_NAMES: &[&str] = &["execute_command"];
 const SANDBOX_FILEOPS_TOOL_NAMES: &[&str] = &["write_file", "read_file", "list_files"];
 const SANDBOX_LIFECYCLE_TOOL_NAMES: &[&str] = &["recreate_sandbox"];
+const SANDBOX_RUNTIME_BACKEND_ID: SandboxBackendId = SandboxBackendId::new("sandbox/runtime");
+const SANDBOX_RUNTIME_CAPABILITIES: &[SandboxCapability] = &[
+    SandboxCapability::FileOps,
+    SandboxCapability::Exec,
+    SandboxCapability::Lifecycle,
+];
 
 /// Shared runtime state used by sandbox tool capability slices.
 pub struct SandboxRuntime {
@@ -105,21 +114,80 @@ impl SandboxRuntime {
     }
 }
 
+impl SandboxBackend for SandboxRuntime {
+    fn id(&self) -> SandboxBackendId {
+        SANDBOX_RUNTIME_BACKEND_ID
+    }
+
+    fn capabilities(&self) -> &'static [SandboxCapability] {
+        SANDBOX_RUNTIME_CAPABILITIES
+    }
+}
+
+#[async_trait]
+impl SandboxExec for SandboxRuntime {
+    async fn exec(
+        &self,
+        command: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<ExecResult> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        sandbox.exec_command(command, cancellation_token).await
+    }
+}
+
+#[async_trait]
+impl SandboxFileOps for SandboxRuntime {
+    async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        sandbox.write_file(path, bytes).await
+    }
+
+    async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        sandbox.read_file(path).await
+    }
+
+    async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        let result = sandbox
+            .exec_command(&list_files_command(path), None)
+            .await?;
+        Ok(SandboxFileListing {
+            path: path.to_string(),
+            listing: result.stdout,
+            stderr: result.stderr,
+            exit_code: result.exit_code,
+        })
+    }
+}
+
+#[async_trait]
+impl SandboxLifecycle for SandboxRuntime {
+    async fn recreate(&self) -> Result<()> {
+        let _exclusive = self.execution_gate.write().await;
+        let mut sandbox = self.get_or_init_sandbox_manager().await?;
+        let result = sandbox.recreate().await;
+        self.set_sandbox(sandbox).await;
+        result
+    }
+}
+
 struct SandboxToolHandlers;
 
 impl SandboxToolHandlers {
     async fn handle_execute_command(
-        sandbox: &mut SandboxManager,
+        exec: &dyn SandboxExec,
         arguments: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
 
-        // Pass cancellation_token to exec_command
-        match sandbox
-            .exec_command(&args.command, cancellation_token)
-            .await
-        {
+        match exec.exec(&args.command, cancellation_token).await {
             Ok(result) => serialize_json(json!({
                 "ok": result.success(),
                 "command": args.command,
@@ -135,9 +203,9 @@ impl SandboxToolHandlers {
         }
     }
 
-    async fn handle_write_file(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
+    async fn handle_write_file(fileops: &dyn SandboxFileOps, arguments: &str) -> Result<String> {
         let args: WriteFileArgs = serde_json::from_str(arguments)?;
-        match sandbox
+        match fileops
             .write_file(&args.path, args.content.as_bytes())
             .await
         {
@@ -154,9 +222,9 @@ impl SandboxToolHandlers {
         }
     }
 
-    async fn handle_read_file(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
+    async fn handle_read_file(fileops: &dyn SandboxFileOps, arguments: &str) -> Result<String> {
         let args: ReadFileArgs = serde_json::from_str(arguments)?;
-        match sandbox.read_file(&args.path).await {
+        match fileops.read_file(&args.path).await {
             Ok(content) => serialize_json(json!({
                 "ok": true,
                 "path": args.path,
@@ -170,42 +238,27 @@ impl SandboxToolHandlers {
         }
     }
 
-    async fn handle_list_files(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
-        #[derive(Debug, Deserialize)]
-        struct ListFilesArgs {
-            #[serde(default = "default_workspace_path")]
-            path: String,
-        }
-
-        fn default_workspace_path() -> String {
-            "/workspace".to_string()
-        }
-
+    async fn handle_list_files(fileops: &dyn SandboxFileOps, arguments: &str) -> Result<String> {
         let args: ListFilesArgs = serde_json::from_str(arguments)?;
-        let cmd = format!(
-            "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
-            escape(args.path.as_str().into()),
-            escape(args.path.as_str().into())
-        );
 
-        match sandbox.exec_command(&cmd, None).await {
-            Ok(result) => {
-                if result.success() {
+        match fileops.list_files(&args.path).await {
+            Ok(listing) => {
+                if listing.success() {
                     serialize_json(json!({
                         "ok": true,
-                        "path": args.path,
-                        "listing": result.stdout,
-                        "stderr": result.stderr,
-                        "exit_code": result.exit_code,
-                        "is_empty": result.stdout.is_empty(),
+                        "path": listing.path,
+                        "listing": listing.listing,
+                        "stderr": listing.stderr,
+                        "exit_code": listing.exit_code,
+                        "is_empty": listing.is_empty(),
                     }))
                 } else {
                     serialize_json(json!({
                         "ok": false,
-                        "path": args.path,
-                        "listing": result.stdout,
-                        "stderr": result.stderr,
-                        "exit_code": result.exit_code,
+                        "path": listing.path,
+                        "listing": listing.listing,
+                        "stderr": listing.stderr,
+                        "exit_code": listing.exit_code,
                     }))
                 }
             }
@@ -218,7 +271,7 @@ impl SandboxToolHandlers {
     }
 
     async fn handle_recreate_sandbox(
-        sandbox: &mut SandboxManager,
+        lifecycle: &dyn SandboxLifecycle,
         arguments: &str,
     ) -> Result<String> {
         let _: RecreateSandboxArgs = if arguments.trim().is_empty() {
@@ -227,7 +280,7 @@ impl SandboxToolHandlers {
             serde_json::from_str(arguments)?
         };
 
-        match sandbox.recreate().await {
+        match lifecycle.recreate().await {
             Ok(()) => serialize_json(json!({
                 "ok": true,
                 "status": "recreated",
@@ -241,42 +294,17 @@ impl SandboxToolHandlers {
         }
     }
 
-    async fn execute_typed_sandbox_tool(
-        runtime: &SandboxRuntime,
+    async fn execute_typed_exec_tool(
+        exec: &dyn SandboxExec,
         invocation: &ToolInvocation,
     ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
         debug!(tool = %invocation.tool_name, "Executing typed sandbox tool");
 
         match invocation.tool_name.as_str() {
-            "recreate_sandbox" => {
-                let _exclusive = runtime.execution_gate.write().await;
-                let mut sandbox = runtime
-                    .get_or_init_sandbox_manager()
-                    .await
-                    .map_err(tool_failure)?;
-                let _args: RecreateSandboxArgs = parse_invocation_args(invocation)?;
-                let result = sandbox.recreate().await;
-                runtime.set_sandbox(sandbox).await;
-                Ok(typed_simple_result(
-                    invocation,
-                    result.map(|()| {
-                        json!({
-                            "ok": true,
-                            "status": "recreated",
-                            "message": "Sandbox recreated successfully. Previous workspace contents were removed.",
-                        })
-                    }),
-                ))
-            }
             "execute_command" => {
-                let _shared = runtime.execution_gate.read().await;
                 let args: ExecuteCommandArgs = parse_invocation_args(invocation)?;
-                let mut sandbox = runtime
-                    .get_or_create_sandbox()
-                    .await
-                    .map_err(tool_failure)?;
-                let result = sandbox
-                    .exec_command(&args.command, Some(&invocation.cancellation_token))
+                let result = exec
+                    .exec(&args.command, Some(&invocation.cancellation_token))
                     .await;
                 Ok(match result {
                     Ok(result) => typed_exec_result(invocation, &args.command, result),
@@ -286,14 +314,22 @@ impl SandboxToolHandlers {
                     ),
                 })
             }
+            other => Err(ToolRuntimeError::Internal(format!(
+                "typed sandbox exec executor received unknown tool: {other}"
+            ))),
+        }
+    }
+
+    async fn execute_typed_fileops_tool(
+        fileops: &dyn SandboxFileOps,
+        invocation: &ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        debug!(tool = %invocation.tool_name, "Executing typed sandbox tool");
+
+        match invocation.tool_name.as_str() {
             "write_file" => {
-                let _shared = runtime.execution_gate.read().await;
                 let args: WriteFileArgs = parse_invocation_args(invocation)?;
-                let mut sandbox = runtime
-                    .get_or_create_sandbox()
-                    .await
-                    .map_err(tool_failure)?;
-                let result = sandbox
+                let result = fileops
                     .write_file(&args.path, args.content.as_bytes())
                     .await;
                 Ok(typed_simple_result(
@@ -308,13 +344,8 @@ impl SandboxToolHandlers {
                 ))
             }
             "read_file" => {
-                let _shared = runtime.execution_gate.read().await;
                 let args: ReadFileArgs = parse_invocation_args(invocation)?;
-                let mut sandbox = runtime
-                    .get_or_create_sandbox()
-                    .await
-                    .map_err(tool_failure)?;
-                let result = sandbox.read_file(&args.path).await;
+                let result = fileops.read_file(&args.path).await;
                 Ok(match result {
                     Ok(content) => typed_read_file_result(invocation, &args.path, &content),
                     Err(error) => typed_simple_result::<Value>(
@@ -324,20 +355,10 @@ impl SandboxToolHandlers {
                 })
             }
             "list_files" => {
-                let _shared = runtime.execution_gate.read().await;
-                let args: ListFilesRuntimeArgs = parse_invocation_args(invocation)?;
-                let mut sandbox = runtime
-                    .get_or_create_sandbox()
-                    .await
-                    .map_err(tool_failure)?;
-                let cmd = format!(
-                    "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
-                    escape(args.path.as_str().into()),
-                    escape(args.path.as_str().into())
-                );
-                let result = sandbox.exec_command(&cmd, None).await;
+                let args: ListFilesArgs = parse_invocation_args(invocation)?;
+                let result = fileops.list_files(&args.path).await;
                 Ok(match result {
-                    Ok(result) => typed_list_files_result(invocation, &args.path, result),
+                    Ok(listing) => typed_list_files_result(invocation, listing),
                     Err(error) => typed_simple_result::<Value>(
                         invocation,
                         Err(anyhow::anyhow!("sandbox list_files failed: {error}")),
@@ -345,60 +366,55 @@ impl SandboxToolHandlers {
                 })
             }
             other => Err(ToolRuntimeError::Internal(format!(
-                "typed sandbox executor received unknown tool: {other}"
+                "typed sandbox fileops executor received unknown tool: {other}"
             ))),
         }
     }
 
-    async fn execute_legacy_sandbox_tool(
-        runtime: &SandboxRuntime,
-        tool_name: &str,
-        arguments: &str,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        debug!(tool = tool_name, "Executing sandbox tool");
+    async fn execute_typed_lifecycle_tool(
+        lifecycle: &dyn SandboxLifecycle,
+        invocation: &ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        debug!(tool = %invocation.tool_name, "Executing typed sandbox tool");
 
-        match tool_name {
+        match invocation.tool_name.as_str() {
             "recreate_sandbox" => {
-                let _exclusive = runtime.execution_gate.write().await;
-                let mut sandbox = runtime.get_or_init_sandbox_manager().await?;
-                let result = Self::handle_recreate_sandbox(&mut sandbox, arguments).await;
-                runtime.set_sandbox(sandbox).await;
-                result
+                let _args: RecreateSandboxArgs = parse_invocation_args(invocation)?;
+                let result = lifecycle.recreate().await;
+                Ok(typed_simple_result(
+                    invocation,
+                    result.map(|()| {
+                        json!({
+                            "ok": true,
+                            "status": "recreated",
+                            "message": "Sandbox recreated successfully. Previous workspace contents were removed.",
+                        })
+                    }),
+                ))
             }
-            "execute_command" => {
-                let _shared = runtime.execution_gate.read().await;
-                let mut sandbox = runtime.get_or_create_sandbox().await?;
-                Self::handle_execute_command(&mut sandbox, arguments, cancellation_token).await
-            }
-            "write_file" => {
-                let _shared = runtime.execution_gate.read().await;
-                let mut sandbox = runtime.get_or_create_sandbox().await?;
-                Self::handle_write_file(&mut sandbox, arguments).await
-            }
-            "read_file" => {
-                let _shared = runtime.execution_gate.read().await;
-                let mut sandbox = runtime.get_or_create_sandbox().await?;
-                Self::handle_read_file(&mut sandbox, arguments).await
-            }
-            "list_files" => {
-                let _shared = runtime.execution_gate.read().await;
-                let mut sandbox = runtime.get_or_create_sandbox().await?;
-                Self::handle_list_files(&mut sandbox, arguments).await
-            }
-            _ => anyhow::bail!("Unknown sandbox tool: {tool_name}"),
+            other => Err(ToolRuntimeError::Internal(format!(
+                "typed sandbox lifecycle executor received unknown tool: {other}"
+            ))),
         }
     }
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
-struct ListFilesRuntimeArgs {
+struct ListFilesArgs {
     #[serde(default = "default_workspace_path")]
     path: String,
 }
 
 fn default_workspace_path() -> String {
     "/workspace".to_string()
+}
+
+fn list_files_command(path: &str) -> String {
+    format!(
+        "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
+        escape(path.into()),
+        escape(path.into())
+    )
 }
 
 fn parse_invocation_args<T>(invocation: &ToolInvocation) -> std::result::Result<T, ToolRuntimeError>
@@ -415,10 +431,6 @@ where
             })
         }
     }
-}
-
-fn tool_failure(error: anyhow::Error) -> ToolRuntimeError {
-    ToolRuntimeError::Failure(error.to_string())
 }
 
 fn typed_exec_result(invocation: &ToolInvocation, command: &str, result: ExecResult) -> ToolOutput {
@@ -446,15 +458,29 @@ fn typed_exec_result(invocation: &ToolInvocation, command: &str, result: ExecRes
     output
 }
 
-fn typed_list_files_result(
-    invocation: &ToolInvocation,
-    path: &str,
-    result: ExecResult,
-) -> ToolOutput {
-    let mut output = typed_exec_result(invocation, "list_files", result);
-    if let Some(payload) = output.structured_payload.as_mut() {
-        payload["path"] = json!(path);
-    }
+fn typed_list_files_result(invocation: &ToolInvocation, listing: SandboxFileListing) -> ToolOutput {
+    let normalizer = sandbox_normalizer(invocation);
+    let mut output = if listing.success() {
+        normalizer.success(invocation, &listing.listing, &listing.stderr)
+    } else {
+        normalizer
+            .failure(
+                invocation,
+                format!("sandbox list_files exited with code {}", listing.exit_code),
+            )
+            .with_streams(
+                normalizer.stdout_preview(&listing.listing),
+                normalizer.stderr_preview(&listing.stderr),
+            )
+    };
+    output.exit_code = Some(i32::try_from(listing.exit_code).unwrap_or(-1));
+    output.cleanup_status = CleanupStatus::NotNeeded;
+    output.structured_payload = Some(json!({
+        "ok": listing.success(),
+        "path": listing.path,
+        "exit_code": listing.exit_code,
+        "is_empty": listing.is_empty(),
+    }));
     output
 }
 
@@ -518,15 +544,22 @@ fn bytes_look_binary(bytes: &[u8]) -> bool {
     inspected.contains(&0)
 }
 
+#[derive(Clone)]
+enum SandboxToolExecutorBackend {
+    Exec(Arc<dyn SandboxExec>),
+    FileOps(Arc<dyn SandboxFileOps>),
+    Lifecycle(Arc<dyn SandboxLifecycle>),
+}
+
 fn sandbox_tool_runtime_executors(
-    runtime: Arc<SandboxRuntime>,
+    backend: SandboxToolExecutorBackend,
     specs: Vec<ToolDefinition>,
 ) -> Vec<Arc<dyn ToolExecutor>> {
     specs
         .into_iter()
         .map(|spec| {
             Arc::new(SandboxToolExecutor {
-                runtime: Arc::clone(&runtime),
+                backend: backend.clone(),
                 name: ToolName::from(spec.name.clone()),
                 spec,
             }) as Arc<dyn ToolExecutor>
@@ -614,7 +647,7 @@ fn sandbox_tool_definitions_for(tool_names: &[&str]) -> Vec<ToolDefinition> {
 }
 
 struct SandboxToolExecutor {
-    runtime: Arc<SandboxRuntime>,
+    backend: SandboxToolExecutorBackend,
     name: ToolName,
     spec: ToolDefinition,
 }
@@ -633,7 +666,18 @@ impl ToolExecutor for SandboxToolExecutor {
         &self,
         invocation: ToolInvocation,
     ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
-        SandboxToolHandlers::execute_typed_sandbox_tool(&self.runtime, &invocation).await
+        match &self.backend {
+            SandboxToolExecutorBackend::Exec(exec) => {
+                SandboxToolHandlers::execute_typed_exec_tool(exec.as_ref(), &invocation).await
+            }
+            SandboxToolExecutorBackend::FileOps(fileops) => {
+                SandboxToolHandlers::execute_typed_fileops_tool(fileops.as_ref(), &invocation).await
+            }
+            SandboxToolExecutorBackend::Lifecycle(lifecycle) => {
+                SandboxToolHandlers::execute_typed_lifecycle_tool(lifecycle.as_ref(), &invocation)
+                    .await
+            }
+        }
     }
 }
 
@@ -675,6 +719,17 @@ mod tests {
         assert!(execute_command.description.contains("JSON"));
         assert!(execute_command.description.contains("stdout"));
         assert!(execute_command.description.contains("exit_code"));
+    }
+
+    #[test]
+    fn sandbox_runtime_exposes_narrow_backend_capabilities() {
+        let runtime = SandboxRuntime::new(1);
+        let capabilities = SandboxBackend::capabilities(&runtime);
+
+        assert_eq!(SandboxBackend::id(&runtime).as_str(), "sandbox/runtime");
+        assert!(capabilities.contains(&SandboxCapability::Exec));
+        assert!(capabilities.contains(&SandboxCapability::FileOps));
+        assert!(capabilities.contains(&SandboxCapability::Lifecycle));
     }
 
     #[test]
@@ -856,21 +911,24 @@ struct RecreateSandboxArgs {}
 
 /// Provider for sandbox command execution tools.
 pub struct SandboxExecProvider {
-    runtime: Arc<SandboxRuntime>,
+    exec: Arc<dyn SandboxExec>,
 }
 
 impl SandboxExecProvider {
-    /// Create an exec-only provider backed by shared sandbox runtime state.
+    /// Create an exec-only provider backed by a narrow sandbox exec capability.
     #[must_use]
-    pub fn new(runtime: Arc<SandboxRuntime>) -> Self {
-        Self { runtime }
+    pub fn new<T>(exec: Arc<T>) -> Self
+    where
+        T: SandboxExec + 'static,
+    {
+        Self { exec }
     }
 
     /// Build typed runtime executors for exec tools.
     #[must_use]
     pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
         sandbox_tool_runtime_executors(
-            Arc::clone(&self.runtime),
+            SandboxToolExecutorBackend::Exec(Arc::clone(&self.exec)),
             sandbox_tool_definitions_for(SANDBOX_EXEC_TOOL_NAMES),
         )
     }
@@ -901,43 +959,53 @@ impl ToolProvider for SandboxExecProvider {
             anyhow::bail!("Unknown sandbox exec tool: {tool_name}");
         }
         let _ = progress_tx;
-        SandboxToolHandlers::execute_legacy_sandbox_tool(
-            &self.runtime,
-            tool_name,
-            arguments,
-            cancellation_token,
-        )
-        .await
+        match tool_name {
+            "execute_command" => {
+                SandboxToolHandlers::handle_execute_command(
+                    self.exec.as_ref(),
+                    arguments,
+                    cancellation_token,
+                )
+                .await
+            }
+            _ => unreachable!("validated sandbox exec tool name"),
+        }
     }
 }
 
 /// Provider for sandbox file operation tools.
 pub struct SandboxFileOpsProvider {
-    runtime: Arc<SandboxRuntime>,
+    fileops: Arc<dyn SandboxFileOps>,
     tool_names: &'static [&'static str],
 }
 
 impl SandboxFileOpsProvider {
-    /// Create a fileops-only provider backed by shared sandbox runtime state.
+    /// Create a fileops-only provider backed by a narrow sandbox fileops capability.
     #[must_use]
-    pub fn new(runtime: Arc<SandboxRuntime>) -> Self {
+    pub fn new<T>(fileops: Arc<T>) -> Self
+    where
+        T: SandboxFileOps + 'static,
+    {
         Self {
-            runtime,
+            fileops,
             tool_names: SANDBOX_FILEOPS_TOOL_NAMES,
         }
     }
 
     /// Create a fileops provider without chat/file-delivery tools.
     #[must_use]
-    pub fn without_delivery(runtime: Arc<SandboxRuntime>) -> Self {
-        Self::new(runtime)
+    pub fn without_delivery<T>(fileops: Arc<T>) -> Self
+    where
+        T: SandboxFileOps + 'static,
+    {
+        Self::new(fileops)
     }
 
     /// Build typed runtime executors for file operation tools.
     #[must_use]
     pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
         sandbox_tool_runtime_executors(
-            Arc::clone(&self.runtime),
+            SandboxToolExecutorBackend::FileOps(Arc::clone(&self.fileops)),
             sandbox_tool_definitions_for(self.tool_names),
         )
     }
@@ -968,33 +1036,42 @@ impl ToolProvider for SandboxFileOpsProvider {
             anyhow::bail!("Unknown sandbox fileops tool: {tool_name}");
         }
         let _ = progress_tx;
-        SandboxToolHandlers::execute_legacy_sandbox_tool(
-            &self.runtime,
-            tool_name,
-            arguments,
-            cancellation_token,
-        )
-        .await
+        let _ = cancellation_token;
+        match tool_name {
+            "write_file" => {
+                SandboxToolHandlers::handle_write_file(self.fileops.as_ref(), arguments).await
+            }
+            "read_file" => {
+                SandboxToolHandlers::handle_read_file(self.fileops.as_ref(), arguments).await
+            }
+            "list_files" => {
+                SandboxToolHandlers::handle_list_files(self.fileops.as_ref(), arguments).await
+            }
+            _ => unreachable!("validated sandbox fileops tool name"),
+        }
     }
 }
 
 /// Provider for sandbox lifecycle tools.
 pub struct SandboxLifecycleProvider {
-    runtime: Arc<SandboxRuntime>,
+    lifecycle: Arc<dyn SandboxLifecycle>,
 }
 
 impl SandboxLifecycleProvider {
-    /// Create a lifecycle-only provider backed by shared sandbox runtime state.
+    /// Create a lifecycle-only provider backed by a narrow sandbox lifecycle capability.
     #[must_use]
-    pub fn new(runtime: Arc<SandboxRuntime>) -> Self {
-        Self { runtime }
+    pub fn new<T>(lifecycle: Arc<T>) -> Self
+    where
+        T: SandboxLifecycle + 'static,
+    {
+        Self { lifecycle }
     }
 
     /// Build typed runtime executors for lifecycle tools.
     #[must_use]
     pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
         sandbox_tool_runtime_executors(
-            Arc::clone(&self.runtime),
+            SandboxToolExecutorBackend::Lifecycle(Arc::clone(&self.lifecycle)),
             sandbox_tool_definitions_for(SANDBOX_LIFECYCLE_TOOL_NAMES),
         )
     }
@@ -1025,12 +1102,13 @@ impl ToolProvider for SandboxLifecycleProvider {
             anyhow::bail!("Unknown sandbox lifecycle tool: {tool_name}");
         }
         let _ = progress_tx;
-        SandboxToolHandlers::execute_legacy_sandbox_tool(
-            &self.runtime,
-            tool_name,
-            arguments,
-            cancellation_token,
-        )
-        .await
+        let _ = cancellation_token;
+        match tool_name {
+            "recreate_sandbox" => {
+                SandboxToolHandlers::handle_recreate_sandbox(self.lifecycle.as_ref(), arguments)
+                    .await
+            }
+            _ => unreachable!("validated sandbox lifecycle tool name"),
+        }
     }
 }

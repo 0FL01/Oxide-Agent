@@ -25,6 +25,7 @@ pub mod manager;
 )))]
 mod manager_stub;
 pub mod scope;
+pub mod traits;
 
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
@@ -50,3 +51,7 @@ pub use manager::{ExecResult, SandboxContainerRecord, SandboxManager};
 )))]
 pub use manager_stub::{ExecResult, SandboxContainerRecord, SandboxManager};
 pub use scope::SandboxScope;
+pub use traits::{
+    SandboxBackend, SandboxBackendId, SandboxCapability, SandboxExec, SandboxFileListing,
+    SandboxFileOps, SandboxLifecycle,
+};
