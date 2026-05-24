@@ -412,7 +412,6 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let legacy_registry = crate::agent::registry::ToolRegistry::new();
         let mut runtime_registry = RuntimeToolRegistry::new();
         runtime_registry
             .register(Arc::new(StaticRuntimeExecutor))
@@ -427,7 +426,6 @@ mod tests {
             task: "read through runtime",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &legacy_registry,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -501,7 +499,6 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let legacy_registry = crate::agent::registry::ToolRegistry::new();
         let mut runtime_registry = RuntimeToolRegistry::new();
         let compress_executor = Arc::new(CompressionProvider::new())
             .tool_runtime_executors()
@@ -521,7 +518,6 @@ mod tests {
             task: "compress through runtime",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &legacy_registry,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -586,7 +582,6 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let legacy_registry = crate::agent::registry::ToolRegistry::new();
         let active = Arc::new(AtomicUsize::new(0));
         let max_seen = Arc::new(AtomicUsize::new(0));
         let mut runtime_registry = RuntimeToolRegistry::new();
@@ -606,7 +601,6 @@ mod tests {
             task: "read several files through runtime",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &legacy_registry,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -685,7 +679,6 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let legacy_registry = crate::agent::registry::ToolRegistry::new();
         let mut runtime_registry = RuntimeToolRegistry::new();
         runtime_registry
             .register(Arc::new(StaticRuntimeExecutor))
@@ -700,7 +693,6 @@ mod tests {
             task: "unsupported typed runtime route",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &legacy_registry,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,

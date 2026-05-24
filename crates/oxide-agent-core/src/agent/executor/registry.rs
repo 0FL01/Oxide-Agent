@@ -1,7 +1,10 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{SandboxRuntime, TodoList};
+#[cfg(test)]
 use crate::agent::registry::ToolRegistry;
+#[cfg(test)]
+use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::tool_runtime::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
@@ -78,14 +81,14 @@ use crate::agent::tool_runtime::WebFetchMdToolModule;
 use crate::agent::tool_runtime::WikiMemoryToolModule;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::tool_runtime::YtdlpToolModule;
-use crate::agent::tool_runtime::{
-    v1_tool_runtime_enabled_for_model, ToolExecutor, ToolModuleContext, ToolModuleContextParts,
-    ToolRegistry as RuntimeToolRegistry,
-};
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::tool_runtime::{AgentsMdModuleContext, AgentsMdToolModule};
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::tool_runtime::{SshMcpModuleContext, SshMcpToolModule};
+use crate::agent::tool_runtime::{
+    ToolExecutor, ToolModuleContext, ToolModuleContextParts, ToolRegistry as RuntimeToolRegistry,
+};
+#[cfg(test)]
 use crate::config::ModelInfo;
 use crate::sandbox::SandboxScope;
 use std::sync::Arc;
@@ -96,23 +99,11 @@ impl AgentExecutor {
     /// Build the currently exposed tool definitions for this executor state.
     #[must_use]
     pub fn current_tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
-        let model_routes = self.settings.get_configured_agent_model_routes();
-        let model = model_routes
-            .first()
-            .cloned()
-            .unwrap_or_else(|| self.settings.get_configured_agent_model());
-        if Self::v1_tool_runtime_enabled_for_model(&model) {
-            let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-            return self.build_tool_runtime_registry(todos_arc, None).specs();
-        }
-
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-        let registry = self.build_tool_registry(todos_arc, None);
-        self.execution_profile
-            .tool_policy()
-            .filter_definitions(registry.all_tools())
+        self.build_tool_runtime_registry(todos_arc, None).specs()
     }
 
+    #[cfg(test)]
     pub(super) fn build_tool_registry(
         &self,
         todos_arc: Arc<Mutex<TodoList>>,
@@ -337,6 +328,7 @@ impl AgentExecutor {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(super) fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
         v1_tool_runtime_enabled_for_model(model)
     }
@@ -403,10 +395,12 @@ impl AgentExecutor {
         Arc::new(runtime)
     }
 
+    #[cfg(test)]
     fn register_core_providers(&self, registry: &mut ToolRegistry, module_ctx: &ToolModuleContext) {
         self.register_legacy_tool_modules(registry, module_ctx);
     }
 
+    #[cfg(test)]
     fn register_legacy_tool_modules(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
         #[cfg(not(any(
             feature = "tool-sandbox-exec",
@@ -480,6 +474,7 @@ impl AgentExecutor {
         feature = "tool-wiki-memory",
         feature = "tool-ytdlp"
     ))]
+    #[cfg(test)]
     fn register_legacy_tool_module<M>(
         &self,
         registry: &mut ToolRegistry,
@@ -538,6 +533,7 @@ impl AgentExecutor {
             .filter(|scope| !scope.is_empty())
     }
 
+    #[cfg(test)]
     fn register_topic_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
         #[cfg(feature = "tool-agents-md")]
         self.register_legacy_tool_module(registry, &AgentsMdToolModule, ctx);
@@ -560,6 +556,7 @@ impl AgentExecutor {
         let _ = (registry, ctx);
     }
 
+    #[cfg(test)]
     fn register_mcp_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
         #[cfg(not(any(
             feature = "integration-mcp-jira",
@@ -574,6 +571,7 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &MattermostMcpToolModule, ctx);
     }
 
+    #[cfg(test)]
     fn register_search_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
         #[cfg(not(any(
             feature = "tool-tavily",
@@ -600,6 +598,7 @@ impl AgentExecutor {
         self.register_legacy_tool_module(registry, &WebFetchMdToolModule, ctx);
     }
 
+    #[cfg(test)]
     fn register_browser_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
         #[cfg(feature = "tool-browser-use")]
         self.register_legacy_tool_module(registry, &BrowserUseToolModule, ctx);
@@ -611,6 +610,7 @@ impl AgentExecutor {
         let _ = (registry, ctx);
     }
 
+    #[cfg(test)]
     fn register_tts_providers(&self, registry: &mut ToolRegistry, ctx: &ToolModuleContext) {
         #[cfg(not(any(feature = "tool-tts-kokoro", feature = "tool-tts-silero")))]
         let _ = (registry, ctx);

@@ -5,7 +5,6 @@ use crate::agent::context::AgentContext;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
-use crate::agent::registry::ToolRegistry;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
@@ -121,8 +120,6 @@ pub struct AgentRunnerContext<'a> {
     pub system_prompt: &'a str,
     /// Available tools for the model.
     pub tools: &'a [ToolDefinition],
-    /// Tool registry for executing tool calls.
-    pub registry: &'a ToolRegistry,
     /// Optional typed runtime registry for v1 async tool execution.
     pub tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
     /// Progress event channel.
@@ -151,7 +148,6 @@ pub(crate) struct AgentRunnerContextBase<'a> {
     pub(crate) task: &'a str,
     pub(crate) system_prompt: &'a str,
     pub(crate) tools: &'a [ToolDefinition],
-    pub(crate) registry: &'a ToolRegistry,
     pub(crate) progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     pub(crate) todos_arc: &'a Arc<Mutex<TodoList>>,
     pub(crate) task_id: &'a str,
@@ -170,7 +166,6 @@ impl<'a> AgentRunnerContext<'a> {
             task: base.task,
             system_prompt: base.system_prompt,
             tools: base.tools,
-            registry: base.registry,
             tool_runtime_registry: None,
             progress_tx: base.progress_tx,
             todos_arc: base.todos_arc,

@@ -1,7 +1,6 @@
 use crate::agent::compaction::CompactionController;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
-use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{
     AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
 };
@@ -41,8 +40,7 @@ pub(super) struct TopicInfraContext {
 
 pub(super) struct PreparedExecution {
     pub(super) todos_arc: Arc<Mutex<TodoList>>,
-    pub(super) registry: ToolRegistry,
-    pub(super) tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
+    pub(super) tool_runtime_registry: Arc<RuntimeToolRegistry>,
     pub(super) tools: Vec<ToolDefinition>,
     pub(super) system_prompt: String,
     pub(super) messages: Vec<Message>,
@@ -70,7 +68,6 @@ impl PreparedExecution {
                 task,
                 system_prompt: &self.system_prompt,
                 tools: &self.tools,
-                registry: &self.registry,
                 progress_tx,
                 todos_arc: &self.todos_arc,
                 task_id,
@@ -84,7 +81,7 @@ impl PreparedExecution {
         ctx.session_id = session_id;
         ctx.memory_scope = memory_scope;
         ctx.memory_behavior = memory_behavior;
-        ctx.tool_runtime_registry = self.tool_runtime_registry.as_ref().map(Arc::clone);
+        ctx.tool_runtime_registry = Some(Arc::clone(&self.tool_runtime_registry));
 
         ctx
     }

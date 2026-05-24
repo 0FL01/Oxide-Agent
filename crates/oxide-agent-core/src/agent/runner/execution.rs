@@ -1920,7 +1920,6 @@ mod tests {
         CompactionController, OXIDE_COMPACTED_SUMMARY_PREFIX,
     };
     use crate::agent::context::{AgentContext, EphemeralSession};
-    use crate::agent::registry::ToolRegistry;
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
     use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
     use crate::config::{AgentSettings, ModelInfo};
@@ -2038,15 +2037,13 @@ mod tests {
         );
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         let mut session = EphemeralSession::new(768);
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let ctx = AgentRunnerContext {
             task: "Route selection regression",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -2094,7 +2091,6 @@ mod tests {
 
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         let mut session = EphemeralSession::new(768);
-        let registry = ToolRegistry::new();
         let tools: Vec<crate::llm::ToolDefinition> = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
@@ -2102,7 +2098,6 @@ mod tests {
             task: "Typed runtime route selection",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: Some(Arc::new(RuntimeToolRegistry::new())),
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -2194,15 +2189,13 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::tool("call-1", "search", "result-1"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let mut ctx = AgentRunnerContext {
             task: "Repair invalid tool history",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -2252,15 +2245,13 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user_task("Какие инструменты тебе доступны?"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let mut ctx = AgentRunnerContext {
             task: "Какие инструменты тебе доступны?",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -2305,8 +2296,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user("Recent request."));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
@@ -2314,7 +2304,6 @@ mod tests {
             task: "Retry after overflow",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
@@ -2395,8 +2384,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user("older ".repeat(4_000)));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
@@ -2404,7 +2392,6 @@ mod tests {
             task: "Pre-sampling compact",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
@@ -2448,8 +2435,7 @@ mod tests {
 
     #[test]
     fn runtime_compaction_threshold_uses_full_request_budget() {
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let mut session = EphemeralSession::new(20_000);
         session.memory_mut().add_message(AgentMessage::user_task(
             "Compact because output reserve consumes the route window",
@@ -2467,7 +2453,6 @@ mod tests {
             task: "Compact because output reserve consumes the route window",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -2496,8 +2481,7 @@ mod tests {
 
     #[test]
     fn refresh_messages_from_memory_drops_transient_messages() {
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let mut session = EphemeralSession::new(1024);
         session
             .memory_mut()
@@ -2509,7 +2493,6 @@ mod tests {
             task: "refresh transient context",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -2536,15 +2519,13 @@ mod tests {
         let llm_client = build_llm_client(single_final_response_provider());
         let mut runner = AgentRunner::new(llm_client);
         let mut session = EphemeralSession::new(2048);
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
             task: "legacy fallback disabled",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -2605,15 +2586,13 @@ mod tests {
             .add_message(AgentMessage::assistant("Recent response"));
 
         let estimated_tokens = session.memory().token_count();
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let mut ctx = AgentRunnerContext {
             task: "Inspect token metrics",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
@@ -2684,8 +2663,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user_task("Fail over after persistent 429"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
@@ -2693,7 +2671,6 @@ mod tests {
             task: "Fail over after persistent 429",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
@@ -2805,8 +2782,7 @@ mod tests {
                 )));
         }
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
@@ -2814,7 +2790,6 @@ mod tests {
             task: "Fail over to a smaller model route",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
@@ -2915,8 +2890,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user_task("Stay on primary when it wakes up"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
@@ -2924,7 +2898,6 @@ mod tests {
             task: "Stay on primary when it wakes up",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
@@ -2996,8 +2969,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user_task("Skip unsupported NVIDIA route"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
@@ -3005,7 +2977,6 @@ mod tests {
             task: "Skip unsupported NVIDIA route",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
