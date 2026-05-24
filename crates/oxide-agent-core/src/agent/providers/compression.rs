@@ -1,6 +1,5 @@
 //! Agent-facing `compress` tool provider.
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -92,33 +91,6 @@ impl Default for CompressionProvider {
     }
 }
 
-#[async_trait]
-impl ToolProvider for CompressionProvider {
-    fn name(&self) -> &'static str {
-        "compression"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tools_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == TOOL_COMPRESS
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        _arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        Err(anyhow!(
-            "{tool_name} is handled directly by the agent runner"
-        ))
-    }
-}
-
 struct CompressionToolExecutor {
     provider: Arc<CompressionProvider>,
     name: ToolName,
@@ -207,32 +179,18 @@ mod tests {
 
     #[test]
     fn exposes_compress_tool_definition() {
-        let provider = CompressionProvider::new();
-        assert!(provider.can_handle(TOOL_COMPRESS));
+        let provider = Arc::new(CompressionProvider::new());
+        let executors = provider.tool_runtime_executors();
 
-        let tools = provider.tools();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, TOOL_COMPRESS);
-        assert!(tools[0].description.contains("compaction pipeline"));
+        assert_eq!(executors.len(), 1);
+        let spec = executors[0].spec();
+        assert_eq!(spec.name, TOOL_COMPRESS);
+        assert!(spec.description.contains("compaction pipeline"));
     }
 
     #[test]
     fn tool_name_list_contains_compress() {
         assert_eq!(compress_tool_names(), vec![TOOL_COMPRESS.to_string()]);
-    }
-
-    #[tokio::test]
-    async fn execute_is_handled_by_runner() {
-        let provider = CompressionProvider::new();
-
-        let error = provider
-            .execute(TOOL_COMPRESS, "{}", None, None)
-            .await
-            .expect_err("compress should be handled by the runner");
-
-        assert!(error
-            .to_string()
-            .contains("handled directly by the agent runner"));
     }
 
     #[test]
