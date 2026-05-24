@@ -408,6 +408,90 @@ fn stale_compatibility_labels_are_removed_from_current_surfaces() {
 }
 
 #[test]
+fn legacy_skills_and_embeddings_are_removed() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+
+    assert!(
+        !manifest_dir.join("src/agent/skills").exists(),
+        "legacy embedding-selected skills subsystem must stay removed"
+    );
+    assert!(
+        !manifest_dir.join("src/llm/embeddings.rs").exists(),
+        "legacy embedding client module must stay removed"
+    );
+
+    let rust_forbidden_patterns = [
+        "EmbeddingProvider",
+        "EmbeddingTaskType",
+        "generate_embedding",
+        "probe_embedding_dimension",
+        "SkillRegistry",
+        "SkillMatcher",
+        "EmbeddingService",
+    ];
+
+    let mut files = Vec::new();
+    collect_rust_files(&manifest_dir.join("src"), &mut files);
+    let rust_offenders = files
+        .into_iter()
+        .filter_map(|path| {
+            let source = fs::read_to_string(&path).expect("read source file");
+            let matches = rust_forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{}: {matches:?}",
+                    path.strip_prefix(manifest_dir)
+                        .expect("source path under manifest dir")
+                        .display()
+                ))
+            }
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        rust_offenders.is_empty(),
+        "legacy skills/embedding production APIs must stay removed; offenders: {rust_offenders:?}"
+    );
+
+    let surface_targets = [".env.example", "config/local.yaml", "docker/Dockerfile.app"];
+    let surface_forbidden_patterns = [
+        "EMBEDDING_",
+        "SKILL_",
+        "SKILLS_DIR",
+        ".embeddings_cache",
+        "COPY skills/",
+    ];
+    let surface_offenders = surface_targets
+        .iter()
+        .flat_map(|target| {
+            let source = fs::read_to_string(workspace_root.join(target))
+                .unwrap_or_else(|error| panic!("read {target}: {error}"));
+            surface_forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{target}: {pattern}"))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        surface_offenders.is_empty(),
+        "legacy skills/embedding env and Docker surfaces must stay removed; offenders: {surface_offenders:?}"
+    );
+}
+
+#[test]
 fn workspace_binaries_expose_capability_manifest_output() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

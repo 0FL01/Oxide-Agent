@@ -28,6 +28,9 @@ forbidden_patterns=(
   '(^|[^A-Z0-9_])CHAT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])AGENT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])SUB_AGENT_MODEL_MAX_TOKENS([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])EMBEDDING_[A-Z0-9_]*([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])SKILL_[A-Z0-9_]*([^A-Z0-9_]|$)'
+  '(^|[^A-Z0-9_])SKILLS_DIR([^A-Z0-9_]|$)'
 )
 
 forbidden_rust_provider_settings=(
