@@ -39,9 +39,6 @@ pub struct TelegramTopicSettings {
     /// Require explicit bot mention in this topic.
     #[serde(default)]
     pub require_mention: bool,
-    /// Skills whitelist for this topic.
-    #[serde(default)]
-    pub skills: Vec<String>,
     /// Optional topic-level system prompt.
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -212,7 +209,6 @@ impl TelegramSettings {
                 .map(ToOwned::to_owned),
             enabled: true,
             require_mention: false,
-            skills: Vec::new(),
             system_prompt: None,
         })
     }
@@ -360,7 +356,6 @@ mod tests {
               "agentId": "support-agent",
               "enabled": true,
               "requireMention": true,
-              "skills": ["faq", "billing"],
               "systemPrompt": "Use support tone"
             },
             {
@@ -395,7 +390,6 @@ mod tests {
         assert_eq!(first.agent_id.as_deref(), Some("support-agent"));
         assert!(first.enabled);
         assert!(first.require_mention);
-        assert_eq!(first.skills, vec!["faq", "billing"]);
         assert_eq!(first.system_prompt.as_deref(), Some("Use support tone"));
 
         let second = &settings.topic_configs[1];
@@ -404,7 +398,6 @@ mod tests {
         assert_eq!(second.agent_id.as_deref(), Some("fallback-agent"));
         assert!(second.enabled);
         assert!(!second.require_mention);
-        assert!(second.skills.is_empty());
         assert_eq!(second.system_prompt, None);
 
         let third = &settings.topic_configs[2];
@@ -413,7 +406,6 @@ mod tests {
         assert_eq!(third.agent_id, None);
         assert!(third.enabled);
         assert!(!third.require_mention);
-        assert!(third.skills.is_empty());
         assert_eq!(third.system_prompt, None);
     }
 
@@ -530,7 +522,6 @@ mod tests {
                 agent_id: Some("static-agent".to_string()),
                 enabled: false,
                 require_mention: true,
-                skills: vec!["faq".to_string()],
                 system_prompt: Some("static prompt".to_string()),
             }],
         };
@@ -542,7 +533,6 @@ mod tests {
         assert_eq!(topic.agent_id.as_deref(), Some("control-plane"));
         assert!(topic.enabled);
         assert!(!topic.require_mention);
-        assert!(topic.skills.is_empty());
         assert_eq!(topic.system_prompt, None);
     }
 

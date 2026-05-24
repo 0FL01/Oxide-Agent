@@ -25,7 +25,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 ## Features
 
 *   **🏗️ Workspace Architecture:** Modular crate design with clear separation of concerns:
-    - `oxide-agent-core` - Domain logic, LLM integrations, hooks, skills, storage
+    - `oxide-agent-core` - Domain logic, LLM integrations, hooks, compaction, storage
     - `oxide-agent-runtime` - Session orchestration, execution cycle, tool providers, sandbox
     - `oxide-agent-transport-telegram` - Telegram transport layer (teloxide integration)
     - `oxide-agent-transport-web` - E2E testing infrastructure with HTTP API
@@ -643,7 +643,7 @@ Enhanced reminder scheduling with pause/resume/retry support.
 
 ```text
 crates/
-├── oxide-agent-core/           # Domain logic, LLM integrations, hooks, skills, storage
+├── oxide-agent-core/           # Domain logic, LLM integrations, hooks, compaction, storage
 │   └── src/
 │       ├── agent/              # Agent core and execution logic
 │       │   ├── compaction/     # Compaction pipeline (12 modules)

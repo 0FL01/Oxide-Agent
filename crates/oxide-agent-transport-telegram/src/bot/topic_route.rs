@@ -811,7 +811,6 @@ mod tests {
             agent_id: agent_id.map(str::to_string),
             enabled,
             require_mention,
-            skills: Vec::new(),
             system_prompt: system_prompt.map(str::to_string),
         }
     }
@@ -1084,7 +1083,6 @@ mod tests {
                     agent_id: Some("static-agent".to_string()),
                     enabled: false,
                     require_mention: true,
-                    skills: Vec::new(),
                     system_prompt: Some("static prompt".to_string()),
                 }],
             },

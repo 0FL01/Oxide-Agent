@@ -24,7 +24,7 @@ Default branch: `dev`.
 ## Workspace Overview
 
 ### Main crates
-- `crates/oxide-agent-core` - agent domain: execution loop, hooks, skills, compaction, storage facade, LLM providers, sandbox facade, wiki memory (store, cache, context, planner, patch), reminder/SSH/manager providers.
+- `crates/oxide-agent-core` - agent domain: execution loop, hooks, compaction, storage facade, LLM providers, sandbox facade, wiki memory (store, cache, context, planner, patch), reminder/SSH/manager providers.
 - `crates/oxide-agent-runtime` - session runtime orchestration and transport-agnostic progress runtime.
 - `crates/oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
 - `crates/oxide-agent-transport-web` - E2E test web transport: HTTP API (axum), in-memory storage, scripted LLM provider, SSE streaming, latency milestone tracking.
@@ -32,14 +32,14 @@ Default branch: `dev`.
 - `crates/oxide-agent-telegram-bot` - Telegram bot binary.
 
 ### Where code usually lives
-- `crates/oxide-agent-core/src/agent/` - executor (slices: config, execution, registry, compaction, policy_hooks, types), runner, hooks, loop detection, skills, compaction, wiki memory (store, cache, context, planner, patch), providers.
+- `crates/oxide-agent-core/src/agent/` - executor (slices: config, execution, registry, compaction, policy_hooks, types), runner, hooks, loop detection, compaction, wiki memory (store, cache, context, planner, patch), providers.
 - `crates/oxide-agent-core/src/storage/` - storage facade, R2 backend, control-plane records, reminder persistence.
 - `crates/oxide-agent-core/src/llm/providers/` - LLM provider implementations.
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
 - `crates/oxide-agent-transport-telegram/src/bot/views/agent.rs` - Agent Mode UI.
 - `crates/oxide-agent-transport-web/src/` - web transport: HTTP server, session manager, scripted LLM, event log/SSE.
 - `docs/` - detailed documentation for rollout, hooks, integrations, and blueprints.
-- `skills/` - system skills.
+- Legacy skills/embeddings RAG has been removed; deterministic context comes from topic `AGENTS.md`, wiki memory, runtime injections, enabled tools, and profile instructions.
 
 ## Architectural invariants
 
@@ -58,7 +58,7 @@ Default branch: `dev`.
 
 ### Agent execution model
 - Runner lives in `crates/oxide-agent-core/src/agent/runner/`; executor slices live under `agent/executor/`.
-- Sessions handle lifecycle, cancellation, loaded skills, hot memory, and transport-independent progress.
+- Sessions handle lifecycle, cancellation, hot memory, and transport-independent progress.
 - Tool calls can run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
 - Compaction protects recent tool context, prunes only before the summary boundary, and coalesces identical checkpoints.
 
@@ -70,11 +70,11 @@ Default branch: `dev`.
 - Background writer (`planner.rs`) optionally uses an LLM to extract structured memory from conversation.
 - Main tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
 
-### Hooks, sub-agents, and skills
+### Hooks and sub-agents
 - Hooks live in `agent/hooks/`; `completion_check` and `tool_access_policy` are always active. Details: `docs/hooks/`.
 - Loop detection has content, tool-sequence, and LLM layers; avoid bypassing it in runner changes.
 - Sub-agents use isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, and cannot recurse, send files, mutate topics/control-plane state, use reminders, `stack_logs`, or `recreate_sandbox`.
-- Skills live in `agent/skills/` and `skills/`; matching is embedding-based.
+- Do not reintroduce embedding-selected skills; add deterministic profile-selected prompt modules only if a future feature explicitly requires them.
 
 ### Topic- and flow-scoped state
 - Per-transport contexts live in `UserConfig.contexts` through `UserContextConfig`.
