@@ -7,11 +7,8 @@ use serde::{Deserialize, Serialize};
 pub const OXIDE_COMPACTED_SUMMARY_PREFIX: &str = "[OXIDE_COMPACTED_SUMMARY_V1]";
 
 /// Stable semantic kind for an entry stored in hot agent memory.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentMessageKind {
-    /// Backward-compatible fallback for messages persisted before Stage 2.
-    #[default]
-    Legacy,
     /// Generic system context injected into the run.
     SystemContext,
     /// Topic-scoped pinned `AGENTS.md` content.
@@ -63,8 +60,7 @@ impl AgentMessageKind {
             | Self::ApprovalReplay
             | Self::InfraStatus => CompactionRetention::ProtectedLive,
             Self::ToolResult => CompactionRetention::PrunableArtifact,
-            Self::Legacy
-            | Self::UserTurn
+            Self::UserTurn
             | Self::AssistantResponse
             | Self::AssistantReasoning
             | Self::AssistantToolCall => CompactionRetention::CompactableHistory,

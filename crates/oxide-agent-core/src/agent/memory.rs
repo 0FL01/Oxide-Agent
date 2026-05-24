@@ -20,7 +20,6 @@ pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMessage {
     /// Semantic kind used by compaction policies.
-    #[serde(default)]
     pub kind: AgentMessageKind,
     /// Role of the message sender
     pub role: MessageRole,
@@ -433,29 +432,10 @@ impl AgentMessage {
         }
     }
 
-    /// Resolve the semantic kind for this message, including legacy fallbacks.
+    /// Resolve the semantic kind for this message.
     #[must_use]
     pub fn resolved_kind(&self) -> AgentMessageKind {
-        if self.kind != AgentMessageKind::Legacy {
-            return self.kind;
-        }
-
-        if self.is_topic_agents_md() {
-            return AgentMessageKind::TopicAgentsMd;
-        }
-
-        match self.role {
-            MessageRole::System => AgentMessageKind::SystemContext,
-            MessageRole::User => AgentMessageKind::UserTurn,
-            MessageRole::Assistant if self.tool_calls.is_some() => {
-                AgentMessageKind::AssistantToolCall
-            }
-            MessageRole::Assistant if self.reasoning.is_some() => {
-                AgentMessageKind::AssistantReasoning
-            }
-            MessageRole::Assistant => AgentMessageKind::AssistantResponse,
-            MessageRole::Tool => AgentMessageKind::ToolResult,
-        }
+        self.kind
     }
 
     /// Retention class used by compaction policies.
@@ -985,42 +965,6 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_messages_resolve_to_role_based_kinds() {
-        let legacy_assistant = AgentMessage {
-            kind: AgentMessageKind::Legacy,
-            role: MessageRole::Assistant,
-            content: "Done".to_string(),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-        };
-        let legacy_tool = AgentMessage {
-            kind: AgentMessageKind::Legacy,
-            role: MessageRole::Tool,
-            content: "stdout".to_string(),
-            reasoning: None,
-            tool_call_id: Some("call-1".to_string()),
-            tool_call_correlation: None,
-            tool_name: Some("execute_command".to_string()),
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-        };
-
-        assert_eq!(
-            legacy_assistant.resolved_kind(),
-            AgentMessageKind::AssistantResponse
-        );
-        assert_eq!(legacy_tool.resolved_kind(), AgentMessageKind::ToolResult);
-    }
-
-    #[test]
     fn test_tool_message_serialization_includes_canonical_correlation_fields() {
         let message = AgentMessage::tool("call-1", "execute_command", "stdout");
         let value = serde_json::to_value(&message).expect("message serializes");
@@ -1035,7 +979,7 @@ mod tests {
     #[test]
     fn test_legacy_tool_message_resolves_correlation_from_tool_call_id() {
         let legacy = json!({
-            "kind": "Legacy",
+            "kind": "ToolResult",
             "role": "Tool",
             "content": "stdout",
             "reasoning": null,
@@ -1085,7 +1029,7 @@ mod tests {
     #[test]
     fn test_legacy_assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
         let legacy = json!({
-            "kind": "Legacy",
+            "kind": "AssistantToolCall",
             "role": "Assistant",
             "content": "Calling tools",
             "reasoning": null,
