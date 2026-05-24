@@ -297,8 +297,7 @@ impl LlmClient {
 
     /// Perform a single chat completion request with tool calling (no retry).
     ///
-    /// This is the base method used by `chat_with_tools` which handles retries internally.
-    /// For agent runner retry handling with UI events, use `chat_with_tools_once` instead.
+    /// This is the base method used by the agent runner, which owns retry handling and UI events.
     #[instrument(skip(self, system_prompt, messages, tools))]
     pub async fn chat_with_tools_single_attempt(
         &self,

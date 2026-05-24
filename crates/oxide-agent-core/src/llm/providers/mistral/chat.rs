@@ -109,9 +109,9 @@ fn chat_temperature(model_id: &str) -> f32 {
     }
 }
 
-/// Send chat request to Mistral API
+/// Send a plain chat request to Mistral API.
 ///
-/// Legacy version without ID mapping. Use `send_chat_request_with_mapping` for tool calling.
+/// Tool-calling requests use `send_chat_request_with_mapping` to preserve provider ID mapping.
 pub async fn send_chat_request(
     http_client: &HttpClient,
     api_key: &str,

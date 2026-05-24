@@ -1106,12 +1106,12 @@ impl SshMcpProvider {
             },
             ToolDefinition {
                 name: TOOL_SSH_CHECK_PROCESS.to_string(),
-                description: "Check a remote process by job_id or a legacy process pattern on the topic infra target."
+                description: "Check a remote process by job_id or process pattern on the topic infra target."
                     .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "pattern": { "type": "string", "description": "Legacy substring or process pattern to inspect via pgrep. Provide exactly one of pattern or job_id." },
+                        "pattern": { "type": "string", "description": "Substring or process pattern to inspect via pgrep. Provide exactly one of pattern or job_id." },
                         "job_id": { "type": "string", "description": "Preferred background job id returned by ssh_exec/ssh_sudo_exec" },
                         "tail_lines": { "type": "integer", "description": "Optional tail line count when using job_id" }
                     }

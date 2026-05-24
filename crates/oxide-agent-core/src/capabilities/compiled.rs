@@ -159,17 +159,12 @@ const OPENCODE_GO_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
         .with_default("https://opencode.ai/zen/go/v1/chat/completions"),
 ];
 #[allow(dead_code)]
-const OPENROUTER_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
-    ModuleConfigProperty::string("api_key", "OpenRouter API key.")
-        .with_env("OPENROUTER_API_KEY")
-        .secret(),
-    ModuleConfigProperty::string("site_url", "Optional OpenRouter site URL attribution.")
-        .with_env("OPENROUTER_SITE_URL")
-        .with_default(""),
-    ModuleConfigProperty::string("site_name", "Optional OpenRouter site name attribution.")
-        .with_env("OPENROUTER_SITE_NAME")
-        .with_default("Oxide Agent Bot"),
-];
+const OPENROUTER_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
+    &[
+        ModuleConfigProperty::string("api_key", "OpenRouter API key.")
+            .with_env("OPENROUTER_API_KEY")
+            .secret(),
+    ];
 
 /// Returns the deterministic list of modules compiled into this build.
 #[must_use]
@@ -611,9 +606,11 @@ mod tests {
             "OPENROUTER_API_KEY"
         );
         assert_eq!(openrouter["properties"]["api_key"]["x-oxide-secret"], true);
-        assert_eq!(
-            openrouter["properties"]["site_name"]["default"],
-            "Oxide Agent Bot"
-        );
+        let properties = openrouter["properties"]
+            .as_object()
+            .expect("OpenRouter config properties should be an object");
+        assert_eq!(properties.len(), 2);
+        assert!(properties.contains_key("enabled"));
+        assert!(properties.contains_key("api_key"));
     }
 }

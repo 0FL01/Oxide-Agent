@@ -92,7 +92,7 @@ impl SerializableProgress {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Milestones {
-    /// HTTP request received (legacy, kept for compatibility).
+    /// HTTP request accepted by the web transport.
     pub session_ready_ms: Option<i64>,
     /// When executor lock was actually acquired (real session ready).
     pub executor_lock_acquired_ms: Option<i64>,

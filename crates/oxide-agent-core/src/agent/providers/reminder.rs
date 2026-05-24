@@ -1183,7 +1183,7 @@ mod tests {
     }
 
     #[test]
-    fn schedule_args_reject_legacy_fields() {
+    fn schedule_args_reject_removed_single_timestamp_shape() {
         let parsed = serde_json::from_value::<ReminderScheduleArgs>(serde_json::json!({
             "kind": "once",
             "task": "Ping",

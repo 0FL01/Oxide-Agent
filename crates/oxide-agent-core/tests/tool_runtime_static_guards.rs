@@ -307,10 +307,16 @@ fn deprecated_config_compatibility_surfaces_are_removed() {
 
     let env_example = fs::read_to_string(workspace_root.join(".env.example"))
         .expect("read workspace .env.example");
-    assert!(
-        !env_example.contains("OXIDE_CODEX_STYLE_COMPACTION"),
-        ".env.example must not document removed temporary migration switches"
-    );
+    for forbidden in [
+        "OXIDE_CODEX_STYLE_COMPACTION",
+        "BROWSER_USE_BRIDGE_LLM_PROVIDER",
+        "BROWSER_USE_BRIDGE_LLM_MODEL",
+    ] {
+        assert!(
+            !env_example.contains(forbidden),
+            ".env.example must not document removed temporary migration switches or sidecar LLM fallbacks: {forbidden}"
+        );
+    }
 
     let executor = fs::read_to_string(manifest_dir.join("src/agent/executor.rs"))
         .expect("read executor module");
@@ -320,6 +326,76 @@ fn deprecated_config_compatibility_surfaces_are_removed() {
             "executor module must not keep backward-compatibility re-exports: {forbidden}"
         );
     }
+}
+
+#[test]
+fn stale_compatibility_labels_are_removed_from_current_surfaces() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+    let targets = [
+        "crates/oxide-agent-core/src/agent/hooks/memory.rs",
+        "crates/oxide-agent-core/src/agent/providers/reminder.rs",
+        "crates/oxide-agent-core/src/agent/providers/ssh_mcp.rs",
+        "crates/oxide-agent-core/src/agent/runner/execution.rs",
+        "crates/oxide-agent-core/src/capabilities/compiled.rs",
+        "crates/oxide-agent-core/src/llm/client.rs",
+        "crates/oxide-agent-core/src/llm/mod.rs",
+        "crates/oxide-agent-core/src/llm/providers/mistral/chat.rs",
+        "crates/oxide-agent-core/src/llm/providers/openrouter.rs",
+        "crates/oxide-agent-core/src/llm/providers/openrouter/module.rs",
+        "crates/oxide-agent-core/src/llm/types.rs",
+        "crates/oxide-agent-core/src/storage/control_plane.rs",
+        "crates/oxide-agent-core/src/storage/telemetry.rs",
+        "crates/oxide-agent-core/src/storage/tests/bindings.rs",
+        "crates/oxide-agent-core/src/storage/tests/keys_and_user.rs",
+        "crates/oxide-agent-transport-telegram/src/bot/context.rs",
+        "crates/oxide-agent-transport-web/src/in_memory_storage.rs",
+        "crates/oxide-agent-transport-web/src/server.rs",
+    ];
+    let forbidden_patterns = [
+        "chat_with_tools_once",
+        "kept for backwards compatibility",
+        "kept for compatibility",
+        "Legacy/internal identifier",
+        "Legacy version without ID mapping",
+        "legacy-provider-id",
+        "legacy_chat_history",
+        "should_use_legacy_fallback",
+        "fall_back_to_legacy_global_state",
+        "topic_binding_record_backward_compatible_deserialization_defaults_new_fields",
+        "#[serde(default)]\n    pub binding_kind",
+        "schedule_args_reject_legacy_fields",
+        "legacy episode memory tools",
+        "legacy process pattern",
+        "Legacy substring",
+        "site_url",
+        "site_name",
+        "OPENROUTER_SITE_URL",
+        "OPENROUTER_SITE_NAME",
+        "Deprecated: App attribution headers",
+    ];
+
+    let offenders = targets
+        .iter()
+        .flat_map(|target| {
+            let source = fs::read_to_string(workspace_root.join(target))
+                .unwrap_or_else(|error| panic!("read {target}: {error}"));
+            forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{target}: {pattern}"))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "stale compatibility labels and deprecated config surfaces must stay removed from current paths; offenders: {offenders:?}"
+    );
 }
 
 #[test]

@@ -160,7 +160,7 @@ pub(crate) fn storage_scope(path: &str) -> &'static str {
         if normalized.contains("/chats/") {
             return "chat_history";
         }
-        return "legacy_chat_history";
+        return "user_chat_history";
     }
     if normalized.ends_with("/agent_memory.json") {
         return "topic_memory";

@@ -192,22 +192,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "env": "OPENROUTER_API_KEY",
             "secret": true,
             "default_value": null
-          },
-          {
-            "name": "site_name",
-            "value_kind": "string",
-            "description": "Optional OpenRouter site name attribution.",
-            "env": "OPENROUTER_SITE_NAME",
-            "secret": false,
-            "default_value": "Oxide Agent Bot"
-          },
-          {
-            "name": "site_url",
-            "value_kind": "string",
-            "description": "Optional OpenRouter site URL attribution.",
-            "env": "OPENROUTER_SITE_URL",
-            "secret": false,
-            "default_value": ""
           }
         ]
       },
@@ -1102,9 +1086,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "kind": "llm-provider",
       "cargo_feature": "llm-openrouter",
       "config_env": [
-        "OPENROUTER_API_KEY",
-        "OPENROUTER_SITE_NAME",
-        "OPENROUTER_SITE_URL"
+        "OPENROUTER_API_KEY"
       ],
       "requires_capabilities": []
     },

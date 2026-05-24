@@ -817,26 +817,6 @@ impl AgentRunner {
         }
     }
 
-    #[allow(dead_code)]
-    async fn chat_with_tools_once(
-        &self,
-        ctx: &mut AgentRunnerContext<'_>,
-    ) -> Result<ChatResponse, LlmError> {
-        // This method is kept for backwards compatibility.
-        // Use call_llm_with_tools for retry handling with UI events.
-        let json_mode = self.structured_output_required_for_config(&ctx.config);
-        self.llm_client
-            .chat_with_tools_single_attempt(
-                ctx.system_prompt,
-                ctx.messages,
-                ctx.tools,
-                &ctx.config.model_name,
-                ctx.config.temperature,
-                json_mode,
-            )
-            .await
-    }
-
     async fn handle_llm_response(
         &mut self,
         mut response: ChatResponse,

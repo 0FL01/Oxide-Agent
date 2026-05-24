@@ -27,22 +27,15 @@ const OPENROUTER_HEADERS: [(&str, &str); 3] = [
 pub struct OpenRouterProvider {
     http_client: HttpClient,
     api_key: String,
-    // Deprecated: App attribution headers are now hardcoded
-    #[allow(dead_code)]
-    site_url: String,
-    #[allow(dead_code)]
-    site_name: String,
 }
 
 impl OpenRouterProvider {
     /// Create a new `OpenRouter` provider instance
     #[must_use]
-    pub fn new(api_key: String, site_url: String, site_name: String) -> Self {
+    pub fn new(api_key: String) -> Self {
         Self {
             http_client: crate::llm::support::http::create_http_client(),
             api_key,
-            site_url,
-            site_name,
         }
     }
 
@@ -51,17 +44,10 @@ impl OpenRouterProvider {
     /// This allows connection reuse across multiple providers,
     /// significantly reducing latency for sequential requests.
     #[must_use]
-    pub fn new_with_client(
-        api_key: String,
-        site_url: String,
-        site_name: String,
-        http_client: HttpClient,
-    ) -> Self {
+    pub fn new_with_client(api_key: String, http_client: HttpClient) -> Self {
         Self {
             http_client,
             api_key,
-            site_url,
-            site_name,
         }
     }
 

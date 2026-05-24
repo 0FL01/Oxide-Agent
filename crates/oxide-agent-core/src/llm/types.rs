@@ -169,7 +169,7 @@ pub struct ToolDefinition {
 /// Tool call from LLM response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    /// Legacy/internal identifier for the tool call.
+    /// Runtime invocation identifier for the tool call.
     pub id: String,
     /// Canonical correlation metadata for provider-specific tool transports.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn tool_call_uses_explicit_correlation_for_runtime_and_wire_ids() {
         let tool_call = ToolCall::new(
-            "legacy-provider-id",
+            "runtime-call-id",
             ToolCallFunction {
                 name: "search".to_string(),
                 arguments: "{}".to_string(),
