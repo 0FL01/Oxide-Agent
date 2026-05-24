@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-profile="${1:?usage: scripts/check-compose-profile.sh <embedded-opencode-local|full>}"
+profile="${1:?usage: scripts/check-compose-profile.sh <embedded-opencode-local|search|media|dev|full>}"
 compose_file="docker/compose.${profile}.yml"
 
 if [[ ! -f "${compose_file}" ]]; then
@@ -40,7 +40,7 @@ forbid_config_text() {
 }
 
 case "${profile}" in
-  embedded-opencode-local)
+  embedded-opencode-local | search | media)
     require_service oxide_agent
     forbid_service sandboxd
     forbid_service sandbox_image
@@ -50,7 +50,7 @@ case "${profile}" in
     forbid_config_text "sandboxd-run"
     forbid_config_text "browser-use-data"
     ;;
-  full)
+  dev | full)
     require_service oxide_agent
     require_service sandboxd
     require_service sandbox_image
