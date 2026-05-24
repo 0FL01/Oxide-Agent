@@ -399,6 +399,47 @@ fn stale_compatibility_labels_are_removed_from_current_surfaces() {
 }
 
 #[test]
+fn workspace_binaries_expose_capability_manifest_output() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+    let binary_entrypoints = [
+        "crates/oxide-agent-telegram-bot/src/main.rs",
+        "crates/oxide-agent-telegram-bot/src/bin/chatgpt-login.rs",
+        "crates/oxide-agent-sandboxd/src/main.rs",
+    ];
+
+    let offenders = binary_entrypoints
+        .iter()
+        .filter_map(|target| {
+            let source = fs::read_to_string(workspace_root.join(target))
+                .unwrap_or_else(|error| panic!("read {target}: {error}"));
+            let required_patterns = [
+                "compiled_capability_manifest",
+                "load_module_runtime_settings",
+                "capabilities",
+                "--compiled",
+                "--enabled",
+                "--json",
+            ];
+            let missing = required_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| !source.contains(pattern))
+                .collect::<Vec<_>>();
+            (!missing.is_empty()).then(|| format!("{target}: missing {missing:?}"))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "all workspace binaries must expose deterministic capability manifest output for PRD 8.5/25; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn legacy_compaction_archive_compatibility_surfaces_are_removed() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let targets = [
