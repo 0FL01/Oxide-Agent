@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/check-compiled-capabilities.sh <embedded-opencode-local|search-only|media-enabled|full>
+  scripts/check-compiled-capabilities.sh <embedded-opencode-local|lite|search-only|no-sandbox|media-enabled|full>
 
 Runs the Telegram app capability CLI for a profile and verifies the compiled
 capability manifest stays deterministic and aligned with the PRD profile
@@ -19,7 +19,7 @@ fi
 
 profile="$1"
 case "${profile}" in
-  embedded-opencode-local | search-only | media-enabled | full)
+  embedded-opencode-local | lite | search-only | no-sandbox | media-enabled | full)
     cargo_feature="profile-${profile}"
     ;;
   *)
@@ -123,6 +123,41 @@ profile_requirements = {
             "tool/ytdlp",
         ),
     },
+    "lite": {
+        "exact_modules": {
+            "llm-provider/opencode-go",
+            "storage/r2",
+            "tool/reminder",
+            "tool/todos",
+            "tool/webfetch-md",
+            "transport/telegram",
+        },
+        "required_capabilities": {
+            "llm-provider/opencode-go",
+            "storage/r2",
+            "tool/reminder",
+            "tool/todos",
+            "tool/webfetch-md",
+            "transport/telegram",
+        },
+        "forbidden_modules": common_forbidden_ids,
+        "forbidden_prefixes": (
+            "integration/",
+            "sandbox-backend/",
+            "sandbox-daemon/",
+            "tool/agents-md",
+            "tool/browser-use",
+            "tool/file-delivery",
+            "tool/media-",
+            "tool/sandbox-",
+            "tool/searxng",
+            "tool/stack-logs",
+            "tool/tavily",
+            "tool/tts-",
+            "tool/wiki-memory",
+            "tool/ytdlp",
+        ),
+    },
     "search-only": {
         "required_modules": {
             "llm-provider/opencode-go",
@@ -146,6 +181,42 @@ profile_requirements = {
             "tool/sandbox-",
             "tool/searxng",
             "tool/stack-logs",
+            "tool/tts-",
+            "tool/ytdlp",
+        ),
+    },
+    "no-sandbox": {
+        "exact_modules": {
+            "llm-provider/opencode-go",
+            "storage/r2",
+            "tool/reminder",
+            "tool/todos",
+            "tool/webfetch-md",
+            "tool/wiki-memory",
+            "transport/telegram",
+        },
+        "required_capabilities": {
+            "llm-provider/opencode-go",
+            "storage/r2",
+            "tool/reminder",
+            "tool/todos",
+            "tool/webfetch-md",
+            "tool/wiki-memory",
+            "transport/telegram",
+        },
+        "forbidden_modules": common_forbidden_ids,
+        "forbidden_prefixes": (
+            "integration/",
+            "sandbox-backend/",
+            "sandbox-daemon/",
+            "tool/agents-md",
+            "tool/browser-use",
+            "tool/file-delivery",
+            "tool/media-",
+            "tool/sandbox-",
+            "tool/searxng",
+            "tool/stack-logs",
+            "tool/tavily",
             "tool/tts-",
             "tool/ytdlp",
         ),

@@ -76,7 +76,9 @@ jobs:
       matrix:
         profile:
           - embedded-opencode-local
+          - lite
           - search-only
+          - no-sandbox
           - media-enabled
           - full
 
