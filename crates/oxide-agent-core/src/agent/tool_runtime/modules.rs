@@ -833,7 +833,7 @@ impl ToolModule for WebFetchMdToolModule {
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+        Arc::new(WebFetchMdProvider::new()).tool_runtime_executors()
     }
 }
 
