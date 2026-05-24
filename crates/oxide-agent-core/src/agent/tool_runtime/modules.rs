@@ -948,12 +948,8 @@ impl ToolModule for SearxngToolModule {
 pub struct KokoroTtsToolModule;
 
 #[cfg(feature = "tool-tts-kokoro")]
-impl ToolModule for KokoroTtsToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/tts-kokoro")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+impl KokoroTtsToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<KokoroTtsProvider> {
         let config = TtsConfig::from_env();
 
         if let Ok(url) = std::env::var("KOKORO_TTS_URL") {
@@ -974,11 +970,25 @@ impl ToolModule for KokoroTtsToolModule {
 
         let base_url = provider.base_url().to_string();
         tracing::debug!(url = %base_url, "Kokoro TTS provider registered");
-        Some(Box::new(provider))
+        Some(provider)
+    }
+}
+
+#[cfg(feature = "tool-tts-kokoro")]
+impl ToolModule for KokoroTtsToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/tts-kokoro")
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider(ctx)
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
@@ -987,12 +997,8 @@ impl ToolModule for KokoroTtsToolModule {
 pub struct SileroTtsToolModule;
 
 #[cfg(feature = "tool-tts-silero")]
-impl ToolModule for SileroTtsToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/tts-silero")
-    }
-
-    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+impl SileroTtsToolModule {
+    fn provider(&self, ctx: &ToolModuleContext) -> Option<SileroTtsProvider> {
         let config = SileroTtsConfig::from_env();
 
         if let Ok(url) = std::env::var("SILERO_TTS_URL") {
@@ -1013,11 +1019,25 @@ impl ToolModule for SileroTtsToolModule {
 
         let base_url = provider.base_url().to_string();
         tracing::debug!(url = %base_url, "Silero TTS provider registered");
-        Some(Box::new(provider))
+        Some(provider)
+    }
+}
+
+#[cfg(feature = "tool-tts-silero")]
+impl ToolModule for SileroTtsToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/tts-silero")
     }
 
-    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+    fn legacy_provider(&self, ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider(ctx)
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
+
+    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider(ctx)
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 

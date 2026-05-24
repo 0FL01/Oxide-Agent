@@ -7,6 +7,10 @@ use super::client::KokoroClient;
 use super::types::{TextToSpeechArgs, TtsConfig};
 use crate::agent::provider::ToolProvider;
 use crate::agent::providers::SandboxRuntime;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::{Context, Result};
@@ -15,6 +19,7 @@ use serde_json::json;
 use shell_escape::escape;
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
@@ -23,6 +28,9 @@ use crate::agent::progress::FileDeliveryKind;
 use crate::agent::providers::file_delivery::{
     deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus,
 };
+
+const TOOL_TEXT_TO_SPEECH_EN: &str = "text_to_speech_en";
+const TOOL_TEXT_TO_SPEECH_EN_FILE: &str = "text_to_speech_en_file";
 
 /// Kokoro TTS provider
 pub struct KokoroTtsProvider {
@@ -93,6 +101,143 @@ impl KokoroTtsProvider {
         self.fileops = Some(fileops);
         self.exec = Some(exec);
         self
+    }
+
+    /// Build native typed runtime executors for Kokoro TTS tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(KokoroTtsToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            Self::text_to_speech_tool(),
+            Self::text_to_speech_file_tool(),
+        ]
+    }
+
+    fn text_to_speech_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_TEXT_TO_SPEECH_EN.to_string(),
+            description: concat!(
+                "Convert text to speech and send as a voice message to the user. ",
+                "IMPORTANT: Text must be in English only - the TTS server supports English language exclusively. ",
+                "If the user's request is in another language, translate it to English first. ",
+                "Best for providing spoken responses, explanations, or when the user requests voice output."
+            )
+            .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to convert to speech. MUST be in English only."
+                    },
+                    "voice": {
+                        "type": "string",
+                        "enum": ["af_bella", "af_aoede", "af_alloy", "af_heart"],
+                        "description": "Voice to use. Default: af_heart (warm female). Options: af_bella (default female), af_aoede (alternative female), af_alloy (neutral), af_heart (warm female)"
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["ogg", "mp3", "wav"],
+                        "description": "Audio format. RECOMMENDED: 'ogg' (Opus codec, smallest size, native Telegram support). Fallback options: 'mp3' (wider compatibility), 'wav' (lossless, larger size). Default: 'ogg'"
+                    },
+                    "speed": {
+                        "type": "number",
+                        "minimum": 0.5,
+                        "maximum": 2.0,
+                        "description": "Speech speed multiplier. Default: 1.0. Range: 0.5 (slow) to 2.0 (fast)"
+                    }
+                },
+                "required": ["text"]
+            }),
+        }
+    }
+
+    fn text_to_speech_file_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_TEXT_TO_SPEECH_EN_FILE.to_string(),
+            description: concat!(
+                "Convert English text to speech and save the audio inside the sandbox for downstream tools such as ffmpeg. ",
+                "Use this when you need a file path instead of immediate delivery to the user."
+            )
+            .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to convert to speech. MUST be in English only."
+                    },
+                    "voice": {
+                        "type": "string",
+                        "enum": ["af_bella", "af_aoede", "af_alloy", "af_heart"],
+                        "description": "Voice to use. Default: af_heart."
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["ogg", "mp3", "wav"],
+                        "description": "Audio format. Use 'wav' when a downstream editor needs PCM audio."
+                    },
+                    "speed": {
+                        "type": "number",
+                        "minimum": 0.5,
+                        "maximum": 2.0,
+                        "description": "Speech speed multiplier."
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Optional sandbox output path. Relative paths are placed under /workspace/. Defaults to /workspace/generated/..."
+                    }
+                },
+                "required": ["text"]
+            }),
+        }
+    }
+
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Result<String> {
+        debug!(tool = tool_name, "Executing TTS tool");
+
+        match tool_name {
+            TOOL_TEXT_TO_SPEECH_EN => {
+                let args: TextToSpeechArgs = match serde_json::from_str(arguments) {
+                    Ok(args) => args,
+                    Err(error) => {
+                        return Ok(format!("Invalid arguments: {error}"));
+                    }
+                };
+
+                self.execute_text_to_speech_en(args, progress_tx).await
+            }
+            TOOL_TEXT_TO_SPEECH_EN_FILE => {
+                let args: TextToSpeechArgs = match serde_json::from_str(arguments) {
+                    Ok(args) => args,
+                    Err(error) => {
+                        return Ok(format!("Invalid arguments: {error}"));
+                    }
+                };
+
+                self.execute_text_to_speech_en_file(args).await
+            }
+            _ => anyhow::bail!("Unknown TTS tool: {tool_name}"),
+        }
     }
 
     async fn write_audio_file(&self, path: &str, content: &[u8]) -> Result<()> {
@@ -290,86 +435,14 @@ impl ToolProvider for KokoroTtsProvider {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: "text_to_speech_en".to_string(),
-                description: concat!(
-                    "Convert text to speech and send as a voice message to the user. ",
-                    "IMPORTANT: Text must be in English only - the TTS server supports English language exclusively. ",
-                    "If the user's request is in another language, translate it to English first. ",
-                    "Best for providing spoken responses, explanations, or when the user requests voice output."
-                )
-                .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "Text to convert to speech. MUST be in English only."
-                        },
-                        "voice": {
-                            "type": "string",
-                            "enum": ["af_bella", "af_aoede", "af_alloy", "af_heart"],
-                            "description": "Voice to use. Default: af_heart (warm female). Options: af_bella (default female), af_aoede (alternative female), af_alloy (neutral), af_heart (warm female)"
-                        },
-                        "format": {
-                            "type": "string",
-                            "enum": ["ogg", "mp3", "wav"],
-                            "description": "Audio format. RECOMMENDED: 'ogg' (Opus codec, smallest size, native Telegram support). Fallback options: 'mp3' (wider compatibility), 'wav' (lossless, larger size). Default: 'ogg'"
-                        },
-                        "speed": {
-                            "type": "number",
-                            "minimum": 0.5,
-                            "maximum": 2.0,
-                            "description": "Speech speed multiplier. Default: 1.0. Range: 0.5 (slow) to 2.0 (fast)"
-                        }
-                    },
-                    "required": ["text"]
-                }),
-            },
-            ToolDefinition {
-                name: "text_to_speech_en_file".to_string(),
-                description: concat!(
-                    "Convert English text to speech and save the audio inside the sandbox for downstream tools such as ffmpeg. ",
-                    "Use this when you need a file path instead of immediate delivery to the user."
-                )
-                .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "Text to convert to speech. MUST be in English only."
-                        },
-                        "voice": {
-                            "type": "string",
-                            "enum": ["af_bella", "af_aoede", "af_alloy", "af_heart"],
-                            "description": "Voice to use. Default: af_heart."
-                        },
-                        "format": {
-                            "type": "string",
-                            "enum": ["ogg", "mp3", "wav"],
-                            "description": "Audio format. Use 'wav' when a downstream editor needs PCM audio."
-                        },
-                        "speed": {
-                            "type": "number",
-                            "minimum": 0.5,
-                            "maximum": 2.0,
-                            "description": "Speech speed multiplier."
-                        },
-                        "output_path": {
-                            "type": "string",
-                            "description": "Optional sandbox output path. Relative paths are placed under /workspace/. Defaults to /workspace/generated/..."
-                        }
-                    },
-                    "required": ["text"]
-                }),
-            },
-        ]
+        Self::tool_definitions()
     }
 
     fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(tool_name, "text_to_speech_en" | "text_to_speech_en_file")
+        matches!(
+            tool_name,
+            TOOL_TEXT_TO_SPEECH_EN | TOOL_TEXT_TO_SPEECH_EN_FILE
+        )
     }
 
     async fn execute(
@@ -379,37 +452,91 @@ impl ToolProvider for KokoroTtsProvider {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
-        debug!(tool = tool_name, "Executing TTS tool");
+        self.execute_tool(tool_name, arguments, progress_tx).await
+    }
+}
 
-        match tool_name {
-            "text_to_speech_en" => {
-                let args: TextToSpeechArgs = match serde_json::from_str(arguments) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        return Ok(format!("Invalid arguments: {e}"));
-                    }
-                };
+struct KokoroTtsToolExecutor {
+    provider: Arc<KokoroTtsProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
 
-                self.execute_text_to_speech_en(args, progress_tx).await
-            }
-            "text_to_speech_en_file" => {
-                let args: TextToSpeechArgs = match serde_json::from_str(arguments) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        return Ok(format!("Invalid arguments: {e}"));
-                    }
-                };
+#[async_trait]
+impl ToolExecutor for KokoroTtsToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
 
-                self.execute_text_to_speech_en_file(args).await
-            }
-            _ => anyhow::bail!("Unknown TTS tool: {tool_name}"),
-        }
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(
+                self.name.as_str(),
+                &invocation.raw_arguments,
+                self.provider.progress_tx.as_ref(),
+            )
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use chrono::Utc;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-kokoro-tts"),
+            batch_id: ToolBatchId::from("batch-kokoro-tts"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     #[test]
     fn provider_creation() {
@@ -422,16 +549,57 @@ mod tests {
         let provider = KokoroTtsProvider::from_env();
         let tools = provider.tools();
         assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].name, "text_to_speech_en");
-        assert_eq!(tools[1].name, "text_to_speech_en_file");
+        assert_eq!(tools[0].name, TOOL_TEXT_TO_SPEECH_EN);
+        assert_eq!(tools[1].name, TOOL_TEXT_TO_SPEECH_EN_FILE);
     }
 
     #[test]
     fn can_handle_check() {
         let provider = KokoroTtsProvider::from_env();
-        assert!(provider.can_handle("text_to_speech_en"));
-        assert!(provider.can_handle("text_to_speech_en_file"));
+        assert!(provider.can_handle(TOOL_TEXT_TO_SPEECH_EN));
+        assert!(provider.can_handle(TOOL_TEXT_TO_SPEECH_EN_FILE));
         assert!(!provider.can_handle("other_tool"));
+    }
+
+    #[test]
+    fn typed_runtime_executors_register_kokoro_tools() {
+        let provider = Arc::new(KokoroTtsProvider::from_env());
+        let names = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().as_str().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![TOOL_TEXT_TO_SPEECH_EN, TOOL_TEXT_TO_SPEECH_EN_FILE]
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_returns_invalid_parameter_message_before_http() {
+        let provider = Arc::new(KokoroTtsProvider::from_env());
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_TEXT_TO_SPEECH_EN)
+            .expect("typed Kokoro TTS executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(
+                TOOL_TEXT_TO_SPEECH_EN,
+                r#"{"text":"hello","voice":"missing_voice"}"#,
+            ))
+            .await
+            .expect("invalid voice returns model-visible output");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        assert!(output
+            .stdout
+            .text
+            .as_deref()
+            .expect("stdout text")
+            .contains("Invalid TTS parameters"));
     }
 
     #[test]
