@@ -9,7 +9,6 @@ use super::session::{AgentSession, RuntimeContextInjection};
 use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
 use anyhow::Result;
 use async_trait::async_trait;
-use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
 /// Minimal context interface needed by the agent runner.
@@ -21,14 +20,6 @@ pub trait AgentContext: Send {
     fn memory_mut(&mut self) -> &mut AgentMemory;
     /// Access the cancellation token for this run.
     fn cancellation_token(&self) -> &CancellationToken;
-    /// Check if a skill has already been loaded into context.
-    fn is_skill_loaded(&self, name: &str) -> bool;
-    /// Register a skill as loaded and update token accounting.
-    fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool;
-    /// Report total tokens currently attributed to loaded skills.
-    fn skill_token_count(&self) -> usize {
-        0
-    }
     /// Return scope metadata used by compaction persistence layers.
     fn compaction_scope(&self) -> CompactionScope {
         CompactionScope::default()
@@ -58,8 +49,6 @@ pub trait AgentContext: Send {
 pub struct EphemeralSession {
     memory: AgentMemory,
     cancellation_token: CancellationToken,
-    loaded_skills: HashSet<String>,
-    skill_token_count: usize,
     started_at: std::time::Instant,
 }
 
@@ -70,8 +59,6 @@ impl EphemeralSession {
         Self {
             memory: AgentMemory::new(max_tokens),
             cancellation_token: CancellationToken::new(),
-            loaded_skills: HashSet::new(),
-            skill_token_count: 0,
             started_at: std::time::Instant::now(),
         }
     }
@@ -85,8 +72,6 @@ impl EphemeralSession {
         Self {
             memory: AgentMemory::new(max_tokens),
             cancellation_token: parent.child_token(),
-            loaded_skills: HashSet::new(),
-            skill_token_count: 0,
             started_at: std::time::Instant::now(),
         }
     }
@@ -100,12 +85,6 @@ impl EphemeralSession {
     /// Access the internal cancellation token mutably if needed.
     pub fn cancellation_token_mut(&mut self) -> &mut CancellationToken {
         &mut self.cancellation_token
-    }
-
-    /// Get total tokens used by loaded skills.
-    #[must_use]
-    pub const fn skill_token_count(&self) -> usize {
-        self.skill_token_count
     }
 }
 
@@ -123,24 +102,12 @@ impl AgentContext for AgentSession {
         &self.cancellation_token
     }
 
-    fn is_skill_loaded(&self, name: &str) -> bool {
-        self.is_skill_loaded(name)
-    }
-
-    fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool {
-        self.register_loaded_skill(name, token_count)
-    }
-
     fn elapsed_secs(&self) -> u64 {
         self.elapsed_secs()
     }
 
     fn compaction_scope(&self) -> CompactionScope {
         AgentSession::compaction_scope(self)
-    }
-
-    fn skill_token_count(&self) -> usize {
-        AgentSession::skill_token_count(self)
     }
 
     fn drain_runtime_context(&mut self) -> Vec<RuntimeContextInjection> {
@@ -174,25 +141,8 @@ impl AgentContext for EphemeralSession {
         &self.cancellation_token
     }
 
-    fn is_skill_loaded(&self, name: &str) -> bool {
-        self.loaded_skills.contains(name)
-    }
-
-    fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool {
-        if self.loaded_skills.insert(name.to_string()) {
-            self.skill_token_count = self.skill_token_count.saturating_add(token_count);
-            return true;
-        }
-
-        false
-    }
-
     fn elapsed_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
-    }
-
-    fn skill_token_count(&self) -> usize {
-        self.skill_token_count
     }
 
     fn compaction_scope(&self) -> CompactionScope {

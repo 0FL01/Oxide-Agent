@@ -14,7 +14,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -294,10 +294,6 @@ pub struct AgentSession {
     pub cancellation_token: CancellationToken,
     /// Last task text for retry actions.
     pub last_task: Option<String>,
-    /// Loaded skills for the current system prompt or dynamic context.
-    loaded_skills: HashSet<String>,
-    /// Token count for loaded skills.
-    skill_token_count: usize,
     /// Additional user context waiting for the next safe iteration boundary.
     runtime_context_inbox: RuntimeContextInbox,
     /// Pending user input required before the task can resume.
@@ -351,8 +347,6 @@ impl AgentSession {
             status: AgentStatus::Idle,
             cancellation_token: CancellationToken::new(),
             last_task: None,
-            loaded_skills: HashSet::new(),
-            skill_token_count: 0,
             runtime_context_inbox: RuntimeContextInbox::new(),
             pending_user_input: None,
             memory_checkpoint: None,
@@ -618,8 +612,6 @@ impl AgentSession {
         self.started_at = None;
         self.current_task_id = None;
         self.last_task = None;
-        self.loaded_skills.clear();
-        self.skill_token_count = 0;
         let _ = self.runtime_context_inbox.drain();
         self.pending_user_input = None;
         if let Ok(mut state) = self.checkpoint_state.try_lock() {
@@ -655,34 +647,6 @@ impl AgentSession {
                     && !message.content.trim().is_empty()
             })
             .map(|message| message.content.clone());
-    }
-
-    /// Clear legacy loaded-skill accounting.
-    pub fn clear_loaded_skills(&mut self) {
-        self.loaded_skills.clear();
-        self.skill_token_count = 0;
-    }
-
-    /// Register a dynamically loaded skill, returns true if it was new.
-    pub fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool {
-        if self.loaded_skills.insert(name.to_string()) {
-            self.skill_token_count = self.skill_token_count.saturating_add(token_count);
-            return true;
-        }
-
-        false
-    }
-
-    /// Check if a skill is already loaded.
-    #[must_use]
-    pub fn is_skill_loaded(&self, name: &str) -> bool {
-        self.loaded_skills.contains(name)
-    }
-
-    /// Get total tokens used by loaded skills.
-    #[must_use]
-    pub const fn skill_token_count(&self) -> usize {
-        self.skill_token_count
     }
 
     /// Clear only the todos list (keeps memory intact)

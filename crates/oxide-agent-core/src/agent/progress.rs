@@ -14,8 +14,6 @@ pub struct TokenSnapshot {
     pub system_prompt_tokens: usize,
     /// Estimated tokens represented by serialized tool schemas.
     pub tool_schema_tokens: usize,
-    /// Estimated tokens represented by loaded skill context outside hot memory.
-    pub loaded_skill_tokens: usize,
     /// Total estimated input tokens for the next request.
     pub total_input_tokens: usize,
     /// Reserved output tokens for the active model.

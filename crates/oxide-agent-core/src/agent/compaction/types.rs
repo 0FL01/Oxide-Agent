@@ -327,8 +327,6 @@ pub struct BudgetEstimate {
     pub tool_schema_tokens: usize,
     /// Estimated token count of the active hot memory.
     pub hot_memory: HotMemoryBudget,
-    /// Total tokens currently attributed to loaded skills.
-    pub loaded_skill_tokens: usize,
     /// Configured response token reserve for the active model.
     pub reserved_output_tokens: usize,
     /// Additional hard safety buffer kept free.

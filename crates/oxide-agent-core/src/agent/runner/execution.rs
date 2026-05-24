@@ -1127,7 +1127,6 @@ impl AgentRunner {
         let policy = CompactionPolicy::default();
         count_tokens_cached(ctx.system_prompt)
             .saturating_add(Self::tool_schema_tokens(ctx.tools))
-            .saturating_add(ctx.agent.skill_token_count())
             .saturating_add(ctx.agent.memory().token_count())
             .saturating_add(route.max_output_tokens as usize)
             .saturating_add(policy.hard_reserve_tokens)
@@ -1143,7 +1142,6 @@ impl AgentRunner {
         context_window
             .saturating_sub(count_tokens_cached(ctx.system_prompt))
             .saturating_sub(Self::tool_schema_tokens(ctx.tools))
-            .saturating_sub(ctx.agent.skill_token_count())
             .saturating_sub(route.max_output_tokens as usize)
             .saturating_sub(policy.hard_reserve_tokens)
     }
@@ -1723,7 +1721,6 @@ impl AgentRunner {
             hot_memory_tokens: budget.hot_memory.total_tokens,
             system_prompt_tokens: budget.system_prompt_tokens,
             tool_schema_tokens: budget.tool_schema_tokens,
-            loaded_skill_tokens: budget.loaded_skill_tokens,
             total_input_tokens: budget.total_input_tokens,
             reserved_output_tokens: budget.reserved_output_tokens,
             hard_reserve_tokens: budget.hard_reserve_tokens,
@@ -1854,7 +1851,6 @@ impl AgentRunner {
             hot_memory_tokens = snapshot.hot_memory_tokens,
             system_prompt_tokens = snapshot.system_prompt_tokens,
             tool_schema_tokens = snapshot.tool_schema_tokens,
-            loaded_skill_tokens = snapshot.loaded_skill_tokens,
             total_input_tokens = snapshot.total_input_tokens,
             reserved_output_tokens = snapshot.reserved_output_tokens,
             projected_total_tokens = snapshot.projected_total_tokens,

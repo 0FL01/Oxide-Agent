@@ -133,7 +133,6 @@ pub async fn create_agent_system_prompt(
     wiki_context: Option<&str>,
 ) -> String {
     let date_context = build_date_context();
-    _session.clear_loaded_skills();
 
     let base_prompt = get_fallback_prompt();
 

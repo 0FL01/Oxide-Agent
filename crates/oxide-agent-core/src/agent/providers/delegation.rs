@@ -1982,7 +1982,6 @@ mod tests {
             hot_memory_tokens: 777,
             system_prompt_tokens: 500,
             tool_schema_tokens: 600,
-            loaded_skill_tokens: 0,
             total_input_tokens: 2_900,
             reserved_output_tokens: 64_000,
             hard_reserve_tokens: 8_192,
