@@ -76,6 +76,67 @@ fn legacy_tool_provider_trait_is_removed() {
 }
 
 #[test]
+fn legacy_tool_registry_and_wrappers_are_removed() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    assert!(
+        !manifest_dir.join("src/agent/registry.rs").exists(),
+        "legacy agent/registry.rs must stay removed; use agent::tool_runtime::ToolRegistry"
+    );
+
+    let agent_mod =
+        fs::read_to_string(manifest_dir.join("src/agent/mod.rs")).expect("read agent/mod.rs");
+    for forbidden in ["pub mod registry;", "pub use registry"] {
+        assert!(
+            !agent_mod.contains(forbidden),
+            "agent module must not export legacy registry symbol {forbidden}"
+        );
+    }
+
+    let forbidden_patterns = [
+        "agent::registry::",
+        "crate::agent::registry::",
+        "crate::agent::registry;",
+        "build_tool_registry",
+        "legacy_provider",
+        "ToolModule::legacy_provider",
+        "FilteredToolProvider",
+        "ProviderRuntimeExecutor",
+        "provider_runtime_executors",
+        "provider_executor",
+    ];
+
+    let mut files = Vec::new();
+    collect_rust_files(&manifest_dir.join("src"), &mut files);
+    let offenders = files
+        .into_iter()
+        .filter_map(|path| {
+            let source = fs::read_to_string(&path).expect("read source file");
+            let matches = forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{}: {matches:?}",
+                    path.strip_prefix(manifest_dir)
+                        .expect("source path under manifest dir")
+                        .display()
+                ))
+            }
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "legacy tool registry/wrapper references must stay removed; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn ssh_cleanup_is_owned_by_ssh_module_not_binaries() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
