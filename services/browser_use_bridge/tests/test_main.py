@@ -234,7 +234,24 @@ def import_bridge_module(extra_env: dict[str, str]):
     browser_use_stub = make_browser_use_module()
     with mock.patch.dict(sys.modules, {"browser_use": browser_use_stub}):
         with mock.patch.dict(os.environ, extra_env, clear=False):
-            return importlib.import_module(module_name)
+            module = importlib.import_module(module_name)
+
+    raw_request = module.RunTaskRequest
+
+    def run_task_request_with_default_config(*args, **kwargs):
+        kwargs.setdefault(
+            "browser_llm_config",
+            {
+                "provider": "anthropic",
+                "model": "claude-3-5-haiku-latest",
+                "supports_vision": True,
+            },
+        )
+        return raw_request(*args, **kwargs)
+
+    module.RawRunTaskRequest = raw_request
+    module.RunTaskRequest = run_task_request_with_default_config
+    return module
 
 
 class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
@@ -243,8 +260,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "",
                 }
             )
 
@@ -256,7 +271,14 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 payload["preferred_browser_llm_source"],
                 "request_browser_llm_config",
             )
-            self.assertFalse(payload["legacy_env_fallback_configured"])
+            removed_env_prefix = "legacy" + "_env"
+            for removed_key in [
+                f"{removed_env_prefix}_fallback_configured",
+                f"{removed_env_prefix}_llm_provider",
+                f"{removed_env_prefix}_llm_model",
+                f"supported_{removed_env_prefix}_providers",
+            ]:
+                self.assertNotIn(removed_key, payload)
             self.assertEqual(
                 payload["profile_scope_mode"], "runtime_injected_preferred"
             )
@@ -272,34 +294,31 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload["browser_runtime_reconnect_supported"])
             self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
-            self.assertIn("browser_use", payload["supported_legacy_env_providers"])
 
-    async def test_health_reports_configured_legacy_fallback(self):
+    async def test_run_requires_request_level_browser_llm_config(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
 
-            response = await module.health()
-            payload = json.loads(response.body)
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            request = module.RawRunTaskRequest(task="Open the homepage")
 
-            self.assertTrue(payload["legacy_env_fallback_configured"])
-            self.assertEqual(payload["legacy_env_llm_provider"], "anthropic")
+            response = await manager.run_task(request, None)
+
+            self.assertEqual(response.status, "failed")
             self.assertEqual(
-                payload["legacy_env_llm_model"], "claude-3-5-haiku-latest"
+                response.error, "browser_llm_config is required for browser task execution"
             )
+            self.assertIsNone(response.llm_source)
 
     async def test_health_reports_browser_ready_retry_overrides(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "",
                     "BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES": "5",
                     "BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS": "1500",
                 }
@@ -316,8 +335,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -373,8 +390,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -395,13 +410,11 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "dont_force_structured_output", FakeAgent.instances[-1].llm.kwargs
             )
 
-    async def test_legacy_fallback_run_reports_observability_fields(self):
+    async def test_default_request_config_run_reports_observability_fields(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -410,7 +423,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             response = await manager.run_task(request, None)
 
             self.assertEqual(response.status, "completed")
-            self.assertEqual(response.llm_source, "legacy_env")
+            self.assertEqual(response.llm_source, "request_config")
             self.assertEqual(response.llm_provider, "anthropic")
             self.assertEqual(response.llm_transport, "anthropic")
             self.assertEqual(response.vision_mode, "auto")
@@ -432,8 +445,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -461,8 +472,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -497,8 +506,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -525,8 +532,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -565,8 +570,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -611,8 +614,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeAgent.auto_close_after_run = True
@@ -635,13 +636,11 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(FakeBrowser.instances[-1].kill_calls, 1)
             self.assertEqual(FakeBrowser.instances[-1].stop_calls, 0)
 
-    async def test_explicit_autonomous_mode_overrides_legacy_steering_wrapper(self):
+    async def test_explicit_autonomous_mode_overrides_steering_contract(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -666,13 +665,11 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.execution_mode, "autonomous")
             self.assertEqual(FakeAgent.instances[-1].kwargs, {})
 
-    async def test_legacy_steering_wrapper_still_applies_navigation_only_fallback(self):
+    async def test_steering_wrapper_still_applies_navigation_only_mode(self):
         with TemporaryDirectory() as tmpdir:
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -698,8 +695,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -724,8 +719,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -760,8 +753,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -787,8 +778,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -811,8 +800,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -834,8 +821,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -872,8 +857,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -909,8 +892,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -935,8 +916,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -964,8 +943,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -992,8 +969,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1027,8 +1002,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=2)
@@ -1063,8 +1036,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=2)
@@ -1107,8 +1078,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1138,8 +1107,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1171,8 +1138,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1202,8 +1167,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeBrowser.initial_start_failures = 1
@@ -1230,8 +1193,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1258,8 +1219,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             FakeBrowser.initial_start_failures = 3
@@ -1285,8 +1244,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1313,8 +1270,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1353,8 +1308,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1380,8 +1333,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1410,8 +1361,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1459,8 +1408,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1487,8 +1434,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             first_manager = module.SessionManager(
@@ -1536,8 +1481,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
@@ -1569,8 +1512,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                 }
             )
             manager = module.SessionManager(
@@ -1604,8 +1545,6 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             module = import_bridge_module(
                 {
                     "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
-                    "BROWSER_USE_BRIDGE_LLM_PROVIDER": "anthropic",
-                    "BROWSER_USE_BRIDGE_LLM_MODEL": "claude-3-5-haiku-latest",
                     "BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS": "60",
                 }
             )

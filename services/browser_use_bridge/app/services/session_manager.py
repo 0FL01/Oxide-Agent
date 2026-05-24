@@ -92,7 +92,7 @@ TRANSIENT_AGENT_OUTPUT_ERROR_PATTERNS = [
 def resolve_execution_mode(
     task: str, requested_mode: ExecutionMode | None
 ) -> ExecutionMode:
-    """Resolve execution mode from explicit request setting or legacy steering wrapper."""
+    """Resolve execution mode from explicit request setting or steering contract."""
     if requested_mode is not None:
         return requested_mode
     if task.lstrip().startswith(STEERING_TASK_PREFIX):

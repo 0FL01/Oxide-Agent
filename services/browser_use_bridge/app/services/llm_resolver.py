@@ -6,7 +6,6 @@ import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from app.config import settings
 from app.constants import (
     MINIMAX_DEFAULT_API_BASE,
     ZAI_DEFAULT_API_BASE,
@@ -130,40 +129,13 @@ def resolve_requested_llm_config(
     )
 
 
-def resolve_legacy_llm_config() -> ResolvedBrowserLlmConfig:
-    """Resolve LLM configuration from legacy environment variables."""
-    provider = normalize_name(settings.llm_provider)
-    if not provider:
-        raise RuntimeError(
-            "BROWSER_USE_BRIDGE_LLM_PROVIDER is required for browser task execution"
-        )
-
-    if provider not in {"browser_use", "anthropic"}:
-        raise RuntimeError(
-            f"unsupported BROWSER_USE_BRIDGE_LLM_PROVIDER '{settings.llm_provider}'"
-        )
-
-    return ResolvedBrowserLlmConfig(
-        provider=provider,
-        transport=provider,
-        model=clean_optional(settings.llm_model),
-        api_base=None,
-        api_key=None,
-        supports_vision=None,
-        supports_tools=None,
-        source="legacy_env",
-    )
-
-
 def resolve_llm_config(
     request: RunTaskRequest, browser_llm_api_key: str | None
 ) -> ResolvedBrowserLlmConfig:
-    """Resolve LLM configuration from request or legacy env."""
-    if request.browser_llm_config is not None:
-        return resolve_requested_llm_config(
-            request.browser_llm_config, browser_llm_api_key
-        )
-    return resolve_legacy_llm_config()
+    """Resolve LLM configuration from the required request-level config."""
+    if request.browser_llm_config is None:
+        raise RuntimeError("browser_llm_config is required for browser task execution")
+    return resolve_requested_llm_config(request.browser_llm_config, browser_llm_api_key)
 
 
 if ChatOpenAI is not None:

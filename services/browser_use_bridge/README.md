@@ -11,10 +11,7 @@
 - `POST /sessions/{id}/extract_content`
 - `POST /sessions/{id}/screenshot`
 
-`POST /sessions/run` поддерживает два режима выбора LLM:
-
-- request-level `browser_llm_config`, который уже используется Rust provider-ом для Stage C route inheritance и является основным режимом
-- legacy fallback через `BROWSER_USE_BRIDGE_LLM_PROVIDER` / `BROWSER_USE_BRIDGE_LLM_MODEL`
+`POST /sessions/run` требует request-level `browser_llm_config`, который используется Rust provider-ом для route inheritance.
 
 Дополнительно `POST /sessions/run` теперь принимает optional `execution_mode`:
 
@@ -40,9 +37,6 @@
 - `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS` - idle/stale profile retention TTL in seconds, default `604800` (7 days), `0` disables TTL pruning
 - `BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES` - retry count for early transient browser readiness failures such as `CDP client not initialized`, default `2`
 - `BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS` - delay between readiness retries in milliseconds, default `750`
-- `BROWSER_USE_BRIDGE_LLM_PROVIDER` - legacy fallback: `browser_use` or `anthropic`
-- `BROWSER_USE_BRIDGE_LLM_MODEL` - legacy fallback model override for selected provider
-
 Bridge автоматически устанавливает `BROWSER_USE_HOME` в `BROWSER_USE_BRIDGE_DATA_DIR`, если он не задан явно.
 
 Для route inheritance Oxide Agent теперь может передавать provider secret server-to-server через header `X-Oxide-Browser-Llm-Api-Key`, не сохраняя его в request body и без обязательного env passthrough в sidecar.
@@ -106,8 +100,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 ## Run In Docker Compose
 
 - Stage 2 wiring publishes the service on `127.0.0.1:8002` and keeps browser state in the `browser-use-data` volume.
-- Default compose now assumes route inheritance as the primary path and no longer passes `BROWSER_USE_BRIDGE_LLM_PROVIDER` / `BROWSER_USE_BRIDGE_LLM_MODEL` into the sidecar.
-- If you need the legacy env fallback, inject `BROWSER_USE_BRIDGE_LLM_PROVIDER`, `BROWSER_USE_BRIDGE_LLM_MODEL`, and the matching API key through a compose override or direct container environment.
+- Default compose uses route inheritance and request-level `browser_llm_config`; environment-based sidecar LLM fallback is not supported.
 - Stage C Rust provider automatically injects `browser_llm_config` from the active Oxide route for `minimax`, `zai`, and `openrouter`.
 - Stage D secret handling sends inherited-route API keys via `X-Oxide-Browser-Llm-Api-Key`, so `minimax`, `zai`, and `openrouter` do not require dedicated sidecar env passthrough in the default compose setup.
 - Stage 2 profile reuse injects `profile_scope` from runtime context; bridge enforces scope match on `profile_id` reuse and rejects creating more than `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE` retained profiles in one scope.
@@ -123,7 +116,7 @@ uvicorn services.browser_use_bridge.app.main:app --host 0.0.0.0 --port 8000
 - If you use request-level `browser_llm_config` with `api_key_ref=env:...`, the referenced env var must exist inside the `browser_use` container.
 - Reusable profile metadata lives under `BROWSER_USE_BRIDGE_DATA_DIR/profiles/<profile_id>/metadata.json`, browser state under `.../profiles/<profile_id>/browser/`.
 - Compose readiness uses `GET /health`, which returns HTTP `503` if the `browser_use` runtime failed to import.
-- `GET /health` also shows whether legacy env fallback is configured, which LLM source is preferred, the profile idle TTL, readiness retry settings, whether session-level runtime observability is available, and whether orphan recovery is enabled.
+- `GET /health` also shows which LLM source is preferred, the profile idle TTL, readiness retry settings, whether session-level runtime observability is available, and whether orphan recovery is enabled.
 
 ## Notes
 

@@ -30,7 +30,6 @@ from app.models.responses import (
     ScreenshotResponse,
 )
 from app.services.session_manager import SessionManager
-from app.utils.text import clean_optional
 
 
 manager = SessionManager(
@@ -72,11 +71,6 @@ async def health() -> JSONResponse:
         "request_browser_llm_config_supported": True,
         "request_browser_llm_api_key_header_supported": True,
         "browser_llm_api_key_header": OXIDE_BROWSER_LLM_API_KEY_HEADER,
-        "legacy_env_fallback_configured": clean_optional(settings.llm_provider)
-        is not None,
-        "legacy_env_llm_provider": clean_optional(settings.llm_provider),
-        "legacy_env_llm_model": clean_optional(settings.llm_model),
-        "supported_legacy_env_providers": ["browser_use", "anthropic"],
         "supported_inherited_route_providers": [
             "minimax",
             "zai",
