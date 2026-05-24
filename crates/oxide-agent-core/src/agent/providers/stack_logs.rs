@@ -3,17 +3,20 @@
 use crate::agent::provider::ToolProvider;
 use crate::llm::ToolDefinition;
 use crate::sandbox::broker::{StackLogsFetchRequest, StackLogsListSourcesRequest};
-use crate::sandbox::SandboxManager;
+use crate::sandbox::{SandboxDiagnostics, SandboxDiagnosticsRuntime};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
 
 const TOOL_STACK_LOGS_LIST_SOURCES: &str = "stack_logs_list_sources";
 const TOOL_STACK_LOGS_FETCH: &str = "stack_logs_fetch";
 
 /// Provider that exposes compose-stack log discovery and fetch tools.
-pub struct StackLogsProvider;
+pub struct StackLogsProvider {
+    diagnostics: Arc<dyn SandboxDiagnostics>,
+}
 
 impl Default for StackLogsProvider {
     fn default() -> Self {
@@ -24,8 +27,14 @@ impl Default for StackLogsProvider {
 impl StackLogsProvider {
     /// Create a new stack logs provider.
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self::with_diagnostics(Arc::new(SandboxDiagnosticsRuntime::new()))
+    }
+
+    /// Create a provider from a narrow sandbox diagnostics backend.
+    #[must_use]
+    pub fn with_diagnostics(diagnostics: Arc<dyn SandboxDiagnostics>) -> Self {
+        Self { diagnostics }
     }
 
     fn list_sources_definition() -> ToolDefinition {
@@ -122,14 +131,18 @@ impl StackLogsProvider {
         }
     }
 
-    async fn handle_list_sources(arguments: &str) -> Result<String> {
+    async fn handle_list_sources(&self, arguments: &str) -> Result<String> {
         let request: StackLogsListSourcesArgs = if arguments.trim().is_empty() {
             StackLogsListSourcesArgs::default()
         } else {
             serde_json::from_str(arguments)?
         };
 
-        match SandboxManager::list_stack_log_sources(request.into()).await {
+        match self
+            .diagnostics
+            .list_stack_log_sources(request.into())
+            .await
+        {
             Ok(response) => serde_json::to_string(&response).map_err(Into::into),
             Err(error) => serde_json::to_string(&json!({
                 "error": error.to_string(),
@@ -138,14 +151,14 @@ impl StackLogsProvider {
         }
     }
 
-    async fn handle_fetch(arguments: &str) -> Result<String> {
+    async fn handle_fetch(&self, arguments: &str) -> Result<String> {
         let request: StackLogsFetchArgs = if arguments.trim().is_empty() {
             StackLogsFetchArgs::default()
         } else {
             serde_json::from_str(arguments)?
         };
 
-        match SandboxManager::fetch_stack_logs(request.into()).await {
+        match self.diagnostics.fetch_stack_logs(request.into()).await {
             Ok(response) => serde_json::to_string(&response).map_err(Into::into),
             Err(error) => serde_json::to_string(&json!({
                 "error": error.to_string(),
@@ -260,8 +273,8 @@ impl ToolProvider for StackLogsProvider {
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         match tool_name {
-            TOOL_STACK_LOGS_LIST_SOURCES => Self::handle_list_sources(arguments).await,
-            TOOL_STACK_LOGS_FETCH => Self::handle_fetch(arguments).await,
+            TOOL_STACK_LOGS_LIST_SOURCES => self.handle_list_sources(arguments).await,
+            TOOL_STACK_LOGS_FETCH => self.handle_fetch(arguments).await,
             _ => anyhow::bail!("Unknown stack logs tool: {tool_name}"),
         }
     }

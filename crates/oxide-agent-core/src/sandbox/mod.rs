@@ -10,6 +10,8 @@
     feature = "tool-stack-logs"
 ))]
 pub mod broker;
+#[cfg(feature = "tool-stack-logs")]
+pub mod diagnostics;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
@@ -36,6 +38,8 @@ pub mod traits;
 pub use broker::SandboxBrokerClient;
 #[cfg(feature = "sandbox-backend-docker-direct")]
 pub use broker::SandboxBrokerServer;
+#[cfg(feature = "tool-stack-logs")]
+pub use diagnostics::SandboxDiagnosticsRuntime;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
@@ -51,6 +55,8 @@ pub use manager::{ExecResult, SandboxContainerRecord, SandboxManager};
 )))]
 pub use manager_stub::{ExecResult, SandboxContainerRecord, SandboxManager};
 pub use scope::SandboxScope;
+#[cfg(feature = "tool-stack-logs")]
+pub use traits::SandboxDiagnostics;
 pub use traits::{
     SandboxBackend, SandboxBackendId, SandboxCapability, SandboxExec, SandboxFileListing,
     SandboxFileOps, SandboxLifecycle,

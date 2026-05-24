@@ -1,5 +1,10 @@
 //! Narrow sandbox backend capability traits.
 
+#[cfg(feature = "tool-stack-logs")]
+use super::broker::{
+    StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
+    StackLogsListSourcesResponse,
+};
 use super::ExecResult;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -108,4 +113,21 @@ pub trait SandboxFileOps: SandboxBackend {
 pub trait SandboxLifecycle: SandboxBackend {
     /// Recreate the current sandbox scope.
     async fn recreate(&self) -> Result<()>;
+}
+
+/// Sandbox diagnostics capability.
+#[cfg(feature = "tool-stack-logs")]
+#[async_trait]
+pub trait SandboxDiagnostics: SandboxBackend {
+    /// List compose-stack log sources available to the diagnostics backend.
+    async fn list_stack_log_sources(
+        &self,
+        request: StackLogsListSourcesRequest,
+    ) -> Result<StackLogsListSourcesResponse>;
+
+    /// Fetch bounded compose-stack logs from the diagnostics backend.
+    async fn fetch_stack_logs(
+        &self,
+        request: StackLogsFetchRequest,
+    ) -> Result<StackLogsFetchResponse>;
 }
