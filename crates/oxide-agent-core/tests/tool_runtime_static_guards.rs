@@ -31,6 +31,51 @@ fn legacy_tool_bridge_module_is_removed() {
 }
 
 #[test]
+fn legacy_tool_provider_trait_is_removed() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    assert!(
+        !manifest_dir.join("src/agent/provider.rs").exists(),
+        "legacy agent/provider.rs ToolProvider trait must stay removed; use typed tool_runtime executors"
+    );
+
+    let agent_mod =
+        fs::read_to_string(manifest_dir.join("src/agent/mod.rs")).expect("read agent/mod.rs");
+    assert!(
+        !agent_mod.contains("pub mod provider;"),
+        "agent module must not export the legacy ToolProvider module"
+    );
+
+    let mut files = Vec::new();
+    collect_rust_files(&manifest_dir.join("src"), &mut files);
+    let offenders = files
+        .into_iter()
+        .filter_map(|path| {
+            let source = fs::read_to_string(&path).expect("read source file");
+            if source.contains("ToolProvider")
+                || source.contains("agent::provider::")
+                || source.contains("crate::agent::provider::")
+                || source.contains("crate::agent::provider;")
+            {
+                Some(
+                    path.strip_prefix(manifest_dir)
+                        .expect("source path under manifest dir")
+                        .display()
+                        .to_string(),
+                )
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "legacy ToolProvider trait references must stay removed; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn sandbox_manager_usage_stays_inside_sandbox_facades() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let agent_dir = manifest_dir.join("src/agent");

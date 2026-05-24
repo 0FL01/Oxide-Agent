@@ -1,6 +1,6 @@
 //! Tool providers module
 //!
-//! Contains implementations of `ToolProvider` for different tool sources.
+//! Contains native typed runtime tool providers for different tool sources.
 
 /// Topic-scoped self-editing tools for `AGENTS.md`.
 pub mod agents_md;

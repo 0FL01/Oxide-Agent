@@ -27,8 +27,6 @@ pub mod preprocessor;
 pub mod profile;
 /// Prompt composition for system prompts
 pub mod prompt;
-/// Tool provider trait
-pub mod provider;
 /// Built-in tool providers (Sandbox, Tavily, Todos)
 pub mod providers;
 /// Recovery module for malformed LLM responses
@@ -79,7 +77,6 @@ pub use profile::{
     ToolAccessPolicy,
 };
 pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
-pub use provider::ToolProvider;
 pub use providers::{SshApprovalGrant, SshApprovalRequestView};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
