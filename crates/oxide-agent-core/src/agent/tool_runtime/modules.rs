@@ -1,7 +1,5 @@
 //! Capability-oriented tool modules.
 
-#[cfg(feature = "manager-control-plane")]
-use super::provider_runtime_executors;
 use super::ToolExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::provider::ToolProvider;
@@ -488,7 +486,7 @@ impl ToolModule for ManagerControlPlaneToolModule {
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
-            .map(|provider| provider_runtime_executors(Arc::new(provider), ctx.progress_tx()))
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
             .unwrap_or_default()
     }
 }

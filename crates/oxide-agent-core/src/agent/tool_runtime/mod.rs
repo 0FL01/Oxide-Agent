@@ -12,7 +12,6 @@ pub mod modules;
 pub mod normalizer;
 pub mod output;
 pub mod process;
-pub mod provider_executor;
 pub mod provider_opencode_go;
 pub mod registry;
 pub mod runtime;
@@ -91,7 +90,6 @@ pub use output::{
     ToolOutput, ToolOutputIdentity, ToolOutputStatus,
 };
 pub use process::ProcessManager;
-pub use provider_executor::provider_runtime_executors;
 pub use provider_opencode_go::{
     OpenCodeGoParsedToolCall, OpenCodeGoProtocolIssue, OpenCodeGoToolCallBatch,
     OpenCodeGoToolCallParser, OpenCodeGoToolOutputEncoder, OpenCodeGoToolParseError,

@@ -8,6 +8,10 @@ use crate::agent::profile::{
     topic_agent_manageable_hooks, topic_agent_protected_hooks, HookAccessPolicy, ToolAccessPolicy,
 };
 use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use crate::sandbox::{SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxScope};
 use crate::storage::{
@@ -24,6 +28,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 mod agent_controls;
 mod agents_md;
@@ -608,6 +613,23 @@ impl ManagerControlPlaneProvider {
         tools
     }
 
+    /// Build native typed runtime executors for manager control-plane tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        self.tools_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(ManagerControlPlaneToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
     async fn execute_private_secret_probe(&self, arguments: &str) -> Result<String> {
         let args: PrivateSecretProbeArgs = Self::parse_args(arguments, TOOL_PRIVATE_SECRET_PROBE)?;
         let secret_ref = Self::validate_non_empty(args.secret_ref, "secret_ref")?;
@@ -618,30 +640,8 @@ impl ManagerControlPlaneProvider {
             "secret_probe": report
         }))
     }
-}
 
-#[async_trait]
-impl ToolProvider for ManagerControlPlaneProvider {
-    fn name(&self) -> &'static str {
-        "manager_control_plane"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        self.tools_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        BASE_TOOL_NAMES.contains(&tool_name)
-            || (self.topic_lifecycle.is_some() && LIFECYCLE_TOOL_NAMES.contains(&tool_name))
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
         match tool_name {
             TOOL_TOPIC_BINDING_SET => self.execute_topic_binding_set(arguments).await,
             TOOL_TOPIC_BINDING_GET => self.execute_topic_binding_get(arguments).await,
@@ -701,6 +701,67 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_FORUM_TOPIC_LIST => self.execute_forum_topic_list(arguments).await,
             _ => Err(anyhow!("Unknown manager control-plane tool: {tool_name}")),
         }
+    }
+}
+
+#[async_trait]
+impl ToolProvider for ManagerControlPlaneProvider {
+    fn name(&self) -> &'static str {
+        "manager_control_plane"
+    }
+
+    fn tools(&self) -> Vec<ToolDefinition> {
+        self.tools_definitions()
+    }
+
+    fn can_handle(&self, tool_name: &str) -> bool {
+        BASE_TOOL_NAMES.contains(&tool_name)
+            || (self.topic_lifecycle.is_some() && LIFECYCLE_TOOL_NAMES.contains(&tool_name))
+    }
+
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
+        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        self.execute_tool(tool_name, arguments).await
+    }
+}
+
+struct ManagerControlPlaneToolExecutor {
+    provider: Arc<ManagerControlPlaneProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for ManagerControlPlaneToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }
 
