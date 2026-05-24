@@ -2,8 +2,6 @@
 //!
 //! Disabled by default - must be enabled via `topic_agent_tools_enable`.
 
-use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -14,7 +12,6 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 mod client;
 mod config;
@@ -167,31 +164,6 @@ impl MattermostMcpProvider {
             .call_tool(upstream_tool_name, args)
             .await
             .with_context(|| format!("mattermost-mcp tool '{}' execution failed", tool_name))
-    }
-}
-
-#[async_trait]
-impl ToolProvider for MattermostMcpProvider {
-    fn name(&self) -> &'static str {
-        "mattermost_mcp"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        upstream_tool_name(tool_name).is_some()
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        _cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
     }
 }
 
@@ -563,15 +535,13 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_name() {
-        let provider = MattermostMcpProvider::new(test_config());
-        assert_eq!(provider.name(), "mattermost_mcp");
-    }
-
-    #[test]
-    fn test_provider_tools() {
-        let provider = MattermostMcpProvider::new(test_config());
-        let tools = provider.tools();
+    fn typed_runtime_specs_include_mattermost_tool_definitions() {
+        let provider = Arc::new(MattermostMcpProvider::new(test_config()));
+        let tools = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect::<Vec<_>>();
 
         assert_eq!(tools.len(), TOOL_MAPPINGS.len());
         assert!(tools
@@ -586,13 +556,18 @@ mod tests {
     }
 
     #[test]
-    fn test_can_handle() {
-        let provider = MattermostMcpProvider::new(test_config());
+    fn typed_runtime_executors_register_only_oxide_mattermost_tools() {
+        let provider = Arc::new(MattermostMcpProvider::new(test_config()));
+        let names = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<std::collections::BTreeSet<_>>();
 
-        assert!(provider.can_handle(TOOL_MATTERMOST_LIST_CHANNELS));
-        assert!(provider.can_handle(TOOL_MATTERMOST_GET_THREAD));
-        assert!(!provider.can_handle("post_message"));
-        assert!(!provider.can_handle("unknown_tool"));
+        assert!(names.contains(TOOL_MATTERMOST_LIST_CHANNELS));
+        assert!(names.contains(TOOL_MATTERMOST_GET_THREAD));
+        assert!(!names.contains("post_message"));
+        assert!(!names.contains("unknown_tool"));
     }
 
     #[test]

@@ -3,8 +3,6 @@
 //! Provides tools for reading, writing, and schema discovery via MCP protocol.
 //! Disabled by default - must be enabled via `topic_agent_tools_enable`.
 
-use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -15,7 +13,6 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 mod client;
 mod config;
@@ -395,34 +392,6 @@ impl JiraMcpProvider {
     }
 }
 
-#[async_trait]
-impl ToolProvider for JiraMcpProvider {
-    fn name(&self) -> &'static str {
-        "jira_mcp"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_JIRA_READ | TOOL_JIRA_WRITE | TOOL_JIRA_SCHEMA
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        _cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
-    }
-}
-
 struct JiraMcpToolExecutor {
     provider: Arc<JiraMcpProvider>,
     name: ToolName,
@@ -528,15 +497,13 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_name() {
-        let provider = JiraMcpProvider::new(test_config());
-        assert_eq!(provider.name(), "jira_mcp");
-    }
-
-    #[test]
-    fn test_provider_tools() {
-        let provider = JiraMcpProvider::new(test_config());
-        let tools = provider.tools();
+    fn typed_runtime_specs_include_jira_tool_definitions() {
+        let provider = Arc::new(JiraMcpProvider::new(test_config()));
+        let tools = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect::<Vec<_>>();
 
         assert_eq!(tools.len(), 3);
         assert!(tools.iter().any(|t| t.name == "jira_read"));
@@ -555,14 +522,22 @@ mod tests {
     }
 
     #[test]
-    fn test_can_handle() {
-        let provider = JiraMcpProvider::new(test_config());
+    fn typed_runtime_executors_register_only_jira_tools() {
+        let provider = Arc::new(JiraMcpProvider::new(test_config()));
+        let names = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<std::collections::BTreeSet<_>>();
 
-        assert!(provider.can_handle("jira_read"));
-        assert!(provider.can_handle("jira_write"));
-        assert!(provider.can_handle("jira_schema"));
-        assert!(!provider.can_handle("unknown_tool"));
-        assert!(!provider.can_handle("ssh_exec"));
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from([
+                TOOL_JIRA_READ.to_string(),
+                TOOL_JIRA_WRITE.to_string(),
+                TOOL_JIRA_SCHEMA.to_string(),
+            ])
+        );
     }
 
     #[test]
@@ -620,21 +595,6 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unknown argument(s): unexpected"));
-    }
-
-    #[test]
-    fn typed_runtime_executors_register_jira_tools() {
-        let provider = Arc::new(JiraMcpProvider::new(test_config()));
-
-        let names = provider
-            .tool_runtime_executors()
-            .into_iter()
-            .map(|executor| executor.name().into_inner())
-            .collect::<std::collections::BTreeSet<_>>();
-
-        assert!(names.contains(TOOL_JIRA_READ));
-        assert!(names.contains(TOOL_JIRA_WRITE));
-        assert!(names.contains(TOOL_JIRA_SCHEMA));
     }
 
     #[tokio::test]
