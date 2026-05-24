@@ -1,6 +1,5 @@
 //! Lightweight topic-scoped `AGENTS.md` tools for the active agent context.
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -178,31 +177,6 @@ impl AgentsMdProvider {
     }
 }
 
-#[async_trait]
-impl ToolProvider for AgentsMdProvider {
-    fn name(&self) -> &'static str {
-        "agents_md"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tools_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(tool_name, TOOL_AGENTS_MD_GET | TOOL_AGENTS_MD_UPDATE)
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
-    }
-}
-
 struct AgentsMdToolExecutor {
     provider: Arc<AgentsMdProvider>,
     name: ToolName,
@@ -283,6 +257,14 @@ mod tests {
         }
     }
 
+    fn typed_executor(provider: &Arc<AgentsMdProvider>, tool_name: &str) -> Arc<dyn ToolExecutor> {
+        provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == tool_name)
+            .expect("typed AGENTS.md executor registered")
+    }
+
     #[tokio::test]
     async fn get_returns_current_topic_record() {
         let mut storage = MockStorageProvider::new();
@@ -301,13 +283,20 @@ mod tests {
                 }))
             });
 
-        let provider = AgentsMdProvider::new(Arc::new(storage), 77, "topic-a".to_string());
-        let result = provider
-            .execute(TOOL_AGENTS_MD_GET, "{}", None, None)
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
+        let output = typed_executor(&provider, TOOL_AGENTS_MD_GET)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_GET, "{}"))
             .await
             .expect("get must succeed");
+        assert_eq!(output.status, ToolOutputStatus::Success);
 
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
         assert_eq!(parsed["found"], true);
         assert_eq!(
             parsed["topic_agents_md"]["agents_md"],
@@ -337,13 +326,7 @@ mod tests {
             77,
             "topic-a".to_string(),
         ));
-        let executor = provider
-            .tool_runtime_executors()
-            .into_iter()
-            .find(|executor| executor.name().as_str() == TOOL_AGENTS_MD_GET)
-            .expect("typed AGENTS.md get executor registered");
-
-        let output = executor
+        let output = typed_executor(&provider, TOOL_AGENTS_MD_GET)
             .execute(runtime_invocation(TOOL_AGENTS_MD_GET, "{}"))
             .await
             .expect("typed AGENTS.md get succeeds");
@@ -366,18 +349,25 @@ mod tests {
             .returning(|_, _| Ok(None));
         storage.expect_upsert_topic_agents_md().times(0);
 
-        let provider = AgentsMdProvider::new(Arc::new(storage), 77, "topic-a".to_string());
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
         let arguments = json!({
             "agents_md": "# Topic AGENTS\nUse checklists",
             "dry_run": true,
         })
         .to_string();
-        let result = provider
-            .execute(TOOL_AGENTS_MD_UPDATE, &arguments, None, None)
+        let output = typed_executor(&provider, TOOL_AGENTS_MD_UPDATE)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_UPDATE, &arguments))
             .await
             .expect("dry run must succeed");
+        assert_eq!(output.status, ToolOutputStatus::Success);
 
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
         assert_eq!(parsed["dry_run"], true);
         assert_eq!(
             parsed["preview"]["agents_md"],
@@ -411,17 +401,24 @@ mod tests {
                 })
             });
 
-        let provider = AgentsMdProvider::new(Arc::new(storage), 77, "topic-a".to_string());
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
         let arguments = json!({
             "agents_md": "# Topic AGENTS\nUse checklists",
         })
         .to_string();
-        let result = provider
-            .execute(TOOL_AGENTS_MD_UPDATE, &arguments, None, None)
+        let output = typed_executor(&provider, TOOL_AGENTS_MD_UPDATE)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_UPDATE, &arguments))
             .await
             .expect("update must succeed");
+        assert_eq!(output.status, ToolOutputStatus::Success);
 
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
         assert_eq!(parsed["topic_agents_md"]["topic_id"], "topic-a");
         assert_eq!(parsed["topic_agents_md"]["version"], 3);
     }
@@ -429,12 +426,16 @@ mod tests {
     #[tokio::test]
     async fn update_rejects_more_than_300_lines() {
         let storage = MockStorageProvider::new();
-        let provider = AgentsMdProvider::new(Arc::new(storage), 77, "topic-a".to_string());
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
         let oversized = vec!["line"; 301].join("\n");
         let arguments = json!({ "agents_md": oversized }).to_string();
 
-        let error = provider
-            .execute(TOOL_AGENTS_MD_UPDATE, &arguments, None, None)
+        let error = typed_executor(&provider, TOOL_AGENTS_MD_UPDATE)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_UPDATE, &arguments))
             .await
             .expect_err("oversized AGENTS.md must be rejected");
 

@@ -1,6 +1,5 @@
 //! Lightweight tools for listing, reading, and deleting scoped durable wiki memory.
 
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -558,34 +557,6 @@ impl WikiMemoryProvider {
     }
 }
 
-#[async_trait]
-impl ToolProvider for WikiMemoryProvider {
-    fn name(&self) -> &'static str {
-        "wiki_memory"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_WIKI_MEMORY_LIST | TOOL_WIKI_MEMORY_READ | TOOL_WIKI_MEMORY_DELETE
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        self.execute_tool(tool_name, arguments).await
-    }
-}
-
 struct WikiMemoryToolExecutor {
     provider: Arc<WikiMemoryProvider>,
     name: ToolName,
@@ -755,6 +726,17 @@ mod tests {
         }
     }
 
+    fn typed_executor(
+        provider: &Arc<WikiMemoryProvider>,
+        tool_name: &str,
+    ) -> Arc<dyn ToolExecutor> {
+        provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == tool_name)
+            .expect("typed wiki memory executor registered")
+    }
+
     #[tokio::test]
     async fn list_returns_indexed_items() {
         let backend = Arc::new(InMemoryWikiBackend::default());
@@ -764,13 +746,19 @@ mod tests {
             "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - current project overview\n\n## Topic pages\n\n- [btc price](pages/btc-price.md) - captured wiki update candidate\n\n## Inbox\n\n- [btc reminder](inbox/btc-reminder.md) - captured wiki update candidate\n"
                 .to_string(),
         );
-        let provider = provider(backend);
+        let provider = Arc::new(provider(backend));
 
-        let result = provider
-            .execute(TOOL_WIKI_MEMORY_LIST, r#"{"kind":"all"}"#, None, None)
+        let output = typed_executor(&provider, TOOL_WIKI_MEMORY_LIST)
+            .execute(runtime_invocation(
+                TOOL_WIKI_MEMORY_LIST,
+                r#"{"kind":"all"}"#,
+            ))
             .await
             .expect("list should succeed");
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
 
         assert_eq!(parsed["count"], 3);
         assert_eq!(parsed["items"][0]["id"], "core:overview");
@@ -787,18 +775,19 @@ mod tests {
             "---\ntitle: BTC price\ntype: note\nupdated_at: 2026-05-19T00:00:00Z\nconfidence: high\ntags: [btc]\nsources:\n  - run:test\n---\n\n76 840.69"
                 .to_string(),
         );
-        let provider = provider(backend);
+        let provider = Arc::new(provider(backend));
 
-        let result = provider
-            .execute(
+        let output = typed_executor(&provider, TOOL_WIKI_MEMORY_READ)
+            .execute(runtime_invocation(
                 TOOL_WIKI_MEMORY_READ,
                 r#"{"id":"page:btc-price"}"#,
-                None,
-                None,
-            )
+            ))
             .await
             .expect("read should succeed");
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
 
         assert_eq!(parsed["found"], true);
         assert_eq!(parsed["id"], "page:btc-price");
@@ -818,13 +807,7 @@ mod tests {
             "# BTC price\n\n76 840.69".to_string(),
         );
         let provider = Arc::new(provider(backend));
-        let executor = provider
-            .tool_runtime_executors()
-            .into_iter()
-            .find(|executor| executor.name().as_str() == TOOL_WIKI_MEMORY_READ)
-            .expect("typed wiki memory read executor registered");
-
-        let output = executor
+        let output = typed_executor(&provider, TOOL_WIKI_MEMORY_READ)
             .execute(runtime_invocation(
                 TOOL_WIKI_MEMORY_READ,
                 r#"{"id":"page:btc-price"}"#,
@@ -856,18 +839,19 @@ mod tests {
             "# Wiki Index\n\n## Topic pages\n\n- [btc price](pages/btc-price.md) - captured wiki update candidate\n"
                 .to_string(),
         );
-        let provider = provider(Arc::clone(&backend));
+        let provider = Arc::new(provider(Arc::clone(&backend)));
 
-        let result = provider
-            .execute(
+        let output = typed_executor(&provider, TOOL_WIKI_MEMORY_DELETE)
+            .execute(runtime_invocation(
                 TOOL_WIKI_MEMORY_DELETE,
                 r#"{"id":"page:btc-price"}"#,
-                None,
-                None,
-            )
+            ))
             .await
             .expect("delete should succeed");
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
         let objects = backend.objects.lock().await;
         let index = objects
             .get(&format!("prod/wiki/v1/contexts/{context_id}/index.md"))
@@ -888,15 +872,13 @@ mod tests {
     #[tokio::test]
     async fn delete_rejects_core_files() {
         let backend = Arc::new(InMemoryWikiBackend::default());
-        let provider = provider(backend);
+        let provider = Arc::new(provider(backend));
 
-        let error = provider
-            .execute(
+        let error = typed_executor(&provider, TOOL_WIKI_MEMORY_DELETE)
+            .execute(runtime_invocation(
                 TOOL_WIKI_MEMORY_DELETE,
                 r#"{"id":"core:overview"}"#,
-                None,
-                None,
-            )
+            ))
             .await
             .expect_err("core delete must fail");
 
