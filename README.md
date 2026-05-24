@@ -182,12 +182,10 @@ SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
 # BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750 # Delay between bridge readiness retries in milliseconds
 # BROWSER_USE_MODEL_ID="GLM-4.6V" # Browser Use dedicated route
 # BROWSER_USE_MODEL_PROVIDER="zai" # Browser Use dedicated provider
-# BROWSER_USE_BRIDGE_LLM_PROVIDER=anthropic # Legacy browser_use sidecar fallback
-# BROWSER_USE_BRIDGE_LLM_MODEL=claude-3-5-haiku-latest # Optional legacy fallback model override
 ```
 </details>
 
-For Browser Use task execution, Oxide sends inherited-route API keys to the bridge server-to-server; legacy sidecar fallback uses the matching upstream key for the selected fallback provider, for example `ANTHROPIC_API_KEY`.
+For Browser Use task execution, Oxide sends the configured dedicated or inherited route to the bridge server-to-server. The bridge stays disabled by default until a cost-effective high-quality vision-agent model is available.
 
 ## Model Configuration
 
