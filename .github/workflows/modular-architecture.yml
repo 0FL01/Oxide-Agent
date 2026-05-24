@@ -184,6 +184,7 @@ jobs:
 
       - name: Check legacy and hardcoded surface guards
         run: |
+          scripts/check-runtime-env-surface.sh
           cargo test -p oxide-agent-core --test tool_runtime_static_guards --all-features
           cargo test -p oxide-agent-core route_provider_validation_rejects_removed_direct_gemini_provider --all-features
           cargo test -p oxide-agent-core removed_direct_gemini_provider_aliases_are_absent --all-features
