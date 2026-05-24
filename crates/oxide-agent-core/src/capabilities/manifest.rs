@@ -964,6 +964,50 @@ mod tests {
     }
 
     #[cfg(all(
+        feature = "tool-sandbox-exec",
+        feature = "sandbox-backend-docker-direct",
+        feature = "sandbox-backend-sandboxd-client"
+    ))]
+    #[test]
+    fn enabled_sandbox_exec_fails_without_enabled_exec_backend() {
+        let manifest =
+            compiled_capability_manifest().expect("compiled modules must have unique IDs");
+
+        manifest
+            .enabled_manifest_from_configured_modules([
+                ("sandbox-backend/docker-direct", false),
+                ("sandbox-daemon/sandboxd", false),
+            ])
+            .expect("sandboxd-client exec backend should satisfy sandbox exec");
+        manifest
+            .enabled_manifest_from_configured_modules([("sandbox-backend/sandboxd-client", false)])
+            .expect("docker-direct exec backend should satisfy sandbox exec");
+
+        let error = manifest
+            .enabled_manifest_from_configured_modules([
+                ("sandbox-backend/docker-direct", false),
+                ("sandbox-backend/sandboxd-client", false),
+                ("sandbox-daemon/sandboxd", false),
+                ("tool/sandbox-fileops", false),
+                ("tool/sandbox-recreate", false),
+                ("tool/stack-logs", false),
+                ("tool/ytdlp", false),
+            ])
+            .expect_err("sandbox exec tool must fail without an enabled exec backend");
+
+        assert_eq!(
+            error,
+            ManifestError::UnsatisfiedEnabledCapabilityRequirement {
+                module: ModuleId::new("tool/sandbox-exec"),
+                capabilities: vec![
+                    CapabilityId::new("sandbox-backend/docker-direct/exec"),
+                    CapabilityId::new("sandbox-backend/sandboxd-client/exec"),
+                ],
+            }
+        );
+    }
+
+    #[cfg(all(
         feature = "tool-ytdlp",
         any(
             feature = "sandbox-backend-docker-direct",
