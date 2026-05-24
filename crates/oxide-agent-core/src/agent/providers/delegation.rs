@@ -967,7 +967,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         .with_model_provider(model.provider.clone())
         .with_model_routes(self.settings.get_configured_sub_agent_model_routes())
         .with_sub_agent(true)
-        .with_codex_style_compaction(true)
     }
 
     async fn prepare_sub_agent_execution(

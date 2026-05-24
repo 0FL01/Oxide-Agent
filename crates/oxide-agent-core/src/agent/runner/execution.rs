@@ -500,12 +500,9 @@ impl AgentRunner {
                 }
 
                 if Self::llm_error_suggests_context_overflow(&error) && metadata.attempt == 1 {
-                    let retried = if ctx.config.codex_style_compaction_enabled {
-                        self.run_runtime_context_limit_compaction(ctx, state, metadata.route)
-                            .await?
-                    } else {
-                        false
-                    };
+                    let retried = self
+                        .run_runtime_context_limit_compaction(ctx, state, metadata.route)
+                        .await?;
                     if retried {
                         return Ok(AttemptOutcome::RetrySameRoute);
                     }
@@ -1048,9 +1045,6 @@ impl AgentRunner {
         previous_route: &ModelInfo,
         next_route: &ModelInfo,
     ) -> Result<bool> {
-        if !ctx.config.codex_style_compaction_enabled {
-            return Ok(false);
-        }
         if !Self::model_downshift_requires_compaction(ctx, previous_route, next_route) {
             return Ok(false);
         }
@@ -2296,8 +2290,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256)
-                .with_codex_style_compaction(true),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
         let result = runner
@@ -2384,8 +2377,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256)
-                .with_codex_style_compaction(true),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
         };
 
         let result = runner.run(&mut ctx).await.expect("runner succeeds");
@@ -2784,7 +2776,6 @@ mod tests {
             memory_behavior: None,
             config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
                 .with_model_provider("primary")
-                .with_codex_style_compaction(true)
                 .with_model_routes(vec![
                     ModelInfo {
                         id: "primary-model".to_string(),

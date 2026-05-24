@@ -59,7 +59,6 @@ impl AgentExecutor {
 
         debug!(
             active_agent_routes = ?format_model_routes(&settings.get_configured_agent_model_routes()),
-            codex_style_compaction_enabled = settings.codex_style_compaction_enabled(),
             "Configured runtime compaction to use active agent routes"
         );
         let compaction_controller = CompactionController::local_llm(

@@ -22,11 +22,6 @@ pub const MISTRAL_REASONING_TEMPERATURE: f32 = 0.7;
 pub const MISTRAL_TOOL_TEMPERATURE: f32 = 0.7;
 /// Temperature for Mistral audio transcription requests.
 pub const MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
-/// Default temperature used for ZAI chat completions.
-// NOTE: Hardcoded to 0.95 in ZaiProvider to avoid f32 serialization issues.
-// Kept here for reference only - do NOT use in code.
-#[deprecated(note = "Hardcoded in ZaiProvider to avoid f32 serialization issues. Do not use.")]
-pub const ZAI_CHAT_TEMPERATURE: f32 = 0.95;
 /// Default temperature used for OpenRouter chat completions.
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for NVIDIA NIM chat completions.
@@ -78,7 +73,6 @@ pub struct AgentSettings {
     /// Dedicated Browser Use model provider override.
     pub browser_use_model_provider: Option<String>,
     /// Dedicated Browser Use model max output tokens override.
-    #[serde(alias = "browser_use_model_max_tokens")]
     pub browser_use_model_max_output_tokens: Option<u32>,
     /// Dedicated Browser Use model context window tokens override.
     pub browser_use_model_context_window_tokens: Option<u32>,
@@ -97,7 +91,6 @@ pub struct AgentSettings {
     /// Chat model provider override
     pub chat_model_provider: Option<String>,
     /// Chat model max output tokens override
-    #[serde(alias = "chat_model_max_tokens")]
     pub chat_model_max_output_tokens: Option<u32>,
     /// Chat model context window tokens override
     pub chat_model_context_window_tokens: Option<u32>,
@@ -107,7 +100,6 @@ pub struct AgentSettings {
     /// Agent model provider override
     pub agent_model_provider: Option<String>,
     /// Agent model max output tokens override
-    #[serde(alias = "agent_model_max_tokens")]
     pub agent_model_max_output_tokens: Option<u32>,
     /// Agent model context window tokens override
     pub agent_model_context_window_tokens: Option<u32>,
@@ -122,7 +114,6 @@ pub struct AgentSettings {
     /// Sub-agent model provider override
     pub sub_agent_model_provider: Option<String>,
     /// Sub-agent model max output tokens override
-    #[serde(alias = "sub_agent_max_tokens")]
     pub sub_agent_max_output_tokens: Option<u32>,
     /// Sub-agent model context window tokens override
     pub sub_agent_context_window_tokens: Option<u32>,
@@ -137,7 +128,6 @@ pub struct AgentSettings {
     /// Dedicated Wiki Memory writer model provider override.
     pub wiki_memory_writer_model_provider: Option<String>,
     /// Dedicated Wiki Memory writer max output tokens override.
-    #[serde(alias = "wiki_memory_writer_model_max_tokens")]
     pub wiki_memory_writer_max_output_tokens: Option<u32>,
     /// Dedicated Wiki Memory writer context window tokens override.
     pub wiki_memory_writer_context_window_tokens: Option<u32>,
@@ -148,9 +138,6 @@ pub struct AgentSettings {
     pub media_model_id: Option<String>,
     /// Media model provider override
     pub media_model_provider: Option<String>,
-
-    /// Temporary migration switch for Codex-style runtime/session-level compaction.
-    pub oxide_codex_style_compaction: Option<bool>,
 
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
@@ -1091,14 +1078,6 @@ impl AgentSettings {
         (String::new(), String::new())
     }
 
-    /// Returns whether Codex-style runtime/session-level compaction is enabled.
-    #[must_use]
-    pub fn codex_style_compaction_enabled(&self) -> bool {
-        self.oxide_codex_style_compaction
-            .or_else(|| parse_optional_env_bool("OXIDE_CODEX_STYLE_COMPACTION"))
-            .unwrap_or(true)
-    }
-
     /// Returns model info by its display name
     pub fn get_model_info_by_name(&self, name: &str) -> Option<ModelInfo> {
         self.get_chat_models()
@@ -1213,20 +1192,6 @@ mod tests {
 
         env::remove_var("ZAI_API_KEY");
         Ok(())
-    }
-
-    #[test]
-    fn test_legacy_max_tokens_alias_deserializes_to_max_output_tokens() {
-        let settings: AgentSettings = serde_json::from_value(json!({
-            "agent_model_id": "agent-model",
-            "agent_model_provider": "mock",
-            "agent_model_max_tokens": 12345,
-            "agent_model_context_window_tokens": 54321
-        }))
-        .expect("legacy alias should deserialize");
-
-        assert_eq!(settings.agent_model_max_output_tokens, Some(12_345));
-        assert_eq!(settings.agent_model_context_window_tokens, Some(54_321));
     }
 
     #[test]
@@ -1439,26 +1404,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_style_compaction_defaults_on_and_allows_explicit_disable() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("OXIDE_CODEX_STYLE_COMPACTION");
-
-        assert!(AgentSettings::default().codex_style_compaction_enabled());
-
-        env::set_var("OXIDE_CODEX_STYLE_COMPACTION", "false");
-        assert!(!AgentSettings::default().codex_style_compaction_enabled());
-        assert!(AgentSettings {
-            oxide_codex_style_compaction: Some(true),
-            ..AgentSettings::default()
-        }
-        .codex_style_compaction_enabled());
-
-        env::remove_var("OXIDE_CODEX_STYLE_COMPACTION");
-    }
-
-    #[test]
     fn test_agent_internal_context_budget_uses_model_window() {
         let settings = AgentSettings {
             agent_model_id: Some("agent-model".to_string()),
@@ -1589,11 +1534,11 @@ mod tests {
         let primary = settings.get_configured_agent_model();
 
         assert_eq!(routes.len(), 2);
-        assert_eq!(routes[0].provider, "minimax");
+        assert_eq!(routes[0].provider, "llm-provider/minimax");
         assert_eq!(routes[0].weight, 10);
-        assert_eq!(routes[1].provider, "zai");
+        assert_eq!(routes[1].provider, "llm-provider/zai");
         assert_eq!(primary.id, "MiniMax-M2.7");
-        assert_eq!(primary.provider, "minimax");
+        assert_eq!(primary.provider, "llm-provider/minimax");
 
         for key in [
             "AGENT_MODEL_ROUTES__0__ID",
@@ -1683,7 +1628,7 @@ mod tests {
         let primary = settings.get_configured_agent_model();
 
         assert_eq!(primary.id, "deepseek-v4-flash");
-        assert_eq!(primary.provider, "opencode-go");
+        assert_eq!(primary.provider, "llm-provider/opencode-go");
         assert_eq!(
             settings.module_string_value_or_env_or_default(
                 "llm-provider/opencode-go",
@@ -1824,7 +1769,6 @@ pub struct ModelInfo {
     /// Internal model identifier
     pub id: String,
     /// Maximum allowed output tokens for a single response.
-    #[serde(alias = "max_tokens")]
     pub max_output_tokens: u32,
     /// Maximum model context window available for the full request.
     #[serde(default)]

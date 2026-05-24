@@ -21,9 +21,6 @@ use crate::agent::session::{AgentSession, PendingUserInput};
 use crate::agent::wiki_memory::WikiStore;
 use std::sync::{Arc, RwLock};
 
-// Re-export sanitize_xml_tags for backward compatibility
-pub use super::recovery::sanitize_xml_tags as public_sanitize_xml_tags;
-
 /// Agent executor that runs tasks iteratively
 pub struct AgentExecutor {
     runner: AgentRunner,

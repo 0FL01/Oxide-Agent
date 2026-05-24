@@ -196,7 +196,6 @@ async fn manual_compaction_uses_codex_style_controller_when_flag_enabled() {
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("mock-model".to_string()),
         agent_model_provider: Some("mock".to_string()),
-        oxide_codex_style_compaction: Some(true),
         ..crate::config::AgentSettings::default()
     });
     let mut provider = crate::llm::MockLlmProvider::new();

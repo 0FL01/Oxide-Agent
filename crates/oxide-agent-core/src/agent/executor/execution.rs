@@ -372,8 +372,7 @@ impl AgentExecutor {
             )
             .with_model_provider(model.provider.clone())
             .with_temperature(self.settings.get_configured_agent_temperature())
-            .with_model_routes(model_routes)
-            .with_codex_style_compaction(self.settings.codex_style_compaction_enabled()),
+            .with_model_routes(model_routes),
         }
     }
 

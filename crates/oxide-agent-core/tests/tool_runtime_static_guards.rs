@@ -207,6 +207,55 @@ fn delegation_sub_agent_tools_use_tool_modules_not_provider_constructors() {
 }
 
 #[test]
+fn deprecated_config_compatibility_surfaces_are_removed() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+
+    let config = fs::read_to_string(manifest_dir.join("src/config.rs")).expect("read config");
+    let forbidden_config_patterns = [
+        "#[serde(alias",
+        "browser_use_model_max_tokens",
+        "chat_model_max_tokens",
+        "agent_model_max_tokens",
+        "sub_agent_max_tokens",
+        "wiki_memory_writer_model_max_tokens",
+        "oxide_codex_style_compaction",
+        "OXIDE_CODEX_STYLE_COMPACTION",
+        "ZAI_CHAT_TEMPERATURE",
+        "#[deprecated(",
+    ];
+    let config_offenders = forbidden_config_patterns
+        .iter()
+        .copied()
+        .filter(|pattern| config.contains(pattern))
+        .collect::<Vec<_>>();
+
+    assert!(
+        config_offenders.is_empty(),
+        "old config aliases, deprecated fields, and migration switches must stay removed; offenders: {config_offenders:?}"
+    );
+
+    let env_example = fs::read_to_string(workspace_root.join(".env.example"))
+        .expect("read workspace .env.example");
+    assert!(
+        !env_example.contains("OXIDE_CODEX_STYLE_COMPACTION"),
+        ".env.example must not document removed temporary migration switches"
+    );
+
+    let executor = fs::read_to_string(manifest_dir.join("src/agent/executor.rs"))
+        .expect("read executor module");
+    for forbidden in ["backward compatibility", "public_sanitize_xml_tags"] {
+        assert!(
+            !executor.contains(forbidden),
+            "executor module must not keep backward-compatibility re-exports: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn ssh_cleanup_is_owned_by_ssh_module_not_binaries() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

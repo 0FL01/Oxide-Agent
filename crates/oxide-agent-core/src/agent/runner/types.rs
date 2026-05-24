@@ -36,8 +36,6 @@ pub struct AgentRunnerConfig {
     pub model_provider: Option<String>,
     /// Optional weighted fallback routes for this execution.
     pub model_routes: Vec<ModelInfo>,
-    /// Whether runtime/session-level Codex-style compaction is selected.
-    pub codex_style_compaction_enabled: bool,
 }
 
 impl AgentRunnerConfig {
@@ -60,7 +58,6 @@ impl AgentRunnerConfig {
             temperature: None,
             model_provider: None,
             model_routes: Vec::new(),
-            codex_style_compaction_enabled: true,
         }
     }
 
@@ -89,13 +86,6 @@ impl AgentRunnerConfig {
     #[must_use]
     pub fn with_model_routes(mut self, model_routes: Vec<ModelInfo>) -> Self {
         self.model_routes = model_routes;
-        self
-    }
-
-    /// Set whether Codex-style runtime compaction is enabled for this run.
-    #[must_use]
-    pub const fn with_codex_style_compaction(mut self, enabled: bool) -> Self {
-        self.codex_style_compaction_enabled = enabled;
         self
     }
 }
@@ -262,18 +252,4 @@ pub(super) struct FinalResponseInput {
     pub final_answer: String,
     /// Optional reasoning content from the model.
     pub reasoning: Option<String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::AgentRunnerConfig;
-
-    #[test]
-    fn runner_config_defaults_to_codex_style_compaction() {
-        assert!(
-            AgentRunnerConfig::new("mock".to_string(), 1, 1, 30, 256)
-                .codex_style_compaction_enabled
-        );
-        assert!(AgentRunnerConfig::default().codex_style_compaction_enabled);
-    }
 }
