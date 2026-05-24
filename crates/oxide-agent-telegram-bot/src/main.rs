@@ -130,6 +130,7 @@ enum StartupCommand {
     RunBot,
     PrintCompiledCapabilitiesJson,
     PrintEnabledCapabilitiesJson { config_path: Option<String> },
+    PrintCompiledConfigSchemaJson,
 }
 
 #[tokio::main]
@@ -148,6 +149,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .enabled_capability_manifest(&manifest)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
             println!("{}", enabled.to_json_pretty()?);
+            return Ok(());
+        }
+        StartupCommand::PrintCompiledConfigSchemaJson => {
+            let manifest = compiled_capability_manifest()?;
+            println!("{}", manifest.config_schema_json_pretty()?);
             return Ok(());
         }
     }
@@ -194,6 +200,7 @@ where
         match arg.as_ref() {
             "--compiled" => set_capability_mode(&mut mode, CapabilityMode::Compiled)?,
             "--enabled" => set_capability_mode(&mut mode, CapabilityMode::Enabled)?,
+            "--config-schema" => set_capability_mode(&mut mode, CapabilityMode::ConfigSchema)?,
             "--config" => {
                 let Some(path) = args.next() else {
                     return Err(capabilities_usage_error());
@@ -218,6 +225,9 @@ where
         Some(CapabilityMode::Enabled) => {
             Ok(StartupCommand::PrintEnabledCapabilitiesJson { config_path })
         }
+        Some(CapabilityMode::ConfigSchema) if config_path.is_none() => {
+            Ok(StartupCommand::PrintCompiledConfigSchemaJson)
+        }
         _ => Err(capabilities_usage_error()),
     }
 }
@@ -226,6 +236,7 @@ where
 enum CapabilityMode {
     Compiled,
     Enabled,
+    ConfigSchema,
 }
 
 fn set_capability_mode(
@@ -245,7 +256,7 @@ fn set_capability_mode(
 fn capabilities_usage_error() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "Usage: oxide-agent-telegram-bot capabilities (--compiled | --enabled [--config PATH]) --json",
+        "Usage: oxide-agent-telegram-bot capabilities (--compiled | --enabled [--config PATH] | --config-schema) --json",
     )
 }
 
@@ -333,6 +344,14 @@ mod tests {
                 config_path: Some("config/test-profile.yaml".to_string())
             }
         );
+    }
+
+    #[test]
+    fn startup_command_parses_compiled_config_schema_json() {
+        let command = parse_startup_command(["capabilities", "--config-schema", "--json"])
+            .expect("config schema command should parse");
+
+        assert_eq!(command, StartupCommand::PrintCompiledConfigSchemaJson);
     }
 
     #[test]

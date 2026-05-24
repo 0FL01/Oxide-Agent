@@ -30,11 +30,12 @@ case "${profile}" in
 esac
 
 tmp_manifest="$(mktemp)"
+tmp_config_schema="$(mktemp)"
 tmp_enabled_config="$(mktemp --suffix=.yaml)"
 tmp_enabled_manifest="$(mktemp)"
 tmp_invalid_config="$(mktemp --suffix=.yaml)"
 tmp_invalid_stderr="$(mktemp)"
-trap 'rm -f "${tmp_manifest}" "${tmp_enabled_config}" "${tmp_enabled_manifest}" "${tmp_invalid_config}" "${tmp_invalid_stderr}"' EXIT
+trap 'rm -f "${tmp_manifest}" "${tmp_config_schema}" "${tmp_enabled_config}" "${tmp_enabled_manifest}" "${tmp_invalid_config}" "${tmp_invalid_stderr}"' EXIT
 
 cargo run -q \
   -p oxide-agent-telegram-bot \
@@ -326,6 +327,62 @@ for prefix in rules.get("forbidden_prefixes", ()):
         fail(f"forbidden capability prefix {prefix!r} present: {forbidden_capabilities_by_prefix}")
 
 print(f"compiled capability check passed for {profile}: {len(module_ids)} modules, {len(capability_ids)} capabilities")
+PY
+
+cargo run -q \
+  -p oxide-agent-telegram-bot \
+  --bin oxide-agent-telegram-bot \
+  --no-default-features \
+  --features "${cargo_feature}" \
+  -- capabilities --config-schema --json >"${tmp_config_schema}"
+
+python3 - "${profile}" "${tmp_manifest}" "${tmp_config_schema}" <<'PY'
+import json
+import sys
+
+profile = sys.argv[1]
+manifest_path = sys.argv[2]
+schema_path = sys.argv[3]
+
+with open(manifest_path, "r", encoding="utf-8") as fh:
+    manifest = json.load(fh)
+with open(schema_path, "r", encoding="utf-8") as fh:
+    schema = json.load(fh)
+
+module_ids = [module["id"] for module in manifest.get("modules", [])]
+module_schema = (
+    schema.get("properties", {})
+    .get("modules", {})
+)
+schema_modules = module_schema.get("properties", {})
+
+
+def fail(message: str) -> None:
+    print(f"config schema check failed for {profile}: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+if module_schema.get("additionalProperties") is not False:
+    fail("modules schema must reject non-compiled module IDs")
+
+if list(schema_modules.keys()) != module_ids:
+    fail(
+        "schema module IDs do not match compiled manifest; "
+        f"schema={list(schema_modules.keys())}; manifest={module_ids}"
+    )
+
+for module in manifest.get("modules", []):
+    module_id = module["id"]
+    entry = schema_modules[module_id]
+    enabled_schema = entry.get("properties", {}).get("enabled", {})
+    if enabled_schema.get("type") != "boolean":
+        fail(f"{module_id} missing boolean enabled flag schema")
+    if entry.get("x-oxide-cargo-feature") != module["cargo_feature"]:
+        fail(f"{module_id} cargo feature metadata mismatch")
+    if entry.get("x-oxide-provides") != module["provides"]:
+        fail(f"{module_id} provided capability metadata mismatch")
+
+print(f"config schema check passed for {profile}: {len(schema_modules)} module schemas")
 PY
 
 cat >"${tmp_enabled_config}" <<'YAML'

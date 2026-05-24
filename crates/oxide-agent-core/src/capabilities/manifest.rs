@@ -2,6 +2,7 @@
 
 use super::{CapabilityId, CapabilityKind, CapabilityModule, CapabilityRequirement, ModuleId};
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
@@ -270,6 +271,57 @@ impl CompiledCapabilityManifest {
     /// Serializes the manifest as pretty JSON for CLI/debug output.
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
+    }
+
+    /// Builds a deterministic JSON Schema for the compiled module config block.
+    #[must_use]
+    pub fn config_schema(&self) -> Value {
+        let mut module_properties = serde_json::Map::new();
+        for module in &self.modules {
+            module_properties.insert(
+                module.id().as_str().to_string(),
+                json!({
+                    "type": "object",
+                    "description": format!(
+                        "Runtime config for compiled module {}",
+                        module.id().as_str()
+                    ),
+                    "additionalProperties": true,
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Disable this compiled module at runtime when set to false."
+                        }
+                    },
+                    "x-oxide-kind": module.kind(),
+                    "x-oxide-cargo-feature": module.cargo_feature(),
+                    "x-oxide-provides": module.provides(),
+                    "x-oxide-requires": module.requires(),
+                    "x-oxide-conflicts": module.conflicts()
+                }),
+            );
+        }
+
+        json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "Oxide Agent compiled module configuration",
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+                "modules": {
+                    "type": "object",
+                    "description": "Runtime module configuration. Keys must be module IDs compiled into this binary.",
+                    "additionalProperties": false,
+                    "properties": module_properties
+                }
+            }
+        })
+    }
+
+    /// Serializes the compiled module config schema as pretty JSON.
+    pub fn config_schema_json_pretty(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.config_schema())
     }
 
     fn validate_compiled_requirements(&self) -> Result<(), ManifestError> {
@@ -541,6 +593,48 @@ mod tests {
         assert_eq!(
             error,
             ManifestError::NonCompiledModuleConfig("tool/missing".to_string())
+        );
+    }
+
+    #[test]
+    fn config_schema_lists_only_compiled_module_ids() {
+        let modules = vec![
+            boxed(StaticCapabilityModule::new(
+                ModuleId::new("tool/a"),
+                CapabilityKind::Tool,
+                "tool-a",
+                TOOL_A_READ,
+            )),
+            boxed(StaticCapabilityModule::new(
+                ModuleId::new("tool/z"),
+                CapabilityKind::Tool,
+                "tool-z",
+                TOOL_Z_WRITE,
+            )),
+        ];
+        let manifest =
+            CompiledCapabilityManifest::from_modules(&modules).expect("manifest should be valid");
+
+        let schema = manifest.config_schema();
+        let module_properties = schema["properties"]["modules"]["properties"]
+            .as_object()
+            .expect("module properties should be an object");
+
+        assert_eq!(
+            module_properties.keys().collect::<Vec<_>>(),
+            vec!["tool/a", "tool/z"]
+        );
+        assert_eq!(
+            schema["properties"]["modules"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            module_properties["tool/a"]["properties"]["enabled"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            module_properties["tool/a"]["x-oxide-cargo-feature"],
+            "tool-a"
         );
     }
 
