@@ -139,3 +139,41 @@ fn sandbox_manager_usage_stays_inside_sandbox_facades() {
         "SandboxManager usage must stay behind sandbox module/facade boundaries; offenders: {offenders:?}"
     );
 }
+
+#[test]
+fn wiki_memory_uses_storage_facade_not_concrete_r2() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let store = fs::read_to_string(manifest_dir.join("src/agent/wiki_memory/store.rs"))
+        .expect("read wiki memory store");
+
+    assert!(
+        !store.contains("R2Storage"),
+        "wiki memory must use StorageProvider-backed WikiObjectBackend, not concrete R2Storage"
+    );
+    assert!(
+        store.contains("StorageProviderWikiBackend"),
+        "wiki memory store should keep the storage facade adapter"
+    );
+}
+
+#[test]
+fn telegram_runner_uses_storage_module_factory_not_concrete_r2() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("core crate lives under workspace/crates");
+    let runner_path = workspace_root.join("crates/oxide-agent-transport-telegram/src/runner.rs");
+    let runner = fs::read_to_string(runner_path).expect("read Telegram runner");
+
+    assert!(
+        runner.contains("storage::build_primary_storage"),
+        "Telegram runner must build storage through the storage backend module factory"
+    );
+    for forbidden in ["R2Storage", "R2StorageConfig", "R2Storage::new"] {
+        assert!(
+            !runner.contains(forbidden),
+            "Telegram runner must not reference concrete storage backend {forbidden}"
+        );
+    }
+}

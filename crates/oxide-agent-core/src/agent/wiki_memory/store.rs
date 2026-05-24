@@ -1,5 +1,3 @@
-#[cfg(feature = "storage-s3-r2")]
-use crate::storage::R2Storage;
 use crate::storage::{
     wiki_context_inbox_key, wiki_context_key, wiki_context_page_key, wiki_context_raw_key,
     wiki_global_key, StorageError, StorageProvider,
@@ -17,22 +15,6 @@ pub trait WikiObjectBackend: Send + Sync {
     async fn put_text(&self, key: &str, content: &str) -> Result<(), StorageError>;
     /// Delete one deterministic text object by key.
     async fn delete_text(&self, key: &str) -> Result<(), StorageError>;
-}
-
-#[async_trait]
-#[cfg(feature = "storage-s3-r2")]
-impl WikiObjectBackend for R2Storage {
-    async fn get_text(&self, key: &str) -> Result<Option<String>, StorageError> {
-        self.load_text(key).await
-    }
-
-    async fn put_text(&self, key: &str, content: &str) -> Result<(), StorageError> {
-        self.save_text(key, content).await
-    }
-
-    async fn delete_text(&self, key: &str) -> Result<(), StorageError> {
-        self.delete_object(key).await
-    }
 }
 
 /// Loaded wiki page content with its deterministic object key and content hash.
