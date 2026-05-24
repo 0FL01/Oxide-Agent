@@ -989,5 +989,182 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "ytdlp_download_video",
     "ytdlp_get_video_metadata",
     "ytdlp_search_videos"
+  ],
+  "registered_llm_provider_ids_dummy_config": [
+    "llm-provider/groq",
+    "llm-provider/minimax",
+    "llm-provider/mistral",
+    "llm-provider/nvidia",
+    "llm-provider/openai-chatgpt",
+    "llm-provider/opencode-go",
+    "llm-provider/openrouter",
+    "llm-provider/zai"
+  ],
+  "storage_backend_module_ids": [
+    "storage/r2"
+  ],
+  "sandbox_backend_module_ids": [
+    "sandbox-backend/docker-direct",
+    "sandbox-backend/sandboxd-client"
+  ],
+  "external_service_requirements": [
+    {
+      "module_id": "integration/mcp-jira",
+      "kind": "mcp-integration",
+      "cargo_feature": "integration-mcp-jira",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "integration/mcp-mattermost",
+      "kind": "mcp-integration",
+      "cargo_feature": "integration-mcp-mattermost",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "integration/ssh-mcp",
+      "kind": "mcp-integration",
+      "cargo_feature": "integration-ssh-mcp",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/groq",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-groq",
+      "config_env": [
+        "GROQ_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/minimax",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-minimax",
+      "config_env": [
+        "MINIMAX_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/mistral",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-mistral",
+      "config_env": [
+        "MISTRAL_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/nvidia",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-nvidia",
+      "config_env": [
+        "NVIDIA_API_BASE",
+        "NVIDIA_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/openai-chatgpt",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-chatgpt",
+      "config_env": [
+        "CHATGPT_AUTH_PATH"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/opencode-go",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-opencode-go",
+      "config_env": [
+        "OPENCODE_GO_API_BASE",
+        "OPENCODE_GO_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/openrouter",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-openrouter",
+      "config_env": [
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_SITE_NAME",
+        "OPENROUTER_SITE_URL"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/zai",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-zai",
+      "config_env": [
+        "ZAI_API_BASE",
+        "ZAI_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "sandbox-backend/docker-direct",
+      "kind": "sandbox-backend",
+      "cargo_feature": "sandbox-backend-docker-direct",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "sandbox-backend/sandboxd-client",
+      "kind": "sandbox-backend",
+      "cargo_feature": "sandbox-backend-sandboxd-client",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "sandbox-daemon/sandboxd",
+      "kind": "service",
+      "cargo_feature": "sandbox-daemon",
+      "config_env": [],
+      "requires_capabilities": [
+        [
+          "sandbox-backend/docker-direct"
+        ]
+      ]
+    },
+    {
+      "module_id": "storage/r2",
+      "kind": "storage-backend",
+      "cargo_feature": "storage-s3-r2",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/browser-use",
+      "kind": "browser",
+      "cargo_feature": "tool-browser-use",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/searxng",
+      "kind": "search",
+      "cargo_feature": "tool-searxng",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/tavily",
+      "kind": "search",
+      "cargo_feature": "tool-tavily",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/webfetch-md",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
+      "config_env": [],
+      "requires_capabilities": []
+    }
   ]
 }
