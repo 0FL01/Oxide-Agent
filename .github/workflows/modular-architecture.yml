@@ -66,3 +66,53 @@ jobs:
 
       - name: Check dependency leakage
         run: scripts/check-cargo-tree-deny.sh "${{ matrix.features }}"
+
+  docker-compose-profile-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - embedded-opencode-local
+          - search
+          - media
+          - dev
+          - full
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check Docker Compose profile topology
+        run: scripts/check-compose-profile.sh "${{ matrix.profile }}"
+
+  dockerfile-profile-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: embedded-opencode-local
+            cargo_features: oxide-agent-telegram-bot/profile-embedded-opencode-local
+            packages: oxide-agent-telegram-bot
+            binaries: oxide-agent-telegram-bot
+          - profile: full
+            cargo_features: oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full
+            packages: oxide-agent-telegram-bot oxide-agent-sandboxd
+            binaries: oxide-agent-telegram-bot oxide-agent-sandboxd
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check profile-aware app Dockerfile
+        run: |
+          docker build --check \
+            -f docker/Dockerfile.app \
+            --build-arg CARGO_FEATURES="${{ matrix.cargo_features }}" \
+            --build-arg PACKAGES="${{ matrix.packages }}" \
+            --build-arg BINARIES="${{ matrix.binaries }}" \
+            .
