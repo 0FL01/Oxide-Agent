@@ -307,6 +307,119 @@ fn typed_runtime_registry_skips_disabled_webfetch_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
+#[cfg(feature = "tool-tavily")]
+#[test]
+fn typed_runtime_registry_skips_disabled_tavily_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("TAVILY_API_KEY", "dummy-key");
+    std::env::set_var("TAVILY_ENABLED", "true");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/tavily".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("web_search"));
+    assert!(!tool_names.contains("web_extract"));
+    assert!(tool_names.contains("write_todos"));
+
+    std::env::remove_var("TAVILY_ENABLED");
+    std::env::remove_var("TAVILY_API_KEY");
+}
+
+#[cfg(feature = "tool-searxng")]
+#[test]
+fn typed_runtime_registry_skips_disabled_searxng_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("SEARXNG_URL", "http://searxng:8080");
+    std::env::set_var("SEARXNG_ENABLED", "true");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/searxng".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("searxng_search"));
+    assert!(tool_names.contains("write_todos"));
+
+    std::env::remove_var("SEARXNG_ENABLED");
+    std::env::remove_var("SEARXNG_URL");
+}
+
+#[cfg(all(feature = "tool-tavily", feature = "tool-searxng"))]
+#[test]
+fn typed_runtime_registry_registers_search_modules_once() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("TAVILY_API_KEY", "dummy-key");
+    std::env::set_var("TAVILY_ENABLED", "true");
+    std::env::set_var("SEARXNG_URL", "http://searxng:8080");
+    std::env::set_var("SEARXNG_ENABLED", "true");
+
+    let executor = build_executor();
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry.tool_names();
+
+    assert_eq!(
+        tool_names
+            .iter()
+            .filter(|name| *name == "web_search")
+            .count(),
+        1
+    );
+    assert_eq!(
+        tool_names
+            .iter()
+            .filter(|name| *name == "web_extract")
+            .count(),
+        1
+    );
+    assert_eq!(
+        tool_names
+            .iter()
+            .filter(|name| *name == "searxng_search")
+            .count(),
+        1
+    );
+
+    std::env::remove_var("SEARXNG_ENABLED");
+    std::env::remove_var("SEARXNG_URL");
+    std::env::remove_var("TAVILY_ENABLED");
+    std::env::remove_var("TAVILY_API_KEY");
+}
+
 #[cfg(feature = "manager-control-plane")]
 #[test]
 fn typed_runtime_registry_skips_disabled_manager_control_plane_module() {

@@ -842,12 +842,8 @@ impl ToolModule for WebFetchMdToolModule {
 pub struct TavilyToolModule;
 
 #[cfg(feature = "tool-tavily")]
-impl ToolModule for TavilyToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/tavily")
-    }
-
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+impl TavilyToolModule {
+    fn provider(&self) -> Option<TavilyProvider> {
         if !crate::config::is_tavily_enabled() {
             return None;
         }
@@ -855,7 +851,7 @@ impl ToolModule for TavilyToolModule {
         match std::env::var("TAVILY_API_KEY") {
             Ok(tavily_key) if !tavily_key.trim().is_empty() => {
                 match TavilyProvider::new(&tavily_key) {
-                    Ok(provider) => Some(Box::new(provider)),
+                    Ok(provider) => Some(provider),
                     Err(error) => {
                         tracing::warn!(error = %error, "Tavily provider initialization failed");
                         None
@@ -876,9 +872,23 @@ impl ToolModule for TavilyToolModule {
             }
         }
     }
+}
+
+#[cfg(feature = "tool-tavily")]
+impl ToolModule for TavilyToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/tavily")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider()
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
@@ -887,19 +897,15 @@ impl ToolModule for TavilyToolModule {
 pub struct SearxngToolModule;
 
 #[cfg(feature = "tool-searxng")]
-impl ToolModule for SearxngToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/searxng")
-    }
-
-    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+impl SearxngToolModule {
+    fn provider(&self) -> Option<SearxngProvider> {
         if !crate::config::is_searxng_enabled() {
             return None;
         }
 
         match crate::config::get_searxng_url() {
             Some(url) if !url.trim().is_empty() => match SearxngProvider::new(&url) {
-                Ok(provider) => Some(Box::new(provider)),
+                Ok(provider) => Some(provider),
                 Err(error) => {
                     tracing::warn!(error = %error, "SearXNG provider initialization failed");
                     None
@@ -917,9 +923,23 @@ impl ToolModule for SearxngToolModule {
             }
         }
     }
+}
+
+#[cfg(feature = "tool-searxng")]
+impl ToolModule for SearxngToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/searxng")
+    }
+
+    fn legacy_provider(&self, _ctx: &ToolModuleContext) -> Option<Box<dyn ToolProvider>> {
+        self.provider()
+            .map(|provider| Box::new(provider) as Box<dyn ToolProvider>)
+    }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Vec::new()
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
