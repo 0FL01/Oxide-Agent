@@ -77,6 +77,19 @@ jobs:
       - name: Check dependency leakage
         run: scripts/check-cargo-tree-deny.sh "${{ matrix.features }}"
 
+  binary-feature-gate-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check binary feature gates
+        run: scripts/check-binary-feature-gates.sh
+
   compiled-capability-manifest-checks:
     runs-on: ubuntu-latest
     strategy:
