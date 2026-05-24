@@ -85,11 +85,6 @@ impl SandboxRuntime {
             .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
     }
 
-    /// Acquires the shared sandbox execution guard used by non-lifecycle tools.
-    pub(crate) async fn shared_execution_guard(&self) -> tokio::sync::RwLockReadGuard<'_, ()> {
-        self.execution_gate.read().await
-    }
-
     /// Returns the progress channel associated with this runtime, if any.
     #[must_use]
     pub(crate) fn progress_tx(&self) -> Option<&Sender<AgentEvent>> {
@@ -149,6 +144,16 @@ impl SandboxFileOps for SandboxRuntime {
         let _shared = self.execution_gate.read().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
         sandbox.read_file(path).await
+    }
+
+    async fn file_size_bytes(
+        &self,
+        path: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<u64> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        sandbox.file_size_bytes(path, cancellation_token).await
     }
 
     async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {

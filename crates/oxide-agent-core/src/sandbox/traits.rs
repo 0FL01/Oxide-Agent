@@ -92,6 +92,13 @@ pub trait SandboxFileOps: SandboxBackend {
     /// Read bytes from a file in the current sandbox scope.
     async fn read_file(&self, path: &str) -> Result<Vec<u8>>;
 
+    /// Return file size in bytes without reading the whole file.
+    async fn file_size_bytes(
+        &self,
+        path: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<u64>;
+
     /// List files below a path in the current sandbox scope.
     async fn list_files(&self, path: &str) -> Result<SandboxFileListing>;
 }

@@ -16,6 +16,12 @@ pub mod manager_control_plane;
     feature = "tool-media-video"
 ))]
 pub mod media_file;
+#[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
+mod path;
 pub mod reminder;
 pub mod sandbox;
 #[cfg(feature = "tool-tts-silero")]
@@ -33,8 +39,6 @@ pub mod tts;
 pub mod webfetch_md;
 pub mod wiki_memory;
 pub mod ytdlp;
-
-mod path;
 
 #[cfg(feature = "tool-tavily")]
 pub mod tavily;

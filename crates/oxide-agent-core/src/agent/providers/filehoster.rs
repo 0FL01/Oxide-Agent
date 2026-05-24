@@ -10,8 +10,8 @@ use crate::agent::tool_runtime::{
     ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxManager, SandboxScope};
-use anyhow::Result;
+use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -24,7 +24,6 @@ use super::file_delivery::{
     deliver_file_via_progress, format_generic_delivery_report, FileDeliveryReport,
     FileDeliveryRequest, FileDeliveryStatus, CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
 };
-use super::path::resolve_file_path;
 use super::sandbox::SandboxRuntime;
 
 const MAX_UPLOAD_SIZE_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB (safety limit)
@@ -35,7 +34,9 @@ const FILE_DELIVERY_TOOL_NAMES: &[&str] = &["send_file_to_user", "upload_file"];
 
 /// Provider for file delivery tools backed by shared sandbox runtime state.
 pub struct FileHosterProvider {
-    runtime: Arc<SandboxRuntime>,
+    fileops: Arc<dyn SandboxFileOps>,
+    exec: Arc<dyn SandboxExec>,
+    progress_tx: Option<Sender<AgentEvent>>,
 }
 
 impl FileHosterProvider {
@@ -48,7 +49,14 @@ impl FileHosterProvider {
     /// Create a file-delivery provider from shared sandbox runtime state.
     #[must_use]
     pub fn from_runtime(runtime: Arc<SandboxRuntime>) -> Self {
-        Self { runtime }
+        let progress_tx = runtime.progress_tx().cloned();
+        let fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
+        let exec: Arc<dyn SandboxExec> = runtime;
+        Self {
+            fileops,
+            exec,
+            progress_tx,
+        }
     }
 
     /// Build typed runtime executors for file delivery tools.
@@ -71,88 +79,76 @@ impl FileHosterProvider {
     }
 
     async fn handle_send_file(
+        &self,
         progress_tx: Option<&Sender<AgentEvent>>,
-        sandbox: &mut SandboxManager,
         arguments: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         let args: SendFileArgs = serde_json::from_str(arguments)?;
         info!(path = %args.path, "send_file_to_user called");
 
-        let resolved_path = match resolve_file_path(sandbox, &args.path).await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(path = %args.path, error = %e, "Failed to resolve file path");
-                return serialize_json(json!({
-                    "ok": false,
-                    "path": args.path,
-                    "status": "resolve_failed",
-                    "error": e.to_string(),
-                }));
-            }
-        };
+        let file =
+            match resolve_file_for_fileops(self.fileops.as_ref(), &args.path, cancellation_token)
+                .await
+            {
+                Ok(file) => file,
+                Err(e) => {
+                    warn!(path = %args.path, error = %e, "Failed to resolve file path");
+                    return serialize_json(json!({
+                        "ok": false,
+                        "path": args.path,
+                        "status": "resolve_failed",
+                        "error": e.to_string(),
+                    }));
+                }
+            };
 
-        let file_name = std::path::Path::new(&resolved_path)
-            .file_name()
-            .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
-
-        let file_size = match sandbox.file_size_bytes(&resolved_path, None).await {
-            Ok(size) => size,
-            Err(e) => {
-                error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
-                return serialize_json(json!({
-                    "ok": false,
-                    "path": resolved_path,
-                    "status": "size_check_failed",
-                    "error": e.to_string(),
-                }));
-            }
-        };
-
-        if file_size == 0 {
+        if file.size_bytes == 0 {
             return serialize_json(json!({
                 "ok": false,
-                "path": resolved_path,
-                "file_name": file_name,
-                "size_bytes": file_size,
+                "path": file.path,
+                "file_name": file.file_name,
+                "size_bytes": file.size_bytes,
                 "status": "empty_content",
                 "message": format!(
-                    "❌ ERROR: File '{file_name}' is empty (0 bytes) and cannot be sent.\nSource path: {resolved_path}"
+                    "❌ ERROR: File '{}' is empty (0 bytes) and cannot be sent.\nSource path: {}",
+                    file.file_name, file.path
                 ),
             }));
         }
 
-        if file_size > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
+        if file.size_bytes > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
             return serialize_json(json!({
                 "ok": false,
-                "path": resolved_path,
-                "file_name": file_name,
-                "size_bytes": file_size,
+                "path": file.path,
+                "file_name": file.file_name,
+                "size_bytes": file.size_bytes,
                 "status": "too_large",
                 "message": "⚠️ ERROR: File too large for chat delivery (>50 MB). Please use the upload_file tool to upload it to the cloud.",
             }));
         }
 
-        match sandbox.download_file(&resolved_path).await {
+        match self.fileops.read_file(&file.path).await {
             Ok(content) => {
                 let report = deliver_file_via_progress(
                     progress_tx,
                     FileDeliveryRequest {
                         kind: FileDeliveryKind::Auto,
-                        file_name: file_name.clone(),
+                        file_name: file.file_name.clone(),
                         content,
-                        source_path: resolved_path.clone(),
+                        source_path: file.path.clone(),
                     },
                 )
                 .await;
-                serialize_json(build_send_file_response(&resolved_path, &report))
+                serialize_json(build_send_file_response(&file.path, &report))
             }
             Err(e) => {
-                error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
+                error!(path = %args.path, resolved_path = %file.path, error = %e, "Failed to read file for delivery");
                 serialize_json(json!({
                     "ok": false,
-                    "path": resolved_path,
-                    "file_name": file_name,
-                    "status": "download_failed",
+                    "path": file.path,
+                    "file_name": file.file_name,
+                    "status": "read_failed",
                     "error": e.to_string(),
                 }))
             }
@@ -161,31 +157,33 @@ impl FileHosterProvider {
 
     async fn handle_upload_file(
         &self,
-        sandbox: &mut SandboxManager,
         arguments: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         let args: UploadFileArgs = serde_json::from_str(arguments)?;
         info!(path = %args.path, "upload_file called");
 
-        let resolved_path = match resolve_file_path(sandbox, &args.path).await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(path = %args.path, error = %e, "Failed to resolve file path");
-                return Ok(format!("❌ {e}"));
-            }
-        };
+        let resolved_path =
+            match resolve_file_path_with_exec(self.exec.as_ref(), &args.path, cancellation_token)
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(path = %args.path, error = %e, "Failed to resolve file path");
+                    return Ok(format!("❌ {e}"));
+                }
+            };
 
-        let file_size = match sandbox
-            .file_size_bytes(&resolved_path, cancellation_token)
-            .await
-        {
-            Ok(size) => size,
-            Err(e) => {
-                error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
-                return Ok(format!("❌ File size check error: {e}"));
-            }
-        };
+        let file_size =
+            match file_size_bytes_with_exec(self.exec.as_ref(), &resolved_path, cancellation_token)
+                .await
+            {
+                Ok(size) => size,
+                Err(e) => {
+                    error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
+                    return Ok(format!("❌ File size check error: {e}"));
+                }
+            };
 
         if file_size > MAX_UPLOAD_SIZE_BYTES {
             return Ok("⛔ FATAL ERROR: File exceeds upload limit (4 GB). Upload impossible. Immediately inform the user that the task cannot be completed.".to_string());
@@ -204,7 +202,7 @@ impl FileHosterProvider {
             url = escape(GOFILE_UPLOAD_URL.into()),
         );
 
-        let result = match sandbox.exec_command(&cmd, cancellation_token).await {
+        let result = match self.exec.exec(&cmd, cancellation_token).await {
             Ok(r) => r,
             Err(e) => return Ok(format!("❌ GoFile upload error: {e}")),
         };
@@ -245,7 +243,7 @@ impl FileHosterProvider {
         }
 
         let rm_cmd = format!("rm -f {}", escape(resolved_path.as_str().into()));
-        match sandbox.exec_command(&rm_cmd, cancellation_token).await {
+        match self.exec.exec(&rm_cmd, cancellation_token).await {
             Ok(rm_res) if rm_res.success() => {}
             Ok(rm_res) => warn!(
                 resolved_path = %resolved_path,
@@ -259,6 +257,121 @@ impl FileHosterProvider {
 
         Ok(download_page)
     }
+}
+
+struct ResolvedSandboxFile {
+    path: String,
+    file_name: String,
+    size_bytes: u64,
+}
+
+async fn resolve_file_for_fileops(
+    fileops: &dyn SandboxFileOps,
+    path: &str,
+    cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<ResolvedSandboxFile> {
+    let resolved_path = workspace_path(path);
+    let size_bytes = fileops
+        .file_size_bytes(&resolved_path, cancellation_token)
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "File '{}' not found at '{}': {}. Use list_files to inspect available files.",
+                path,
+                resolved_path,
+                error
+            )
+        })?;
+    let file_name = file_name_from_path(&resolved_path);
+    Ok(ResolvedSandboxFile {
+        path: resolved_path,
+        file_name,
+        size_bytes,
+    })
+}
+
+async fn resolve_file_path_with_exec(
+    exec: &dyn SandboxExec,
+    path: &str,
+    cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<String> {
+    if path.starts_with('/') {
+        return Ok(path.to_string());
+    }
+
+    let workspace_path = workspace_path(path);
+    let check_cmd = format!(
+        "test -f {} && echo 'exists'",
+        escape(workspace_path.as_str().into())
+    );
+    let check = exec.exec(&check_cmd, cancellation_token).await?;
+
+    if check.stdout.contains("exists") {
+        return Ok(workspace_path);
+    }
+
+    let find_cmd = format!("find /workspace -name {} -type f", escape(path.into()));
+    let result = exec.exec(&find_cmd, cancellation_token).await?;
+    let found_paths: Vec<&str> = result
+        .stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    match found_paths.len() {
+        0 => anyhow::bail!(
+            "File '{}' not found in sandbox. Use 'list_files' tool to see available files.",
+            path
+        ),
+        1 => Ok(found_paths[0].to_string()),
+        _ => {
+            let paths_list = found_paths.join("\n  - ");
+            anyhow::bail!(
+                "Multiple files found with name '{}':\n  - {}\n\nPlease specify the full path to the desired file.",
+                path,
+                paths_list
+            )
+        }
+    }
+}
+
+async fn file_size_bytes_with_exec(
+    exec: &dyn SandboxExec,
+    path: &str,
+    cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<u64> {
+    let cmd = format!("stat -c %s {}", escape(path.into()));
+    let result = exec.exec(&cmd, cancellation_token).await?;
+    if !result.success() {
+        anyhow::bail!(
+            "stat failed (code {}): {}",
+            result.exit_code,
+            result.combined_output()
+        );
+    }
+    result
+        .stdout
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .parse::<u64>()
+        .map_err(|error| anyhow!("failed to parse file size: {error}"))
+}
+
+fn workspace_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/workspace/{path}")
+    }
+}
+
+fn file_name_from_path(path: &str) -> String {
+    std::path::Path::new(path).file_name().map_or_else(
+        || "file".to_string(),
+        |name| name.to_string_lossy().to_string(),
+    )
 }
 
 /// Arguments for `upload_file` tool
@@ -355,7 +468,7 @@ fn file_delivery_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "send_file_to_user".to_string(),
-            description: "Send a file from the sandbox to the user via the chat transport. Returns JSON with ok, status, file_name, size_bytes, and message. Supports both absolute paths (/workspace/file.txt) and relative paths (file.txt) - will automatically search in /workspace if not found.".to_string(),
+            description: "Send a file from the sandbox to the user via the chat transport. Returns JSON with ok, status, file_name, size_bytes, and message. Supports absolute paths (/workspace/file.txt) and relative paths resolved under /workspace; use list_files to discover exact paths.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -478,22 +591,16 @@ impl ToolProvider for FileHosterProvider {
             anyhow::bail!("Unknown file delivery tool: {tool_name}");
         }
 
-        let _shared = self.runtime.shared_execution_guard().await;
-        let mut sandbox = self.runtime.get_or_create_sandbox().await?;
-
         match tool_name {
             "send_file_to_user" => {
-                Self::handle_send_file(
-                    self.runtime.progress_tx().or(progress_tx),
-                    &mut sandbox,
+                self.handle_send_file(
+                    self.progress_tx.as_ref().or(progress_tx),
                     arguments,
+                    cancellation_token,
                 )
                 .await
             }
-            "upload_file" => {
-                self.handle_upload_file(&mut sandbox, arguments, cancellation_token)
-                    .await
-            }
+            "upload_file" => self.handle_upload_file(arguments, cancellation_token).await,
             _ => unreachable!("validated file delivery tool name"),
         }
     }
