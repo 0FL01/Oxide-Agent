@@ -483,7 +483,7 @@ impl ToolModule for SshMcpToolModule {
 
     fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         self.provider(ctx)
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .map(|provider| Arc::new(provider).tool_runtime_executors(ctx.progress_tx()))
             .unwrap_or_default()
     }
 }

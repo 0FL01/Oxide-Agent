@@ -215,15 +215,19 @@ fn typed_runtime_registry_exposes_ssh_mcp_tools_when_topic_infra_configured() {
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
 
-    for tool_name in ["ssh_exec", "ssh_sudo_exec", "ssh_check_process"] {
+    for tool_name in [
+        "ssh_exec",
+        "ssh_sudo_exec",
+        "ssh_read_file",
+        "ssh_apply_file_edit",
+        "ssh_check_process",
+        "ssh_send_file_to_user",
+    ] {
         assert!(
             tool_names.contains(tool_name),
             "missing typed runtime SSH MCP tool: {tool_name}"
         );
     }
-    assert!(!tool_names.contains("ssh_read_file"));
-    assert!(!tool_names.contains("ssh_apply_file_edit"));
-    assert!(!tool_names.contains("ssh_send_file_to_user"));
 }
 
 #[cfg(feature = "tool-wiki-memory")]
