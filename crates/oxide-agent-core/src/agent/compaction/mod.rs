@@ -1,8 +1,7 @@
 //! Agent Mode context compaction building blocks.
 //!
-//! The runtime path is `CompactionController` plus `LocalLlmSummary`. Legacy
-//! persisted data is handled by serde-compatible message/type fields and the
-//! deterministic history migration helpers.
+//! The runtime path is `CompactionController` plus `LocalLlmSummary`, which
+//! writes one current `OXIDE_COMPACTED_SUMMARY_V1` handoff message.
 
 pub mod archive;
 pub mod budget;
@@ -13,7 +12,7 @@ pub mod prompt;
 pub mod task;
 pub mod types;
 
-pub use archive::{ArchiveChunk, ArchiveRecord, ArchiveRef};
+pub use archive::ArchiveRef;
 pub use budget::{count_tokens_cached, estimate_request_budget};
 pub use controller::{
     CompactRequestContext, CompactRunOutcome, CompactionController, CompactionControllerError,
@@ -28,8 +27,7 @@ pub use task::{
     CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
 };
 pub use types::{
-    AgentMessageKind, BreadcrumbCard, BudgetEstimate, BudgetState, CompactedSummaryMetadata,
-    CompactionBackend, CompactionPhase, CompactionPolicy, CompactionReason, CompactionRequest,
-    CompactionRetention, CompactionScope, CompactionSummary, CompactionTrigger, HotMemoryBudget,
-    LEGACY_BREADCRUMB_PREFIX, LEGACY_COMPACTION_SUMMARY_PREFIX, OXIDE_COMPACTED_SUMMARY_PREFIX,
+    AgentMessageKind, BudgetEstimate, BudgetState, CompactedSummaryMetadata, CompactionBackend,
+    CompactionPhase, CompactionPolicy, CompactionReason, CompactionRequest, CompactionRetention,
+    CompactionScope, CompactionTrigger, HotMemoryBudget, OXIDE_COMPACTED_SUMMARY_PREFIX,
 };

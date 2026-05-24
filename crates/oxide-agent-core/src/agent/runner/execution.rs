@@ -1893,7 +1893,8 @@ mod tests {
     use super::*;
     use crate::agent::compaction::{
         CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
-        CompactionController, OXIDE_COMPACTED_SUMMARY_PREFIX,
+        CompactedSummaryMetadata, CompactionBackend, CompactionController, CompactionPhase,
+        CompactionReason, OXIDE_COMPACTED_SUMMARY_PREFIX,
     };
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
@@ -1907,6 +1908,27 @@ mod tests {
     use tokio::sync::Mutex;
 
     struct StaticRuntimeSummaryBackend;
+
+    fn existing_compacted_summary() -> AgentMessage {
+        AgentMessage::compacted_summary(
+            "Old current-format state.",
+            &CompactedSummaryMetadata {
+                generation: 1,
+                reason: CompactionReason::Manual,
+                phase: CompactionPhase::Manual,
+                token_before: 100,
+                token_after: 10,
+                history_items_before: 3,
+                history_items_after: 1,
+                provider: "mock".to_string(),
+                route: "mock-model".to_string(),
+                backend: CompactionBackend::LocalLlmSummary,
+                created_at: "2026-05-21T20:10:00+03:00".to_string(),
+                previous_summary_detected: false,
+                repair_applied: false,
+            },
+        )
+    }
 
     #[async_trait]
     impl CompactSummaryBackend for StaticRuntimeSummaryBackend {
@@ -2267,7 +2289,7 @@ mod tests {
             .add_message(AgentMessage::user_task("Retry after overflow"));
         session
             .memory_mut()
-            .add_message(AgentMessage::summary("[COMPACTION_SUMMARY]\nOld"));
+            .add_message(existing_compacted_summary());
         session
             .memory_mut()
             .add_message(AgentMessage::user("Recent request."));

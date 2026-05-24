@@ -55,11 +55,11 @@ pub mod loop_detection;
 pub mod progress;
 
 pub use compaction::{
-    AgentMessageKind, ArchiveChunk, ArchiveRecord, ArchiveRef, BudgetEstimate, BudgetState,
-    CompactRequestContext, CompactRunOutcome, CompactSummaryBackend, CompactSummaryError,
-    CompactSummaryRequest, CompactSummaryResult, CompactedSummaryMetadata, CompactionBackend,
-    CompactionController, CompactionControllerError, CompactionPhase, CompactionReason,
-    CompactionSummary, CompactionTrigger, HotMemoryBudget, LocalLlmSummary,
+    AgentMessageKind, ArchiveRef, BudgetEstimate, BudgetState, CompactRequestContext,
+    CompactRunOutcome, CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest,
+    CompactSummaryResult, CompactedSummaryMetadata, CompactionBackend, CompactionController,
+    CompactionControllerError, CompactionPhase, CompactionReason, CompactionTrigger,
+    HotMemoryBudget, LocalLlmSummary,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};

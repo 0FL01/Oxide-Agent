@@ -256,6 +256,55 @@ fn deprecated_config_compatibility_surfaces_are_removed() {
 }
 
 #[test]
+fn legacy_compaction_archive_compatibility_surfaces_are_removed() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let targets = [
+        "src/agent/compaction/archive.rs",
+        "src/agent/compaction/history.rs",
+        "src/agent/compaction/mod.rs",
+        "src/agent/compaction/types.rs",
+        "src/agent/memory.rs",
+    ];
+    let forbidden_patterns = [
+        "ArchiveChunk",
+        "ArchiveRecord",
+        "BreadcrumbCard",
+        "CompactionSummary",
+        "LEGACY_COMPACTION_SUMMARY_PREFIX",
+        "LEGACY_BREADCRUMB_PREFIX",
+        "AgentMessageKind::Breadcrumb",
+        "AgentMessageKind::ArchiveReference",
+        "structured_summary",
+        "breadcrumb_card",
+        "archive_ref_payload",
+        "summary_payload",
+        "breadcrumb_payload",
+        "from_compaction_summary",
+        "from_breadcrumb_card",
+        "archive_reference_with_ref",
+    ];
+
+    let offenders = targets
+        .iter()
+        .flat_map(|target| {
+            let source = fs::read_to_string(manifest_dir.join(target))
+                .unwrap_or_else(|error| panic!("read {target}: {error}"));
+            forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{target}: {pattern}"))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "legacy staged-compaction archive/breadcrumb compatibility surfaces must stay removed; offenders: {offenders:?}"
+    );
+}
+
+#[test]
 fn ssh_cleanup_is_owned_by_ssh_module_not_binaries() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir

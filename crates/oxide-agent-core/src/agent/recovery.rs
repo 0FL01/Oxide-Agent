@@ -1447,9 +1447,6 @@ mod tests {
                 tool_call_correlations: Some(vec![correlation.clone()]),
                 externalized_payload: None,
                 pruned_artifact: None,
-                structured_summary: None,
-                archive_ref: None,
-                breadcrumb_card: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::ToolResult,
@@ -1463,9 +1460,6 @@ mod tests {
                 tool_call_correlations: None,
                 externalized_payload: None,
                 pruned_artifact: None,
-                structured_summary: None,
-                archive_ref: None,
-                breadcrumb_card: None,
             },
         ];
 
@@ -1507,9 +1501,6 @@ mod tests {
                 tool_call_correlations: Some(vec![correlation.clone()]),
                 externalized_payload: None,
                 pruned_artifact: None,
-                structured_summary: None,
-                archive_ref: None,
-                breadcrumb_card: None,
             },
             AgentMessage {
                 kind: AgentMessageKind::ToolResult,
@@ -1523,9 +1514,6 @@ mod tests {
                 tool_call_correlations: None,
                 externalized_payload: None,
                 pruned_artifact: None,
-                structured_summary: None,
-                archive_ref: None,
-                breadcrumb_card: None,
             },
         ];
 

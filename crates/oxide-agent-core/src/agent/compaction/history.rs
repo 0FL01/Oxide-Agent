@@ -1,10 +1,7 @@
 //! Deterministic history construction for runtime/session-level compaction.
 
 use super::budget::count_tokens_cached;
-use super::{
-    AgentMessageKind, CompactedSummaryMetadata, LEGACY_BREADCRUMB_PREFIX,
-    LEGACY_COMPACTION_SUMMARY_PREFIX, OXIDE_COMPACTED_SUMMARY_PREFIX,
-};
+use super::{AgentMessageKind, CompactedSummaryMetadata, OXIDE_COMPACTED_SUMMARY_PREFIX};
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::recovery::repair_agent_message_history_runtime;
 use thiserror::Error;
@@ -22,13 +19,11 @@ pub struct BuildCompactedHistoryRequest<'a> {
     pub target_token_budget: usize,
 }
 
-/// Summary extracted from the previous history during lazy migration/re-compaction.
+/// Current compacted summary extracted from previous history during re-compaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviousCompactedSummary {
     /// Raw summary message text.
     pub content: String,
-    /// Whether the source used the new summary prefix.
-    pub current_format: bool,
 }
 
 /// Errors that prevent safe compacted history construction.
@@ -57,22 +52,10 @@ pub fn is_current_compacted_summary_message(message: &AgentMessage) -> bool {
         .starts_with(OXIDE_COMPACTED_SUMMARY_PREFIX)
 }
 
-/// Returns true for any current or legacy compaction/breadcrumb summary entry.
+/// Returns true for the current compacted-summary entry.
 #[must_use]
 pub fn is_any_compaction_summary_message(message: &AgentMessage) -> bool {
-    if is_current_compacted_summary_message(message) {
-        return true;
-    }
-
-    let content = message.content.trim_start();
-    content.starts_with(LEGACY_COMPACTION_SUMMARY_PREFIX)
-        || content.starts_with(LEGACY_BREADCRUMB_PREFIX)
-        || message.structured_summary.is_some()
-        || message.breadcrumb_card.is_some()
-        || matches!(
-            message.resolved_kind(),
-            AgentMessageKind::Summary | AgentMessageKind::Breadcrumb
-        )
+    is_current_compacted_summary_message(message)
 }
 
 /// Extract the newest previous summary as input signal for the next compact prompt.
@@ -83,7 +66,6 @@ pub fn extract_previous_compacted_summary(
     messages.iter().rev().find_map(|message| {
         is_any_compaction_summary_message(message).then(|| PreviousCompactedSummary {
             content: message.content.trim().to_string(),
-            current_format: is_current_compacted_summary_message(message),
         })
     })
 }
@@ -165,7 +147,6 @@ fn is_pinned(message: &AgentMessage) -> bool {
             | AgentMessageKind::RuntimeContext
             | AgentMessageKind::ApprovalReplay
             | AgentMessageKind::InfraStatus
-            | AgentMessageKind::ArchiveReference
     )
 }
 
@@ -216,9 +197,7 @@ fn message_tokens(message: &AgentMessage) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::compaction::{
-        ArchiveRef, CompactionBackend, CompactionPhase, CompactionReason, CompactionSummary,
-    };
+    use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
     use crate::agent::recovery::repair_agent_message_history_runtime;
     use crate::llm::{ToolCall, ToolCallFunction};
 
@@ -241,41 +220,23 @@ mod tests {
     }
 
     #[test]
-    fn detects_current_and_legacy_summary_messages() {
+    fn detects_current_summary_messages() {
         let current = AgentMessage::compacted_summary("state", &metadata(false));
         assert!(is_current_compacted_summary_message(&current));
         assert!(is_any_compaction_summary_message(&current));
 
-        let legacy = AgentMessage::summary("[COMPACTION_SUMMARY]\nGoal:\nship");
-        assert!(!is_current_compacted_summary_message(&legacy));
-        assert!(is_any_compaction_summary_message(&legacy));
-
-        let breadcrumb = AgentMessage::summary("[BREADCRUMB_CARD]\nNext Steps:\n- continue");
-        assert!(is_any_compaction_summary_message(&breadcrumb));
+        let old_text_shape = AgentMessage::summary("[COMPACTION_SUMMARY]\nGoal:\nship");
+        assert!(!is_any_compaction_summary_message(&old_text_shape));
     }
 
     #[test]
-    fn detects_structured_legacy_summary_payload() {
-        let legacy = AgentMessage::from_compaction_summary(CompactionSummary {
-            goal: "ship".to_string(),
-            ..CompactionSummary::default()
-        });
-
-        assert!(is_any_compaction_summary_message(&legacy));
-        let extracted = extract_previous_compacted_summary(&[legacy]).expect("summary found");
-        assert!(!extracted.current_format);
-        assert!(extracted.content.contains("[COMPACTION_SUMMARY]"));
-    }
-
-    #[test]
-    fn builds_history_with_one_current_summary_and_no_old_summaries() {
+    fn builds_history_with_one_current_summary() {
         let messages = vec![
             AgentMessage::topic_agents_md("# Topic"),
             AgentMessage::user_task("Implement compaction"),
-            AgentMessage::summary("[COMPACTION_SUMMARY]\nOld"),
+            AgentMessage::compacted_summary("Old current-format summary.", &metadata(false)),
             AgentMessage::user("latest request"),
             AgentMessage::assistant("latest answer"),
-            AgentMessage::summary("[BREADCRUMB_CARD]\nOld breadcrumb"),
         ];
 
         let replacement = build_compacted_history(BuildCompactedHistoryRequest {
@@ -295,10 +256,7 @@ mod tests {
         );
         assert!(replacement
             .iter()
-            .all(|message| !message.content.contains("[BREADCRUMB_CARD]")));
-        assert!(replacement
-            .iter()
-            .all(|message| !message.content.contains("[COMPACTION_SUMMARY]")));
+            .all(|message| !message.content.contains("Old current-format summary.")));
         assert!(replacement
             .iter()
             .any(|message| message.resolved_kind() == AgentMessageKind::TopicAgentsMd));
@@ -308,107 +266,6 @@ mod tests {
         assert!(replacement
             .iter()
             .any(|message| message.content == "latest request"));
-    }
-
-    #[test]
-    fn lazy_migration_preserves_old_archive_references_without_old_summaries() {
-        let archive_ref = ArchiveRef {
-            archive_id: "archive-legacy".to_string(),
-            created_at: 1_779_341_200,
-            title: "Legacy compacted chunk".to_string(),
-            storage_key: "users/1/compaction/archive-legacy.json".to_string(),
-        };
-        let fixture_json = serde_json::json!([
-            {
-                "kind": "Summary",
-                "role": "System",
-                "content": "[COMPACTION_SUMMARY]\nGoal:\nship legacy migration",
-                "reasoning": null,
-                "tool_call_id": null,
-                "tool_call_correlation": null,
-                "tool_name": null,
-                "tool_calls": null,
-                "tool_call_correlations": null,
-                "externalized_payload": null,
-                "pruned_artifact": null,
-                "structured_summary": {
-                    "goal": "ship legacy migration",
-                    "constraints": [],
-                    "decisions": [],
-                    "discoveries": [],
-                    "relevant_files_entities": [],
-                    "remaining_work": [],
-                    "risks": []
-                },
-                "archive_ref": null,
-                "breadcrumb_card": null
-            },
-            {
-                "kind": "ArchiveReference",
-                "role": "System",
-                "content": "[ARCHIVE_REFERENCE]\nLegacy compacted chunk",
-                "reasoning": null,
-                "tool_call_id": null,
-                "tool_call_correlation": null,
-                "tool_name": null,
-                "tool_calls": null,
-                "tool_call_correlations": null,
-                "externalized_payload": null,
-                "pruned_artifact": null,
-                "structured_summary": null,
-                "archive_ref": archive_ref,
-                "breadcrumb_card": null
-            },
-            {
-                "kind": "UserTurn",
-                "role": "User",
-                "content": "continue from migrated session",
-                "reasoning": null,
-                "tool_call_id": null,
-                "tool_call_correlation": null,
-                "tool_name": null,
-                "tool_calls": null,
-                "tool_call_correlations": null,
-                "externalized_payload": null,
-                "pruned_artifact": null,
-                "structured_summary": null,
-                "archive_ref": null,
-                "breadcrumb_card": null
-            }
-        ]);
-        let messages: Vec<AgentMessage> =
-            serde_json::from_value(fixture_json).expect("legacy fixture deserializes");
-        assert_eq!(
-            messages[1].archive_ref_payload(),
-            Some(&archive_ref),
-            "old archive refs must remain deserializable"
-        );
-        assert!(extract_previous_compacted_summary(&messages).is_some());
-
-        let replacement = build_compacted_history(BuildCompactedHistoryRequest {
-            messages: &messages,
-            summary_text: "Migrated summary with current state.",
-            metadata: &metadata(true),
-            target_token_budget: 10_000,
-        })
-        .expect("legacy fixture compacts safely");
-
-        assert_eq!(
-            replacement
-                .iter()
-                .filter(|message| is_current_compacted_summary_message(message))
-                .count(),
-            1
-        );
-        assert!(replacement
-            .iter()
-            .all(|message| !message.content.contains("[COMPACTION_SUMMARY]")));
-        assert!(replacement
-            .iter()
-            .any(|message| message.archive_ref_payload() == Some(&archive_ref)));
-        assert!(replacement
-            .iter()
-            .any(|message| message.content == "continue from migrated session"));
     }
 
     #[test]

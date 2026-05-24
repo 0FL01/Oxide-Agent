@@ -4,8 +4,8 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    count_tokens_cached, AgentMessageKind, ArchiveRef, BreadcrumbCard, CompactedSummaryMetadata,
-    CompactionRetention, CompactionSummary, OXIDE_COMPACTED_SUMMARY_PREFIX,
+    count_tokens_cached, AgentMessageKind, ArchiveRef, CompactedSummaryMetadata,
+    CompactionRetention, OXIDE_COMPACTED_SUMMARY_PREFIX,
 };
 use crate::agent::providers::TodoList;
 use crate::agent::recovery::{repair_agent_message_history_runtime, HistoryRepairOutcome};
@@ -47,15 +47,6 @@ pub struct AgentMessage {
     /// Metadata for tool payloads already pruned down to a placeholder.
     #[serde(default)]
     pub pruned_artifact: Option<PrunedArtifact>,
-    /// Structured summary metadata for compaction-generated summary entries.
-    #[serde(default)]
-    pub structured_summary: Option<CompactionSummary>,
-    /// Lightweight archive ref for displaced context chunks.
-    #[serde(default)]
-    pub archive_ref: Option<ArchiveRef>,
-    /// Deterministic breadcrumb handoff state preserved by the legacy cleanup pipeline.
-    #[serde(default)]
-    pub breadcrumb_card: Option<BreadcrumbCard>,
 }
 
 /// Metadata describing a tool payload externalized out of hot memory.
@@ -144,9 +135,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -164,9 +152,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -189,9 +174,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -209,9 +191,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -229,9 +208,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -249,9 +225,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -272,9 +245,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -307,9 +277,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -349,9 +316,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: Some(externalized_payload),
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -394,9 +358,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload,
             pruned_artifact: Some(pruned_artifact),
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -425,9 +386,6 @@ impl AgentMessage {
             tool_call_correlations,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -472,80 +430,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
-        }
-    }
-
-    /// Create a summary entry backed by structured compaction data.
-    pub fn from_compaction_summary(summary: CompactionSummary) -> Self {
-        Self {
-            kind: AgentMessageKind::Summary,
-            role: MessageRole::System,
-            content: format_compaction_summary(&summary),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-            structured_summary: Some(summary),
-            archive_ref: None,
-            breadcrumb_card: None,
-        }
-    }
-
-    /// Create a breadcrumb entry backed by structured handoff metadata.
-    pub fn from_breadcrumb_card(breadcrumb: BreadcrumbCard) -> Self {
-        Self {
-            kind: AgentMessageKind::Breadcrumb,
-            role: MessageRole::System,
-            content: format_breadcrumb_card(&breadcrumb),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: Some(breadcrumb),
-        }
-    }
-
-    /// Create a lightweight reference to archived context.
-    pub fn archive_reference(content: impl Into<String>) -> Self {
-        Self {
-            kind: AgentMessageKind::ArchiveReference,
-            ..Self::archive_reference_with_ref(content, None)
-        }
-    }
-
-    /// Create a lightweight archive reference entry backed by structured metadata.
-    pub fn archive_reference_with_ref(
-        content: impl Into<String>,
-        archive_ref: Option<ArchiveRef>,
-    ) -> Self {
-        Self {
-            kind: AgentMessageKind::ArchiveReference,
-            role: MessageRole::System,
-            content: content.into(),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-            structured_summary: None,
-            archive_ref,
-            breadcrumb_card: None,
         }
     }
 
@@ -590,24 +474,6 @@ impl AgentMessage {
     #[must_use]
     pub fn is_pruned(&self) -> bool {
         self.pruned_artifact.is_some()
-    }
-
-    /// Returns structured compaction summary metadata when available.
-    #[must_use]
-    pub fn summary_payload(&self) -> Option<&CompactionSummary> {
-        self.structured_summary.as_ref()
-    }
-
-    /// Returns structured archive ref metadata when available.
-    #[must_use]
-    pub fn archive_ref_payload(&self) -> Option<&ArchiveRef> {
-        self.archive_ref.as_ref()
-    }
-
-    /// Returns structured breadcrumb metadata when available.
-    #[must_use]
-    pub fn breadcrumb_payload(&self) -> Option<&BreadcrumbCard> {
-        self.breadcrumb_card.as_ref()
     }
 
     /// Resolve the canonical correlation for a tool result message.
@@ -860,26 +726,6 @@ impl AgentMemory {
     }
 }
 
-fn format_compaction_summary(summary: &CompactionSummary) -> String {
-    let mut sections = vec!["[COMPACTION_SUMMARY]".to_string()];
-
-    if !summary.goal.trim().is_empty() {
-        sections.push(format!("Goal:\n{}", summary.goal.trim()));
-    }
-    push_summary_list(&mut sections, "Constraints", &summary.constraints);
-    push_summary_list(&mut sections, "Decisions", &summary.decisions);
-    push_summary_list(&mut sections, "Discoveries", &summary.discoveries);
-    push_summary_list(
-        &mut sections,
-        "Relevant Files And Entities",
-        &summary.relevant_files_entities,
-    );
-    push_summary_list(&mut sections, "Remaining Work", &summary.remaining_work);
-    push_summary_list(&mut sections, "Risks", &summary.risks);
-
-    sections.join("\n\n")
-}
-
 fn format_compacted_summary(summary_text: &str, metadata: &CompactedSummaryMetadata) -> String {
     format!(
         "{prefix}\n\
@@ -913,46 +759,6 @@ repair_applied: {repair_applied}\n\n\
         repair_applied = metadata.repair_applied,
         summary = summary_text.trim(),
     )
-}
-
-fn push_summary_list(sections: &mut Vec<String>, title: &str, items: &[String]) {
-    if items.is_empty() {
-        return;
-    }
-
-    sections.push(format!("{title}:\n- {}", items.join("\n- ")));
-}
-
-fn format_breadcrumb_card(breadcrumb: &BreadcrumbCard) -> String {
-    let mut sections = vec!["[BREADCRUMB_CARD]".to_string()];
-
-    if !breadcrumb.current_goal.trim().is_empty() {
-        sections.push(format!("Current Goal:\n{}", breadcrumb.current_goal.trim()));
-    }
-    push_summary_list(
-        &mut sections,
-        "Authoritative State",
-        &breadcrumb.authoritative_state,
-    );
-    push_summary_list(
-        &mut sections,
-        "Recent User Requests",
-        &breadcrumb.recent_user_requests,
-    );
-    push_summary_list(
-        &mut sections,
-        "Recent Assistant Updates",
-        &breadcrumb.recent_assistant_updates,
-    );
-    push_summary_list(
-        &mut sections,
-        "Recent Tool Outcomes",
-        &breadcrumb.recent_tool_outcomes,
-    );
-    push_summary_list(&mut sections, "Next Steps", &breadcrumb.next_steps);
-    push_summary_list(&mut sections, "Open Questions", &breadcrumb.open_questions);
-
-    sections.join("\n\n")
 }
 
 impl AgentMessage {
@@ -1158,11 +964,6 @@ mod tests {
         let runtime = AgentMessage::runtime_context("User added a new constraint");
         let tool = AgentMessage::tool("call-1", "execute_command", "cargo check");
         let summary = AgentMessage::summary("[Previous context compressed]\n...");
-        let breadcrumb = AgentMessage::from_breadcrumb_card(BreadcrumbCard {
-            current_goal: "Investigate failure".to_string(),
-            authoritative_state: vec!["Last known good SNI: google.com".to_string()],
-            ..BreadcrumbCard::default()
-        });
 
         assert_eq!(
             topic_agents_md.resolved_kind(),
@@ -1181,43 +982,6 @@ mod tests {
 
         assert_eq!(summary.resolved_kind(), AgentMessageKind::Summary);
         assert_eq!(summary.retention(), CompactionRetention::Pinned);
-
-        assert_eq!(breadcrumb.resolved_kind(), AgentMessageKind::Breadcrumb);
-        assert_eq!(breadcrumb.retention(), CompactionRetention::Pinned);
-    }
-
-    #[test]
-    fn test_structured_summary_message_keeps_payload() {
-        let summary = CompactionSummary {
-            goal: "Ship stage 8".to_string(),
-            decisions: vec!["Use a first-class summary entry.".to_string()],
-            ..CompactionSummary::default()
-        };
-
-        let message = AgentMessage::from_compaction_summary(summary.clone());
-
-        assert_eq!(message.resolved_kind(), AgentMessageKind::Summary);
-        assert_eq!(message.summary_payload(), Some(&summary));
-        assert!(message.content.contains("[COMPACTION_SUMMARY]"));
-        assert!(message.content.contains("Goal:"));
-    }
-
-    #[test]
-    fn test_breadcrumb_message_keeps_payload() {
-        let breadcrumb = BreadcrumbCard {
-            current_goal: "Recover Xray access".to_string(),
-            authoritative_state: vec!["Current SNI: google.com".to_string()],
-            recent_tool_outcomes: vec!["xray restart succeeded".to_string()],
-            next_steps: vec!["Re-emit VLESS link from latest config".to_string()],
-            ..BreadcrumbCard::default()
-        };
-
-        let message = AgentMessage::from_breadcrumb_card(breadcrumb.clone());
-
-        assert_eq!(message.resolved_kind(), AgentMessageKind::Breadcrumb);
-        assert_eq!(message.breadcrumb_payload(), Some(&breadcrumb));
-        assert!(message.content.contains("[BREADCRUMB_CARD]"));
-        assert!(message.content.contains("Authoritative State:"));
     }
 
     #[test]
@@ -1234,9 +998,6 @@ mod tests {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         };
         let legacy_tool = AgentMessage {
             kind: AgentMessageKind::Legacy,
@@ -1250,9 +1011,6 @@ mod tests {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         };
 
         assert_eq!(
@@ -1285,9 +1043,7 @@ mod tests {
             "tool_name": "execute_command",
             "tool_calls": null,
             "externalized_payload": null,
-            "pruned_artifact": null,
-            "structured_summary": null,
-            "archive_ref": null
+            "pruned_artifact": null
         });
         let message: AgentMessage = serde_json::from_value(legacy).expect("message deserializes");
 
@@ -1344,9 +1100,7 @@ mod tests {
                 "is_recovered": false
             }],
             "externalized_payload": null,
-            "pruned_artifact": null,
-            "structured_summary": null,
-            "archive_ref": null
+            "pruned_artifact": null
         });
         let message: AgentMessage = serde_json::from_value(legacy).expect("message deserializes");
 

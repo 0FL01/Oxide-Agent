@@ -192,7 +192,7 @@ async fn executor_injects_configured_wiki_memory_context() {
 }
 
 #[tokio::test]
-async fn manual_compaction_uses_codex_style_controller_when_flag_enabled() {
+async fn manual_compaction_uses_current_compaction_controller() {
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("mock-model".to_string()),
         agent_model_provider: Some("mock".to_string()),
@@ -254,7 +254,7 @@ async fn manual_compaction_uses_codex_style_controller_when_flag_enabled() {
         });
     }
 
-    assert_eq!(outcome.metadata.generation, 2);
+    assert_eq!(outcome.metadata.generation, 1);
     assert_eq!(outcome.metadata.provider, "mock");
     assert_eq!(outcome.metadata.route, "mock-model");
     assert!(outcome.replacement.history_items_after <= outcome.replacement.history_items_before);
