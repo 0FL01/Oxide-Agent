@@ -1,6 +1,9 @@
 //! Feature-gated compiled capability module list.
 
-use super::{CapabilityModule, CompiledCapabilityManifest, ManifestError};
+use super::{
+    CapabilityId, CapabilityModule, CapabilityRequirement, CompiledCapabilityManifest,
+    ManifestError,
+};
 
 macro_rules! push_module {
     ($modules:ident, $feature:literal, $id:literal, $kind:ident, [$($capability:literal),+ $(,)?]) => {
@@ -17,6 +20,71 @@ macro_rules! push_module {
         }
     };
 }
+
+macro_rules! push_module_with_requires {
+    ($modules:ident, $feature:literal, $id:literal, $kind:ident, [$($capability:literal),+ $(,)?], $requires:expr) => {
+        #[cfg(feature = $feature)]
+        {
+            const PROVIDES: &[$crate::capabilities::CapabilityId] =
+                &[$($crate::capabilities::CapabilityId::new($capability)),+];
+            $modules.push(Box::new(
+                $crate::capabilities::StaticCapabilityModule::new(
+                    $crate::capabilities::ModuleId::new($id),
+                    $crate::capabilities::CapabilityKind::$kind,
+                    $feature,
+                    PROVIDES,
+                )
+                .with_requires($requires),
+            ));
+        }
+    };
+}
+
+#[allow(dead_code)]
+const SANDBOX_FILEOPS_BACKEND_CAPABILITIES: &[CapabilityId] = &[
+    CapabilityId::new("sandbox-backend/docker-direct/fileops"),
+    CapabilityId::new("sandbox-backend/sandboxd-client/fileops"),
+];
+#[allow(dead_code)]
+const SANDBOX_EXEC_BACKEND_CAPABILITIES: &[CapabilityId] = &[
+    CapabilityId::new("sandbox-backend/docker-direct/exec"),
+    CapabilityId::new("sandbox-backend/sandboxd-client/exec"),
+];
+#[allow(dead_code)]
+const SANDBOX_LIFECYCLE_BACKEND_CAPABILITIES: &[CapabilityId] = &[
+    CapabilityId::new("sandbox-backend/docker-direct/lifecycle"),
+    CapabilityId::new("sandbox-backend/sandboxd-client/lifecycle"),
+];
+#[allow(dead_code)]
+const SANDBOX_DIAGNOSTICS_BACKEND_CAPABILITIES: &[CapabilityId] = &[
+    CapabilityId::new("sandbox-backend/docker-direct/diagnostics"),
+    CapabilityId::new("sandbox-backend/sandboxd-client/diagnostics"),
+];
+
+#[allow(dead_code)]
+const SANDBOX_FILEOPS_BACKEND_REQUIREMENT: &[CapabilityRequirement] =
+    &[CapabilityRequirement::any_of(
+        SANDBOX_FILEOPS_BACKEND_CAPABILITIES,
+    )];
+#[allow(dead_code)]
+const SANDBOX_EXEC_BACKEND_REQUIREMENT: &[CapabilityRequirement] =
+    &[CapabilityRequirement::any_of(
+        SANDBOX_EXEC_BACKEND_CAPABILITIES,
+    )];
+#[allow(dead_code)]
+const SANDBOX_LIFECYCLE_BACKEND_REQUIREMENT: &[CapabilityRequirement] =
+    &[CapabilityRequirement::any_of(
+        SANDBOX_LIFECYCLE_BACKEND_CAPABILITIES,
+    )];
+#[allow(dead_code)]
+const SANDBOX_DIAGNOSTICS_BACKEND_REQUIREMENT: &[CapabilityRequirement] =
+    &[CapabilityRequirement::any_of(
+        SANDBOX_DIAGNOSTICS_BACKEND_CAPABILITIES,
+    )];
+#[allow(dead_code)]
+const SANDBOX_DOCKER_BACKEND_REQUIREMENT: &[CapabilityRequirement] = &[CapabilityRequirement::new(
+    CapabilityId::new("sandbox-backend/docker-direct"),
+)];
 
 /// Returns the deterministic list of modules compiled into this build.
 #[must_use]
@@ -212,26 +280,29 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         Browser,
         ["tool/browser-use"]
     );
-    push_module!(
+    push_module_with_requires!(
         modules,
         "tool-sandbox-fileops",
         "tool/sandbox-fileops",
         SandboxTool,
-        ["tool/sandbox-fileops", "tool/sandbox-list-files"]
+        ["tool/sandbox-fileops", "tool/sandbox-list-files"],
+        SANDBOX_FILEOPS_BACKEND_REQUIREMENT
     );
-    push_module!(
+    push_module_with_requires!(
         modules,
         "tool-sandbox-exec",
         "tool/sandbox-exec",
         SandboxTool,
-        ["tool/sandbox-exec"]
+        ["tool/sandbox-exec"],
+        SANDBOX_EXEC_BACKEND_REQUIREMENT
     );
-    push_module!(
+    push_module_with_requires!(
         modules,
         "tool-sandbox-recreate",
         "tool/sandbox-recreate",
         SandboxTool,
-        ["tool/sandbox-recreate"]
+        ["tool/sandbox-recreate"],
+        SANDBOX_LIFECYCLE_BACKEND_REQUIREMENT
     );
     push_module!(
         modules,
@@ -286,12 +357,13 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         Media,
         ["tool/tts-silero"]
     );
-    push_module!(
+    push_module_with_requires!(
         modules,
         "tool-stack-logs",
         "tool/stack-logs",
         Diagnostics,
-        ["tool/stack-logs"]
+        ["tool/stack-logs"],
+        SANDBOX_DIAGNOSTICS_BACKEND_REQUIREMENT
     );
 }
 
@@ -302,21 +374,34 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
         "sandbox-backend-docker-direct",
         "sandbox-backend/docker-direct",
         SandboxBackend,
-        ["sandbox-backend/docker-direct"]
+        [
+            "sandbox-backend/docker-direct",
+            "sandbox-backend/docker-direct/fileops",
+            "sandbox-backend/docker-direct/exec",
+            "sandbox-backend/docker-direct/lifecycle",
+            "sandbox-backend/docker-direct/diagnostics"
+        ]
     );
     push_module!(
         modules,
         "sandbox-backend-sandboxd-client",
         "sandbox-backend/sandboxd-client",
         SandboxBackend,
-        ["sandbox-backend/sandboxd-client"]
+        [
+            "sandbox-backend/sandboxd-client",
+            "sandbox-backend/sandboxd-client/fileops",
+            "sandbox-backend/sandboxd-client/exec",
+            "sandbox-backend/sandboxd-client/lifecycle",
+            "sandbox-backend/sandboxd-client/diagnostics"
+        ]
     );
-    push_module!(
+    push_module_with_requires!(
         modules,
         "sandbox-daemon",
         "sandbox-daemon/sandboxd",
         Service,
-        ["sandbox-daemon/sandboxd"]
+        ["sandbox-daemon/sandboxd"],
+        SANDBOX_DOCKER_BACKEND_REQUIREMENT
     );
 
     push_module!(

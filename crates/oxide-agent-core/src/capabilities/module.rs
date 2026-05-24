@@ -91,21 +91,40 @@ pub enum CapabilityKind {
 
 /// Required capability edge declared by a module.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct CapabilityRequirement {
-    capability: CapabilityId,
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum CapabilityRequirement {
+    /// A hard requirement on one exact capability.
+    Capability {
+        /// Required capability.
+        capability: CapabilityId,
+    },
+    /// A requirement that can be satisfied by any one of several capabilities.
+    AnyOf {
+        /// Capabilities that can satisfy the requirement.
+        capabilities: &'static [CapabilityId],
+    },
 }
 
 impl CapabilityRequirement {
     /// Creates a hard requirement on a single capability.
     #[must_use]
     pub const fn new(capability: CapabilityId) -> Self {
-        Self { capability }
+        Self::Capability { capability }
     }
 
-    /// Returns the required capability.
+    /// Creates a requirement that can be satisfied by any listed capability.
     #[must_use]
-    pub const fn capability(self) -> CapabilityId {
-        self.capability
+    pub const fn any_of(capabilities: &'static [CapabilityId]) -> Self {
+        Self::AnyOf { capabilities }
+    }
+
+    /// Returns the required capabilities in deterministic order.
+    #[must_use]
+    pub fn capability_options(self) -> Vec<CapabilityId> {
+        match self {
+            Self::Capability { capability } => vec![capability],
+            Self::AnyOf { capabilities } => capabilities.to_vec(),
+        }
     }
 }
 

@@ -26,6 +26,26 @@ pub enum ManifestError {
     /// Runtime configuration referenced a module that is not compiled into this binary.
     #[error("module config references a non-compiled or unknown module id: {0}")]
     NonCompiledModuleConfig(String),
+    /// A compiled module declares a requirement that no compiled capability can satisfy.
+    #[error(
+        "compiled module {module} has an unsatisfied capability requirement; expected one of {capabilities:?}"
+    )]
+    UnsatisfiedCompiledCapabilityRequirement {
+        /// Module with the unsatisfied requirement.
+        module: ModuleId,
+        /// Capability IDs that could satisfy the requirement.
+        capabilities: Vec<CapabilityId>,
+    },
+    /// A runtime-enabled module declares a requirement that no enabled capability can satisfy.
+    #[error(
+        "enabled module {module} has an unsatisfied capability requirement; expected one of {capabilities:?}"
+    )]
+    UnsatisfiedEnabledCapabilityRequirement {
+        /// Module with the unsatisfied requirement.
+        module: ModuleId,
+        /// Capability IDs that could satisfy the requirement.
+        capabilities: Vec<CapabilityId>,
+    },
 }
 
 /// Manifest entry for one compiled module.
@@ -161,10 +181,12 @@ impl CompiledCapabilityManifest {
             .map(|(id, module)| CapabilityManifestEntry { id, module })
             .collect();
 
-        Ok(Self {
+        let manifest = Self {
             modules: module_entries,
             capabilities,
-        })
+        };
+        manifest.validate_compiled_requirements()?;
+        Ok(manifest)
     }
 
     /// Compiled module entries sorted by module ID.
@@ -242,15 +264,33 @@ impl CompiledCapabilityManifest {
             .map(ModuleManifestEntry::id)
             .filter(|module_id| !disabled_modules.contains(module_id.as_str()));
 
-        Ok(EnabledCapabilityManifest::from_compiled_module_ids(
-            self,
-            enabled_module_ids,
-        ))
+        EnabledCapabilityManifest::try_from_compiled_module_ids(self, enabled_module_ids)
     }
 
     /// Serializes the manifest as pretty JSON for CLI/debug output.
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
+    }
+
+    fn validate_compiled_requirements(&self) -> Result<(), ManifestError> {
+        let compiled_capabilities: BTreeSet<CapabilityId> = self
+            .capabilities
+            .iter()
+            .map(CapabilityManifestEntry::id)
+            .collect();
+
+        for module in &self.modules {
+            for requirement in module.requires() {
+                if !requirement_is_satisfied_by(*requirement, &compiled_capabilities) {
+                    return Err(ManifestError::UnsatisfiedCompiledCapabilityRequirement {
+                        module: module.id(),
+                        capabilities: requirement.capability_options(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -277,22 +317,53 @@ impl EnabledCapabilityManifest {
     where
         I: IntoIterator<Item = ModuleId>,
     {
+        Self::try_from_compiled_module_ids(compiled, module_ids)
+            .expect("all compiled module requirements must be satisfied by compiled capabilities")
+    }
+
+    /// Creates an enabled manifest from a validated set of compiled module IDs.
+    pub fn try_from_compiled_module_ids<I>(
+        compiled: &CompiledCapabilityManifest,
+        module_ids: I,
+    ) -> Result<Self, ManifestError>
+    where
+        I: IntoIterator<Item = ModuleId>,
+    {
         let enabled_modules: BTreeSet<ModuleId> = module_ids.into_iter().collect();
 
-        Self {
-            modules: compiled
-                .modules
-                .iter()
-                .map(ModuleManifestEntry::id)
-                .filter(|module_id| enabled_modules.contains(module_id))
-                .collect(),
-            capabilities: compiled
-                .capabilities
-                .iter()
-                .filter(|entry| enabled_modules.contains(&entry.module()))
-                .map(CapabilityManifestEntry::id)
-                .collect(),
+        let modules: Vec<_> = compiled
+            .modules
+            .iter()
+            .map(ModuleManifestEntry::id)
+            .filter(|module_id| enabled_modules.contains(module_id))
+            .collect();
+        let capabilities: Vec<_> = compiled
+            .capabilities
+            .iter()
+            .filter(|entry| enabled_modules.contains(&entry.module()))
+            .map(CapabilityManifestEntry::id)
+            .collect();
+        let enabled_capabilities: BTreeSet<CapabilityId> = capabilities.iter().copied().collect();
+
+        for module in compiled
+            .modules
+            .iter()
+            .filter(|module| enabled_modules.contains(&module.id()))
+        {
+            for requirement in module.requires() {
+                if !requirement_is_satisfied_by(*requirement, &enabled_capabilities) {
+                    return Err(ManifestError::UnsatisfiedEnabledCapabilityRequirement {
+                        module: module.id(),
+                        capabilities: requirement.capability_options(),
+                    });
+                }
+            }
         }
+
+        Ok(Self {
+            modules,
+            capabilities,
+        })
     }
 
     /// Enabled module IDs sorted by module ID.
@@ -313,6 +384,20 @@ impl EnabledCapabilityManifest {
     }
 }
 
+fn requirement_is_satisfied_by(
+    requirement: CapabilityRequirement,
+    capabilities: &BTreeSet<CapabilityId>,
+) -> bool {
+    match requirement {
+        CapabilityRequirement::Capability { capability } => capabilities.contains(&capability),
+        CapabilityRequirement::AnyOf {
+            capabilities: options,
+        } => options
+            .iter()
+            .any(|capability| capabilities.contains(capability)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +411,15 @@ mod tests {
     const TOOL_A_READ: &[CapabilityId] = &[CapabilityId::new("tool/a-read")];
     const TOOL_A_WRITE: &[CapabilityId] = &[CapabilityId::new("tool/a-write")];
     const TOOL_SHARED: &[CapabilityId] = &[CapabilityId::new("tool/shared")];
+    const SANDBOX_BACKEND_A_FILEOPS: &[CapabilityId] =
+        &[CapabilityId::new("sandbox-backend/a/fileops")];
+    const SANDBOX_FILEOPS_BACKEND_OPTIONS: &[CapabilityId] = &[
+        CapabilityId::new("sandbox-backend/a/fileops"),
+        CapabilityId::new("sandbox-backend/b/fileops"),
+    ];
+    const SANDBOX_FILEOPS_REQUIRES: &[CapabilityRequirement] = &[CapabilityRequirement::any_of(
+        SANDBOX_FILEOPS_BACKEND_OPTIONS,
+    )];
 
     fn boxed(module: StaticCapabilityModule) -> Box<dyn CapabilityModule> {
         Box::new(module)
@@ -486,6 +580,98 @@ mod tests {
 
         assert_eq!(module_ids, ["tool/a"]);
         assert_eq!(capability_ids, ["tool/a-read"]);
+    }
+
+    #[test]
+    fn compiled_manifest_requires_declared_capabilities_to_exist() {
+        let modules = vec![boxed(
+            StaticCapabilityModule::new(
+                ModuleId::new("tool/sandbox-fileops"),
+                CapabilityKind::SandboxTool,
+                "tool-sandbox-fileops",
+                TOOL_A_READ,
+            )
+            .with_requires(SANDBOX_FILEOPS_REQUIRES),
+        )];
+
+        let error = CompiledCapabilityManifest::from_modules(&modules)
+            .expect_err("missing compiled dependency must fail");
+
+        assert_eq!(
+            error,
+            ManifestError::UnsatisfiedCompiledCapabilityRequirement {
+                module: ModuleId::new("tool/sandbox-fileops"),
+                capabilities: SANDBOX_FILEOPS_BACKEND_OPTIONS.to_vec(),
+            }
+        );
+    }
+
+    #[test]
+    fn enabled_manifest_requires_declared_capabilities_to_stay_enabled() {
+        let modules = vec![
+            boxed(
+                StaticCapabilityModule::new(
+                    ModuleId::new("tool/sandbox-fileops"),
+                    CapabilityKind::SandboxTool,
+                    "tool-sandbox-fileops",
+                    TOOL_A_READ,
+                )
+                .with_requires(SANDBOX_FILEOPS_REQUIRES),
+            ),
+            boxed(StaticCapabilityModule::new(
+                ModuleId::new("sandbox-backend/a"),
+                CapabilityKind::SandboxBackend,
+                "sandbox-backend-a",
+                SANDBOX_BACKEND_A_FILEOPS,
+            )),
+        ];
+        let manifest =
+            CompiledCapabilityManifest::from_modules(&modules).expect("manifest should be valid");
+
+        let error = manifest
+            .enabled_manifest_from_configured_modules([("sandbox-backend/a", false)])
+            .expect_err("disabled dependency must fail");
+
+        assert_eq!(
+            error,
+            ManifestError::UnsatisfiedEnabledCapabilityRequirement {
+                module: ModuleId::new("tool/sandbox-fileops"),
+                capabilities: SANDBOX_FILEOPS_BACKEND_OPTIONS.to_vec(),
+            }
+        );
+    }
+
+    #[cfg(all(
+        feature = "tool-sandbox-exec",
+        any(
+            feature = "sandbox-backend-docker-direct",
+            feature = "sandbox-backend-sandboxd-client"
+        )
+    ))]
+    #[test]
+    fn compiled_sandbox_exec_declares_exec_backend_requirement() {
+        let manifest =
+            compiled_capability_manifest().expect("compiled modules must have unique IDs");
+        let sandbox_exec = manifest
+            .modules()
+            .iter()
+            .find(|module| module.id().as_str() == "tool/sandbox-exec")
+            .expect("sandbox exec module should be compiled");
+
+        let requirement_options: Vec<_> = sandbox_exec
+            .requires()
+            .iter()
+            .flat_map(|requirement| requirement.capability_options())
+            .map(|capability| capability.as_str())
+            .collect();
+
+        assert_eq!(
+            requirement_options,
+            [
+                "sandbox-backend/docker-direct/exec",
+                "sandbox-backend/sandboxd-client/exec"
+            ]
+        );
     }
 
     #[test]
