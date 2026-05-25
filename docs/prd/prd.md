@@ -3396,64 +3396,182 @@ If this cannot be made to work without elevated settings, document it directly a
 
 ## 21. Acceptance Criteria
 
-Implementation is accepted only when all applicable criteria are met:
+### MVP acceptance in the current development environment
 
-- `SANDBOX_BACKEND=bwrap` can run a command inside Debian 13 / trixie rootfs.
-- Persistent `/workspace` works across separate bwrap command invocations.
-- `recreate_sandbox` wipes `/workspace` and preserves image store.
-- `destroy` removes scope state and does not remove image store.
-- bwrap backend works without Docker daemon running.
-- bwrap backend works without Docker socket access.
-- bwrap backend does not use Docker API.
-- bwrap-only build does not include `bollard` in `cargo tree`.
-- Docker backend still works.
-- Docker Compose current broker workflow is not broken.
-- `sandboxd` remains Docker-only unless a later backend-independent broker design is implemented.
-- Bare binary on Debian 13 is documented and smoke-tested.
-- Bare binary on Alpine host is documented and smoke-tested or explicitly blocked with a concrete reason.
-- Debian host + Debian rootfs tested.
-- Debian host + Alpine rootfs tested or marked optional pending.
-- Alpine host + Debian rootfs tested.
-- Alpine host + Alpine rootfs tested or marked optional pending.
-- Docker Compose + bwrap has documented requirements or is explicitly marked unsupported until requirements are met.
-- No repo root read-write mount by default.
-- No host home mount by default.
-- No Docker socket mount by default.
-- No `.env` exposure by default.
-- image selection works through `BWRAP_IMAGE` + `BWRAP_IMAGE_STORE` and through direct `BWRAP_ROOTFS`.
-- Debian 13 and Alpine 3.23 image directories can be plugged in without Rust code changes by adding `rootfs/` and `image.json`.
-- runtime system package installation through Debian `apt` works in `overlay-rw` mode and persists per scope.
-- runtime system package installation through Alpine `apk` works in `overlay-rw` mode and persists per scope when Alpine rootfs is supported.
-- runtime Python dependency installation works both in persistent `/workspace` and, when intentionally used, in system site-packages through the per-scope overlay.
-- File tools cannot escape `/workspace` through traversal.
-- File tools cannot escape `/workspace` through symlinks.
-- Shared image rootfs is immutable; default bwrap profile uses per-scope writable root overlay.
-- `/tmp` is tmpfs and non-persistent.
-- Missing `bwrap` returns actionable error.
-- Missing rootfs returns actionable error.
-- Invalid `SANDBOX_BACKEND` returns actionable error.
-- Invalid bwrap network/root mode returns actionable error.
-- Timeout kills spawned bwrap command/process group.
-- Output caps prevent unbounded stdout/stderr memory usage.
-- Capability manifest includes bwrap exec/fileops/lifecycle only under bwrap feature.
-- `tool-stack-logs` is absent or explicitly unsupported in bwrap mode.
-- PRD includes repository-specific architecture decisions and risk register.
+The following criteria are release-blocking for the implementation agent working inside the current development sandbox.
 
-## 22. Open Questions
+- `SANDBOX_BACKEND=bwrap` can be selected through config/env without requiring Docker daemon, Docker socket, Docker API, or `bollard`.
+- The bwrap-only build profile does not include `bollard` in `cargo tree`.
+- Docker backend still compiles and existing Docker/Docker Compose workflow is not broken.
+- Bwrap backend can create a scope state directory under configured `BWRAP_STATE_DIR`.
+- Bwrap backend can resolve an image through `BWRAP_IMAGE` and `BWRAP_IMAGE_STORE`, or through explicit `BWRAP_ROOTFS`.
+- Bwrap backend persists `/workspace` across command executions within the same scope.
+- Bwrap backend supports per-scope writable system state through `BWRAP_ROOT_MODE=overlay-rw`, or fails with an actionable error if overlay mode is unavailable in the current nested sandbox.
+- `exec_command` runs through a fresh `bwrap` process per command.
+- `write_file`, `read_file`, `list_files`, and `apply_file_edit` work against `/workspace`.
+- `apply_file_edit` preserves read-snapshot guard semantics, expected replacement count validation, and SHA-256 before/after reporting.
+- File tools cannot escape `/workspace` through `..`, absolute host paths, or symlink traversal.
+- Per-scope operations are serialized so package-manager writes, `write_file`, `apply_file_edit`, `recreate_sandbox`, and `destroy_sandbox` cannot corrupt shared scope state.
+- Missing `bwrap`, missing rootfs, unsupported overlay mode, invalid image manifest, and invalid state directory permissions produce actionable errors.
+- `BWRAP_NET=host` and `BWRAP_NET=none` are represented in config and in bwrap invocation construction.
+- Output capture enforces `BWRAP_MAX_OUTPUT_BYTES` and reports truncation metadata.
+- Command timeout kills or terminates the bwrap process tree and reports timeout status.
+- `recreate_sandbox` resets the per-scope workspace and writable system overlay according to the PRD.
+- `destroy_sandbox` removes the per-scope state directory and does not delete shared image rootfs data.
+- Repo-local sandbox state is ignored by git.
+- A self-test command or script exists for the current development environment and records whether the environment is nested bwrap, Docker, or bare host.
 
-- Should `profile-full` eventually include `sandbox-backend-bwrap`, or should bwrap remain in a dedicated host profile only?
-- Should bwrap admin inventory keep using `SandboxContainerRecord` as compatibility, or should `SandboxInstanceRecord` be introduced before bwrap admin inventory is exposed?
-- What exact Debian package set should be used for `debian-13-dev`: match `sandbox/Dockerfile.dev` exactly, or create smaller bwrap variants corresponding to `dev`, `exec`, `media`, and `minimal`?
-- What signing mechanism should be used for published rootfs tarballs: minisign, cosign, GPG, or release checksums only for MVP?
-- Should rootfs images be pinned per scope, or should existing scopes follow current `BWRAP_IMAGE` after upgrades?
-- Should `BWRAP_NET` default to `host` for compatibility or `none` for stricter security in production host-bwrap profile?
-- What final default should be used for `BWRAP_MAX_OUTPUT_BYTES`?
-- Should concurrent execs within one scope be allowed in MVP, or should all bwrap operations per scope be serialized for safer workspace consistency?
-- Should bwrap be supported through `sandboxd` in v2, and if so should the broker become backend-neutral?
-- Can Docker Compose + bwrap be supported without `privileged: true` on the target deployment hosts after smoke testing?
-- Which safe Rust crate should be chosen for symlink-safe file operations and file locks under `unsafe_code = "forbid"`?
-- Should rootfs unpack/verification be handled by Rust code, shell scripts, or CI release artifacts only?
-- Should Alpine rootfs be supported in MVP or after Debian rootfs is stable?
+### Platform certification criteria
+
+The following criteria are required before declaring a platform officially supported, but they are not required to be executed by an implementation agent running inside a nested Fedora+bwrap development sandbox.
+
+- Bare binary on Debian 13 is documented with install requirements, rootfs setup, state directory setup, and smoke-test commands.
+- Bare binary on Alpine host is documented with install requirements, rootfs setup, state directory setup, and smoke-test commands.
+- Debian host + Debian rootfs has a smoke-test script and expected output.
+- Debian host + Alpine rootfs has a smoke-test script and expected output, or is explicitly marked optional pending with a concrete reason.
+- Alpine host + Debian rootfs has a smoke-test script and expected output.
+- Alpine host + Alpine rootfs has a smoke-test script and expected output, or is explicitly marked optional pending with a concrete reason.
+- Docker Compose + bwrap has documented requirements and is marked experimental/dev-only until manually smoke-tested on target hosts.
+- If Docker Compose + bwrap requires `privileged: true` on a target host, that path is marked unsafe/dev-only and is not considered a normal supported deployment mode.
+
+### Platform certification evidence
+
+Each platform smoke test should produce a small machine-readable result file, for example:
+
+```json
+{
+  "platform": "debian-13-host",
+  "rootfs": "debian-13-dev",
+  "backend": "bwrap",
+  "nested": false,
+  "bwrap_version": "0.11.x",
+  "root_mode": "overlay-rw",
+  "network_mode": "host",
+  "tests": {
+    "create_scope": "pass",
+    "exec_command": "pass",
+    "workspace_persistence": "pass",
+    "apt_or_apk_install": "pass",
+    "pip_install": "pass",
+    "apply_file_edit": "pass",
+    "path_escape_rejected": "pass",
+    "timeout": "pass",
+    "destroy_scope": "pass"
+  }
+}
+
+## 22. Product and Architecture Decisions
+
+These questions are intentionally resolved here instead of being left open. The goal is to keep the bwrap backend implementation narrow, testable, and safe without blocking Docker/Docker Compose users.
+
+### Build profiles
+
+Decision: keep `sandbox-backend-bwrap` out of `profile-full` for MVP.
+
+MVP should introduce a dedicated host profile, for example `profile-host-bwrap` or equivalent, that enables `sandbox-backend-bwrap` without Docker direct dependencies. `profile-full` may include bwrap later only after bwrap has stable CI coverage on Debian 13 and Alpine hosts and after `cargo tree` confirms that the intended bwrap-only profile does not include `bollard`.
+
+Rationale: `profile-full` is too broad for first integration. Adding bwrap there immediately increases dependency and support surface. The product goal is not to migrate Docker users; it is to add a standalone host backend that can run without Docker daemon, Docker socket, Docker API, or `bollard`.
+
+### Admin inventory naming
+
+Decision: introduce `SandboxInstanceRecord` before exposing bwrap admin inventory.
+
+`SandboxContainerRecord` may remain as a Docker compatibility type internally, but new admin-facing inventory should use backend-neutral naming. For bwrap, the runtime object is not a container: it is a scope directory plus metadata, workspace, writable system overlay, locks, and optionally active process records.
+
+Required shape:
+
+- `SandboxInstanceRecord`
+- `backend: docker | sandboxd | bwrap`
+- `scope_id`
+- `state_dir`
+- `workspace_dir`
+- `image_id`
+- `rootfs_path`
+- `root_mode`
+- `network_mode`
+- `created_at`
+- `last_used_at`
+- `status`
+- backend-specific metadata under an explicit nested field
+
+Rationale: using `ContainerRecord` for bwrap leaks Docker semantics into the new backend and will make future admin tooling confusing.
+
+### Debian image package set
+
+Decision: create bwrap image variants, but ship only `debian-13-dev` first.
+
+`debian-13-dev` should be derived from the practical package set in `sandbox/Dockerfile.dev`, adjusted for rootfs/bootstrap constraints. It should be the first supported and smoke-tested image.
+
+Do not block MVP on `exec`, `media`, and `minimal` variants. Define the naming convention now, but implement additional variants after the first Debian rootfs is stable:
+
+- `debian-13-dev`
+- `debian-13-exec`
+- `debian-13-media`
+- `debian-13-minimal`
+- `alpine-3.23-dev`
+
+Rationale: one high-quality Debian rootfs with package installation support is more valuable than several half-tested variants. Variant support should be an image lifecycle feature, not a blocker for the backend.
+
+### Rootfs signing
+
+Decision: use release checksums for MVP; design manifests so `cosign` can be added later.
+
+MVP should publish:
+
+- rootfs tarball
+- `SHA256SUMS`
+- `image.json`
+- optionally `SHA256SUMS.txt` generated by CI
+
+The `image.json` schema should reserve fields for future signing and provenance:
+
+- `sha256`
+- `source`
+- `created_at`
+- `builder`
+- `provenance`
+- `signature`
+- `signature_type`
+
+Post-MVP should prefer `cosign` for signing release blobs/artifacts. Do not use GPG as the default product path unless the project already has release-key management in place. Do not introduce minisign unless the project wants a deliberately smaller non-Sigstore signing workflow.
+
+Rationale: release checksums are enough for local MVP smoke testing, while the manifest remains compatible with stronger signing later.
+
+### Rootfs pinning per scope
+
+Decision: pin rootfs image identity per scope.
+
+When a scope is created, persist the selected image identity in `metadata.json`:
+
+- `image_id`
+- `image_manifest_sha256`
+- `rootfs_path`
+- `rootfs_sha256`, if available
+- `root_mode`
+
+Existing scopes must continue using their pinned image metadata unless the user explicitly runs a recreate/rebase operation.
+
+Changing `BWRAP_IMAGE` affects only newly created scopes by default.
+
+Rationale: package installs are persisted in the per-scope system overlay. Letting old scopes silently follow a new base rootfs can break package databases, dynamic linker expectations, Python environments, and agent-created files.
+
+### Network default
+
+Decision: default `BWRAP_NET=host` for the developer/agent profile; require `BWRAP_NET=none` for hardened production profiles.
+
+The default host-bwrap developer profile should use `host` because package managers and language tooling commonly need network access:
+
+- `apt-get update`
+- `apt-get install`
+- `apk add`
+- `pip install`
+- `git clone`
+- `curl`
+
+Production or restricted deployments should explicitly set:
+
+```env
+BWRAP_NET=none
 
 ## 23. Appendix: Candidate bwrap Invocation
 
