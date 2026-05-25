@@ -417,6 +417,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     ]
   },
   "registered_tool_names_default_config": [
+    "apply_file_edit",
     "cancel_sub_agents",
     "compress",
     "describe_image_file",

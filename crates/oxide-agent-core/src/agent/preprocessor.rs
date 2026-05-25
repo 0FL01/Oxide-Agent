@@ -519,6 +519,14 @@ mod tests {
                 exit_code: 0,
             })
         }
+
+        async fn apply_file_edit(
+            &self,
+            _path: &str,
+            _edit: crate::sandbox::SandboxFileEdit,
+        ) -> Result<crate::sandbox::SandboxApplyFileEditResult> {
+            anyhow::bail!("test sandbox file edit is not implemented")
+        }
     }
 
     struct RecordingSandboxExec {

@@ -116,6 +116,7 @@ fn typed_runtime_registry_exposes_sandbox_tools() {
         .collect::<std::collections::BTreeSet<_>>();
 
     for tool_name in [
+        "apply_file_edit",
         "execute_command",
         "list_files",
         "read_file",
@@ -968,7 +969,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
 
-    for file_tool in ["write_file", "read_file", "list_files"] {
+    for file_tool in ["write_file", "read_file", "apply_file_edit", "list_files"] {
         assert!(!tool_names.contains(file_tool));
     }
     assert!(tool_names.contains("send_file_to_user"));
@@ -1001,6 +1002,7 @@ fn typed_runtime_registry_skips_disabled_file_delivery_module() {
     assert!(!tool_names.contains("upload_file"));
     assert!(tool_names.contains("write_file"));
     assert!(tool_names.contains("read_file"));
+    assert!(tool_names.contains("apply_file_edit"));
     assert!(tool_names.contains("list_files"));
 }
 
@@ -1213,6 +1215,7 @@ fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     assert!(tool_names.contains("read_file"));
     assert!(tool_names.contains("write_todos"));
     assert!(tool_names.contains("write_file"));
+    assert!(tool_names.contains("apply_file_edit"));
     #[cfg(feature = "tool-compression")]
     assert!(tool_names.contains("compress"));
     #[cfg(not(feature = "tool-compression"))]

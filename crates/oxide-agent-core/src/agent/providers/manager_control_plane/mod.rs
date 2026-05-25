@@ -181,6 +181,7 @@ const TOPIC_AGENT_SANDBOX_TOOLS: &[&str] = &[
     "execute_command",
     "write_file",
     "read_file",
+    "apply_file_edit",
     "send_file_to_user",
     "list_files",
     "recreate_sandbox",

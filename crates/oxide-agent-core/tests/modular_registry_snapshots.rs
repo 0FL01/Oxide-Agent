@@ -354,6 +354,7 @@ fn assert_tool_availability_contract(
             assert_present_tools(
                 &tool_names,
                 &[
+                    "apply_file_edit",
                     "execute_command",
                     "cancel_sub_agents",
                     "compress",

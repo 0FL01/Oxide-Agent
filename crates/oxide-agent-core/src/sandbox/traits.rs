@@ -66,6 +66,38 @@ pub struct SandboxFileListing {
     pub exit_code: i64,
 }
 
+/// Request for a targeted sandbox text edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxFileEdit {
+    /// Exact text fragment to replace.
+    pub search: String,
+    /// Replacement text.
+    pub replace: String,
+    /// Exact number of replacements expected. Defaults are owned by the tool layer.
+    pub expected_replacements: usize,
+}
+
+/// Result of applying a targeted sandbox text edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxApplyFileEditResult {
+    /// Edited file path.
+    pub path: String,
+    /// `updated` when bytes changed, `unchanged` when the replacement was identical.
+    pub status: String,
+    /// Number of exact fragment replacements applied.
+    pub replacements: usize,
+    /// SHA-256 of the file before the edit.
+    pub previous_sha256: String,
+    /// SHA-256 of the file after the edit.
+    pub new_sha256: String,
+    /// File size before the edit.
+    pub bytes_before: usize,
+    /// File size after the edit.
+    pub bytes_written: usize,
+    /// Whether file bytes changed.
+    pub changed: bool,
+}
+
 impl SandboxFileListing {
     /// Whether the list operation exited successfully.
     #[must_use]
@@ -109,6 +141,13 @@ pub trait SandboxFileOps: SandboxBackend {
 
     /// List files below a path in the current sandbox scope.
     async fn list_files(&self, path: &str) -> Result<SandboxFileListing>;
+
+    /// Apply a targeted text edit to a file in the current sandbox scope.
+    async fn apply_file_edit(
+        &self,
+        path: &str,
+        edit: SandboxFileEdit,
+    ) -> Result<SandboxApplyFileEditResult>;
 }
 
 /// Sandbox lifecycle capability.

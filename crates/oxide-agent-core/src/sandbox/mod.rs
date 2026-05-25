@@ -61,6 +61,6 @@ pub use traits::SandboxAdmin;
 #[cfg(feature = "tool-stack-logs")]
 pub use traits::SandboxDiagnostics;
 pub use traits::{
-    SandboxBackend, SandboxBackendId, SandboxCapability, SandboxExec, SandboxFileListing,
-    SandboxFileOps, SandboxLifecycle,
+    SandboxApplyFileEditResult, SandboxBackend, SandboxBackendId, SandboxCapability, SandboxExec,
+    SandboxFileEdit, SandboxFileListing, SandboxFileOps, SandboxLifecycle,
 };

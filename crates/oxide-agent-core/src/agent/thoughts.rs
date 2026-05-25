@@ -9,6 +9,7 @@ use lazy_regex::regex_replace_all;
 const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
     ("read_file", "Reading file {path}"),
     ("write_file", "Writing changes to {path}"),
+    ("apply_file_edit", "Editing file {path}"),
     ("execute_command", "Executing command"),
     ("list_files", "Viewing directory contents {directory}"),
     ("recreate_sandbox", "Resetting sandbox workspace"),
