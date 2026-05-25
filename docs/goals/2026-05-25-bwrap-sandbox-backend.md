@@ -91,6 +91,7 @@ Out of scope:
 - 2026-05-25 20:40 +03: Added a multi-backend stack-logs regression test proving `SANDBOX_BACKEND=bwrap` returns the explicit unsupported Docker/Compose diagnostics error for both stack-log source listing and fetching. Verified `cargo test -p oxide-agent-core --no-default-features --features 'sandbox-backend-bwrap,tool-stack-logs' stack_logs_report_explicit_unsupported_error_under_bwrap --lib`.
 - 2026-05-25 20:46 +03: Improved bwrap configuration diagnostics. A bwrap-only binary whose implicit default selects an uncompiled backend now tells the operator to set the single compiled backend, for example `SANDBOX_BACKEND=bwrap`; missing bwrap image/rootfs errors now tell operators that `SANDBOX_IMAGE` is Docker-only and ignored by `SANDBOX_BACKEND=bwrap`. Verified focused config tests, `cargo check -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap`, and `cargo fmt --check`.
 - 2026-05-25 20:49 +03: Added hermetic bwrap invocation-argument coverage. The test now asserts `BWRAP_NET=host` leaves networking shared, `BWRAP_NET=none` adds `--unshare-net`, `overlay-rw` uses bwrap overlay arguments, `ro` uses `--ro-bind`, commands chdir to `/workspace`, workspace is the only writable host bind, and Docker socket/sandboxd paths are not bound. Verified the focused invocation test, full `bwrap::tests`, `cargo check -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap`, and `cargo fmt --check`.
+- 2026-05-25 20:51 +03: Tightened bwrap image manifest validation so `rootfs` must be relative and cannot contain path components that escape the image directory. Added a regression test for `../rootfs` manifests. Verified full `bwrap::tests`, `cargo check -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap`, and `cargo fmt --check`.
 
 ## Risks and Blockers
 
@@ -118,6 +119,7 @@ Out of scope:
 - `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap selected_backend_reports_feature_config_mismatch --lib` passed.
 - `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap bwrap_config_errors_are_actionable --lib` passed.
 - `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap bwrap_invocation_args_encode_network_root_modes_and_bind_policy --lib` passed.
+- `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap bwrap_manifest_validation_rejects_unsafe_values --lib` passed.
 - `cargo test -p oxide-agent-core --no-default-features --features 'tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate,sandbox-backend-bwrap' agent::providers::sandbox::tests --lib` passed.
 - `cargo test -p oxide-agent-core --no-default-features --features 'sandbox-backend-bwrap,tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate' bwrap_smoke --lib -- --ignored --list` passed and lists two ignored runtime smoke tests.
 - `cargo test -p oxide-agent-core --no-default-features --features 'sandbox-backend-bwrap,tool-stack-logs' stack_logs_report_explicit_unsupported_error_under_bwrap --lib` passed.

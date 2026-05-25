@@ -950,9 +950,20 @@ fn load_manifest(path: &Path) -> Result<(BwrapImageManifest, Option<String>)> {
             path.display()
         );
     }
-    if manifest.rootfs.starts_with('/') {
+    let rootfs_path = Path::new(&manifest.rootfs);
+    if rootfs_path.is_absolute() {
         bail!(
             "Invalid bwrap image manifest {}: rootfs must be relative",
+            path.display()
+        );
+    }
+    if manifest.rootfs.trim().is_empty()
+        || rootfs_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        bail!(
+            "Invalid bwrap image manifest {}: rootfs must stay under the image directory",
             path.display()
         );
     }
@@ -1702,6 +1713,24 @@ mod tests {
         .expect("manifest");
         let absolute_rootfs = load_manifest(&manifest_path).unwrap_err().to_string();
         assert!(absolute_rootfs.contains("rootfs must be relative"));
+
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "id": "escaping-rootfs",
+  "arch": "{}",
+  "rootfs": "../rootfs",
+  "default_shell": "/bin/sh",
+  "default_workdir": "/workspace"
+}}"#,
+                host_arch()
+            ),
+        )
+        .expect("manifest");
+        let escaping_rootfs = load_manifest(&manifest_path).unwrap_err().to_string();
+        assert!(escaping_rootfs.contains("rootfs must stay under the image directory"));
 
         std::fs::write(
             &manifest_path,
