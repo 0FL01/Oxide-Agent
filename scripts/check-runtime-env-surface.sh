@@ -13,6 +13,13 @@ paths=(
   services/browser_use_bridge
 )
 
+existing_paths=()
+for path in "${paths[@]}"; do
+  if [[ -e "${path}" ]]; then
+    existing_paths+=("${path}")
+  fi
+done
+
 forbidden_patterns=(
   '(^|[^A-Z0-9_])R2_ACCESS_KEY_ID([^A-Z0-9_]|$)'
   '(^|[^A-Z0-9_])R2_SECRET_ACCESS_KEY([^A-Z0-9_]|$)'
@@ -51,7 +58,7 @@ forbidden_rust_provider_settings=(
 
 failed=0
 for pattern in "${forbidden_patterns[@]}"; do
-  if rg -n --pcre2 "${pattern}" "${paths[@]}" \
+  if rg -n --pcre2 "${pattern}" "${existing_paths[@]}" \
     --glob '!target/**' \
     --glob '!crates/oxide-agent-core/tests/tool_runtime_static_guards.rs'; then
     echo "forbidden legacy runtime env surface matched pattern: ${pattern}" >&2

@@ -163,10 +163,10 @@ pub trait SandboxAdmin: SandboxBackend {
     /// Destroy sandbox resources for a logical scope.
     async fn destroy_scope(&self, scope: SandboxScope) -> Result<()>;
 
-    /// List all sandbox containers owned by a user.
+    /// List all sandbox instances owned by a user.
     async fn list_user_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>>;
 
-    /// Inspect a user-owned sandbox container by backend container name.
+    /// Inspect a user-owned sandbox instance by backend instance name.
     async fn inspect_sandbox_by_name(
         &self,
         user_id: i64,
@@ -179,7 +179,7 @@ pub trait SandboxAdmin: SandboxBackend {
     /// Recreate the sandbox for a logical scope.
     async fn recreate_scope_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord>;
 
-    /// Delete a user-owned sandbox by backend container name.
+    /// Delete a user-owned sandbox by backend instance name.
     async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> Result<bool>;
 }
 

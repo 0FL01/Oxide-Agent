@@ -33,7 +33,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 *   **🤖 Agent Mode:**
         <img width="974" height="747" alt="image_2026-01-11_20-58-21" src="https://github.com/user-attachments/assets/c99e55e4-8933-4ec8-9f50-22f7cbca4c77" />
 
-    *   **Integrated Sandbox:** Safe execution of Python code and Bash commands in isolated Docker containers (`debian:trixie-slim`).
+    *   **Integrated Sandbox:** Safe execution of Python code and shell commands in isolated sandbox instances. Docker/broker is the default deployment path; Bubblewrap is available for bare-host setups.
     *   **Parallel Tool Execution:** Multiple tool calls in one LLM response execute concurrently for faster task completion.
     *   **Fire-and-Forget Checkpoint:** Memory persistence is async, non-blocking for reduced latency.
     *   **History Repair:** Validates tool_call_id before LLM calls; orphaned tool results prevented during compaction.

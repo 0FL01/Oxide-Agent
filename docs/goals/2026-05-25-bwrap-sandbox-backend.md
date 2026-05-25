@@ -81,6 +81,7 @@ Out of scope:
 - 2026-05-25 20:10 +03: Added a hermetic bwrap state lifecycle unit test using a fake executable and minimal fake rootfs. The test covers create, metadata record shape, workspace write/read/list/size, recreate workspace wipe, and destroy without requiring a real bwrap-capable host. Verified `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap bwrap::tests --lib` and `cargo fmt`.
 - 2026-05-25 20:13 +03: Tightened sandbox tool descriptions to be backend-neutral: `execute_command` now describes shell execution in `/workspace` rather than Bash, file tools state that relative paths resolve under `/workspace` and absolute paths must start with `/workspace/`, and lifecycle wording uses sandbox instance instead of container. Added focused provider tests and verified `cargo test -p oxide-agent-core --no-default-features --features 'tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate,sandbox-backend-bwrap' agent::providers::sandbox::tests --lib`, `cargo check` for the same feature set, and `cargo fmt --check`.
 - 2026-05-25 20:15 +03: Added `host-bwrap` to the modular registry snapshot guard, generated the dedicated host-bwrap snapshot, and asserted that the profile enables `sandbox-backend/bwrap` while keeping Docker direct and sandboxd-client backends absent. Verified `INSTA_UPDATE=always scripts/check-registry-snapshots.sh host-bwrap`, `scripts/check-registry-snapshots.sh host-bwrap`, and `cargo fmt --check`.
+- 2026-05-25 20:16 +03: Polished remaining public sandbox wording in README and sandbox admin trait docs from Docker/Bash-specific phrasing to backend-neutral sandbox instance/shell phrasing. Updated `scripts/check-runtime-env-surface.sh` to skip missing optional paths so the guard stays quiet when `README-ru.md` is absent. Verified `scripts/check-runtime-env-surface.sh`, `cargo check -p oxide-agent-core --no-default-features --features 'tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate,sandbox-backend-bwrap'`, and `cargo fmt --check`.
 
 ## Risks and Blockers
 
@@ -101,6 +102,7 @@ Out of scope:
 - `scripts/check-cargo-tree-deny.sh sandbox-backend-bwrap` passed.
 - `scripts/check-cargo-tree-deny.sh profile-host-bwrap` passed.
 - `scripts/check-compiled-capabilities.sh host-bwrap` passed.
+- `scripts/check-runtime-env-surface.sh` passed.
 - `scripts/check-registry-snapshots.sh host-bwrap` passed.
 - `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap bwrap::tests --lib` passed.
 - `cargo test -p oxide-agent-core --no-default-features --features 'tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate,sandbox-backend-bwrap' agent::providers::sandbox::tests --lib` passed.
