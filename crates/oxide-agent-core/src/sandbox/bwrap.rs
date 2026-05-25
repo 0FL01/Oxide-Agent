@@ -1300,8 +1300,56 @@ fn capture_output(bytes: Vec<u8>, max_bytes: usize) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_workspace_path, BwrapNetworkMode, BwrapRootMode};
-    use std::path::Path;
+    use super::{resolve_workspace_path, BwrapNetworkMode, BwrapRootMode, BwrapSandboxManager};
+    use crate::sandbox::SandboxScope;
+    use std::ffi::OsString;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    const BWRAP_TEST_ENV_KEYS: &[&str] = &[
+        "BWRAP_ALLOW_OVERLAY",
+        "BWRAP_BIN",
+        "BWRAP_COMMAND_TIMEOUT_SECS",
+        "BWRAP_DISABLE_NESTED_USERNS",
+        "BWRAP_IMAGE",
+        "BWRAP_IMAGE_STORE",
+        "BWRAP_LOCK_DIR",
+        "BWRAP_MAX_OUTPUT_BYTES",
+        "BWRAP_MAX_READ_FILE_BYTES",
+        "BWRAP_NET",
+        "BWRAP_RESOLV_CONF",
+        "BWRAP_ROOT_MODE",
+        "BWRAP_ROOTFS",
+        "BWRAP_STATE_DIR",
+        "SANDBOX_EXEC_TIMEOUT_SECS",
+    ];
+
+    struct EnvGuard {
+        previous: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn capture(keys: &'static [&'static str]) -> Self {
+            Self {
+                previous: keys
+                    .iter()
+                    .map(|key| (*key, std::env::var_os(key)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
 
     #[test]
     fn workspace_path_accepts_relative_and_workspace_absolute_paths() {
@@ -1362,5 +1410,104 @@ mod tests {
             "ro".parse::<BwrapRootMode>().unwrap(),
             BwrapRootMode::ReadOnly
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_state_lifecycle_persists_workspace_and_recreate_wipes_it() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        std::env::set_var("BWRAP_ALLOW_OVERLAY", "true");
+        std::env::set_var("BWRAP_BIN", &fake_bwrap);
+        std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "5");
+        std::env::set_var("BWRAP_DISABLE_NESTED_USERNS", "false");
+        std::env::set_var("BWRAP_IMAGE", "test-dev");
+        std::env::set_var("BWRAP_LOCK_DIR", temp.path().join("locks"));
+        std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "1024");
+        std::env::set_var("BWRAP_MAX_READ_FILE_BYTES", "1024");
+        std::env::set_var("BWRAP_NET", "none");
+        std::env::set_var("BWRAP_RESOLV_CONF", "none");
+        std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
+        std::env::set_var("BWRAP_ROOTFS", &rootfs);
+        std::env::set_var("BWRAP_STATE_DIR", temp.path().join("scopes"));
+        std::env::remove_var("SANDBOX_EXEC_TIMEOUT_SECS");
+
+        let scope =
+            SandboxScope::new(42, "topic-alpha").with_transport_metadata(Some(1001), Some(77));
+        let mut manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
+
+        manager.create_sandbox().await.unwrap();
+        assert!(manager.is_running());
+        assert_eq!(
+            manager.current_record().unwrap().container_name,
+            scope.stable_name()
+        );
+
+        manager
+            .write_file("notes/todo.txt", b"hello")
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .read_file("/workspace/notes/todo.txt")
+                .await
+                .unwrap(),
+            b"hello"
+        );
+        let listing = manager.list_files("/workspace").await.unwrap();
+        assert!(listing.listing.contains("/workspace/notes/"));
+        assert!(listing.listing.contains("/workspace/notes/todo.txt"));
+        assert_eq!(
+            manager
+                .file_size_bytes("notes/todo.txt", None)
+                .await
+                .unwrap(),
+            5
+        );
+
+        manager.recreate().await.unwrap();
+        assert!(manager.read_file("notes/todo.txt").await.is_err());
+        let record = manager.current_record().unwrap();
+        assert_eq!(
+            record.container_id,
+            format!("bwrap:{}", scope.stable_name())
+        );
+        assert_eq!(
+            record.labels.get("agent.sandbox_backend"),
+            Some(&"bwrap".to_string())
+        );
+
+        manager.destroy().await.unwrap();
+        assert!(!temp
+            .path()
+            .join("scopes")
+            .join(scope.stable_name())
+            .exists());
+    }
+
+    #[cfg(unix)]
+    fn create_fake_rootfs(rootfs: &Path) {
+        for directory in ["bin", "dev", "proc", "tmp", "workspace"] {
+            std::fs::create_dir_all(rootfs.join(directory)).expect("fake rootfs dir");
+        }
+        std::fs::write(rootfs.join("bin/sh"), b"").expect("fake shell");
+    }
+
+    #[cfg(unix)]
+    fn create_fake_bwrap(path: &PathBuf) {
+        std::fs::write(path, b"#!/bin/sh\nprintf '%s\n' '--disable-userns'\n").expect("fake bwrap");
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake bwrap metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("fake bwrap permissions");
     }
 }
