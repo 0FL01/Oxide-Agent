@@ -340,7 +340,7 @@ pub(crate) async fn send_multimodal_unavailable_message(
     crate::bot::resilient::send_message_resilient_with_thread(
         bot,
         chat_id,
-        "🚫 Agent cannot process this input right now.\nGemini/OpenRouter connection required for image, audio, and video capabilities.",
+        "🚫 Agent cannot process this input right now.\nOpenRouter media route or Mistral audio route required for image, audio, and video capabilities.",
         None,
         thread_id,
     )

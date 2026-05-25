@@ -224,11 +224,10 @@ fn current_step(state: &ProgressState) -> Option<&Step> {
 
 fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "flow {} | prompt {} | tools {} | skills {}",
+        "flow {} | prompt {} | tools {}",
         oxide_agent_core::utils::format_tokens(snapshot.hot_memory_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.system_prompt_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.tool_schema_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.loaded_skill_tokens),
     )
 }
 
@@ -288,7 +287,6 @@ mod tests {
             hot_memory_tokens: 5_700,
             system_prompt_tokens: 1_200,
             tool_schema_tokens: 1_100,
-            loaded_skill_tokens: 0,
             total_input_tokens: 8_000,
             reserved_output_tokens: 8_000,
             hard_reserve_tokens: 8_192,
@@ -325,7 +323,7 @@ mod tests {
         let output = render_progress_html(&state);
 
         assert!(output.contains("Iteration 1/5"));
-        assert!(output.contains("flow 5.7k | prompt 1.2k | tools 1.1k | skills 0"));
+        assert!(output.contains("flow 5.7k | prompt 1.2k | tools 1.1k"));
         assert!(output.contains("📤 8k + 🛡️ 8.2k = 📊 24k | 🟢 176k free"));
         assert!(output.contains("Budget: healthy"));
         assert!(!output.contains("Last API usage:"));

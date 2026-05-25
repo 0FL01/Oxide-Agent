@@ -22,7 +22,7 @@ class ResolvedBrowserLlmConfig:
     api_key: str | None
     supports_vision: bool | None
     supports_tools: bool | None
-    source: Literal["request_config", "legacy_env"]
+    source: Literal["request_config"]
 
 
 @dataclass
@@ -39,7 +39,7 @@ class SessionRecord:
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
-    llm_source: Literal["request_config", "legacy_env"] | None = None
+    llm_source: Literal["request_config"] | None = None
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None

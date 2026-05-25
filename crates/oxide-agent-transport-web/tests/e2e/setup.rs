@@ -1,6 +1,6 @@
 //! Test infrastructure setup: AppState factory functions and task execution helpers.
 
-use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::{SandboxManager, SandboxScope};
 use oxide_agent_runtime::SessionRegistry;
@@ -65,15 +65,15 @@ pub fn setup_web_test_with_structured_main_provider(
     provider: Arc<SequencedZaiProvider>,
 ) -> AppState {
     let agent_settings = Arc::new(AgentSettings {
-        agent_model_id: Some("gemini-2.0-flash".to_string()),
-        agent_model_provider: Some("gemini".to_string()),
+        agent_model_id: Some("google/gemini-2.0-flash".to_string()),
+        agent_model_provider: Some("openrouter".to_string()),
         agent_timeout_secs: Some(5),
         ..AgentSettings::default()
     });
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("gemini".to_string(), provider);
+        llm.register_provider("openrouter".to_string(), provider);
         Arc::new(llm)
     };
 
@@ -129,16 +129,19 @@ pub fn setup_live_zai_test() -> anyhow::Result<AppState> {
         agent_model_max_output_tokens: Some(32_000),
         agent_model_context_window_tokens: Some(200_000),
         agent_timeout_secs: Some(900),
-        zai_api_key: Some(api_key),
         ..AgentSettings::default()
     };
+    let mut zai_config = ModuleRuntimeConfig::default().with_string_value("api_key", api_key);
     if let Ok(base) = env::var("ZAI_API_BASE") {
         if !base.is_empty() {
-            settings.zai_api_base = base;
+            zai_config = zai_config.with_string_value("api_base", base);
         }
     } else {
-        settings.zai_api_base = ZAI_API_BASE.to_string();
+        zai_config = zai_config.with_string_value("api_base", ZAI_API_BASE);
     }
+    settings
+        .modules
+        .insert("llm-provider/zai".to_string(), zai_config);
     let agent_settings = Arc::new(settings);
 
     let llm = Arc::new(LlmClient::new(&agent_settings));

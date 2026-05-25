@@ -222,7 +222,6 @@ mod progress_integration_tests {
                 hot_memory_tokens: 5_700,
                 system_prompt_tokens: 1_200,
                 tool_schema_tokens: 1_100,
-                loaded_skill_tokens: 0,
                 total_input_tokens: 8_000,
                 reserved_output_tokens: 8_000,
                 hard_reserve_tokens: 8_192,

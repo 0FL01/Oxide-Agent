@@ -1,7 +1,5 @@
 # Oxide Agent TG Bot
 
-[(Russian README)](README-ru.md)
-
 Universal Telegram bot with AI assistant, supporting multiple models, multimodality, and advanced **Agent Mode** with code execution.
 
 ## Description
@@ -11,7 +9,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **7 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral, Google Gemini), along with Groq support.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, NVIDIA NIM), along with Groq support.
 
 ### Architecture Highlights
 
@@ -25,7 +23,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 ## Features
 
 *   **🏗️ Workspace Architecture:** Modular crate design with clear separation of concerns:
-    - `oxide-agent-core` - Domain logic, LLM integrations, hooks, skills, storage
+    - `oxide-agent-core` - Domain logic, LLM integrations, hooks, compaction, storage
     - `oxide-agent-runtime` - Session orchestration, execution cycle, tool providers, sandbox
     - `oxide-agent-transport-telegram` - Telegram transport layer (teloxide integration)
     - `oxide-agent-transport-web` - E2E testing infrastructure with HTTP API
@@ -42,7 +40,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Cold-Start Tool Drift Pruning:** Removes stale tool calls from persisted memories on startup.
     *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
     *   **📋 Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
-    *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (9 skills: core, delegation_manager, ffmpeg-conversion, file-hosting, file-management, html-report, task-planning, video-processing, web-search).
+    *   **Durable Context:** Topic `AGENTS.md`, wiki memory, runtime injections, and enabled tools provide deterministic prompt context.
     *   **📁 File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
     *   **🎬 Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
@@ -64,10 +62,10 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 7 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
+*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, NVIDIA NIM). Groq is supported in **Chat Mode only**.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Multimedia Processing:**
-    *   Voice and video messages (speech recognition via Gemini or Voxtral).
+    *   Voice and video messages (speech recognition via OpenRouter-hosted Gemini-family models or Voxtral).
     *   Images (analysis and description via multimodal models).
     *   Work with documents of various formats.
 *   **🗣️ Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
@@ -82,21 +80,20 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 ### 🔑 API Keys (Mandatory)
 | Provider | Variable | Description |
 | :--- | :--- | :--- |
-| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when configured for Agent routes (`glm-4.7`, default examples). [Zhipu AI](https://z.ai/) |
-| **OpenCode Go** | `OPENCODE_GO_API_KEY` | Required when using `opencode-go` routes such as `deepseek-v4-flash`. |
+| **OpenCode Go** | `OPENCODE_GO_API_KEY` | **Primary Agent Mode provider** — recommended route: `deepseek-v4-flash` via `opencode-go`. [OpenCode](https://opencode.ai/) |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
-| **Cloudflare R2** | `R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
-| **Mistral AI** | `MISTRAL_API_KEY` | **Critical for Agent** (`mistral-embed` model for skill selection) |
+| **Cloudflare R2** | `OXIDE_R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
+| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when using ZAI routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
+| **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
 ### 🤖 Supported LLM Providers for Chat/Agent Mode
-The bot supports **7 main providers** for both standard chat and advanced Agent mode (with tool calling):
+The bot supports **6 main providers** for both standard chat and advanced Agent mode (with tool calling):
 
-*   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — primary provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
+*   **OpenCode Go** (`OPENCODE_GO_API_KEY`) — **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls (strict), structured JSON for DeepSeek V4 routes, adaptive throttling, unbounded retry, and reasoning content parsing.
+*   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — alternative provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) — Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
-*   **OpenCode Go** (`OPENCODE_GO_API_KEY`) — subscription OpenAI-compatible provider. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls and structured JSON for DeepSeek V4 routes.
-*   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
 *   **Mistral** (`MISTRAL_API_KEY`) — great for cost-effective agent/chat combos (e.g., `mistral-large-latest`, `pixtral-large-latest`). Supports tool calling via JSON mode or native tools. Includes Voxtral audio transcription (`voxtral-mini-latest`).
-*   **Google Gemini** (`GEMINI_API_KEY`) — direct integration for Gemini models, primarily used for multimodal tasks or as a fallback.
+*   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
 
 #### Other Providers (Chat only)
 *   **Groq** (`GROQ_API_KEY`) — optional provider for fast specialized chat workloads (e.g. `llama-3.3-70b-versatile`).
@@ -156,16 +153,15 @@ SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / SEARXNG_ENAB
 DEBUG_MODE=false                # Debug logging mode
 
 # Cloudflare R2 (S3)
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_ENDPOINT_URL=...
-R2_BUCKET_NAME=...
-R2_REGION=auto                 # S3-compatible storage region
+OXIDE_R2_ACCESS_KEY_ID=...
+OXIDE_R2_SECRET_ACCESS_KEY=...
+OXIDE_R2_ENDPOINT_URL=...
+OXIDE_R2_BUCKET_NAME=...
+OXIDE_R2_REGION=auto           # S3-compatible storage region
 
 # API Keys
 GROQ_API_KEY=...
 MISTRAL_API_KEY=...
-GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
 NVIDIA_API_KEY=...              # NVIDIA NIM / hosted integrate.api.nvidia.com
 NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
@@ -184,12 +180,10 @@ SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
 # BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750 # Delay between bridge readiness retries in milliseconds
 # BROWSER_USE_MODEL_ID="GLM-4.6V" # Browser Use dedicated route
 # BROWSER_USE_MODEL_PROVIDER="zai" # Browser Use dedicated provider
-# BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Legacy browser_use sidecar fallback
-# BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional legacy fallback model override
 ```
 </details>
 
-For Browser Use task execution, the bridge container also needs the matching upstream API key for the selected provider, for example `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`.
+For Browser Use task execution, Oxide sends the configured dedicated or inherited route to the bridge server-to-server. The bridge stays disabled by default until a cost-effective high-quality vision-agent model is available.
 
 ## Model Configuration
 
@@ -204,7 +198,16 @@ CHAT_MODEL_NAME="✨ Gemini 3.0 Flash"
 Swap `CHAT_MODEL_PROVIDER`/`CHAT_MODEL_ID` and adjust the name when you need a different multimodal provider (e.g., `mistral-large-latest`).
 
 *   **Agent & Sub-agent (Recommended Models)**
-  For the best performance in Agent Mode, it is highly recommended to use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent (both via **ZAI** provider).
+  For the best performance in Agent Mode, it is highly recommended to use **deepseek-v4-flash** for both the Main Agent and Sub-Agent (via **OpenCode Go** provider). This route offers strict tool calling, structured output support, reasoning content, adaptive throttling, and unlimited retry for reliable agent execution.
+```dotenv
+AGENT_MODEL_ID="deepseek-v4-flash"
+AGENT_MODEL_PROVIDER="opencode-go"
+
+SUB_AGENT_MODEL_ID="deepseek-v4-flash"
+SUB_AGENT_MODEL_PROVIDER="opencode-go"
+```
+
+  **Alternative (ZAI):** If you prefer the ZAI provider, use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent:
 ```dotenv
 AGENT_MODEL_ID="glm-4.7"
 AGENT_MODEL_PROVIDER="zai"
@@ -224,9 +227,9 @@ MEDIA_MODEL_PROVIDER="openrouter"
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
-# Priority: MiniMax > ZAI > Mistral
-AGENT_MODEL_ROUTES__0__ID="MiniMax-M2.7"
-AGENT_MODEL_ROUTES__0__PROVIDER="minimax"
+# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI (GLM-4.7) > Mistral
+AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
+AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=10
 
 AGENT_MODEL_ROUTES__1__ID="glm-4.7"
@@ -238,20 +241,20 @@ AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
 AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
 
-### NVIDIA NIM agent route example
-Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven backup route first:
+### Weighted failover with NVIDIA NIM
+Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven primary route first:
 
 ```dotenv
 NVIDIA_API_KEY=...
 NVIDIA_API_BASE="https://integrate.api.nvidia.com/v1"
 
-AGENT_MODEL_ROUTES__0__ID="meta/llama-3.1-70b-instruct"
-AGENT_MODEL_ROUTES__0__PROVIDER="nvidia"
-AGENT_MODEL_ROUTES__0__WEIGHT=3
+AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
+AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
+AGENT_MODEL_ROUTES__0__WEIGHT=5
 
-AGENT_MODEL_ROUTES__1__ID="glm-4.7"
-AGENT_MODEL_ROUTES__1__PROVIDER="zai"
-AGENT_MODEL_ROUTES__1__WEIGHT=5
+AGENT_MODEL_ROUTES__1__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__1__PROVIDER="nvidia"
+AGENT_MODEL_ROUTES__1__WEIGHT=3
 ```
 
 The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
@@ -262,7 +265,7 @@ The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled ex
 > at a reasonable price-per-token. To re-enable, set `BROWSER_USE_URL` and optionally
 > `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`. See `docs/browser-use.md`.
 
-When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `gemini / gemma-4-31b-it`) even when main/sub-agent stay on a different route:
+When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `openrouter / google/gemini-3-flash-preview`) even when main/sub-agent stay on a different route:
 
 ```dotenv
 BROWSER_USE_MODEL_ID="GLM-4.6V"
@@ -280,18 +283,18 @@ AGENT_MODEL_ID="devstral-2512"
 AGENT_MODEL_PROVIDER="mistral"
 ```
 
-Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
+Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-family IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
 
 ## Available LLM Providers
 
 | Provider | Description |
 | :--- | :--- |
-| **ZAI (Zhipu AI)** | Default agent model, native tool-aware chat |
+| **OpenCode Go** | Primary (recommended) agent provider, subscription OpenAI-compatible API, DeepSeek V4 Flash, strict tool calling, structured output |
+| **ZAI (Zhipu AI)** | Alternative agent provider, native tool-aware chat, GLM-4.7 / GLM-4.5-Air |
 | **MiniMax** | Claude SDK-compatible, high context |
-| **NVIDIA NIM** | Tool calling support, hosted inference |
 | **Mistral** | Generous free tier, includes Voxtral audio transcription |
-| **Google Gemini** | Multimodal, efficient |
-| **OpenRouter** | Aggregator for various models |
+| **OpenRouter** | Aggregator for various models, including Gemini-family model IDs |
+| **NVIDIA NIM** | Tool calling support, hosted inference |
 | **Groq** | Fast inference (Chat Mode only) |
 
 > **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
@@ -473,26 +476,14 @@ Legacy `text_to_speech` has been replaced by language-specific tools.
 
 
 <details>
-<summary>🏗 Internal Structure, Skills, Hooks, Compaction</summary>
+<summary>🏗 Internal Structure, Context, Hooks, Compaction</summary>
 
-### 🎯 Skills System
-The agent uses a RAG approach with embeddings to automatically provide relevant context:
-- **9 skills** as markdown documents (`skills/`)
-- **Semantic matching** of user requests with skills via cosine similarity (threshold: 0.6)
-- **Embeddings caching** for fast access
-- **Automatic injection** of relevant instructions into the system prompt
-- **Configuration:** `SKILL_TOKEN_BUDGET` (4096 tokens), `SKILL_SEMANTIC_THRESHOLD` (0.6), `SKILL_MAX_SELECTED` (3)
-
-**Available Skills:**
-- `core` - Basic agent rules (always loaded)
-- `delegation_manager` - Sub-agent delegation patterns
-- `file-management` - Sandbox operations
-- `file-hosting` - Large file uploads
-- `task-planning` - Todo management for multistep tasks
-- `web-search` - Web search and extraction tools
-- `video-processing` - YT-DLP integration
-- `ffmpeg-conversion` - Media conversion
-- `html-report` - Design style guide
+### Deterministic Context
+The legacy skills RAG subsystem has been removed. The agent prompt is assembled from explicit deterministic sources:
+- Topic-scoped `AGENTS.md`
+- S3/R2-backed wiki memory
+- Runtime context injections
+- Enabled tools and profile instructions
 
 ### 🔄 Loop Protection
 Three-level loop detection system (`agent/loop_detection/`):
@@ -593,17 +584,17 @@ Enhanced reminder scheduling with pause/resume/retry support.
 ### Services
 
 1. **sandbox_image**
-    - Builds agent-sandbox image from `sandbox/Dockerfile.sandbox`
+    - Builds the selected sandbox image variant, with full/dev using `sandbox/Dockerfile.dev`
     - One-shot build service used during `docker compose up --build`
 
 2. **oxide_agent** (main bot)
-   - Builds from root Dockerfile
+   - Builds from `docker/Dockerfile.app` with the full profile by default
    - Network mode: `host`
    - Mounts: `./config:/app/config`, `sandboxd-run:/run/sandboxd`
    - Environment: `SANDBOX_BACKEND=broker`, `SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock`
 
 3. **sandboxd** (broker daemon)
-   - Builds from root Dockerfile
+   - Uses the same full-profile `docker/Dockerfile.app` image
    - Command: `./oxide-agent-sandboxd`
    - Runs as user 0 (privileged for Docker access)
    - Mounts: `/var/run/docker.sock:/var/run/docker.sock` (only sandboxd has Docker access)
@@ -658,7 +649,7 @@ Enhanced reminder scheduling with pause/resume/retry support.
 
 ```text
 crates/
-├── oxide-agent-core/           # Domain logic, LLM integrations, hooks, skills, storage
+├── oxide-agent-core/           # Domain logic, LLM integrations, hooks, compaction, storage
 │   └── src/
 │       ├── agent/              # Agent core and execution logic
 │       │   ├── compaction/     # Compaction pipeline (12 modules)
@@ -674,9 +665,8 @@ crates/
 │       │   │   └── ...
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
-│       │   └── skills/         # Skills subsystem (RAG/embeddings)
 │       ├── llm/                # LLM provider integrations
-│       │   ├── providers/      # 5+ providers (zai, minimax, mistral, gemini, groq)
+│       │   ├── providers/      # Providers (zai, minimax, mistral, openrouter, groq, ...)
 │       │   └── tool_correlation.rs
 │       ├── storage/            # Storage facade, R2 backend, control-plane records
 │       └── config.rs
@@ -701,7 +691,6 @@ crates/
 └── oxide-agent-telegram-bot/   # Binary entry point and configuration
     └── src/main.rs
 
-skills/                         # Skill definitions (markdown)
 tests/                          # Integration and functional tests
 ├── e2e/                        # E2E tests for web transport
 │   ├── session_tests.rs

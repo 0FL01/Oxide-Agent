@@ -3,7 +3,10 @@
 //! Provides `web_markdown`: one HTTP GET for a known URL plus optional HTML to Markdown
 //! conversion. It is intentionally not a crawler, browser, or PDF exporter.
 
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -13,6 +16,7 @@ use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use url::Host;
@@ -73,6 +77,58 @@ impl WebFetchMdProvider {
         };
 
         Self { client }
+    }
+
+    #[cfg(test)]
+    fn with_client(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+
+    /// Build native typed runtime executors for the web markdown tool.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let spec = Self::tool_definition();
+        vec![Arc::new(WebFetchMdToolExecutor {
+            provider: Arc::clone(self),
+            name: ToolName::from(spec.name.clone()),
+            spec,
+        })]
+    }
+
+    fn tool_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_WEB_MARKDOWN.to_string(),
+            description: "Fetch one known http/https URL and return Markdown. This tool does not crawl, execute JavaScript, search the web, or export PDFs.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Fully-qualified http/https URL to fetch"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Optional request timeout in seconds, clamped to 1..120"
+                    }
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        if tool_name != TOOL_WEB_MARKDOWN {
+            bail!("unknown webfetch_md tool: {tool_name}");
+        }
+
+        let args: WebMarkdownArgs =
+            serde_json::from_str(arguments).context("invalid web_markdown arguments")?;
+        self.fetch_markdown(args, cancellation_token).await
     }
 
     async fn fetch_markdown(
@@ -180,51 +236,49 @@ impl Default for WebFetchMdProvider {
     }
 }
 
+struct WebFetchMdToolExecutor {
+    provider: Arc<WebFetchMdProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+}
+
 #[async_trait]
-impl ToolProvider for WebFetchMdProvider {
-    fn name(&self) -> &'static str {
-        "webfetch_md"
+impl ToolExecutor for WebFetchMdToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
     }
 
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: TOOL_WEB_MARKDOWN.to_string(),
-            description: "Fetch one known http/https URL and return Markdown. This tool does not crawl, execute JavaScript, search the web, or export PDFs.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Fully-qualified http/https URL to fetch"
-                    },
-                    "timeout_secs": {
-                        "type": "integer",
-                        "description": "Optional request timeout in seconds, clamped to 1..120"
-                    }
-                },
-                "required": ["url"]
-            }),
-        }]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == TOOL_WEB_MARKDOWN
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
     }
 
     async fn execute(
         &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
-        if tool_name != TOOL_WEB_MARKDOWN {
-            bail!("unknown webfetch_md tool: {tool_name}");
-        }
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(
+                self.name.as_str(),
+                &invocation.raw_arguments,
+                Some(&invocation.cancellation_token),
+            )
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(webfetch_runtime_error)
+    }
+}
 
-        let args: WebMarkdownArgs =
-            serde_json::from_str(arguments).context("invalid web_markdown arguments")?;
-        self.fetch_markdown(args, cancellation_token).await
+fn webfetch_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    let message = error.to_string();
+    if message.contains("invalid web_markdown arguments") {
+        ToolRuntimeError::InvalidArguments(message)
+    } else {
+        ToolRuntimeError::Failure(message)
     }
 }
 
@@ -444,19 +498,120 @@ fn truncate_chars(input: String, max_chars: usize) -> TruncatedOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::provider::ToolProvider;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use chrono::Utc;
     use reqwest::header::HeaderValue;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn runtime_invocation(raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-webfetch-md"),
+            batch_id: ToolBatchId::from("batch-webfetch-md"),
+            batch_index: 0,
+            invocation_id: InvocationId::from("invoke-web-markdown"),
+            tool_call_id: ToolCallId::from("call-web-markdown"),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(TOOL_WEB_MARKDOWN),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
+
+    async fn serve_http_once(body: &'static str, content_type: &'static str) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).await.expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+        addr
+    }
 
     #[test]
-    fn lists_only_web_markdown_tool() {
-        let provider = WebFetchMdProvider::new();
-        let tools = provider.tools();
+    fn typed_runtime_lists_only_web_markdown_tool() {
+        let provider = Arc::new(WebFetchMdProvider::new());
+        let tools = provider.tool_runtime_executors();
 
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, TOOL_WEB_MARKDOWN);
-        assert!(provider.can_handle(TOOL_WEB_MARKDOWN));
-        assert!(!provider.can_handle("web_search"));
-        assert!(!provider.can_handle("web_extract"));
+        assert_eq!(tools[0].name().as_str(), TOOL_WEB_MARKDOWN);
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_fetches_web_markdown() {
+        let addr = serve_http_once(
+            "<html><body><main><h1>Hello</h1><p>Readable page.</p></main></body></html>",
+            "text/html; charset=utf-8",
+        )
+        .await;
+        let client = reqwest::Client::builder()
+            .resolve("example.test", addr)
+            .build()
+            .expect("test client");
+        let provider = Arc::new(WebFetchMdProvider::with_client(client));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_WEB_MARKDOWN)
+            .expect("typed web_markdown executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(
+                r#"{"url":"http://example.test/article","timeout_secs":5}"#,
+            ))
+            .await
+            .expect("typed web_markdown succeeds");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let stdout = output.stdout.text.as_deref().expect("stdout text");
+        assert!(stdout.contains("URL: http://example.test/article"));
+        assert!(stdout.contains("# Hello"));
+        assert!(stdout.contains("Readable page."));
     }
 
     #[test]

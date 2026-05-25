@@ -1,3 +1,5 @@
+#![cfg(feature = "llm-mistral")]
+
 use anyhow::Result;
 use dotenvy::dotenv;
 use oxide_agent_core::llm::providers::MistralProvider;

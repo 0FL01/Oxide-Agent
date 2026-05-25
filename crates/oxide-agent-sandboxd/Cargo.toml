@@ -19,3 +19,13 @@ tokio = { version = "1.48", features = ["full"] }
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = []
+sandbox-daemon = ["oxide-agent-core/sandbox-daemon"]
+profile-full = ["sandbox-daemon"]
+
+[[bin]]
+name = "oxide-agent-sandboxd"
+path = "src/main.rs"
+required-features = ["sandbox-daemon"]

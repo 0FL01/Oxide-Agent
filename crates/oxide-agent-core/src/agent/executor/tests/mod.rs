@@ -2,7 +2,6 @@
 #![allow(clippy::clone_on_ref_ptr)]
 
 mod basics;
-mod manager;
 mod registry;
 mod resume;
 
@@ -11,6 +10,7 @@ pub(super) use super::AgentExecutor;
 pub(super) use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
 pub(super) use crate::agent::profile::HookAccessPolicy;
 pub(super) use crate::agent::providers::TodoList;
+#[cfg(feature = "manager-control-plane")]
 pub(super) use crate::agent::providers::{
     ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
     ForumTopicEditResult, ForumTopicThreadRequest, ManagerTopicLifecycle,
@@ -18,35 +18,28 @@ pub(super) use crate::agent::providers::{
 pub(super) use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
 pub(super) use crate::config::AgentSettings;
 pub(super) use crate::llm::LlmClient;
-pub(super) use crate::storage::{
-    AppendAuditEventOptions, AuditEventRecord, MockStorageProvider, TopicBindingKind,
-    TopicBindingRecord,
-};
-pub(super) use anyhow::{bail, Result};
-pub(super) use mockall::predicate::eq;
-pub(super) use serde_json::json;
+pub(super) use crate::storage::MockStorageProvider;
+#[cfg(feature = "manager-control-plane")]
+pub(super) use anyhow::bail;
+pub(super) use anyhow::Result;
 pub(super) use std::sync::{Arc, Mutex as StdMutex};
 pub(super) use tokio::sync::Mutex;
 
+#[cfg(feature = "manager-control-plane")]
 pub(super) struct RecordingTopicLifecycle {
     create_calls: StdMutex<Vec<ForumTopicCreateRequest>>,
 }
 
+#[cfg(feature = "manager-control-plane")]
 impl RecordingTopicLifecycle {
     pub(super) fn new() -> Self {
         Self {
             create_calls: StdMutex::new(Vec::new()),
         }
     }
-
-    pub(super) fn create_calls(&self) -> Vec<ForumTopicCreateRequest> {
-        match self.create_calls.lock() {
-            Ok(calls) => calls.clone(),
-            Err(_) => Vec::new(),
-        }
-    }
 }
 
+#[cfg(feature = "manager-control-plane")]
 #[async_trait::async_trait]
 impl ManagerTopicLifecycle for RecordingTopicLifecycle {
     async fn forum_topic_create(
@@ -142,20 +135,6 @@ pub(super) fn build_executor_with_mock_response(response_text: &'static str) -> 
     llm.register_provider("mock".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
     AgentExecutor::new(Arc::new(llm), session, settings)
-}
-
-pub(super) fn build_audit_record(options: AppendAuditEventOptions) -> AuditEventRecord {
-    AuditEventRecord {
-        schema_version: 1,
-        version: 1,
-        event_id: "evt-1".to_string(),
-        user_id: options.user_id,
-        topic_id: options.topic_id,
-        agent_id: options.agent_id,
-        action: options.action,
-        payload: options.payload,
-        created_at: 100,
-    }
 }
 
 pub(super) struct BlockingTestHook;

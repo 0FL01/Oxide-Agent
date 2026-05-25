@@ -1094,7 +1094,7 @@ async fn send_multimodal_unavailable_message(
     let mut req = bot.send_message(
         msg.chat.id,
         format!(
-            "🚫 Feature unavailable.\nNo configured media route supports {feature}. Configure Gemini/OpenRouter for image+video or Mistral for audio STT."
+            "🚫 Feature unavailable.\nNo configured media route supports {feature}. Configure OpenRouter for image+video or Mistral for audio STT."
         ),
     );
     if let Some(thread_id) = outbound_thread.message_thread_id {
@@ -1400,8 +1400,7 @@ pub async fn handle_voice(
         .await
     {
         Ok(text) => {
-            if text.starts_with("(Gemini):") || text.starts_with("(OpenRouter):") || text.is_empty()
-            {
+            if text.starts_with("(OpenRouter):") || text.is_empty() {
                 let mut req = bot.send_message(msg.chat.id, "Failed to recognize speech.");
                 if let Some(thread_id) = outbound_thread.message_thread_id {
                     req = req.message_thread_id(thread_id);

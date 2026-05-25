@@ -323,13 +323,34 @@ mod tests {
         }
     }
 
+    fn existing_summary() -> AgentMessage {
+        AgentMessage::compacted_summary(
+            "Previous current-format summary.",
+            &CompactedSummaryMetadata {
+                generation: 1,
+                reason: CompactionReason::Manual,
+                phase: CompactionPhase::Manual,
+                token_before: 100,
+                token_after: 10,
+                history_items_before: 3,
+                history_items_after: 1,
+                provider: "mock".to_string(),
+                route: "agent-model".to_string(),
+                backend: CompactionBackend::LocalLlmSummary,
+                created_at: "2026-05-21T20:10:00+03:00".to_string(),
+                previous_summary_detected: false,
+                repair_applied: false,
+            },
+        )
+    }
+
     #[tokio::test]
     async fn manual_compact_replaces_memory_with_one_prefixed_summary() {
         let backend = StaticSummaryBackend;
         let controller = CompactionController::new(Arc::new(backend));
         let mut memory = AgentMemory::new(100_000);
         memory.add_message(AgentMessage::user_task("Ship compaction"));
-        memory.add_message(AgentMessage::summary("[COMPACTION_SUMMARY]\nold"));
+        memory.add_message(existing_summary());
         memory.add_message(AgentMessage::user("Continue"));
 
         let outcome = controller
@@ -350,7 +371,7 @@ mod tests {
         assert!(memory
             .get_messages()
             .iter()
-            .all(|message| !message.content.contains("[COMPACTION_SUMMARY]")));
+            .all(|message| !message.content.contains("Previous current-format summary.")));
     }
 
     #[tokio::test]
@@ -411,7 +432,7 @@ mod tests {
         let controller = CompactionController::new(Arc::new(FailingSummaryBackend));
         let mut memory = AgentMemory::new(100_000);
         memory.add_message(AgentMessage::user_task("Ship compaction"));
-        memory.add_message(AgentMessage::summary("[COMPACTION_SUMMARY]\nold"));
+        memory.add_message(existing_summary());
         memory.add_message(AgentMessage::user("Continue"));
         let before_messages =
             serde_json::to_value(memory.get_messages()).expect("messages serialize");
@@ -442,7 +463,7 @@ mod tests {
         let mut messages = vec![
             AgentMessage::topic_agents_md("# Topic AGENTS\nKeep this instruction."),
             AgentMessage::user_task("Finish the compaction cleanup."),
-            AgentMessage::summary("[COMPACTION_SUMMARY]\nold summary"),
+            existing_summary(),
         ];
         for index in 0..30 {
             messages.push(AgentMessage::user_turn(format!(
@@ -462,7 +483,7 @@ mod tests {
         assert!(selected_content.contains("Keep this instruction."));
         assert!(selected_content.contains("Finish the compaction cleanup."));
         assert!(selected_content.contains("recent important finding"));
-        assert!(!selected_content.contains("[COMPACTION_SUMMARY]"));
+        assert!(!selected_content.contains("Previous current-format summary."));
         assert!(!selected_content.contains("old-0:"));
     }
 }

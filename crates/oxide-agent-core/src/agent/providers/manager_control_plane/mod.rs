@@ -2,14 +2,17 @@
 //!
 //! Exposes user-scoped CRUD tools for topic bindings, topic contexts, and agent profiles.
 
-use super::ssh_mcp::{probe_secret_ref, SecretProbeKind};
+use super::{probe_secret_ref, SecretProbeKind};
 use crate::agent::profile::{
     parse_agent_profile, topic_agent_all_hooks, topic_agent_default_blocked_tools,
     topic_agent_manageable_hooks, topic_agent_protected_hooks, HookAccessPolicy, ToolAccessPolicy,
 };
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxContainerRecord, SandboxManager, SandboxScope};
+use crate::sandbox::{SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxScope};
 use crate::storage::{
     validate_topic_agents_md_content, validate_topic_context_content, AgentProfileRecord,
     AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider, TopicAgentsMdRecord,
@@ -24,6 +27,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 mod agent_controls;
 mod agents_md;
@@ -200,12 +204,13 @@ const TOPIC_AGENT_REMINDER_TOOLS: &[&str] = &[
     "reminder_resume",
     "reminder_retry",
 ];
-#[cfg(feature = "tavily")]
+#[cfg(feature = "tool-tavily")]
 const TOPIC_AGENT_TAVILY_TOOLS: &[&str] = &["web_search", "web_extract"];
-#[cfg(feature = "searxng")]
+#[cfg(feature = "tool-searxng")]
 const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
+#[cfg(feature = "tool-webfetch-md")]
 const TOPIC_AGENT_WEBFETCH_TOOLS: &[&str] = &["web_markdown"];
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
     "browser_use_run_task",
     "browser_use_get_session",
@@ -213,6 +218,7 @@ const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
     "browser_use_extract_content",
     "browser_use_screenshot",
 ];
+#[cfg(feature = "integration-ssh-mcp")]
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",
     "ssh_sudo_exec",
@@ -221,9 +227,9 @@ const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_check_process",
     "ssh_send_file_to_user",
 ];
-#[cfg(feature = "jira")]
+#[cfg(feature = "integration-mcp-jira")]
 const TOPIC_AGENT_JIRA_TOOLS: &[&str] = &["jira_read", "jira_write", "jira_schema"];
-#[cfg(feature = "mattermost")]
+#[cfg(feature = "integration-mcp-mattermost")]
 const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_list_teams",
     "mattermost_get_team",
@@ -245,12 +251,19 @@ const TOPIC_AGENT_MATTERMOST_TOOLS: &[&str] = &[
     "mattermost_search_users",
     "mattermost_upload_file",
 ];
+#[cfg(any(
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video"
+))]
 const TOPIC_AGENT_MEDIA_FILE_TOOLS: &[&str] = &[
     "transcribe_audio_file",
     "describe_image_file",
     "describe_video_file",
 ];
+#[cfg(feature = "tool-tts-kokoro")]
 const TOPIC_AGENT_TTS_EN_TOOLS: &[&str] = &["text_to_speech_en", "text_to_speech_en_file"];
+#[cfg(feature = "tool-tts-silero")]
 const TOPIC_AGENT_TTS_RU_TOOLS: &[&str] = &["text_to_speech_ru", "text_to_speech_ru_file"];
 
 /// Transport-agnostic request for forum topic creation.
@@ -405,14 +418,40 @@ pub trait ManagerTopicSandboxControl: Send + Sync {
     ) -> Result<bool>;
 }
 
-#[derive(Default)]
-struct DockerTopicSandboxCleanup;
+struct SandboxAdminTopicSandboxCleanup {
+    admin: Arc<dyn SandboxAdmin>,
+}
 
-#[derive(Default)]
-struct DockerTopicSandboxControl;
+struct SandboxAdminTopicSandboxControl {
+    admin: Arc<dyn SandboxAdmin>,
+}
+
+impl Default for SandboxAdminTopicSandboxCleanup {
+    fn default() -> Self {
+        Self::new(Arc::new(SandboxAdminRuntime::new()))
+    }
+}
+
+impl SandboxAdminTopicSandboxCleanup {
+    fn new(admin: Arc<dyn SandboxAdmin>) -> Self {
+        Self { admin }
+    }
+}
+
+impl Default for SandboxAdminTopicSandboxControl {
+    fn default() -> Self {
+        Self::new(Arc::new(SandboxAdminRuntime::new()))
+    }
+}
+
+impl SandboxAdminTopicSandboxControl {
+    fn new(admin: Arc<dyn SandboxAdmin>) -> Self {
+        Self { admin }
+    }
+}
 
 #[async_trait]
-impl ManagerTopicSandboxCleanup for DockerTopicSandboxCleanup {
+impl ManagerTopicSandboxCleanup for SandboxAdminTopicSandboxCleanup {
     async fn cleanup_topic_sandbox(
         &self,
         user_id: i64,
@@ -423,15 +462,14 @@ impl ManagerTopicSandboxCleanup for DockerTopicSandboxCleanup {
             ManagerControlPlaneProvider::forum_topic_context_key(topic.chat_id, topic.thread_id),
         )
         .with_transport_metadata(Some(topic.chat_id), Some(topic.thread_id));
-        let mut sandbox = SandboxManager::new(scope).await?;
-        sandbox.destroy().await
+        self.admin.destroy_scope(scope).await
     }
 }
 
 #[async_trait]
-impl ManagerTopicSandboxControl for DockerTopicSandboxControl {
+impl ManagerTopicSandboxControl for SandboxAdminTopicSandboxControl {
     async fn list_topic_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
-        SandboxManager::list_user_sandboxes(user_id).await
+        self.admin.list_user_sandboxes(user_id).await
     }
 
     async fn get_topic_sandbox(
@@ -439,19 +477,23 @@ impl ManagerTopicSandboxControl for DockerTopicSandboxControl {
         user_id: i64,
         container_name: &str,
     ) -> Result<Option<SandboxContainerRecord>> {
-        SandboxManager::inspect_sandbox_by_name(user_id, container_name).await
+        self.admin
+            .inspect_sandbox_by_name(user_id, container_name)
+            .await
     }
 
     async fn ensure_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        SandboxManager::ensure_scope_sandbox(scope).await
+        self.admin.ensure_scope_sandbox(scope).await
     }
 
     async fn recreate_topic_sandbox(&self, scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        SandboxManager::recreate_scope_sandbox(scope).await
+        self.admin.recreate_scope_sandbox(scope).await
     }
 
     async fn delete_topic_sandbox_by_scope(&self, scope: SandboxScope) -> Result<bool> {
-        SandboxManager::delete_sandbox_by_name(scope.owner_id(), &scope.container_name()).await
+        self.admin
+            .delete_sandbox_by_name(scope.owner_id(), &scope.container_name())
+            .await
     }
 
     async fn delete_topic_sandbox_by_name(
@@ -459,7 +501,9 @@ impl ManagerTopicSandboxControl for DockerTopicSandboxControl {
         user_id: i64,
         container_name: &str,
     ) -> Result<bool> {
-        SandboxManager::delete_sandbox_by_name(user_id, container_name).await
+        self.admin
+            .delete_sandbox_by_name(user_id, container_name)
+            .await
     }
 }
 
@@ -476,12 +520,15 @@ impl ManagerControlPlaneProvider {
     /// Creates a manager control-plane provider bound to a specific user.
     #[must_use]
     pub fn new(storage: Arc<dyn StorageProvider>, user_id: i64) -> Self {
+        let sandbox_admin: Arc<dyn SandboxAdmin> = Arc::new(SandboxAdminRuntime::new());
         Self {
             storage,
             user_id,
             topic_lifecycle: None,
-            sandbox_cleanup: Arc::new(DockerTopicSandboxCleanup),
-            sandbox_control: Arc::new(DockerTopicSandboxControl),
+            sandbox_cleanup: Arc::new(SandboxAdminTopicSandboxCleanup::new(Arc::clone(
+                &sandbox_admin,
+            ))),
+            sandbox_control: Arc::new(SandboxAdminTopicSandboxControl::new(sandbox_admin)),
         }
     }
 
@@ -565,6 +612,23 @@ impl ManagerControlPlaneProvider {
         tools
     }
 
+    /// Build native typed runtime executors for manager control-plane tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        self.tools_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(ManagerControlPlaneToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
     async fn execute_private_secret_probe(&self, arguments: &str) -> Result<String> {
         let args: PrivateSecretProbeArgs = Self::parse_args(arguments, TOOL_PRIVATE_SECRET_PROBE)?;
         let secret_ref = Self::validate_non_empty(args.secret_ref, "secret_ref")?;
@@ -575,30 +639,8 @@ impl ManagerControlPlaneProvider {
             "secret_probe": report
         }))
     }
-}
 
-#[async_trait]
-impl ToolProvider for ManagerControlPlaneProvider {
-    fn name(&self) -> &'static str {
-        "manager_control_plane"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        self.tools_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        BASE_TOOL_NAMES.contains(&tool_name)
-            || (self.topic_lifecycle.is_some() && LIFECYCLE_TOOL_NAMES.contains(&tool_name))
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
         match tool_name {
             TOOL_TOPIC_BINDING_SET => self.execute_topic_binding_set(arguments).await,
             TOOL_TOPIC_BINDING_GET => self.execute_topic_binding_get(arguments).await,
@@ -658,6 +700,63 @@ impl ToolProvider for ManagerControlPlaneProvider {
             TOOL_FORUM_TOPIC_LIST => self.execute_forum_topic_list(arguments).await,
             _ => Err(anyhow!("Unknown manager control-plane tool: {tool_name}")),
         }
+    }
+
+    #[cfg(test)]
+    fn tools(&self) -> Vec<ToolDefinition> {
+        self.tools_definitions()
+    }
+
+    #[cfg(test)]
+    fn can_handle(&self, tool_name: &str) -> bool {
+        BASE_TOOL_NAMES.contains(&tool_name)
+            || (self.topic_lifecycle.is_some() && LIFECYCLE_TOOL_NAMES.contains(&tool_name))
+    }
+
+    #[cfg(test)]
+    async fn execute(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
+        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        self.execute_tool(tool_name, arguments).await
+    }
+}
+
+struct ManagerControlPlaneToolExecutor {
+    provider: Arc<ManagerControlPlaneProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for ManagerControlPlaneToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }
 

@@ -119,6 +119,10 @@ pub fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
 }
 
 fn normalize_tool_runtime_route_part(value: &str) -> String {
+    let value = value
+        .trim()
+        .strip_prefix("llm-provider/")
+        .unwrap_or(value.trim());
     value
         .trim()
         .chars()

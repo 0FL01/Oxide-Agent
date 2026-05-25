@@ -1,6 +1,9 @@
 //! Lightweight tools for listing, reading, and deleting scoped durable wiki memory.
 
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::agent::wiki_memory::{wiki_context_id, WikiPage, WikiStore};
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Result};
@@ -8,6 +11,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 const TOOL_WIKI_MEMORY_LIST: &str = "wiki_memory_list";
 const TOOL_WIKI_MEMORY_READ: &str = "wiki_memory_read";
@@ -175,6 +180,23 @@ impl WikiMemoryProvider {
             user_id,
             context_key,
         }
+    }
+
+    /// Build native typed runtime executors for wiki memory tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(WikiMemoryToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
     }
 
     fn tool_definitions() -> Vec<ToolDefinition> {
@@ -524,38 +546,49 @@ impl WikiMemoryProvider {
         })
         .to_string())
     }
-}
 
-#[async_trait]
-impl ToolProvider for WikiMemoryProvider {
-    fn name(&self) -> &'static str {
-        "wiki_memory"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tool_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_WIKI_MEMORY_LIST | TOOL_WIKI_MEMORY_READ | TOOL_WIKI_MEMORY_DELETE
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
         match tool_name {
             TOOL_WIKI_MEMORY_LIST => self.execute_list(arguments).await,
             TOOL_WIKI_MEMORY_READ => self.execute_read(arguments).await,
             TOOL_WIKI_MEMORY_DELETE => self.execute_delete(arguments).await,
             _ => Err(anyhow!("unknown wiki memory tool: {tool_name}")),
         }
+    }
+}
+
+struct WikiMemoryToolExecutor {
+    provider: Arc<WikiMemoryProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for WikiMemoryToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }
 
@@ -614,11 +647,18 @@ fn append_delete_log_entry(existing: Option<&str>, context_id: &str, path: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
     use crate::agent::wiki_memory::WikiObjectBackend;
+    use crate::llm::InvocationId;
     use crate::storage::StorageError;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
 
     #[derive(Default)]
     struct InMemoryWikiBackend {
@@ -655,6 +695,48 @@ mod tests {
         wiki_context_id(7, "topic-a")
     }
 
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(7),
+            turn_id: TurnId::from("turn-wiki-memory"),
+            batch_id: ToolBatchId::from("batch-wiki-memory"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
+
+    fn typed_executor(
+        provider: &Arc<WikiMemoryProvider>,
+        tool_name: &str,
+    ) -> Arc<dyn ToolExecutor> {
+        provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == tool_name)
+            .expect("typed wiki memory executor registered")
+    }
+
     #[tokio::test]
     async fn list_returns_indexed_items() {
         let backend = Arc::new(InMemoryWikiBackend::default());
@@ -664,13 +746,19 @@ mod tests {
             "# Wiki Index\n\n## Core pages\n\n- [overview](overview.md) - current project overview\n\n## Topic pages\n\n- [btc price](pages/btc-price.md) - captured wiki update candidate\n\n## Inbox\n\n- [btc reminder](inbox/btc-reminder.md) - captured wiki update candidate\n"
                 .to_string(),
         );
-        let provider = provider(backend);
+        let provider = Arc::new(provider(backend));
 
-        let result = provider
-            .execute(TOOL_WIKI_MEMORY_LIST, r#"{"kind":"all"}"#, None, None)
+        let output = typed_executor(&provider, TOOL_WIKI_MEMORY_LIST)
+            .execute(runtime_invocation(
+                TOOL_WIKI_MEMORY_LIST,
+                r#"{"kind":"all"}"#,
+            ))
             .await
             .expect("list should succeed");
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
 
         assert_eq!(parsed["count"], 3);
         assert_eq!(parsed["items"][0]["id"], "core:overview");
@@ -687,18 +775,19 @@ mod tests {
             "---\ntitle: BTC price\ntype: note\nupdated_at: 2026-05-19T00:00:00Z\nconfidence: high\ntags: [btc]\nsources:\n  - run:test\n---\n\n76 840.69"
                 .to_string(),
         );
-        let provider = provider(backend);
+        let provider = Arc::new(provider(backend));
 
-        let result = provider
-            .execute(
+        let output = typed_executor(&provider, TOOL_WIKI_MEMORY_READ)
+            .execute(runtime_invocation(
                 TOOL_WIKI_MEMORY_READ,
                 r#"{"id":"page:btc-price"}"#,
-                None,
-                None,
-            )
+            ))
             .await
             .expect("read should succeed");
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
 
         assert_eq!(parsed["found"], true);
         assert_eq!(parsed["id"], "page:btc-price");
@@ -707,6 +796,32 @@ mod tests {
             .expect("content string")
             .contains("76 840.69"));
         assert!(parsed["content_hash"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_reads_page_content() {
+        let backend = Arc::new(InMemoryWikiBackend::default());
+        let context_id = context_id();
+        backend.objects.lock().await.insert(
+            format!("prod/wiki/v1/contexts/{context_id}/pages/btc-price.md"),
+            "# BTC price\n\n76 840.69".to_string(),
+        );
+        let provider = Arc::new(provider(backend));
+        let output = typed_executor(&provider, TOOL_WIKI_MEMORY_READ)
+            .execute(runtime_invocation(
+                TOOL_WIKI_MEMORY_READ,
+                r#"{"id":"page:btc-price"}"#,
+            ))
+            .await
+            .expect("typed wiki memory read succeeds");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        assert!(output
+            .stdout
+            .text
+            .as_deref()
+            .expect("stdout text")
+            .contains("76 840.69"));
     }
 
     #[tokio::test]
@@ -724,18 +839,19 @@ mod tests {
             "# Wiki Index\n\n## Topic pages\n\n- [btc price](pages/btc-price.md) - captured wiki update candidate\n"
                 .to_string(),
         );
-        let provider = provider(Arc::clone(&backend));
+        let provider = Arc::new(provider(Arc::clone(&backend)));
 
-        let result = provider
-            .execute(
+        let output = typed_executor(&provider, TOOL_WIKI_MEMORY_DELETE)
+            .execute(runtime_invocation(
                 TOOL_WIKI_MEMORY_DELETE,
                 r#"{"id":"page:btc-price"}"#,
-                None,
-                None,
-            )
+            ))
             .await
             .expect("delete should succeed");
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
         let objects = backend.objects.lock().await;
         let index = objects
             .get(&format!("prod/wiki/v1/contexts/{context_id}/index.md"))
@@ -756,15 +872,13 @@ mod tests {
     #[tokio::test]
     async fn delete_rejects_core_files() {
         let backend = Arc::new(InMemoryWikiBackend::default());
-        let provider = provider(backend);
+        let provider = Arc::new(provider(backend));
 
-        let error = provider
-            .execute(
+        let error = typed_executor(&provider, TOOL_WIKI_MEMORY_DELETE)
+            .execute(runtime_invocation(
                 TOOL_WIKI_MEMORY_DELETE,
                 r#"{"id":"core:overview"}"#,
-                None,
-                None,
-            )
+            ))
             .await
             .expect_err("core delete must fail");
 

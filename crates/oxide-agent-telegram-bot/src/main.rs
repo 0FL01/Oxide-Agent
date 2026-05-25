@@ -1,12 +1,13 @@
 use dotenvy::dotenv;
-use oxide_agent_core::agent::providers::cleanup_stale_private_key_tempfiles;
-use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::capabilities::{compiled_capability_manifest, compiled_profile_name};
+use oxide_agent_core::config::{load_module_runtime_settings, AgentSettings};
 use oxide_agent_transport_telegram::config::{BotSettings, TelegramSettings};
 use oxide_agent_transport_telegram::runner::run_bot;
 use regex::Regex;
+use std::env;
 use std::io::{self, Write};
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
 /// Regex patterns for redacting sensitive data
@@ -31,8 +32,8 @@ impl RedactionPatterns {
             token1: Regex::new(r"(https?://[^/]+/bot)([0-9]+:[A-Za-z0-9_-]+)(/['\s]*)")?,
             token2: Regex::new(r"([0-9]{8,10}:[A-Za-z0-9_-]{35})")?,
             token3: Regex::new(r"(bot[0-9]{8,10}:)[A-Za-z0-9_-]+")?,
-            r2_1: Regex::new(r"R2_ACCESS_KEY_ID=[^\s&]+")?,
-            r2_2: Regex::new(r"R2_SECRET_ACCESS_KEY=[^\s&]+")?,
+            r2_1: Regex::new(r"OXIDE_R2_ACCESS_KEY_ID=[^\s&]+")?,
+            r2_2: Regex::new(r"OXIDE_R2_SECRET_ACCESS_KEY=[^\s&]+")?,
             r2_3: Regex::new(r"'aws_access_key_id': '[^']*'")?,
             r2_4: Regex::new(r"'aws_secret_access_key': '[^']*'")?,
         })
@@ -54,11 +55,11 @@ impl RedactionPatterns {
             .to_string();
         output = self
             .r2_1
-            .replace_all(&output, "R2_ACCESS_KEY_ID=[MASKED]")
+            .replace_all(&output, "OXIDE_R2_ACCESS_KEY_ID=[MASKED]")
             .to_string();
         output = self
             .r2_2
-            .replace_all(&output, "R2_SECRET_ACCESS_KEY=[MASKED]")
+            .replace_all(&output, "OXIDE_R2_SECRET_ACCESS_KEY=[MASKED]")
             .to_string();
         output = self
             .r2_3
@@ -124,8 +125,50 @@ where
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum StartupCommand {
+    RunBot,
+    PrintCompiledCapabilitiesJson,
+    PrintEnabledCapabilitiesJson { config_path: Option<String> },
+    PrintCompiledConfigSchemaJson,
+    PrintConfigExample { profile: String, json: bool },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match parse_startup_command(env::args().skip(1))? {
+        StartupCommand::RunBot => {}
+        StartupCommand::PrintCompiledCapabilitiesJson => {
+            let manifest = compiled_capability_manifest()?;
+            println!("{}", manifest.to_json_pretty()?);
+            return Ok(());
+        }
+        StartupCommand::PrintEnabledCapabilitiesJson { config_path } => {
+            let manifest = compiled_capability_manifest()?;
+            let module_settings = load_module_runtime_settings(config_path.as_deref())?;
+            let enabled = module_settings
+                .enabled_capability_manifest(&manifest)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+            println!("{}", enabled.to_json_pretty()?);
+            return Ok(());
+        }
+        StartupCommand::PrintCompiledConfigSchemaJson => {
+            let manifest = compiled_capability_manifest()?;
+            println!("{}", manifest.config_schema_json_pretty()?);
+            return Ok(());
+        }
+        StartupCommand::PrintConfigExample { profile, json } => {
+            validate_requested_profile_matches_compiled(&profile)?;
+            let manifest = compiled_capability_manifest()?;
+            if json {
+                println!("{}", manifest.config_example_json_pretty(&profile)?);
+            } else {
+                print!("{}", manifest.config_example_yaml(&profile)?);
+            }
+            return Ok(());
+        }
+    }
+
     // Load .env file
     dotenv().ok();
 
@@ -138,16 +181,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup logging with redaction
     init_logging(patterns);
 
-    match cleanup_stale_private_key_tempfiles() {
-        Ok(removed) if removed > 0 => {
-            info!(removed, "Removed stale SSH private key temp files");
-        }
-        Ok(_) => {}
-        Err(error) => {
-            warn!(%error, "Failed to clean up stale SSH private key temp files");
-        }
-    }
-
     info!("Starting Oxide Agent TG Bot...");
 
     // Load settings
@@ -156,6 +189,190 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_bot(settings).await;
 
     Ok(())
+}
+
+fn parse_startup_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    let Some(first) = args.next() else {
+        return Ok(StartupCommand::RunBot);
+    };
+
+    match first.as_ref() {
+        "capabilities" => parse_capabilities_command(args),
+        "config" => parse_config_command(args),
+        _ => Ok(StartupCommand::RunBot),
+    }
+}
+
+fn parse_capabilities_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut mode = None;
+    let mut config_path = None;
+    let mut json = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_ref() {
+            "--compiled" => set_capability_mode(&mut mode, CapabilityMode::Compiled)?,
+            "--enabled" => set_capability_mode(&mut mode, CapabilityMode::Enabled)?,
+            "--config-schema" => set_capability_mode(&mut mode, CapabilityMode::ConfigSchema)?,
+            "--config" => {
+                let Some(path) = args.next() else {
+                    return Err(capabilities_usage_error());
+                };
+                config_path = Some(path.as_ref().to_string());
+            }
+            "--json" => {
+                json = true;
+            }
+            _ => return Err(capabilities_usage_error()),
+        }
+    }
+
+    if !json {
+        return Err(capabilities_usage_error());
+    }
+
+    match mode {
+        Some(CapabilityMode::Compiled) if config_path.is_none() => {
+            Ok(StartupCommand::PrintCompiledCapabilitiesJson)
+        }
+        Some(CapabilityMode::Enabled) => {
+            Ok(StartupCommand::PrintEnabledCapabilitiesJson { config_path })
+        }
+        Some(CapabilityMode::ConfigSchema) if config_path.is_none() => {
+            Ok(StartupCommand::PrintCompiledConfigSchemaJson)
+        }
+        _ => Err(capabilities_usage_error()),
+    }
+}
+
+fn parse_config_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    let Some(subcommand) = args.next() else {
+        return Err(config_usage_error());
+    };
+
+    match subcommand.as_ref() {
+        "schema" => parse_config_schema_command(args),
+        "example" => parse_config_example_command(args),
+        _ => Err(config_usage_error()),
+    }
+}
+
+fn parse_config_schema_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut compiled = false;
+    let mut json = false;
+    for arg in args {
+        match arg.as_ref() {
+            "--compiled" => compiled = true,
+            "--json" => json = true,
+            _ => return Err(config_usage_error()),
+        }
+    }
+
+    if compiled && json {
+        Ok(StartupCommand::PrintCompiledConfigSchemaJson)
+    } else {
+        Err(config_usage_error())
+    }
+}
+
+fn parse_config_example_command<I, S>(args: I) -> io::Result<StartupCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    let mut profile = None;
+    let mut json = false;
+    while let Some(arg) = args.next() {
+        match arg.as_ref() {
+            "--profile" => {
+                let Some(value) = args.next() else {
+                    return Err(config_usage_error());
+                };
+                profile = Some(value.as_ref().to_string());
+            }
+            "--json" => json = true,
+            _ => return Err(config_usage_error()),
+        }
+    }
+
+    let Some(profile) = profile else {
+        return Err(config_usage_error());
+    };
+
+    Ok(StartupCommand::PrintConfigExample { profile, json })
+}
+
+fn validate_requested_profile_matches_compiled(profile: &str) -> io::Result<()> {
+    let Some(compiled_profile) = compiled_profile_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "config example requires exactly one profile feature to be compiled",
+        ));
+    };
+
+    if profile == compiled_profile {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "config example profile '{profile}' does not match compiled profile '{compiled_profile}'"
+            ),
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CapabilityMode {
+    Compiled,
+    Enabled,
+    ConfigSchema,
+}
+
+fn set_capability_mode(
+    mode: &mut Option<CapabilityMode>,
+    requested: CapabilityMode,
+) -> io::Result<()> {
+    match mode {
+        None => {
+            *mode = Some(requested);
+            Ok(())
+        }
+        Some(existing) if *existing == requested => Ok(()),
+        Some(_) => Err(capabilities_usage_error()),
+    }
+}
+
+fn capabilities_usage_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "Usage: oxide-agent-telegram-bot capabilities (--compiled | --enabled [--config PATH] | --config-schema) --json",
+    )
+}
+
+fn config_usage_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "Usage: oxide-agent-telegram-bot config schema --compiled --json | config example --profile PROFILE [--json]",
+    )
 }
 
 fn init_logging(patterns: Arc<RedactionPatterns>) {
@@ -202,4 +419,97 @@ fn init_settings() -> Arc<BotSettings> {
 
     info!("Configuration loaded successfully.");
     Arc::new(BotSettings::new(agent_settings, telegram_settings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_startup_command, StartupCommand};
+    use std::io;
+
+    #[test]
+    fn startup_command_defaults_to_bot() {
+        let command =
+            parse_startup_command(std::iter::empty::<&str>()).expect("empty args should run bot");
+
+        assert_eq!(command, StartupCommand::RunBot);
+    }
+
+    #[test]
+    fn startup_command_parses_compiled_capabilities_json() {
+        let command = parse_startup_command(["capabilities", "--compiled", "--json"])
+            .expect("capabilities command should parse");
+
+        assert_eq!(command, StartupCommand::PrintCompiledCapabilitiesJson);
+    }
+
+    #[test]
+    fn startup_command_parses_enabled_capabilities_json_with_config() {
+        let command = parse_startup_command([
+            "capabilities",
+            "--enabled",
+            "--config",
+            "config/test-profile.yaml",
+            "--json",
+        ])
+        .expect("enabled capabilities command should parse");
+
+        assert_eq!(
+            command,
+            StartupCommand::PrintEnabledCapabilitiesJson {
+                config_path: Some("config/test-profile.yaml".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn startup_command_parses_compiled_config_schema_json() {
+        let command = parse_startup_command(["capabilities", "--config-schema", "--json"])
+            .expect("config schema command should parse");
+
+        assert_eq!(command, StartupCommand::PrintCompiledConfigSchemaJson);
+    }
+
+    #[test]
+    fn startup_command_parses_config_schema_command() {
+        let command = parse_startup_command(["config", "schema", "--compiled", "--json"])
+            .expect("config schema command should parse");
+
+        assert_eq!(command, StartupCommand::PrintCompiledConfigSchemaJson);
+    }
+
+    #[test]
+    fn startup_command_parses_profile_config_example_json() {
+        let command = parse_startup_command([
+            "config",
+            "example",
+            "--profile",
+            "embedded-opencode-local",
+            "--json",
+        ])
+        .expect("profile config example command should parse");
+
+        assert_eq!(
+            command,
+            StartupCommand::PrintConfigExample {
+                profile: "embedded-opencode-local".to_string(),
+                json: true
+            }
+        );
+    }
+
+    #[test]
+    fn startup_command_rejects_partial_capabilities_command() {
+        let error = parse_startup_command(["capabilities", "--compiled"])
+            .expect_err("partial capabilities command should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn startup_command_rejects_mixed_capability_modes() {
+        let error = parse_startup_command(["capabilities", "--compiled", "--enabled", "--json"])
+            .expect_err("mixed capability modes should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
 }

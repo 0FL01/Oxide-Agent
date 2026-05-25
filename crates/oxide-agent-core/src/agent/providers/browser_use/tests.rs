@@ -1,32 +1,104 @@
 use super::response::{format_http_error, is_retryable_error};
 use super::*;
+use crate::agent::identity::SessionId;
 use crate::agent::tool_model_route::scope_tool_model_route;
+use crate::agent::tool_runtime::{
+    ModelMetadata, OutputNormalizer, ProviderMetadata, ToolBatchId, ToolCallId,
+    ToolExecutionContext, ToolInvocation, ToolName, ToolOutputStatus, ToolRuntimeConfig,
+    ToolTimeoutConfig, TurnId,
+};
+use crate::llm::InvocationId;
+use chrono::Utc;
 use reqwest::StatusCode;
 use std::env;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
+
+fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+    let now = Utc::now();
+    ToolInvocation {
+        session_id: SessionId::from(77),
+        turn_id: TurnId::from("turn-browser-use"),
+        batch_id: ToolBatchId::from("batch-browser-use"),
+        batch_index: 0,
+        invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+        tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+        provider_tool_call_id: None,
+        tool_name: ToolName::from(tool_name),
+        raw_provider_payload: json!({}),
+        raw_arguments: raw_arguments.to_string(),
+        normalized_arguments: serde_json::Value::Null,
+        cancellation_token: CancellationToken::new(),
+        timeout: ToolTimeoutConfig::default(),
+        execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+        provider_metadata: ProviderMetadata {
+            provider: "test".to_string(),
+            protocol: "chat_like".to_string(),
+        },
+        model_metadata: ModelMetadata {
+            model: "test-model".to_string(),
+        },
+        working_directory: None,
+        environment_metadata: None,
+        created_at: now,
+        started_at: Some(now),
+    }
+}
 
 fn test_settings() -> Arc<crate::config::AgentSettings> {
-    Arc::new(crate::config::AgentSettings {
-        gemini_api_key: Some("gemini-secret".to_string()),
-        minimax_api_key: Some("minimax-secret".to_string()),
-        zai_api_key: Some("zai-secret".to_string()),
-        openrouter_api_key: Some("openrouter-secret".to_string()),
-        ..crate::config::AgentSettings::default()
-    })
+    Arc::new(settings_with_browser_route_keys(
+        crate::config::AgentSettings::default(),
+    ))
 }
 
 fn test_settings_with_dedicated_browser_use_model() -> Arc<crate::config::AgentSettings> {
-    Arc::new(crate::config::AgentSettings {
-        gemini_api_key: Some("gemini-secret".to_string()),
-        minimax_api_key: Some("minimax-secret".to_string()),
-        zai_api_key: Some("zai-secret".to_string()),
-        openrouter_api_key: Some("openrouter-secret".to_string()),
-        browser_use_model_id: Some("GLM-4.6V".to_string()),
-        browser_use_model_provider: Some("zai".to_string()),
-        ..crate::config::AgentSettings::default()
-    })
+    Arc::new(settings_with_browser_route_keys(
+        crate::config::AgentSettings {
+            browser_use_model_id: Some("GLM-4.6V".to_string()),
+            browser_use_model_provider: Some("zai".to_string()),
+            ..crate::config::AgentSettings::default()
+        },
+    ))
+}
+
+fn settings_with_browser_route_keys(
+    mut settings: crate::config::AgentSettings,
+) -> crate::config::AgentSettings {
+    for (module_id, api_key) in [
+        ("llm-provider/minimax", "minimax-secret"),
+        ("llm-provider/zai", "zai-secret"),
+        ("llm-provider/openrouter", "openrouter-secret"),
+    ] {
+        settings.modules.insert(
+            module_id.to_string(),
+            crate::config::ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+        );
+    }
+    settings
+}
+
+struct EnvVarRestore {
+    key: &'static str,
+    value: Option<std::ffi::OsString>,
+}
+
+impl EnvVarRestore {
+    fn unset(key: &'static str) -> Self {
+        let value = env::var_os(key);
+        env::remove_var(key);
+        Self { key, value }
+    }
+}
+
+impl Drop for EnvVarRestore {
+    fn drop(&mut self) {
+        match &self.value {
+            Some(value) => env::set_var(self.key, value),
+            None => env::remove_var(self.key),
+        }
+    }
 }
 
 #[test]
@@ -46,6 +118,48 @@ fn test_args_deserialize() {
     let screenshot: Result<ScreenshotArgs, _> =
         serde_json::from_str(r#"{"session_id":"s1","full_page":true}"#);
     assert!(screenshot.is_ok());
+}
+
+#[test]
+fn typed_runtime_executors_register_browser_use_tools() {
+    let provider = Arc::new(BrowserUseProvider::new(
+        "http://localhost:8002",
+        test_settings(),
+    ));
+
+    let names = provider
+        .tool_runtime_executors()
+        .into_iter()
+        .map(|executor| executor.name().into_inner())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(names.contains(TOOL_RUN_TASK));
+    assert!(names.contains(TOOL_GET_SESSION));
+    assert!(names.contains(TOOL_CLOSE_SESSION));
+    assert!(names.contains(TOOL_EXTRACT_CONTENT));
+    assert!(names.contains(TOOL_SCREENSHOT));
+}
+
+#[tokio::test]
+async fn typed_runtime_executor_rejects_missing_task_before_http() {
+    let provider = Arc::new(BrowserUseProvider::new(
+        "http://localhost:8002",
+        test_settings(),
+    ));
+    let executor = provider
+        .tool_runtime_executors()
+        .into_iter()
+        .find(|executor| executor.name().as_str() == TOOL_RUN_TASK)
+        .expect("browser_use_run_task executor");
+
+    let error = executor
+        .execute(runtime_invocation(TOOL_RUN_TASK, "{}"))
+        .await
+        .expect_err("missing task must be invalid arguments");
+
+    let output = OutputNormalizer::new(ToolRuntimeConfig::default())
+        .executor_error(&runtime_invocation(TOOL_RUN_TASK, "{}"), error);
+    assert_eq!(output.status, ToolOutputStatus::InvalidArguments);
 }
 
 #[test]
@@ -91,10 +205,9 @@ async fn run_task_rejects_profile_reuse_without_runtime_scope() {
     let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
 
     let error = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open docs","reuse_profile":true}"#,
-            None,
             None,
         )
         .await
@@ -163,7 +276,7 @@ async fn run_task_posts_to_bridge() {
     );
 
     let result = provider
-        .execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None)
+        .execute_tool(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None)
         .await;
 
     assert!(result.is_ok());
@@ -200,10 +313,9 @@ async fn run_task_rewrites_screenshot_focused_requests_and_adds_follow_up_guidan
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open the dashboard and take a screenshot"}"#,
-            None,
             None,
         )
         .await
@@ -242,10 +354,9 @@ async fn run_task_replaces_follow_up_guidance_when_bridge_reports_dead_runtime()
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open the dashboard and take a screenshot"}"#,
-            None,
             None,
         )
         .await
@@ -285,10 +396,9 @@ async fn run_task_rewrites_extract_focused_requests_and_adds_follow_up_guidance(
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Открой документацию и извлеки текст страницы"}"#,
-            None,
             None,
         )
         .await
@@ -328,10 +438,9 @@ async fn get_session_reads_bridge_json() {
     );
 
     let result = provider
-        .execute(
+        .execute_tool(
             TOOL_GET_SESSION,
             r#"{"session_id":"browser-use-123"}"#,
-            None,
             None,
         )
         .await;
@@ -365,10 +474,9 @@ async fn extract_content_posts_to_bridge() {
     );
 
     let result = provider
-        .execute(
+        .execute_tool(
             TOOL_EXTRACT_CONTENT,
             r#"{"session_id":"browser-use-123","format":"html","max_chars":2048}"#,
-            None,
             None,
         )
         .await;
@@ -403,10 +511,9 @@ async fn screenshot_posts_to_bridge() {
     );
 
     let result = provider
-        .execute(
+        .execute_tool(
             TOOL_SCREENSHOT,
             r#"{"session_id":"browser-use-123","full_page":true}"#,
-            None,
             None,
         )
         .await;
@@ -481,6 +588,26 @@ fn browser_llm_config_marks_vision_openrouter_models() {
 }
 
 #[test]
+fn browser_llm_config_accepts_canonical_openrouter_provider_id() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "google/gemini-3-flash-preview".to_string(),
+        provider: "llm-provider/openrouter".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, api_key) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("canonical OpenRouter route config");
+
+    assert_eq!(config.provider, "openrouter");
+    assert_eq!(api_key, "openrouter-secret");
+    assert!(config.supports_vision);
+}
+
+#[test]
 fn browser_llm_config_marks_glm_4_6v_as_vision_capable() {
     let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
     let route = crate::config::ModelInfo {
@@ -499,7 +626,31 @@ fn browser_llm_config_marks_glm_4_6v_as_vision_capable() {
 }
 
 #[test]
+fn browser_llm_config_accepts_canonical_zai_provider_id() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "GLM-4.6V".to_string(),
+        provider: "llm-provider/zai".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, api_key) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("canonical ZAI route config");
+
+    assert_eq!(config.provider, "zai");
+    assert_eq!(api_key, "zai-secret");
+    assert!(config.supports_vision);
+}
+
+#[test]
 fn browser_llm_config_requires_configured_secret() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _zai_api_key = EnvVarRestore::unset("ZAI_API_KEY");
     let provider = BrowserUseProvider::new(
         "http://localhost:8002",
         Arc::new(crate::config::AgentSettings::default()),
@@ -547,7 +698,7 @@ async fn run_task_posts_inherited_browser_llm_config() {
 
     let result = scope_tool_model_route(
         route,
-        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+        provider.execute_tool(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None),
     )
     .await;
 
@@ -589,7 +740,7 @@ async fn run_task_prefers_dedicated_browser_use_model_over_active_route() {
 
     let result = scope_tool_model_route(
         active_route,
-        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+        provider.execute_tool(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None),
     )
     .await;
 
@@ -624,10 +775,9 @@ async fn run_task_posts_runtime_profile_scope_for_reuse() {
     .with_profile_scope("topic-a");
 
     provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open example","reuse_profile":true}"#,
-            None,
             None,
         )
         .await
@@ -664,10 +814,9 @@ async fn run_task_warns_for_ui_heavy_text_only_route() {
 
     let output = scope_tool_model_route(
         route,
-        provider.execute(
+        provider.execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Click the login button and submit the form"}"#,
-            None,
             None,
         ),
     )
@@ -704,10 +853,9 @@ async fn run_task_warns_for_russian_ui_heavy_text_only_route() {
 
     let output = scope_tool_model_route(
         route,
-        provider.execute(
+        provider.execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Нажми кнопку входа и отправь форму"}"#,
-            None,
             None,
         ),
     )
@@ -744,10 +892,9 @@ async fn run_task_splits_visual_description_into_navigation_only_follow_up_on_te
 
     let output = scope_tool_model_route(
         route,
-        provider.execute(
+        provider.execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Describe the visual layout and colors of the homepage"}"#,
-            None,
             None,
         ),
     )
@@ -790,10 +937,9 @@ async fn run_task_splits_russian_visual_description_on_text_only_route() {
 
     let output = scope_tool_model_route(
         route,
-        provider.execute(
+        provider.execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Опиши визуально, как выглядит главная страница и какие там цвета"}"#,
-            None,
             None,
         ),
     )
@@ -828,10 +974,9 @@ async fn run_task_allows_russian_visual_analysis_on_dedicated_glm_4_6v_route() {
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Опиши визуально, как выглядит главная страница и какие там цвета"}"#,
-            None,
             None,
         )
         .await
@@ -857,10 +1002,9 @@ async fn run_task_fast_fails_autonomous_visual_task_on_unstable_glm_4_6v_route()
     );
 
     let error = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open the login page and solve the captcha to continue"}"#,
-            None,
             None,
         )
         .await
@@ -894,10 +1038,9 @@ async fn run_task_allows_autonomous_visual_task_when_unstable_routes_disabled() 
     );
 
     let output = provider
-        .execute(
+        .execute_tool(
             TOOL_RUN_TASK,
             r#"{"task":"Open the login page and solve the captcha to continue"}"#,
-            None,
             None,
         )
         .await
@@ -947,7 +1090,7 @@ async fn run_task_rejects_unsupported_inherited_route() {
 
     let error = scope_tool_model_route(
         route,
-        provider.execute(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None, None),
+        provider.execute_tool(TOOL_RUN_TASK, r#"{"task":"Open example"}"#, None),
     )
     .await
     .expect_err("unsupported route should fail");

@@ -3,7 +3,7 @@
 //! Implements the subset of storage operations needed by Agent Mode:
 //! - user configs
 //! - chat history
-//! - agent memory (legacy + context-scoped + flow-scoped)
+//! - agent memory (user-scoped + context-scoped + flow-scoped)
 //! - topic agents md (minimal)
 //! - reminder jobs used by reminder E2E tests
 //!
@@ -201,7 +201,7 @@ impl crate::api::StorageProvider for InMemoryStorage {
         Ok(())
     }
 
-    // --- Agent memory: legacy ---
+    // --- Agent memory: user-scoped ---
 
     async fn save_agent_memory(
         &self,

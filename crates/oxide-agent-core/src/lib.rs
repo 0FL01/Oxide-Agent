@@ -5,6 +5,8 @@
 
 /// Agent logic and tools.
 pub mod agent;
+/// Capability module manifests and registry scaffolding.
+pub mod capabilities;
 /// Configuration management.
 pub mod config;
 /// LLM providers and client.

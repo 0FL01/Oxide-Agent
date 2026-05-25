@@ -209,7 +209,6 @@ impl AgentExecutor {
             &task_id,
             progress_tx.as_ref(),
             &mut self.session,
-            self.skill_registry.as_mut(),
             RunnerContextServices {
                 compaction_controller: &self.compaction_controller,
             },
@@ -338,34 +337,20 @@ impl AgentExecutor {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> PreparedExecution {
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-        let registry = self.build_tool_registry(Arc::clone(&todos_arc), progress_tx);
         let model_routes = self.settings.get_configured_agent_model_routes();
         let model = model_routes
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
-        let tool_runtime_registry = if Self::v1_tool_runtime_enabled_for_model(&model) {
-            Some(Arc::new(self.build_tool_runtime_registry(
-                Arc::clone(&todos_arc),
-                progress_tx,
-            )))
-        } else {
-            None
-        };
-        let tools = if let Some(runtime_registry) = &tool_runtime_registry {
-            runtime_registry.specs()
-        } else {
-            self.execution_profile
-                .tool_policy()
-                .filter_definitions(registry.all_tools())
-        };
+        let tool_runtime_registry =
+            Arc::new(self.build_tool_runtime_registry(Arc::clone(&todos_arc), progress_tx));
+        let tools = tool_runtime_registry.specs();
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
         let wiki_context = self.render_wiki_context_for_task(task).await;
         let system_prompt = create_agent_system_prompt(
             task,
             &tools,
             structured_output,
-            self.skill_registry.as_mut(),
             &mut self.session,
             self.execution_profile.prompt_instructions(),
             wiki_context.as_deref(),
@@ -374,7 +359,6 @@ impl AgentExecutor {
         let messages = AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
         PreparedExecution {
             todos_arc,
-            registry,
             tool_runtime_registry,
             tools,
             system_prompt,
@@ -388,8 +372,7 @@ impl AgentExecutor {
             )
             .with_model_provider(model.provider.clone())
             .with_temperature(self.settings.get_configured_agent_temperature())
-            .with_model_routes(model_routes)
-            .with_codex_style_compaction(self.settings.codex_style_compaction_enabled()),
+            .with_model_routes(model_routes),
         }
     }
 

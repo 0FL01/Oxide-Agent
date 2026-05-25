@@ -27,24 +27,18 @@ pub mod preprocessor;
 pub mod profile;
 /// Prompt composition for system prompts
 pub mod prompt;
-/// Tool provider trait
-pub mod provider;
 /// Built-in tool providers (Sandbox, Tavily, Todos)
 pub mod providers;
 /// Recovery module for malformed LLM responses
 pub mod recovery;
-/// Registry for managing available tools
-pub mod registry;
 /// Core agent runner (execution loop)
 pub mod runner;
 /// Agent session management
 pub mod session;
-/// Skill system for modular prompts
-pub mod skills;
 /// Structured output parsing and validation
 pub mod structured_output;
 /// Task-local active model route metadata for tool providers.
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 pub(crate) mod tool_model_route;
 /// Async parallel tool runtime foundations.
 pub mod tool_runtime;
@@ -61,11 +55,11 @@ pub mod loop_detection;
 pub mod progress;
 
 pub use compaction::{
-    AgentMessageKind, ArchiveChunk, ArchiveRecord, ArchiveRef, BudgetEstimate, BudgetState,
-    CompactRequestContext, CompactRunOutcome, CompactSummaryBackend, CompactSummaryError,
-    CompactSummaryRequest, CompactSummaryResult, CompactedSummaryMetadata, CompactionBackend,
-    CompactionController, CompactionControllerError, CompactionPhase, CompactionReason,
-    CompactionSummary, CompactionTrigger, HotMemoryBudget, LocalLlmSummary,
+    AgentMessageKind, ArchiveRef, BudgetEstimate, BudgetState, CompactRequestContext,
+    CompactRunOutcome, CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest,
+    CompactSummaryResult, CompactedSummaryMetadata, CompactionBackend, CompactionController,
+    CompactionControllerError, CompactionPhase, CompactionReason, CompactionTrigger,
+    HotMemoryBudget, LocalLlmSummary,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};
@@ -83,15 +77,12 @@ pub use profile::{
     ToolAccessPolicy,
 };
 pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
-pub use provider::ToolProvider;
 pub use providers::{SshApprovalGrant, SshApprovalRequestView};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
-pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{
     AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingUserInput,
     RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
 };
-pub use skills::SkillRegistry;
 pub use wiki_memory::WikiStore;

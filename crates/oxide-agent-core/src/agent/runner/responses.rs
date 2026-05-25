@@ -115,6 +115,28 @@ impl AgentRunner {
         }
     }
 
+    fn save_undelivered_final_response_draft(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        final_response: &str,
+        reason: &str,
+    ) {
+        let trimmed = final_response.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        let notice = format!(
+            "[SYSTEM: The previous assistant final response was not delivered to the user. \
+Reason: {reason}. Use it only as internal context; if any of it is needed for the user, \
+include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}"
+        );
+        ctx.messages.push(crate::llm::Message::system(&notice));
+        ctx.agent
+            .memory_mut()
+            .add_message(crate::agent::memory::AgentMessage::undelivered_assistant_draft(notice));
+    }
+
     /// Handle a final response payload and run after-agent hooks.
     pub(super) async fn handle_final_response(
         &mut self,
@@ -142,9 +164,11 @@ impl AgentRunner {
                     .await;
             }
             let retry_message = format!("[SYSTEM: {reason}]\n\n{}", context.unwrap_or_default());
-            ctx.messages
-                .push(crate::llm::Message::assistant(&final_response));
-            self.save_final_response(ctx, &final_response, input.reasoning);
+            self.save_undelivered_final_response_draft(
+                ctx,
+                &final_response,
+                "completion hook forced another iteration",
+            );
             ctx.messages
                 .push(crate::llm::Message::system(&retry_message));
             ctx.agent
@@ -168,9 +192,11 @@ impl AgentRunner {
                     .await;
             }
 
-            ctx.messages
-                .push(crate::llm::Message::assistant(&final_response));
-            self.save_final_response(ctx, &final_response, input.reasoning);
+            self.save_undelivered_final_response_draft(
+                ctx,
+                &final_response,
+                "new user context arrived before delivery",
+            );
             let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
             Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
             return Ok(None);

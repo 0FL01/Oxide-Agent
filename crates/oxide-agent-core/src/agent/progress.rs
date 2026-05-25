@@ -14,8 +14,6 @@ pub struct TokenSnapshot {
     pub system_prompt_tokens: usize,
     /// Estimated tokens represented by serialized tool schemas.
     pub tool_schema_tokens: usize,
-    /// Estimated tokens represented by loaded skill context outside hot memory.
-    pub loaded_skill_tokens: usize,
     /// Total estimated input tokens for the next request.
     pub total_input_tokens: usize,
     /// Reserved output tokens for the active model.
@@ -111,7 +109,6 @@ pub enum AgentEvent {
         /// Original file name
         file_name: String,
         /// Raw file content
-        #[serde(with = "serde_bytes")]
         content: Vec<u8>,
     },
     /// File to send to user with delivery confirmation

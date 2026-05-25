@@ -1,8 +1,13 @@
 use anyhow::Result;
-use oxide_agent_core::agent::provider::ToolProvider;
+use oxide_agent_core::agent::identity::SessionId;
 use oxide_agent_core::agent::providers::{
     ReminderContext, ReminderProvider, ReminderScheduleNotifier,
 };
+use oxide_agent_core::agent::tool_runtime::{
+    ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext, ToolInvocation,
+    ToolName, ToolOutputStatus, ToolTimeoutConfig, TurnId,
+};
+use oxide_agent_core::llm::InvocationId;
 use oxide_agent_core::storage::{
     CreateReminderJobOptions, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
     StorageProvider,
@@ -12,6 +17,7 @@ use oxide_agent_transport_web::in_memory_storage::InMemoryStorage;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio_util::sync::CancellationToken;
 
 fn now_unix_secs() -> i64 {
     SystemTime::now()
@@ -26,8 +32,8 @@ fn reminder_provider(
     scheduler: Arc<ReminderSchedulerHandle>,
     user_id: i64,
     context_key: &str,
-) -> ReminderProvider {
-    ReminderProvider::new(ReminderContext {
+) -> Arc<ReminderProvider> {
+    Arc::new(ReminderProvider::new(ReminderContext {
         storage,
         user_id,
         context_key: context_key.to_string(),
@@ -36,7 +42,55 @@ fn reminder_provider(
         thread_id: None,
         thread_kind: ReminderThreadKind::None,
         notifier: Some(scheduler as Arc<dyn ReminderScheduleNotifier>),
-    })
+    }))
+}
+
+fn reminder_invocation(tool_name: &str, raw_arguments: String) -> ToolInvocation {
+    let now = chrono::Utc::now();
+    ToolInvocation {
+        session_id: SessionId::from(77),
+        turn_id: TurnId::from("turn-reminder-integration"),
+        batch_id: ToolBatchId::from("batch-reminder-integration"),
+        batch_index: 0,
+        invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+        tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+        provider_tool_call_id: None,
+        tool_name: ToolName::from(tool_name),
+        raw_provider_payload: json!({}),
+        raw_arguments,
+        normalized_arguments: serde_json::Value::Null,
+        cancellation_token: CancellationToken::new(),
+        timeout: ToolTimeoutConfig::default(),
+        execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+        provider_metadata: ProviderMetadata {
+            provider: "test".to_string(),
+            protocol: "chat_like".to_string(),
+        },
+        model_metadata: ModelMetadata {
+            model: "test-model".to_string(),
+        },
+        working_directory: None,
+        environment_metadata: None,
+        created_at: now,
+        started_at: Some(now),
+    }
+}
+
+async fn execute_reminder(
+    provider: &Arc<ReminderProvider>,
+    tool_name: &str,
+    arguments: String,
+) -> Result<()> {
+    let executor = provider
+        .tool_runtime_executors()
+        .into_iter()
+        .find(|executor| executor.name().as_str() == tool_name)
+        .expect("typed reminder executor registered");
+    let output = executor
+        .execute(reminder_invocation(tool_name, arguments))
+        .await?;
+    assert_eq!(output.status, ToolOutputStatus::Success);
+    Ok(())
 }
 
 #[tokio::test]
@@ -77,19 +131,17 @@ async fn provider_schedule_and_cancel_update_in_memory_queue() -> Result<()> {
     let scheduler = Arc::new(ReminderSchedulerHandle::new([88]));
     let provider = reminder_provider(storage.clone(), scheduler.clone(), 88, "topic-b");
 
-    provider
-        .execute(
-            "reminder_schedule",
-            &json!({
-                "kind": "interval",
-                "task": "check deployment",
-                "every_minutes": 10
-            })
-            .to_string(),
-            None,
-            None,
-        )
-        .await?;
+    execute_reminder(
+        &provider,
+        "reminder_schedule",
+        json!({
+            "kind": "interval",
+            "task": "check deployment",
+            "every_minutes": 10
+        })
+        .to_string(),
+    )
+    .await?;
 
     let scheduled = storage
         .list_reminder_jobs(88, Some("topic-b".to_string()), None, 10)
@@ -101,17 +153,15 @@ async fn provider_schedule_and_cancel_update_in_memory_queue() -> Result<()> {
         Some(scheduled[0].next_run_at)
     );
 
-    provider
-        .execute(
-            "reminder_cancel",
-            &json!({
-                "reminder_id": scheduled[0].reminder_id
-            })
-            .to_string(),
-            None,
-            None,
-        )
-        .await?;
+    execute_reminder(
+        &provider,
+        "reminder_cancel",
+        json!({
+            "reminder_id": scheduled[0].reminder_id
+        })
+        .to_string(),
+    )
+    .await?;
 
     let cancelled = storage
         .get_reminder_job(88, scheduled[0].reminder_id.clone())
@@ -129,48 +179,42 @@ async fn provider_pause_and_resume_refresh_in_memory_queue() -> Result<()> {
     let scheduler = Arc::new(ReminderSchedulerHandle::new([99]));
     let provider = reminder_provider(storage.clone(), scheduler.clone(), 99, "topic-c");
 
-    provider
-        .execute(
-            "reminder_schedule",
-            &json!({
-                "kind": "interval",
-                "task": "rotate logs",
-                "every_minutes": 5
-            })
-            .to_string(),
-            None,
-            None,
-        )
-        .await?;
+    execute_reminder(
+        &provider,
+        "reminder_schedule",
+        json!({
+            "kind": "interval",
+            "task": "rotate logs",
+            "every_minutes": 5
+        })
+        .to_string(),
+    )
+    .await?;
 
     let scheduled = storage
         .list_reminder_jobs(99, Some("topic-c".to_string()), None, 10)
         .await?;
     let reminder_id = scheduled[0].reminder_id.clone();
 
-    provider
-        .execute(
-            "reminder_pause",
-            &json!({ "reminder_id": reminder_id }).to_string(),
-            None,
-            None,
-        )
-        .await?;
+    execute_reminder(
+        &provider,
+        "reminder_pause",
+        json!({ "reminder_id": reminder_id }).to_string(),
+    )
+    .await?;
 
     assert_eq!(scheduler.tracked_count().await, 0);
 
-    provider
-        .execute(
-            "reminder_resume",
-            &json!({
-                "reminder_id": reminder_id,
-                "delay_secs": 900
-            })
-            .to_string(),
-            None,
-            None,
-        )
-        .await?;
+    execute_reminder(
+        &provider,
+        "reminder_resume",
+        json!({
+            "reminder_id": reminder_id,
+            "delay_secs": 900
+        })
+        .to_string(),
+    )
+    .await?;
 
     let resumed = storage
         .get_reminder_job(99, scheduled[0].reminder_id.clone())

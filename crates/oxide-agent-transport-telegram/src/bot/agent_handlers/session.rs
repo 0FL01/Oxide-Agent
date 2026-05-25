@@ -27,7 +27,6 @@ const FNV_PRIME: u64 = 0x100000001b3;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AgentModeSessionKeys {
     pub(crate) primary: SessionId,
-    pub(crate) legacy: SessionId,
 }
 
 #[derive(Clone, Copy)]
@@ -71,16 +70,6 @@ impl AgentMemoryCheckpoint for FlowMemoryCheckpoint {
             )
             .await?;
         Ok(())
-    }
-}
-
-impl AgentModeSessionKeys {
-    pub(crate) fn distinct_legacy(self) -> Option<SessionId> {
-        if self.primary == self.legacy {
-            None
-        } else {
-            Some(self.legacy)
-        }
     }
 }
 
@@ -136,19 +125,15 @@ pub(crate) fn agent_mode_session_keys(
 ) -> AgentModeSessionKeys {
     AgentModeSessionKeys {
         primary: derive_agent_mode_session_id(user_id, chat_id, thread_id, agent_flow_id),
-        legacy: SessionId::from(user_id),
     }
 }
 
 pub(crate) fn select_existing_session_id(
     keys: AgentModeSessionKeys,
     primary_exists: bool,
-    legacy_exists: bool,
 ) -> Option<SessionId> {
     if primary_exists {
         Some(keys.primary)
-    } else if legacy_exists {
-        Some(keys.legacy)
     } else {
         None
     }
@@ -156,13 +141,7 @@ pub(crate) fn select_existing_session_id(
 
 pub(crate) async fn resolve_existing_session_id(keys: AgentModeSessionKeys) -> Option<SessionId> {
     let primary_exists = SESSION_REGISTRY.contains(&keys.primary).await;
-    let legacy_exists = if let Some(legacy) = keys.distinct_legacy() {
-        SESSION_REGISTRY.contains(&legacy).await
-    } else {
-        primary_exists
-    };
-
-    select_existing_session_id(keys, primary_exists, legacy_exists)
+    select_existing_session_id(keys, primary_exists)
 }
 
 pub(crate) async fn session_manager_control_plane_enabled(session_id: SessionId) -> Option<bool> {
@@ -199,58 +178,33 @@ async fn ensure_cached_session_wiki_store(
     );
 }
 
-pub(crate) async fn reset_sessions_with_compat(keys: AgentModeSessionKeys) -> ResetSessionOutcome {
+pub(crate) async fn reset_session(keys: AgentModeSessionKeys) -> ResetSessionOutcome {
     let primary_result = SESSION_REGISTRY.reset(&keys.primary).await;
-    let legacy_result = if let Some(legacy) = keys.distinct_legacy() {
-        Some(SESSION_REGISTRY.reset(&legacy).await)
-    } else {
-        None
-    };
 
     let primary_reset = matches!(primary_result, Ok(()));
-    let legacy_reset = matches!(legacy_result, Some(Ok(())));
-    if primary_reset || legacy_reset {
+    if primary_reset {
         clear_pending_text_batch(keys.primary).await;
-        if let Some(legacy) = keys.distinct_legacy() {
-            clear_pending_text_batch(legacy).await;
-        }
         return ResetSessionOutcome::Reset;
     }
 
     let primary_busy = matches!(primary_result, Err("Cannot reset while task is running"));
-    let legacy_busy = matches!(
-        legacy_result,
-        Some(Err("Cannot reset while task is running"))
-    );
-    if primary_busy || legacy_busy {
+    if primary_busy {
         return ResetSessionOutcome::Busy;
     }
 
     ResetSessionOutcome::NotFound
 }
 
-pub(crate) async fn cancel_and_clear_with_compat(keys: AgentModeSessionKeys) -> (bool, bool) {
+pub(crate) async fn cancel_and_clear_session(keys: AgentModeSessionKeys) -> (bool, bool) {
     let cancelled_primary = SESSION_REGISTRY.cancel(&keys.primary).await;
-
-    if let Some(legacy) = keys.distinct_legacy() {
-        let cancelled_legacy = SESSION_REGISTRY.cancel(&legacy).await;
-        (cancelled_primary || cancelled_legacy, false)
-    } else {
-        (cancelled_primary, false)
-    }
+    (cancelled_primary, false)
 }
 
-pub(crate) async fn remove_sessions_with_compat(keys: AgentModeSessionKeys) {
+pub(crate) async fn remove_session(keys: AgentModeSessionKeys) {
     SESSION_REGISTRY.remove(&keys.primary).await;
     clear_pending_text_batch(keys.primary).await;
     clear_pending_cancel_message(keys.primary).await;
     clear_pending_cancel_confirmation(keys.primary).await;
-    if let Some(legacy) = keys.distinct_legacy() {
-        SESSION_REGISTRY.remove(&legacy).await;
-        clear_pending_text_batch(legacy).await;
-        clear_pending_cancel_message(legacy).await;
-        clear_pending_cancel_confirmation(legacy).await;
-    }
 }
 
 pub(crate) async fn clear_pending_text_batch(session_id: SessionId) {
@@ -265,15 +219,11 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
         ctx.transport_ctx.chat_id,
         ctx.transport_ctx.thread_spec,
     );
-    let requires_primary_session = ctx.session_keys.primary != ctx.session_keys.legacy;
-
     if let Some(existing_session_id) = resolve_existing_session_id(ctx.session_keys).await {
-        let should_migrate_legacy =
-            requires_primary_session && existing_session_id != ctx.session_keys.primary;
         if let Some(existing_manager_enabled) =
             session_manager_control_plane_enabled(existing_session_id).await
         {
-            if existing_manager_enabled == manager_enabled && !should_migrate_legacy {
+            if existing_manager_enabled == manager_enabled {
                 ensure_cached_session_wiki_store(existing_session_id, ctx.storage).await;
                 debug!(session_id = %existing_session_id, "Session already exists in cache");
                 return existing_session_id;
@@ -285,7 +235,6 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
                     session_id = %existing_session_id,
                     previous_manager_enabled = existing_manager_enabled,
                     current_manager_enabled = manager_enabled,
-                    migrate_to_primary = should_migrate_legacy,
                     "Session identity changed; recreating session"
                 );
             } else if SESSION_REGISTRY.contains(&existing_session_id).await {
@@ -294,7 +243,6 @@ pub(crate) async fn ensure_session_exists(ctx: EnsureSessionContext<'_>) -> Sess
                     session_id = %existing_session_id,
                     previous_manager_enabled = existing_manager_enabled,
                     current_manager_enabled = manager_enabled,
-                    migrate_to_primary = should_migrate_legacy,
                     "Session identity changed while task is running; deferring refresh"
                 );
                 return existing_session_id;
@@ -376,15 +324,10 @@ async fn load_agent_memory_into_session(
         return;
     }
 
-    if ctx.agent_flow_created {
-        migrate_legacy_agent_memory_into_flow(ctx, session).await;
-        session.restore_last_task_from_memory();
-    } else {
-        info!(
-            user_id = ctx.user_id,
-            "No saved agent memory found, starting fresh"
-        );
-    }
+    info!(
+        user_id = ctx.user_id,
+        "No saved flow-scoped agent memory found, starting fresh"
+    );
 }
 
 async fn inject_topic_agents_md_for_flow(
@@ -470,47 +413,6 @@ async fn load_flow_agent_memory(
             );
             None
         }
-    }
-}
-
-async fn migrate_legacy_agent_memory_into_flow(
-    ctx: &EnsureSessionContext<'_>,
-    session: &mut AgentSession,
-) {
-    if let Ok(Some(saved_memory)) = ctx
-        .storage
-        .load_agent_memory_for_context(ctx.user_id, ctx.context_key.clone())
-        .await
-    {
-        session.memory = saved_memory;
-        if let Err(error) = ctx
-            .storage
-            .save_agent_memory_for_flow(
-                ctx.user_id,
-                ctx.context_key.clone(),
-                ctx.agent_flow_id.clone(),
-                &session.memory,
-            )
-            .await
-        {
-            warn!(
-                error = %error,
-                user_id = ctx.user_id,
-                topic_id = %ctx.context_key,
-                flow_id = %ctx.agent_flow_id,
-                "Failed to migrate legacy agent memory into flow-scoped storage"
-            );
-        }
-        info!(
-            user_id = ctx.user_id,
-            messages_count = session.memory.get_messages().len(),
-            "Migrated legacy agent memory into flow-scoped storage"
-        );
-    } else {
-        info!(
-            user_id = ctx.user_id,
-            "No saved agent memory found, starting fresh"
-        );
     }
 }
 

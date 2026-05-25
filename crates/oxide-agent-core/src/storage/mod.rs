@@ -2,23 +2,38 @@
 //!
 //! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
 
+#[cfg(any(feature = "storage-s3-r2", test))]
 mod builders;
 mod control_plane;
 mod error;
 mod flows;
 mod keys;
+#[cfg(feature = "storage-s3-r2")]
+mod modules;
 mod provider;
+#[cfg(feature = "storage-s3-r2")]
 mod r2;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_base;
+#[cfg(feature = "storage-s3-r2")]
+mod r2_config;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_control_plane;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_memory;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_provider;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_reminder;
+#[cfg(feature = "storage-s3-r2")]
 mod r2_user;
 mod reminder;
+#[cfg(any(feature = "storage-s3-r2", test))]
 mod schema;
+#[cfg(any(feature = "storage-s3-r2", test))]
 mod telemetry;
 mod user;
+#[cfg(any(feature = "storage-s3-r2", test))]
 mod utils;
 
 #[cfg(test)]
@@ -45,10 +60,15 @@ pub use keys::{
     user_context_chat_history_prefix, user_history_key, wiki_context_inbox_key, wiki_context_key,
     wiki_context_page_key, wiki_context_raw_key, wiki_global_key,
 };
+#[cfg(feature = "storage-s3-r2")]
+pub use modules::{build_primary_storage, BuiltStorageBackend, StorageBackendModule};
 #[cfg(test)]
 pub use provider::MockStorageProvider;
 pub use provider::StorageProvider;
-pub use r2::{PersistedAgentMemoryRef, R2Storage};
+#[cfg(feature = "storage-s3-r2")]
+pub use r2::R2Storage;
+#[cfg(feature = "storage-s3-r2")]
+pub use r2_config::R2StorageConfig;
 pub use reminder::{
     compute_cron_next_run_at, compute_next_reminder_run_at, format_reminder_unix_in_timezone,
     parse_reminder_timezone, resolve_reminder_local_datetime, CreateReminderJobOptions,

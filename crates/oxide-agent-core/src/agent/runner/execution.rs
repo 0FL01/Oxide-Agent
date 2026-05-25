@@ -1,5 +1,6 @@
 //! Core execution loop for the agent runner.
 
+use super::tools::ToolTurnAssistantContent;
 use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
@@ -210,22 +211,16 @@ impl AgentRunner {
         }
 
         if ctx.config.model_routes.is_empty() {
-            if ctx.tool_runtime_registry.is_some() {
-                let error = LlmError::ApiError(
-                    "typed tool runtime v1 requires an explicit opencode-go/deepseek-v4-flash route"
-                        .to_string(),
-                );
-                Self::emit_llm_error(ctx.progress_tx, &error).await;
-                return Err(anyhow!("LLM call failed: {error}"));
-            }
-            return self.call_llm_with_tools_legacy(ctx, state, iteration).await;
+            return self
+                .call_llm_with_tools_single_route(ctx, state, iteration)
+                .await;
         }
 
         self.call_llm_with_tools_with_failover(ctx, state, iteration)
             .await
     }
 
-    async fn call_llm_with_tools_legacy(
+    async fn call_llm_with_tools_single_route(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
@@ -324,7 +319,9 @@ impl AgentRunner {
                     attempt = attempt.saturating_add(1);
                     continue;
                 }
-                AttemptOutcome::FailoverToNextRoute(_) => unreachable!("legacy path has no routes"),
+                AttemptOutcome::FailoverToNextRoute(_) => {
+                    unreachable!("single-route path has no failover route")
+                }
             }
         }
     }
@@ -336,21 +333,6 @@ impl AgentRunner {
         iteration: usize,
     ) -> Result<ChatResponse> {
         let max_retries = LlmClient::MAX_RETRIES;
-
-        if ctx.tool_runtime_registry.is_some()
-            && !ctx
-                .config
-                .model_routes
-                .iter()
-                .any(v1_tool_runtime_enabled_for_model)
-        {
-            let error = LlmError::ApiError(
-                "typed tool runtime v1 only supports opencode-go/deepseek-v4-flash routes"
-                    .to_string(),
-            );
-            Self::emit_llm_error(ctx.progress_tx, &error).await;
-            return Err(anyhow!("LLM call failed: {error}"));
-        }
 
         let mut exhausted_routes = std::collections::HashSet::new();
         let mut pending_failover_from: Option<ModelInfo> = None;
@@ -523,12 +505,9 @@ impl AgentRunner {
                 }
 
                 if Self::llm_error_suggests_context_overflow(&error) && metadata.attempt == 1 {
-                    let retried = if ctx.config.codex_style_compaction_enabled {
-                        self.run_runtime_context_limit_compaction(ctx, state, metadata.route)
-                            .await?
-                    } else {
-                        false
-                    };
+                    let retried = self
+                        .run_runtime_context_limit_compaction(ctx, state, metadata.route)
+                        .await?;
                     if retried {
                         return Ok(AttemptOutcome::RetrySameRoute);
                     }
@@ -679,7 +658,12 @@ impl AgentRunner {
     ) -> Option<usize> {
         let now = Instant::now();
         let json_mode = self.structured_output_required_for_config(&ctx.config);
-        let require_v1_tool_route = ctx.tool_runtime_registry.is_some();
+        let require_v1_tool_route = ctx.tool_runtime_registry.is_some()
+            && ctx
+                .config
+                .model_routes
+                .iter()
+                .any(v1_tool_runtime_enabled_for_model);
         self.route_failover_state
             .route_quarantine
             .retain(|_, until| *until > now);
@@ -834,26 +818,6 @@ impl AgentRunner {
         }
     }
 
-    #[allow(dead_code)]
-    async fn chat_with_tools_once(
-        &self,
-        ctx: &mut AgentRunnerContext<'_>,
-    ) -> Result<ChatResponse, LlmError> {
-        // This method is kept for backwards compatibility.
-        // Use call_llm_with_tools for retry handling with UI events.
-        let json_mode = self.structured_output_required_for_config(&ctx.config);
-        self.llm_client
-            .chat_with_tools_single_attempt(
-                ctx.system_prompt,
-                ctx.messages,
-                ctx.tools,
-                &ctx.config.model_name,
-                ctx.config.temperature,
-                json_mode,
-            )
-            .await
-    }
-
     async fn handle_llm_response(
         &mut self,
         mut response: ChatResponse,
@@ -947,12 +911,12 @@ impl AgentRunner {
         }
 
         if ctx.tool_runtime_registry.is_none() {
-            return Err(Self::legacy_tool_execution_disabled_error(ctx));
+            return Err(Self::missing_tool_runtime_registry_error(ctx));
         }
         self.execute_tools_with_runtime(
             ctx,
             state,
-            &raw_json,
+            ToolTurnAssistantContent::StructuredControlEnvelope,
             response.reasoning_content,
             tool_calls,
         )
@@ -1066,9 +1030,6 @@ impl AgentRunner {
         previous_route: &ModelInfo,
         next_route: &ModelInfo,
     ) -> Result<bool> {
-        if !ctx.config.codex_style_compaction_enabled {
-            return Ok(false);
-        }
         if !Self::model_downshift_requires_compaction(ctx, previous_route, next_route) {
             return Ok(false);
         }
@@ -1127,7 +1088,6 @@ impl AgentRunner {
         let policy = CompactionPolicy::default();
         count_tokens_cached(ctx.system_prompt)
             .saturating_add(Self::tool_schema_tokens(ctx.tools))
-            .saturating_add(ctx.agent.skill_token_count())
             .saturating_add(ctx.agent.memory().token_count())
             .saturating_add(route.max_output_tokens as usize)
             .saturating_add(policy.hard_reserve_tokens)
@@ -1143,7 +1103,6 @@ impl AgentRunner {
         context_window
             .saturating_sub(count_tokens_cached(ctx.system_prompt))
             .saturating_sub(Self::tool_schema_tokens(ctx.tools))
-            .saturating_sub(ctx.agent.skill_token_count())
             .saturating_sub(route.max_output_tokens as usize)
             .saturating_sub(policy.hard_reserve_tokens)
     }
@@ -1348,19 +1307,19 @@ impl AgentRunner {
                 .execute_tools_with_runtime(
                     ctx,
                     state,
-                    raw_json,
+                    ToolTurnAssistantContent::NativeModelContent(raw_json),
                     response.reasoning_content.take(),
                     tool_calls,
                 )
                 .await;
         }
 
-        Err(Self::legacy_tool_execution_disabled_error(ctx))
+        Err(Self::missing_tool_runtime_registry_error(ctx))
     }
 
-    fn legacy_tool_execution_disabled_error(ctx: &AgentRunnerContext<'_>) -> anyhow::Error {
+    fn missing_tool_runtime_registry_error(ctx: &AgentRunnerContext<'_>) -> anyhow::Error {
         anyhow!(
-            "legacy tool execution is disabled; active tool calls require typed runtime route opencode-go/deepseek-v4-flash, current provider={}, model={}",
+            "tool runtime registry is required for active tool calls; current provider={}, model={}",
             ctx.config.model_provider.as_deref().unwrap_or("unknown"),
             ctx.config.model_name,
         )
@@ -1427,17 +1386,12 @@ impl AgentRunner {
             }
 
             return self
-                .handle_tool_calls_response(
-                    &mut ChatResponse {
-                        content: Some(raw_output.clone()),
-                        tool_calls,
-                        finish_reason: "stop".to_string(),
-                        reasoning_content: reasoning,
-                        usage: None,
-                    },
-                    &raw_output,
+                .execute_tools_with_runtime(
                     ctx,
                     state,
+                    ToolTurnAssistantContent::StructuredControlEnvelope,
+                    reasoning,
+                    tool_calls,
                 )
                 .await;
         }
@@ -1723,7 +1677,6 @@ impl AgentRunner {
             hot_memory_tokens: budget.hot_memory.total_tokens,
             system_prompt_tokens: budget.system_prompt_tokens,
             tool_schema_tokens: budget.tool_schema_tokens,
-            loaded_skill_tokens: budget.loaded_skill_tokens,
             total_input_tokens: budget.total_input_tokens,
             reserved_output_tokens: budget.reserved_output_tokens,
             hard_reserve_tokens: budget.hard_reserve_tokens,
@@ -1854,7 +1807,6 @@ impl AgentRunner {
             hot_memory_tokens = snapshot.hot_memory_tokens,
             system_prompt_tokens = snapshot.system_prompt_tokens,
             tool_schema_tokens = snapshot.tool_schema_tokens,
-            loaded_skill_tokens = snapshot.loaded_skill_tokens,
             total_input_tokens = snapshot.total_input_tokens,
             reserved_output_tokens = snapshot.reserved_output_tokens,
             projected_total_tokens = snapshot.projected_total_tokens,
@@ -1920,11 +1872,13 @@ impl AgentRunner {
 mod tests {
     use super::*;
     use crate::agent::compaction::{
-        CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
-        CompactionController, OXIDE_COMPACTED_SUMMARY_PREFIX,
+        AgentMessageKind, CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest,
+        CompactSummaryResult, CompactedSummaryMetadata, CompactionBackend, CompactionController,
+        CompactionPhase, CompactionReason, OXIDE_COMPACTED_SUMMARY_PREFIX,
     };
     use crate::agent::context::{AgentContext, EphemeralSession};
-    use crate::agent::registry::ToolRegistry;
+    use crate::agent::hooks::CompletionCheckHook;
+    use crate::agent::providers::{TodoItem, TodoList};
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
     use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
     use crate::config::{AgentSettings, ModelInfo};
@@ -1936,6 +1890,27 @@ mod tests {
     use tokio::sync::Mutex;
 
     struct StaticRuntimeSummaryBackend;
+
+    fn existing_compacted_summary() -> AgentMessage {
+        AgentMessage::compacted_summary(
+            "Old current-format state.",
+            &CompactedSummaryMetadata {
+                generation: 1,
+                reason: CompactionReason::Manual,
+                phase: CompactionPhase::Manual,
+                token_before: 100,
+                token_after: 10,
+                history_items_before: 3,
+                history_items_after: 1,
+                provider: "mock".to_string(),
+                route: "mock-model".to_string(),
+                backend: CompactionBackend::LocalLlmSummary,
+                created_at: "2026-05-21T20:10:00+03:00".to_string(),
+                previous_summary_detected: false,
+                repair_applied: false,
+            },
+        )
+    }
 
     #[async_trait]
     impl CompactSummaryBackend for StaticRuntimeSummaryBackend {
@@ -1990,6 +1965,67 @@ mod tests {
         assert!(runner.structured_output_required_for_config(&config));
     }
 
+    #[tokio::test]
+    async fn forced_final_response_is_saved_as_undelivered_draft() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        runner.register_hook(Box::new(CompletionCheckHook::new()));
+
+        let mut session = EphemeralSession::new(2048);
+        let mut todos = TodoList::new();
+        todos.items.push(TodoItem::new("finish work"));
+        session.memory_mut().todos = todos.clone();
+        let todos_arc = Arc::new(Mutex::new(todos));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "forced-final-draft",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
+        };
+        let mut state = RunState::new();
+        let draft = "Full report generated before todos were complete.";
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: draft.to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("forced final response should continue");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert!(
+            !memory.iter().any(|message| {
+                message.resolved_kind() == AgentMessageKind::AssistantResponse
+                    && message.content.contains(draft)
+            }),
+            "forced final response must not be stored as delivered assistant prose"
+        );
+        let draft_message = memory
+            .iter()
+            .find(|message| message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft)
+            .expect("undelivered draft should be recorded");
+        assert!(draft_message.content.contains("not delivered to the user"));
+        assert!(draft_message.content.contains(draft));
+    }
+
     #[test]
     fn unbounded_retry_is_limited_to_opencode_go_retryable_errors() {
         let rate_limit = LlmError::RateLimit {
@@ -2042,22 +2078,19 @@ mod tests {
         );
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         let mut session = EphemeralSession::new(768);
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let ctx = AgentRunnerContext {
             task: "Route selection regression",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-chatgpt-route-selection",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -2099,7 +2132,6 @@ mod tests {
 
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         let mut session = EphemeralSession::new(768);
-        let registry = ToolRegistry::new();
         let tools: Vec<crate::llm::ToolDefinition> = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
@@ -2107,14 +2139,12 @@ mod tests {
             task: "Typed runtime route selection",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: Some(Arc::new(RuntimeToolRegistry::new())),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-typed-route-selection",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -2200,22 +2230,19 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::tool("call-1", "search", "result-1"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let mut ctx = AgentRunnerContext {
             task: "Repair invalid tool history",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-history-repair",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -2259,22 +2286,19 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user_task("Какие инструменты тебе доступны?"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let mut ctx = AgentRunnerContext {
             task: "Какие инструменты тебе доступны?",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-unstructured-structured-fallback",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -2308,13 +2332,12 @@ mod tests {
             .add_message(AgentMessage::user_task("Retry after overflow"));
         session
             .memory_mut()
-            .add_message(AgentMessage::summary("[COMPACTION_SUMMARY]\nOld"));
+            .add_message(existing_compacted_summary());
         session
             .memory_mut()
             .add_message(AgentMessage::user("Recent request."));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
@@ -2322,20 +2345,17 @@ mod tests {
             task: "Retry after overflow",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-overflow-runtime-compaction",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: Some(&compaction_controller),
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256)
-                .with_codex_style_compaction(true),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
         };
 
         let result = runner
@@ -2404,8 +2424,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user("older ".repeat(4_000)));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
@@ -2413,20 +2432,17 @@ mod tests {
             task: "Pre-sampling compact",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-pre-sampling-runtime-compaction",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: Some(&compaction_controller),
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256)
-                .with_codex_style_compaction(true),
+            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
         };
 
         let result = runner.run(&mut ctx).await.expect("runner succeeds");
@@ -2458,8 +2474,7 @@ mod tests {
 
     #[test]
     fn runtime_compaction_threshold_uses_full_request_budget() {
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let mut session = EphemeralSession::new(20_000);
         session.memory_mut().add_message(AgentMessage::user_task(
             "Compact because output reserve consumes the route window",
@@ -2477,14 +2492,12 @@ mod tests {
             task: "Compact because output reserve consumes the route window",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-full-budget-threshold",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -2507,8 +2520,7 @@ mod tests {
 
     #[test]
     fn refresh_messages_from_memory_drops_transient_messages() {
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let mut session = EphemeralSession::new(1024);
         session
             .memory_mut()
@@ -2520,14 +2532,12 @@ mod tests {
             task: "refresh transient context",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "refresh-transient-test",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -2544,26 +2554,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_calls_without_typed_runtime_do_not_fallback_to_legacy_execution() {
+    async fn tool_calls_without_typed_runtime_fail_without_history_mutation() {
         let llm_client = build_llm_client(single_final_response_provider());
         let mut runner = AgentRunner::new(llm_client);
         let mut session = EphemeralSession::new(2048);
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
-            task: "legacy fallback disabled",
+            task: "tool runtime missing",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
-            task_id: "legacy-fallback-disabled",
+            task_id: "tool-runtime-missing",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: Some("42".to_string()),
             memory_scope: None,
@@ -2575,7 +2582,7 @@ mod tests {
         let response = ChatResponse {
             content: Some("assistant raw".to_string()),
             tool_calls: vec![ToolCall::new(
-                "invoke-legacy-disabled",
+                "invoke-runtime-missing",
                 ToolCallFunction {
                     name: "read_file".to_string(),
                     arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
@@ -2597,10 +2604,10 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("legacy tool execution is disabled"));
+            .contains("tool runtime registry is required for active tool calls"));
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
-            "legacy fallback must not write partial assistant/tool history"
+            "missing tool runtime must not write partial assistant/tool history"
         );
         assert!(ctx.messages.is_empty());
     }
@@ -2618,22 +2625,19 @@ mod tests {
             .add_message(AgentMessage::assistant("Recent response"));
 
         let estimated_tokens = session.memory().token_count();
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let mut ctx = AgentRunnerContext {
             task: "Inspect token metrics",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runner-token-metrics",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -2698,8 +2702,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user_task("Fail over after persistent 429"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
@@ -2707,14 +2710,12 @@ mod tests {
             task: "Fail over after persistent 429",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-provider-failover",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -2820,8 +2821,7 @@ mod tests {
                 )));
         }
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
@@ -2829,21 +2829,18 @@ mod tests {
             task: "Fail over to a smaller model route",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-model-downshift",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: Some(&compaction_controller),
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
             config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
                 .with_model_provider("primary")
-                .with_codex_style_compaction(true)
                 .with_model_routes(vec![
                     ModelInfo {
                         id: "primary-model".to_string(),
@@ -2931,8 +2928,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user_task("Stay on primary when it wakes up"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
@@ -2940,14 +2936,12 @@ mod tests {
             task: "Stay on primary when it wakes up",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-primary-recovery",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,
@@ -3013,8 +3007,7 @@ mod tests {
             .memory_mut()
             .add_message(AgentMessage::user_task("Skip unsupported NVIDIA route"));
 
-        let registry = ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
@@ -3022,14 +3015,12 @@ mod tests {
             task: "Skip unsupported NVIDIA route",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
             todos_arc: &todos_arc,
             task_id: "runner-nvidia-capability-skip",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,

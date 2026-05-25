@@ -4,7 +4,6 @@
 //! enabling proactive agent behavior for complex multi-step requests.
 
 use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -17,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Sender, Mutex};
-use tracing::{debug, info};
+use tracing::info;
 
 /// Status of a todo item
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -334,37 +333,6 @@ impl TodosProvider {
     }
 }
 
-#[async_trait]
-impl ToolProvider for TodosProvider {
-    fn name(&self) -> &'static str {
-        "todos"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        self.tool_specs()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == "write_todos"
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        debug!(tool = tool_name, "Executing todos tool");
-
-        if tool_name != "write_todos" {
-            anyhow::bail!("Unknown todos tool: {tool_name}");
-        }
-
-        self.write_todos(arguments, progress_tx).await
-    }
-}
-
 struct TodosRuntimeExecutor {
     provider: Arc<TodosProvider>,
     name: ToolName,
@@ -453,6 +421,29 @@ mod tests {
             created_at: now,
             started_at: Some(now),
         }
+    }
+
+    fn write_todos_executor(
+        provider: &Arc<TodosProvider>,
+        progress_tx: Option<Sender<AgentEvent>>,
+    ) -> Arc<dyn ToolExecutor> {
+        provider
+            .tool_runtime_executors(progress_tx)
+            .into_iter()
+            .find(|executor| executor.name().as_str() == "write_todos")
+            .expect("write_todos runtime executor missing")
+    }
+
+    async fn execute_write_todos(
+        provider: &Arc<TodosProvider>,
+        arguments: &str,
+        progress_tx: Option<Sender<AgentEvent>>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let output = write_todos_executor(provider, progress_tx)
+            .execute(runtime_invocation(arguments))
+            .await?;
+        assert!(output.success, "write_todos failed: {output:?}");
+        Ok(output.stdout.text.unwrap_or_default())
     }
 
     #[test]
@@ -567,7 +558,7 @@ mod tests {
     #[tokio::test]
     async fn test_todos_write_reports_blocked_task() -> Result<(), Box<dyn std::error::Error>> {
         let todos = Arc::new(Mutex::new(TodoList::new()));
-        let provider = TodosProvider::new(Arc::clone(&todos));
+        let provider = Arc::new(TodosProvider::new(Arc::clone(&todos)));
 
         let args = r#"{
             "todos": [
@@ -575,7 +566,7 @@ mod tests {
             ]
         }"#;
 
-        let result = provider.execute("write_todos", args, None, None).await?;
+        let result = execute_write_todos(&provider, args, None).await?;
         assert!(result.contains("Waiting on user"));
         Ok(())
     }
@@ -583,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn test_todos_write() -> Result<(), Box<dyn std::error::Error>> {
         let todos = Arc::new(Mutex::new(TodoList::new()));
-        let provider = TodosProvider::new(Arc::clone(&todos));
+        let provider = Arc::new(TodosProvider::new(Arc::clone(&todos)));
 
         let args = r#"{
             "todos": [
@@ -593,7 +584,7 @@ mod tests {
             ]
         }"#;
 
-        let result = provider.execute("write_todos", args, None, None).await?;
+        let result = execute_write_todos(&provider, args, None).await?;
         assert!(result.contains("Task list updated"));
         assert!(result.contains("1/3 completed"));
         assert!(result.contains("Task 2"));
@@ -608,7 +599,7 @@ mod tests {
     #[tokio::test]
     async fn test_todos_write_emits_progress_update() -> Result<(), Box<dyn std::error::Error>> {
         let todos = Arc::new(Mutex::new(TodoList::new()));
-        let provider = TodosProvider::new(Arc::clone(&todos));
+        let provider = Arc::new(TodosProvider::new(Arc::clone(&todos)));
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(4);
 
         let args = r#"{
@@ -618,9 +609,7 @@ mod tests {
             ]
         }"#;
 
-        provider
-            .execute("write_todos", args, Some(&progress_tx), None)
-            .await?;
+        execute_write_todos(&provider, args, Some(progress_tx)).await?;
 
         let update = recv_todos_update(&mut progress_rx).await?;
         assert_eq!(update.items.len(), 2);
@@ -635,11 +624,7 @@ mod tests {
         let todos = Arc::new(Mutex::new(TodoList::new()));
         let provider = Arc::new(TodosProvider::new(Arc::clone(&todos)));
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(4);
-        let executor = provider
-            .tool_runtime_executors(Some(progress_tx))
-            .into_iter()
-            .find(|executor| executor.name().as_str() == "write_todos")
-            .ok_or("write_todos runtime executor missing")?;
+        let executor = write_todos_executor(&provider, Some(progress_tx));
 
         let args = r#"{
             "todos": [

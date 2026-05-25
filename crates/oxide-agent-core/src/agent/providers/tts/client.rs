@@ -152,6 +152,11 @@ mod tests {
 
     #[test]
     fn client_from_env() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::remove_var("KOKORO_TTS_URL");
+
         // Should use defaults when env vars not set
         let client = KokoroClient::from_env();
         assert_eq!(client.base_url(), "http://127.0.0.1:8000");

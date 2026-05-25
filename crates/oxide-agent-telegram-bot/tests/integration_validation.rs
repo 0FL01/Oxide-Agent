@@ -4,6 +4,7 @@ use aws_sdk_s3::Client;
 use aws_types::region::Region;
 use dotenvy::dotenv;
 use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::storage::R2StorageConfig;
 use oxide_agent_transport_telegram::config::TelegramSettings;
 use std::path::Path;
 use tracing::info;
@@ -59,19 +60,7 @@ fn load_env_settings() -> Result<IntegrationEnv> {
     match (agent_settings, telegram_settings) {
         (Ok(agent), Ok(telegram)) => Ok(IntegrationEnv {
             telegram_token: telegram.telegram_token,
-            r2_endpoint: agent
-                .r2_endpoint_url
-                .ok_or_else(|| anyhow!("R2_ENDPOINT_URL missing"))?,
-            r2_access: agent
-                .r2_access_key_id
-                .ok_or_else(|| anyhow!("R2_ACCESS_KEY_ID missing"))?,
-            r2_secret: agent
-                .r2_secret_access_key
-                .ok_or_else(|| anyhow!("R2_SECRET_ACCESS_KEY missing"))?,
-            r2_bucket: agent
-                .r2_bucket_name
-                .ok_or_else(|| anyhow!("R2_BUCKET_NAME missing"))?,
-            r2_region: agent.r2_region,
+            ..integration_env_from_r2_config(R2StorageConfig::from_agent_settings(&agent)?)?
         }),
         (agent_result, telegram_result) => {
             if let Err(err) = agent_result {
@@ -91,14 +80,26 @@ fn load_env_settings() -> Result<IntegrationEnv> {
             Ok(IntegrationEnv {
                 telegram_token: std::env::var("TELEGRAM_TOKEN")
                     .unwrap_or_else(|_| "dummy_token_for_s3_verification".to_string()),
-                r2_endpoint: std::env::var("R2_ENDPOINT_URL")?,
-                r2_access: std::env::var("R2_ACCESS_KEY_ID")?,
-                r2_secret: std::env::var("R2_SECRET_ACCESS_KEY")?,
-                r2_bucket: std::env::var("R2_BUCKET_NAME")?,
-                r2_region: std::env::var("R2_REGION").unwrap_or_else(|_| "auto".to_string()),
+                r2_endpoint: std::env::var("OXIDE_R2_ENDPOINT_URL")?,
+                r2_access: std::env::var("OXIDE_R2_ACCESS_KEY_ID")?,
+                r2_secret: std::env::var("OXIDE_R2_SECRET_ACCESS_KEY")?,
+                r2_bucket: std::env::var("OXIDE_R2_BUCKET_NAME")?,
+                r2_region: std::env::var("OXIDE_R2_REGION").unwrap_or_else(|_| "auto".to_string()),
             })
         }
     }
+}
+
+fn integration_env_from_r2_config(config: R2StorageConfig) -> Result<IntegrationEnv> {
+    Ok(IntegrationEnv {
+        telegram_token: std::env::var("TELEGRAM_TOKEN")
+            .unwrap_or_else(|_| "dummy_token_for_s3_verification".to_string()),
+        r2_endpoint: config.endpoint_url,
+        r2_access: config.access_key_id,
+        r2_secret: config.secret_access_key,
+        r2_bucket: config.bucket_name,
+        r2_region: config.region,
+    })
 }
 
 fn validate_telegram_token(telegram_token: &str) {
@@ -188,7 +189,6 @@ fn validate_llm_provider_keys() {
     info!("Validating LLM Client configuration...");
     let has_provider = std::env::var("GROQ_API_KEY").is_ok()
         || std::env::var("MISTRAL_API_KEY").is_ok()
-        || std::env::var("GEMINI_API_KEY").is_ok()
         || std::env::var("OPENROUTER_API_KEY").is_ok();
 
     assert!(

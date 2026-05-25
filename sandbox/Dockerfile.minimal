@@ -1,0 +1,28 @@
+FROM debian:trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    dnsutils \
+    fd-find \
+    git \
+    iputils-ping \
+    jq \
+    net-tools \
+    procps \
+    ripgrep \
+    telnet \
+    traceroute \
+    tzdata \
+    unzip \
+    whois \
+    zip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -snf /usr/share/zoneinfo/Europe/Moscow /etc/localtime \
+    && echo "Europe/Moscow" > /etc/timezone \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd
+
+WORKDIR /workspace
+
+CMD ["sleep", "infinity"]

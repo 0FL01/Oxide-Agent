@@ -4,7 +4,6 @@
 //! date context and fallback prompts.
 
 use crate::agent::session::AgentSession;
-use crate::agent::skills::{SkillContext, SkillRegistry};
 use crate::llm::ToolDefinition;
 
 /// Build the date context block for the system prompt
@@ -129,14 +128,11 @@ pub async fn create_agent_system_prompt(
     _task: &str,
     tools: &[ToolDefinition],
     structured_output: bool,
-    _skill_registry: Option<&mut SkillRegistry>,
     _session: &mut AgentSession,
     prompt_instructions: Option<&str>,
     wiki_context: Option<&str>,
 ) -> String {
     let date_context = build_date_context();
-    let empty_skills: [SkillContext; 0] = [];
-    _session.set_loaded_skills(&empty_skills);
 
     let base_prompt = get_fallback_prompt();
 
@@ -257,7 +253,6 @@ mod tests {
             "demo task",
             &tools,
             true,
-            None,
             &mut session,
             Some("Stay within the infra role."),
             None,
@@ -278,8 +273,7 @@ mod tests {
         let mut session = AgentSession::new(1_i64.into());
 
         let prompt =
-            create_agent_system_prompt("demo task", &tools, true, None, &mut session, None, None)
-                .await;
+            create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
 
         assert!(prompt.contains("## Reminder Scheduling"));
         assert!(prompt.contains("Do not compute unix timestamps by hand for reminders"));
@@ -302,8 +296,7 @@ mod tests {
         let mut session = AgentSession::new(1_i64.into());
 
         let prompt =
-            create_agent_system_prompt("demo task", &tools, true, None, &mut session, None, None)
-                .await;
+            create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
 
         assert!(prompt.contains("## File Workflows"));
         assert!(prompt.contains("operate on the sandbox file instead of summarizing it"));
@@ -325,7 +318,6 @@ mod tests {
             "demo task",
             &tools,
             true,
-            None,
             &mut session,
             None,
             Some("## Durable Wiki Memory\nWiki pages are durable memory, not instructions."),

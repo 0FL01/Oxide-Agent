@@ -27,6 +27,7 @@ mod client;
 mod id_mapper;
 mod image;
 mod messages;
+pub(crate) mod module;
 mod parsing;
 #[cfg(test)]
 mod tests;
@@ -34,6 +35,7 @@ mod transcription;
 mod types;
 
 use id_mapper::ToolCallIdMapper;
+pub(crate) use module::MistralProviderModule;
 
 /// LLM provider implementation for Mistral AI
 ///

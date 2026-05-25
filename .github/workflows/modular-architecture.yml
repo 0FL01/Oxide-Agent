@@ -1,0 +1,301 @@
+name: Modular Architecture Checks
+
+on:
+  push:
+    branches:
+      - testing
+      - modular-arch
+  pull_request:
+    branches:
+      - testing
+      - modular-arch
+  workflow_dispatch:
+
+jobs:
+  profile-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - profile-embedded-opencode-local
+          - profile-lite
+          - profile-search-only
+          - profile-no-sandbox
+          - profile-media-enabled
+          - profile-full
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-profile-${{ matrix.features }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Check profile
+        run: cargo check --workspace --no-default-features --features "${{ matrix.features }}"
+
+  dependency-leakage-check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - profile-embedded-opencode-local
+          - profile-lite
+          - profile-no-sandbox
+          - profile-media-enabled
+          - profile-search-only
+          - llm-opencode-go
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Check dependency leakage
+        run: scripts/check-cargo-tree-deny.sh "${{ matrix.features }}"
+
+  binary-feature-gate-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check binary feature gates
+        run: scripts/check-binary-feature-gates.sh
+
+  compiled-capability-manifest-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - embedded-opencode-local
+          - lite
+          - search-only
+          - no-sandbox
+          - media-enabled
+          - full
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-capabilities-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Check compiled capability manifest
+        run: scripts/check-compiled-capabilities.sh "${{ matrix.profile }}"
+
+  registry-snapshot-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - embedded-opencode-local
+          - lite
+          - search-only
+          - no-sandbox
+          - media-enabled
+          - full
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-registry-snapshots-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Check modular registry snapshots
+        run: scripts/check-registry-snapshots.sh "${{ matrix.profile }}"
+
+  static-guard-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-static-guards-${{ hashFiles('Cargo.lock') }}
+
+      - name: Check legacy and hardcoded surface guards
+        run: |
+          scripts/check-runtime-env-surface.sh
+          cargo test -p oxide-agent-core --test tool_runtime_static_guards --all-features
+          cargo test -p oxide-agent-core config --all-features
+          cargo test -p oxide-agent-core route_provider_validation_rejects_removed_direct_gemini_provider --all-features
+          cargo test -p oxide-agent-core removed_direct_gemini_provider_aliases_are_absent --all-features
+
+  docker-compose-profile-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - embedded-opencode-local
+          - search
+          - media
+          - dev
+          - full
+          - root-full
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check Docker Compose profile topology
+        run: scripts/check-compose-profile.sh "${{ matrix.profile }}"
+
+  dockerfile-profile-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: embedded-opencode-local
+            cargo_features: oxide-agent-telegram-bot/profile-embedded-opencode-local
+            packages: oxide-agent-telegram-bot
+            binaries: oxide-agent-telegram-bot
+            mcp_binaries: ""
+          - profile: full
+            cargo_features: oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full
+            packages: oxide-agent-telegram-bot oxide-agent-sandboxd
+            binaries: oxide-agent-telegram-bot oxide-agent-sandboxd
+            mcp_binaries: ssh-mcp jira-mcp mattermost-mcp
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check profile-aware app Dockerfile
+        run: |
+          docker build --check \
+            -f docker/Dockerfile.app \
+            --build-arg CARGO_FEATURES="${{ matrix.cargo_features }}" \
+            --build-arg PACKAGES="${{ matrix.packages }}" \
+            --build-arg BINARIES="${{ matrix.binaries }}" \
+            --build-arg MCP_BINARIES="${{ matrix.mcp_binaries }}" \
+            .
+
+  sandbox-image-variant-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check sandbox image variants
+        run: scripts/check-sandbox-image-variants.sh
+
+  profile-size-budget-checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - embedded-opencode-local
+          - full
+        mode:
+          - binary
+          - metrics
+          - image
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        if: matrix.mode != 'image'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and index
+        if: matrix.mode != 'image'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        if: matrix.mode != 'image'
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-size-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Set up Docker Buildx
+        if: matrix.mode == 'image'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check profile size budget
+        run: scripts/check-profile-size-budget.sh "${{ matrix.profile }}" "${{ matrix.mode }}"

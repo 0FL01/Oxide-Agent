@@ -1206,9 +1206,9 @@ async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
         .expect("old tool message should exist after runtime compaction");
     assert!(old_tool.is_externalized() || old_tool.is_pruned());
     assert!(!old_tool.content.contains("CRITICAL_DECISION_TOKEN"));
-    assert!(!messages
-        .iter()
-        .any(|message| message.summary_payload().is_some()));
+    assert!(!messages.iter().any(|message| message
+        .content
+        .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)));
 
     server.abort();
 }

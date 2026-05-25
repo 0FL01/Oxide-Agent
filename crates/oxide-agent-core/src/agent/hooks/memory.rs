@@ -103,7 +103,7 @@ impl Hook for RetrievalAdvisorHook {
         }
         if needs_history_card {
             lines.push(
-                "- History card: if injected wiki context is insufficient, rely on current hot/session context rather than legacy episode memory tools."
+                "- History card: if injected wiki context is insufficient, rely on current hot/session context rather than retired episode memory tools."
                     .to_string(),
             );
         }

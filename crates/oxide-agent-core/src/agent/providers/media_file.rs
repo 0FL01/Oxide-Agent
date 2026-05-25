@@ -1,8 +1,11 @@
 //! Explicit media-analysis tools for files already stored in the sandbox.
 
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::{LlmClient, ToolDefinition};
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::header::CONTENT_TYPE;
@@ -17,6 +20,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::path::resolve_file_path;
+use super::sandbox::SandboxRuntime;
 
 const TOOL_TRANSCRIBE_AUDIO_FILE: &str = "transcribe_audio_file";
 const TOOL_DESCRIBE_IMAGE_FILE: &str = "describe_image_file";
@@ -34,8 +38,8 @@ enum MediaKind {
 /// Provider for explicit media analysis on sandbox files.
 pub struct MediaFileProvider {
     llm_client: Arc<LlmClient>,
-    sandbox: Arc<Mutex<Option<SandboxManager>>>,
-    sandbox_scope: SandboxScope,
+    fileops: Arc<dyn SandboxFileOps>,
+    exec: Arc<dyn SandboxExec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,61 +71,164 @@ impl MediaFileProvider {
     /// Create a new provider with lazy sandbox initialization.
     #[must_use]
     pub fn new(llm_client: Arc<LlmClient>, sandbox_scope: impl Into<SandboxScope>) -> Self {
+        Self::from_runtime(
+            llm_client,
+            Arc::new(SandboxRuntime::new(sandbox_scope.into())),
+        )
+    }
+
+    /// Create a new provider from the shared sandbox runtime.
+    #[must_use]
+    pub fn from_runtime(llm_client: Arc<LlmClient>, runtime: Arc<SandboxRuntime>) -> Self {
+        let fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
+        let exec: Arc<dyn SandboxExec> = runtime;
+        Self::with_sandbox_backends(llm_client, fileops, exec)
+    }
+
+    /// Create a provider from narrow sandbox capability traits.
+    #[must_use]
+    pub fn with_sandbox_backends(
+        llm_client: Arc<LlmClient>,
+        fileops: Arc<dyn SandboxFileOps>,
+        exec: Arc<dyn SandboxExec>,
+    ) -> Self {
         Self {
             llm_client,
-            sandbox: Arc::new(Mutex::new(None)),
-            sandbox_scope: sandbox_scope.into(),
+            fileops,
+            exec,
         }
     }
 
-    async fn ensure_sandbox(&self) -> Result<()> {
-        if self
-            .sandbox
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(SandboxManager::is_running)
-        {
-            return Ok(());
-        }
+    /// Build native typed runtime executors for all media-file tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        self.tool_runtime_executors_for(&[
+            TOOL_TRANSCRIBE_AUDIO_FILE,
+            TOOL_DESCRIBE_IMAGE_FILE,
+            TOOL_DESCRIBE_VIDEO_FILE,
+        ])
+    }
 
-        let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
-        sandbox.create_sandbox().await?;
-        *self.sandbox.lock().await = Some(sandbox);
-        Ok(())
+    /// Build native typed runtime executors for a module-owned media tool subset.
+    #[must_use]
+    pub fn tool_runtime_executors_for(
+        self: &Arc<Self>,
+        tool_names: &[&str],
+    ) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .filter(|spec| tool_names.contains(&spec.name.as_str()))
+            .map(|spec| {
+                Arc::new(MediaFileToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            Self::transcribe_audio_tool(),
+            Self::describe_image_tool(),
+            Self::describe_video_tool(),
+        ]
+    }
+
+    fn transcribe_audio_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_TRANSCRIBE_AUDIO_FILE.to_string(),
+            description: "Transcribe an audio file that already exists in the sandbox. Use this when you need explicit audio understanding for a preserved upload instead of automatic preprocessing.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the audio file in the sandbox (relative or absolute)"
+                    },
+                    "mime_type": {
+                        "type": "string",
+                        "description": "Optional MIME type override, for example audio/ogg or audio/wav"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional task-specific prompt that explains what transcription format or details you need, for example timestamps, speakers, or translation-ready text"
+                    }
+                },
+                "required": ["path"]
+            }),
+        }
+    }
+
+    fn describe_image_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_DESCRIBE_IMAGE_FILE.to_string(),
+            description: "Analyze an image file stored in the sandbox or fetched from a direct URL and return a detailed description. Use this only when you explicitly need image understanding.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the image file in the sandbox (relative or absolute) or an http(s) URL to a remote image"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional task-specific prompt that explains what to focus on"
+                    }
+                },
+                "required": ["path"]
+            }),
+        }
+    }
+
+    fn describe_video_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_DESCRIBE_VIDEO_FILE.to_string(),
+            description: "Analyze a video file stored in the sandbox or fetched from a direct URL and return a detailed description of the clip. Use this only when you explicitly need video understanding.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the video file in the sandbox (relative or absolute) or an http(s) URL to a remote video"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Optional task-specific prompt that explains what to focus on"
+                    },
+                    "mime_type": {
+                        "type": "string",
+                        "description": "Optional MIME type override, for example video/mp4 or video/webm"
+                    }
+                },
+                "required": ["path"]
+            }),
+        }
     }
 
     async fn read_media_source(
         &self,
         path: &str,
         kind: Option<MediaKind>,
-    ) -> Result<(SandboxManager, String, Vec<u8>, Option<String>)> {
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-        };
-
+    ) -> Result<(String, Vec<u8>, Option<String>)> {
         if is_remote_url(path) {
             let media_kind = kind.ok_or_else(|| anyhow!("Remote media kind is required"))?;
-            let resolved_path = self
-                .download_remote_media_file(&mut sandbox, path, media_kind)
-                .await?;
-            let bytes = sandbox.read_file(&resolved_path).await?;
-            return Ok((sandbox, resolved_path.clone(), bytes, Some(resolved_path)));
+            let resolved_path = self.download_remote_media_file(path, media_kind).await?;
+            let bytes = self.fileops.read_file(&resolved_path).await?;
+            return Ok((resolved_path.clone(), bytes, Some(resolved_path)));
         }
 
-        let resolved_path = resolve_file_path(&mut sandbox, path).await?;
-        let bytes = sandbox.read_file(&resolved_path).await?;
-        Ok((sandbox, resolved_path, bytes, None))
+        let resolved_path = resolve_file_path(self.exec.as_ref(), path).await?;
+        let bytes = self.fileops.read_file(&resolved_path).await?;
+        Ok((resolved_path, bytes, None))
     }
 
-    async fn read_media_file(&self, path: &str) -> Result<(SandboxManager, String, Vec<u8>)> {
-        let (sandbox, resolved_path, bytes, _) = self.read_media_source(path, None).await?;
-        Ok((sandbox, resolved_path, bytes))
+    async fn read_media_file(&self, path: &str) -> Result<(String, Vec<u8>)> {
+        let (resolved_path, bytes, _) = self.read_media_source(path, None).await?;
+        Ok((resolved_path, bytes))
     }
 
     fn resolve_audio_model_name(&self) -> Result<String> {
@@ -161,12 +268,7 @@ impl MediaFileProvider {
             .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
     }
 
-    async fn download_remote_media_file(
-        &self,
-        sandbox: &mut SandboxManager,
-        source: &str,
-        kind: MediaKind,
-    ) -> Result<String> {
+    async fn download_remote_media_file(&self, source: &str, kind: MediaKind) -> Result<String> {
         let url = normalize_remote_media_url(source)?;
         let content_type = self.probe_remote_media_content_type(&url).await;
 
@@ -184,8 +286,8 @@ impl MediaFileProvider {
             }
         }
 
-        sandbox
-            .exec_command(
+        self.exec
+            .exec(
                 &format!("mkdir -p {}", escape(REMOTE_MEDIA_DIR.into())),
                 None,
             )
@@ -200,7 +302,7 @@ impl MediaFileProvider {
             url = escape(url.as_str().into()),
         );
 
-        let result = sandbox.exec_command(&download_cmd, None).await?;
+        let result = self.exec.exec(&download_cmd, None).await?;
         if !result.success() {
             return Err(anyhow!(
                 "Failed to download remote media: {}",
@@ -208,7 +310,7 @@ impl MediaFileProvider {
             ));
         }
 
-        let size = sandbox.file_size_bytes(&resolved_path, None).await?;
+        let size = self.fileops.file_size_bytes(&resolved_path, None).await?;
         if size == 0 {
             return Err(anyhow!("Downloaded remote media is empty"));
         }
@@ -216,9 +318,10 @@ impl MediaFileProvider {
         Ok(resolved_path)
     }
 
-    async fn cleanup_downloaded_media(&self, sandbox: &mut SandboxManager, path: &str) {
-        if let Err(error) = sandbox
-            .exec_command(&format!("rm -f {}", escape(path.into())), None)
+    async fn cleanup_downloaded_media(&self, path: &str) {
+        if let Err(error) = self
+            .exec
+            .exec(&format!("rm -f {}", escape(path.into())), None)
             .await
         {
             warn!(path = %path, error = %error, "Failed to clean up remote media download");
@@ -247,17 +350,8 @@ impl MediaFileProvider {
             return Ok(None);
         };
 
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-        };
-
         let stable_path = format!("/workspace/browser_use/{session_id}/latest.png");
-        match sandbox.read_file(&stable_path).await {
+        match self.fileops.read_file(&stable_path).await {
             Ok(bytes) => {
                 warn!(
                     requested_path = %original_path,
@@ -272,7 +366,7 @@ impl MediaFileProvider {
 
     async fn handle_transcribe_audio_file(&self, arguments: &str) -> Result<String> {
         let args: AudioFileArgs = serde_json::from_str(arguments)?;
-        let (_sandbox, resolved_path, audio_bytes) = self.read_media_file(&args.path).await?;
+        let (resolved_path, audio_bytes) = self.read_media_file(&args.path).await?;
         let mime_type = args
             .mime_type
             .unwrap_or_else(|| infer_audio_mime_type(&resolved_path).to_string());
@@ -299,7 +393,7 @@ impl MediaFileProvider {
 
     async fn handle_describe_image_file(&self, arguments: &str) -> Result<String> {
         let args: ImageFileArgs = serde_json::from_str(arguments)?;
-        let (mut sandbox, resolved_path, image_bytes, cleanup_path) = match self
+        let (resolved_path, image_bytes, cleanup_path) = match self
             .read_media_source(&args.path, Some(MediaKind::Image))
             .await
         {
@@ -308,15 +402,7 @@ impl MediaFileProvider {
                 if let Some((fallback_path, bytes)) =
                     self.read_browser_use_latest_screenshot(&args.path).await?
                 {
-                    self.ensure_sandbox().await?;
-                    let sandbox = {
-                        let guard = self.sandbox.lock().await;
-                        guard
-                            .as_ref()
-                            .cloned()
-                            .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-                    };
-                    (sandbox, fallback_path, bytes, None)
+                    (fallback_path, bytes, None)
                 } else {
                     return Err(error);
                 }
@@ -336,7 +422,7 @@ impl MediaFileProvider {
             .map_err(|error| anyhow!("Image analysis failed: {error}"))?;
 
         if let Some(path) = cleanup_path {
-            self.cleanup_downloaded_media(&mut sandbox, &path).await;
+            self.cleanup_downloaded_media(&path).await;
         }
 
         Ok(serde_json::to_string(&json!({
@@ -349,7 +435,7 @@ impl MediaFileProvider {
 
     async fn handle_describe_video_file(&self, arguments: &str) -> Result<String> {
         let args: VideoFileArgs = serde_json::from_str(arguments)?;
-        let (mut sandbox, resolved_path, video_bytes, cleanup_path) = self
+        let (resolved_path, video_bytes, cleanup_path) = self
             .read_media_source(&args.path, Some(MediaKind::Video))
             .await?;
         let mime_type = args
@@ -369,7 +455,7 @@ impl MediaFileProvider {
             .map_err(|error| anyhow!("Video analysis failed: {error}"))?;
 
         if let Some(path) = cleanup_path {
-            self.cleanup_downloaded_media(&mut sandbox, &path).await;
+            self.cleanup_downloaded_media(&path).await;
         }
 
         Ok(serde_json::to_string(&json!({
@@ -379,6 +465,16 @@ impl MediaFileProvider {
             "model": model_name,
             "description": description,
         }))?)
+    }
+
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
+        debug!(tool = tool_name, "Executing media_file tool");
+        match tool_name {
+            TOOL_TRANSCRIBE_AUDIO_FILE => self.handle_transcribe_audio_file(arguments).await,
+            TOOL_DESCRIBE_IMAGE_FILE => self.handle_describe_image_file(arguments).await,
+            TOOL_DESCRIBE_VIDEO_FILE => self.handle_describe_video_file(arguments).await,
+            _ => anyhow::bail!("Unknown media_file tool: {tool_name}"),
+        }
     }
 }
 
@@ -554,108 +650,92 @@ fn remote_media_nonce() -> u128 {
         .as_nanos()
 }
 
+struct MediaFileToolExecutor {
+    provider: Arc<MediaFileProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
 #[async_trait]
-impl ToolProvider for MediaFileProvider {
-    fn name(&self) -> &'static str {
-        "media_file"
+impl ToolExecutor for MediaFileToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
     }
 
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: TOOL_TRANSCRIBE_AUDIO_FILE.to_string(),
-                description: "Transcribe an audio file that already exists in the sandbox. Use this when you need explicit audio understanding for a preserved upload instead of automatic preprocessing.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the audio file in the sandbox (relative or absolute)"
-                        },
-                        "mime_type": {
-                            "type": "string",
-                            "description": "Optional MIME type override, for example audio/ogg or audio/wav"
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Optional task-specific prompt that explains what transcription format or details you need, for example timestamps, speakers, or translation-ready text"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_DESCRIBE_IMAGE_FILE.to_string(),
-                description: "Analyze an image file stored in the sandbox or fetched from a direct URL and return a detailed description. Use this only when you explicitly need image understanding.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the image file in the sandbox (relative or absolute) or an http(s) URL to a remote image"
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Optional task-specific prompt that explains what to focus on"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_DESCRIBE_VIDEO_FILE.to_string(),
-                description: "Analyze a video file stored in the sandbox or fetched from a direct URL and return a detailed description of the clip. Use this only when you explicitly need video understanding.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the video file in the sandbox (relative or absolute) or an http(s) URL to a remote video"
-                        },
-                        "prompt": {
-                            "type": "string",
-                            "description": "Optional task-specific prompt that explains what to focus on"
-                        },
-                        "mime_type": {
-                            "type": "string",
-                            "description": "Optional MIME type override, for example video/mp4 or video/webm"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
-        ]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_TRANSCRIBE_AUDIO_FILE | TOOL_DESCRIBE_IMAGE_FILE | TOOL_DESCRIBE_VIDEO_FILE
-        )
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
     }
 
     async fn execute(
         &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        debug!(tool = tool_name, "Executing media_file tool");
-        match tool_name {
-            TOOL_TRANSCRIBE_AUDIO_FILE => self.handle_transcribe_audio_file(arguments).await,
-            TOOL_DESCRIBE_IMAGE_FILE => self.handle_describe_image_file(arguments).await,
-            TOOL_DESCRIBE_VIDEO_FILE => self.handle_describe_video_file(arguments).await,
-            _ => anyhow::bail!("Unknown media_file tool: {tool_name}"),
-        }
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(media_file_runtime_error)
+    }
+}
+
+fn media_file_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    if error.downcast_ref::<serde_json::Error>().is_some() {
+        ToolRuntimeError::InvalidArguments(error.to_string())
+    } else {
+        ToolRuntimeError::Failure(error.to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AgentSettings;
-    use crate::llm::LlmClient;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, OutputNormalizer, ProviderMetadata, ToolBatchId, ToolCallId,
+        ToolExecutionContext, ToolOutputStatus, ToolRuntimeConfig, ToolTimeoutConfig, TurnId,
+    };
+    use crate::config::{AgentSettings, ModuleRuntimeConfig};
+    use crate::llm::{InvocationId, LlmClient};
+    use chrono::Utc;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-media-file"),
+            batch_id: ToolBatchId::from("batch-media-file"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     #[test]
     fn infers_audio_mime_type_from_extension() {
@@ -693,13 +773,16 @@ mod tests {
 
     #[test]
     fn transcribe_audio_tool_accepts_custom_prompt() {
-        let provider =
-            MediaFileProvider::new(Arc::new(LlmClient::new(&AgentSettings::default())), 42_i64);
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
         let tool = provider
-            .tools()
+            .tool_runtime_executors()
             .into_iter()
-            .find(|tool| tool.name == TOOL_TRANSCRIBE_AUDIO_FILE)
-            .expect("transcribe_audio_file tool must exist");
+            .find(|executor| executor.name().as_str() == TOOL_TRANSCRIBE_AUDIO_FILE)
+            .expect("transcribe_audio_file executor must exist")
+            .spec();
 
         assert_eq!(
             tool.parameters["properties"]["prompt"]["type"],
@@ -733,9 +816,15 @@ mod tests {
 
     #[test]
     fn media_tool_descriptions_mention_urls() {
-        let provider =
-            MediaFileProvider::new(Arc::new(LlmClient::new(&AgentSettings::default())), 42_i64);
-        let tools = provider.tools();
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
+        let tools = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect::<Vec<_>>();
 
         let image_tool = tools
             .iter()
@@ -754,17 +843,88 @@ mod tests {
             .is_some_and(|text| text.contains("URL")));
     }
 
+    #[test]
+    fn typed_runtime_executors_register_media_tools() {
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
+
+        let names = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(names.contains(TOOL_TRANSCRIBE_AUDIO_FILE));
+        assert!(names.contains(TOOL_DESCRIBE_IMAGE_FILE));
+        assert!(names.contains(TOOL_DESCRIBE_VIDEO_FILE));
+    }
+
+    #[test]
+    fn typed_runtime_executors_for_filters_media_tools() {
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
+
+        let names = provider
+            .tool_runtime_executors_for(&[TOOL_DESCRIBE_IMAGE_FILE])
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec![TOOL_DESCRIBE_IMAGE_FILE.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_rejects_missing_path_before_sandbox() {
+        let provider = Arc::new(MediaFileProvider::new(
+            Arc::new(LlmClient::new(&AgentSettings::default())),
+            42_i64,
+        ));
+        let executor = provider
+            .tool_runtime_executors_for(&[TOOL_DESCRIBE_IMAGE_FILE])
+            .into_iter()
+            .next()
+            .expect("image executor");
+
+        let error = executor
+            .execute(runtime_invocation(TOOL_DESCRIBE_IMAGE_FILE, "{}"))
+            .await
+            .expect_err("missing path must be invalid arguments");
+
+        let output = OutputNormalizer::new(ToolRuntimeConfig::default())
+            .executor_error(&runtime_invocation(TOOL_DESCRIBE_IMAGE_FILE, "{}"), error);
+        assert_eq!(output.status, ToolOutputStatus::InvalidArguments);
+    }
+
     mod media_resolver_tests {
         use super::*;
 
+        fn with_provider_key(
+            mut settings: AgentSettings,
+            module_id: &str,
+            api_key: &str,
+        ) -> AgentSettings {
+            settings.modules.insert(
+                module_id.to_string(),
+                ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+            );
+            settings
+        }
+
         #[test]
         fn resolve_audio_model_name_supports_mistral_stt_route() {
-            let settings = AgentSettings {
-                chat_model_id: Some("chat-mistral".to_string()),
-                chat_model_provider: Some("mistral".to_string()),
-                mistral_api_key: Some("test-mistral-key".to_string()),
-                ..AgentSettings::default()
-            };
+            let settings = with_provider_key(
+                AgentSettings {
+                    chat_model_id: Some("chat-mistral".to_string()),
+                    chat_model_provider: Some("mistral".to_string()),
+                    ..AgentSettings::default()
+                },
+                "llm-provider/mistral",
+                "test-mistral-key",
+            );
             let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
             assert_eq!(
@@ -775,15 +935,21 @@ mod tests {
 
         #[test]
         fn resolve_video_model_name_falls_back_to_chat_route() {
-            let settings = AgentSettings {
-                chat_model_id: Some("chat-openrouter".to_string()),
-                chat_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("media-mistral".to_string()),
-                media_model_provider: Some("mistral".to_string()),
-                openrouter_api_key: Some("test-openrouter-key".to_string()),
-                mistral_api_key: Some("test-mistral-key".to_string()),
-                ..AgentSettings::default()
-            };
+            let settings = with_provider_key(
+                with_provider_key(
+                    AgentSettings {
+                        chat_model_id: Some("chat-openrouter".to_string()),
+                        chat_model_provider: Some("openrouter".to_string()),
+                        media_model_id: Some("media-mistral".to_string()),
+                        media_model_provider: Some("mistral".to_string()),
+                        ..AgentSettings::default()
+                    },
+                    "llm-provider/openrouter",
+                    "test-openrouter-key",
+                ),
+                "llm-provider/mistral",
+                "test-mistral-key",
+            );
             let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
             assert_eq!(
@@ -794,12 +960,15 @@ mod tests {
 
         #[test]
         fn resolve_image_model_name_reports_unavailable_route() {
-            let settings = AgentSettings {
-                chat_model_id: Some("chat-mistral".to_string()),
-                chat_model_provider: Some("mistral".to_string()),
-                mistral_api_key: Some("test-mistral-key".to_string()),
-                ..AgentSettings::default()
-            };
+            let settings = with_provider_key(
+                AgentSettings {
+                    chat_model_id: Some("chat-mistral".to_string()),
+                    chat_model_provider: Some("mistral".to_string()),
+                    ..AgentSettings::default()
+                },
+                "llm-provider/mistral",
+                "test-mistral-key",
+            );
             let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
             let error = provider

@@ -39,9 +39,6 @@ pub struct TelegramTopicSettings {
     /// Require explicit bot mention in this topic.
     #[serde(default)]
     pub require_mention: bool,
-    /// Skills whitelist for this topic.
-    #[serde(default)]
-    pub skills: Vec<String>,
     /// Optional topic-level system prompt.
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -62,31 +59,25 @@ pub struct TelegramSettings {
     #[serde(rename = "manager_allowed_users")]
     pub manager_allowed_users_str: Option<String>,
     /// Forum chat id where the manager control-plane agent lives.
-    #[serde(default, alias = "managerHomeChatId")]
+    #[serde(default)]
     pub manager_home_chat_id: Option<i64>,
     /// Forum thread id for the manager control-plane home topic.
-    #[serde(default, alias = "managerHomeThreadId")]
+    #[serde(default)]
     pub manager_home_thread_id: Option<i32>,
     /// Enables Attach/Detach flow controls in Agent Mode and Chat Mode.
-    #[serde(
-        default = "default_attach_detach_enabled",
-        alias = "attachDetachEnabled"
-    )]
+    #[serde(default = "default_attach_detach_enabled")]
     pub attach_detach_enabled: bool,
     /// Enables progress/status messages for reminder-triggered agent runs.
-    #[serde(
-        default = "default_reminder_agent_progress_enabled",
-        alias = "reminderAgentProgressEnabled"
-    )]
+    #[serde(default = "default_reminder_agent_progress_enabled")]
     pub reminder_agent_progress_enabled: bool,
     /// Allows reminder-triggered agent runs to return a no-change sentinel without notifying chat.
-    #[serde(default, alias = "reminderSilentNoChangeEnabled")]
+    #[serde(default)]
     pub reminder_silent_no_change_enabled: bool,
     /// Agent profile id used in the manager control-plane home topic.
-    #[serde(default, alias = "managerHomeAgentId")]
+    #[serde(default)]
     pub manager_home_agent_id: Option<String>,
     /// Per-topic overrides loaded from structured config.
-    #[serde(default, rename = "topicConfigs", alias = "topic_configs")]
+    #[serde(default)]
     pub topic_configs: Vec<TelegramTopicSettings>,
 }
 
@@ -212,7 +203,6 @@ impl TelegramSettings {
                 .map(ToOwned::to_owned),
             enabled: true,
             require_mention: false,
-            skills: Vec::new(),
             system_prompt: None,
         })
     }
@@ -349,18 +339,17 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_topic_configs_with_camel_case_keys() {
+    fn deserializes_topic_configs_with_canonical_keys() {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "topicConfigs": [
+          "topic_configs": [
             {
               "chatId": -10001,
               "threadId": 42,
               "agentId": "support-agent",
               "enabled": true,
               "requireMention": true,
-              "skills": ["faq", "billing"],
               "systemPrompt": "Use support tone"
             },
             {
@@ -395,7 +384,6 @@ mod tests {
         assert_eq!(first.agent_id.as_deref(), Some("support-agent"));
         assert!(first.enabled);
         assert!(first.require_mention);
-        assert_eq!(first.skills, vec!["faq", "billing"]);
         assert_eq!(first.system_prompt.as_deref(), Some("Use support tone"));
 
         let second = &settings.topic_configs[1];
@@ -404,7 +392,6 @@ mod tests {
         assert_eq!(second.agent_id.as_deref(), Some("fallback-agent"));
         assert!(second.enabled);
         assert!(!second.require_mention);
-        assert!(second.skills.is_empty());
         assert_eq!(second.system_prompt, None);
 
         let third = &settings.topic_configs[2];
@@ -413,7 +400,6 @@ mod tests {
         assert_eq!(third.agent_id, None);
         assert!(third.enabled);
         assert!(!third.require_mention);
-        assert!(third.skills.is_empty());
         assert_eq!(third.system_prompt, None);
     }
 
@@ -422,7 +408,7 @@ mod tests {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "topicConfigs": [
+          "topic_configs": [
             {"chatId": -10001, "threadId": 10, "agentId": "forum-agent"},
             {"chatId": -10001, "agentId": "default-chat-agent"}
           ]
@@ -462,7 +448,7 @@ mod tests {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "topicConfigs": [
+          "topic_configs": [
             {"chatId": -30003, "threadId": 5}
           ]
         }
@@ -530,7 +516,6 @@ mod tests {
                 agent_id: Some("static-agent".to_string()),
                 enabled: false,
                 require_mention: true,
-                skills: vec!["faq".to_string()],
                 system_prompt: Some("static prompt".to_string()),
             }],
         };
@@ -542,7 +527,6 @@ mod tests {
         assert_eq!(topic.agent_id.as_deref(), Some("control-plane"));
         assert!(topic.enabled);
         assert!(!topic.require_mention);
-        assert!(topic.skills.is_empty());
         assert_eq!(topic.system_prompt, None);
     }
 
@@ -598,8 +582,8 @@ mod tests {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "reminderAgentProgressEnabled": false,
-          "reminderSilentNoChangeEnabled": true
+          "reminder_agent_progress_enabled": false,
+          "reminder_silent_no_change_enabled": true
         }
         "#;
 
@@ -624,7 +608,7 @@ mod tests {
         let raw = r#"
         {
           "telegram_token": "dummy",
-          "attachDetachEnabled": false
+          "attach_detach_enabled": false
         }
         "#;
 

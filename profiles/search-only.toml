@@ -1,0 +1,9 @@
+profile = "search-only"
+cargo_features = ["profile-search-only"]
+
+[modules]
+"transport/telegram" = { enabled = true }
+"storage/r2" = { enabled = true }
+"llm-provider/opencode-go" = { enabled = true }
+"tool/webfetch-md" = { enabled = true }
+"tool/tavily" = { enabled = true }

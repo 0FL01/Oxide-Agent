@@ -37,7 +37,6 @@ fn topic(
         agent_id: None,
         enabled,
         require_mention,
-        skills: Vec::new(),
         system_prompt: system_prompt.map(str::to_string),
     }
 }
@@ -581,7 +580,6 @@ async fn resolve_topic_route_prefers_dynamic_binding_over_static_topic_config() 
                 agent_id: Some("static-agent".to_string()),
                 enabled: false,
                 require_mention: true,
-                skills: Vec::new(),
                 system_prompt: Some("static prompt".to_string()),
             }],
         },

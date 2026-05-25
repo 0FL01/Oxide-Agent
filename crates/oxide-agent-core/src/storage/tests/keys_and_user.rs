@@ -7,7 +7,7 @@ fn user_chat_history_key_uses_chat_uuid_namespace() {
 }
 
 #[test]
-fn legacy_user_history_key_stays_unchanged() {
+fn user_history_key_uses_user_root_namespace() {
     let key = user_history_key(42);
     assert_eq!(key, "users/42/history.json");
 }

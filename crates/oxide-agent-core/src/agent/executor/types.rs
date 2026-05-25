@@ -1,12 +1,10 @@
 use crate::agent::compaction::CompactionController;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
-use crate::agent::registry::ToolRegistry;
 use crate::agent::runner::{
     AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
 };
 use crate::agent::session::{AgentSession, PendingUserInput};
-use crate::agent::skills::SkillRegistry;
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::llm::{Message, ToolDefinition};
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
@@ -15,6 +13,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
 pub(super) struct AgentsMdContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,
@@ -22,6 +21,7 @@ pub(super) struct AgentsMdContext {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "manager-control-plane"), allow(dead_code))]
 pub(super) struct ManagerControlPlaneContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,
@@ -29,6 +29,7 @@ pub(super) struct ManagerControlPlaneContext {
 }
 
 #[derive(Clone)]
+#[cfg_attr(not(feature = "integration-ssh-mcp"), allow(dead_code))]
 pub(super) struct TopicInfraContext {
     pub(super) storage: Arc<dyn StorageProvider>,
     pub(super) user_id: i64,
@@ -39,8 +40,7 @@ pub(super) struct TopicInfraContext {
 
 pub(super) struct PreparedExecution {
     pub(super) todos_arc: Arc<Mutex<TodoList>>,
-    pub(super) registry: ToolRegistry,
-    pub(super) tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
+    pub(super) tool_runtime_registry: Arc<RuntimeToolRegistry>,
     pub(super) tools: Vec<ToolDefinition>,
     pub(super) system_prompt: String,
     pub(super) messages: Vec<Message>,
@@ -58,7 +58,6 @@ impl PreparedExecution {
         task_id: &'a str,
         progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
         session: &'a mut AgentSession,
-        skill_registry: Option<&'a mut SkillRegistry>,
         services: RunnerContextServices<'a>,
     ) -> AgentRunnerContext<'a> {
         let session_id = Some(session.session_id.to_string());
@@ -69,7 +68,6 @@ impl PreparedExecution {
                 task,
                 system_prompt: &self.system_prompt,
                 tools: &self.tools,
-                registry: &self.registry,
                 progress_tx,
                 todos_arc: &self.todos_arc,
                 task_id,
@@ -80,11 +78,10 @@ impl PreparedExecution {
             self.runner_config.clone(),
         );
 
-        ctx.skill_registry = skill_registry;
         ctx.session_id = session_id;
         ctx.memory_scope = memory_scope;
         ctx.memory_behavior = memory_behavior;
-        ctx.tool_runtime_registry = self.tool_runtime_registry.as_ref().map(Arc::clone);
+        ctx.tool_runtime_registry = Some(Arc::clone(&self.tool_runtime_registry));
 
         ctx
     }

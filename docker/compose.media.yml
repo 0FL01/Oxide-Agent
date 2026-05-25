@@ -1,0 +1,29 @@
+name: ${COMPOSE_PROJECT_NAME:-oxide-agent-media}
+
+services:
+  oxide_agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+      args:
+        CARGO_FEATURES: oxide-agent-telegram-bot/profile-media-enabled
+        PACKAGES: oxide-agent-telegram-bot
+        BINARIES: oxide-agent-telegram-bot
+        ENTRYPOINT_BINARY: oxide-agent-telegram-bot
+    image: oxide-agent:media
+    container_name: oxide_agent_media
+    restart: unless-stopped
+    env_file:
+      - path: ../.env.media
+        required: false
+    environment:
+      TZ: Europe/Moscow
+      RUST_LOG: oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
+      DEBUG_MODE: "false"
+    volumes:
+      - ../config:/app/config:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"

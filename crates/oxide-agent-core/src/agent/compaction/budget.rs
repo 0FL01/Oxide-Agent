@@ -35,14 +35,12 @@ pub fn estimate_request_budget(
     let system_prompt_tokens = estimate_text_tokens(request.system_prompt);
     let tool_schema_tokens = estimate_tool_tokens(request.tools);
     let hot_memory = estimate_hot_memory(agent.memory().get_messages());
-    let loaded_skill_tokens = agent.skill_token_count();
     let context_window_tokens = agent.memory().max_tokens();
     let reserved_output_tokens =
         usize::try_from(request.model_max_output_tokens).unwrap_or(usize::MAX);
     let hard_reserve_tokens = policy.hard_reserve_tokens;
     let total_input_tokens = system_prompt_tokens
         .saturating_add(tool_schema_tokens)
-        .saturating_add(loaded_skill_tokens)
         .saturating_add(hot_memory.total_tokens);
     let projected_total_tokens = total_input_tokens
         .saturating_add(reserved_output_tokens)
@@ -69,7 +67,6 @@ pub fn estimate_request_budget(
         system_prompt_tokens,
         tool_schema_tokens,
         hot_memory,
-        loaded_skill_tokens,
         reserved_output_tokens,
         hard_reserve_tokens,
         total_input_tokens,
@@ -90,7 +87,6 @@ fn estimate_hot_memory(messages: &[AgentMessage]) -> HotMemoryBudget {
         protected_live_tokens: 0,
         prunable_artifact_tokens: 0,
         compactable_history_tokens: 0,
-        skill_context_tokens: 0,
         runtime_context_tokens: 0,
     };
 
@@ -115,15 +111,8 @@ fn estimate_hot_memory(messages: &[AgentMessage]) -> HotMemoryBudget {
             }
         }
 
-        match message.resolved_kind() {
-            AgentMessageKind::SkillContext => {
-                budget.skill_context_tokens = budget.skill_context_tokens.saturating_add(tokens);
-            }
-            AgentMessageKind::RuntimeContext => {
-                budget.runtime_context_tokens =
-                    budget.runtime_context_tokens.saturating_add(tokens);
-            }
-            _ => {}
+        if message.resolved_kind() == AgentMessageKind::RuntimeContext {
+            budget.runtime_context_tokens = budget.runtime_context_tokens.saturating_add(tokens);
         }
     }
 
@@ -199,8 +188,6 @@ mod tests {
             "execute_command",
             "cargo check output",
         ));
-        assert!(session.register_loaded_skill("release", 321));
-
         let tools = [ToolDefinition {
             name: "execute_command".to_string(),
             description: "Run a shell command".to_string(),
@@ -223,7 +210,6 @@ mod tests {
         assert!(estimate.hot_memory.total_tokens > 0);
         assert!(estimate.hot_memory.pinned_tokens > 0);
         assert!(estimate.hot_memory.prunable_artifact_tokens > 0);
-        assert_eq!(estimate.loaded_skill_tokens, 321);
         assert_eq!(estimate.reserved_output_tokens, 512);
         assert_eq!(estimate.warning_threshold_tokens, 2_600);
         assert_eq!(estimate.compact_threshold_tokens, 3_400);
@@ -232,7 +218,6 @@ mod tests {
             estimate.total_input_tokens,
             estimate.system_prompt_tokens
                 + estimate.tool_schema_tokens
-                + estimate.loaded_skill_tokens
                 + estimate.hot_memory.total_tokens
         );
     }

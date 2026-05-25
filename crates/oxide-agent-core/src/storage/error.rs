@@ -1,5 +1,3 @@
-use aws_sdk_s3::error::SdkError;
-use aws_sdk_s3::operation::get_object::GetObjectError;
 use thiserror::Error;
 
 /// Errors that can occur during storage operations.
@@ -7,7 +5,7 @@ use thiserror::Error;
 pub enum StorageError {
     /// Error retrieving object from S3.
     #[error("S3 Get error: {0}")]
-    S3Get(Box<SdkError<GetObjectError>>),
+    S3Get(String),
     /// Error putting object into S3.
     #[error("S3 put error: {0}")]
     S3Put(String),

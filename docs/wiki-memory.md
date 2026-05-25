@@ -10,7 +10,7 @@ Oxide Agent durable memory is a bounded Markdown wiki stored in the existing S3/
 - Wiki writes are staged as validated patches in the session cache and flushed as bounded Markdown objects after successful runs.
 - Explicit remember requests and confident procedure/preference candidates create scoped `pages/*.md`; low-confidence facts go to `inbox/*.md`.
 - `index.md` and `log.md` are protected from planner edits and reconciled by runtime after patch validation, so new pages are discoverable without S3 `LIST`.
-- Skills embeddings are separate from durable memory and remain available for skills RAG.
+- The legacy skills/embeddings subsystem has been removed; durable context now comes from wiki memory, topic `AGENTS.md`, runtime injections, and enabled tools.
 
 ## Object Layout
 
@@ -27,18 +27,10 @@ With an optional storage prefix, wiki objects live under:
 
 `context_id` is derived deterministically from the transport memory scope. It is intentionally not split by `flow_id`, so topic/project memory can survive individual agent flows.
 
-## Legacy Data Cleanup
+## Removed Persistent-Memory Data
 
-The old Postgres persistent-memory tables and R2 objects under `persistent_memory/` are no longer read. Postgres has been fully removed from the stack (`docker-compose.yml` postgres service deleted, `crates/oxide-agent-memory` removed).
+The old Postgres persistent-memory tables and R2 objects under `persistent_memory/` are no longer runtime inputs. Postgres has been fully removed from the stack (`docker-compose.yml` postgres service deleted, `crates/oxide-agent-memory` removed).
 
-If you still have legacy data, clean up manually:
+Oxide Agent does not provide a migration, compatibility reader, startup cleanup routine, or transformation path for these records. Clean deployments recover only from `.env` plus the S3/R2-backed wiki memory object layout described above.
 
-```bash
-# R2/S3: remove old typed durable-memory objects after verifying the bucket/prefix.
-aws s3 rm s3://<bucket>/<optional-prefix>/persistent_memory/ --recursive --endpoint-url <r2-endpoint>
-
-# Postgres: only if you still have a Postgres instance with old tables — the service is no longer in compose.
-# DROP TABLE IF EXISTS memory_embeddings, memory_episodes, memory_threads, memory_session_states, memories;
-```
-
-The runtime does not require cleanup to be correct; cleanup only removes orphaned legacy data.
+If obsolete `persistent_memory/` objects or old Postgres tables still exist outside the current stack, treat them as orphaned deployment leftovers and delete them out-of-band after separate operator verification. The Oxide runtime must not depend on that deletion to start or to assemble durable context.

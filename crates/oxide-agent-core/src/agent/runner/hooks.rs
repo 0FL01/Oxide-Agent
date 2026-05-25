@@ -227,8 +227,7 @@ mod tests {
             Arc::new(crate::testing::mock_llm_simple("ok")),
         );
         let mut runner = AgentRunner::new(Arc::new(llm_client));
-        let registry = crate::agent::registry::ToolRegistry::new();
-        let tools = registry.all_tools();
+        let tools = Vec::new();
         let mut session = EphemeralSession::new(1024);
         session
             .memory_mut()
@@ -239,14 +238,12 @@ mod tests {
             task: "test transient context",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &registry,
             tool_runtime_registry: None,
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "transient-hook-test",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: None,
             memory_scope: None,

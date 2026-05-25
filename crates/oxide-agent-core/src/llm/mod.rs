@@ -1,10 +1,9 @@
 //! LLM providers and client
 //!
-//! Provides a unified interface to various LLM providers (Groq, Mistral, Gemini, OpenRouter).
+//! Provides a unified interface to various LLM providers (Groq, Mistral, OpenRouter).
 
 mod capabilities;
 mod client;
-pub mod embeddings;
 mod error;
 mod provider;
 /// Implementations of specific LLM providers
@@ -14,11 +13,18 @@ mod types;
 
 pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
 pub use client::LlmClient;
-pub use embeddings::EmbeddingTaskType;
 pub use error::LlmError;
 pub use provider::LlmProvider;
 #[cfg(test)]
 pub use provider::MockLlmProvider;
+#[cfg(any(
+    feature = "llm-chatgpt",
+    feature = "llm-mistral",
+    feature = "llm-zai",
+    feature = "llm-nvidia",
+    feature = "llm-opencode-go",
+    feature = "llm-openrouter"
+))]
 pub use support::http;
 pub use types::{
     ChatResponse, ChatWithToolsRequest, InvocationId, Message, ProviderItemId, ProviderToolCallId,
@@ -46,12 +52,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_correlation_defaults_to_invocation_id_for_legacy_wire_usage() {
-        let correlation = ToolCallCorrelation::from_legacy_tool_call_id("call-123");
+    fn tool_call_correlation_defaults_to_invocation_id_for_wire_usage() {
+        let correlation = ToolCallCorrelation::new("call-123");
 
         assert_eq!(correlation.invocation_id, InvocationId::from("call-123"));
         assert_eq!(correlation.wire_tool_call_id(), "call-123");
-        assert_eq!(correlation.legacy_tool_call_id(), "call-123");
+        assert_eq!(correlation.invocation_id.as_str(), "call-123");
         assert!(correlation.provider_tool_call_id.is_none());
         assert!(correlation.provider_item_id.is_none());
         assert_eq!(correlation.protocol, ToolProtocol::ChatLike);
@@ -67,7 +73,7 @@ mod tests {
             .with_transport(ToolTransport::ServerExecuted);
 
         assert_eq!(correlation.wire_tool_call_id(), "provider-call-9");
-        assert_eq!(correlation.legacy_tool_call_id(), "invoke-1");
+        assert_eq!(correlation.invocation_id.as_str(), "invoke-1");
         assert_eq!(
             correlation.provider_tool_call_id,
             Some(ProviderToolCallId::from("provider-call-9"))
@@ -83,7 +89,7 @@ mod tests {
     #[test]
     fn tool_call_uses_explicit_correlation_for_runtime_and_wire_ids() {
         let tool_call = ToolCall::new(
-            "legacy-provider-id",
+            "runtime-call-id",
             ToolCallFunction {
                 name: "search".to_string(),
                 arguments: "{}".to_string(),
@@ -105,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_message_serialization_includes_legacy_and_canonical_correlation_fields() {
+    fn tool_message_serialization_includes_wire_and_canonical_correlation_fields() {
         let message = Message::tool("call-1", "search", "result");
         let value = serde_json::to_value(&message).expect("message serializes");
 
@@ -117,19 +123,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tool_message_resolves_correlation_from_tool_call_id() {
-        let legacy = json!({
+    fn tool_message_resolves_correlation_from_tool_call_id() {
+        let value = json!({
             "role": "tool",
             "content": "result",
-            "tool_call_id": "call-legacy",
+            "tool_call_id": "call-wire",
             "name": "search"
         });
-        let message: Message = serde_json::from_value(legacy).expect("message deserializes");
+        let message: Message = serde_json::from_value(value).expect("message deserializes");
 
         assert_eq!(message.tool_call_correlation, None);
         assert_eq!(
             message.resolved_tool_call_correlation(),
-            Some(ToolCallCorrelation::from_legacy_tool_call_id("call-legacy"))
+            Some(ToolCallCorrelation::new("call-wire"))
         );
     }
 
@@ -185,12 +191,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
-        let legacy = json!({
+    fn assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
+        let value = json!({
             "role": "assistant",
             "content": "calling tools",
             "tool_calls": [{
-                "id": "call-legacy",
+                "id": "call-wire",
                 "function": {
                     "name": "search",
                     "arguments": "{}"
@@ -198,14 +204,12 @@ mod tests {
                 "is_recovered": false
             }]
         });
-        let message: Message = serde_json::from_value(legacy).expect("message deserializes");
+        let message: Message = serde_json::from_value(value).expect("message deserializes");
 
         assert_eq!(message.tool_call_correlations, None);
         assert_eq!(
             message.resolved_tool_call_correlations(),
-            Some(vec![ToolCallCorrelation::from_legacy_tool_call_id(
-                "call-legacy"
-            )])
+            Some(vec![ToolCallCorrelation::new("call-wire")])
         );
     }
 }

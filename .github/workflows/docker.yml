@@ -37,7 +37,15 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: docker/Dockerfile.app
           push: true
+          build-args: |
+            CARGO_FEATURES=oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full
+            PACKAGES=oxide-agent-telegram-bot oxide-agent-sandboxd
+            BINARIES=oxide-agent-telegram-bot oxide-agent-sandboxd
+            MCP_BINARIES=ssh-mcp jira-mcp mattermost-mcp
+            ENTRYPOINT_BINARY=oxide-agent-telegram-bot
+            RUNTIME_APT_PACKAGES=openssh-client
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha_short }}
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest

@@ -1,4 +1,4 @@
-use super::super::ssh_mcp::inspect_topic_infra_config;
+use super::super::inspect_topic_infra_config;
 use super::*;
 
 #[derive(Debug, Deserialize)]

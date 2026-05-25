@@ -5,9 +5,7 @@ use crate::agent::context::AgentContext;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
-use crate::agent::registry::ToolRegistry;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
-use crate::agent::skills::SkillRegistry;
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
     get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
@@ -38,8 +36,6 @@ pub struct AgentRunnerConfig {
     pub model_provider: Option<String>,
     /// Optional weighted fallback routes for this execution.
     pub model_routes: Vec<ModelInfo>,
-    /// Whether runtime/session-level Codex-style compaction is selected.
-    pub codex_style_compaction_enabled: bool,
 }
 
 impl AgentRunnerConfig {
@@ -62,7 +58,6 @@ impl AgentRunnerConfig {
             temperature: None,
             model_provider: None,
             model_routes: Vec::new(),
-            codex_style_compaction_enabled: true,
         }
     }
 
@@ -93,13 +88,6 @@ impl AgentRunnerConfig {
         self.model_routes = model_routes;
         self
     }
-
-    /// Set whether Codex-style runtime compaction is enabled for this run.
-    #[must_use]
-    pub const fn with_codex_style_compaction(mut self, enabled: bool) -> Self {
-        self.codex_style_compaction_enabled = enabled;
-        self
-    }
 }
 
 impl Default for AgentRunnerConfig {
@@ -122,8 +110,6 @@ pub struct AgentRunnerContext<'a> {
     pub system_prompt: &'a str,
     /// Available tools for the model.
     pub tools: &'a [ToolDefinition],
-    /// Tool registry for executing tool calls.
-    pub registry: &'a ToolRegistry,
     /// Optional typed runtime registry for v1 async tool execution.
     pub tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
     /// Progress event channel.
@@ -136,8 +122,6 @@ pub struct AgentRunnerContext<'a> {
     pub messages: &'a mut Vec<Message>,
     /// Agent context abstraction (memory + cancellation).
     pub agent: &'a mut dyn AgentContext,
-    /// Optional skill registry for dynamic skill injection.
-    pub skill_registry: Option<&'a mut SkillRegistry>,
     /// Optional runtime/session-level compaction controller.
     pub compaction_controller: Option<&'a CompactionController>,
     /// Stable top-level session identity when available.
@@ -154,7 +138,6 @@ pub(crate) struct AgentRunnerContextBase<'a> {
     pub(crate) task: &'a str,
     pub(crate) system_prompt: &'a str,
     pub(crate) tools: &'a [ToolDefinition],
-    pub(crate) registry: &'a ToolRegistry,
     pub(crate) progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     pub(crate) todos_arc: &'a Arc<Mutex<TodoList>>,
     pub(crate) task_id: &'a str,
@@ -173,14 +156,12 @@ impl<'a> AgentRunnerContext<'a> {
             task: base.task,
             system_prompt: base.system_prompt,
             tools: base.tools,
-            registry: base.registry,
             tool_runtime_registry: None,
             progress_tx: base.progress_tx,
             todos_arc: base.todos_arc,
             task_id: base.task_id,
             messages: base.messages,
             agent: base.agent,
-            skill_registry: None,
             compaction_controller,
             session_id: None,
             memory_scope: None,
@@ -271,18 +252,4 @@ pub(super) struct FinalResponseInput {
     pub final_answer: String,
     /// Optional reasoning content from the model.
     pub reasoning: Option<String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::AgentRunnerConfig;
-
-    #[test]
-    fn runner_config_defaults_to_codex_style_compaction() {
-        assert!(
-            AgentRunnerConfig::new("mock".to_string(), 1, 1, 30, 256)
-                .codex_style_compaction_enabled
-        );
-        assert!(AgentRunnerConfig::default().codex_style_compaction_enabled);
-    }
 }

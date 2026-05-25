@@ -1,76 +1,104 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
-use crate::agent::providers::{
-    AgentsMdProvider, CompressionProvider, DelegationProvider, FileHosterProvider,
-    KokoroTtsProvider, ManagerControlPlaneProvider, MediaFileProvider, ReminderProvider,
-    SandboxProvider, SshMcpProvider, StackLogsProvider, TodoList, TodosProvider,
-    WebFetchMdProvider, WikiMemoryProvider, YtdlpProvider,
-};
-use crate::agent::registry::ToolRegistry;
+use crate::agent::providers::{SandboxRuntime, TodoList};
+#[cfg(test)]
+use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
+#[cfg(feature = "tool-browser-use")]
+use crate::agent::tool_runtime::BrowserUseToolModule;
+#[cfg(feature = "tool-compression")]
+use crate::agent::tool_runtime::CompressionToolModule;
+#[cfg(feature = "tool-delegation")]
+use crate::agent::tool_runtime::DelegationToolModule;
+#[cfg(feature = "tool-file-delivery")]
+use crate::agent::tool_runtime::FileDeliveryToolModule;
+#[cfg(feature = "integration-mcp-jira")]
+use crate::agent::tool_runtime::JiraMcpToolModule;
+#[cfg(feature = "tool-tts-kokoro")]
+use crate::agent::tool_runtime::KokoroTtsToolModule;
+#[cfg(feature = "manager-control-plane")]
+use crate::agent::tool_runtime::ManagerControlPlaneModuleContext;
+#[cfg(feature = "manager-control-plane")]
+use crate::agent::tool_runtime::ManagerControlPlaneToolModule;
+#[cfg(feature = "integration-mcp-mattermost")]
+use crate::agent::tool_runtime::MattermostMcpToolModule;
+#[cfg(feature = "tool-media-audio")]
+use crate::agent::tool_runtime::MediaAudioToolModule;
+#[cfg(feature = "tool-media-image")]
+use crate::agent::tool_runtime::MediaImageToolModule;
+#[cfg(feature = "tool-media-video")]
+use crate::agent::tool_runtime::MediaVideoToolModule;
+#[cfg(feature = "tool-reminder")]
+use crate::agent::tool_runtime::ReminderToolModule;
+#[cfg(feature = "tool-sandbox-exec")]
+use crate::agent::tool_runtime::SandboxExecToolModule;
+#[cfg(feature = "tool-sandbox-fileops")]
+use crate::agent::tool_runtime::SandboxFileOpsToolModule;
+#[cfg(feature = "tool-sandbox-recreate")]
+use crate::agent::tool_runtime::SandboxRecreateToolModule;
+#[cfg(feature = "tool-searxng")]
+use crate::agent::tool_runtime::SearxngToolModule;
+#[cfg(feature = "tool-tts-silero")]
+use crate::agent::tool_runtime::SileroTtsToolModule;
+#[cfg(feature = "tool-stack-logs")]
+use crate::agent::tool_runtime::StackLogsToolModule;
+#[cfg(feature = "tool-tavily")]
+use crate::agent::tool_runtime::TavilyToolModule;
+#[cfg(feature = "tool-todos")]
+use crate::agent::tool_runtime::TodosToolModule;
+#[cfg(any(
+    feature = "tool-sandbox-exec",
+    feature = "tool-sandbox-fileops",
+    feature = "tool-sandbox-recreate",
+    feature = "manager-control-plane",
+    feature = "integration-ssh-mcp",
+    feature = "integration-mcp-jira",
+    feature = "integration-mcp-mattermost",
+    feature = "tool-agents-md",
+    feature = "tool-browser-use",
+    feature = "tool-compression",
+    feature = "tool-delegation",
+    feature = "tool-file-delivery",
+    feature = "tool-media-audio",
+    feature = "tool-media-image",
+    feature = "tool-media-video",
+    feature = "tool-reminder",
+    feature = "tool-searxng",
+    feature = "tool-stack-logs",
+    feature = "tool-tavily",
+    feature = "tool-todos",
+    feature = "tool-tts-kokoro",
+    feature = "tool-tts-silero",
+    feature = "tool-webfetch-md",
+    feature = "tool-wiki-memory",
+    feature = "tool-ytdlp",
+))]
+use crate::agent::tool_runtime::ToolModule;
+#[cfg(feature = "tool-webfetch-md")]
+use crate::agent::tool_runtime::WebFetchMdToolModule;
+#[cfg(feature = "tool-wiki-memory")]
+use crate::agent::tool_runtime::WikiMemoryToolModule;
+#[cfg(feature = "tool-ytdlp")]
+use crate::agent::tool_runtime::YtdlpToolModule;
+#[cfg(feature = "tool-agents-md")]
+use crate::agent::tool_runtime::{AgentsMdModuleContext, AgentsMdToolModule};
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::tool_runtime::{SshMcpModuleContext, SshMcpToolModule};
 use crate::agent::tool_runtime::{
-    v1_tool_runtime_enabled_for_model, OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
-    ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
+    ToolExecutor, ToolModuleContext, ToolModuleContextParts, ToolRegistry as RuntimeToolRegistry,
 };
+#[cfg(test)]
 use crate::config::ModelInfo;
-use crate::llm::ToolDefinition;
-use async_trait::async_trait;
+use crate::sandbox::SandboxScope;
 use std::sync::Arc;
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::Mutex;
 use tracing::warn;
-
-#[cfg(feature = "browser_use")]
-use crate::agent::providers::BrowserUseProvider;
-#[cfg(feature = "searxng")]
-use crate::agent::providers::SearxngProvider;
-#[cfg(feature = "tavily")]
-use crate::agent::providers::TavilyProvider;
 
 impl AgentExecutor {
     /// Build the currently exposed tool definitions for this executor state.
     #[must_use]
     pub fn current_tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
-        let model_routes = self.settings.get_configured_agent_model_routes();
-        let model = model_routes
-            .first()
-            .cloned()
-            .unwrap_or_else(|| self.settings.get_configured_agent_model());
-        if Self::v1_tool_runtime_enabled_for_model(&model) {
-            let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-            return self.build_tool_runtime_registry(todos_arc, None).specs();
-        }
-
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-        let registry = self.build_tool_registry(todos_arc, None);
-        self.execution_profile
-            .tool_policy()
-            .filter_definitions(registry.all_tools())
-    }
-
-    pub(super) fn build_tool_registry(
-        &self,
-        todos_arc: Arc<Mutex<TodoList>>,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> ToolRegistry {
-        let mut registry = ToolRegistry::new();
-
-        // Core providers: todos, sandbox, filehoster, media file analysis, ytdlp, delegation
-        self.register_core_providers(&mut registry, todos_arc, progress_tx);
-
-        // Topic-scoped providers: agents_md, manager, ssh, reminders
-        self.register_topic_providers(&mut registry);
-        self.register_wiki_memory_provider(&mut registry);
-
-        // Feature-gated MCP, search, and browser automation providers
-        self.register_mcp_providers(&mut registry);
-        self.register_search_providers(&mut registry);
-        self.register_browser_providers(&mut registry);
-
-        // Optional TTS providers.
-        self.register_kokoro_tts_provider(&mut registry, progress_tx);
-        self.register_silero_tts_provider(&mut registry, progress_tx);
-
-        registry
+        self.build_tool_runtime_registry(todos_arc, None).specs()
     }
 
     #[must_use]
@@ -81,43 +109,172 @@ impl AgentExecutor {
     ) -> RuntimeToolRegistry {
         let mut registry = RuntimeToolRegistry::new();
 
-        let todos_provider = Arc::new(TodosProvider::new(todos_arc));
-        self.register_tool_runtime_executors(
-            &mut registry,
-            todos_provider.tool_runtime_executors(progress_tx.cloned()),
-        );
-
-        let sandbox_scope = self.session.sandbox_scope().clone();
-        let sandbox_provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(sandbox_scope).with_progress_tx(tx.clone())
-        } else {
-            SandboxProvider::new(sandbox_scope)
-        };
-        self.register_tool_runtime_executors(
-            &mut registry,
-            Arc::new(sandbox_provider).tool_runtime_executors(),
-        );
-
-        self.register_topic_runtime_providers(&mut registry, progress_tx);
-        self.register_wiki_memory_runtime_provider(&mut registry, progress_tx);
-
-        if let Some(topic_infra) = &self.topic_infra {
-            let ssh_provider = Arc::new(SshMcpProvider::new(
-                Arc::clone(&topic_infra.storage),
-                topic_infra.user_id,
-                topic_infra.topic_id.clone(),
-                topic_infra.config.clone(),
-                topic_infra.approvals.clone(),
-            ));
-            self.register_tool_runtime_executors(
-                &mut registry,
-                ssh_provider.tool_runtime_executors(),
-            );
-        }
+        let module_ctx = self.build_tool_module_context(Arc::clone(&todos_arc), progress_tx);
+        self.register_tool_runtime_modules(&mut registry, &module_ctx);
 
         registry
     }
 
+    fn register_tool_runtime_modules(
+        &self,
+        registry: &mut RuntimeToolRegistry,
+        ctx: &ToolModuleContext,
+    ) {
+        #[cfg(not(any(
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-sandbox-recreate",
+            feature = "manager-control-plane",
+            feature = "integration-ssh-mcp",
+            feature = "integration-mcp-jira",
+            feature = "integration-mcp-mattermost",
+            feature = "tool-agents-md",
+            feature = "tool-browser-use",
+            feature = "tool-compression",
+            feature = "tool-delegation",
+            feature = "tool-file-delivery",
+            feature = "tool-media-audio",
+            feature = "tool-media-image",
+            feature = "tool-media-video",
+            feature = "tool-reminder",
+            feature = "tool-searxng",
+            feature = "tool-stack-logs",
+            feature = "tool-tavily",
+            feature = "tool-todos",
+            feature = "tool-tts-kokoro",
+            feature = "tool-tts-silero",
+            feature = "tool-webfetch-md",
+            feature = "tool-wiki-memory",
+            feature = "tool-ytdlp"
+        )))]
+        let _ = (registry, ctx);
+
+        #[cfg(feature = "tool-agents-md")]
+        self.register_tool_runtime_module(registry, &AgentsMdToolModule, ctx);
+        #[cfg(feature = "integration-mcp-jira")]
+        self.register_tool_runtime_module(registry, &JiraMcpToolModule, ctx);
+        #[cfg(feature = "manager-control-plane")]
+        self.register_tool_runtime_module(registry, &ManagerControlPlaneToolModule, ctx);
+        #[cfg(feature = "integration-mcp-mattermost")]
+        self.register_tool_runtime_module(registry, &MattermostMcpToolModule, ctx);
+        #[cfg(feature = "tool-browser-use")]
+        self.register_tool_runtime_module(registry, &BrowserUseToolModule, ctx);
+        #[cfg(feature = "tool-compression")]
+        self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
+        #[cfg(feature = "tool-delegation")]
+        self.register_tool_runtime_module(registry, &DelegationToolModule, ctx);
+        #[cfg(feature = "tool-file-delivery")]
+        self.register_tool_runtime_module(registry, &FileDeliveryToolModule, ctx);
+        #[cfg(feature = "tool-media-audio")]
+        self.register_tool_runtime_module(registry, &MediaAudioToolModule, ctx);
+        #[cfg(feature = "tool-media-image")]
+        self.register_tool_runtime_module(registry, &MediaImageToolModule, ctx);
+        #[cfg(feature = "tool-media-video")]
+        self.register_tool_runtime_module(registry, &MediaVideoToolModule, ctx);
+        #[cfg(feature = "tool-reminder")]
+        self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
+        #[cfg(feature = "tool-searxng")]
+        self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
+        #[cfg(feature = "integration-ssh-mcp")]
+        self.register_tool_runtime_module(registry, &SshMcpToolModule, ctx);
+        #[cfg(feature = "tool-stack-logs")]
+        self.register_tool_runtime_module(registry, &StackLogsToolModule, ctx);
+        #[cfg(feature = "tool-tavily")]
+        self.register_tool_runtime_module(registry, &TavilyToolModule, ctx);
+        #[cfg(feature = "tool-todos")]
+        self.register_tool_runtime_module(registry, &TodosToolModule, ctx);
+        #[cfg(feature = "tool-tts-kokoro")]
+        self.register_tool_runtime_module(registry, &KokoroTtsToolModule, ctx);
+        #[cfg(feature = "tool-tts-silero")]
+        self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
+        #[cfg(feature = "tool-webfetch-md")]
+        self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
+        #[cfg(feature = "tool-wiki-memory")]
+        self.register_tool_runtime_module(registry, &WikiMemoryToolModule, ctx);
+        #[cfg(feature = "tool-ytdlp")]
+        self.register_tool_runtime_module(registry, &YtdlpToolModule, ctx);
+        #[cfg(feature = "tool-sandbox-exec")]
+        self.register_tool_runtime_module(registry, &SandboxExecToolModule, ctx);
+        #[cfg(feature = "tool-sandbox-fileops")]
+        self.register_tool_runtime_module(registry, &SandboxFileOpsToolModule, ctx);
+        #[cfg(feature = "tool-sandbox-recreate")]
+        self.register_tool_runtime_module(registry, &SandboxRecreateToolModule, ctx);
+    }
+
+    #[cfg(any(
+        feature = "tool-sandbox-exec",
+        feature = "tool-sandbox-fileops",
+        feature = "tool-sandbox-recreate",
+        feature = "manager-control-plane",
+        feature = "integration-ssh-mcp",
+        feature = "integration-mcp-jira",
+        feature = "integration-mcp-mattermost",
+        feature = "tool-agents-md",
+        feature = "tool-browser-use",
+        feature = "tool-compression",
+        feature = "tool-delegation",
+        feature = "tool-file-delivery",
+        feature = "tool-media-audio",
+        feature = "tool-media-image",
+        feature = "tool-media-video",
+        feature = "tool-reminder",
+        feature = "tool-searxng",
+        feature = "tool-stack-logs",
+        feature = "tool-tavily",
+        feature = "tool-todos",
+        feature = "tool-tts-kokoro",
+        feature = "tool-tts-silero",
+        feature = "tool-webfetch-md",
+        feature = "tool-wiki-memory",
+        feature = "tool-ytdlp"
+    ))]
+    fn register_tool_runtime_module<M>(
+        &self,
+        registry: &mut RuntimeToolRegistry,
+        module: &M,
+        ctx: &ToolModuleContext,
+    ) where
+        M: ToolModule,
+    {
+        let module_id = module.module_id();
+        if !self.settings.is_module_enabled(module_id.as_str()) {
+            tracing::debug!(%module_id, "Skipping disabled typed tool runtime module");
+            return;
+        }
+
+        tracing::debug!(%module_id, "Registering typed tool runtime module");
+        self.register_tool_runtime_executors(registry, module.tool_runtime_executors(ctx));
+    }
+
+    #[cfg_attr(
+        not(any(
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-sandbox-recreate",
+            feature = "manager-control-plane",
+            feature = "integration-ssh-mcp",
+            feature = "integration-mcp-jira",
+            feature = "integration-mcp-mattermost",
+            feature = "tool-agents-md",
+            feature = "tool-browser-use",
+            feature = "tool-compression",
+            feature = "tool-file-delivery",
+            feature = "tool-media-audio",
+            feature = "tool-media-image",
+            feature = "tool-media-video",
+            feature = "tool-reminder",
+            feature = "tool-searxng",
+            feature = "tool-stack-logs",
+            feature = "tool-tavily",
+            feature = "tool-todos",
+            feature = "tool-tts-kokoro",
+            feature = "tool-tts-silero",
+            feature = "tool-webfetch-md",
+            feature = "tool-wiki-memory",
+            feature = "tool-ytdlp"
+        )),
+        allow(dead_code)
+    )]
     fn register_tool_runtime_executors(
         &self,
         registry: &mut RuntimeToolRegistry,
@@ -142,122 +299,76 @@ impl AgentExecutor {
         }
     }
 
-    fn register_tool_runtime_provider(
-        &self,
-        registry: &mut RuntimeToolRegistry,
-        provider: Arc<dyn ToolProvider>,
-        progress_tx: Option<&Sender<AgentEvent>>,
-    ) {
-        self.register_tool_runtime_executors(
-            registry,
-            ProviderRuntimeExecutor::from_provider(provider, progress_tx.cloned()),
-        );
-    }
-
-    fn register_topic_runtime_providers(
-        &self,
-        registry: &mut RuntimeToolRegistry,
-        progress_tx: Option<&Sender<AgentEvent>>,
-    ) {
-        if let Some(agents_md) = &self.agents_md {
-            self.register_tool_runtime_provider(
-                registry,
-                Arc::new(AgentsMdProvider::new(
-                    Arc::clone(&agents_md.storage),
-                    agents_md.user_id,
-                    agents_md.topic_id.clone(),
-                )),
-                progress_tx,
-            );
-        }
-
-        if let Some(manager_provider) = self.manager_control_plane_provider() {
-            self.register_tool_runtime_provider(registry, Arc::new(manager_provider), progress_tx);
-        }
-
-        if let Some(reminder_context) = &self.reminder_context {
-            self.register_tool_runtime_provider(
-                registry,
-                Arc::new(ReminderProvider::new(reminder_context.clone())),
-                progress_tx,
-            );
-        }
-    }
-
-    fn register_wiki_memory_runtime_provider(
-        &self,
-        registry: &mut RuntimeToolRegistry,
-        progress_tx: Option<&Sender<AgentEvent>>,
-    ) {
-        let Some(store) = self.wiki_memory_store.clone() else {
-            return;
-        };
-        let scope = self.session.memory_scope();
-        self.register_tool_runtime_provider(
-            registry,
-            Arc::new(WikiMemoryProvider::new(
-                store,
-                scope.user_id,
-                scope.context_key.clone(),
-            )),
-            progress_tx,
-        );
-    }
-
     #[must_use]
+    #[cfg(test)]
     pub(super) fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
         v1_tool_runtime_enabled_for_model(model)
     }
 
-    fn register_core_providers(
+    fn build_tool_module_context(
         &self,
-        registry: &mut ToolRegistry,
         todos_arc: Arc<Mutex<TodoList>>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        registry.register(Box::new(TodosProvider::new(Arc::clone(&todos_arc))));
-
+    ) -> ToolModuleContext {
         let sandbox_scope = self.session.sandbox_scope().clone();
-        let sandbox_provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(sandbox_scope.clone()).with_progress_tx(tx.clone())
-        } else {
-            SandboxProvider::new(sandbox_scope.clone())
-        };
-        registry.register(Box::new(sandbox_provider));
-        registry.register(Box::new(CompressionProvider::new()));
-        registry.register(Box::new(StackLogsProvider::new()));
-        registry.register(Box::new(FileHosterProvider::new(sandbox_scope.clone())));
-        registry.register(Box::new(MediaFileProvider::new(
-            self.runner.llm_client(),
-            sandbox_scope.clone(),
-        )));
-
-        let ytdlp_provider = if let Some(tx) = progress_tx {
-            YtdlpProvider::new(sandbox_scope.clone()).with_progress_tx(tx.clone())
-        } else {
-            YtdlpProvider::new(sandbox_scope.clone())
-        };
-        registry.register(Box::new(ytdlp_provider));
-
-        let mut delegation_provider = DelegationProvider::new(
-            self.runner.llm_client(),
-            sandbox_scope,
-            Arc::clone(&self.settings),
-        );
-        if let Some(agents_md) = &self.agents_md {
-            delegation_provider = delegation_provider.with_topic_agents_md_context(
-                Arc::clone(&agents_md.storage),
-                agents_md.user_id,
-                agents_md.topic_id.clone(),
-            );
-        }
-        if let Some(profile_scope) = self.browser_use_profile_scope() {
-            delegation_provider = delegation_provider.with_browser_use_profile_scope(profile_scope);
-        }
-        registry.register(Box::new(delegation_provider));
+        ToolModuleContext::new(ToolModuleContextParts {
+            todos: todos_arc,
+            sandbox_scope: sandbox_scope.clone(),
+            sandbox_runtime: self.build_sandbox_runtime(sandbox_scope, progress_tx),
+            llm_client: self.runner.llm_client(),
+            settings: Arc::clone(&self.settings),
+            browser_use_profile_scope: self.browser_use_profile_scope(),
+            browser_use_semaphore: None,
+            #[cfg(feature = "tool-agents-md")]
+            agents_md_context: self.agents_md.as_ref().map(|context| {
+                AgentsMdModuleContext::new(
+                    Arc::clone(&context.storage),
+                    context.user_id,
+                    context.topic_id.clone(),
+                )
+            }),
+            #[cfg(feature = "manager-control-plane")]
+            manager_control_plane_context: self.manager_control_plane.as_ref().map(|context| {
+                ManagerControlPlaneModuleContext::new(
+                    Arc::clone(&context.storage),
+                    context.user_id,
+                    context.topic_lifecycle.clone(),
+                )
+            }),
+            #[cfg(feature = "integration-ssh-mcp")]
+            ssh_mcp_context: self.topic_infra.as_ref().map(|context| {
+                SshMcpModuleContext::new(
+                    Arc::clone(&context.storage),
+                    context.user_id,
+                    context.topic_id.clone(),
+                    context.config.clone(),
+                    context.approvals.clone(),
+                )
+            }),
+            #[cfg(feature = "tool-reminder")]
+            reminder_context: self.reminder_context.clone(),
+            #[cfg(feature = "tool-wiki-memory")]
+            wiki_memory_store: self.wiki_memory_store.clone(),
+            #[cfg(feature = "tool-wiki-memory")]
+            memory_scope: self.session.memory_scope().clone(),
+            progress_tx: progress_tx.cloned(),
+        })
     }
 
-    #[cfg(feature = "browser_use")]
+    fn build_sandbox_runtime(
+        &self,
+        sandbox_scope: SandboxScope,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> Arc<SandboxRuntime> {
+        let runtime = if let Some(tx) = progress_tx {
+            SandboxRuntime::new(sandbox_scope).with_progress_tx(tx.clone())
+        } else {
+            SandboxRuntime::new(sandbox_scope)
+        };
+        Arc::new(runtime)
+    }
+
+    #[cfg(feature = "tool-browser-use")]
     pub(super) fn browser_use_profile_scope(&self) -> Option<String> {
         self.reminder_context
             .as_ref()
@@ -276,7 +387,7 @@ impl AgentExecutor {
             .filter(|scope| !scope.is_empty())
     }
 
-    #[cfg(not(feature = "browser_use"))]
+    #[cfg(not(feature = "tool-browser-use"))]
     pub(super) fn browser_use_profile_scope(&self) -> Option<String> {
         self.reminder_context
             .as_ref()
@@ -293,319 +404,5 @@ impl AgentExecutor {
             })
             .map(|scope| scope.trim().to_string())
             .filter(|scope| !scope.is_empty())
-    }
-
-    fn register_topic_providers(&self, registry: &mut ToolRegistry) {
-        if let Some(agents_md) = &self.agents_md {
-            registry.register(Box::new(AgentsMdProvider::new(
-                Arc::clone(&agents_md.storage),
-                agents_md.user_id,
-                agents_md.topic_id.clone(),
-            )));
-        }
-
-        if let Some(manager_provider) = self.manager_control_plane_provider() {
-            registry.register(Box::new(manager_provider));
-        }
-
-        if let Some(topic_infra) = &self.topic_infra {
-            registry.register(Box::new(crate::agent::providers::SshMcpProvider::new(
-                Arc::clone(&topic_infra.storage),
-                topic_infra.user_id,
-                topic_infra.topic_id.clone(),
-                topic_infra.config.clone(),
-                topic_infra.approvals.clone(),
-            )));
-        }
-
-        if let Some(reminder_context) = &self.reminder_context {
-            registry.register(Box::new(ReminderProvider::new(reminder_context.clone())));
-        }
-    }
-
-    fn manager_control_plane_provider(&self) -> Option<ManagerControlPlaneProvider> {
-        let control_plane = self.manager_control_plane.as_ref()?;
-        let mut manager_provider = ManagerControlPlaneProvider::new(
-            Arc::clone(&control_plane.storage),
-            control_plane.user_id,
-        );
-        if let Some(topic_lifecycle) = &control_plane.topic_lifecycle {
-            manager_provider = manager_provider.with_topic_lifecycle(Arc::clone(topic_lifecycle));
-        }
-        Some(manager_provider)
-    }
-
-    fn register_wiki_memory_provider(&self, registry: &mut ToolRegistry) {
-        let Some(store) = self.wiki_memory_store.clone() else {
-            return;
-        };
-        let scope = self.session.memory_scope();
-        registry.register(Box::new(WikiMemoryProvider::new(
-            store,
-            scope.user_id,
-            scope.context_key.clone(),
-        )));
-    }
-
-    #[cfg(feature = "jira")]
-    fn register_jira_mcp_provider(registry: &mut ToolRegistry) {
-        if let Some(config) = crate::agent::providers::JiraMcpConfig::from_env() {
-            let binary_path = config.binary_path.clone();
-            tracing::debug!(
-                binary_path = %binary_path,
-                jira_url_present = !config.jira_url.is_empty(),
-                jira_email_present = !config.jira_email.is_empty(),
-                jira_token_present = !config.jira_token.is_empty(),
-                "Registering Jira MCP provider"
-            );
-            registry.register(Box::new(crate::agent::providers::JiraMcpProvider::new(
-                config,
-            )));
-            tracing::debug!(binary_path = %binary_path, "Jira MCP provider registered");
-        } else {
-            tracing::warn!(
-                "jira feature is enabled but JIRA_URL, JIRA_EMAIL, or JIRA_API_TOKEN is not set; \
-                 Jira MCP provider will not be available. Set these env vars to enable it."
-            );
-        }
-    }
-
-    #[cfg(feature = "mattermost")]
-    fn register_mattermost_mcp_provider(registry: &mut ToolRegistry) {
-        if let Some(config) = crate::agent::providers::MattermostMcpConfig::from_env() {
-            let binary_path = config.binary_path.clone();
-            tracing::debug!(
-                binary_path = %binary_path,
-                mattermost_url_present = !config.mattermost_url.is_empty(),
-                mattermost_token_present = !config.mattermost_token.is_empty(),
-                timeout_secs = config.timeout_secs,
-                max_retries = config.max_retries,
-                verify_ssl = config.verify_ssl,
-                "Registering Mattermost MCP provider"
-            );
-            registry.register(Box::new(
-                crate::agent::providers::MattermostMcpProvider::new(config),
-            ));
-            tracing::debug!(binary_path = %binary_path, "Mattermost MCP provider registered");
-        } else {
-            tracing::warn!(
-                "mattermost feature is enabled but MATTERMOST_URL or MATTERMOST_TOKEN is not set; \
-                 Mattermost MCP provider will not be available. Set these env vars to enable it."
-            );
-        }
-    }
-
-    fn register_mcp_providers(&self, _registry: &mut ToolRegistry) {
-        #[cfg(feature = "jira")]
-        Self::register_jira_mcp_provider(_registry);
-
-        #[cfg(feature = "mattermost")]
-        Self::register_mattermost_mcp_provider(_registry);
-    }
-
-    fn register_search_providers(&self, registry: &mut ToolRegistry) {
-        #[cfg(feature = "tavily")]
-        if crate::config::is_tavily_enabled() {
-            if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
-                if !tavily_key.trim().is_empty() {
-                    if let Ok(provider) = TavilyProvider::new(&tavily_key) {
-                        registry.register(Box::new(provider));
-                    }
-                } else {
-                    warn!("Tavily enabled but TAVILY_API_KEY is empty; provider not registered");
-                }
-            } else {
-                warn!("Tavily enabled but TAVILY_API_KEY is not set; provider not registered");
-            }
-        }
-        #[cfg(not(feature = "tavily"))]
-        if crate::config::is_tavily_enabled() {
-            tracing::warn!("Tavily enabled but feature not compiled in");
-        }
-
-        #[cfg(feature = "searxng")]
-        if crate::config::is_searxng_enabled() {
-            if let Some(url) = crate::config::get_searxng_url() {
-                if !url.trim().is_empty() {
-                    match SearxngProvider::new(&url) {
-                        Ok(provider) => registry.register(Box::new(provider)),
-                        Err(error) => {
-                            warn!(error = %error, "SearXNG provider initialization failed")
-                        }
-                    }
-                } else {
-                    warn!("SearXNG enabled but SEARXNG_URL is empty; provider not registered");
-                }
-            } else {
-                warn!("SearXNG enabled but SEARXNG_URL is not set; provider not registered");
-            }
-        }
-        #[cfg(not(feature = "searxng"))]
-        if crate::config::is_searxng_enabled() {
-            tracing::warn!("SearXNG enabled but feature not compiled in");
-        }
-
-        registry.register(Box::new(WebFetchMdProvider::new()));
-    }
-
-    fn register_browser_providers(&self, _registry: &mut ToolRegistry) {
-        // NOTE: Browser Use is disabled until a quality vision-capable agent model
-        // is available at a reasonable price-per-token. To re-enable, set
-        // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
-        // `BROWSER_USE_MODEL_PROVIDER`). See `docs/browser-use.md`.
-        #[cfg(feature = "browser_use")]
-        if crate::config::is_browser_use_enabled() {
-            if let Some(url) = crate::config::get_browser_use_url() {
-                if !url.trim().is_empty() {
-                    let mut provider = BrowserUseProvider::new(&url, Arc::clone(&self.settings));
-                    if let Some(profile_scope) = self.browser_use_profile_scope() {
-                        provider = provider.with_profile_scope(profile_scope);
-                    }
-                    provider = provider.with_sandbox_scope(self.session.sandbox_scope().clone());
-                    _registry.register(Box::new(provider));
-                } else {
-                    warn!(
-                        "Browser Use enabled but BROWSER_USE_URL is empty; provider not registered"
-                    );
-                }
-            } else {
-                warn!(
-                    "Browser Use enabled but BROWSER_USE_URL is not set; provider not registered"
-                );
-            }
-        }
-        #[cfg(not(feature = "browser_use"))]
-        if crate::config::is_browser_use_enabled() {
-            tracing::warn!("Browser Use enabled but feature not compiled in");
-        }
-    }
-
-    fn register_kokoro_tts_provider(
-        &self,
-        registry: &mut ToolRegistry,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        let config = crate::agent::providers::tts::TtsConfig::from_env();
-
-        if let Ok(url) = std::env::var("KOKORO_TTS_URL") {
-            if url.trim().is_empty() {
-                tracing::debug!(
-                    "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
-                );
-                return;
-            }
-        }
-
-        tracing::debug!(url = %config.base_url, "Registering TTS provider");
-        let sandbox_scope = self.session.sandbox_scope().clone();
-
-        let provider = if let Some(tx) = progress_tx {
-            KokoroTtsProvider::from_config(config)
-                .with_sandbox_scope(sandbox_scope)
-                .with_progress_tx(tx.clone())
-        } else {
-            KokoroTtsProvider::from_config(config).with_sandbox_scope(sandbox_scope)
-        };
-
-        let base_url = provider.base_url().to_string();
-        registry.register(Box::new(provider));
-        tracing::debug!(url = %base_url, "Kokoro TTS provider registered");
-    }
-
-    fn register_silero_tts_provider(
-        &self,
-        registry: &mut ToolRegistry,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) {
-        let config = crate::agent::providers::silero_tts::SileroTtsConfig::from_env();
-
-        if let Ok(url) = std::env::var("SILERO_TTS_URL") {
-            if url.trim().is_empty() {
-                tracing::debug!(
-                    "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
-                );
-                return;
-            }
-        }
-
-        tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");
-        let sandbox_scope = self.session.sandbox_scope().clone();
-
-        let provider = if let Some(tx) = progress_tx {
-            crate::agent::providers::silero_tts::SileroTtsProvider::from_config(config)
-                .with_sandbox_scope(sandbox_scope)
-                .with_progress_tx(tx.clone())
-        } else {
-            crate::agent::providers::silero_tts::SileroTtsProvider::from_config(config)
-                .with_sandbox_scope(sandbox_scope)
-        };
-
-        let base_url = provider.base_url().to_string();
-        registry.register(Box::new(provider));
-        tracing::debug!(url = %base_url, "Silero TTS provider registered");
-    }
-}
-
-struct ProviderRuntimeExecutor {
-    provider: Arc<dyn ToolProvider>,
-    name: ToolName,
-    spec: ToolDefinition,
-    progress_tx: Option<Sender<AgentEvent>>,
-    execution_lock: Arc<Mutex<()>>,
-}
-
-impl ProviderRuntimeExecutor {
-    fn from_provider(
-        provider: Arc<dyn ToolProvider>,
-        progress_tx: Option<Sender<AgentEvent>>,
-    ) -> Vec<Arc<dyn ToolExecutor>> {
-        let execution_lock = Arc::new(Mutex::new(()));
-        provider
-            .tools()
-            .into_iter()
-            .map(|spec| {
-                Arc::new(Self {
-                    provider: Arc::clone(&provider),
-                    name: ToolName::from(spec.name.clone()),
-                    spec,
-                    progress_tx: progress_tx.clone(),
-                    execution_lock: Arc::clone(&execution_lock),
-                }) as Arc<dyn ToolExecutor>
-            })
-            .collect()
-    }
-}
-
-#[async_trait]
-impl ToolExecutor for ProviderRuntimeExecutor {
-    fn name(&self) -> ToolName {
-        self.name.clone()
-    }
-
-    fn spec(&self) -> ToolDefinition {
-        self.spec.clone()
-    }
-
-    async fn execute(
-        &self,
-        invocation: ToolInvocation,
-    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
-        let _guard = self.execution_lock.lock().await;
-        let output = self
-            .provider
-            .execute(
-                self.name.as_str(),
-                &invocation.raw_arguments,
-                self.progress_tx.as_ref(),
-                Some(&invocation.cancellation_token),
-            )
-            .await
-            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))?;
-        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
-            timeout: invocation.timeout.clone(),
-            artifact_dir: invocation.execution_context.artifact_dir.clone(),
-            ..ToolRuntimeConfig::default()
-        });
-        Ok(normalizer.success(&invocation, &output, ""))
     }
 }

@@ -8,7 +8,7 @@ use super::{
     parse_agent_callback_action, parse_agent_control_command, pending_cancel_confirmation,
     pending_cancel_message, prepare_completed_response_delivery,
     queue_followup_during_completed_response_delivery, remember_pending_cancel_confirmation,
-    remember_pending_cancel_message, remove_sessions_with_compat, resolve_execution_profile,
+    remember_pending_cancel_message, remove_session, resolve_execution_profile,
     select_existing_session_id, session_manager_control_plane_enabled,
     should_create_fresh_flow_on_detach, should_merge_text_batch, take_pending_cancel_confirmation,
     take_pending_cancel_message, use_inline_flow_controls, AgentCallbackAction,
@@ -661,22 +661,9 @@ fn existing_session_selection_prefers_primary_key() {
         Some(ThreadId(MessageId(42))),
         "flow-a",
     );
-    let selected = select_existing_session_id(keys, true, true);
+    let selected = select_existing_session_id(keys, true);
 
     assert_eq!(selected, Some(keys.primary));
-}
-
-#[test]
-fn existing_session_selection_falls_back_to_legacy_key() {
-    let keys = agent_mode_session_keys(
-        12345,
-        ChatId(-1001),
-        Some(ThreadId(MessageId(42))),
-        "flow-a",
-    );
-    let selected = select_existing_session_id(keys, false, true);
-
-    assert_eq!(selected, Some(keys.legacy));
 }
 
 #[test]
@@ -1013,17 +1000,10 @@ fn manager_control_plane_gating_disables_tools_inside_created_topics() {
         },
     );
 
-    let thread_keys = agent_mode_session_keys(
-        77,
-        ChatId(-100_123),
-        Some(ThreadId(MessageId(42))),
-        "flow-a",
-    );
     let general_spec = resolve_thread_spec_from_context(true, true, None);
     let created_topic_spec =
         resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
 
-    assert_ne!(thread_keys.primary, thread_keys.legacy);
     assert!(manager_control_plane_enabled(
         &settings,
         88,
@@ -1057,8 +1037,8 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
     let allowed_keys = agent_mode_session_keys(88, chat_id, Some(general_thread), "flow-a");
     let blocked_keys = agent_mode_session_keys(77, chat_id, Some(blocked_thread), "flow-a");
 
-    remove_sessions_with_compat(allowed_keys).await;
-    remove_sessions_with_compat(blocked_keys).await;
+    remove_session(allowed_keys).await;
+    remove_session(blocked_keys).await;
 
     let allowed_session = ensure_session_exists(EnsureSessionContext {
         session_keys: allowed_keys,
@@ -1108,8 +1088,8 @@ async fn threaded_transport_session_disables_manager_tools_inside_created_topics
         Some(false)
     );
 
-    remove_sessions_with_compat(allowed_keys).await;
-    remove_sessions_with_compat(blocked_keys).await;
+    remove_session(allowed_keys).await;
+    remove_session(blocked_keys).await;
 }
 
 #[tokio::test]
@@ -1122,7 +1102,7 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
     let llm = test_llm(&manager_settings);
     let keys = agent_mode_session_keys(88, chat_id, Some(thread_id), "flow-a");
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys: keys,
@@ -1148,7 +1128,7 @@ async fn threaded_transport_session_keeps_manager_tools_disabled_for_allowlisted
         Some(false)
     );
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 }
 
 #[tokio::test]
@@ -1163,7 +1143,7 @@ async fn new_flow_injects_topic_agents_md_once() {
     let llm = test_llm(&settings);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-agents");
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys: keys,
@@ -1199,7 +1179,7 @@ async fn new_flow_injects_topic_agents_md_once() {
     assert!(memory.has_topic_agents_md());
     assert_eq!(pinned_count, 1);
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 }
 
 #[tokio::test]
@@ -1225,7 +1205,7 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
     let llm = test_llm(&settings);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-existing");
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 
     let session_id = ensure_session_exists(EnsureSessionContext {
         session_keys: keys,
@@ -1261,7 +1241,7 @@ async fn restored_flow_does_not_duplicate_topic_agents_md() {
 
     assert_eq!(pinned_count, 1);
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 }
 
 #[tokio::test]
@@ -1276,7 +1256,7 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
     let llm = test_llm(&allowed_settings);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 
     let first_session = ensure_session_exists(EnsureSessionContext {
         session_keys: keys,
@@ -1326,7 +1306,7 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
         Some(false)
     );
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 }
 
 #[tokio::test]
@@ -1342,7 +1322,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
     let llm = test_llm(&allowed_settings);
     let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), flow_id);
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 
     let first_session = ensure_session_exists(EnsureSessionContext {
         session_keys: keys,
@@ -1434,7 +1414,7 @@ async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refre
         Some(false)
     );
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 }
 
 #[tokio::test]
@@ -1486,100 +1466,6 @@ async fn completed_response_delivery_commits_terminal_send_without_followups() {
 }
 
 #[tokio::test]
-async fn threaded_transport_session_does_not_bypass_rbac_via_legacy_fallback() {
-    let bot = Bot::new("token");
-    let chat_id = ChatId(-100_123);
-    let thread_id = ThreadId(MessageId(52));
-    let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
-    let legacy_manager_settings = test_settings(Some("77"));
-    let llm = test_llm(&legacy_manager_settings);
-    let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
-
-    remove_sessions_with_compat(keys).await;
-
-    let legacy_executor = oxide_agent_core::agent::AgentExecutor::new(
-        llm.clone(),
-        AgentSession::new(keys.legacy),
-        legacy_manager_settings.agent.clone(),
-    )
-    .with_manager_control_plane(storage.clone(), 77);
-    SESSION_REGISTRY.insert(keys.legacy, legacy_executor).await;
-
-    let restricted_settings = test_settings(None);
-    let resolved_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
-        context_key: "topic-a".to_string(),
-        agent_flow_id: "flow-a".to_string(),
-        agent_flow_created: false,
-        sandbox_scope: test_sandbox_scope(77, "topic-a"),
-        user_id: 77,
-        bot: &bot,
-        transport_ctx: SessionTransportContext {
-            chat_id,
-            manager_default_chat_id: Some(chat_id),
-            thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
-        },
-        llm: &llm,
-        storage: &storage,
-        settings: &restricted_settings,
-    })
-    .await;
-
-    assert_eq!(resolved_session, keys.primary);
-    assert_eq!(
-        session_manager_control_plane_enabled(resolved_session).await,
-        Some(false)
-    );
-
-    remove_sessions_with_compat(keys).await;
-}
-
-#[tokio::test]
-async fn threaded_transport_session_migrates_idle_legacy_session_to_primary_scope() {
-    let bot = Bot::new("token");
-    let chat_id = ChatId(-100_123);
-    let thread_id = ThreadId(MessageId(53));
-    let storage: Arc<dyn StorageProvider> = Arc::new(NoopStorage::default());
-    let settings = test_settings(None);
-    let llm = test_llm(&settings);
-    let keys = agent_mode_session_keys(77, chat_id, Some(thread_id), "flow-a");
-
-    remove_sessions_with_compat(keys).await;
-
-    let legacy_executor = oxide_agent_core::agent::AgentExecutor::new(
-        llm.clone(),
-        AgentSession::new(keys.legacy),
-        settings.agent.clone(),
-    );
-    SESSION_REGISTRY.insert(keys.legacy, legacy_executor).await;
-
-    let resolved_session = ensure_session_exists(EnsureSessionContext {
-        session_keys: keys,
-        context_key: "topic-a".to_string(),
-        agent_flow_id: "flow-a".to_string(),
-        agent_flow_created: false,
-        sandbox_scope: test_sandbox_scope(77, "topic-a"),
-        user_id: 77,
-        bot: &bot,
-        transport_ctx: SessionTransportContext {
-            chat_id,
-            manager_default_chat_id: Some(chat_id),
-            thread_spec: resolve_thread_spec_from_context(true, true, Some(thread_id)),
-        },
-        llm: &llm,
-        storage: &storage,
-        settings: &settings,
-    })
-    .await;
-
-    assert_eq!(resolved_session, keys.primary);
-    assert!(SESSION_REGISTRY.contains(&keys.primary).await);
-    assert!(!SESSION_REGISTRY.contains(&keys.legacy).await);
-
-    remove_sessions_with_compat(keys).await;
-}
-
-#[tokio::test]
 async fn ensure_session_attaches_missing_wiki_store_to_cached_primary_session() {
     let bot = Bot::new("token");
     let chat_id = ChatId(-100_123);
@@ -1588,7 +1474,7 @@ async fn ensure_session_attaches_missing_wiki_store_to_cached_primary_session() 
     let llm = test_llm(&settings);
     let keys = agent_mode_session_keys(77, chat_id, None, "flow-a");
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 
     let executor_without_wiki_store = oxide_agent_core::agent::AgentExecutor::new(
         llm.clone(),
@@ -1625,7 +1511,7 @@ async fn ensure_session_attaches_missing_wiki_store_to_cached_primary_session() 
         .expect("cached session should remain registered");
     assert!(executor_arc.read().await.has_wiki_memory_store());
 
-    remove_sessions_with_compat(keys).await;
+    remove_session(keys).await;
 }
 
 #[tokio::test]

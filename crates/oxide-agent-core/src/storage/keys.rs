@@ -135,6 +135,7 @@ pub fn topic_agents_md_key(user_id: i64, topic_id: &str) -> String {
 }
 
 #[must_use]
+#[cfg(feature = "storage-s3-r2")]
 pub(crate) fn topic_prompt_guard_key(user_id: i64, topic_id: &str) -> String {
     format!("users/{user_id}/control_plane/topic_prompts/{topic_id}")
 }

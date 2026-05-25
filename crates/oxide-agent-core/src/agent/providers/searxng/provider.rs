@@ -2,12 +2,16 @@ use super::backoff::MAX_RETRIES;
 use super::client::SearxngClient;
 use super::format::format_search_results;
 use super::types::{SearxngSearchArgs, TOOL_NAME};
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::config::{get_searxng_rotation_engines, get_searxng_timeout};
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
 use tracing::error;
@@ -30,16 +34,20 @@ impl SearxngProvider {
             client: SearxngClient::new(base_url, timeout, get_searxng_rotation_engines())?,
         })
     }
-}
 
-#[async_trait]
-impl ToolProvider for SearxngProvider {
-    fn name(&self) -> &'static str {
-        "searxng"
+    /// Build native typed runtime executors for SearXNG tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let spec = Self::tool_definition();
+        vec![Arc::new(SearxngToolExecutor {
+            provider: Arc::clone(self),
+            name: ToolName::from(spec.name.clone()),
+            spec,
+        })]
     }
 
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
+    fn tool_definition() -> ToolDefinition {
+        ToolDefinition {
             name: TOOL_NAME.to_string(),
             description: concat!(
                 "Search the public web using a self-hosted SearXNG instance. ",
@@ -88,20 +96,10 @@ impl ToolProvider for SearxngProvider {
                 },
                 "required": ["query"]
             }),
-        }]
+        }
     }
 
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == TOOL_NAME
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
         debug!(tool = tool_name, "Executing SearXNG tool");
 
         match tool_name {
@@ -139,5 +137,38 @@ impl ToolProvider for SearxngProvider {
             }
             _ => anyhow::bail!("Unknown SearXNG tool: {tool_name}"),
         }
+    }
+}
+
+struct SearxngToolExecutor {
+    provider: Arc<SearxngProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+}
+
+#[async_trait]
+impl ToolExecutor for SearxngToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }

@@ -1,24 +1,17 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::{debug, info, instrument, trace, warn};
 
+use super::providers;
 use super::{
-    capabilities, embeddings, providers, support, ChatResponse, ChatWithToolsRequest, LlmError,
-    LlmProvider, Message, ProviderCapabilities, ToolDefinition,
+    capabilities, support, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
+    ProviderCapabilities, ToolDefinition,
 };
 
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
-    embedding: Option<(
-        embeddings::EmbeddingProvider,
-        String,
-        String,
-        u32,
-        Option<u32>,
-    )>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Default chat model name for user-facing requests
@@ -32,93 +25,8 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
-    fn create_embedding_provider(
-        settings: &crate::config::AgentSettings,
-    ) -> Option<(
-        embeddings::EmbeddingProvider,
-        String,
-        String,
-        u32,
-        Option<u32>,
-    )> {
-        let provider_name = settings.embedding_provider.as_ref()?;
-        let model_id = settings.embedding_model_id.clone()?;
-        let profile_id = settings
-            .get_embedding_profile_id()
-            .unwrap_or_else(|| model_id.clone());
-        let provider_name = provider_name.to_ascii_lowercase();
-        let prompt_style = settings.embedding_prompt_style.clone().unwrap_or_default();
-        let query_prefix = settings.embedding_query_prefix.clone();
-        let document_prefix = settings.embedding_document_prefix.clone();
-
-        let provider = match provider_name.as_str() {
-            "gemini" | "google" => {
-                let api_key = settings.gemini_api_key.clone()?;
-                embeddings::EmbeddingProvider::new_gemini(api_key)
-            }
-            "mistral" => {
-                let api_key = settings.mistral_api_key.clone()?;
-                let api_base = embeddings::get_api_base(&provider_name)?;
-                embeddings::EmbeddingProvider::new_openai_compatible(
-                    api_key,
-                    api_base.to_string(),
-                    prompt_style,
-                    query_prefix,
-                    document_prefix,
-                )
-            }
-            "openrouter" => {
-                let api_key = settings.openrouter_api_key.clone()?;
-                let api_base = embeddings::get_api_base(&provider_name)?;
-                embeddings::EmbeddingProvider::new_openai_compatible(
-                    api_key,
-                    api_base.to_string(),
-                    prompt_style,
-                    query_prefix,
-                    document_prefix,
-                )
-            }
-            "openai-base" => {
-                let api_key = settings.embedding_openai_api_key.clone()?;
-                let api_base = settings.embedding_openai_base_url.clone()?;
-                embeddings::EmbeddingProvider::new_openai_compatible(
-                    api_key,
-                    api_base,
-                    prompt_style,
-                    query_prefix,
-                    document_prefix,
-                )
-            }
-            _ => return None,
-        };
-
-        let dimensions = settings
-            .embedding_dimensions
-            .unwrap_or(crate::config::DEFAULT_EMBEDDING_DIMENSIONS);
-        let request_dimensions = match provider_name.as_str() {
-            "mistral" => None,
-            _ => Some(dimensions),
-        };
-
-        Some((
-            provider,
-            model_id,
-            profile_id,
-            dimensions,
-            request_dimensions,
-        ))
-    }
-
     fn provider_key(name: &str) -> String {
-        name.to_ascii_lowercase()
-    }
-
-    fn insert_provider(
-        providers: &mut HashMap<String, Arc<dyn LlmProvider>>,
-        name: &str,
-        provider: Arc<dyn LlmProvider>,
-    ) {
-        providers.insert(Self::provider_key(name), provider);
+        providers::provider_key(name)
     }
 
     fn resolve_media_route_for_modality(
@@ -155,7 +63,7 @@ impl LlmClient {
         }
 
         Err(LlmError::MissingConfig(format!(
-            "No configured route supports {} (expected providers: gemini/openrouter, mistral for STT)",
+            "No configured route supports {} (expected providers: openrouter, mistral for STT)",
             modality.label()
         )))
     }
@@ -257,115 +165,10 @@ impl LlmClient {
         };
         let media_model_name = media_model_id.clone();
 
-        let http_client = support::http::create_http_client();
-
-        let mut providers = HashMap::new();
-
-        if let Some(auth_path) = settings
-            .chatgpt_auth_path
-            .as_ref()
-            .filter(|path| !path.trim().is_empty())
-        {
-            let resolved_auth_path = providers::chatgpt::resolve_auth_file_path(Some(auth_path))
-                .unwrap_or_else(|_| PathBuf::from(auth_path));
-            if resolved_auth_path.exists() {
-                Self::insert_provider(
-                    &mut providers,
-                    "chatgpt",
-                    Arc::new(providers::ChatGptProvider::new_with_client(
-                        resolved_auth_path,
-                        http_client.clone(),
-                    )),
-                );
-            }
-        }
-
-        if let Some(api_key) = settings.groq_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "groq",
-                Arc::new(providers::GroqProvider::new(api_key.clone())),
-            );
-        }
-
-        if let Some(api_key) = settings.mistral_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "mistral",
-                Arc::new(providers::MistralProvider::new_with_client(
-                    api_key.clone(),
-                    http_client.clone(),
-                )),
-            );
-        }
-
-        if let Some(api_key) = settings.minimax_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "minimax",
-                Arc::new(providers::MiniMaxProvider::new(api_key.clone())),
-            );
-        }
-
-        if let Some(api_key) = settings.zai_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "zai",
-                Arc::new(providers::ZaiProvider::new_with_client(
-                    api_key.clone(),
-                    settings.zai_api_base.clone(),
-                    http_client.clone(),
-                )),
-            );
-        }
-
-        if let Some(api_key) = settings.gemini_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "gemini",
-                Arc::new(providers::GeminiProvider::new(api_key.clone())),
-            );
-        }
-
-        if let Some(api_key) = settings.nvidia_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "nvidia",
-                Arc::new(providers::NvidiaProvider::new_with_client(
-                    api_key.clone(),
-                    settings.nvidia_api_base.clone(),
-                    http_client.clone(),
-                )),
-            );
-        }
-
-        if let Some(api_key) = settings.opencode_go_api_key.as_ref() {
-            let provider: Arc<dyn LlmProvider> =
-                Arc::new(providers::OpenCodeGoProvider::new_with_client(
-                    api_key.clone(),
-                    settings.opencode_go_api_base.clone(),
-                    http_client.clone(),
-                ));
-            Self::insert_provider(&mut providers, "opencode-go", Arc::clone(&provider));
-            Self::insert_provider(&mut providers, "opencode_go", provider);
-        }
-
-        if let Some(api_key) = settings.openrouter_api_key.as_ref() {
-            Self::insert_provider(
-                &mut providers,
-                "openrouter",
-                Arc::new(providers::OpenRouterProvider::new_with_client(
-                    api_key.clone(),
-                    settings.openrouter_site_url.clone(),
-                    settings.openrouter_site_name.clone(),
-                    http_client,
-                )),
-            );
-        }
+        let providers = providers::build_configured_providers(settings);
 
         Self {
             providers,
-            embedding: Self::create_embedding_provider(settings),
             models: settings.get_available_models(),
             chat_model_name,
             media_model_name,
@@ -385,12 +188,6 @@ impl LlmClient {
         self.is_audio_transcription_available()
             || self.is_image_understanding_available()
             || self.is_video_understanding_available()
-    }
-
-    /// Returns true if embedding provider is configured.
-    #[must_use]
-    pub fn is_embedding_available(&self) -> bool {
-        self.embedding.is_some()
     }
 
     /// Returns true if requested provider is configured.
@@ -500,8 +297,7 @@ impl LlmClient {
 
     /// Perform a single chat completion request with tool calling (no retry).
     ///
-    /// This is the base method used by `chat_with_tools` which handles retries internally.
-    /// For agent runner retry handling with UI events, use `chat_with_tools_once` instead.
+    /// This is the base method used by the agent runner, which owns retry handling and UI events.
     #[instrument(skip(self, system_prompt, messages, tools))]
     pub async fn chat_with_tools_single_attempt(
         &self,
@@ -734,56 +530,6 @@ impl LlmClient {
         support::backoff::get_rate_limit_wait_secs(error)
     }
 
-    /// Generate an embedding vector using configured provider.
-    ///
-    /// # Errors
-    ///
-    /// Returns `LlmError::MissingConfig` if embedding provider is not configured, or any provider error.
-    pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-        self.generate_embedding_for_task(text, None, None).await
-    }
-
-    /// Generate an embedding vector with provider-specific retrieval task metadata.
-    pub async fn generate_embedding_for_task(
-        &self,
-        text: &str,
-        task_type: Option<embeddings::EmbeddingTaskType>,
-        title: Option<&str>,
-    ) -> Result<Vec<f32>, LlmError> {
-        let (provider, model, _, _, request_dimensions) =
-            self.embedding.as_ref().ok_or_else(|| {
-                LlmError::MissingConfig("embedding provider not configured".to_string())
-            })?;
-
-        provider
-            .generate(text, model, task_type, title, *request_dimensions)
-            .await
-    }
-
-    /// Probe embedding dimension by making a test request.
-    ///
-    /// Returns `None` if embedding provider is not configured or the probe fails.
-    pub async fn probe_embedding_dimension(&self) -> Option<usize> {
-        let (provider, model, _, _, _) = self.embedding.as_ref()?;
-        provider.probe_dimension(model).await
-    }
-
-    /// Return the configured embedding output dimensionality.
-    ///
-    /// Returns `None` if embedding provider is not configured.
-    #[must_use]
-    pub fn embedding_dimensions(&self) -> Option<u32> {
-        self.embedding.as_ref().map(|(_, _, _, dim, _)| *dim)
-    }
-
-    /// Return the active embedding profile identifier used for cache/index isolation.
-    #[must_use]
-    pub fn embedding_profile_id(&self) -> Option<&str> {
-        self.embedding
-            .as_ref()
-            .map(|(_, _, profile_id, _, _)| profile_id.as_str())
-    }
-
     /// Transcribe audio to text
     ///
     /// # Errors
@@ -823,7 +569,7 @@ impl LlmClient {
 
     /// Transcribe audio with automatic fallback for text-only providers and retry logic.
     ///
-    /// If the provider returns `ZAI_FALLBACK_TO_GEMINI` error, uses `media_model_provider` instead.
+    /// If the provider returns `ZAI_FALLBACK_TO_MEDIA` error, uses `media_model_provider` instead.
     /// Retries up to 5 times with exponential backoff for retryable errors.
     ///
     /// # Errors
@@ -851,7 +597,7 @@ impl LlmClient {
 
         match primary_result {
             Ok(text) => Ok(text),
-            Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_GEMINI" => {
+            Err(LlmError::Unknown(msg)) if msg == "ZAI_FALLBACK_TO_MEDIA" => {
                 let media_provider = self
                     .media_model_provider
                     .as_deref()
@@ -990,21 +736,35 @@ impl LlmClient {
 #[cfg(test)]
 mod tests {
     use super::LlmClient;
-    use crate::config::AgentSettings;
+    use crate::config::{AgentSettings, ModuleRuntimeConfig};
     use crate::llm::{ChatResponse, Message, MockLlmProvider};
     use std::sync::Arc;
 
+    fn with_provider_key(
+        mut settings: AgentSettings,
+        module_id: &str,
+        api_key: &str,
+    ) -> AgentSettings {
+        settings.modules.insert(
+            module_id.to_string(),
+            ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+        );
+        settings
+    }
+
     #[test]
     fn media_resolver_prefers_explicit_media_route_for_video() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-gemini".to_string()),
-            media_model_provider: Some("gemini".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            gemini_api_key: Some("test-gemini-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                media_model_id: Some("media-gemini".to_string()),
+                media_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let llm = LlmClient::new(&settings);
         let route = llm
@@ -1012,20 +772,26 @@ mod tests {
             .expect("media route should resolve");
 
         assert_eq!(route.id, "media-gemini");
-        assert_eq!(route.provider, "gemini");
+        assert_eq!(route.provider, "openrouter");
     }
 
     #[test]
     fn media_resolver_falls_back_to_chat_route_when_media_is_stt_only() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-mistral".to_string()),
-            media_model_provider: Some("mistral".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            with_provider_key(
+                AgentSettings {
+                    chat_model_id: Some("chat-openrouter".to_string()),
+                    chat_model_provider: Some("openrouter".to_string()),
+                    media_model_id: Some("media-mistral".to_string()),
+                    media_model_provider: Some("mistral".to_string()),
+                    ..AgentSettings::default()
+                },
+                "llm-provider/openrouter",
+                "test-openrouter-key",
+            ),
+            "llm-provider/mistral",
+            "test-mistral-key",
+        );
 
         let llm = LlmClient::new(&settings);
         let image_route = llm
@@ -1038,12 +804,15 @@ mod tests {
 
     #[test]
     fn media_resolver_allows_mistral_for_audio_stt_only() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-mistral".to_string()),
-            chat_model_provider: Some("mistral".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-mistral".to_string()),
+                chat_model_provider: Some("mistral".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/mistral",
+            "test-mistral-key",
+        );
 
         let llm = LlmClient::new(&settings);
         let audio_route = llm
@@ -1057,14 +826,17 @@ mod tests {
 
     #[test]
     fn media_resolver_skips_unconfigured_provider_routes() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-gemini".to_string()),
-            media_model_provider: Some("gemini".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                media_model_id: Some("media-mistral".to_string()),
+                media_model_provider: Some("mistral".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let llm = LlmClient::new(&settings);
         let route = llm
@@ -1077,15 +849,17 @@ mod tests {
 
     #[test]
     fn media_model_name_resolvers_return_selected_route_names() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-gemini".to_string()),
-            media_model_provider: Some("gemini".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            gemini_api_key: Some("test-gemini-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                media_model_id: Some("media-gemini".to_string()),
+                media_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let llm = LlmClient::new(&settings);
         assert_eq!(
@@ -1107,15 +881,21 @@ mod tests {
 
     #[test]
     fn media_name_resolver_falls_back_to_chat_for_non_stt_modalities() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("media-mistral".to_string()),
-            media_model_provider: Some("mistral".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            with_provider_key(
+                AgentSettings {
+                    chat_model_id: Some("chat-openrouter".to_string()),
+                    chat_model_provider: Some("openrouter".to_string()),
+                    media_model_id: Some("media-mistral".to_string()),
+                    media_model_provider: Some("mistral".to_string()),
+                    ..AgentSettings::default()
+                },
+                "llm-provider/openrouter",
+                "test-openrouter-key",
+            ),
+            "llm-provider/mistral",
+            "test-mistral-key",
+        );
 
         let llm = LlmClient::new(&settings);
         assert_eq!(
@@ -1137,12 +917,15 @@ mod tests {
 
     #[test]
     fn multimodal_availability_is_modality_specific() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-mistral".to_string()),
-            chat_model_provider: Some("mistral".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-mistral".to_string()),
+                chat_model_provider: Some("mistral".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/mistral",
+            "test-mistral-key",
+        );
 
         let llm = LlmClient::new(&settings);
         assert!(llm.is_multimodal_available());
@@ -1153,12 +936,15 @@ mod tests {
 
     #[test]
     fn multimodal_is_unavailable_when_no_supported_media_routes_exist() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-groq".to_string()),
-            chat_model_provider: Some("groq".to_string()),
-            groq_api_key: Some("test-groq-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-groq".to_string()),
+                chat_model_provider: Some("groq".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/groq",
+            "test-groq-key",
+        );
 
         let llm = LlmClient::new(&settings);
         assert!(!llm.is_multimodal_available());
@@ -1173,19 +959,21 @@ mod tests {
             error,
             crate::llm::LlmError::MissingConfig(message)
                 if message.contains("video understanding")
-                    && message.contains("gemini/openrouter")
+                    && message.contains("openrouter")
         ));
     }
 
     #[test]
     fn llm_client_registers_opencode_go_when_key_present() {
-        let settings = AgentSettings {
-            chat_model_id: Some("deepseek-v4-flash".to_string()),
-            chat_model_provider: Some("opencode-go".to_string()),
-            opencode_go_api_key: Some("test-opencode-key".to_string()),
-            opencode_go_api_base: "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("deepseek-v4-flash".to_string()),
+                chat_model_provider: Some("opencode-go".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/opencode-go",
+            "test-opencode-key",
+        );
 
         let llm = LlmClient::new(&settings);
 
@@ -1198,12 +986,15 @@ mod tests {
 
     #[tokio::test]
     async fn main_agent_tool_request_uses_configured_temperature() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let mut llm = LlmClient::new(&settings);
         let mut provider = MockLlmProvider::new();
@@ -1244,12 +1035,15 @@ mod tests {
 
     #[tokio::test]
     async fn chat_completion_folds_system_history_into_prompt() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let mut llm = LlmClient::new(&settings);
         let mut provider = MockLlmProvider::new();
@@ -1296,12 +1090,15 @@ mod tests {
 
     #[tokio::test]
     async fn tool_requests_fold_system_history_into_prompt() {
-        let settings = AgentSettings {
-            chat_model_id: Some("chat-openrouter".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
+        let settings = with_provider_key(
+            AgentSettings {
+                chat_model_id: Some("chat-openrouter".to_string()),
+                chat_model_provider: Some("openrouter".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/openrouter",
+            "test-openrouter-key",
+        );
 
         let mut llm = LlmClient::new(&settings);
         let mut provider = MockLlmProvider::new();
@@ -1336,69 +1133,5 @@ mod tests {
             .expect("request should succeed");
 
         assert_eq!(response.content.as_deref(), Some("ok"));
-    }
-
-    #[test]
-    fn mistral_embeddings_default_to_1024_without_request_dimensions() {
-        let settings = AgentSettings {
-            embedding_provider: Some("mistral".to_string()),
-            embedding_model_id: Some("mistral-embed".to_string()),
-            mistral_api_key: Some("test-mistral-key".to_string()),
-            ..AgentSettings::default()
-        };
-
-        let llm = LlmClient::new(&settings);
-        assert_eq!(llm.embedding_dimensions(), Some(1024));
-
-        let embedding = llm
-            .embedding
-            .as_ref()
-            .expect("embedding should be configured");
-        assert!(embedding.4.is_none());
-    }
-
-    #[test]
-    fn openai_compatible_embeddings_keep_request_dimensions() {
-        let settings = AgentSettings {
-            embedding_provider: Some("openrouter".to_string()),
-            embedding_model_id: Some("test-embedding".to_string()),
-            openrouter_api_key: Some("test-openrouter-key".to_string()),
-            ..AgentSettings::default()
-        };
-
-        let llm = LlmClient::new(&settings);
-        assert_eq!(llm.embedding_dimensions(), Some(1024));
-
-        let embedding = llm
-            .embedding
-            .as_ref()
-            .expect("embedding should be configured");
-        assert_eq!(embedding.4, Some(1024));
-    }
-
-    #[test]
-    fn openai_base_embeddings_use_custom_base_url_and_dimensions() {
-        let settings = AgentSettings {
-            embedding_provider: Some("openai-base".to_string()),
-            embedding_model_id: Some("user2-base".to_string()),
-            embedding_openai_base_url: Some("http://127.0.0.1:8002/v1".to_string()),
-            embedding_openai_api_key: Some("test-openai-base-key".to_string()),
-            embedding_dimensions: Some(768),
-            embedding_prompt_style: Some(crate::config::EmbeddingPromptStyle::User2),
-            ..AgentSettings::default()
-        };
-
-        let llm = LlmClient::new(&settings);
-        assert_eq!(llm.embedding_dimensions(), Some(768));
-
-        let embedding = llm
-            .embedding
-            .as_ref()
-            .expect("embedding should be configured");
-        assert_eq!(embedding.4, Some(768));
-        assert!(llm
-            .embedding_profile_id()
-            .expect("profile id configured")
-            .contains("prompt-user2"));
     }
 }

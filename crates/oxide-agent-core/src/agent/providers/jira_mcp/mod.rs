@@ -3,15 +3,16 @@
 //! Provides tools for reading, writing, and schema discovery via MCP protocol.
 //! Disabled by default - must be enabled via `topic_agent_tools_enable`.
 
-use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 mod client;
 mod config;
@@ -313,6 +314,31 @@ impl JiraMcpProvider {
         }
     }
 
+    /// Build native typed runtime executors for Jira MCP tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(JiraMcpToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            JIRA_READ_TOOL.clone(),
+            JIRA_WRITE_TOOL.clone(),
+            JIRA_SCHEMA_TOOL.clone(),
+        ]
+    }
+
     /// Lazily initializes the MCP client.
     async fn ensure_client(&self) -> Result<Arc<JiraMcpClient>> {
         let mut guard = self.client.lock().await;
@@ -330,36 +356,8 @@ impl JiraMcpProvider {
         *guard = Some(Arc::clone(&client));
         Ok(client)
     }
-}
 
-#[async_trait]
-impl ToolProvider for JiraMcpProvider {
-    fn name(&self) -> &'static str {
-        "jira_mcp"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            JIRA_READ_TOOL.clone(),
-            JIRA_WRITE_TOOL.clone(),
-            JIRA_SCHEMA_TOOL.clone(),
-        ]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_JIRA_READ | TOOL_JIRA_WRITE | TOOL_JIRA_SCHEMA
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        _cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
         // Parse arguments into JSON object
         let args_value: serde_json::Value =
             serde_json::from_str(arguments).context("failed to parse tool arguments as JSON")?;
@@ -394,9 +392,96 @@ impl ToolProvider for JiraMcpProvider {
     }
 }
 
+struct JiraMcpToolExecutor {
+    provider: Arc<JiraMcpProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for JiraMcpToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(jira_mcp_runtime_error)
+    }
+}
+
+fn jira_mcp_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    let message = error.to_string();
+    if error.downcast_ref::<serde_json::Error>().is_some()
+        || message.contains("failed to parse tool arguments as JSON")
+        || message.contains("tool arguments must be a JSON object")
+        || message.contains("invalid jira_read arguments")
+    {
+        ToolRuntimeError::InvalidArguments(message)
+    } else {
+        ToolRuntimeError::Failure(message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, OutputNormalizer, ProviderMetadata, ToolBatchId, ToolCallId,
+        ToolExecutionContext, ToolOutputStatus, ToolRuntimeConfig, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use chrono::Utc;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-jira-mcp"),
+            batch_id: ToolBatchId::from("batch-jira-mcp"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     fn json_args(value: Value) -> Map<String, Value> {
         serde_json::from_value(value).expect("test JSON must deserialize into args map")
@@ -412,15 +497,13 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_name() {
-        let provider = JiraMcpProvider::new(test_config());
-        assert_eq!(provider.name(), "jira_mcp");
-    }
-
-    #[test]
-    fn test_provider_tools() {
-        let provider = JiraMcpProvider::new(test_config());
-        let tools = provider.tools();
+    fn typed_runtime_specs_include_jira_tool_definitions() {
+        let provider = Arc::new(JiraMcpProvider::new(test_config()));
+        let tools = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect::<Vec<_>>();
 
         assert_eq!(tools.len(), 3);
         assert!(tools.iter().any(|t| t.name == "jira_read"));
@@ -439,14 +522,22 @@ mod tests {
     }
 
     #[test]
-    fn test_can_handle() {
-        let provider = JiraMcpProvider::new(test_config());
+    fn typed_runtime_executors_register_only_jira_tools() {
+        let provider = Arc::new(JiraMcpProvider::new(test_config()));
+        let names = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<std::collections::BTreeSet<_>>();
 
-        assert!(provider.can_handle("jira_read"));
-        assert!(provider.can_handle("jira_write"));
-        assert!(provider.can_handle("jira_schema"));
-        assert!(!provider.can_handle("unknown_tool"));
-        assert!(!provider.can_handle("ssh_exec"));
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from([
+                TOOL_JIRA_READ.to_string(),
+                TOOL_JIRA_WRITE.to_string(),
+                TOOL_JIRA_SCHEMA.to_string(),
+            ])
+        );
     }
 
     #[test]
@@ -504,5 +595,26 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unknown argument(s): unexpected"));
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_rejects_invalid_jira_read_before_mcp() {
+        let provider = Arc::new(JiraMcpProvider::new(test_config()));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_JIRA_READ)
+            .expect("jira_read executor");
+
+        let error = executor
+            .execute(runtime_invocation(TOOL_JIRA_READ, r#"{"limit":10}"#))
+            .await
+            .expect_err("invalid jira_read args must fail before MCP init");
+
+        let output = OutputNormalizer::new(ToolRuntimeConfig::default()).executor_error(
+            &runtime_invocation(TOOL_JIRA_READ, r#"{"limit":10}"#),
+            error,
+        );
+        assert_eq!(output.status, ToolOutputStatus::InvalidArguments);
     }
 }

@@ -11,14 +11,15 @@ use crate::agent::hooks::{
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
-use crate::agent::provider::ToolProvider;
-use crate::agent::providers::{
-    FileHosterProvider, SandboxProvider, TodoList, TodosProvider, WebFetchMdProvider, YtdlpProvider,
-};
-use crate::agent::registry::ToolRegistry;
+use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::runner::{
     run_with_timeout, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
     TimedRunResult,
+};
+use crate::agent::session::AgentMemoryScope;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolModuleContext, ToolModuleContextParts,
+    ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::{
     get_agent_search_limit, get_sub_agent_max_iterations, AgentSettings, AGENT_CONTINUATION_LIMIT,
@@ -39,12 +40,33 @@ use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-#[cfg(feature = "browser_use")]
-use crate::agent::providers::BrowserUseProvider;
-#[cfg(feature = "searxng")]
-use crate::agent::providers::SearxngProvider;
-#[cfg(feature = "tavily")]
-use crate::agent::providers::TavilyProvider;
+#[cfg(feature = "tool-browser-use")]
+use crate::agent::tool_runtime::BrowserUseToolModule;
+#[cfg(feature = "tool-sandbox-exec")]
+use crate::agent::tool_runtime::SandboxExecToolModule;
+#[cfg(feature = "tool-sandbox-fileops")]
+use crate::agent::tool_runtime::SandboxFileOpsToolModule;
+#[cfg(feature = "tool-searxng")]
+use crate::agent::tool_runtime::SearxngToolModule;
+#[cfg(feature = "tool-tavily")]
+use crate::agent::tool_runtime::TavilyToolModule;
+#[cfg(feature = "tool-todos")]
+use crate::agent::tool_runtime::TodosToolModule;
+#[cfg(any(
+    feature = "tool-browser-use",
+    feature = "tool-sandbox-exec",
+    feature = "tool-sandbox-fileops",
+    feature = "tool-searxng",
+    feature = "tool-tavily",
+    feature = "tool-todos",
+    feature = "tool-webfetch-md",
+    feature = "tool-ytdlp"
+))]
+use crate::agent::tool_runtime::ToolModule;
+#[cfg(feature = "tool-webfetch-md")]
+use crate::agent::tool_runtime::WebFetchMdToolModule;
+#[cfg(feature = "tool-ytdlp")]
+use crate::agent::tool_runtime::YtdlpToolModule;
 use tokio::sync::Semaphore;
 
 const TOOL_SPAWN_SUB_AGENTS: &str = "spawn_sub_agents";
@@ -59,6 +81,7 @@ const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     TOOL_WAIT_SUB_AGENTS,
     TOOL_CANCEL_SUB_AGENTS,
     "send_file_to_user",
+    "upload_file",
     "ssh_send_file_to_user",
     "transcribe_audio_file",
     "describe_image_file",
@@ -117,12 +140,21 @@ const TOPIC_AGENTS_MD_LOAD_TIMEOUT_SECS: u64 = 5;
 /// Provider for sub-agent delegation tool.
 pub struct DelegationProvider {
     llm_client: Arc<crate::llm::LlmClient>,
+    #[cfg_attr(
+        not(any(
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-ytdlp",
+            feature = "tool-browser-use"
+        )),
+        allow(dead_code)
+    )]
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
     browser_use_profile_scope: Option<String>,
     topic_agents_md_context: Option<TopicAgentsMdContext>,
     /// Semaphore to limit concurrent Browser Use requests per sub-agent.
-    /// Used via Arc::clone() in build_sub_agent_providers().
+    /// Used via Arc::clone() in build_sub_agent_tool_runtime_executors().
     #[allow(dead_code)]
     browser_use_semaphore: Arc<Semaphore>,
     jobs: Arc<SubAgentJobStore>,
@@ -138,7 +170,7 @@ struct TopicAgentsMdContext {
 struct PreparedSubAgentExecution {
     task_id: String,
     task: String,
-    registry: ToolRegistry,
+    tool_runtime_registry: Arc<RuntimeToolRegistry>,
     tools: Vec<ToolDefinition>,
     system_prompt: String,
     todos_arc: Arc<Mutex<TodoList>>,
@@ -529,6 +561,107 @@ impl DelegationProvider {
         self
     }
 
+    /// Build native typed runtime executors for sub-agent delegation tools.
+    #[must_use]
+    pub fn tool_runtime_executors(
+        self: &Arc<Self>,
+        progress_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Vec<Arc<dyn ToolExecutor>> {
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(DelegationToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    progress_tx: progress_tx.clone(),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: TOOL_SPAWN_SUB_AGENTS.to_string(),
+                description: "Start one or more stateless sub-agents in the background. \
+Use this for independent, atomic tasks. Returns sub-agent ids immediately; use wait_sub_agents only when results are needed. \
+At most five sub-agents may run concurrently."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": SUB_AGENT_MAX_CONCURRENT_JOBS,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "task": {
+                                        "type": "string",
+                                        "description": "Short, clear task for one sub-agent"
+                                    },
+                                    "tools": {
+                                        "type": "array",
+                                        "description": "Whitelist of allowed tools for this sub-agent",
+                                        "items": {"type": "string"}
+                                    },
+                                    "context": {
+                                        "type": "string",
+                                        "description": "Additional task context (optional)"
+                                    }
+                                },
+                                "required": ["task", "tools"]
+                            }
+                        }
+                    },
+                    "required": ["tasks"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_WAIT_SUB_AGENTS.to_string(),
+                description: "Wait for one or more background sub-agents. \
+Returns as soon as any requested sub-agent reaches a final status or the timeout expires."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sub-agent ids returned by spawn_sub_agents"
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Optional wait timeout in milliseconds. Defaults to 30000 and is capped at 3600000."
+                        }
+                    },
+                    "required": ["ids"]
+                }),
+            },
+            ToolDefinition {
+                name: TOOL_CANCEL_SUB_AGENTS.to_string(),
+                description: "Cancel selected background sub-agents, or all sub-agents for this parent run with all=true."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Sub-agent ids to cancel"
+                        },
+                        "all": {
+                            "type": "boolean",
+                            "description": "Cancel all sub-agents owned by this parent run"
+                        }
+                    }
+                }),
+            },
+        ]
+    }
+
     fn blocked_tool_set() -> HashSet<String> {
         BLOCKED_SUB_AGENT_TOOLS
             .iter()
@@ -536,121 +669,154 @@ impl DelegationProvider {
             .collect()
     }
 
-    fn build_sub_agent_providers(
+    fn build_sub_agent_tool_runtime_executors(
         &self,
         todos_arc: Arc<Mutex<crate::agent::providers::TodoList>>,
+        memory_scope: AgentMemoryScope,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Vec<Box<dyn ToolProvider>> {
-        let sandbox_provider = if let Some(tx) = progress_tx {
-            SandboxProvider::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone())
+    ) -> Vec<Arc<dyn ToolExecutor>> {
+        let mut executors: Vec<Arc<dyn ToolExecutor>> = Vec::new();
+        let module_ctx =
+            self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
+
+        #[cfg(not(any(
+            feature = "tool-browser-use",
+            feature = "tool-sandbox-exec",
+            feature = "tool-sandbox-fileops",
+            feature = "tool-searxng",
+            feature = "tool-tavily",
+            feature = "tool-todos",
+            feature = "tool-webfetch-md",
+            feature = "tool-ytdlp"
+        )))]
+        let _ = (&module_ctx, &mut executors);
+
+        #[cfg(feature = "tool-todos")]
+        self.push_sub_agent_tool_module(&mut executors, &TodosToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-sandbox-exec")]
+        self.push_sub_agent_tool_module(&mut executors, &SandboxExecToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-sandbox-fileops")]
+        self.push_sub_agent_tool_module(&mut executors, &SandboxFileOpsToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-ytdlp")]
+        self.push_sub_agent_tool_module(&mut executors, &YtdlpToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-webfetch-md")]
+        self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-tavily")]
+        self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-searxng")]
+        self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-browser-use")]
+        self.push_sub_agent_tool_module(&mut executors, &BrowserUseToolModule, &module_ctx);
+
+        self.warn_for_uncompiled_sub_agent_tool_modules();
+
+        executors
+    }
+
+    fn build_sub_agent_tool_module_context(
+        &self,
+        todos_arc: Arc<Mutex<TodoList>>,
+        _memory_scope: AgentMemoryScope,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    ) -> ToolModuleContext {
+        let sandbox_runtime = if let Some(tx) = progress_tx {
+            Arc::new(SandboxRuntime::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone()))
         } else {
-            SandboxProvider::new(self.sandbox_scope.clone())
-        };
-        let ytdlp_provider = if let Some(tx) = progress_tx {
-            YtdlpProvider::new(self.sandbox_scope.clone()).with_progress_tx(tx.clone())
-        } else {
-            YtdlpProvider::new(self.sandbox_scope.clone())
+            Arc::new(SandboxRuntime::new(self.sandbox_scope.clone()))
         };
 
-        let mut providers: Vec<Box<dyn ToolProvider>> = vec![
-            Box::new(TodosProvider::new(todos_arc)),
-            Box::new(sandbox_provider),
-            Box::new(FileHosterProvider::new(self.sandbox_scope.clone())),
-            Box::new(ytdlp_provider),
-            Box::new(WebFetchMdProvider::new()),
-        ];
+        ToolModuleContext::new(ToolModuleContextParts {
+            todos: todos_arc,
+            sandbox_scope: self.sandbox_scope.clone(),
+            sandbox_runtime,
+            llm_client: Arc::clone(&self.llm_client),
+            settings: Arc::clone(&self.settings),
+            browser_use_profile_scope: self.browser_use_profile_scope.clone(),
+            browser_use_semaphore: Some(Arc::clone(&self.browser_use_semaphore)),
+            #[cfg(feature = "tool-agents-md")]
+            agents_md_context: None,
+            #[cfg(feature = "manager-control-plane")]
+            manager_control_plane_context: None,
+            #[cfg(feature = "integration-ssh-mcp")]
+            ssh_mcp_context: None,
+            #[cfg(feature = "tool-reminder")]
+            reminder_context: None,
+            #[cfg(feature = "tool-wiki-memory")]
+            wiki_memory_store: None,
+            #[cfg(feature = "tool-wiki-memory")]
+            memory_scope: _memory_scope,
+            progress_tx: progress_tx.cloned(),
+        })
+    }
 
-        #[cfg(feature = "tavily")]
-        if crate::config::is_tavily_enabled() {
-            if let Ok(tavily_key) = std::env::var("TAVILY_API_KEY") {
-                if !tavily_key.trim().is_empty() {
-                    if let Ok(provider) = TavilyProvider::new(&tavily_key) {
-                        providers.push(Box::new(provider));
-                    }
-                } else {
-                    warn!("Tavily enabled but TAVILY_API_KEY is empty; sub-agent provider not registered");
-                }
-            } else {
-                warn!("Tavily enabled but TAVILY_API_KEY is not set; sub-agent provider not registered");
-            }
+    #[cfg(any(
+        feature = "tool-browser-use",
+        feature = "tool-sandbox-exec",
+        feature = "tool-sandbox-fileops",
+        feature = "tool-searxng",
+        feature = "tool-tavily",
+        feature = "tool-todos",
+        feature = "tool-webfetch-md",
+        feature = "tool-ytdlp"
+    ))]
+    fn push_sub_agent_tool_module<M>(
+        &self,
+        executors: &mut Vec<Arc<dyn ToolExecutor>>,
+        module: &M,
+        ctx: &ToolModuleContext,
+    ) where
+        M: ToolModule,
+    {
+        let module_id = module.module_id();
+        if !self.settings.is_module_enabled(module_id.as_str()) {
+            return;
         }
-        #[cfg(not(feature = "tavily"))]
+
+        executors.extend(module.tool_runtime_executors(ctx));
+    }
+
+    fn warn_for_uncompiled_sub_agent_tool_modules(&self) {
+        #[cfg(not(feature = "tool-tavily"))]
         if crate::config::is_tavily_enabled() {
             warn!("Tavily enabled but feature not compiled in");
         }
 
-        #[cfg(feature = "searxng")]
-        if crate::config::is_searxng_enabled() {
-            if let Some(url) = crate::config::get_searxng_url() {
-                if !url.trim().is_empty() {
-                    match SearxngProvider::new(&url) {
-                        Ok(provider) => providers.push(Box::new(provider)),
-                        Err(error) => {
-                            warn!(error = %error, "SearXNG sub-agent provider initialization failed")
-                        }
-                    }
-                } else {
-                    warn!("SearXNG enabled but SEARXNG_URL is empty; sub-agent provider not registered");
-                }
-            } else {
-                warn!(
-                    "SearXNG enabled but SEARXNG_URL is not set; sub-agent provider not registered"
-                );
-            }
-        }
-        #[cfg(not(feature = "searxng"))]
+        #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             warn!("SearXNG enabled but feature not compiled in");
         }
 
-        #[cfg(feature = "browser_use")]
-        self.maybe_push_browser_use_provider(&mut providers);
-        #[cfg(not(feature = "browser_use"))]
+        #[cfg(not(feature = "tool-browser-use"))]
         if crate::config::is_browser_use_enabled() {
             warn!("Browser Use enabled but feature not compiled in");
         }
-
-        providers
     }
 
-    #[cfg(feature = "browser_use")]
-    fn maybe_push_browser_use_provider(&self, providers: &mut Vec<Box<dyn ToolProvider>>) {
-        // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
-        // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
-        if !crate::config::is_browser_use_enabled() {
-            return;
-        }
-
-        if let Some(url) = crate::config::get_browser_use_url() {
-            if !url.trim().is_empty() {
-                let sem = Arc::clone(&self.browser_use_semaphore);
-                let mut provider =
-                    BrowserUseProvider::new_with_semaphore(&url, Arc::clone(&self.settings), sem);
-                if let Some(profile_scope) = &self.browser_use_profile_scope {
-                    provider = provider.with_profile_scope(profile_scope.clone());
-                }
-                provider = provider.with_sandbox_scope(self.sandbox_scope.clone());
-                providers.push(Box::new(provider));
-            } else {
-                warn!("Browser Use enabled but BROWSER_USE_URL is empty; sub-agent provider not registered");
-            }
-        } else {
-            warn!("Browser Use enabled but BROWSER_USE_URL is not set; sub-agent provider not registered");
-        }
-    }
-
-    fn build_registry(
+    fn build_sub_agent_tool_runtime_registry(
         &self,
         allowed_tools: &HashSet<String>,
-        providers: Vec<Box<dyn ToolProvider>>,
-    ) -> ToolRegistry {
-        let allowed = Arc::new(allowed_tools.clone());
-        let mut registry = ToolRegistry::new();
-        for provider in providers {
-            registry.register(Box::new(RestrictedToolProvider::new(
-                provider,
-                Arc::clone(&allowed),
-            )));
+        executors: Vec<Arc<dyn ToolExecutor>>,
+    ) -> RuntimeToolRegistry {
+        let mut registry = RuntimeToolRegistry::new();
+        for executor in executors {
+            let tool_name = executor.name();
+            if !allowed_tools.contains(tool_name.as_str()) {
+                continue;
+            }
+            if let Err(error) = registry.register(executor) {
+                warn!(
+                    tool_name = %tool_name,
+                    error = %error,
+                    "Skipping duplicate sub-agent typed runtime executor"
+                );
+            }
         }
         registry
     }
@@ -801,7 +967,6 @@ impl DelegationProvider {
         .with_model_provider(model.provider.clone())
         .with_model_routes(self.settings.get_configured_sub_agent_model_routes())
         .with_sub_agent(true)
-        .with_codex_style_compaction(true)
     }
 
     async fn prepare_sub_agent_execution(
@@ -833,16 +998,19 @@ impl DelegationProvider {
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
         let (sub_agent_progress_tx, progress_relay_task) =
             spawn_sub_agent_progress_relay(progress_tx);
-        let providers =
-            self.build_sub_agent_providers(Arc::clone(&todos_arc), sub_agent_progress_tx.as_ref());
-        let available_tools: HashSet<String> = providers
+        let executors = self.build_sub_agent_tool_runtime_executors(
+            Arc::clone(&todos_arc),
+            AgentMemoryScope::new(0, "sub-agent", task_id.clone()),
+            sub_agent_progress_tx.as_ref(),
+        );
+        let available_tools: HashSet<String> = executors
             .iter()
-            .flat_map(|provider| provider.tools())
-            .map(|tool| tool.name)
+            .map(|executor| executor.name().into_inner())
             .collect();
         let allowed = self.filter_allowed_tools(requested_tools, &available_tools, &task_id)?;
-        let registry = self.build_registry(&allowed, providers);
-        let tools = registry.all_tools();
+        let tool_runtime_registry =
+            Arc::new(self.build_sub_agent_tool_runtime_registry(&allowed, executors));
+        let tools = tool_runtime_registry.specs();
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
         let system_prompt = create_sub_agent_system_prompt(
             task.as_str(),
@@ -854,7 +1022,7 @@ impl DelegationProvider {
         Ok(PreparedSubAgentExecution {
             task_id,
             task,
-            registry,
+            tool_runtime_registry,
             tools,
             system_prompt,
             todos_arc,
@@ -870,12 +1038,11 @@ impl DelegationProvider {
     fn build_sub_agent_runner_context<'a>(
         prepared: &'a mut PreparedSubAgentExecution,
     ) -> AgentRunnerContext<'a> {
-        AgentRunnerContext::new_base(
+        let mut ctx = AgentRunnerContext::new_base(
             AgentRunnerContextBase {
                 task: prepared.task.as_str(),
                 system_prompt: &prepared.system_prompt,
                 tools: &prepared.tools,
-                registry: &prepared.registry,
                 progress_tx: prepared.progress_tx.as_ref(),
                 todos_arc: &prepared.todos_arc,
                 task_id: &prepared.task_id,
@@ -884,7 +1051,9 @@ impl DelegationProvider {
             },
             Some(&prepared.compaction_controller),
             prepared.runner_config.clone(),
-        )
+        );
+        ctx.tool_runtime_registry = Some(Arc::clone(&prepared.tool_runtime_registry));
+        ctx
     }
 
     fn sub_agent_timeout_duration_for_settings(settings: &AgentSettings) -> Duration {
@@ -984,10 +1153,10 @@ impl DelegationProvider {
     async fn finish_sub_agent_progress_relay(prepared: &mut PreparedSubAgentExecution) {
         // Drop the restricted providers before awaiting the relay task.
         // Some providers retain cloned progress senders internally; if the
-        // registry stays alive while we await the relay, the sub-agent channel
-        // never closes and the relay task cannot finish.
+        // typed runtime registry stays alive while we await the relay, the
+        // sub-agent channel never closes and the relay task cannot finish.
         prepared.tools.clear();
-        prepared.registry = ToolRegistry::new();
+        prepared.tool_runtime_registry = Arc::new(RuntimeToolRegistry::new());
         drop(prepared.progress_tx.take());
 
         if let Some(task) = prepared.progress_relay_task.take() {
@@ -1101,6 +1270,24 @@ impl DelegationProvider {
         })))
     }
 
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String> {
+        match tool_name {
+            TOOL_SPAWN_SUB_AGENTS => {
+                self.spawn_sub_agents(arguments, progress_tx, cancellation_token)
+                    .await
+            }
+            TOOL_WAIT_SUB_AGENTS => self.wait_sub_agents(arguments).await,
+            TOOL_CANCEL_SUB_AGENTS => self.cancel_sub_agents(arguments),
+            _ => Err(anyhow!("Unknown delegation tool: {tool_name}")),
+        }
+    }
+
     async fn run_prepared_sub_agent_execution(
         llm_client: Arc<crate::llm::LlmClient>,
         settings: Arc<AgentSettings>,
@@ -1136,116 +1323,58 @@ impl DelegationProvider {
     }
 }
 
+struct DelegationToolExecutor {
+    provider: Arc<DelegationProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    progress_tx: Option<mpsc::Sender<AgentEvent>>,
+}
+
 #[async_trait]
-impl ToolProvider for DelegationProvider {
-    fn name(&self) -> &'static str {
-        "delegation"
+impl ToolExecutor for DelegationToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
     }
 
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: TOOL_SPAWN_SUB_AGENTS.to_string(),
-                description: "Start one or more stateless sub-agents in the background. \
-Use this for independent, atomic tasks. Returns sub-agent ids immediately; use wait_sub_agents only when results are needed. \
-At most five sub-agents may run concurrently."
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "tasks": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": SUB_AGENT_MAX_CONCURRENT_JOBS,
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "task": {
-                                        "type": "string",
-                                        "description": "Short, clear task for one sub-agent"
-                                    },
-                                    "tools": {
-                                        "type": "array",
-                                        "description": "Whitelist of allowed tools for this sub-agent",
-                                        "items": {"type": "string"}
-                                    },
-                                    "context": {
-                                        "type": "string",
-                                        "description": "Additional task context (optional)"
-                                    }
-                                },
-                                "required": ["task", "tools"]
-                            }
-                        }
-                    },
-                    "required": ["tasks"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_WAIT_SUB_AGENTS.to_string(),
-                description: "Wait for one or more background sub-agents. \
-Returns as soon as any requested sub-agent reaches a final status or the timeout expires."
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Sub-agent ids returned by spawn_sub_agents"
-                        },
-                        "timeout_ms": {
-                            "type": "integer",
-                            "description": "Optional wait timeout in milliseconds. Defaults to 30000 and is capped at 3600000."
-                        }
-                    },
-                    "required": ["ids"]
-                }),
-            },
-            ToolDefinition {
-                name: TOOL_CANCEL_SUB_AGENTS.to_string(),
-                description: "Cancel selected background sub-agents, or all sub-agents for this parent run with all=true."
-                    .to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Sub-agent ids to cancel"
-                        },
-                        "all": {
-                            "type": "boolean",
-                            "description": "Cancel all sub-agents owned by this parent run"
-                        }
-                    }
-                }),
-            },
-        ]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        tool_name == TOOL_SPAWN_SUB_AGENTS
-            || tool_name == TOOL_WAIT_SUB_AGENTS
-            || tool_name == TOOL_CANCEL_SUB_AGENTS
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
     }
 
     async fn execute(
         &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        match tool_name {
-            TOOL_SPAWN_SUB_AGENTS => {
-                self.spawn_sub_agents(arguments, progress_tx, cancellation_token)
-                    .await
-            }
-            TOOL_WAIT_SUB_AGENTS => self.wait_sub_agents(arguments).await,
-            TOOL_CANCEL_SUB_AGENTS => self.cancel_sub_agents(arguments),
-            _ => Err(anyhow!("Unknown delegation tool: {tool_name}")),
-        }
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(
+                self.name.as_str(),
+                &invocation.raw_arguments,
+                self.progress_tx.as_ref(),
+                Some(&invocation.cancellation_token),
+            )
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(delegation_runtime_error)
+    }
+}
+
+fn delegation_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    let message = error.to_string();
+    if error.downcast_ref::<serde_json::Error>().is_some()
+        || message.contains("tasks must contain")
+        || message.contains("cannot spawn more than")
+        || message.contains("Sub-agent task cannot be empty")
+        || message.contains("Sub-agent tools whitelist cannot be empty")
+        || message.contains("ids must contain")
+        || message.contains("No allowed tools left")
+    {
+        ToolRuntimeError::InvalidArguments(message)
+    } else {
+        ToolRuntimeError::Failure(message)
     }
 }
 
@@ -1309,56 +1438,6 @@ struct CancelSubAgentsArgs {
     ids: Vec<String>,
     #[serde(default)]
     all: bool,
-}
-
-struct RestrictedToolProvider {
-    inner: Box<dyn ToolProvider>,
-    allowed_tools: Arc<HashSet<String>>,
-}
-
-impl RestrictedToolProvider {
-    fn new(inner: Box<dyn ToolProvider>, allowed_tools: Arc<HashSet<String>>) -> Self {
-        Self {
-            inner,
-            allowed_tools,
-        }
-    }
-}
-
-#[async_trait]
-impl ToolProvider for RestrictedToolProvider {
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        self.inner
-            .tools()
-            .into_iter()
-            .filter(|tool| self.allowed_tools.contains(&tool.name))
-            .collect()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        self.allowed_tools.contains(tool_name) && self.inner.can_handle(tool_name)
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        if !self.allowed_tools.contains(tool_name) {
-            warn!(tool_name = %tool_name, "Tool blocked by delegation whitelist");
-            return Err(anyhow!("Tool '{tool_name}' is not allowed for sub-agent"));
-        }
-
-        self.inner
-            .execute(tool_name, arguments, progress_tx, cancellation_token)
-            .await
-    }
 }
 
 enum SubAgentReportStatus {
@@ -1443,22 +1522,65 @@ mod tests {
     use super::{
         should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay,
         DelegationProvider, SubAgentJobStatus, SubAgentJobStore, SUB_AGENT_MAX_CONCURRENT_JOBS,
+        TOOL_CANCEL_SUB_AGENTS, TOOL_SPAWN_SUB_AGENTS, TOOL_WAIT_SUB_AGENTS,
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::identity::SessionId;
     use crate::agent::memory::AgentMessage;
     use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
     use crate::agent::providers::TodoList;
     use crate::agent::runner::TimedRunResult;
-    use crate::agent::session::{PendingUserInput, UserInputKind};
+    use crate::agent::session::{AgentMemoryScope, PendingUserInput, UserInputKind};
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolInvocation, ToolName, ToolOutputStatus, ToolRuntimeError, ToolTimeoutConfig, TurnId,
+    };
     use crate::config::AgentSettings;
-    use crate::llm::LlmClient;
+    use crate::llm::{InvocationId, LlmClient};
     use crate::storage::MockStorageProvider;
+    use chrono::Utc;
     use mockall::predicate::eq;
     use serde_json::json;
     use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-delegation"),
+            batch_id: ToolBatchId::from("batch-delegation"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
+
+    fn test_memory_scope() -> AgentMemoryScope {
+        AgentMemoryScope::new(77, "test-topic", "sub-agent-test")
+    }
 
     #[test]
     fn sub_agent_blocklist_includes_sensitive_tools() {
@@ -1475,6 +1597,7 @@ mod tests {
             "text_to_speech_en_file",
             "text_to_speech_ru",
             "text_to_speech_ru_file",
+            "upload_file",
             "recreate_sandbox",
             "stack_logs_list_sources",
             "stack_logs_fetch",
@@ -1545,6 +1668,90 @@ mod tests {
         assert_eq!(lookup.found[0].status, SubAgentJobStatus::Cancelled);
         assert!(lookup.found[0].completed);
         assert_eq!(store.active_count(), 0);
+    }
+
+    #[test]
+    fn typed_runtime_executors_register_delegation_tools() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider = Arc::new(DelegationProvider::new(
+            Arc::new(LlmClient::new(&settings)),
+            1_i64,
+            settings,
+        ));
+        let executors = provider.tool_runtime_executors(None);
+        let tool_names = executors
+            .iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<Vec<_>>();
+
+        for tool_name in [
+            TOOL_SPAWN_SUB_AGENTS,
+            TOOL_WAIT_SUB_AGENTS,
+            TOOL_CANCEL_SUB_AGENTS,
+        ] {
+            assert!(
+                tool_names.iter().any(|name| name == tool_name),
+                "missing typed delegation executor: {tool_name}"
+            );
+            assert_eq!(
+                tool_names
+                    .iter()
+                    .filter(|name| name.as_str() == tool_name)
+                    .count(),
+                1,
+                "expected one typed delegation executor for {tool_name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_rejects_empty_spawn_tasks_before_runner() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider = Arc::new(DelegationProvider::new(
+            Arc::new(LlmClient::new(&settings)),
+            1_i64,
+            settings,
+        ));
+        let executor = provider
+            .tool_runtime_executors(None)
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_SPAWN_SUB_AGENTS)
+            .expect("spawn_sub_agents typed executor registered");
+
+        let error = executor
+            .execute(runtime_invocation(TOOL_SPAWN_SUB_AGENTS, r#"{"tasks":[]}"#))
+            .await
+            .expect_err("empty spawn tasks must be invalid arguments");
+
+        assert!(matches!(error, ToolRuntimeError::InvalidArguments(_)));
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_cancels_all_without_jobs() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider = Arc::new(DelegationProvider::new(
+            Arc::new(LlmClient::new(&settings)),
+            1_i64,
+            settings,
+        ));
+        let executor = provider
+            .tool_runtime_executors(None)
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_CANCEL_SUB_AGENTS)
+            .expect("cancel_sub_agents typed executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(
+                TOOL_CANCEL_SUB_AGENTS,
+                r#"{"all":true}"#,
+            ))
+            .await
+            .expect("cancel all succeeds without active jobs");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let stdout = output.stdout.text.as_deref().expect("stdout text");
+        assert!(stdout.contains(r#""ok": true"#));
+        assert!(stdout.contains(r#""active_count": 0"#));
     }
 
     #[test]
@@ -1696,7 +1903,7 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
 
-        let prepared = provider
+        let mut prepared = provider
             .prepare_sub_agent_execution(
                 &json!({
                     "task": "Inspect the workspace.",
@@ -1713,6 +1920,17 @@ mod tests {
         assert_eq!(prepared.runner_config.model_name, "sub-model");
         assert_eq!(prepared.runner_config.model_max_output_tokens, 12_345);
         assert_eq!(prepared.sub_session.memory().max_tokens(), 96_000);
+        assert_eq!(
+            prepared.tool_runtime_registry.specs().len(),
+            prepared.tools.len()
+        );
+        assert!(prepared
+            .tool_runtime_registry
+            .get(&ToolName::from("write_todos"))
+            .is_some());
+
+        let ctx = DelegationProvider::build_sub_agent_runner_context(&mut prepared);
+        assert!(ctx.tool_runtime_registry.is_some());
     }
 
     #[tokio::test]
@@ -1796,9 +2014,9 @@ mod tests {
             .contains("Failed to load topic AGENTS.md for sub-agent bootstrap"));
     }
 
-    #[cfg(feature = "browser_use")]
+    #[cfg(feature = "tool-browser-use")]
     #[test]
-    fn build_sub_agent_providers_registers_browser_use_when_enabled() {
+    fn build_sub_agent_tool_runtime_executors_registers_browser_use_when_enabled() {
         let _guard = crate::config::test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1809,11 +2027,11 @@ mod tests {
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let providers = provider.build_sub_agent_providers(todos, None);
-        let tools: HashSet<String> = providers
+        let executors =
+            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
+        let tools: HashSet<String> = executors
             .iter()
-            .flat_map(|provider| provider.tools())
-            .map(|tool| tool.name)
+            .map(|executor| executor.name().into_inner())
             .collect();
 
         assert!(tools.contains("browser_use_run_task"));
@@ -1827,19 +2045,44 @@ mod tests {
     }
 
     #[test]
-    fn build_sub_agent_providers_do_not_expose_compress() {
+    fn build_sub_agent_tool_runtime_executors_do_not_expose_compress() {
         let settings = Arc::new(AgentSettings::default());
         let provider =
             DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
         let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let providers = provider.build_sub_agent_providers(todos, None);
-        let tools: HashSet<String> = providers
+        let executors =
+            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
+        let tools: HashSet<String> = executors
             .iter()
-            .flat_map(|provider| provider.tools())
-            .map(|tool| tool.name)
+            .map(|executor| executor.name().into_inner())
             .collect();
 
         assert!(!tools.contains("compress"));
+    }
+
+    #[test]
+    fn build_sub_agent_tool_runtime_executors_use_narrow_sandbox_surface() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
+        let executors =
+            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
+        let tools: HashSet<String> = executors
+            .iter()
+            .map(|executor| executor.name().into_inner())
+            .collect();
+
+        assert!(!tools.contains("send_file_to_user"));
+        assert!(!tools.contains("upload_file"));
+        assert!(!tools.contains("recreate_sandbox"));
+
+        #[cfg(feature = "tool-sandbox-exec")]
+        assert!(tools.contains("execute_command"));
+        #[cfg(feature = "tool-sandbox-fileops")]
+        for tool in ["write_file", "read_file", "list_files"] {
+            assert!(tools.contains(tool), "missing sandbox fileops tool: {tool}");
+        }
     }
 
     #[test]
@@ -1902,7 +2145,6 @@ mod tests {
             hot_memory_tokens: 777,
             system_prompt_tokens: 500,
             tool_schema_tokens: 600,
-            loaded_skill_tokens: 0,
             total_input_tokens: 2_900,
             reserved_output_tokens: 64_000,
             hard_reserve_tokens: 8_192,

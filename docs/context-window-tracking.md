@@ -1238,5 +1238,5 @@ function findMessage(messages: Message[], id: string): Message | undefined {
 
 - [OpenAI API - Usage](https://platform.openai.com/docs/api-reference/chat/object#chat/object-usage)
 - [Anthropic API - Cache](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching)
-- [Google Gemini API - UsageMetadata](https://ai.google.dev/api/rest/v1beta/GenerateContentResponse#usagemetadata)
+- OpenRouter/Gemini-family usage metadata should be consumed through the active OpenRouter response contract, not through a direct Google Gemini API integration.
 - [Tiktoken - Tokenizer](https://github.com/openai/tiktoken)

@@ -201,7 +201,6 @@ mod tests {
             hot_memory_tokens: 1,
             system_prompt_tokens: 2,
             tool_schema_tokens: 3,
-            loaded_skill_tokens: 0,
             total_input_tokens: 6,
             reserved_output_tokens: 4,
             hard_reserve_tokens: 2,

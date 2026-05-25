@@ -15,7 +15,7 @@ pub struct CompactSummaryRequest<'a> {
     pub route: &'a ModelInfo,
     /// Source hot-memory messages to summarize.
     pub messages: &'a [AgentMessage],
-    /// Previous compacted or legacy summary, if one was detected.
+    /// Previous current-format compacted summary, if one was detected.
     pub previous_summary: Option<&'a PreviousCompactedSummary>,
 }
 

@@ -6,6 +6,7 @@ use crate::agent::compaction::CompactionTrigger;
 use crate::agent::identity::SessionId;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
+use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_runtime::{
     v1_tool_runtime_enabled_for_model, ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata,
@@ -64,19 +65,40 @@ enum BufferedRuntimeHistoryEvent {
     },
 }
 
+pub(super) enum ToolTurnAssistantContent<'a> {
+    NativeModelContent(&'a str),
+    StructuredControlEnvelope,
+}
+
+impl ToolTurnAssistantContent<'_> {
+    fn undelivered_draft(&self) -> Option<String> {
+        match self {
+            Self::NativeModelContent(content) => {
+                let trimmed = content.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+            Self::StructuredControlEnvelope => None,
+        }
+    }
+}
+
 struct BufferedRuntimeHistory {
-    assistant_content: String,
     assistant_reasoning: StdMutex<Option<String>>,
+    undelivered_draft: Option<String>,
     events: StdMutex<Vec<BufferedRuntimeHistoryEvent>>,
 }
 
 impl BufferedRuntimeHistory {
-    fn new(assistant_content: String, assistant_reasoning: Option<String>) -> Self {
+    fn new(assistant_reasoning: Option<String>, undelivered_draft: Option<String>) -> Self {
         Self {
-            assistant_content,
             assistant_reasoning: StdMutex::new(assistant_reasoning),
+            undelivered_draft,
             events: StdMutex::new(Vec::new()),
         }
+    }
+
+    fn undelivered_draft(&self) -> Option<String> {
+        self.undelivered_draft.clone()
     }
 
     fn drain_events(&self) -> Vec<BufferedRuntimeHistoryEvent> {
@@ -103,7 +125,7 @@ impl ToolHistoryWriter for BufferedRuntimeHistory {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(BufferedRuntimeHistoryEvent::Assistant {
-                content: self.assistant_content.clone(),
+                content: String::new(),
                 reasoning,
                 tool_calls: batch.to_llm_tool_calls(),
             });
@@ -146,7 +168,7 @@ impl AgentRunner {
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
-        raw_json: &str,
+        assistant_content: ToolTurnAssistantContent<'_>,
         reasoning_content: Option<String>,
         tool_calls: Vec<ToolCall>,
     ) -> anyhow::Result<Option<AgentRunResult>> {
@@ -173,9 +195,10 @@ impl AgentRunner {
         let batch_id = ToolBatchId::from(format!("{}_tool_batch_{}", ctx.task_id, state.iteration));
         let batch = OpenCodeGoToolCallBatch::from_llm_tool_calls(turn_id, tool_calls);
         let runtime_config = ToolRuntimeConfig::default();
+        let undelivered_draft = assistant_content.undelivered_draft();
         let history = Arc::new(BufferedRuntimeHistory::new(
-            raw_json.to_string(),
             reasoning_content,
+            undelivered_draft,
         ));
         let history_writer: Arc<dyn ToolHistoryWriter> =
             Arc::<BufferedRuntimeHistory>::clone(&history);
@@ -197,6 +220,7 @@ impl AgentRunner {
         let result = runtime.execute_batch(batch, turn_context).await;
         self.apply_buffered_runtime_history(ctx, state, history.drain_events())
             .await;
+        self.apply_undelivered_tool_turn_draft(ctx, history.undelivered_draft());
         result.map_err(|error| anyhow::anyhow!("typed tool runtime failed: {error}"))?;
 
         Self::emit_token_snapshot_update(
@@ -205,6 +229,26 @@ impl AgentRunner {
         )
         .await;
         Ok(None)
+    }
+
+    fn apply_undelivered_tool_turn_draft(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        draft: Option<String>,
+    ) {
+        let Some(draft) = draft else {
+            return;
+        };
+
+        let notice = format!(
+            "[SYSTEM: The previous assistant tool-call turn included non-user-visible draft text. \
+It was not delivered to the user because that turn executed tools. Use it only as internal context; \
+if any of it is needed for the user, include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{draft}"
+        );
+        ctx.messages.push(Message::system(&notice));
+        ctx.agent
+            .memory_mut()
+            .add_message(AgentMessage::undelivered_assistant_draft(notice));
     }
 
     async fn emit_runtime_tool_call(&self, ctx: &mut AgentRunnerContext<'_>, tool_call: &ToolCall) {
@@ -278,6 +322,9 @@ impl AgentRunner {
         }
 
         self.apply_after_tool_hooks(ctx, state, &tool_name, &content);
+        if output.success && tool_name == TOOL_COMPRESS {
+            state.request_manual_compaction();
+        }
 
         let correlation = ToolCallCorrelation::new(output.invocation_id.clone())
             .with_provider_tool_call_id(output.tool_call_id.as_str())
@@ -316,6 +363,7 @@ mod tests {
     use super::*;
     use crate::agent::compaction::AgentMessageKind;
     use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::providers::CompressionProvider;
     use crate::agent::runner::AgentRunnerConfig;
     use crate::agent::tool_runtime::{
         OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
@@ -407,7 +455,6 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let legacy_registry = crate::agent::registry::ToolRegistry::new();
         let mut runtime_registry = RuntimeToolRegistry::new();
         runtime_registry
             .register(Arc::new(StaticRuntimeExecutor))
@@ -422,14 +469,12 @@ mod tests {
             task: "read through runtime",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &legacy_registry,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-test",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: Some("42".to_string()),
             memory_scope: None,
@@ -464,7 +509,7 @@ mod tests {
             .execute_tools_with_runtime(
                 &mut ctx,
                 &mut state,
-                "assistant raw",
+                ToolTurnAssistantContent::StructuredControlEnvelope,
                 Some("reasoning".to_string()),
                 vec![tool_call],
             )
@@ -475,6 +520,10 @@ mod tests {
         let memory = ctx.agent.memory().get_messages();
         assert_eq!(memory.len(), 2);
         assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
+        assert!(
+            memory[0].content.is_empty(),
+            "structured tool-call envelopes must not be replayed as assistant prose"
+        );
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
         assert_eq!(memory[1].tool_call_id.as_deref(), Some("invoke-read-1"));
         assert_eq!(memory[1].tool_name.as_deref(), Some("read_file"));
@@ -489,6 +538,168 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_tool_call_content_is_recorded_as_undelivered_draft() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(StaticRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "read through runtime",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-read-1",
+            ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+            },
+            false,
+        );
+
+        let draft = "Full report that was generated before the tool finished.";
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::NativeModelContent(draft),
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 3);
+        assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
+        assert!(
+            memory[0].content.is_empty(),
+            "native tool-call content must not be replayed as delivered assistant prose"
+        );
+        assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
+        assert_eq!(memory[2].kind, AgentMessageKind::UndeliveredAssistantDraft);
+        assert!(memory[2].content.contains("not delivered to the user"));
+        assert!(memory[2].content.contains(draft));
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_compress_output_requests_manual_compaction() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        let compress_executor = Arc::new(CompressionProvider::new())
+            .tool_runtime_executors()
+            .into_iter()
+            .next()
+            .expect("compress executor registered");
+        runtime_registry
+            .register(compress_executor)
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "compress through runtime",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-compress-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-compress-1",
+            ToolCallFunction {
+                name: TOOL_COMPRESS.to_string(),
+                arguments: "{}".to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-compress-1")
+                .with_provider_tool_call_id("call-compress-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::StructuredControlEnvelope,
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        assert!(state.force_manual_compaction);
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 2);
+        assert_eq!(memory[1].tool_name.as_deref(), Some(TOOL_COMPRESS));
+        assert!(memory[1].content.contains("scheduled"));
+    }
+
+    #[tokio::test]
     async fn typed_runtime_path_runs_batch_in_parallel_and_preserves_output_order() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
@@ -497,7 +708,6 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let legacy_registry = crate::agent::registry::ToolRegistry::new();
         let active = Arc::new(AtomicUsize::new(0));
         let max_seen = Arc::new(AtomicUsize::new(0));
         let mut runtime_registry = RuntimeToolRegistry::new();
@@ -517,14 +727,12 @@ mod tests {
             task: "read several files through runtime",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &legacy_registry,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-parallel-test",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: Some("42".to_string()),
             memory_scope: None,
@@ -560,7 +768,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         let result = runner
-            .execute_tools_with_runtime(&mut ctx, &mut state, "assistant raw", None, tool_calls)
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::StructuredControlEnvelope,
+                None,
+                tool_calls,
+            )
             .await
             .expect("runtime execution succeeds");
 
@@ -597,7 +811,6 @@ mod tests {
         };
         let llm_client = Arc::new(LlmClient::new(&settings));
         let mut runner = AgentRunner::new(llm_client);
-        let legacy_registry = crate::agent::registry::ToolRegistry::new();
         let mut runtime_registry = RuntimeToolRegistry::new();
         runtime_registry
             .register(Arc::new(StaticRuntimeExecutor))
@@ -612,14 +825,12 @@ mod tests {
             task: "unsupported typed runtime route",
             system_prompt: "system prompt",
             tools: &tools,
-            registry: &legacy_registry,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
             todos_arc: &todos_arc,
             task_id: "runtime-unsupported-route-test",
             messages: &mut messages,
             agent: &mut session,
-            skill_registry: None,
             compaction_controller: None,
             session_id: Some("42".to_string()),
             memory_scope: None,
@@ -648,7 +859,7 @@ mod tests {
             .execute_tools_with_runtime(
                 &mut ctx,
                 &mut state,
-                "assistant raw",
+                ToolTurnAssistantContent::StructuredControlEnvelope,
                 None,
                 vec![tool_call],
             )

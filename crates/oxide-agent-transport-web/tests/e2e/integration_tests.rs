@@ -19,7 +19,7 @@ use std::time::Instant;
 #[tokio::test]
 #[ignore = "Requires OPENROUTER_API_KEY, MISTRAL_API_KEY, or ZAI_API_KEY environment variable"]
 async fn e2e_connection_pool_latency() {
-    use oxide_agent_core::config::AgentSettings;
+    use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
 
     let (provider_name, model_id) = if std::env::var("OPENROUTER_API_KEY").is_ok() {
         ("openrouter", "openrouter/free")
@@ -42,15 +42,34 @@ async fn e2e_connection_pool_latency() {
         };
         match provider_name {
             "openrouter" => {
-                s.openrouter_api_key = std::env::var("OPENROUTER_API_KEY").ok();
+                if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
+                    s.modules.insert(
+                        "llm-provider/openrouter".to_string(),
+                        ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+                    );
+                }
             }
             "mistral" => {
-                s.mistral_api_key = std::env::var("MISTRAL_API_KEY").ok();
+                if let Ok(api_key) = std::env::var("MISTRAL_API_KEY") {
+                    s.modules.insert(
+                        "llm-provider/mistral".to_string(),
+                        ModuleRuntimeConfig::default().with_string_value("api_key", api_key),
+                    );
+                }
             }
             "zai" => {
-                s.zai_api_key = std::env::var("ZAI_API_KEY").ok();
+                let mut config = std::env::var("ZAI_API_KEY").ok().map(|api_key| {
+                    ModuleRuntimeConfig::default().with_string_value("api_key", api_key)
+                });
                 if let Ok(base) = std::env::var("ZAI_API_BASE") {
-                    s.zai_api_base = base;
+                    config = Some(
+                        config
+                            .unwrap_or_default()
+                            .with_string_value("api_base", base),
+                    );
+                }
+                if let Some(config) = config {
+                    s.modules.insert("llm-provider/zai".to_string(), config);
                 }
             }
             _ => {}

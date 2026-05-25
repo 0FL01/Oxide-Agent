@@ -1,9 +1,14 @@
 // Allow clone_on_ref_ptr in integration tests due to trait object coercion requirements
 #![allow(clippy::clone_on_ref_ptr)]
 
+use oxide_agent_core::agent::identity::SessionId;
 use oxide_agent_core::agent::providers::DelegationProvider;
-use oxide_agent_core::agent::ToolProvider;
+use oxide_agent_core::agent::tool_runtime::{
+    ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext, ToolInvocation,
+    ToolName, ToolOutputStatus, ToolTimeoutConfig, TurnId,
+};
 use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::llm::InvocationId;
 use oxide_agent_core::llm::{
     ChatResponse, ChatWithToolsRequest, LlmClient, LlmError, LlmProvider, Message,
 };
@@ -11,6 +16,65 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{watch, Mutex as AsyncMutex};
 use tokio::time::Duration;
+use tokio_util::sync::CancellationToken;
+
+const TOOL_SPAWN_SUB_AGENTS: &str = "spawn_sub_agents";
+const TOOL_WAIT_SUB_AGENTS: &str = "wait_sub_agents";
+
+fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+    let now = chrono::Utc::now();
+    ToolInvocation {
+        session_id: SessionId::from(77),
+        turn_id: TurnId::from("turn-sub-agent-delegation"),
+        batch_id: ToolBatchId::from("batch-sub-agent-delegation"),
+        batch_index: 0,
+        invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+        tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+        provider_tool_call_id: None,
+        tool_name: ToolName::from(tool_name),
+        raw_provider_payload: json!({}),
+        raw_arguments: raw_arguments.to_string(),
+        normalized_arguments: serde_json::Value::Null,
+        cancellation_token: CancellationToken::new(),
+        timeout: ToolTimeoutConfig::default(),
+        execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+        provider_metadata: ProviderMetadata {
+            provider: "test".to_string(),
+            protocol: "chat_like".to_string(),
+        },
+        model_metadata: ModelMetadata {
+            model: "test-model".to_string(),
+        },
+        working_directory: None,
+        environment_metadata: None,
+        created_at: now,
+        started_at: Some(now),
+    }
+}
+
+async fn execute_delegation_tool(
+    provider: &Arc<DelegationProvider>,
+    tool_name: &str,
+    arguments: &str,
+) -> anyhow::Result<String> {
+    let executor = provider
+        .tool_runtime_executors(None)
+        .into_iter()
+        .find(|executor| executor.name().as_str() == tool_name)
+        .expect("delegation typed executor registered");
+    let output = executor
+        .execute(runtime_invocation(tool_name, arguments))
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+
+    anyhow::ensure!(
+        output.status == ToolOutputStatus::Success,
+        "delegation tool {tool_name} failed: {:?}",
+        output.error_message
+    );
+
+    Ok(output.stdout.text.unwrap_or_default())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecordedSubAgentRequest {
@@ -158,7 +222,7 @@ async fn sub_agent_delegation_budget_path_smoke_test() -> anyhow::Result<()> {
             requests: Arc::clone(&requests),
         }),
     );
-    let provider = DelegationProvider::new(Arc::new(llm), 1, settings.clone());
+    let provider = Arc::new(DelegationProvider::new(Arc::new(llm), 1, settings.clone()));
 
     let args = json!({
         "tasks": [{
@@ -168,26 +232,23 @@ async fn sub_agent_delegation_budget_path_smoke_test() -> anyhow::Result<()> {
         }]
     });
 
-    let spawn_result = provider
-        .execute("spawn_sub_agents", &args.to_string(), None, None)
-        .await?;
+    let spawn_result =
+        execute_delegation_tool(&provider, TOOL_SPAWN_SUB_AGENTS, &args.to_string()).await?;
     let spawn_json: serde_json::Value = serde_json::from_str(&spawn_result)?;
     let sub_agent_id = spawn_json["started"][0]["id"]
         .as_str()
         .expect("spawn returns sub-agent id");
 
-    let wait_result = provider
-        .execute(
-            "wait_sub_agents",
-            &json!({
-                "ids": [sub_agent_id],
-                "timeout_ms": 30_000
-            })
-            .to_string(),
-            None,
-            None,
-        )
-        .await?;
+    let wait_result = execute_delegation_tool(
+        &provider,
+        TOOL_WAIT_SUB_AGENTS,
+        &json!({
+            "ids": [sub_agent_id],
+            "timeout_ms": 30_000
+        })
+        .to_string(),
+    )
+    .await?;
     let wait_json: serde_json::Value = serde_json::from_str(&wait_result)?;
     assert_eq!(wait_json["statuses"][0]["status"], "completed");
     assert_eq!(wait_json["statuses"][0]["output"], "budget-path-ok");
@@ -216,7 +277,7 @@ async fn sub_agent_spawn_returns_before_background_result() -> anyhow::Result<()
             release_rx: AsyncMutex::new(release_rx),
         }),
     );
-    let provider = DelegationProvider::new(Arc::new(llm), 1, settings);
+    let provider = Arc::new(DelegationProvider::new(Arc::new(llm), 1, settings));
 
     let args = json!({
         "tasks": [{
@@ -227,7 +288,7 @@ async fn sub_agent_spawn_returns_before_background_result() -> anyhow::Result<()
 
     let spawn_result = tokio::time::timeout(
         Duration::from_millis(250),
-        provider.execute("spawn_sub_agents", &args.to_string(), None, None),
+        execute_delegation_tool(&provider, TOOL_SPAWN_SUB_AGENTS, &args.to_string()),
     )
     .await
     .expect("spawn_sub_agents must return without waiting for the sub-agent")?;
@@ -236,34 +297,30 @@ async fn sub_agent_spawn_returns_before_background_result() -> anyhow::Result<()
         .as_str()
         .expect("spawn returns sub-agent id");
 
-    let poll_result = provider
-        .execute(
-            "wait_sub_agents",
-            &json!({
-                "ids": [sub_agent_id],
-                "timeout_ms": 0
-            })
-            .to_string(),
-            None,
-            None,
-        )
-        .await?;
+    let poll_result = execute_delegation_tool(
+        &provider,
+        TOOL_WAIT_SUB_AGENTS,
+        &json!({
+            "ids": [sub_agent_id],
+            "timeout_ms": 0
+        })
+        .to_string(),
+    )
+    .await?;
     let poll_json: serde_json::Value = serde_json::from_str(&poll_result)?;
     assert_eq!(poll_json["statuses"][0]["status"], "running");
 
     release_tx.send(true)?;
-    let wait_result = provider
-        .execute(
-            "wait_sub_agents",
-            &json!({
-                "ids": [sub_agent_id],
-                "timeout_ms": 30_000
-            })
-            .to_string(),
-            None,
-            None,
-        )
-        .await?;
+    let wait_result = execute_delegation_tool(
+        &provider,
+        TOOL_WAIT_SUB_AGENTS,
+        &json!({
+            "ids": [sub_agent_id],
+            "timeout_ms": 30_000
+        })
+        .to_string(),
+    )
+    .await?;
     let wait_json: serde_json::Value = serde_json::from_str(&wait_result)?;
     assert_eq!(wait_json["statuses"][0]["status"], "completed");
     assert_eq!(wait_json["statuses"][0]["output"], "async-path-ok");
@@ -276,7 +333,7 @@ async fn sub_agent_spawn_returns_before_background_result() -> anyhow::Result<()
 async fn sub_agent_delegation_smoke_test() -> anyhow::Result<()> {
     let settings = Arc::new(AgentSettings::new()?);
     let llm = Arc::new(LlmClient::new(&settings));
-    let provider = DelegationProvider::new(llm, 1, settings.clone());
+    let provider = Arc::new(DelegationProvider::new(llm, 1, settings.clone()));
 
     let args = json!({
         "tasks": [{
@@ -286,25 +343,22 @@ async fn sub_agent_delegation_smoke_test() -> anyhow::Result<()> {
         }]
     });
 
-    let spawn_result = provider
-        .execute("spawn_sub_agents", &args.to_string(), None, None)
-        .await?;
+    let spawn_result =
+        execute_delegation_tool(&provider, TOOL_SPAWN_SUB_AGENTS, &args.to_string()).await?;
     let spawn_json: serde_json::Value = serde_json::from_str(&spawn_result)?;
     let sub_agent_id = spawn_json["started"][0]["id"]
         .as_str()
         .expect("spawn returns sub-agent id");
-    let result = provider
-        .execute(
-            "wait_sub_agents",
-            &json!({
-                "ids": [sub_agent_id],
-                "timeout_ms": 60_000
-            })
-            .to_string(),
-            None,
-            None,
-        )
-        .await?;
+    let result = execute_delegation_tool(
+        &provider,
+        TOOL_WAIT_SUB_AGENTS,
+        &json!({
+            "ids": [sub_agent_id],
+            "timeout_ms": 60_000
+        })
+        .to_string(),
+    )
+    .await?;
 
     assert!(!result.trim().is_empty());
     Ok(())
