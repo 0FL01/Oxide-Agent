@@ -2674,6 +2674,36 @@ mod backend_selection_tests {
             None => std::env::remove_var("SANDBOX_BACKEND"),
         }
     }
+
+    #[cfg(feature = "tool-stack-logs")]
+    #[tokio::test]
+    async fn stack_logs_report_explicit_unsupported_error_under_bwrap() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous: Option<OsString> = std::env::var_os("SANDBOX_BACKEND");
+        std::env::set_var("SANDBOX_BACKEND", "bwrap");
+
+        let list_error =
+            SandboxManager::list_stack_log_sources(StackLogsListSourcesRequest::default())
+                .await
+                .unwrap_err()
+                .to_string();
+        let fetch_error = SandboxManager::fetch_stack_logs(StackLogsFetchRequest::default())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        for error in [list_error, fetch_error] {
+            assert!(error.contains("Stack logs are Docker/Compose diagnostics"));
+            assert!(error.contains("not supported by SANDBOX_BACKEND=bwrap"));
+        }
+
+        match previous {
+            Some(value) => std::env::set_var("SANDBOX_BACKEND", value),
+            None => std::env::remove_var("SANDBOX_BACKEND"),
+        }
+    }
 }
 
 #[cfg(all(test, feature = "sandbox-backend-docker-direct"))]
