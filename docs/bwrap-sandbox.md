@@ -113,6 +113,41 @@ cargo test -p oxide-agent-core \
   bwrap_smoke --lib -- --ignored
 ```
 
+## Platform Certification
+
+Current MVP certification status:
+
+| Host | Rootfs | Status | Smoke command |
+| --- | --- | --- | --- |
+| Debian 13 | Debian 13 `debian-13-dev` | Primary target, ready to smoke after rootfs build | `scripts/smoke-bwrap.sh debian-13-dev` |
+| Debian 13 | Alpine | Optional pending | Use `BWRAP_ROOTFS=/path/to/alpine/rootfs scripts/smoke-bwrap.sh alpine-3.23-dev` after an Alpine rootfs builder or verified minirootfs import is added |
+| Alpine host | Debian 13 `debian-13-dev` | First-class target, requires prebuilt/copied Debian rootfs | `BWRAP_ROOTFS=/opt/oxide-agent/bwrap-images/debian-13-dev/rootfs scripts/smoke-bwrap.sh debian-13-dev` |
+| Alpine host | Alpine | Optional pending | Use `BWRAP_ROOTFS=/path/to/alpine/rootfs scripts/smoke-bwrap.sh alpine-3.23-dev` after Alpine host plus Alpine rootfs smoke coverage exists |
+| Docker Compose app container | Any bwrap rootfs | Experimental/dev-only | Requires a future explicit override with namespace/seccomp requirements; keep normal Compose on broker mode |
+
+Alpine rootfs support is intentionally marked optional pending for MVP because the shipped rootfs builder currently targets Debian 13 package parity with `sandbox/Dockerfile.dev`. Alpine minirootfs import needs a separate checksum/provenance path and smoke coverage for BusyBox/GNU tool differences before it should be called supported.
+
+Expected successful smoke result shape:
+
+```json
+{
+  "backend": "bwrap",
+  "environment_kind": "bare-host",
+  "root_mode": "overlay-rw",
+  "network_mode": "host",
+  "exit_status": 0,
+  "tests": {
+    "create_scope": "pass",
+    "exec_command": "pass",
+    "workspace_persistence": "pass",
+    "docker_socket_absent": "pass",
+    "sandboxd_socket_absent": "pass"
+  }
+}
+```
+
+On Alpine hosts, install `bubblewrap ca-certificates tar xz`, place the rootfs/image store and state directories under absolute service paths, and ensure the OpenRC/service user owns `BWRAP_STATE_DIR` and `BWRAP_LOCK_DIR`. Debian rootfs execution on Alpine does not require host glibc because glibc lives inside the rootfs; the agent binary itself must be compatible with the Alpine host.
+
 ## Security Notes
 
 - File tools are restricted to `/workspace`.
