@@ -1,7 +1,5 @@
 # Oxide Agent TG Bot
 
-[(Russian README)](README-ru.md)
-
 Universal Telegram bot with AI assistant, supporting multiple models, multimodality, and advanced **Agent Mode** with code execution.
 
 ## Description
@@ -11,7 +9,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral), along with Groq support.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, NVIDIA NIM), along with Groq support.
 
 ### Architecture Highlights
 
@@ -64,7 +62,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, OpenCode Go, NVIDIA NIM, OpenRouter, Mistral). Groq is supported in **Chat Mode only**.
+*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, NVIDIA NIM). Groq is supported in **Chat Mode only**.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Multimedia Processing:**
     *   Voice and video messages (speech recognition via OpenRouter-hosted Gemini-family models or Voxtral).
@@ -82,20 +80,20 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 ### 🔑 API Keys (Mandatory)
 | Provider | Variable | Description |
 | :--- | :--- | :--- |
-| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when configured for Agent routes (`glm-4.7`, default examples). [Zhipu AI](https://z.ai/) |
-| **OpenCode Go** | `OPENCODE_GO_API_KEY` | Required when using `opencode-go` routes such as `deepseek-v4-flash`. |
+| **OpenCode Go** | `OPENCODE_GO_API_KEY` | **Primary Agent Mode provider** — recommended route: `deepseek-v4-flash` via `opencode-go`. [OpenCode](https://opencode.ai/) |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | **Cloudflare R2** | `OXIDE_R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
-| **Mistral AI** | `MISTRAL_API_KEY` | **Critical for Agent** (`mistral-embed` model for skill selection) |
+| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when using ZAI routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
+| **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
 ### 🤖 Supported LLM Providers for Chat/Agent Mode
 The bot supports **6 main providers** for both standard chat and advanced Agent mode (with tool calling):
 
-*   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — primary provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
+*   **OpenCode Go** (`OPENCODE_GO_API_KEY`) — **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls (strict), structured JSON for DeepSeek V4 routes, adaptive throttling, unbounded retry, and reasoning content parsing.
+*   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — alternative provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) — Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
-*   **OpenCode Go** (`OPENCODE_GO_API_KEY`) — subscription OpenAI-compatible provider. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls and structured JSON for DeepSeek V4 routes.
-*   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
 *   **Mistral** (`MISTRAL_API_KEY`) — great for cost-effective agent/chat combos (e.g., `mistral-large-latest`, `pixtral-large-latest`). Supports tool calling via JSON mode or native tools. Includes Voxtral audio transcription (`voxtral-mini-latest`).
+*   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
 
 #### Other Providers (Chat only)
 *   **Groq** (`GROQ_API_KEY`) — optional provider for fast specialized chat workloads (e.g. `llama-3.3-70b-versatile`).
@@ -200,7 +198,16 @@ CHAT_MODEL_NAME="✨ Gemini 3.0 Flash"
 Swap `CHAT_MODEL_PROVIDER`/`CHAT_MODEL_ID` and adjust the name when you need a different multimodal provider (e.g., `mistral-large-latest`).
 
 *   **Agent & Sub-agent (Recommended Models)**
-  For the best performance in Agent Mode, it is highly recommended to use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent (both via **ZAI** provider).
+  For the best performance in Agent Mode, it is highly recommended to use **deepseek-v4-flash** for both the Main Agent and Sub-Agent (via **OpenCode Go** provider). This route offers strict tool calling, structured output support, reasoning content, adaptive throttling, and unlimited retry for reliable agent execution.
+```dotenv
+AGENT_MODEL_ID="deepseek-v4-flash"
+AGENT_MODEL_PROVIDER="opencode-go"
+
+SUB_AGENT_MODEL_ID="deepseek-v4-flash"
+SUB_AGENT_MODEL_PROVIDER="opencode-go"
+```
+
+  **Alternative (ZAI):** If you prefer the ZAI provider, use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent:
 ```dotenv
 AGENT_MODEL_ID="glm-4.7"
 AGENT_MODEL_PROVIDER="zai"
@@ -220,9 +227,9 @@ MEDIA_MODEL_PROVIDER="openrouter"
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
-# Priority: MiniMax > ZAI > Mistral
-AGENT_MODEL_ROUTES__0__ID="MiniMax-M2.7"
-AGENT_MODEL_ROUTES__0__PROVIDER="minimax"
+# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI (GLM-4.7) > Mistral
+AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
+AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=10
 
 AGENT_MODEL_ROUTES__1__ID="glm-4.7"
@@ -234,20 +241,20 @@ AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
 AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
 
-### NVIDIA NIM agent route example
-Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven backup route first:
+### Weighted failover with NVIDIA NIM
+Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven primary route first:
 
 ```dotenv
 NVIDIA_API_KEY=...
 NVIDIA_API_BASE="https://integrate.api.nvidia.com/v1"
 
-AGENT_MODEL_ROUTES__0__ID="meta/llama-3.1-70b-instruct"
-AGENT_MODEL_ROUTES__0__PROVIDER="nvidia"
-AGENT_MODEL_ROUTES__0__WEIGHT=3
+AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
+AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
+AGENT_MODEL_ROUTES__0__WEIGHT=5
 
-AGENT_MODEL_ROUTES__1__ID="glm-4.7"
-AGENT_MODEL_ROUTES__1__PROVIDER="zai"
-AGENT_MODEL_ROUTES__1__WEIGHT=5
+AGENT_MODEL_ROUTES__1__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__1__PROVIDER="nvidia"
+AGENT_MODEL_ROUTES__1__WEIGHT=3
 ```
 
 The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
@@ -282,11 +289,12 @@ Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-famil
 
 | Provider | Description |
 | :--- | :--- |
-| **ZAI (Zhipu AI)** | Default agent model, native tool-aware chat |
+| **OpenCode Go** | Primary (recommended) agent provider, subscription OpenAI-compatible API, DeepSeek V4 Flash, strict tool calling, structured output |
+| **ZAI (Zhipu AI)** | Alternative agent provider, native tool-aware chat, GLM-4.7 / GLM-4.5-Air |
 | **MiniMax** | Claude SDK-compatible, high context |
-| **NVIDIA NIM** | Tool calling support, hosted inference |
 | **Mistral** | Generous free tier, includes Voxtral audio transcription |
 | **OpenRouter** | Aggregator for various models, including Gemini-family model IDs |
+| **NVIDIA NIM** | Tool calling support, hosted inference |
 | **Groq** | Fast inference (Chat Mode only) |
 
 > **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
