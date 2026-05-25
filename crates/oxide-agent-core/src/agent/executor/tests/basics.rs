@@ -89,6 +89,7 @@ fn executor_registers_episodic_extract_hook_for_wiki_drafts() {
     assert!(executor.runner.has_registered_hook("episodic_extract"));
 }
 
+#[cfg(feature = "tool-wiki-memory")]
 #[test]
 fn executor_exposes_wiki_memory_tools_when_store_configured() {
     let backend = Arc::new(InMemoryWikiBackend::default());
@@ -99,6 +100,7 @@ fn executor_exposes_wiki_memory_tools_when_store_configured() {
 
     assert!(tools.iter().any(|tool| tool.name == "wiki_memory_list"));
     assert!(tools.iter().any(|tool| tool.name == "wiki_memory_read"));
+    assert!(tools.iter().any(|tool| tool.name == "wiki_memory_search"));
     assert!(tools.iter().any(|tool| tool.name == "wiki_memory_delete"));
 }
 
