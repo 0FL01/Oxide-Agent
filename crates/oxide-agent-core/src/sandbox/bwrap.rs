@@ -11,7 +11,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::process::Command;
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -50,6 +50,7 @@ struct BwrapSandboxConfig {
     net: BwrapNetworkMode,
     root_mode: BwrapRootMode,
     command_timeout: Duration,
+    lock_timeout: Duration,
     max_output_bytes: usize,
     max_read_file_bytes: u64,
     allow_overlay: bool,
@@ -456,8 +457,27 @@ impl BwrapSandboxManager {
             .truncate(false)
             .open(&self.state.lock)
             .with_context(|| format!("Failed to open bwrap lock {}", self.state.lock.display()))?;
-        file.lock_exclusive()
-            .with_context(|| format!("Failed to lock bwrap scope {}", self.state.scope_name))?;
+        let started_at = Instant::now();
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if started_at.elapsed() >= self.config.lock_timeout {
+                        bail!(
+                            "Timed out after {}s waiting for bwrap scope lock {}. Another command, recreate, or destroy operation is still active for this scope.",
+                            self.config.lock_timeout.as_secs(),
+                            self.state.scope_name
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to lock bwrap scope {}", self.state.scope_name)
+                    });
+                }
+            }
+        }
         Ok(ScopeLock { file })
     }
 
@@ -730,6 +750,10 @@ impl BwrapSandboxConfig {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(BWRAP_DEFAULT_TIMEOUT_SECS),
         )?);
+        let lock_timeout = Duration::from_secs(env_u64(
+            "BWRAP_RECREATE_LOCK_TIMEOUT_SECS",
+            command_timeout.as_secs().saturating_add(5),
+        )?);
         let max_output_bytes = env_usize("BWRAP_MAX_OUTPUT_BYTES", BWRAP_DEFAULT_MAX_OUTPUT_BYTES)?;
         let max_read_file_bytes = env_u64(
             "BWRAP_MAX_READ_FILE_BYTES",
@@ -774,6 +798,7 @@ impl BwrapSandboxConfig {
             net,
             root_mode,
             command_timeout,
+            lock_timeout,
             max_output_bytes,
             max_read_file_bytes,
             allow_overlay,
@@ -805,6 +830,9 @@ impl BwrapSandboxConfig {
         }
         if self.command_timeout.is_zero() {
             bail!("BWRAP_COMMAND_TIMEOUT_SECS must be greater than zero.");
+        }
+        if self.lock_timeout.is_zero() {
+            bail!("BWRAP_RECREATE_LOCK_TIMEOUT_SECS must be greater than zero.");
         }
         if self.max_output_bytes == 0 {
             bail!("BWRAP_MAX_OUTPUT_BYTES must be greater than zero.");
@@ -1333,6 +1361,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     const BWRAP_TEST_ENV_KEYS: &[&str] = &[
         "BWRAP_ALLOW_OVERLAY",
@@ -1345,6 +1374,7 @@ mod tests {
         "BWRAP_MAX_OUTPUT_BYTES",
         "BWRAP_MAX_READ_FILE_BYTES",
         "BWRAP_NET",
+        "BWRAP_RECREATE_LOCK_TIMEOUT_SECS",
         "BWRAP_RESOLV_CONF",
         "BWRAP_ROOT_MODE",
         "BWRAP_ROOTFS",
@@ -1688,6 +1718,39 @@ mod tests {
                 .to_string();
         assert!(unsupported_root_mode.contains("tmp-overlay is not supported"));
         assert!(unsupported_root_mode.contains("overlay-rw, ro"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_lock_timeout_defaults_to_command_timeout_plus_five_and_rejects_zero() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "7");
+        std::env::remove_var("BWRAP_RECREATE_LOCK_TIMEOUT_SECS");
+        let manager = BwrapSandboxManager::new(SandboxScope::new(42, "default-lock-timeout"))
+            .await
+            .unwrap();
+        assert_eq!(manager.config.lock_timeout, Duration::from_secs(12));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_RECREATE_LOCK_TIMEOUT_SECS", "0");
+        let zero_lock_timeout =
+            BwrapSandboxManager::new(SandboxScope::new(42, "zero-lock-timeout"))
+                .await
+                .err()
+                .expect("zero lock timeout should fail")
+                .to_string();
+        assert!(zero_lock_timeout.contains("BWRAP_RECREATE_LOCK_TIMEOUT_SECS"));
+        assert!(zero_lock_timeout.contains("greater than zero"));
     }
 
     #[cfg(unix)]

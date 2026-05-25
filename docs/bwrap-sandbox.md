@@ -82,6 +82,7 @@ BWRAP_LOCK_DIR=.oxide/sandbox/locks
 BWRAP_NET=host
 BWRAP_ROOT_MODE=overlay-rw
 BWRAP_COMMAND_TIMEOUT_SECS=60
+BWRAP_RECREATE_LOCK_TIMEOUT_SECS=65
 BWRAP_MAX_OUTPUT_BYTES=16777216
 BWRAP_MAX_READ_FILE_BYTES=52428800
 BWRAP_ALLOW_OVERLAY=true
@@ -96,6 +97,8 @@ BWRAP_IMAGE_STORE=/opt/oxide-agent/bwrap-images
 BWRAP_STATE_DIR=/var/lib/oxide-agent/sandbox/scopes
 BWRAP_LOCK_DIR=/var/lib/oxide-agent/sandbox/locks
 ```
+
+All bwrap operations for the same scope use an exclusive filesystem lock so package-manager writes and overlay state are serialized. `BWRAP_RECREATE_LOCK_TIMEOUT_SECS` controls how long an operation waits for that lock; by default it is `BWRAP_COMMAND_TIMEOUT_SECS + 5`.
 
 ## Smoke Test
 
