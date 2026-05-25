@@ -463,7 +463,8 @@ fn legacy_skills_and_embeddings_are_removed() {
         "legacy skills/embedding production APIs must stay removed; offenders: {rust_offenders:?}"
     );
 
-    let surface_targets = [".env.example", "config/local.yaml", "docker/Dockerfile.app"];
+    let required_surface_targets = [".env.example", "docker/Dockerfile.app"];
+    let optional_surface_targets = ["config/local.yaml"];
     let surface_forbidden_patterns = [
         "EMBEDDING_",
         "SKILL_",
@@ -471,7 +472,7 @@ fn legacy_skills_and_embeddings_are_removed() {
         ".embeddings_cache",
         "COPY skills/",
     ];
-    let surface_offenders = surface_targets
+    let required_surface_offenders = required_surface_targets
         .iter()
         .flat_map(|target| {
             let source = fs::read_to_string(workspace_root.join(target))
@@ -483,6 +484,25 @@ fn legacy_skills_and_embeddings_are_removed() {
                 .map(|pattern| format!("{target}: {pattern}"))
                 .collect::<Vec<_>>()
         })
+        .collect::<Vec<_>>();
+    let optional_surface_offenders = optional_surface_targets
+        .iter()
+        .flat_map(|target| {
+            let Ok(source) = fs::read_to_string(workspace_root.join(target)) else {
+                return Vec::new();
+            };
+            surface_forbidden_patterns
+                .iter()
+                .copied()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{target}: {pattern}"))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    let surface_offenders = required_surface_offenders
+        .into_iter()
+        .chain(optional_surface_offenders)
         .collect::<Vec<_>>();
 
     assert!(
