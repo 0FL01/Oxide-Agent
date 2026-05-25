@@ -20,7 +20,6 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use shell_escape::escape;
 use std::collections::HashMap;
 use std::str;
 use std::sync::Arc;
@@ -184,15 +183,7 @@ impl SandboxFileOps for SandboxRuntime {
     async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {
         let _shared = self.execution_gate.read().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
-        let result = sandbox
-            .exec_command(&list_files_command(path), None)
-            .await?;
-        Ok(SandboxFileListing {
-            path: path.to_string(),
-            listing: result.stdout,
-            stderr: result.stderr,
-            exit_code: result.exit_code,
-        })
+        sandbox.list_files(path).await
     }
 
     async fn apply_file_edit(
@@ -379,14 +370,6 @@ struct ListFilesArgs {
 
 fn default_workspace_path() -> String {
     "/workspace".to_string()
-}
-
-fn list_files_command(path: &str) -> String {
-    format!(
-        "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
-        escape(path.into()),
-        escape(path.into())
-    )
 }
 
 fn parse_invocation_args<T>(invocation: &ToolInvocation) -> std::result::Result<T, ToolRuntimeError>

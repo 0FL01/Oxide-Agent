@@ -33,7 +33,10 @@ use futures_util::{StreamExt, TryStreamExt};
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use http_body_util::{Either, Full};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "sandbox-backend-docker-direct")]
+#[cfg(any(
+    feature = "sandbox-backend-docker-direct",
+    feature = "sandbox-backend-sandboxd-client"
+))]
 use shell_escape::escape;
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use std::collections::BTreeSet;
@@ -73,7 +76,7 @@ use crate::sandbox::broker::{
 };
 #[cfg(feature = "sandbox-backend-bwrap")]
 use crate::sandbox::bwrap::BwrapSandboxManager;
-use crate::sandbox::SandboxScope;
+use crate::sandbox::{SandboxFileListing, SandboxScope};
 
 #[cfg(feature = "sandbox-backend-docker-direct")]
 const DOCKER_COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
@@ -806,6 +809,85 @@ impl SandboxManager {
             }
         }
     }
+
+    pub async fn list_files(&mut self, path: &str) -> Result<SandboxFileListing> {
+        match &mut self.inner {
+            #[cfg(feature = "sandbox-backend-docker-direct")]
+            SandboxManagerInner::Docker(manager) => list_files_via_exec(manager, path).await,
+            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            SandboxManagerInner::Broker(manager) => list_files_via_exec(manager, path).await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.list_files(path).await,
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "sandbox-backend-docker-direct",
+    feature = "sandbox-backend-sandboxd-client"
+))]
+async fn list_files_via_exec(
+    manager: &mut impl SandboxCommandExec,
+    path: &str,
+) -> Result<SandboxFileListing> {
+    let result = manager
+        .exec_command(&list_files_command(path), None)
+        .await?;
+    Ok(SandboxFileListing {
+        path: path.to_string(),
+        listing: result.stdout,
+        stderr: result.stderr,
+        exit_code: result.exit_code,
+    })
+}
+
+#[cfg(any(
+    feature = "sandbox-backend-docker-direct",
+    feature = "sandbox-backend-sandboxd-client"
+))]
+#[async_trait::async_trait]
+trait SandboxCommandExec {
+    async fn exec_command(
+        &mut self,
+        cmd: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<ExecResult>;
+}
+
+#[cfg(feature = "sandbox-backend-docker-direct")]
+#[async_trait::async_trait]
+impl SandboxCommandExec for DockerSandboxManager {
+    async fn exec_command(
+        &mut self,
+        cmd: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<ExecResult> {
+        Self::exec_command(self, cmd, cancellation_token).await
+    }
+}
+
+#[cfg(feature = "sandbox-backend-sandboxd-client")]
+#[async_trait::async_trait]
+impl SandboxCommandExec for BrokerSandboxManager {
+    async fn exec_command(
+        &mut self,
+        cmd: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<ExecResult> {
+        Self::exec_command(self, cmd, cancellation_token).await
+    }
+}
+
+#[cfg(any(
+    feature = "sandbox-backend-docker-direct",
+    feature = "sandbox-backend-sandboxd-client"
+))]
+fn list_files_command(path: &str) -> String {
+    format!(
+        "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
+        escape(path.into()),
+        escape(path.into())
+    )
 }
 
 /// Docker sandbox manager for isolated code execution
