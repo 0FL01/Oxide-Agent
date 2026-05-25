@@ -60,6 +60,14 @@ Expected layout:
 
 The rootfs is the immutable lower layer. Runtime package installs and system writes go into the per-scope overlay under `BWRAP_STATE_DIR`.
 
+When `mmdebstrap` or a prebuilt Debian rootfs is unavailable, build a smoke-only rootfs from host binaries:
+
+```bash
+scripts/build-bwrap-rootfs-host-smoke.sh
+```
+
+This creates `.oxide/sandbox/images/host-smoke-dev/` with just enough files for bwrap runtime checks. It is intentionally not a production image, does not provide package-manager parity, and does not certify Debian 13 rootfs behavior.
+
 ## Configuration
 
 Development example:
@@ -107,6 +115,27 @@ The Rust integration-style smoke tests are ignored by default and can be run aga
 ```bash
 SANDBOX_BACKEND=bwrap \
 BWRAP_ROOTFS=.oxide/sandbox/images/debian-13-dev/rootfs \
+cargo test -p oxide-agent-core \
+  --no-default-features \
+  --features 'sandbox-backend-bwrap,tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate' \
+  bwrap_smoke --lib -- --ignored
+```
+
+For the host-derived smoke rootfs, use:
+
+```bash
+scripts/build-bwrap-rootfs-host-smoke.sh
+
+BWRAP_IMAGE_STORE=.oxide/sandbox/images \
+BWRAP_STATE_DIR=.oxide/sandbox/scopes \
+BWRAP_LOCK_DIR=.oxide/sandbox/locks \
+BWRAP_NET=host \
+BWRAP_ROOT_MODE=overlay-rw \
+scripts/smoke-bwrap.sh host-smoke-dev
+
+SANDBOX_BACKEND=bwrap \
+BWRAP_ROOTFS=.oxide/sandbox/images/host-smoke-dev/rootfs \
+BWRAP_NET=host \
 cargo test -p oxide-agent-core \
   --no-default-features \
   --features 'sandbox-backend-bwrap,tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate' \
