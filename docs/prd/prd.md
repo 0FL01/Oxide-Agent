@@ -3677,68 +3677,78 @@ Development repo-local layout:
       agent-sandbox-u77-0123456789abcdef.lock
 ```
 
-Service layout:
+### Deployment-aware storage layout
+
+The bwrap backend must not assume that the repository checkout is present at runtime. Oxide Agent may run in several deployment modes:
+
+- local development from a repository checkout;
+- standalone precompiled binary with a `.env` file next to the binary;
+- system service;
+- Docker Compose deployment;
+- Docker Compose image that already contains prebuilt bwrap rootfs assets.
+
+Because of this, storage must be split into two concepts:
+
+1. **Image store** — unpacked bwrap rootfs images and immutable image metadata.
+2. **Runtime state** — per-agent/per-scope writable sandbox state, overlays, workspaces, locks, and metadata.
+
+The image store may be read-only after installation. Runtime state must be writable by the Oxide Agent process.
+
+Recommended variables:
+
+```env
+OXIDE_STATE_DIR=/var/lib/oxide-agent
+BWRAP_IMAGE_STORE=/opt/oxide-agent/bwrap-images
+BWRAP_STATE_DIR=/var/lib/oxide-agent/sandbox/scopes
+BWRAP_LOCK_DIR=/var/lib/oxide-agent/sandbox/locks
+````
+
+Do not rely on shell-style variable interpolation inside `.env` files unless the config loader explicitly implements and tests it. For MVP, prefer fully resolved absolute paths in production examples.
+
+#### Workspace mount mapping
 
 ```text
-/var/lib/oxide-agent/
-  sandbox/
-    images/
-      debian-13-dev/
-        rootfs/
-        image.json
-        checksums.txt
-        provenance.json
-    scopes/
-      agent-sandbox-u77-0123456789abcdef/
-        system/
-          upper/
-          work/
-        workspace/
-        tmp/
-        active/
-        metadata.json
-    locks/
-      agent-sandbox-u77-0123456789abcdef.lock
-```
-
-Workspace mount mapping:
-
-```text
-host: <state>/scopes/<scope>/workspace
+host:    ${BWRAP_STATE_DIR}/<scope>/workspace
 sandbox: /workspace
-mode: read-write
+mode:    read-write
 persistence: persistent until recreate/destroy
 ```
 
-Rootfs overlay mapping:
+#### Rootfs overlay mapping when `BWRAP_ROOT_MODE=overlay-rw`
 
 ```text
-lower host: <image-store>/<image-id>/rootfs
-upper host: <state>/scopes/<scope>/system/upper
-work host:  <state>/scopes/<scope>/system/work/<exec-id>
-sandbox:   /
-mode:      overlay-rw by default
+lower host: ${BWRAP_IMAGE_STORE}/<image-id>/rootfs
+upper host: ${BWRAP_STATE_DIR}/<scope>/system/upper
+work host:  ${BWRAP_STATE_DIR}/<scope>/system/work
+sandbox:    /
+mode:       overlay-rw
 persistence: lower is immutable/shared; upper is persistent per scope until recreate/destroy
 ```
 
-Read-only root mapping when `BWRAP_ROOT_MODE=ro`:
+The overlay work directory must be on the same filesystem as the upper directory. Per-scope operations must be serialized in MVP. If the implementation chooses per-command work directories, they must be created empty before each command and removed after command completion.
+
+#### Read-only root mapping when `BWRAP_ROOT_MODE=ro`
 
 ```text
-host: <image-store>/<image-id>/rootfs
+host:    ${BWRAP_IMAGE_STORE}/<image-id>/rootfs
 sandbox: /
-mode: read-only
-persistence: immutable image content
+mode:    read-only
+persistence: immutable image content only
 ```
 
-Tmp mapping:
+`BWRAP_ROOT_MODE=ro` is valid for restricted execution, but it does not satisfy the package-install use case because `apt`, `apk`, and system-level `pip` installs need writable system paths. The developer/agent profile should default to `overlay-rw`.
+
+#### Tmp mapping
 
 ```text
 sandbox: /tmp
-mode: tmpfs
+mode:    tmpfs
 persistence: per-command only
 ```
 
-Forbidden default mappings:
+#### Forbidden default mappings
+
+The bwrap backend must not mount the following host paths into the sandbox by default:
 
 ```text
 host repo root -> sandbox
@@ -3750,3 +3760,5 @@ host /var/run/docker.sock -> sandbox
 host /run/sandboxd -> sandbox
 host / -> sandbox
 ```
+
+The only default writable host-backed mount exposed to sandbox tools should be `/workspace`, backed by `${BWRAP_STATE_DIR}/<scope>/workspace`. System writes inside the sandbox must go through the per-scope overlay upperdir, not by binding arbitrary host directories.
