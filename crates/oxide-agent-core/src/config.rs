@@ -1839,11 +1839,11 @@ pub fn get_agent_model() -> String {
 /// Maximum iterations for agent loop
 pub const AGENT_MAX_ITERATIONS: usize = 200;
 /// Maximum iterations for sub-agent loop
-pub const SUB_AGENT_MAX_ITERATIONS: usize = 60;
+pub const SUB_AGENT_MAX_ITERATIONS: usize = 2000;
 /// Agent task timeout in seconds
 pub const AGENT_TIMEOUT_SECS: u64 = 1800; // 30 minutes
 /// Sub-agent task timeout in seconds
-pub const SUB_AGENT_TIMEOUT_SECS: u64 = 600;
+pub const SUB_AGENT_TIMEOUT_SECS: u64 = 3600;
 /// Maximum timeout for individual tool call (in seconds)
 /// This prevents a single tool from blocking the agent indefinitely
 pub const AGENT_TOOL_TIMEOUT_SECS: u64 = 300; // 5 minutes

@@ -54,10 +54,8 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         - Soft Timeout Report Hook - provides detailed timeout reporting
         - Sub-Agent Safety - ensures safe execution environments
         - Registry - centralized hook management
-    *   **🌐 Browser Automation:** Self-hosted Browser Use bridge for high-level browser tasks with reusable sessions.
-    *   **🔄 Loop Detection:** Three levels of protection (Content Detector, Tool Detector, LLM Detector) to prevent infinite loops.
     *   **⏱️ Universal Runtime:** Transport-agnostic progress rendering system that can be adapted for Discord, Slack, and other transports.
-    *   **👥 Hierarchical Delegation:** The Main Agent acts as an orchestrator, delegating heavy retrieval and mechanical tasks (git clone, searching) to Sub-Agents to maximize efficiency and context preservation.
+    *   **👥 Hierarchical Delegation:** The Main Agent spawns async Sub-Agents for parallel, independent subtasks. Each sub-agent runs in an isolated ephemeral session with a task-specific tool whitelist, inherits the topic AGENTS.md and parent cancellation, and returns results via background job tracking.
     *   **Autonomy:** Agent plans steps and selects tools itself.
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
@@ -340,37 +338,6 @@ SILERO_TTS_TIMEOUT_SECS=60
 **SSML Support:** Set `ssml: true` for SSML markup with `<speak>`, `<break>`, `<prosody>` tags
 
 **Migration Note:** Piper TTS has been replaced with Silero TTS. Use `text_to_speech_en` for Kokoro (English) and `text_to_speech_ru` for Silero (Russian).
-
-### 🔌 Jira MCP Integration
-Full Jira Server 7.5.0 integration via MCP protocol.
-
-**Configuration:**
-```dotenv
-JIRA_URL=https://jira.company.com
-JIRA_EMAIL=agent@company.com
-JIRA_API_TOKEN=your_api_token
-JIRA_MCP_BINARY_PATH=/usr/local/bin/jira-mcp  # Auto-detected
-```
-
-**Feature Flag:** `--features jira`
-
-**Tools:** `jira_read`, `jira_write`, `jira_schema` (disabled by default)
-
-**Usage:** Enable via `topic_agent_tools_enable` with `tools=["jira"]`
-
-### 💬 Mattermost MCP Integration
-Mattermost workspace integration via MCP protocol (16 tools).
-
-**Configuration:**
-```dotenv
-MATTERMOST_URL=https://mattermost.company.com
-MATTERMOST_TOKEN=your_bot_or_user_token
-MATTERMOST_MCP_BINARY_PATH=/usr/local/bin/mattermost-mcp  # Auto-detected
-```
-
-**Feature Flag:** `--features mattermost`
-
-**Tools:** Teams, channels, messages, users, files operations
 
 ### 🔐 SSH MCP Infrastructure
 Topic-scoped SSH tools with approval flow for sensitive operations.
