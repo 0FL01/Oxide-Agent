@@ -79,6 +79,28 @@ fn settings_with_browser_route_keys(
     settings
 }
 
+struct EnvVarRestore {
+    key: &'static str,
+    value: Option<std::ffi::OsString>,
+}
+
+impl EnvVarRestore {
+    fn unset(key: &'static str) -> Self {
+        let value = env::var_os(key);
+        env::remove_var(key);
+        Self { key, value }
+    }
+}
+
+impl Drop for EnvVarRestore {
+    fn drop(&mut self) {
+        match &self.value {
+            Some(value) => env::set_var(self.key, value),
+            None => env::remove_var(self.key),
+        }
+    }
+}
+
 #[test]
 fn test_args_deserialize() {
     let run: Result<RunTaskArgs, _> = serde_json::from_str(
@@ -625,6 +647,10 @@ fn browser_llm_config_accepts_canonical_zai_provider_id() {
 
 #[test]
 fn browser_llm_config_requires_configured_secret() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _zai_api_key = EnvVarRestore::unset("ZAI_API_KEY");
     let provider = BrowserUseProvider::new(
         "http://localhost:8002",
         Arc::new(crate::config::AgentSettings::default()),
