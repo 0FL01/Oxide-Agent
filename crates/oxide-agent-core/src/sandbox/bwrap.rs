@@ -84,6 +84,12 @@ impl Drop for ScopeLock {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OutputTruncation {
+    original_bytes: usize,
+    captured_bytes: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum BwrapNetworkMode {
@@ -676,20 +682,22 @@ impl BwrapSandboxManager {
             }
         };
 
-        let (stdout, stdout_truncated) =
+        let (stdout, stdout_truncation) =
             capture_output(output.stdout, self.config.max_output_bytes);
-        let (mut stderr, stderr_truncated) =
+        let (mut stderr, stderr_truncation) =
             capture_output(output.stderr, self.config.max_output_bytes);
-        if stdout_truncated {
+        if let Some(truncation) = stdout_truncation {
             stderr.push_str(&format!(
-                "\n[oxide-agent] stdout truncated to {} bytes by BWRAP_MAX_OUTPUT_BYTES",
-                self.config.max_output_bytes
+                "\n[oxide-agent] stdout truncated by BWRAP_MAX_OUTPUT_BYTES: captured {} of {} bytes",
+                truncation.captured_bytes,
+                truncation.original_bytes
             ));
         }
-        if stderr_truncated {
+        if let Some(truncation) = stderr_truncation {
             stderr.push_str(&format!(
-                "\n[oxide-agent] stderr truncated to {} bytes by BWRAP_MAX_OUTPUT_BYTES",
-                self.config.max_output_bytes
+                "\n[oxide-agent] stderr truncated by BWRAP_MAX_OUTPUT_BYTES: captured {} of {} bytes",
+                truncation.captured_bytes,
+                truncation.original_bytes
             ));
         }
 
@@ -1363,13 +1371,16 @@ fn remove_dir_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn capture_output(bytes: Vec<u8>, max_bytes: usize) -> (String, bool) {
+fn capture_output(bytes: Vec<u8>, max_bytes: usize) -> (String, Option<OutputTruncation>) {
     if bytes.len() <= max_bytes {
-        return (String::from_utf8_lossy(&bytes).into_owned(), false);
+        return (String::from_utf8_lossy(&bytes).into_owned(), None);
     }
     (
         String::from_utf8_lossy(&bytes[..max_bytes]).into_owned(),
-        true,
+        Some(OutputTruncation {
+            original_bytes: bytes.len(),
+            captured_bytes: max_bytes,
+        }),
     )
 }
 
@@ -1896,8 +1907,12 @@ mod tests {
         assert_eq!(output.exit_code, 7);
         assert_eq!(output.stdout, "abcdefgh");
         assert!(output.stderr.contains("qrstuvwx"));
-        assert!(output.stderr.contains("stdout truncated"));
-        assert!(output.stderr.contains("stderr truncated"));
+        assert!(output
+            .stderr
+            .contains("stdout truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 16 bytes"));
+        assert!(output
+            .stderr
+            .contains("stderr truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 10 bytes"));
 
         create_fake_bwrap_script(&fake_bwrap, "#!/bin/sh\nsleep 5\n");
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
