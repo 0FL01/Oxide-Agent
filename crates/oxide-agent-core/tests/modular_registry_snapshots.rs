@@ -325,7 +325,58 @@ fn assert_tool_availability_contract(
     );
 
     match profile {
-        "profile-embedded-opencode-local" | "profile-lite" => {
+        "profile-embedded-opencode-local" => {
+            assert!(
+                enabled_module_ids.contains("sandbox-backend/docker-direct"),
+                "embedded-opencode-local profile must enable the direct Docker sandbox backend"
+            );
+            assert_present_capabilities(
+                &enabled_capability_ids,
+                &[
+                    "sandbox-backend/docker-direct/exec",
+                    "sandbox-backend/docker-direct/fileops",
+                    "sandbox-backend/docker-direct/lifecycle",
+                    "tool/compression",
+                    "tool/delegation",
+                    "tool/file-delivery",
+                    "tool/media-audio-transcription",
+                    "tool/media-image-description",
+                    "tool/media-video-description",
+                    "tool/sandbox-exec",
+                    "tool/sandbox-fileops",
+                    "tool/sandbox-list-files",
+                    "tool/sandbox-recreate",
+                    "tool/tavily-search",
+                    "tool/tavily-extract",
+                ],
+                profile,
+            );
+            assert_present_tools(
+                &tool_names,
+                &[
+                    "execute_command",
+                    "cancel_sub_agents",
+                    "compress",
+                    "describe_image_file",
+                    "describe_video_file",
+                    "list_files",
+                    "read_file",
+                    "recreate_sandbox",
+                    "send_file_to_user",
+                    "spawn_sub_agents",
+                    "transcribe_audio_file",
+                    "upload_file",
+                    "wait_sub_agents",
+                    "write_file",
+                ],
+                profile,
+            );
+            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
+            assert_absent_tool_prefix(&tool_names, "jira_", profile);
+            assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
+            assert_absent_tool_prefix(&tool_names, "ssh_", profile);
+        }
+        "profile-lite" => {
             assert_absent_tools(&tool_names, &["execute_command"], profile);
             assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);

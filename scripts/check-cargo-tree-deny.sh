@@ -37,8 +37,11 @@ if [[ ${#deny[@]} -eq 0 ]]; then
         profile-search-only)
             deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius)
             ;;
-        profile-lite | profile-embedded-opencode-local)
+        profile-lite)
             deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius tavily)
+            ;;
+        profile-embedded-opencode-local)
+            deny=(rmcp zai-rs async-openai claudius)
             ;;
         profile-media-enabled)
             deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius tavily htmd)

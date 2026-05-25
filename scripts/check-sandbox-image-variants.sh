@@ -25,12 +25,12 @@ legacy_surface_paths=(
   README-ru.md
 )
 
-if rg -n 'Dockerfile\.sandbox' "${legacy_surface_paths[@]}" --glob '!target/**'; then
+if grep -RInE -- 'Dockerfile[.]sandbox' "${legacy_surface_paths[@]}"; then
   echo "legacy fat sandbox Dockerfile must not be referenced by active deploy or runtime surfaces" >&2
   exit 1
 fi
 
-if ! rg -q 'dockerfile: sandbox/Dockerfile\.dev' .github/workflows/ci-cd.yml; then
+if ! grep -Eq -- 'dockerfile: sandbox/Dockerfile[.]dev' .github/workflows/ci-cd.yml; then
   echo "production deploy workflow must build the selected dev sandbox image variant" >&2
   exit 1
 fi

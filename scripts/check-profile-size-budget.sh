@@ -184,10 +184,10 @@ metric_env_name() {
 
 default_metric_budget() {
   case "${profile}:$1" in
-    embedded-opencode-local:MODULES) echo 8 ;;
-    embedded-opencode-local:CAPABILITIES) echo 8 ;;
+    embedded-opencode-local:MODULES) echo 19 ;;
+    embedded-opencode-local:CAPABILITIES) echo 25 ;;
     embedded-opencode-local:DEPENDENCIES) echo 400 ;;
-    embedded-opencode-local:HIGH_RISK_DEPENDENCIES) echo 7 ;;
+    embedded-opencode-local:HIGH_RISK_DEPENDENCIES) echo 11 ;;
     full:MODULES) echo 39 ;;
     full:CAPABILITIES) echo 53 ;;
     full:DEPENDENCIES) echo 470 ;;

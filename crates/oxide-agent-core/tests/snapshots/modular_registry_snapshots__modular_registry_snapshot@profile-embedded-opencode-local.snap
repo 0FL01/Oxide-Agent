@@ -11,6 +11,26 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/opencode-go"
       },
       {
+        "id": "sandbox-backend/docker-direct",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/docker-direct/diagnostics",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/docker-direct/exec",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/docker-direct/fileops",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
+        "id": "sandbox-backend/docker-direct/lifecycle",
+        "module": "sandbox-backend/docker-direct"
+      },
+      {
         "id": "storage/r2",
         "module": "storage/r2"
       },
@@ -19,8 +39,56 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/agents-md"
       },
       {
+        "id": "tool/compression",
+        "module": "tool/compression"
+      },
+      {
+        "id": "tool/delegation",
+        "module": "tool/delegation"
+      },
+      {
+        "id": "tool/file-delivery",
+        "module": "tool/file-delivery"
+      },
+      {
+        "id": "tool/media-audio-transcription",
+        "module": "tool/media-audio"
+      },
+      {
+        "id": "tool/media-image-description",
+        "module": "tool/media-image"
+      },
+      {
+        "id": "tool/media-video-description",
+        "module": "tool/media-video"
+      },
+      {
         "id": "tool/reminder",
         "module": "tool/reminder"
+      },
+      {
+        "id": "tool/sandbox-exec",
+        "module": "tool/sandbox-exec"
+      },
+      {
+        "id": "tool/sandbox-fileops",
+        "module": "tool/sandbox-fileops"
+      },
+      {
+        "id": "tool/sandbox-list-files",
+        "module": "tool/sandbox-fileops"
+      },
+      {
+        "id": "tool/sandbox-recreate",
+        "module": "tool/sandbox-recreate"
+      },
+      {
+        "id": "tool/tavily-extract",
+        "module": "tool/tavily"
+      },
+      {
+        "id": "tool/tavily-search",
+        "module": "tool/tavily"
       },
       {
         "id": "tool/todos",
@@ -69,6 +137,21 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
+        "cargo_feature": "sandbox-backend-docker-direct",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "sandbox-backend/docker-direct",
+        "kind": "sandbox-backend",
+        "provides": [
+          "sandbox-backend/docker-direct",
+          "sandbox-backend/docker-direct/diagnostics",
+          "sandbox-backend/docker-direct/exec",
+          "sandbox-backend/docker-direct/fileops",
+          "sandbox-backend/docker-direct/lifecycle"
+        ],
+        "requires": []
+      },
+      {
         "cargo_feature": "storage-s3-r2",
         "config_properties": [],
         "conflicts": [],
@@ -91,6 +174,72 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
+        "cargo_feature": "tool-compression",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/compression",
+        "kind": "tool",
+        "provides": [
+          "tool/compression"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-delegation",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/delegation",
+        "kind": "tool",
+        "provides": [
+          "tool/delegation"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-file-delivery",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/file-delivery",
+        "kind": "file-delivery",
+        "provides": [
+          "tool/file-delivery"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-audio",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-audio",
+        "kind": "media",
+        "provides": [
+          "tool/media-audio-transcription"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-image",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-image",
+        "kind": "media",
+        "provides": [
+          "tool/media-image-description"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-video",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-video",
+        "kind": "media",
+        "provides": [
+          "tool/media-video-description"
+        ],
+        "requires": []
+      },
+      {
         "cargo_feature": "tool-reminder",
         "config_properties": [],
         "conflicts": [],
@@ -98,6 +247,76 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "reminder",
         "provides": [
           "tool/reminder"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-sandbox-exec",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-exec",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-exec"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/exec",
+              "sandbox-backend/sandboxd-client/exec"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-sandbox-fileops",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-fileops",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-fileops",
+          "tool/sandbox-list-files"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/fileops",
+              "sandbox-backend/sandboxd-client/fileops"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-sandbox-recreate",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-recreate",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-recreate"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/lifecycle",
+              "sandbox-backend/sandboxd-client/lifecycle"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-tavily",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/tavily",
+        "kind": "search",
+        "provides": [
+          "tool/tavily-extract",
+          "tool/tavily-search"
         ],
         "requires": []
       },
@@ -150,9 +369,26 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "enabled_manifest_default_config": {
     "capabilities": [
       "llm-provider/opencode-go",
+      "sandbox-backend/docker-direct",
+      "sandbox-backend/docker-direct/diagnostics",
+      "sandbox-backend/docker-direct/exec",
+      "sandbox-backend/docker-direct/fileops",
+      "sandbox-backend/docker-direct/lifecycle",
       "storage/r2",
       "tool/agents-md",
+      "tool/compression",
+      "tool/delegation",
+      "tool/file-delivery",
+      "tool/media-audio-transcription",
+      "tool/media-image-description",
+      "tool/media-video-description",
       "tool/reminder",
+      "tool/sandbox-exec",
+      "tool/sandbox-fileops",
+      "tool/sandbox-list-files",
+      "tool/sandbox-recreate",
+      "tool/tavily-extract",
+      "tool/tavily-search",
       "tool/todos",
       "tool/webfetch-md",
       "tool/wiki-memory",
@@ -160,9 +396,20 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     ],
     "modules": [
       "llm-provider/opencode-go",
+      "sandbox-backend/docker-direct",
       "storage/r2",
       "tool/agents-md",
+      "tool/compression",
+      "tool/delegation",
+      "tool/file-delivery",
+      "tool/media-audio",
+      "tool/media-image",
+      "tool/media-video",
       "tool/reminder",
+      "tool/sandbox-exec",
+      "tool/sandbox-fileops",
+      "tool/sandbox-recreate",
+      "tool/tavily",
       "tool/todos",
       "tool/webfetch-md",
       "tool/wiki-memory",
@@ -170,7 +417,21 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     ]
   },
   "registered_tool_names_default_config": [
+    "cancel_sub_agents",
+    "compress",
+    "describe_image_file",
+    "describe_video_file",
+    "execute_command",
+    "list_files",
+    "read_file",
+    "recreate_sandbox",
+    "send_file_to_user",
+    "spawn_sub_agents",
+    "transcribe_audio_file",
+    "upload_file",
+    "wait_sub_agents",
     "web_markdown",
+    "write_file",
     "write_todos"
   ],
   "registered_llm_provider_ids_dummy_config": [
@@ -183,7 +444,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "storage_backend_module_ids": [
     "storage/r2"
   ],
-  "sandbox_backend_module_ids": [],
+  "sandbox_backend_module_ids": [
+    "sandbox-backend/docker-direct"
+  ],
   "external_service_requirements": [
     {
       "module_id": "llm-provider/opencode-go",
@@ -196,9 +459,23 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
+      "module_id": "sandbox-backend/docker-direct",
+      "kind": "sandbox-backend",
+      "cargo_feature": "sandbox-backend-docker-direct",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
       "module_id": "storage/r2",
       "kind": "storage-backend",
       "cargo_feature": "storage-s3-r2",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/tavily",
+      "kind": "search",
+      "cargo_feature": "tool-tavily",
       "config_env": [],
       "requires_capabilities": []
     },

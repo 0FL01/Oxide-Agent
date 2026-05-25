@@ -28,7 +28,8 @@ services:
     container_name: oxide_agent
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
