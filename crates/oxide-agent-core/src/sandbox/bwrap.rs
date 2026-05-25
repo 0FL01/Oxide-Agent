@@ -1630,6 +1630,49 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn bwrap_exec_preserves_nonzero_exit_truncates_output_and_times_out() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap_script(
+            &fake_bwrap,
+            "#!/bin/sh\nprintf abcdefghijklmnop\nprintf qrstuvwxyz >&2\nexit 7\n",
+        );
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "8");
+
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "exec-output"))
+            .await
+            .unwrap();
+        let output = manager.exec_command("ignored", None).await.unwrap();
+        assert_eq!(output.exit_code, 7);
+        assert_eq!(output.stdout, "abcdefgh");
+        assert!(output.stderr.contains("qrstuvwx"));
+        assert!(output.stderr.contains("stdout truncated"));
+        assert!(output.stderr.contains("stderr truncated"));
+
+        create_fake_bwrap_script(&fake_bwrap, "#!/bin/sh\nsleep 5\n");
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "1");
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "exec-timeout"))
+            .await
+            .unwrap();
+        let error = manager
+            .exec_command("ignored", None)
+            .await
+            .err()
+            .expect("sleeping bwrap should time out")
+            .to_string();
+        assert!(error.contains("timed out after 1s"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     #[ignore = "requires host bubblewrap support and BWRAP_ROOTFS pointing at a prepared rootfs"]
     async fn bwrap_smoke_exec_persists_workspace_and_overlay_rw() {
         let Some(rootfs) = std::env::var_os("BWRAP_ROOTFS").map(PathBuf::from) else {
@@ -1723,7 +1766,12 @@ mod tests {
 
     #[cfg(unix)]
     fn create_fake_bwrap(path: &PathBuf) {
-        std::fs::write(path, b"#!/bin/sh\nprintf '%s\n' '--disable-userns'\n").expect("fake bwrap");
+        create_fake_bwrap_script(path, "#!/bin/sh\nprintf '%s\n' '--disable-userns'\n");
+    }
+
+    #[cfg(unix)]
+    fn create_fake_bwrap_script(path: &PathBuf, script: &str) {
+        std::fs::write(path, script).expect("fake bwrap");
         let mut permissions = std::fs::metadata(path)
             .expect("fake bwrap metadata")
             .permissions();
