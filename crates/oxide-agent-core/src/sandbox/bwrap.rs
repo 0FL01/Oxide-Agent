@@ -1504,11 +1504,21 @@ fn remove_dir_if_exists(path: &Path) -> Result<()> {
 }
 
 fn ensure_configured_dir(env_key: &str, path: &Path) -> Result<()> {
-    if path.exists() && !path.is_dir() {
+    if !path.exists() {
+        return fs::create_dir_all(path)
+            .with_context(|| format!("Failed to create {env_key} directory {}", path.display()));
+    }
+
+    let metadata = path
+        .symlink_metadata()
+        .with_context(|| format!("Failed to inspect {env_key} path {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!("{env_key} must not be a symlink: {}", path.display());
+    }
+    if !metadata.is_dir() {
         bail!("{env_key} must be a directory: {}", path.display());
     }
-    fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create {env_key} directory {}", path.display()))
+    Ok(())
 }
 
 fn capture_output(bytes: Vec<u8>, max_bytes: usize) -> (String, Option<OutputTruncation>) {
@@ -2091,6 +2101,24 @@ mod tests {
         assert!(state_error.contains("must be a directory"));
 
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let state_target = temp.path().join("state-target");
+        std::fs::create_dir(&state_target).expect("state target");
+        let state_symlink = temp.path().join("state-link");
+        symlink(&state_target, &state_symlink).expect("state symlink");
+        std::env::set_var("BWRAP_STATE_DIR", &state_symlink);
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-state-symlink"))
+            .await
+            .unwrap();
+        let state_symlink_error = manager
+            .create_sandbox()
+            .await
+            .err()
+            .expect("state symlink should fail")
+            .to_string();
+        assert!(state_symlink_error.contains("BWRAP_STATE_DIR"));
+        assert!(state_symlink_error.contains("must not be a symlink"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         let lock_file = temp.path().join("not-a-lock-dir");
         std::fs::write(&lock_file, b"file").expect("lock file");
         std::env::set_var("BWRAP_LOCK_DIR", &lock_file);
@@ -2105,6 +2133,24 @@ mod tests {
             .to_string();
         assert!(lock_error.contains("BWRAP_LOCK_DIR"));
         assert!(lock_error.contains("must be a directory"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let lock_target = temp.path().join("lock-target");
+        std::fs::create_dir(&lock_target).expect("lock target");
+        let lock_symlink = temp.path().join("lock-link");
+        symlink(&lock_target, &lock_symlink).expect("lock symlink");
+        std::env::set_var("BWRAP_LOCK_DIR", &lock_symlink);
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-lock-symlink"))
+            .await
+            .unwrap();
+        let lock_symlink_error = manager
+            .create_sandbox()
+            .await
+            .err()
+            .expect("lock symlink should fail")
+            .to_string();
+        assert!(lock_symlink_error.contains("BWRAP_LOCK_DIR"));
+        assert!(lock_symlink_error.contains("must not be a symlink"));
     }
 
     #[cfg(unix)]

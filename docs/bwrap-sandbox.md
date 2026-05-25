@@ -118,6 +118,8 @@ BWRAP_ROOT_UPPER_DIR=/var/lib/oxide-agent/sandbox/root-upper
 
 All bwrap operations for the same scope use an exclusive filesystem lock so package-manager writes and overlay state are serialized. `BWRAP_RECREATE_LOCK_TIMEOUT_SECS` controls how long an operation waits for that lock; by default it is `BWRAP_COMMAND_TIMEOUT_SECS + 5`.
 
+`BWRAP_STATE_DIR` and `BWRAP_LOCK_DIR` must be real directories or absent so the agent can create them. Direct symlink paths are rejected.
+
 `BWRAP_ROOT_UPPER_DIR` is optional. When set, each scope stores persistent system overlay writes under `<BWRAP_ROOT_UPPER_DIR>/<scope>/upper` and per-command overlay workdirs under `<BWRAP_ROOT_UPPER_DIR>/<scope>/work`, keeping both on the same filesystem. The path must be a real directory or absent; it must not be a symlink or live inside the shared rootfs image.
 
 `BWRAP_RESOLV_CONF=auto` may bind the host resolver config when networking is shared and the rootfs has `/etc/resolv.conf`. If an explicit resolver path is configured, it must be a regular file and must not be a symlink.
