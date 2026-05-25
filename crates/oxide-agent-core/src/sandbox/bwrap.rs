@@ -751,8 +751,9 @@ impl BwrapSandboxConfig {
             let manifest_path = image_dir.join("image.json");
             if !manifest_path.is_file() {
                 bail!(
-                    "Bwrap image manifest not found at {}. Run scripts/build-bwrap-rootfs-debian.sh or set BWRAP_ROOTFS.",
-                    manifest_path.display()
+                    "Bwrap image manifest not found at {}. {}",
+                    manifest_path.display(),
+                    bwrap_rootfs_hint()
                 );
             }
             let (manifest, manifest_sha256) = load_manifest(&manifest_path)?;
@@ -975,8 +976,9 @@ fn load_manifest(path: &Path) -> Result<(BwrapImageManifest, Option<String>)> {
 fn validate_rootfs(config: &BwrapSandboxConfig) -> Result<()> {
     if !config.rootfs.is_dir() {
         bail!(
-            "Bwrap backend selected, but rootfs not found at {}. Run scripts/build-bwrap-rootfs-debian.sh or set BWRAP_ROOTFS.",
-            config.rootfs.display()
+            "Bwrap backend selected, but rootfs not found at {}. {}",
+            config.rootfs.display(),
+            bwrap_rootfs_hint()
         );
     }
     for required in ["proc", "dev", "tmp", "workspace"] {
@@ -1001,6 +1003,15 @@ fn validate_rootfs(config: &BwrapSandboxConfig) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn bwrap_rootfs_hint() -> String {
+    let mut hint =
+        "Run scripts/build-bwrap-rootfs-debian.sh or set BWRAP_IMAGE/BWRAP_ROOTFS.".to_string();
+    if std::env::var_os("SANDBOX_IMAGE").is_some() {
+        hint.push_str(" SANDBOX_IMAGE is Docker-only and is ignored by SANDBOX_BACKEND=bwrap.");
+    }
+    hint
 }
 
 fn bwrap_supports_disable_userns(bwrap_bin: &Path) -> Result<bool> {
@@ -1328,6 +1339,7 @@ mod tests {
         "BWRAP_ROOTFS",
         "BWRAP_STATE_DIR",
         "SANDBOX_EXEC_TIMEOUT_SECS",
+        "SANDBOX_IMAGE",
     ];
 
     struct EnvGuard {
@@ -1572,6 +1584,20 @@ mod tests {
             .to_string();
         assert!(missing_rootfs.contains("rootfs not found"));
         assert!(missing_rootfs.contains("scripts/build-bwrap-rootfs-debian.sh"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::remove_var("BWRAP_ROOTFS");
+        std::env::set_var("BWRAP_IMAGE_STORE", temp.path().join("empty-images"));
+        std::env::set_var("SANDBOX_IMAGE", "agent-sandbox:custom");
+        let docker_image_only =
+            BwrapSandboxManager::new(SandboxScope::new(42, "docker-image-only"))
+                .await
+                .err()
+                .expect("missing bwrap image should fail")
+                .to_string();
+        assert!(docker_image_only.contains("Bwrap image manifest not found"));
+        assert!(docker_image_only.contains("BWRAP_IMAGE/BWRAP_ROOTFS"));
+        assert!(docker_image_only.contains("SANDBOX_IMAGE is Docker-only"));
 
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         std::env::set_var("BWRAP_ROOT_MODE", "tmp-overlay");

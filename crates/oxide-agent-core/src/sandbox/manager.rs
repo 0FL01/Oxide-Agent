@@ -447,6 +447,27 @@ fn compiled_sandbox_backends() -> Vec<&'static str> {
     backends
 }
 
+fn compiled_sandbox_backends_text(compiled: &[&'static str]) -> String {
+    if compiled.is_empty() {
+        "none".to_string()
+    } else {
+        compiled.join(", ")
+    }
+}
+
+fn sandbox_backend_mismatch_advice(compiled: &[&'static str]) -> String {
+    match compiled {
+        [] => "Enable one of the sandbox backend features.".to_string(),
+        [backend] => {
+            format!("Set SANDBOX_BACKEND={backend} or build with the selected backend feature.")
+        }
+        _ => format!(
+            "Set SANDBOX_BACKEND to one of the compiled backends: {}.",
+            compiled.join(", ")
+        ),
+    }
+}
+
 fn selected_sandbox_backend() -> Result<SandboxBackendConfig> {
     let backend = get_sandbox_backend_config().map_err(anyhow::Error::msg)?;
     let compiled = compiled_sandbox_backends();
@@ -462,13 +483,10 @@ fn selected_sandbox_backend() -> Result<SandboxBackendConfig> {
     }
 
     Err(anyhow!(
-        "SANDBOX_BACKEND={} was selected, but this binary was not compiled with that backend. Compiled sandbox backends: {}.",
+        "SANDBOX_BACKEND={} was selected, but this binary was not compiled with that backend. Compiled sandbox backends: {}. {}",
         backend,
-        if compiled.is_empty() {
-            "none".to_string()
-        } else {
-            compiled.join(", ")
-        }
+        compiled_sandbox_backends_text(&compiled),
+        sandbox_backend_mismatch_advice(&compiled)
     ))
 }
 
@@ -2668,6 +2686,12 @@ mod backend_selection_tests {
         assert!(error.contains(uncompiled_backend));
         assert!(error.contains("not compiled"));
         assert!(error.contains("Compiled sandbox backends"));
+        if compiled_sandbox_backends().len() == 1 {
+            assert!(error.contains(&format!(
+                "Set SANDBOX_BACKEND={}",
+                compiled_sandbox_backends()[0]
+            )));
+        }
 
         match previous {
             Some(value) => std::env::set_var("SANDBOX_BACKEND", value),
