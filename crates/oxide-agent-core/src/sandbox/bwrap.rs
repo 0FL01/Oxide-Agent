@@ -49,6 +49,7 @@ struct BwrapSandboxConfig {
     rootfs: PathBuf,
     state_dir: PathBuf,
     lock_dir: PathBuf,
+    root_upper_dir: Option<PathBuf>,
     net: BwrapNetworkMode,
     root_mode: BwrapRootMode,
     command_timeout: Duration,
@@ -755,6 +756,7 @@ impl BwrapSandboxConfig {
                 .map_or_else(|| state_root.join("locks"), |parent| parent.join("locks")),
         )?;
         let rootfs_override = optional_path_env("BWRAP_ROOTFS")?;
+        let root_upper_dir = optional_path_env("BWRAP_ROOT_UPPER_DIR")?;
         let net = env_parse("BWRAP_NET", BWRAP_DEFAULT_NET)?;
         let root_mode = env_parse("BWRAP_ROOT_MODE", BWRAP_DEFAULT_ROOT_MODE)?;
         let allow_overlay = env_bool("BWRAP_ALLOW_OVERLAY", true)?;
@@ -819,6 +821,7 @@ impl BwrapSandboxConfig {
             rootfs: absolute_maybe_existing_path(&rootfs)?,
             state_dir,
             lock_dir,
+            root_upper_dir,
             net,
             root_mode,
             command_timeout,
@@ -874,6 +877,9 @@ impl BwrapSandboxConfig {
             );
         }
         validate_rootfs(self)?;
+        if let Some(root_upper_dir) = &self.root_upper_dir {
+            validate_root_upper_dir(root_upper_dir, &self.rootfs)?;
+        }
         Ok(())
     }
 }
@@ -882,10 +888,14 @@ impl BwrapScopeState {
     fn new(config: &BwrapSandboxConfig, scope: &SandboxScope) -> Self {
         let scope_name = scope.stable_name();
         let scope_dir = config.state_dir.join(&scope_name);
+        let system_dir = config.root_upper_dir.as_ref().map_or_else(
+            || scope_dir.join("system"),
+            |parent| parent.join(&scope_name),
+        );
         Self {
             workspace: scope_dir.join("workspace"),
-            system_upper: scope_dir.join("system/upper"),
-            system_work: scope_dir.join("system/work"),
+            system_upper: system_dir.join("upper"),
+            system_work: system_dir.join("work"),
             tmp: scope_dir.join("tmp"),
             active: scope_dir.join("active"),
             metadata: scope_dir.join("metadata.json"),
@@ -1082,6 +1092,36 @@ fn validate_rootfs(config: &BwrapSandboxConfig) -> Result<()> {
             "Bwrap rootfs {} does not contain default shell {}.",
             config.rootfs.display(),
             config.default_shell
+        );
+    }
+    Ok(())
+}
+
+fn validate_root_upper_dir(root_upper_dir: &Path, rootfs: &Path) -> Result<()> {
+    if root_upper_dir.exists() && !root_upper_dir.is_dir() {
+        bail!(
+            "BWRAP_ROOT_UPPER_DIR must be a directory: {}",
+            root_upper_dir.display()
+        );
+    }
+    if root_upper_dir
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        bail!(
+            "BWRAP_ROOT_UPPER_DIR must not be a symlink: {}",
+            root_upper_dir.display()
+        );
+    }
+    let root_upper_dir = root_upper_dir
+        .parent()
+        .unwrap_or(root_upper_dir)
+        .canonicalize()
+        .unwrap_or_else(|_| root_upper_dir.to_path_buf());
+    if root_upper_dir.starts_with(rootfs) {
+        bail!(
+            "BWRAP_ROOT_UPPER_DIR must not be inside the bwrap rootfs image: {}",
+            root_upper_dir.display()
         );
     }
     Ok(())
@@ -1456,6 +1496,7 @@ mod tests {
         "BWRAP_RECREATE_LOCK_TIMEOUT_SECS",
         "BWRAP_RESOLV_CONF",
         "BWRAP_ROOT_MODE",
+        "BWRAP_ROOT_UPPER_DIR",
         "BWRAP_ROOTFS",
         "BWRAP_STATE_DIR",
         "SANDBOX_EXEC_TIMEOUT_SECS",
@@ -1969,6 +2010,75 @@ mod tests {
             .to_string();
         assert!(lock_error.contains("BWRAP_LOCK_DIR"));
         assert!(lock_error.contains("must be a directory"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let root_upper_parent = temp.path().join("root-upper");
+        std::env::set_var("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
+        let scope = SandboxScope::new(42, "upper-override");
+        let manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
+        assert_eq!(
+            manager.state.system_upper,
+            root_upper_parent.join(scope.stable_name()).join("upper")
+        );
+        assert_eq!(
+            manager.state.system_work,
+            root_upper_parent.join(scope.stable_name()).join("work")
+        );
+        let work_dir = manager
+            .prepare_overlay_workdir()
+            .unwrap()
+            .expect("overlay workdir");
+        assert!(work_dir.starts_with(root_upper_parent.join(scope.stable_name()).join("work")));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let file_upper = temp.path().join("file-upper");
+        std::fs::write(&file_upper, b"file").expect("file upper");
+        std::env::set_var("BWRAP_ROOT_UPPER_DIR", &file_upper);
+        let file_error = BwrapSandboxManager::new(SandboxScope::new(42, "file-upper"))
+            .await
+            .err()
+            .expect("file upper should fail")
+            .to_string();
+        assert!(file_error.contains("BWRAP_ROOT_UPPER_DIR"));
+        assert!(file_error.contains("must be a directory"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let symlink_target = temp.path().join("upper-target");
+        std::fs::create_dir_all(&symlink_target).expect("upper target");
+        let symlink_upper = temp.path().join("upper-symlink");
+        symlink(&symlink_target, &symlink_upper).expect("upper symlink");
+        std::env::set_var("BWRAP_ROOT_UPPER_DIR", &symlink_upper);
+        let symlink_error = BwrapSandboxManager::new(SandboxScope::new(42, "symlink-upper"))
+            .await
+            .err()
+            .expect("symlink upper should fail")
+            .to_string();
+        assert!(symlink_error.contains("BWRAP_ROOT_UPPER_DIR"));
+        assert!(symlink_error.contains("must not be a symlink"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_ROOT_UPPER_DIR", rootfs.join("unsafe-upper"));
+        let rootfs_error = BwrapSandboxManager::new(SandboxScope::new(42, "rootfs-upper"))
+            .await
+            .err()
+            .expect("rootfs upper should fail")
+            .to_string();
+        assert!(rootfs_error.contains("BWRAP_ROOT_UPPER_DIR"));
+        assert!(rootfs_error.contains("must not be inside the bwrap rootfs image"));
     }
 
     #[cfg(unix)]
