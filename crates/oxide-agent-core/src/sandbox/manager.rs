@@ -2642,6 +2642,40 @@ impl Drop for DockerSandboxManager {
     }
 }
 
+#[cfg(test)]
+mod backend_selection_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn selected_backend_reports_feature_config_mismatch() {
+        let Some(uncompiled_backend) = SandboxBackendConfig::VALID_VALUES
+            .iter()
+            .copied()
+            .find(|backend| !compiled_sandbox_backends().contains(backend))
+        else {
+            return;
+        };
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous: Option<OsString> = std::env::var_os("SANDBOX_BACKEND");
+
+        std::env::set_var("SANDBOX_BACKEND", uncompiled_backend);
+        let error = selected_sandbox_backend().unwrap_err().to_string();
+
+        assert!(error.contains("SANDBOX_BACKEND="));
+        assert!(error.contains(uncompiled_backend));
+        assert!(error.contains("not compiled"));
+        assert!(error.contains("Compiled sandbox backends"));
+
+        match previous {
+            Some(value) => std::env::set_var("SANDBOX_BACKEND", value),
+            None => std::env::remove_var("SANDBOX_BACKEND"),
+        }
+    }
+}
+
 #[cfg(all(test, feature = "sandbox-backend-docker-direct"))]
 mod tests {
     use super::*;

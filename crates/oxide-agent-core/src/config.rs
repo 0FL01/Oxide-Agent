@@ -1215,6 +1215,58 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_backend_config_parses_supported_values() {
+        assert_eq!(
+            "docker".parse::<SandboxBackendConfig>().unwrap(),
+            SandboxBackendConfig::Docker
+        );
+        assert_eq!(
+            " broker ".parse::<SandboxBackendConfig>().unwrap(),
+            SandboxBackendConfig::Broker
+        );
+        assert_eq!(
+            "BWRAP".parse::<SandboxBackendConfig>().unwrap(),
+            SandboxBackendConfig::Bwrap
+        );
+        assert_eq!(SandboxBackendConfig::Bwrap.to_string(), "bwrap");
+    }
+
+    #[test]
+    fn sandbox_backend_config_rejects_invalid_values_with_actionable_error() {
+        let error = "podman".parse::<SandboxBackendConfig>().unwrap_err();
+
+        assert!(error.contains("Invalid SANDBOX_BACKEND='podman'"));
+        assert!(error.contains("docker, broker, bwrap"));
+    }
+
+    #[test]
+    fn sandbox_backend_env_parsing_handles_bwrap_and_broker_mode() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = env::var_os("SANDBOX_BACKEND");
+
+        env::set_var("SANDBOX_BACKEND", "bwrap");
+        assert_eq!(
+            get_sandbox_backend_config().unwrap(),
+            SandboxBackendConfig::Bwrap
+        );
+        assert!(!sandbox_uses_broker());
+
+        env::set_var("SANDBOX_BACKEND", "broker");
+        assert_eq!(
+            get_sandbox_backend_config().unwrap(),
+            SandboxBackendConfig::Broker
+        );
+        assert!(sandbox_uses_broker());
+
+        match previous {
+            Some(value) => env::set_var("SANDBOX_BACKEND", value),
+            None => env::remove_var("SANDBOX_BACKEND"),
+        }
+    }
+
+    #[test]
     fn route_provider_validation_rejects_non_compiled_provider() {
         let settings = AgentSettings {
             chat_model_id: Some("chat-model".to_string()),
