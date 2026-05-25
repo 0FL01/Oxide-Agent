@@ -89,23 +89,36 @@ if "$bwrap_bin" --help 2>/dev/null | grep -q -- "--disable-userns"; then
 fi
 
 set +e
-"$bwrap_bin" "${args[@]}" /bin/sh -lc 'cat /etc/os-release >/workspace/os-release.txt && echo ok >/workspace/ok.txt && pwd >/workspace/pwd.txt'
+"$bwrap_bin" "${args[@]}" /bin/sh -lc 'cat /etc/os-release >/workspace/os-release.txt && echo ok >/workspace/ok.txt && pwd >/workspace/pwd.txt && { test ! -S /var/run/docker.sock && echo pass || echo fail; } >/workspace/docker-socket-absent.txt && { test ! -e /run/sandboxd && echo pass || echo fail; } >/workspace/sandboxd-absent.txt'
 status=$?
 set -e
 
 tests_create_scope=pass
 tests_exec_command=fail
 tests_workspace_persistence=fail
+tests_docker_socket_absent=fail
+tests_sandboxd_absent=fail
 if [[ "$status" -eq 0 ]]; then
   tests_exec_command=pass
 fi
 if [[ -f "$workspace/ok.txt" && "$(cat "$workspace/ok.txt")" == "ok" ]]; then
   tests_workspace_persistence=pass
 fi
+if [[ -f "$workspace/docker-socket-absent.txt" && "$(cat "$workspace/docker-socket-absent.txt")" == "pass" ]]; then
+  tests_docker_socket_absent=pass
+fi
+if [[ -f "$workspace/sandboxd-absent.txt" && "$(cat "$workspace/sandboxd-absent.txt")" == "pass" ]]; then
+  tests_sandboxd_absent=pass
+fi
 
 nested=false
+environment_kind="bare-host"
 if [[ -f /.dockerenv ]] || grep -qaE '(docker|containerd|kubepods)' /proc/1/cgroup 2>/dev/null; then
   nested=true
+  environment_kind="docker-container"
+fi
+if grep -qaE 'kubepods' /proc/1/cgroup 2>/dev/null; then
+  environment_kind="kubernetes-container"
 fi
 
 cat >"$result_file" <<JSON
@@ -113,6 +126,7 @@ cat >"$result_file" <<JSON
   "platform": "$(uname -s)-$(uname -m)",
   "rootfs": "$image_id",
   "backend": "bwrap",
+  "environment_kind": "$environment_kind",
   "nested": $nested,
   "bwrap_version": "$("$bwrap_bin" --version 2>/dev/null | head -n1)",
   "root_mode": "$root_mode",
@@ -121,7 +135,9 @@ cat >"$result_file" <<JSON
   "tests": {
     "create_scope": "$tests_create_scope",
     "exec_command": "$tests_exec_command",
-    "workspace_persistence": "$tests_workspace_persistence"
+    "workspace_persistence": "$tests_workspace_persistence",
+    "docker_socket_absent": "$tests_docker_socket_absent",
+    "sandboxd_socket_absent": "$tests_sandboxd_absent"
   }
 }
 JSON

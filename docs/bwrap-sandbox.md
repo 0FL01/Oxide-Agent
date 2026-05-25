@@ -100,7 +100,7 @@ BWRAP_NET=host \
 scripts/smoke-bwrap.sh debian-13-dev
 ```
 
-The script writes a JSON result under `.oxide/sandbox/smoke/`. It reports whether the current environment appears nested and whether basic create/exec/workspace persistence passed.
+The script writes a JSON result under `.oxide/sandbox/smoke/`. It reports `environment_kind` (`bare-host`, `docker-container`, or `kubernetes-container`), whether the current environment appears nested, and whether basic create/exec/workspace persistence passed. It also checks that the bwrap sandbox did not expose `/var/run/docker.sock` or `/run/sandboxd`.
 
 ## Security Notes
 
