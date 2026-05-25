@@ -44,7 +44,7 @@ impl TopicMemoryPolicy {
         Self {
             context_label,
             allow_procedure_capture: true,
-            allow_failure_capture: true,
+            allow_failure_capture: false,
             allow_preference_capture: !synthetic,
             allow_manual_read_advice: true,
             allow_history_cards: !synthetic,

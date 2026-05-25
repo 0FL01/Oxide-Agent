@@ -94,16 +94,28 @@ impl WikiPatchPlanner {
                 .iter()
                 .find(|draft| draft.content.trim() == signal.content.trim());
             if should_create_page(signal, draft) {
-                operations.push(WikiPatchOperation::CreatePage {
-                    path: page_path(context_id, task_id, index, signal, draft, now),
-                    content: page_content(task, signal, draft, now),
-                });
-            } else {
+                if let Some(path) = canonical_page_path(context_id, draft) {
+                    operations.push(WikiPatchOperation::UpsertPage {
+                        path,
+                        expected_hash: None,
+                        content: page_content(task, signal, draft, now),
+                    });
+                } else {
+                    operations.push(WikiPatchOperation::CreatePage {
+                        path: page_path(context_id, task_id, index, signal, draft, now),
+                        content: page_content(task, signal, draft, now),
+                    });
+                }
+            } else if should_create_inbox_item(signal, draft) {
                 operations.push(WikiPatchOperation::CreateInboxItem {
                     path: inbox_path(context_id, task_id, index, signal, draft, now),
                     content: inbox_content(task, signal, draft, now),
                 });
             }
+        }
+
+        if operations.is_empty() {
+            return None;
         }
 
         Some(WikiPatchSet {
@@ -277,6 +289,23 @@ fn should_create_page(signal: &WikiSignal, draft: Option<&ToolDerivedMemoryDraft
         ToolDerivedMemoryKind::Preference => draft.confidence >= 0.7,
         ToolDerivedMemoryKind::Procedure => draft.confidence >= 0.75,
         ToolDerivedMemoryKind::Fact => draft.confidence >= 0.85,
+    }
+}
+
+fn should_create_inbox_item(signal: &WikiSignal, draft: Option<&ToolDerivedMemoryDraft>) -> bool {
+    signal.explicit || draft.is_some_and(is_explicit_remember_draft)
+}
+
+fn canonical_page_path(context_id: &str, draft: Option<&ToolDerivedMemoryDraft>) -> Option<String> {
+    let draft = draft?;
+    match draft.kind {
+        ToolDerivedMemoryKind::Preference if draft.confidence >= 0.7 => {
+            Some(format!("contexts/{context_id}/constraints.md"))
+        }
+        ToolDerivedMemoryKind::Procedure if draft.confidence >= 0.75 => {
+            Some(format!("contexts/{context_id}/procedures.md"))
+        }
+        _ => None,
     }
 }
 
@@ -552,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_routes_confident_tool_drafts_to_page() {
+    fn planner_routes_confident_tool_drafts_to_canonical_page() {
         let planner = WikiPatchPlanner::default();
         let draft = ToolDerivedMemoryDraft {
             kind: ToolDerivedMemoryKind::Procedure,
@@ -574,8 +603,8 @@ mod tests {
 
         assert_eq!(patch.operations.len(), 1);
         match &patch.operations[0] {
-            WikiPatchOperation::CreatePage { path, content } => {
-                assert!(path.contains("deploy-workflow"));
+            WikiPatchOperation::UpsertPage { path, content, .. } => {
+                assert_eq!(path, "contexts/ctx-12345678/procedures.md");
                 assert!(content.contains("Run cargo test before deployment."));
                 assert!(content.contains("## Evidence"));
                 assert!(content.contains("hook:test_hook"));
@@ -585,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_routes_low_confidence_facts_to_inbox() {
+    fn planner_skips_low_confidence_non_explicit_facts() {
         let planner = WikiPatchPlanner::default();
         let draft = ToolDerivedMemoryDraft {
             kind: ToolDerivedMemoryKind::Fact,
@@ -601,18 +630,9 @@ mod tests {
             captured_at: now(),
         };
 
-        let patch = planner
+        assert!(planner
             .plan_run_patch("ctx-12345678", "task-abc123", "debug", &[draft], now())
-            .expect("low confidence draft should create inbox patch");
-
-        assert_eq!(patch.operations.len(), 1);
-        match &patch.operations[0] {
-            WikiPatchOperation::CreateInboxItem { path, content } => {
-                assert!(path.starts_with("contexts/ctx-12345678/inbox/"));
-                assert!(content.contains("type: inbox"));
-            }
-            other => panic!("unexpected op: {other:?}"),
-        }
+            .is_none());
     }
 
     #[test]

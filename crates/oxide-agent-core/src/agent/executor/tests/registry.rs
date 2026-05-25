@@ -249,7 +249,12 @@ fn typed_runtime_registry_exposes_wiki_memory_tools_when_store_configured() {
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
 
-    for tool_name in ["wiki_memory_list", "wiki_memory_read", "wiki_memory_delete"] {
+    for tool_name in [
+        "wiki_memory_list",
+        "wiki_memory_read",
+        "wiki_memory_search",
+        "wiki_memory_delete",
+    ] {
         assert!(
             tool_names.contains(tool_name),
             "missing typed runtime wiki memory tool: {tool_name}"

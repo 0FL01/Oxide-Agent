@@ -14,8 +14,9 @@ use crate::agent::wiki_memory::planner::{
     extract_explicit_remember_payload, has_explicit_remember_intent,
 };
 use crate::agent::wiki_memory::{
-    wiki_context_id, WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchPlanner,
-    WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache, WikiStore,
+    wiki_context_id, WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchOperation,
+    WikiPatchPlanner, WikiPatchSet, WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache,
+    WikiStore,
 };
 use crate::config::{get_agent_max_iterations, ModelInfo};
 use crate::llm::LlmClient;
@@ -466,6 +467,15 @@ impl AgentExecutor {
             );
             return;
         };
+        let patch = Self::merge_canonical_wiki_upserts(&job.store, &job.context_id, patch).await;
+        if patch.operations.is_empty() {
+            debug!(
+                task_id = job.task_id,
+                context_id = job.context_id,
+                "wiki memory background update matched existing canonical memory; skipping durable update"
+            );
+            return;
+        }
 
         let validator = WikiPatchValidator::new(WikiPatchValidatorConfig::default());
         let validated = match validator.validate(&job.store, &job.context_id, patch) {
@@ -517,6 +527,69 @@ impl AgentExecutor {
                 warn!(%error, "wiki memory background flush failed; user task result preserved");
             }
         }
+    }
+
+    async fn merge_canonical_wiki_upserts(
+        store: &WikiStore,
+        context_id: &str,
+        mut patch: WikiPatchSet,
+    ) -> WikiPatchSet {
+        let mut operations = Vec::with_capacity(patch.operations.len());
+        for operation in patch.operations {
+            let WikiPatchOperation::UpsertPage {
+                path,
+                expected_hash: _,
+                content,
+            } = operation
+            else {
+                operations.push(operation);
+                continue;
+            };
+
+            let Some(file) = canonical_context_file(context_id, &path) else {
+                operations.push(WikiPatchOperation::UpsertPage {
+                    path,
+                    expected_hash: None,
+                    content,
+                });
+                continue;
+            };
+
+            match store.read_context_file(context_id, file).await {
+                Ok(Some(existing)) => {
+                    if let Some(merged) =
+                        merge_existing_canonical_wiki_page(&existing.content, &content)
+                    {
+                        operations.push(WikiPatchOperation::UpsertPage {
+                            path,
+                            expected_hash: Some(existing.content_hash),
+                            content: merged,
+                        });
+                    }
+                }
+                Ok(None) => {
+                    operations.push(WikiPatchOperation::UpsertPage {
+                        path,
+                        expected_hash: None,
+                        content,
+                    });
+                }
+                Err(error) => {
+                    warn!(
+                        %error,
+                        path,
+                        "wiki memory failed to load canonical page for merge; writing fresh page"
+                    );
+                    operations.push(WikiPatchOperation::UpsertPage {
+                        path,
+                        expected_hash: None,
+                        content,
+                    });
+                }
+            }
+        }
+        patch.operations = operations;
+        patch
     }
 
     async fn extract_wiki_memory_background_drafts(
@@ -654,7 +727,7 @@ fn build_wiki_memory_writer_transcript(
 }
 
 fn wiki_memory_writer_system_prompt() -> &'static str {
-    "You are a background memory curator for LLM Wiki. Extract only durable facts, preferences, or reusable procedures that are explicitly requested to be remembered or strongly implied by the completed conversation. If the latest user message only says to save/remember something without a payload, resolve the payload from the immediately preceding user/assistant context. Do not invent facts. Do not include secrets, credentials, API keys, tokens, passwords, or private keys. Return only JSON with this shape: {\"candidates\":[{\"kind\":\"fact|preference|procedure\",\"title\":\"short title\",\"content\":\"durable memory text\",\"confidence\":0.0,\"importance\":0.0,\"tags\":[\"tag\"],\"evidence\":[\"short evidence\"],\"reason\":\"why save\"}]}. Return {\"candidates\":[]} when nothing should be saved."
+    "You are a background memory curator for LLM Wiki. Extract only durable facts, preferences, or reusable procedures that the user explicitly asked to remember, clearly stated as an ongoing preference, or proved as a reusable procedure in the completed conversation. If the latest user message only says to save/remember something without a payload, resolve the payload from the immediately preceding user/assistant context. Do not save command failures, transient diagnostics, guesses, generic task outcomes, or facts that are already represented by deterministic drafts. Do not invent facts. Do not include secrets, credentials, API keys, tokens, passwords, or private keys. Return only JSON with this shape: {\"candidates\":[{\"kind\":\"fact|preference|procedure\",\"title\":\"short title\",\"content\":\"durable memory text\",\"confidence\":0.0,\"importance\":0.0,\"tags\":[\"tag\"],\"evidence\":[\"short evidence\"],\"reason\":\"why save\"}]}. Use confidence >= 0.85 only when the memory is explicit and durable. Return {\"candidates\":[]} when nothing should be saved."
 }
 
 fn build_wiki_memory_writer_user_prompt(job: &WikiMemoryFlushJob) -> String {
@@ -743,7 +816,7 @@ fn wiki_memory_candidate_to_draft(
         content: content.clone(),
         short_description: truncate_wiki_writer_text(short_description, 180),
         importance: clamp_unit(candidate.importance.unwrap_or(0.78)),
-        confidence: clamp_unit(candidate.confidence.unwrap_or(0.86)),
+        confidence: clamp_unit(candidate.confidence.unwrap_or(0.74)),
         source: "background_llm_writer".to_string(),
         reason: candidate
             .reason
@@ -855,6 +928,56 @@ fn push_unique(values: &mut Vec<String>, value: String) {
     }
 }
 
+fn canonical_context_file<'a>(context_id: &str, path: &'a str) -> Option<&'a str> {
+    let relative = path.strip_prefix(&format!("contexts/{context_id}/"))?;
+    match relative {
+        "constraints.md" | "procedures.md" => Some(relative),
+        _ => None,
+    }
+}
+
+fn merge_existing_canonical_wiki_page(existing: &str, candidate: &str) -> Option<String> {
+    let candidate_body = extract_wiki_page_memory_body(candidate)?;
+    let normalized_candidate = normalized_memory_text(candidate_body);
+    if normalized_candidate.len() > 24
+        && normalized_memory_text(existing).contains(&normalized_candidate)
+    {
+        return None;
+    }
+
+    let title = extract_wiki_page_title(candidate).unwrap_or("Wiki memory update");
+    let mut merged = existing.trim_end().to_string();
+    merged.push_str("\n\n## Entry - ");
+    merged.push_str(title.trim());
+    merged.push_str("\n\n");
+    merged.push_str(candidate_body.trim());
+    merged.push('\n');
+    Some(merged)
+}
+
+fn extract_wiki_page_title(content: &str) -> Option<&str> {
+    content.lines().find_map(|line| {
+        let trimmed = line.trim();
+        trimmed
+            .strip_prefix("# ")
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+    })
+}
+
+fn extract_wiki_page_memory_body(content: &str) -> Option<&str> {
+    let after_title = content
+        .split_once("\n# ")
+        .and_then(|(_, rest)| rest.split_once('\n').map(|(_, body)| body))
+        .unwrap_or(content);
+    let body = after_title
+        .split("\n\n## Capture")
+        .next()
+        .unwrap_or(after_title)
+        .trim();
+    (!body.is_empty()).then_some(body)
+}
+
 fn contains_secret_like_text(value: &str) -> bool {
     let normalized = value.to_ascii_lowercase();
     [
@@ -868,4 +991,39 @@ fn contains_secret_like_text(value: &str) -> bool {
     ]
     .iter()
     .any(|needle| normalized.contains(needle))
+}
+
+#[cfg(test)]
+mod wiki_memory_merge_tests {
+    use super::merge_existing_canonical_wiki_page;
+
+    fn page(title: &str, body: &str) -> String {
+        format!(
+            "---\ntitle: {title}\ntype: procedure\nupdated_at: 2026-05-25T00:00:00Z\nconfidence: high\ntags:\n  - procedure\nsources:\n  - run:test\n---\n\n# {title}\n\n{body}\n\n## Capture\n\n- Kind: procedure\n"
+        )
+    }
+
+    #[test]
+    fn canonical_merge_appends_new_entry() {
+        let existing = page("Procedures", "Run smoke tests before deploy.");
+        let candidate = page(
+            "Rollback workflow",
+            "Keep rollback notes next to release notes.",
+        );
+
+        let merged = merge_existing_canonical_wiki_page(&existing, &candidate)
+            .expect("new candidate should append");
+
+        assert!(merged.contains("Run smoke tests before deploy."));
+        assert!(merged.contains("## Entry - Rollback workflow"));
+        assert!(merged.contains("Keep rollback notes next to release notes."));
+    }
+
+    #[test]
+    fn canonical_merge_skips_duplicate_entry() {
+        let existing = page("Procedures", "Run smoke tests before deploy.");
+        let candidate = page("Deploy workflow", "Run smoke tests before deploy.");
+
+        assert!(merge_existing_canonical_wiki_page(&existing, &candidate).is_none());
+    }
 }

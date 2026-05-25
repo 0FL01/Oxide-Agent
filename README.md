@@ -54,10 +54,8 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         - Soft Timeout Report Hook - provides detailed timeout reporting
         - Sub-Agent Safety - ensures safe execution environments
         - Registry - centralized hook management
-    *   **🌐 Browser Automation:** Self-hosted Browser Use bridge for high-level browser tasks with reusable sessions.
-    *   **🔄 Loop Detection:** Three levels of protection (Content Detector, Tool Detector, LLM Detector) to prevent infinite loops.
     *   **⏱️ Universal Runtime:** Transport-agnostic progress rendering system that can be adapted for Discord, Slack, and other transports.
-    *   **👥 Hierarchical Delegation:** The Main Agent acts as an orchestrator, delegating heavy retrieval and mechanical tasks (git clone, searching) to Sub-Agents to maximize efficiency and context preservation.
+    *   **👥 Hierarchical Delegation:** The Main Agent spawns async Sub-Agents for parallel, independent subtasks. Each sub-agent runs in an isolated ephemeral session with a task-specific tool whitelist, inherits the topic AGENTS.md and parent cancellation, and returns results via background job tracking.
     *   **Autonomy:** Agent plans steps and selects tools itself.
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
@@ -70,8 +68,6 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   Work with documents of various formats.
 *   **🗣️ Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
 *   **Context Management:** Dialogue history saved in Cloudflare R2 (S3) with context-scoped isolation per topic.
-*   **🔒 Security and Quality:** `unsafe_code = "forbid"`, strict Clippy lints, no panics (`zero-panic profile`), DM tool restrictions, SSH approval flow, RBAC.
-
 ## System Requirements
 
 <details>
@@ -223,7 +219,9 @@ MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
 MEDIA_MODEL_PROVIDER="openrouter"
 ```
 
-### Weighted Model Routes (Failover)
+<details>
+<summary>⚖️ Weighted Model Routes (Failover)</summary>
+
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
@@ -241,7 +239,11 @@ AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
 AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
 
-### Weighted failover with NVIDIA NIM
+</details>
+
+<details>
+<summary>⚖️ Weighted failover with NVIDIA NIM</summary>
+
 Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven primary route first:
 
 ```dotenv
@@ -259,7 +261,10 @@ AGENT_MODEL_ROUTES__1__WEIGHT=3
 
 The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
 
-### Browser Use default route (disabled)
+</details>
+
+<details>
+<summary>🌐 Browser Use default route (disabled)</summary>
 
 > **NOTE**: Browser Use is currently disabled. It requires a quality vision-capable agent model
 > at a reasonable price-per-token. To re-enable, set `BROWSER_USE_URL` and optionally
@@ -274,7 +279,11 @@ BROWSER_USE_MODEL_PROVIDER="zai"
 
 Browser Use prefers this dedicated route over the currently active main/sub-agent route and falls back to the inherited route only when the dedicated override is absent.
 
-### Alternate provider example
+</details>
+
+<details>
+<summary>🔄 Alternate provider example</summary>
+
 ```
 CHAT_MODEL_ID="mistral-large-latest"
 CHAT_MODEL_PROVIDER="mistral"
@@ -284,6 +293,8 @@ AGENT_MODEL_PROVIDER="mistral"
 ```
 
 Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-family IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
+
+</details>
 
 ## Available LLM Providers
 
@@ -299,7 +310,8 @@ Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-famil
 
 > **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
 
-## New Tool Providers
+<details>
+<summary>🔧 Tool Providers</summary>
 
 ### 🗣️ Kokoro TTS (Voice Synthesis)
 Generates voice messages from agent output using local Kokoro TTS server.
@@ -341,37 +353,6 @@ SILERO_TTS_TIMEOUT_SECS=60
 
 **Migration Note:** Piper TTS has been replaced with Silero TTS. Use `text_to_speech_en` for Kokoro (English) and `text_to_speech_ru` for Silero (Russian).
 
-### 🔌 Jira MCP Integration
-Full Jira Server 7.5.0 integration via MCP protocol.
-
-**Configuration:**
-```dotenv
-JIRA_URL=https://jira.company.com
-JIRA_EMAIL=agent@company.com
-JIRA_API_TOKEN=your_api_token
-JIRA_MCP_BINARY_PATH=/usr/local/bin/jira-mcp  # Auto-detected
-```
-
-**Feature Flag:** `--features jira`
-
-**Tools:** `jira_read`, `jira_write`, `jira_schema` (disabled by default)
-
-**Usage:** Enable via `topic_agent_tools_enable` with `tools=["jira"]`
-
-### 💬 Mattermost MCP Integration
-Mattermost workspace integration via MCP protocol (16 tools).
-
-**Configuration:**
-```dotenv
-MATTERMOST_URL=https://mattermost.company.com
-MATTERMOST_TOKEN=your_bot_or_user_token
-MATTERMOST_MCP_BINARY_PATH=/usr/local/bin/mattermost-mcp  # Auto-detected
-```
-
-**Feature Flag:** `--features mattermost`
-
-**Tools:** Teams, channels, messages, users, files operations
-
 ### 🔐 SSH MCP Infrastructure
 Topic-scoped SSH tools with approval flow for sensitive operations.
 
@@ -389,7 +370,10 @@ OXIDE_SSH_MCP_BINARY=/usr/local/bin/ssh-mcp
 
 **Blocked in DM:** All SSH tools are blocked in private/DM chats by default.
 
-## Manager Control Plane
+</details>
+
+<details>
+<summary>🏗️ Manager Control Plane</summary>
 
 Programmatic topic management with RBAC, audit trail, and rollback support.
 
@@ -414,7 +398,10 @@ MANAGER_HOME_AGENT_ID=control-plane       # Agent ID for manager home (optional)
 
 **Note:** When `MANAGER_HOME_CHAT_ID` is set, manager control-plane tools are only available in the designated topic.
 
-## Security
+</details>
+
+<details>
+<summary>🔒 Security</summary>
 
 ### DM Tool Restrictions
 SSH, Jira, and Mattermost tools are **blocked by default in private/DM chats** for security.
@@ -441,35 +428,6 @@ Sensitive SSH operations require operator approval with single-use tokens.
 4. Agent retries with approval token
 5. Token consumed (single-use), TTL 600s
 
-## Breaking Changes
-
-<details>
-<summary>⚠️ Important Changes from Previous Versions</summary>
-
-### 1. DM Tool Restrictions (March 23, 2026)
-SSH, Jira, and Mattermost tools are now **blocked by default in private/DM chats**.
-
-**Migration:** If you need these tools in DMs, configure `DM_ALLOWED_TOOLS` or `DM_BLOCKED_TOOLS` env vars.
-
-### 2. Sandbox Broker Default
-`SANDBOX_BACKEND=broker` is now the default for security isolation.
-
-**Migration:** Ensure `oxide-agent-sandboxd` container is running, or set `SANDBOX_BACKEND=docker` for direct Docker access.
-
-### 3. Cold-Start Tool Drift Pruning
-Startup maintenance sweep that removes stale tool calls from persisted memories.
-
-**Migration:** Monitor first startup after upgrade for memory rewrites. Disable with `STARTUP_TOOL_DRIFT_PRUNE_ENABLED=false` if needed.
-
-### 4. Codex-Style Runtime Compaction
-Agent Mode uses session-level compaction that replaces hot history with one local LLM summary. The old staged prune/archive pipeline is removed from runtime code.
-
-**Migration:** Codex-style compaction is enabled by default and uses the active runtime model route. `OXIDE_CODEX_STYLE_COMPACTION=false` is a short-lived emergency disable for runner auto-compaction; it does not restore the removed staged pipeline. Legacy compaction data remains readable and is migrated lazily on the next compact.
-
-### 5. TTS Tool Split (English/Russian)
-Legacy `text_to_speech` has been replaced by language-specific tools.
-
-**Migration:** Use `text_to_speech_en` for Kokoro (English-only) and `text_to_speech_ru` for Silero (Russian). Configure `SILERO_TTS_*` variables when enabling Russian TTS.
 </details>
 
 ## Agent Architecture
@@ -479,7 +437,6 @@ Legacy `text_to_speech` has been replaced by language-specific tools.
 <summary>🏗 Internal Structure, Context, Hooks, Compaction</summary>
 
 ### Deterministic Context
-The legacy skills RAG subsystem has been removed. The agent prompt is assembled from explicit deterministic sources:
 - Topic-scoped `AGENTS.md`
 - S3/R2-backed wiki memory
 - Runtime context injections
@@ -494,15 +451,10 @@ Three-level loop detection system (`agent/loop_detection/`):
 **Configuration:** `LOOP_DETECTION_ENABLED`, `LOOP_TOOL_CALL_THRESHOLD` (5), `LOOP_LLM_CHECK_AFTER_TURNS` (30), `LOOP_SCOUT_MODEL`
 
 ### 🔄 Runtime Compaction
-Codex-style Agent Mode compaction is a runtime/session-level operation:
-1. **Detect** - Pre-sampling, context-limit retry, manual compact, or model-route downshift.
-2. **Summarize** - Use a normal configured LLM route as a provider-agnostic local summary backend.
-3. **Replace Atomically** - Build one `[OXIDE_COMPACTED_SUMMARY_V1]` handoff, preserve pinned state and safe recent text, validate tool history, then replace hot memory in one step.
-
-The runtime path does not call OpenAI `/responses/compact`, does not create new R2 archive/payload objects, and does not emit `pruning_applied` events. Old `[COMPACTION_SUMMARY]` and `[BREADCRUMB_CARD]` entries are detected and folded into the next compacted summary.
-
-**Configuration:**
-- `OXIDE_CODEX_STYLE_COMPACTION` (`true` by default; set `false` only as a short-lived auto-compaction disable)
+Unified session-level compaction with a single path through `CompactionController`:
+1. **Detect** — Pre-sampling budget check, context-limit retry, manual compact, or model-route downshift.
+2. **Summarize** — Uses a normal configured LLM route as a provider-agnostic local summary backend (`LocalLlmSummary`).
+3. **Replace Atomically** — Builds one `[OXIDE_COMPACTED_SUMMARY_V1]` handoff, preserves pinned state and safe recent tool context, validates tool-call integrity, and replaces hot memory in one step.
 
 ### 🔗 Hooks System
 Extensible architecture for personalizing agent behavior:
@@ -534,10 +486,6 @@ The agent uses a modular provider system, each offering a specialized set of too
 - **SSH MCP Provider** (`ssh_mcp.rs`) — SSH infrastructure with approval flow
 - **Manager Control Plane** (`manager_control_plane/`) — Topic CRUD, RBAC, audit trail
 - **Agents MD Provider** (`agents_md.rs`) — Topic-scoped AGENTS.md editing
-
-### 🚀 Performance Optimizations
-- **HTTP Connection Pooling:** Shared HTTP client for all LLM providers (reduces latency)
-- **Tokenizer Caching:** cl100k tokenizer cached at startup (~15s latency eliminated)
 </details>
 
 ## Reminder System
@@ -732,65 +680,6 @@ config/                         # Configuration files (default.yaml, local.yaml,
 </details>
 
 ## Development
-
-<details>
-<summary>💻 Developer Commands and CI/CD</summary>
-
-For local development (requires Rust installed):
-```bash
-# Check
-cargo check
-
-# Testing
-cargo test --workspace
-
-# Linting (Clippy with warn/deny)
-cargo clippy --workspace --tests -- -D warnings
-
-# Formatting
-cargo fmt --all
-
-# Build with feature flags
-cargo build --release --features searxng,jira,mattermost
-
-# Run E2E tests (requires transport-web crate)
-cargo test -p oxide-agent-transport-web --test e2e
-```
-
-### Testing Infrastructure
-
-The project uses a comprehensive testing approach:
-
-- **Hermetic Tests:** Isolated tests using mock implementations
-- **E2E Tests:** Full end-to-end tests via web transport (`crates/oxide-agent-transport-web/tests/e2e/`)
-  - Session lifecycle, SSE streaming
-  - Compaction regression, delegation
-  - Reminder system, tool latency benchmarks
-  - Live ZAI audit tests (requires `RUN_LLM_E2E_CHECKS=1`)
-- **Test Utilities:** Helper functions for quick mock setup
-
-**Testing Dependencies:**
-- `mockall` (0.14.0) - Trait-based mocking framework
-- `insta` (1.46.1) - Snapshot testing framework
-
-### CI/CD
-
-The project uses GitHub Actions for automatic testing and deployment:
-- **Testing:** Runs `cargo check`, `cargo clippy`, `cargo test`, `cargo fmt`
-- **Validation:** Integration tests with real API keys (push to non-PR branches)
-- **Deployment:** Automatic deploy to server via SSH, dynamic docker-compose generation
-- **Docker:** Multi-platform builds with Docker Buildx, pushes to Docker Hub on `testing` branch
-
-### Security and Lints
-
-- **`unsafe_code = "forbid"`** in workspace lints — unsafe code is forbidden
-- **Clippy lints (forbid level):**
-  - `unwrap_used = "forbid"` — all Result/Option must be handled via `?` or `match`
-  - `too_many_lines = "forbid"` — files >300 lines must be split
-  - `too_many_arguments = "forbid"` — functions >3 arguments require Context/Config struct
-- **Feature flags:** Tavily, SearXNG, Jira, Mattermost available via `--features`
-- **Error Handling:** Using `thiserror` for library errors, `anyhow` for application
-</details>
 
 ## Feature Flags
 

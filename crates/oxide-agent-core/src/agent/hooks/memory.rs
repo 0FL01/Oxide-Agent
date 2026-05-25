@@ -748,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn episodic_extract_captures_failure_after_command_error() {
+    fn episodic_extract_ignores_command_failures_by_default() {
         let hook = EpisodicExtractHook::new();
         let scope = AgentMemoryScope::new(7, "topic-a", "flow-a");
         let runtime = MemoryBehaviorRuntime::new();
@@ -764,9 +764,7 @@ mod tests {
         );
 
         let drafts = runtime.snapshot();
-        assert_eq!(drafts.len(), 1);
-        assert_eq!(drafts[0].kind, ToolDerivedMemoryKind::Fact);
-        assert!(drafts[0].content.contains("cargo test"));
+        assert!(drafts.is_empty());
     }
 
     #[test]
