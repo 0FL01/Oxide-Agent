@@ -622,13 +622,13 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "execute_command".to_string(),
-            description: "Execute a bash command in the isolated sandbox environment. Returns JSON with ok, stdout, stderr, and exit_code. Available commands include: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
+            description: "Execute a shell command in the isolated sandbox environment with /workspace as the working directory. Do not assume Bash-specific syntax unless the sandbox image provides bash. Returns JSON with ok, stdout, stderr, and exit_code. Common commands may include python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The bash command to execute"
+                        "description": "The shell command to execute inside the sandbox"
                     }
                 },
                 "required": ["command"]
@@ -642,7 +642,7 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file (relative to /workspace or absolute)"
+                        "description": "Workspace file path. Relative paths resolve under /workspace; absolute paths must start with /workspace/."
                     },
                     "content": {
                         "type": "string",
@@ -660,7 +660,7 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to read"
+                        "description": "Workspace file path. Relative paths resolve under /workspace; absolute paths must start with /workspace/."
                     }
                 },
                 "required": ["path"]
@@ -674,7 +674,7 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to edit"
+                        "description": "Workspace file path. Relative paths resolve under /workspace; absolute paths must start with /workspace/."
                     },
                     "search": {
                         "type": "string",
@@ -700,14 +700,14 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Optional path to list (defaults to /workspace)"
+                        "description": "Optional workspace path to list. Defaults to /workspace; absolute paths must start with /workspace/."
                     }
                 }
             }),
         },
         ToolDefinition {
             name: "recreate_sandbox".to_string(),
-            description: "Recreate the sandbox container from scratch, wiping all previous workspace contents. Returns JSON with ok, status, and message or error.".to_string(),
+            description: "Recreate the sandbox instance from scratch, wiping all previous workspace contents. Returns JSON with ok, status, and message or error.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {}
@@ -799,6 +799,44 @@ mod tests {
         assert!(execute_command.description.contains("JSON"));
         assert!(execute_command.description.contains("stdout"));
         assert!(execute_command.description.contains("exit_code"));
+        assert!(execute_command.description.contains("shell command"));
+        assert!(execute_command.description.contains("/workspace"));
+        assert!(!execute_command.description.contains("bash command"));
+    }
+
+    #[test]
+    fn sandbox_file_tool_descriptions_are_workspace_scoped() {
+        let provider = Arc::new(SandboxFileOpsProvider::new(Arc::new(SandboxRuntime::new(
+            1,
+        ))));
+        let specs: Vec<_> = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect();
+
+        for tool_name in ["write_file", "read_file", "apply_file_edit", "list_files"] {
+            let spec = specs
+                .iter()
+                .find(|tool| tool.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} registered"));
+            let path_description = spec
+                .parameters
+                .get("properties")
+                .and_then(|properties| properties.get("path"))
+                .and_then(|path| path.get("description"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+
+            assert!(
+                path_description.contains("/workspace"),
+                "{tool_name} path description should mention /workspace"
+            );
+            assert!(
+                path_description.contains("absolute paths must start with /workspace/"),
+                "{tool_name} path description should reject non-workspace absolutes"
+            );
+        }
     }
 
     #[test]

@@ -79,6 +79,7 @@ Out of scope:
 - 2026-05-25 20:05 +03: Added backend-neutral `SandboxInstanceRecord` projection and moved manager/control-plane topic sandbox inventory to `instance_*` fields while preserving `container_*` compatibility aliases. Added `instance_name` input alias for get/delete tools, bwrap rootfs/state/workspace labels, and focused manager sandbox tests. Verified `cargo test -p oxide-agent-core --no-default-features --features manager-control-plane manager_control_plane::tests::sandboxes --lib`, `cargo check -p oxide-agent-core --no-default-features --features 'sandbox-backend-bwrap,manager-control-plane'`, `cargo clippy --workspace --no-default-features --features profile-host-bwrap`, and `cargo check -p oxide-agent-core --no-default-features --features profile-full`.
 - 2026-05-25 20:05 +03: Expanded `scripts/smoke-bwrap.sh` evidence to record `environment_kind` (`bare-host`, `docker-container`, or `kubernetes-container`) and verify that `/var/run/docker.sock` and `/run/sandboxd` are absent inside the bwrap sandbox. Updated `docs/bwrap-sandbox.md` with the smoke result contract.
 - 2026-05-25 20:10 +03: Added a hermetic bwrap state lifecycle unit test using a fake executable and minimal fake rootfs. The test covers create, metadata record shape, workspace write/read/list/size, recreate workspace wipe, and destroy without requiring a real bwrap-capable host. Verified `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap bwrap::tests --lib` and `cargo fmt`.
+- 2026-05-25 20:13 +03: Tightened sandbox tool descriptions to be backend-neutral: `execute_command` now describes shell execution in `/workspace` rather than Bash, file tools state that relative paths resolve under `/workspace` and absolute paths must start with `/workspace/`, and lifecycle wording uses sandbox instance instead of container. Added focused provider tests and verified `cargo test -p oxide-agent-core --no-default-features --features 'tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate,sandbox-backend-bwrap' agent::providers::sandbox::tests --lib`, `cargo check` for the same feature set, and `cargo fmt --check`.
 
 ## Risks and Blockers
 
@@ -100,6 +101,7 @@ Out of scope:
 - `scripts/check-cargo-tree-deny.sh profile-host-bwrap` passed.
 - `scripts/check-compiled-capabilities.sh host-bwrap` passed.
 - `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap bwrap::tests --lib` passed.
+- `cargo test -p oxide-agent-core --no-default-features --features 'tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate,sandbox-backend-bwrap' agent::providers::sandbox::tests --lib` passed.
 - `bash -n scripts/build-bwrap-rootfs-debian.sh && bash -n scripts/smoke-bwrap.sh` passed.
 - Hermetic bwrap state lifecycle unit test passed with a fake rootfs/bwrap executable.
 - Runtime bwrap smoke was not executed because this environment has `/usr/bin/bwrap` but does not have `mmdebstrap` or `.oxide/sandbox/images/debian-13-dev/rootfs`. Run `scripts/build-bwrap-rootfs-debian.sh` or provide a prebuilt rootfs, then run `scripts/smoke-bwrap.sh debian-13-dev`.
