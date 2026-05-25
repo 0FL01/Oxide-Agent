@@ -17,7 +17,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 - **Transport-Agnostic Runtime:** Progress rendering and execution model can be adapted for Discord, Slack, etc.
 - **Topic-Scoped Infrastructure:** Per-topic agent profiles, hooks, tools, and memory isolation
 - **Manager Control Plane:** Programmatic topic management with RBAC, audit trail, and rollback support
-- **Sandbox Broker:** Security isolation with Unix socket broker (`oxide-agent-sandboxd`)
+- **Sandbox Backends:** Docker broker isolation by default, plus optional bare-host Bubblewrap mode
 </details>
 
 ## Features
@@ -27,7 +27,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     - `oxide-agent-runtime` - Session orchestration, execution cycle, tool providers, sandbox
     - `oxide-agent-transport-telegram` - Telegram transport layer (teloxide integration)
     - `oxide-agent-transport-web` - E2E testing infrastructure with HTTP API
-    - `oxide-agent-sandboxd` - Sandbox broker daemon for Docker access isolation
+    - `oxide-agent-sandboxd` - Sandbox broker daemon for Docker access isolation in the default Compose deployment
     - `oxide-agent-telegram-bot` - Binary entry point and configuration
 
 *   **🤖 Agent Mode:**
@@ -531,6 +531,8 @@ Enhanced reminder scheduling with pause/resume/retry support.
 <summary>🐳 Docker Architecture</summary>
 
 ### Services
+
+The default Docker Compose deployment uses the broker backend. Bare-host Bubblewrap mode is documented separately in `docs/bwrap-sandbox.md` and is not enabled by this Compose file.
 
 1. **sandbox_image**
     - Builds the selected sandbox image variant, with full/dev using `sandbox/Dockerfile.dev`
