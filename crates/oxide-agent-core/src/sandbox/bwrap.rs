@@ -1300,7 +1300,10 @@ fn capture_output(bytes: Vec<u8>, max_bytes: usize) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_workspace_path, BwrapNetworkMode, BwrapRootMode, BwrapSandboxManager};
+    use super::{
+        host_arch, load_manifest, resolve_workspace_path, BwrapNetworkMode, BwrapRootMode,
+        BwrapSandboxManager,
+    };
     use crate::sandbox::SandboxScope;
     use std::ffi::OsString;
     #[cfg(unix)]
@@ -1535,6 +1538,94 @@ mod tests {
             .write_file("secret-link.txt", b"nope")
             .await
             .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_config_errors_are_actionable() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_BIN", temp.path().join("missing-bwrap"));
+        let missing_bwrap = BwrapSandboxManager::new(SandboxScope::new(42, "missing-bwrap"))
+            .await
+            .err()
+            .expect("missing bwrap should fail")
+            .to_string();
+        assert!(missing_bwrap.contains("BWRAP_BIN"));
+        assert!(missing_bwrap.contains("Install bubblewrap"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_ROOTFS", temp.path().join("missing-rootfs"));
+        let missing_rootfs = BwrapSandboxManager::new(SandboxScope::new(42, "missing-rootfs"))
+            .await
+            .err()
+            .expect("missing rootfs should fail")
+            .to_string();
+        assert!(missing_rootfs.contains("rootfs not found"));
+        assert!(missing_rootfs.contains("scripts/build-bwrap-rootfs-debian.sh"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_ROOT_MODE", "tmp-overlay");
+        let unsupported_root_mode =
+            BwrapSandboxManager::new(SandboxScope::new(42, "unsupported-root-mode"))
+                .await
+                .err()
+                .expect("unsupported root mode should fail")
+                .to_string();
+        assert!(unsupported_root_mode.contains("tmp-overlay is not supported"));
+        assert!(unsupported_root_mode.contains("overlay-rw, ro"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bwrap_manifest_validation_rejects_unsafe_values() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let manifest_path = temp.path().join("image.json");
+
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "id": "bad-rootfs",
+  "arch": "{}",
+  "rootfs": "/abs/rootfs",
+  "default_shell": "/bin/sh",
+  "default_workdir": "/workspace"
+}}"#,
+                host_arch()
+            ),
+        )
+        .expect("manifest");
+        let absolute_rootfs = load_manifest(&manifest_path).unwrap_err().to_string();
+        assert!(absolute_rootfs.contains("rootfs must be relative"));
+
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "id": "bad-workdir",
+  "arch": "{}",
+  "rootfs": "rootfs",
+  "default_shell": "/bin/sh",
+  "default_workdir": "/tmp"
+}}"#,
+                host_arch()
+            ),
+        )
+        .expect("manifest");
+        let bad_workdir = load_manifest(&manifest_path).unwrap_err().to_string();
+        assert!(bad_workdir.contains("default_workdir must be /workspace"));
     }
 
     #[cfg(unix)]
