@@ -1325,8 +1325,31 @@ fn parse_resolv_conf() -> Result<BwrapResolvConf> {
     match value.trim() {
         "auto" => Ok(BwrapResolvConf::Auto),
         "none" => Ok(BwrapResolvConf::None),
-        path => Ok(BwrapResolvConf::Path(absolute_existing_path(path)?)),
+        path => {
+            let path = absolute_path(path)?;
+            validate_resolv_conf_path(&path)?;
+            Ok(BwrapResolvConf::Path(path))
+        }
     }
+}
+
+fn validate_resolv_conf_path(path: &Path) -> Result<()> {
+    let metadata = path
+        .symlink_metadata()
+        .with_context(|| format!("BWRAP_RESOLV_CONF path does not exist: {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "BWRAP_RESOLV_CONF must not be a symlink: {}",
+            path.display()
+        );
+    }
+    if !metadata.is_file() {
+        bail!(
+            "BWRAP_RESOLV_CONF must be a regular file: {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn host_arch() -> &'static str {
@@ -1860,6 +1883,31 @@ mod tests {
                 .to_string();
         assert!(rootfs_symlink_error.contains("BWRAP_ROOTFS"));
         assert!(rootfs_symlink_error.contains("must not be a symlink"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_RESOLV_CONF", temp.path());
+        let resolv_dir_error = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-dir"))
+            .await
+            .err()
+            .expect("resolv dir should fail")
+            .to_string();
+        assert!(resolv_dir_error.contains("BWRAP_RESOLV_CONF"));
+        assert!(resolv_dir_error.contains("regular file"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let resolv_file = temp.path().join("resolv.conf");
+        std::fs::write(&resolv_file, b"nameserver 127.0.0.1\n").expect("resolv file");
+        let resolv_symlink = temp.path().join("resolv-link.conf");
+        symlink(&resolv_file, &resolv_symlink).expect("resolv symlink");
+        std::env::set_var("BWRAP_RESOLV_CONF", &resolv_symlink);
+        let resolv_symlink_error =
+            BwrapSandboxManager::new(SandboxScope::new(42, "resolv-symlink"))
+                .await
+                .err()
+                .expect("resolv symlink should fail")
+                .to_string();
+        assert!(resolv_symlink_error.contains("BWRAP_RESOLV_CONF"));
+        assert!(resolv_symlink_error.contains("must not be a symlink"));
 
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         std::env::remove_var("BWRAP_ROOTFS");
