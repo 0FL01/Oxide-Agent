@@ -69,6 +69,7 @@ struct BwrapScopeState {
     scope_name: String,
     scope_dir: PathBuf,
     workspace: PathBuf,
+    system_dir: PathBuf,
     system_upper: PathBuf,
     system_work: PathBuf,
     tmp: PathBuf,
@@ -338,6 +339,14 @@ impl BwrapSandboxManager {
 
     pub(crate) async fn destroy(&mut self) -> Result<()> {
         let _lock = self.lock_scope()?;
+        self.remove_scope_state_locked()?;
+        Ok(())
+    }
+
+    fn remove_scope_state_locked(&self) -> Result<()> {
+        if !self.state.system_dir.starts_with(&self.state.scope_dir) {
+            remove_dir_if_exists(&self.state.system_dir)?;
+        }
         if self.state.scope_dir.exists() {
             fs::remove_dir_all(&self.state.scope_dir).with_context(|| {
                 format!(
@@ -448,6 +457,9 @@ impl BwrapSandboxManager {
             return Ok(false);
         }
         let scope_dir = config.state_dir.join(container_name);
+        if let Some(root_upper_dir) = &config.root_upper_dir {
+            remove_dir_if_exists(&root_upper_dir.join(container_name))?;
+        }
         remove_dir_if_exists(&scope_dir)?;
         Ok(true)
     }
@@ -894,6 +906,7 @@ impl BwrapScopeState {
         );
         Self {
             workspace: scope_dir.join("workspace"),
+            system_dir: system_dir.clone(),
             system_upper: system_dir.join("upper"),
             system_work: system_dir.join("work"),
             tmp: scope_dir.join("tmp"),
@@ -2043,6 +2056,27 @@ mod tests {
             .unwrap()
             .expect("overlay workdir");
         assert!(work_dir.starts_with(root_upper_parent.join(scope.stable_name()).join("work")));
+        let mut manager = manager;
+        manager.create_sandbox().await.unwrap();
+        assert!(root_upper_parent.join(scope.stable_name()).exists());
+        manager.destroy().await.unwrap();
+        assert!(!root_upper_parent.join(scope.stable_name()).exists());
+        assert!(root_upper_parent.exists());
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
+        let delete_scope = SandboxScope::new(42, "upper-delete");
+        let mut manager = BwrapSandboxManager::new(delete_scope.clone())
+            .await
+            .unwrap();
+        manager.create_sandbox().await.unwrap();
+        assert!(root_upper_parent.join(delete_scope.stable_name()).exists());
+        assert!(
+            BwrapSandboxManager::delete_sandbox_by_name(42, &delete_scope.stable_name())
+                .await
+                .unwrap()
+        );
+        assert!(!root_upper_parent.join(delete_scope.stable_name()).exists());
 
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         let file_upper = temp.path().join("file-upper");
