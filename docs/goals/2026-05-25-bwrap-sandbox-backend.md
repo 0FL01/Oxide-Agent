@@ -86,4 +86,16 @@ Out of scope:
 
 ## Final Verification
 
-- Pending.
+- `cargo fmt --check` passed.
+- `cargo clippy --workspace --no-default-features --features profile-host-bwrap` passed.
+- `cargo check -p oxide-agent-core --no-default-features --features 'sandbox-backend-bwrap,tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate'` passed.
+- `cargo check -p oxide-agent-core --no-default-features --features profile-host-bwrap` passed.
+- `cargo check -p oxide-agent-core --no-default-features --features profile-full` passed.
+- `cargo check -p oxide-agent-core --no-default-features --features sandbox-backend-docker-direct` passed.
+- `cargo check -p oxide-agent-sandboxd --no-default-features --features profile-full` passed.
+- `scripts/check-cargo-tree-deny.sh sandbox-backend-bwrap` passed.
+- `scripts/check-cargo-tree-deny.sh profile-host-bwrap` passed.
+- `scripts/check-compiled-capabilities.sh host-bwrap` passed.
+- `cargo test -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap bwrap::tests --lib` passed.
+- `bash -n scripts/build-bwrap-rootfs-debian.sh && bash -n scripts/smoke-bwrap.sh` passed.
+- Runtime bwrap smoke was not executed because this environment has `/usr/bin/bwrap` but does not have `mmdebstrap` or `.oxide/sandbox/images/debian-13-dev/rootfs`. Run `scripts/build-bwrap-rootfs-debian.sh` or provide a prebuilt rootfs, then run `scripts/smoke-bwrap.sh debian-13-dev`.
