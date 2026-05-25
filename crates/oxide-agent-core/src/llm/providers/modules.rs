@@ -207,10 +207,9 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 mod tests {
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
-        provider_key, provider_media_capabilities, provider_missing_route_config_message,
-        provider_module_id,
+        provider_key, provider_missing_route_config_message, provider_module_id,
     };
-    use crate::config::{AgentSettings, ModuleRuntimeConfig};
+    use crate::config::{test_env_mutex, AgentSettings, ModuleRuntimeConfig};
 
     fn settings_with_provider_key(module_id: &str, api_key: &str) -> AgentSettings {
         let mut settings = AgentSettings::default();
@@ -284,6 +283,12 @@ mod tests {
     #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn opencode_go_module_owns_missing_route_config_message() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_api_key = std::env::var("OPENCODE_GO_API_KEY").ok();
+        std::env::remove_var("OPENCODE_GO_API_KEY");
+
         let settings = AgentSettings::default();
 
         assert_eq!(
@@ -297,6 +302,10 @@ mod tests {
             provider_missing_route_config_message("opencode_go", &settings),
             None
         );
+
+        if let Some(api_key) = previous_api_key {
+            std::env::set_var("OPENCODE_GO_API_KEY", api_key);
+        }
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -385,7 +394,7 @@ mod tests {
     #[cfg(feature = "llm-openrouter")]
     #[test]
     fn openrouter_module_owns_media_capabilities() {
-        let capabilities = provider_media_capabilities("llm-provider/openrouter")
+        let capabilities = super::provider_media_capabilities("llm-provider/openrouter")
             .expect("provider should resolve");
 
         assert!(capabilities.supports_audio_transcription);
@@ -454,8 +463,8 @@ mod tests {
     #[cfg(feature = "llm-mistral")]
     #[test]
     fn mistral_module_owns_media_capabilities() {
-        let capabilities =
-            provider_media_capabilities("llm-provider/mistral").expect("provider should resolve");
+        let capabilities = super::provider_media_capabilities("llm-provider/mistral")
+            .expect("provider should resolve");
 
         assert!(capabilities.supports_audio_transcription);
         assert!(!capabilities.supports_image_understanding);

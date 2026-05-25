@@ -10,6 +10,7 @@ pub(super) use super::AgentExecutor;
 pub(super) use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
 pub(super) use crate::agent::profile::HookAccessPolicy;
 pub(super) use crate::agent::providers::TodoList;
+#[cfg(feature = "manager-control-plane")]
 pub(super) use crate::agent::providers::{
     ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
     ForumTopicEditResult, ForumTopicThreadRequest, ManagerTopicLifecycle,
@@ -18,14 +19,18 @@ pub(super) use crate::agent::session::{AgentSession, PendingUserInput, UserInput
 pub(super) use crate::config::AgentSettings;
 pub(super) use crate::llm::LlmClient;
 pub(super) use crate::storage::MockStorageProvider;
-pub(super) use anyhow::{bail, Result};
+#[cfg(feature = "manager-control-plane")]
+pub(super) use anyhow::bail;
+pub(super) use anyhow::Result;
 pub(super) use std::sync::{Arc, Mutex as StdMutex};
 pub(super) use tokio::sync::Mutex;
 
+#[cfg(feature = "manager-control-plane")]
 pub(super) struct RecordingTopicLifecycle {
     create_calls: StdMutex<Vec<ForumTopicCreateRequest>>,
 }
 
+#[cfg(feature = "manager-control-plane")]
 impl RecordingTopicLifecycle {
     pub(super) fn new() -> Self {
         Self {
@@ -34,6 +39,7 @@ impl RecordingTopicLifecycle {
     }
 }
 
+#[cfg(feature = "manager-control-plane")]
 #[async_trait::async_trait]
 impl ManagerTopicLifecycle for RecordingTopicLifecycle {
     async fn forum_topic_create(

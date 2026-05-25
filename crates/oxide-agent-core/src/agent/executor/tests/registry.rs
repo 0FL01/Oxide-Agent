@@ -76,6 +76,14 @@ fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
             ..ModelInfo::default()
         }
     ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            provider: "llm-provider/opencode-go".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
 }
 
 #[test]

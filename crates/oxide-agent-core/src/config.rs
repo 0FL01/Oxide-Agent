@@ -1570,7 +1570,7 @@ mod tests {
         env::remove_var("ZAI_API_KEY");
 
         env::set_var("CHAT_MODEL_ID", "chat-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("CHAT_MODEL_PROVIDER", "opencode-go");
         env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
         env::set_var(
             "OPENCODE_GO_API_BASE",
@@ -1617,7 +1617,7 @@ mod tests {
         env::remove_var("OPENCODE_GO_API_BASE");
 
         env::set_var("CHAT_MODEL_ID", "chat-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("CHAT_MODEL_PROVIDER", "opencode_go");
         env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
         env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode-go");
@@ -1657,7 +1657,7 @@ mod tests {
         env::remove_var("OPENCODE_GO_API_BASE");
 
         env::set_var("CHAT_MODEL_ID", "chat-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("CHAT_MODEL_PROVIDER", "opencode_go");
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
         env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
 
