@@ -60,6 +60,22 @@ Expected layout:
 
 The rootfs is the immutable lower layer. Runtime package installs and system writes go into the per-scope overlay under `BWRAP_STATE_DIR`.
 
+Import a prebuilt, checksum-verified rootfs tarball when local `mmdebstrap` is unavailable or when preparing an Alpine host:
+
+```bash
+scripts/import-bwrap-rootfs-tar.sh \
+  --tarball /path/to/debian-13-dev-rootfs.tar.zst \
+  --sha256 <expected-sha256> \
+  --image-id debian-13-dev \
+  --output .oxide/sandbox/images/debian-13-dev \
+  --distro debian \
+  --suite trixie \
+  --version 13 \
+  --package-manager apt
+```
+
+The import path still does not require Docker. The checksum is mandatory; keep tarball signing/provenance outside the repository and record the expected checksum from the trusted build pipeline or release artifact.
+
 When `mmdebstrap` or a prebuilt Debian rootfs is unavailable, build a smoke-only rootfs from host binaries:
 
 ```bash
