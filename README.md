@@ -219,7 +219,9 @@ MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
 MEDIA_MODEL_PROVIDER="openrouter"
 ```
 
-### Weighted Model Routes (Failover)
+<details>
+<summary>⚖️ Weighted Model Routes (Failover)</summary>
+
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
@@ -237,7 +239,11 @@ AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
 AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
 
-### Weighted failover with NVIDIA NIM
+</details>
+
+<details>
+<summary>⚖️ Weighted failover with NVIDIA NIM</summary>
+
 Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven primary route first:
 
 ```dotenv
@@ -255,7 +261,10 @@ AGENT_MODEL_ROUTES__1__WEIGHT=3
 
 The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
 
-### Browser Use default route (disabled)
+</details>
+
+<details>
+<summary>🌐 Browser Use default route (disabled)</summary>
 
 > **NOTE**: Browser Use is currently disabled. It requires a quality vision-capable agent model
 > at a reasonable price-per-token. To re-enable, set `BROWSER_USE_URL` and optionally
@@ -270,7 +279,11 @@ BROWSER_USE_MODEL_PROVIDER="zai"
 
 Browser Use prefers this dedicated route over the currently active main/sub-agent route and falls back to the inherited route only when the dedicated override is absent.
 
-### Alternate provider example
+</details>
+
+<details>
+<summary>🔄 Alternate provider example</summary>
+
 ```
 CHAT_MODEL_ID="mistral-large-latest"
 CHAT_MODEL_PROVIDER="mistral"
@@ -280,6 +293,8 @@ AGENT_MODEL_PROVIDER="mistral"
 ```
 
 Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-family IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
+
+</details>
 
 ## Available LLM Providers
 
@@ -295,7 +310,8 @@ Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-famil
 
 > **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
 
-## New Tool Providers
+<details>
+<summary>🔧 Tool Providers</summary>
 
 ### 🗣️ Kokoro TTS (Voice Synthesis)
 Generates voice messages from agent output using local Kokoro TTS server.
@@ -354,7 +370,10 @@ OXIDE_SSH_MCP_BINARY=/usr/local/bin/ssh-mcp
 
 **Blocked in DM:** All SSH tools are blocked in private/DM chats by default.
 
-## Manager Control Plane
+</details>
+
+<details>
+<summary>🏗️ Manager Control Plane</summary>
 
 Programmatic topic management with RBAC, audit trail, and rollback support.
 
@@ -379,7 +398,10 @@ MANAGER_HOME_AGENT_ID=control-plane       # Agent ID for manager home (optional)
 
 **Note:** When `MANAGER_HOME_CHAT_ID` is set, manager control-plane tools are only available in the designated topic.
 
-## Security
+</details>
+
+<details>
+<summary>🔒 Security</summary>
 
 ### DM Tool Restrictions
 SSH, Jira, and Mattermost tools are **blocked by default in private/DM chats** for security.
@@ -406,6 +428,8 @@ Sensitive SSH operations require operator approval with single-use tokens.
 4. Agent retries with approval token
 5. Token consumed (single-use), TTL 600s
 
+</details>
+
 ## Agent Architecture
 
 
@@ -413,7 +437,6 @@ Sensitive SSH operations require operator approval with single-use tokens.
 <summary>🏗 Internal Structure, Context, Hooks, Compaction</summary>
 
 ### Deterministic Context
-The legacy skills RAG subsystem has been removed. The agent prompt is assembled from explicit deterministic sources:
 - Topic-scoped `AGENTS.md`
 - S3/R2-backed wiki memory
 - Runtime context injections
@@ -432,8 +455,6 @@ Unified session-level compaction with a single path through `CompactionControlle
 1. **Detect** — Pre-sampling budget check, context-limit retry, manual compact, or model-route downshift.
 2. **Summarize** — Uses a normal configured LLM route as a provider-agnostic local summary backend (`LocalLlmSummary`).
 3. **Replace Atomically** — Builds one `[OXIDE_COMPACTED_SUMMARY_V1]` handoff, preserves pinned state and safe recent tool context, validates tool-call integrity, and replaces hot memory in one step.
-
-The runtime path does not call OpenAI `/responses/compact`, does not create R2 archive/payload objects, and does not emit `pruning_applied` events. Only the current `[OXIDE_COMPACTED_SUMMARY_V1]` marker is detected; legacy markers are treated as plain content.
 
 ### 🔗 Hooks System
 Extensible architecture for personalizing agent behavior:
