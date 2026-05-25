@@ -11,8 +11,8 @@ use crate::agent::tool_runtime::{
 use crate::llm::ToolDefinition;
 use crate::sandbox::{
     ExecResult, SandboxApplyFileEditResult, SandboxBackend, SandboxBackendId, SandboxCapability,
-    SandboxExec, SandboxFileEdit, SandboxFileListing, SandboxFileOps, SandboxLifecycle,
-    SandboxManager, SandboxScope,
+    SandboxEditReadGuard, SandboxExec, SandboxFileEdit, SandboxFileListing, SandboxFileOps,
+    SandboxLifecycle, SandboxManager, SandboxScope,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -21,7 +21,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::str;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
@@ -193,39 +192,26 @@ impl SandboxFileOps for SandboxRuntime {
     ) -> Result<SandboxApplyFileEditResult> {
         let _exclusive = self.execution_gate.write().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
-        let current = sandbox.read_file(path).await?;
-        let previous_sha256 = sha256_hex(&current);
-
-        if !current.is_empty() {
-            let snapshots = self.read_snapshots.lock().await;
-            validate_edit_read_guard(path, &previous_sha256, current.len(), snapshots.get(path))?;
-        }
-
-        let (updated, replacements) = apply_exact_text_edit(&current, &edit)?;
-        let new_sha256 = sha256_hex(&updated);
-        let changed = current != updated;
-        if changed {
-            sandbox.write_file(path, &updated).await?;
-        }
+        let read_guard =
+            self.read_snapshots
+                .lock()
+                .await
+                .get(path)
+                .map(|snapshot| SandboxEditReadGuard {
+                    sha256: snapshot.sha256.clone(),
+                    bytes: snapshot.bytes,
+                });
+        let result = sandbox.apply_file_edit(path, edit, read_guard).await?;
 
         self.read_snapshots.lock().await.insert(
             path.to_string(),
             ReadSnapshot {
-                sha256: new_sha256.clone(),
-                bytes: updated.len(),
+                sha256: result.new_sha256.clone(),
+                bytes: result.bytes_written,
             },
         );
 
-        Ok(SandboxApplyFileEditResult {
-            path: path.to_string(),
-            status: if changed { "updated" } else { "unchanged" }.to_string(),
-            replacements,
-            previous_sha256,
-            new_sha256,
-            bytes_before: current.len(),
-            bytes_written: updated.len(),
-            changed,
-        })
+        Ok(result)
     }
 }
 
@@ -524,6 +510,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+#[cfg(test)]
 fn validate_edit_read_guard(
     path: &str,
     current_sha256: &str,
@@ -553,12 +540,13 @@ fn validate_edit_read_guard(
     Ok(())
 }
 
+#[cfg(test)]
 fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<u8>, usize)> {
     if bytes_look_binary(current) {
         anyhow::bail!("apply_file_edit only supports text files; binary content was detected");
     }
 
-    let current_text = str::from_utf8(current)
+    let current_text = std::str::from_utf8(current)
         .map_err(|error| anyhow::anyhow!("apply_file_edit only supports UTF-8 text: {error}"))?;
 
     if edit.expected_replacements == 0 {

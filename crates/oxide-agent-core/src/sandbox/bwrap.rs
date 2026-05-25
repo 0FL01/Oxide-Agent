@@ -16,7 +16,11 @@ use tokio::process::Command;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use super::{ExecResult, SandboxContainerRecord, SandboxFileListing, SandboxScope};
+use super::traits::apply_sandbox_file_edit;
+use super::{
+    ExecResult, SandboxApplyFileEditResult, SandboxContainerRecord, SandboxEditReadGuard,
+    SandboxFileEdit, SandboxFileListing, SandboxScope,
+};
 
 const BWRAP_DEFAULT_BIN: &str = "bwrap";
 const BWRAP_DEFAULT_IMAGE: &str = "debian-13-dev";
@@ -316,6 +320,41 @@ impl BwrapSandboxManager {
         }
         fs::read(&host_path)
             .with_context(|| format!("Failed to read workspace file {}", host_path.display()))
+    }
+
+    pub(crate) async fn apply_file_edit(
+        &mut self,
+        path: &str,
+        edit: SandboxFileEdit,
+        read_guard: Option<SandboxEditReadGuard>,
+    ) -> Result<SandboxApplyFileEditResult> {
+        let _lock = self.lock_scope()?;
+        self.ensure_scope_dirs_locked()?;
+        let host_path = self.resolve_workspace_path(path)?;
+        self.ensure_regular_file(&host_path, path)?;
+        let size = host_path.metadata()?.len();
+        if size > self.config.max_read_file_bytes {
+            bail!(
+                "Refusing to edit {path}: file is {size} bytes, read limit is {} bytes",
+                self.config.max_read_file_bytes
+            );
+        }
+
+        let current = fs::read(&host_path)
+            .with_context(|| format!("Failed to read workspace file {}", host_path.display()))?;
+        let applied = apply_sandbox_file_edit(path, &current, &edit, read_guard.as_ref())?;
+        if applied.result.changed {
+            if host_path
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                bail!("Refusing to write through symlink: {path}");
+            }
+            fs::write(&host_path, &applied.updated).with_context(|| {
+                format!("Failed to write workspace file {}", host_path.display())
+            })?;
+        }
+        Ok(applied.result)
     }
 
     pub(crate) async fn upload_file(&mut self, path: &str, content: &[u8]) -> Result<()> {
@@ -1555,7 +1594,8 @@ mod tests {
         host_arch, load_manifest, resolve_workspace_path, BwrapNetworkMode, BwrapRootMode,
         BwrapSandboxManager, WORKSPACE_PREFIX,
     };
-    use crate::sandbox::SandboxScope;
+    use crate::sandbox::{SandboxEditReadGuard, SandboxFileEdit, SandboxScope};
+    use sha2::{Digest, Sha256};
     use std::ffi::OsString;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
@@ -1795,6 +1835,100 @@ mod tests {
             .write_file("secret-link.txt", b"nope")
             .await
             .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_apply_file_edit_is_guarded_under_scope_lock() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "topic-apply-edit"))
+            .await
+            .unwrap();
+        manager.create_sandbox().await.unwrap();
+        manager
+            .write_file("notes.txt", b"alpha\nbeta\n")
+            .await
+            .unwrap();
+        let current = manager.read_file("notes.txt").await.unwrap();
+        let read_guard = SandboxEditReadGuard {
+            sha256: format!("{:x}", Sha256::digest(&current)),
+            bytes: current.len(),
+        };
+
+        let result = manager
+            .apply_file_edit(
+                "notes.txt",
+                SandboxFileEdit {
+                    search: "beta".to_string(),
+                    replace: "gamma".to_string(),
+                    expected_replacements: 1,
+                },
+                Some(read_guard.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(result.changed);
+        assert_eq!(result.replacements, 1);
+        assert_eq!(result.previous_sha256, read_guard.sha256);
+        assert_eq!(
+            manager.read_file("notes.txt").await.unwrap(),
+            b"alpha\ngamma\n"
+        );
+
+        manager
+            .write_file("notes.txt", b"changed elsewhere\n")
+            .await
+            .unwrap();
+        let stale_error = manager
+            .apply_file_edit(
+                "notes.txt",
+                SandboxFileEdit {
+                    search: "changed".to_string(),
+                    replace: "updated".to_string(),
+                    expected_replacements: 1,
+                },
+                Some(read_guard),
+            )
+            .await
+            .err()
+            .expect("stale read guard should fail")
+            .to_string();
+        assert!(stale_error.contains("file changed after last read"));
+
+        let fresh = manager.read_file("notes.txt").await.unwrap();
+        let fresh_guard = SandboxEditReadGuard {
+            sha256: format!("{:x}", Sha256::digest(&fresh)),
+            bytes: fresh.len(),
+        };
+        let count_error = manager
+            .apply_file_edit(
+                "notes.txt",
+                SandboxFileEdit {
+                    search: "missing".to_string(),
+                    replace: "updated".to_string(),
+                    expected_replacements: 1,
+                },
+                Some(fresh_guard),
+            )
+            .await
+            .err()
+            .expect("replacement count mismatch should fail")
+            .to_string();
+        assert!(count_error.contains("expected 1 replacements, found 0"));
+        assert_eq!(
+            manager.read_file("notes.txt").await.unwrap(),
+            b"changed elsewhere\n"
+        );
     }
 
     #[cfg(unix)]

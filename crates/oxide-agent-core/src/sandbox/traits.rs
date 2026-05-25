@@ -10,6 +10,8 @@ use super::{SandboxContainerRecord, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::str;
 
 /// Stable identifier for a sandbox backend implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -77,6 +79,15 @@ pub struct SandboxFileEdit {
     pub expected_replacements: usize,
 }
 
+/// Previously observed file state required before applying a guarded edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxEditReadGuard {
+    /// SHA-256 observed by the last successful read.
+    pub sha256: String,
+    /// Byte length observed by the last successful read.
+    pub bytes: usize,
+}
+
 /// Result of applying a targeted sandbox text edit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxApplyFileEditResult {
@@ -96,6 +107,125 @@ pub struct SandboxApplyFileEditResult {
     pub bytes_written: usize,
     /// Whether file bytes changed.
     pub changed: bool,
+}
+
+/// Internal result of applying a sandbox text edit to in-memory bytes.
+pub(crate) struct SandboxAppliedFileEdit {
+    /// Updated bytes to write when the edit changed the file.
+    pub updated: Vec<u8>,
+    /// Structured edit result.
+    pub result: SandboxApplyFileEditResult,
+}
+
+pub(crate) fn apply_sandbox_file_edit(
+    path: &str,
+    current: &[u8],
+    edit: &SandboxFileEdit,
+    read_guard: Option<&SandboxEditReadGuard>,
+) -> Result<SandboxAppliedFileEdit> {
+    let previous_sha256 = sha256_hex(current);
+
+    if !current.is_empty() {
+        validate_edit_read_guard(path, &previous_sha256, current.len(), read_guard)?;
+    }
+
+    let (updated, replacements) = apply_exact_text_edit(current, edit)?;
+    let new_sha256 = sha256_hex(&updated);
+    let changed = current != updated;
+
+    Ok(SandboxAppliedFileEdit {
+        result: SandboxApplyFileEditResult {
+            path: path.to_string(),
+            status: if changed { "updated" } else { "unchanged" }.to_string(),
+            replacements,
+            previous_sha256,
+            new_sha256,
+            bytes_before: current.len(),
+            bytes_written: updated.len(),
+            changed,
+        },
+        updated,
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn validate_edit_read_guard(
+    path: &str,
+    current_sha256: &str,
+    current_bytes: usize,
+    read_guard: Option<&SandboxEditReadGuard>,
+) -> Result<()> {
+    if current_bytes == 0 {
+        return Ok(());
+    }
+
+    let read_guard = read_guard.ok_or_else(|| {
+        anyhow::anyhow!(
+            "file must be read with read_file before apply_file_edit; empty files are exempt: {path}"
+        )
+    })?;
+
+    if read_guard.sha256 != current_sha256 {
+        anyhow::bail!(
+            "file changed after last read; call read_file again before editing: {path} (last_read_sha256={}, current_sha256={}, last_read_bytes={}, current_bytes={})",
+            read_guard.sha256,
+            current_sha256,
+            read_guard.bytes,
+            current_bytes
+        );
+    }
+
+    Ok(())
+}
+
+fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<u8>, usize)> {
+    if bytes_look_binary(current) {
+        anyhow::bail!("apply_file_edit only supports text files; binary content was detected");
+    }
+
+    let current_text = str::from_utf8(current)
+        .map_err(|error| anyhow::anyhow!("apply_file_edit only supports UTF-8 text: {error}"))?;
+
+    if edit.expected_replacements == 0 {
+        anyhow::bail!("expected_replacements must be greater than zero");
+    }
+
+    if edit.search.is_empty() {
+        if current.is_empty() {
+            if edit.expected_replacements != 1 {
+                anyhow::bail!(
+                    "expected {} replacements, found 1 for empty-file insert; file was not modified",
+                    edit.expected_replacements
+                );
+            }
+            return Ok((edit.replace.as_bytes().to_vec(), 1));
+        }
+        anyhow::bail!("search must not be empty for non-empty files");
+    }
+
+    let replacements = current_text.matches(&edit.search).count();
+    if replacements != edit.expected_replacements {
+        anyhow::bail!(
+            "expected {} replacements, found {}; file was not modified",
+            edit.expected_replacements,
+            replacements
+        );
+    }
+
+    Ok((
+        current_text
+            .replace(&edit.search, &edit.replace)
+            .into_bytes(),
+        replacements,
+    ))
+}
+
+fn bytes_look_binary(bytes: &[u8]) -> bool {
+    let inspected = &bytes[..bytes.len().min(8192)];
+    inspected.contains(&0)
 }
 
 impl SandboxFileListing {

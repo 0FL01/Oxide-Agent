@@ -76,7 +76,15 @@ use crate::sandbox::broker::{
 };
 #[cfg(feature = "sandbox-backend-bwrap")]
 use crate::sandbox::bwrap::BwrapSandboxManager;
-use crate::sandbox::{SandboxFileListing, SandboxScope};
+#[cfg(any(
+    feature = "sandbox-backend-docker-direct",
+    feature = "sandbox-backend-sandboxd-client"
+))]
+use crate::sandbox::traits::apply_sandbox_file_edit;
+use crate::sandbox::{
+    SandboxApplyFileEditResult, SandboxEditReadGuard, SandboxFileEdit, SandboxFileListing,
+    SandboxScope,
+};
 
 #[cfg(feature = "sandbox-backend-docker-direct")]
 const DOCKER_COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
@@ -816,6 +824,38 @@ impl SandboxManager {
             SandboxManagerInner::Broker(manager) => manager.read_file(path).await,
             #[cfg(feature = "sandbox-backend-bwrap")]
             SandboxManagerInner::Bwrap(manager) => manager.read_file(path).await,
+        }
+    }
+
+    pub async fn apply_file_edit(
+        &mut self,
+        path: &str,
+        edit: SandboxFileEdit,
+        read_guard: Option<SandboxEditReadGuard>,
+    ) -> Result<SandboxApplyFileEditResult> {
+        match &mut self.inner {
+            #[cfg(feature = "sandbox-backend-docker-direct")]
+            SandboxManagerInner::Docker(manager) => {
+                let current = manager.read_file(path).await?;
+                let applied = apply_sandbox_file_edit(path, &current, &edit, read_guard.as_ref())?;
+                if applied.result.changed {
+                    manager.write_file(path, &applied.updated).await?;
+                }
+                Ok(applied.result)
+            }
+            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            SandboxManagerInner::Broker(manager) => {
+                let current = manager.read_file(path).await?;
+                let applied = apply_sandbox_file_edit(path, &current, &edit, read_guard.as_ref())?;
+                if applied.result.changed {
+                    manager.write_file(path, &applied.updated).await?;
+                }
+                Ok(applied.result)
+            }
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => {
+                manager.apply_file_edit(path, edit, read_guard).await
+            }
         }
     }
 
