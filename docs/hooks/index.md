@@ -11,8 +11,6 @@
 
 ### Хуки основного агента
 - [**CompletionCheckHook**](completion-check.md) - проверка завершения todo-задач
-- [**DelegationGuardHook**](delegation-guard.md) - защита от делегирования аналитических задач
-- [**WorkloadDistributorHook**](workload-distributor.md) - распределение нагрузки между агентами
 - [**SearchBudgetHook**](search-budget.md) - лимит поисковых запросов
 - [**TimeoutReportHook**](timeout-report.md) - отчёт при достижении тайм-аута
 
@@ -21,7 +19,7 @@
 
 ### Саб-агенты
 - [**Обзор саб-агентов**](sub-agents/index.md) - жизненный цикл и отличия от main agent
-- [**Механизм делегирования**](sub-agents/delegation.md) - `delegate_to_sub_agent` инструмент
+- [**Механизм делегирования**](sub-agents/delegation.md) - `spawn_sub_agents`, `wait_sub_agents`, `cancel_sub_agents`
 - [**EphemeralSession**](sub-agents/ephemeral-session.md) - изолированная сессия саб-агента
 
 ### Примеры
@@ -39,15 +37,13 @@
 | `AGENT_MAX_ITERATIONS` | 200 | Макс. итераций (main agent, env override) |
 | `AGENT_TIMEOUT_SECS` | 600 | Тайм-аут агента (10 минут) |
 | `SUB_AGENT_MAX_ITERATIONS` | 60 | Макс. итераций (sub-agent, env override) |
-| `SUB_AGENT_MAX_TOKENS` | 64,000 | Макс. токенов (sub-agent) |
+| sub-agent context budget | inherited | Наследует budget основного агента, если не задан explicit override |
 
 ## Карта хуков по агентам
 
 ### Main Agent (оркестратор)
 ```
 ✅ CompletionCheckHook
-✅ WorkloadDistributorHook
-✅ DelegationGuardHook
 ✅ SearchBudgetHook
 ✅ TimeoutReportHook
 ```
@@ -58,9 +54,6 @@
 ✅ SubAgentSafetyHook
 ✅ SearchBudgetHook
 ✅ TimeoutReportHook
-
-❌ WorkloadDistributorHook - саб-агенты сами выполняют работу
-❌ DelegationGuardHook - саб-агентам запрещено делегировать
 ```
 
 ## Поток выполнения через хуки
@@ -68,12 +61,9 @@
 ```
 User Request
     ↓
-[BeforeAgent] → WorkloadDistributorHook: inject context (если сложный промпт)
-    ↓
 LLM Call + Tool Calls
     ↓
-[BeforeTool] → DelegationGuardHook (если delegate_to_sub_agent)
-               WorkloadDistributorHook (блокирует тяжёлые команды)
+[BeforeTool] → policy/safety/search hooks
     ↓
 Tool Execution
     ↓

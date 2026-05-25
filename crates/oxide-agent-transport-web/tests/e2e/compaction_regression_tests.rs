@@ -17,7 +17,7 @@ use super::helpers::{
     create_session_http_with_user, create_task_http_with_body, fetch_task_events,
     fetch_task_progress, tool_call_response, wait_for_task_status, wait_for_zai_calls,
 };
-use super::providers::{ControlledNarratorProvider, SequencedZaiProvider};
+use super::providers::SequencedZaiProvider;
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -70,7 +70,6 @@ async fn seed_history(
 
 fn setup_web_test_with_budget(
     zai_provider: Arc<SequencedZaiProvider>,
-    narrator_provider: Arc<ControlledNarratorProvider>,
     model_max_output_tokens: u32,
     context_window_tokens: u32,
 ) -> AppState {
@@ -81,8 +80,6 @@ fn setup_web_test_with_budget(
         agent_model_context_window_tokens: Some(context_window_tokens),
         sub_agent_model_id: Some("glm-4.7".to_string()),
         sub_agent_model_provider: Some("zai".to_string()),
-        narrator_model_id: Some("narrator-model".to_string()),
-        narrator_model_provider: Some("narrator".to_string()),
         agent_timeout_secs: Some(5),
         sub_agent_timeout_secs: Some(5),
         ..AgentSettings::default()
@@ -91,7 +88,6 @@ fn setup_web_test_with_budget(
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
         llm.register_provider("zai".to_string(), zai_provider);
-        llm.register_provider("narrator".to_string(), narrator_provider);
         Arc::new(llm)
     };
 
@@ -100,18 +96,12 @@ fn setup_web_test_with_budget(
     AppState::new(Arc::new(session_manager))
 }
 
-fn setup_web_test_with_compaction_budget(
-    zai_provider: Arc<SequencedZaiProvider>,
-    narrator_provider: Arc<ControlledNarratorProvider>,
-) -> AppState {
-    setup_web_test_with_budget(zai_provider, narrator_provider, 32_000, 200_000)
+fn setup_web_test_with_compaction_budget(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
+    setup_web_test_with_budget(zai_provider, 32_000, 200_000)
 }
 
-fn setup_web_test_with_pressure_budget(
-    zai_provider: Arc<SequencedZaiProvider>,
-    narrator_provider: Arc<ControlledNarratorProvider>,
-) -> AppState {
-    setup_web_test_with_budget(zai_provider, narrator_provider, 1_024, 4_096)
+fn setup_web_test_with_pressure_budget(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
+    setup_web_test_with_budget(zai_provider, 1_024, 4_096)
 }
 
 fn two_todo_tool_calls_response() -> ChatResponse {
@@ -163,6 +153,45 @@ fn two_todo_tool_calls_response() -> ChatResponse {
     }
 }
 
+fn compress_and_write_todos_response() -> ChatResponse {
+    ChatResponse {
+        content: None,
+        tool_calls: vec![
+            ToolCall::new(
+                "call-compress".to_string(),
+                ToolCallFunction {
+                    name: "compress".to_string(),
+                    arguments: serde_json::json!({}).to_string(),
+                },
+                false,
+            ),
+            ToolCall::new(
+                "call-write-todos".to_string(),
+                ToolCallFunction {
+                    name: "write_todos".to_string(),
+                    arguments: serde_json::json!({
+                        "todos": [
+                            {
+                                "description": "Verify compaction with another tool",
+                                "status": "completed"
+                            }
+                        ]
+                    })
+                    .to_string(),
+                },
+                false,
+            ),
+        ],
+        finish_reason: "tool_calls".to_string(),
+        reasoning_content: None,
+        usage: Some(TokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        }),
+    }
+}
+
 fn request_contains(request: &super::providers::RecordedToolRequest, needle: &str) -> bool {
     request.system_prompt.contains(needle)
         || request
@@ -179,15 +208,14 @@ fn token_rich_payload(label: &str, words: usize) -> String {
 }
 
 #[tokio::test]
-async fn e2e_compaction_post_run_deduplicates_superseded_read_file_results() {
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
     init_test_tracing();
 
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -373,15 +401,14 @@ async fn e2e_compaction_post_run_deduplicates_superseded_read_file_results() {
 }
 
 #[tokio::test]
-async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
     init_test_tracing();
 
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -554,15 +581,14 @@ async fn e2e_compaction_post_run_deduplicates_only_matching_read_file_paths() {
 }
 
 #[tokio::test]
-async fn e2e_compaction_post_run_blocks_dedup_when_write_file_intervenes() {
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
     init_test_tracing();
 
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -737,13 +763,12 @@ async fn e2e_compaction_post_run_blocks_dedup_when_write_file_intervenes() {
 }
 
 #[tokio::test]
-async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -856,13 +881,12 @@ async fn e2e_compaction_post_run_prunes_old_artifact_on_healthy_budget() {
 }
 
 #[tokio::test]
-async fn e2e_compaction_post_run_preserves_delegate_results_while_cleaning_regular_tools() {
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compaction_runtime_preserves_sub_agent_wait_results_while_cleaning_regular_tools() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -875,13 +899,13 @@ async fn e2e_compaction_post_run_preserves_delegate_results_while_cleaning_regul
         &session_id,
         user_id,
         vec![
-            AgentMessage::user_task("Investigate delegated network findings"),
+            AgentMessage::user_task("Investigate sub-agent network findings"),
             AgentMessage::tool(
-                "delegate-old",
-                "delegate_to_sub_agent",
+                "sub-agent-wait-old",
+                "wait_sub_agents",
                 &format!(
-                    "delegated summary DELEGATE_MARKER {}",
-                    token_rich_payload("delegate", 2_500)
+                    "sub-agent summary SUB_AGENT_MARKER {}",
+                    token_rich_payload("sub-agent", 2_500)
                 ),
             ),
             AgentMessage::tool(
@@ -966,18 +990,18 @@ async fn e2e_compaction_post_run_preserves_delegate_results_while_cleaning_regul
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    let delegate_tool = messages
+    let sub_agent_tool = messages
         .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("delegate-old"))
-        .expect("delegate result should exist");
+        .find(|message| message.tool_call_id.as_deref() == Some("sub-agent-wait-old"))
+        .expect("sub-agent wait result should exist");
     let web_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("web-old"))
         .expect("web result should exist");
 
-    assert!(delegate_tool.content.contains("DELEGATE_MARKER"));
-    assert!(!delegate_tool.is_externalized());
-    assert!(!delegate_tool.is_pruned());
+    assert!(sub_agent_tool.content.contains("SUB_AGENT_MARKER"));
+    assert!(!sub_agent_tool.is_externalized());
+    assert!(!sub_agent_tool.is_pruned());
     assert!(web_tool.is_externalized() || web_tool.is_pruned());
     assert!(!web_tool.content.contains("WEB_MARKER"));
 
@@ -985,15 +1009,14 @@ async fn e2e_compaction_post_run_preserves_delegate_results_while_cleaning_regul
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
     let anchor = "ANCHOR_CTX_9f3a9a4bc7f14d60b2a6e8c14529f0aa";
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         two_todo_tool_calls_response(),
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1068,7 +1091,7 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
     let old_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-anchor"))
-        .expect("old tool message should exist after post-run cleanup");
+        .expect("old tool message should exist after runtime compaction");
     assert!(!old_tool.is_pruned());
     assert!(old_tool.content.contains(anchor));
 
@@ -1076,13 +1099,12 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
 }
 
 #[tokio::test]
-async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1181,26 +1203,25 @@ async fn e2e_compaction_post_run_prunes_old_data_without_summary() {
     let old_tool = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("old-call"))
-        .expect("old tool message should exist after post-run cleanup");
+        .expect("old tool message should exist after runtime compaction");
     assert!(old_tool.is_externalized() || old_tool.is_pruned());
     assert!(!old_tool.content.contains("CRITICAL_DECISION_TOKEN"));
-    assert!(!messages
-        .iter()
-        .any(|message| message.summary_payload().is_some()));
+    assert!(!messages.iter().any(|message| message
+        .content
+        .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)));
 
     server.abort();
 }
 
 #[tokio::test]
-async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary_boundary() {
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         two_todo_tool_calls_response(),
         two_todo_tool_calls_response(),
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state =
-        setup_web_test_with_pressure_budget(zai_provider.clone(), narrator_provider.clone());
+    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1268,7 +1289,7 @@ async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary
         .expect("failed to decode task progress");
     assert!(matches!(
         progress["latest_token_snapshot"]["budget_state"].as_str(),
-        Some("ShouldPrune") | Some("ShouldCompact") | Some("OverLimit")
+        Some("Warning") | Some("ShouldCompact") | Some("OverLimit")
     ));
 
     let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
@@ -1303,12 +1324,12 @@ async fn e2e_compaction_pressure_budget_applies_post_run_cleanup_without_summary
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone(), narrator_provider);
+    let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1396,6 +1417,7 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
 }
 
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_compress_tool_triggers_manual_compaction() {
     init_test_tracing();
 
@@ -1403,8 +1425,7 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         tool_call_response("compress", serde_json::json!({})),
         super::helpers::unstructured_text_response("done"),
     ]));
-    let narrator_provider = Arc::new(ControlledNarratorProvider::new(None));
-    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone(), narrator_provider);
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
     let session_manager = app_state.session_manager();
     let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
     let client = reqwest::Client::new();
@@ -1464,6 +1485,10 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     assert!(event_names
         .iter()
         .any(|event| event == "compaction_completed"));
+    assert!(
+        !event_names.iter().any(|event| event == "pruning_applied"),
+        "runtime manual compaction must not emit removed prune/archive cleanup events"
+    );
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -1473,6 +1498,12 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
+    assert!(
+        messages.iter().any(|message| message
+            .content
+            .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)),
+        "runtime manual compaction should insert a Codex-style compacted summary"
+    );
     let tool_result = messages
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("call-compress"))
@@ -1483,6 +1514,118 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
     assert_eq!(tool_result_json["ok"], true);
     assert_eq!(tool_result_json["applied"], true);
     assert_eq!(tool_result_json["summary_updated"], true);
+
+    server.abort();
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
+    init_test_tracing();
+
+    let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
+        compress_and_write_todos_response(),
+        super::helpers::unstructured_text_response("done"),
+    ]));
+    let app_state = setup_web_test_with_compaction_budget(zai_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260405;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+
+    seed_history(
+        session_manager.as_ref(),
+        &session_id,
+        user_id,
+        vec![
+            AgentMessage::user("Older context before tool-heavy compaction."),
+            AgentMessage::assistant("Older answer before tool-heavy compaction."),
+            AgentMessage::user("Recent request before multi-tool batch."),
+        ],
+    )
+    .await;
+
+    let task_id = create_task_http_with_body(
+        &client,
+        &base_url,
+        &session_id,
+        "Compress context, update todos, and finish.",
+    )
+    .await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(3),
+    )
+    .await;
+    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+
+    let events = fetch_task_events(&client, &base_url, &session_id, &task_id).await;
+    let event_names: Vec<String> = events
+        .iter()
+        .filter_map(|event| event["event_name"].as_str())
+        .map(str::to_string)
+        .collect();
+
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_started"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "compaction_completed"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "tool_call:compress"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "tool_result:compress"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "tool_call:write_todos"));
+    assert!(event_names
+        .iter()
+        .any(|event| event == "tool_result:write_todos"));
+    assert!(
+        !event_names.iter().any(|event| event == "pruning_applied"),
+        "runtime compaction must not emit removed prune/archive cleanup events"
+    );
+
+    let sid = derive_session_id(&session_id, user_id);
+    let executor_arc = session_manager
+        .session_registry()
+        .get(&sid)
+        .await
+        .expect("session should exist in registry");
+    let executor = executor_arc.read().await;
+    let messages = executor.session().memory.get_messages();
+
+    assert!(
+        messages.iter().any(|message| message
+            .content
+            .starts_with(oxide_agent_core::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)),
+        "runtime compaction should insert a Codex-style compacted summary"
+    );
+    assert!(messages.iter().any(|message| {
+        message.tool_name.as_deref() == Some("compress")
+            && serde_json::from_str::<serde_json::Value>(&message.content)
+                .ok()
+                .is_some_and(|value| value["ok"] == true && value["applied"] == true)
+    }));
+    assert!(messages
+        .iter()
+        .any(|message| message.tool_name.as_deref() == Some("write_todos")));
+
+    let (_validated, repair_outcome) =
+        oxide_agent_core::agent::recovery::repair_agent_message_history_runtime(messages);
+    assert!(
+        !repair_outcome.applied,
+        "tool-heavy compaction history should not require repair"
+    );
+    assert_eq!(executor.session().memory.todos.completed_count(), 1);
 
     server.abort();
 }

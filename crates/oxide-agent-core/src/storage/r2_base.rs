@@ -6,12 +6,11 @@ use super::{
     telemetry::StorageOperation,
     utils::{
         current_timestamp_unix_secs, is_precondition_failed_put_error,
-        should_retry_control_plane_rmw, CONTROL_PLANE_RMW_MAX_RETRIES,
+        should_retry_control_plane_rmw, ControlPlaneLocks, CONTROL_PLANE_RMW_MAX_RETRIES,
         CONTROL_PLANE_RMW_RETRY_BACKOFF_MS,
     },
-    StorageError, TopicAgentsMdRecord, TopicContextRecord,
+    R2StorageConfig, StorageError, TopicAgentsMdRecord, TopicContextRecord,
 };
-use crate::config::AgentSettings;
 use crate::storage::StorageProvider;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::error::SdkError;
@@ -19,36 +18,10 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use aws_types::region::Region;
 use moka::future::Cache;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::time::sleep;
 use tracing::warn;
-
-/// Process-local per-key lock registry for control-plane RMW operations.
-///
-/// Limitation: this lock only serializes operations inside a single process.
-/// It does not provide cross-process or cross-instance mutual exclusion.
-#[derive(Default)]
-pub(super) struct ControlPlaneLocks {
-    locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
-}
-
-impl ControlPlaneLocks {
-    pub(super) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(super) async fn acquire(&self, key: String) -> OwnedMutexGuard<()> {
-        let lock = {
-            let mut locks = self.locks.lock().await;
-            Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
-        };
-
-        lock.lock_owned().await
-    }
-}
 
 #[derive(Clone, Copy)]
 pub(super) enum TopicPromptStoreKind {
@@ -71,34 +44,23 @@ impl R2Storage {
     /// # Errors
     ///
     /// Returns an error if R2 configuration is missing.
-    pub async fn new(settings: &AgentSettings) -> Result<Self, StorageError> {
-        let endpoint_url = settings
-            .r2_endpoint_url
-            .as_ref()
-            .ok_or_else(|| StorageError::Config("R2_ENDPOINT_URL is missing".into()))?;
-        let access_key = settings
-            .r2_access_key_id
-            .as_ref()
-            .ok_or_else(|| StorageError::Config("R2_ACCESS_KEY_ID is missing".into()))?;
-        let secret_key = settings
-            .r2_secret_access_key
-            .as_ref()
-            .ok_or_else(|| StorageError::Config("R2_SECRET_ACCESS_KEY is missing".into()))?;
-        let bucket = settings
-            .r2_bucket_name
-            .as_ref()
-            .ok_or_else(|| StorageError::Config("R2_BUCKET_NAME is missing".into()))?;
-
-        let credentials = Credentials::new(access_key, secret_key, None, None, "r2-storage");
+    pub async fn new(config: &R2StorageConfig) -> Result<Self, StorageError> {
+        let credentials = Credentials::new(
+            config.access_key_id.clone(),
+            config.secret_access_key.clone(),
+            None,
+            None,
+            "r2-storage",
+        );
 
         let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
-            .region(Region::new(settings.r2_region.clone()))
+            .region(Region::new(config.region.clone()))
             .load()
             .await;
 
         let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
-            .endpoint_url(endpoint_url)
+            .endpoint_url(config.endpoint_url.clone())
             .force_path_style(true)
             .build();
 
@@ -112,7 +74,7 @@ impl R2Storage {
 
         Ok(Self {
             client,
-            bucket: bucket.clone(),
+            bucket: config.bucket_name.clone(),
             cache,
             control_plane_locks: ControlPlaneLocks::new(),
             telemetry: Default::default(),
@@ -297,7 +259,7 @@ impl R2Storage {
             Err(e) => {
                 self.telemetry
                     .record_operation(StorageOperation::Get, key, "error");
-                Err(StorageError::S3Get(Box::new(e)))
+                Err(StorageError::S3Get(e.to_string()))
             }
         }
     }
@@ -354,7 +316,7 @@ impl R2Storage {
             Err(e) => {
                 self.telemetry
                     .record_operation(StorageOperation::Get, key, "error");
-                Err(StorageError::S3Get(Box::new(e)))
+                Err(StorageError::S3Get(e.to_string()))
             }
         }
     }
@@ -399,7 +361,7 @@ impl R2Storage {
             Err(e) => {
                 self.telemetry
                     .record_operation(StorageOperation::Get, key, "error");
-                Err(StorageError::S3Get(Box::new(e)))
+                Err(StorageError::S3Get(e.to_string()))
             }
         }
     }
@@ -552,51 +514,6 @@ impl R2Storage {
         }
 
         Ok(records)
-    }
-
-    pub(super) async fn list_keys_under_prefix(
-        &self,
-        prefix: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        let mut continuation_token: Option<String> = None;
-        let mut keys = Vec::new();
-
-        loop {
-            let response = match self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(prefix)
-                .set_continuation_token(continuation_token.clone())
-                .send()
-                .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    self.telemetry
-                        .record_operation(StorageOperation::List, prefix, "error");
-                    return Err(StorageError::S3Put(error.to_string()));
-                }
-            };
-
-            self.telemetry
-                .record_operation(StorageOperation::List, prefix, "ok");
-
-            for object in response.contents() {
-                let Some(key) = object.key() else {
-                    continue;
-                };
-                keys.push(key.to_string());
-            }
-
-            if !response.is_truncated().unwrap_or(false) {
-                break;
-            }
-
-            continuation_token = response.next_continuation_token().map(str::to_string);
-        }
-
-        Ok(keys)
     }
 
     pub(super) async fn mutate_reminder_job<F>(

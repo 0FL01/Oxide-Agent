@@ -19,40 +19,34 @@ pub mod hooks;
 pub mod identity;
 /// Memory management for agent conversation history
 pub mod memory;
+/// Task-local memory behavior signals for wiki updates.
+pub mod memory_behavior;
 /// Preprocessor for different input types (voice, photo, etc)
 pub mod preprocessor;
 /// Execution profile parsing and policy helpers
 pub mod profile;
 /// Prompt composition for system prompts
 pub mod prompt;
-/// Tool provider trait
-pub mod provider;
 /// Built-in tool providers (Sandbox, Tavily, Todos)
 pub mod providers;
 /// Recovery module for malformed LLM responses
 pub mod recovery;
-/// Registry for managing available tools
-pub mod registry;
 /// Core agent runner (execution loop)
 pub mod runner;
 /// Agent session management
 pub mod session;
-/// Skill system for modular prompts
-pub mod skills;
 /// Structured output parsing and validation
 pub mod structured_output;
-/// Tool execution bridge with timeout and cancellation
-pub mod tool_bridge;
-/// Task-local tool execution runtime metadata
-pub(crate) mod tool_runtime;
+/// Task-local active model route metadata for tool providers.
+#[cfg(feature = "tool-browser-use")]
+pub(crate) mod tool_model_route;
+/// Async parallel tool runtime foundations.
+pub mod tool_runtime;
+/// Durable LLM Wiki memory primitives.
+pub mod wiki_memory;
 
 /// Agent thought inference from tool calls
 pub mod thoughts;
-
-/// Narrator for human-readable status updates
-pub mod narrator;
-
-pub(crate) mod persistent_memory;
 
 /// Loop detection subsystem
 pub mod loop_detection;
@@ -61,15 +55,11 @@ pub mod loop_detection;
 pub mod progress;
 
 pub use compaction::{
-    classify_hot_memory, estimate_request_budget, externalize_hot_memory,
-    persist_compacted_history_chunk, prune_hot_memory, rebuild_hot_context, AgentMessageKind,
-    ArchiveChunk, ArchivePersistenceOutcome, ArchiveRecord, ArchiveRef, ArchiveSink,
-    BudgetEstimate, BudgetState, ClassifiedMemoryEntry, CompactionClassSummary, CompactionOutcome,
-    CompactionPolicy, CompactionRequest, CompactionRetention, CompactionScope, CompactionService,
-    CompactionSnapshot, CompactionSummarizer, CompactionSummarizerConfig, CompactionSummary,
-    CompactionTrigger, ExternalizationOutcome, ExternalizedPayloadRecord, HotMemoryBudget,
-    NoopArchiveSink, NoopPayloadSink, PayloadSink, PruneOutcome, RebuildOutcome, RecentRawWindow,
-    SummaryGenerationOutcome,
+    AgentMessageKind, ArchiveRef, BudgetEstimate, BudgetState, CompactRequestContext,
+    CompactRunOutcome, CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest,
+    CompactSummaryResult, CompactedSummaryMetadata, CompactionBackend, CompactionController,
+    CompactionControllerError, CompactionPhase, CompactionReason, CompactionTrigger,
+    HotMemoryBudget, LocalLlmSummary,
 };
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};
@@ -77,7 +67,9 @@ pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry,
 pub use identity::SessionId;
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::{AgentMemory, ExternalizedPayload, PrunedArtifact};
-pub use persistent_memory::{connect_postgres_memory_store, PersistentMemoryStore};
+pub use memory_behavior::{
+    MemoryBehaviorRuntime, ToolDerivedMemoryDraft, ToolDerivedMemoryKind, TopicMemoryPolicy,
+};
 pub use profile::{
     dm_default_blocked_tools, dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
     topic_agent_all_hooks, topic_agent_default_blocked_tools, topic_agent_manageable_hooks,
@@ -85,14 +77,12 @@ pub use profile::{
     ToolAccessPolicy,
 };
 pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
-pub use provider::ToolProvider;
 pub use providers::{SshApprovalGrant, SshApprovalRequestView};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
-pub use registry::ToolRegistry;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{
-    AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingSshReplay,
-    PendingUserInput, RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
+    AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingUserInput,
+    RuntimeContextInbox, RuntimeContextInjection, UserInputKind,
 };
-pub use skills::SkillRegistry;
+pub use wiki_memory::WikiStore;

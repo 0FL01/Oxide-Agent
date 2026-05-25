@@ -68,13 +68,6 @@ class Settings:
             "BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS", 750
         )
     )
-    llm_provider: str = field(
-        default_factory=lambda: os.getenv("BROWSER_USE_BRIDGE_LLM_PROVIDER", "").strip()
-    )
-    llm_model: str | None = field(
-        default_factory=lambda: os.getenv("BROWSER_USE_BRIDGE_LLM_MODEL")
-    )
-
 
 # Global settings instance
 settings = Settings()

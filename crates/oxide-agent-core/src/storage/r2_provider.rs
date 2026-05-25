@@ -9,7 +9,6 @@ use super::{
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
-use oxide_agent_memory::{EpisodeRecord, MemoryRecord, SessionStateRecord, ThreadRecord};
 use tracing::{error, info};
 
 #[async_trait]
@@ -294,277 +293,27 @@ impl StorageProvider for R2Storage {
         .await
     }
 
-    async fn upsert_memory_thread(
-        &self,
-        record: ThreadRecord,
-    ) -> Result<ThreadRecord, StorageError> {
-        with_storage_reason(
-            "upsert_memory_thread",
-            self.upsert_memory_thread_inner(record),
-        )
-        .await
-    }
-
-    async fn create_memory_episode(
-        &self,
-        record: EpisodeRecord,
-    ) -> Result<EpisodeRecord, StorageError> {
-        with_storage_reason(
-            "create_memory_episode",
-            self.create_memory_episode_inner(record),
-        )
-        .await
-    }
-
-    async fn create_memory_record(
-        &self,
-        record: MemoryRecord,
-    ) -> Result<MemoryRecord, StorageError> {
-        with_storage_reason(
-            "create_memory_record",
-            self.create_memory_record_inner(record),
-        )
-        .await
-    }
-
-    async fn upsert_memory_record(
-        &self,
-        record: MemoryRecord,
-    ) -> Result<MemoryRecord, StorageError> {
-        with_storage_reason(
-            "upsert_memory_record",
-            self.upsert_memory_record_inner(record),
-        )
-        .await
-    }
-
-    async fn link_memory_episode_artifact(
-        &self,
-        episode_id: String,
-        artifact: oxide_agent_memory::ArtifactRef,
-    ) -> Result<Option<EpisodeRecord>, StorageError> {
-        with_storage_reason(
-            "link_memory_episode_artifact",
-            self.link_memory_episode_artifact_inner(episode_id, artifact),
-        )
-        .await
-    }
-
-    async fn upsert_memory_session_state(
-        &self,
-        record: SessionStateRecord,
-    ) -> Result<SessionStateRecord, StorageError> {
-        with_storage_reason(
-            "upsert_memory_session_state",
-            self.upsert_memory_session_state_inner(record),
-        )
-        .await
-    }
-
-    async fn get_memory_thread(
-        &self,
-        thread_id: String,
-    ) -> Result<Option<ThreadRecord>, StorageError> {
-        with_storage_reason("get_memory_thread", self.get_memory_thread_inner(thread_id)).await
-    }
-
-    async fn get_memory_episode(
-        &self,
-        episode_id: String,
-    ) -> Result<Option<EpisodeRecord>, StorageError> {
-        with_storage_reason(
-            "get_memory_episode",
-            self.get_memory_episode_inner(episode_id),
-        )
-        .await
-    }
-
-    async fn list_memory_episodes_for_thread(
-        &self,
-        thread_id: String,
-        filter: oxide_agent_memory::EpisodeListFilter,
-    ) -> Result<Vec<EpisodeRecord>, StorageError> {
-        with_storage_reason(
-            "list_memory_episodes_for_thread",
-            self.list_memory_episodes_for_thread_inner(thread_id, filter),
-        )
-        .await
-    }
-
-    async fn get_memory_record(
-        &self,
-        memory_id: String,
-    ) -> Result<Option<MemoryRecord>, StorageError> {
-        with_storage_reason("get_memory_record", self.get_memory_record_inner(memory_id)).await
-    }
-
-    async fn delete_memory_record(
-        &self,
-        memory_id: String,
-    ) -> Result<Option<MemoryRecord>, StorageError> {
-        with_storage_reason(
-            "delete_memory_record",
-            self.delete_memory_record_inner(memory_id),
-        )
-        .await
-    }
-
-    async fn list_memory_records(
-        &self,
-        context_key: String,
-        filter: oxide_agent_memory::MemoryListFilter,
-    ) -> Result<Vec<MemoryRecord>, StorageError> {
-        with_storage_reason(
-            "list_memory_records",
-            self.list_memory_records_inner(context_key, filter),
-        )
-        .await
-    }
-
-    async fn get_memory_session_state(
-        &self,
-        session_id: String,
-    ) -> Result<Option<SessionStateRecord>, StorageError> {
-        with_storage_reason(
-            "get_memory_session_state",
-            self.get_memory_session_state_inner(session_id),
-        )
-        .await
-    }
-
-    async fn list_memory_session_states(
-        &self,
-        filter: oxide_agent_memory::SessionStateListFilter,
-    ) -> Result<Vec<SessionStateRecord>, StorageError> {
-        with_storage_reason(
-            "list_memory_session_states",
-            self.list_memory_session_states_inner(filter),
-        )
-        .await
-    }
-
-    async fn search_memory_episodes_lexical(
-        &self,
-        query: String,
-        filter: oxide_agent_memory::EpisodeSearchFilter,
-    ) -> Result<Vec<oxide_agent_memory::EpisodeSearchHit>, StorageError> {
-        with_storage_reason(
-            "search_memory_episodes_lexical",
-            self.search_memory_episodes_lexical_inner(query, filter),
-        )
-        .await
-    }
-
-    async fn search_memory_records_lexical(
-        &self,
-        query: String,
-        filter: oxide_agent_memory::MemorySearchFilter,
-    ) -> Result<Vec<oxide_agent_memory::MemorySearchHit>, StorageError> {
-        with_storage_reason(
-            "search_memory_records_lexical",
-            self.search_memory_records_lexical_inner(query, filter),
-        )
-        .await
-    }
-
-    async fn get_memory_embedding(
-        &self,
-        owner_type: oxide_agent_memory::EmbeddingOwnerType,
-        owner_id: String,
-    ) -> Result<Option<oxide_agent_memory::EmbeddingRecord>, StorageError> {
-        with_storage_reason(
-            "get_memory_embedding",
-            self.get_memory_embedding_inner(owner_type, owner_id),
-        )
-        .await
-    }
-
-    async fn upsert_memory_embedding_pending(
-        &self,
-        update: oxide_agent_memory::EmbeddingPendingUpdate,
-    ) -> Result<oxide_agent_memory::EmbeddingRecord, StorageError> {
-        with_storage_reason(
-            "upsert_memory_embedding_pending",
-            self.upsert_memory_embedding_pending_inner(update),
-        )
-        .await
-    }
-
-    async fn upsert_memory_embedding_ready(
-        &self,
-        update: oxide_agent_memory::EmbeddingReadyUpdate,
-    ) -> Result<oxide_agent_memory::EmbeddingRecord, StorageError> {
-        with_storage_reason(
-            "upsert_memory_embedding_ready",
-            self.upsert_memory_embedding_ready_inner(update),
-        )
-        .await
-    }
-
-    async fn upsert_memory_embedding_failure(
-        &self,
-        update: oxide_agent_memory::EmbeddingFailureUpdate,
-    ) -> Result<oxide_agent_memory::EmbeddingRecord, StorageError> {
-        with_storage_reason(
-            "upsert_memory_embedding_failure",
-            self.upsert_memory_embedding_failure_inner(update),
-        )
-        .await
-    }
-
-    async fn list_memory_episode_embedding_backfill_candidates(
-        &self,
-        request: oxide_agent_memory::EmbeddingBackfillRequest,
-    ) -> Result<Vec<oxide_agent_memory::EpisodeEmbeddingCandidate>, StorageError> {
-        with_storage_reason(
-            "list_memory_episode_embedding_backfill_candidates",
-            self.list_memory_episode_embedding_backfill_candidates_inner(request),
-        )
-        .await
-    }
-
-    async fn list_memory_record_embedding_backfill_candidates(
-        &self,
-        request: oxide_agent_memory::EmbeddingBackfillRequest,
-    ) -> Result<Vec<oxide_agent_memory::MemoryEmbeddingCandidate>, StorageError> {
-        with_storage_reason(
-            "list_memory_record_embedding_backfill_candidates",
-            self.list_memory_record_embedding_backfill_candidates_inner(request),
-        )
-        .await
-    }
-
-    async fn search_memory_episodes_vector(
-        &self,
-        query_embedding: Vec<f32>,
-        model_id: String,
-        filter: oxide_agent_memory::EpisodeSearchFilter,
-    ) -> Result<Vec<oxide_agent_memory::EpisodeSearchHit>, StorageError> {
-        with_storage_reason(
-            "search_memory_episodes_vector",
-            self.search_memory_episodes_vector_inner(query_embedding, model_id, filter),
-        )
-        .await
-    }
-
-    async fn search_memory_records_vector(
-        &self,
-        query_embedding: Vec<f32>,
-        model_id: String,
-        filter: oxide_agent_memory::MemorySearchFilter,
-    ) -> Result<Vec<oxide_agent_memory::MemorySearchHit>, StorageError> {
-        with_storage_reason(
-            "search_memory_records_vector",
-            self.search_memory_records_vector_inner(query_embedding, model_id, filter),
-        )
-        .await
-    }
-
     async fn load_text_artifact(
         &self,
         storage_key: String,
     ) -> Result<Option<String>, StorageError> {
         with_storage_reason("load_text_artifact", self.load_text(&storage_key)).await
+    }
+
+    async fn load_wiki_text(&self, storage_key: String) -> Result<Option<String>, StorageError> {
+        with_storage_reason("load_wiki_text", self.load_text(&storage_key)).await
+    }
+
+    async fn save_wiki_text(
+        &self,
+        storage_key: String,
+        content: String,
+    ) -> Result<(), StorageError> {
+        with_storage_reason("save_wiki_text", self.save_text(&storage_key, &content)).await
+    }
+
+    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
+        with_storage_reason("delete_wiki_text", self.delete_object(&storage_key)).await
     }
 
     /// Clear all context (history and memory) for a user

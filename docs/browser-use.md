@@ -1,300 +1,37 @@
 # Browser Use Operations
 
-> **STATUS: DISABLED**
->
-> Browser Use отключён. Причина: требуется качественная vision-агентная модель за вменяемую цену за токен.
-> Код и bridge-сервис сохранены. Для включения нужно задать `BROWSER_USE_URL` в конфиге
-> (env var `BROWSER_USE_ENABLED` больше не поддерживается).
+Status: disabled.
 
-Операторский runbook для self-hosted интеграции Browser Use в Oxide Agent.
+Browser Use is intentionally disabled until a cost-effective, high-quality vision-agent model is available.
 
-Следующий архитектурный этап зафиксирован отдельно в [Browser Use Stage A](./browser-use-stage-a.md): там описан переход от bridge-side LLM env к inheritance route из Oxide Agent для `MiniMax`, `ZAI` и других основных provider-ов.
+The implementation is kept in the repository as dormant code. Do not treat old rollout/stage notes as current operational guidance.
 
-Следующий post-v1 decision slice зафиксирован в [Browser Use Post-v1 Decisions](./browser-use-post-v1.md): low-level browser surface отложен, а следующим implementation priority выбран topic-scoped persistent profile reuse.
+## Current breadcrumb
 
-## Что уже входит в rollout
+- Bridge code remains under `services/browser_use_bridge/`.
+- Rust provider code remains behind the Browser Use integration paths in `oxide-agent-core`.
+- Runtime enablement is by setting `BROWSER_USE_URL` to a non-empty bridge URL.
+- `BROWSER_USE_ENABLED` is not a supported enable switch.
+- Keep topic/context isolation, `navigation_only` guardrails, and runtime liveness/reconnect behavior when touching the bridge.
 
-- `browser_use` sidecar в `docker-compose.yml`
-- `browser_use_bridge` HTTP service с endpoint-ами `GET /health`, `POST /sessions/run`, `GET /sessions/{id}`, `DELETE /sessions/{id}`
-- Rust provider в `oxide-agent-core` с tool-ами:
-  - `browser_use_run_task`
-  - `browser_use_get_session`
-  - `browser_use_close_session`
-  - `browser_use_extract_content`
-  - `browser_use_screenshot`
-- регистрация tools в main agent, sub-agent и manager control plane
-- manager alias-ы `browser` и `browser_use` для topic-level enable/disable
+## What was removed from this runbook
 
-## Runtime Topology
+The previous file contained active-looking rollout tails, stage links, and post-v1 notes for Browser Use route inheritance, profile reuse, readiness retry, keep-alive, and low-level browser surface decisions. Those notes were stale while Browser Use is disabled, and two referenced stage documents were not present in the repo.
 
-- `oxide_agent` обращается к `browser_use` по `BROWSER_USE_URL`
-- `browser_use` публикуется только на loopback `127.0.0.1:8002`
-- browser state и session metadata сохраняются в volume `browser-use-data`
-- reusable profile metadata и browser state теперь хранятся отдельно под `profiles/`, а не смешиваются с `sessions/` и `artifacts/`
-- bridge уже поддерживает request-level `browser_llm_config` для нормализованного выбора LLM
-- legacy env path через `BROWSER_USE_BRIDGE_LLM_PROVIDER` остается временным fallback
-- Stage C уже прокидывает active Oxide route в bridge `browser_llm_config` для совместимых provider-ов
-- Stage D передает inherited-route API key server-to-server через внутренний header, а не через request body
-- Stage E вводит capability policy для text-only vs vision-capable routes
-- Stage F делает route inheritance основным operator path в дефолтном `docker-compose` и добавляет runtime observability по `llm_source` / `vision_mode`
-- Stage 1 reuse slice добавляет optional `reuse_profile` / `profile_id` в `browser_use_run_task` и отдельные profile records в bridge storage
-- Stage 2 reuse wiring прокидывает hidden `profile_scope` из реального `context_key` и вводит quota на retained profiles per scope
-- Stage 3 lifecycle cleanup теперь detaches reusable profiles на graceful shutdown bridge, auto-recovers orphaned `active` profiles после restart/crash и TTL-prune-ит старые idle/stale profiles до quota check
-- Stage 1 dedicated browser route добавляет отдельный Oxide-side override для Browser Use, чтобы browser automation можно было держать на `zai / GLM-4.6V`, даже если main/sub-agent идут по другому route
-- Stage 2 vision classification расширяет policy для `zai / GLM-4.6V` и добавляет распознавание русскоязычных UI/vision задач до запуска sidecar session
-- Stage 3 run-task steering усиливает guidance: screenshot/content-oriented задачи теперь подталкиваются к схеме `browser_use_run_task` для navigation only, затем `browser_use_screenshot` / `browser_use_extract_content` для финального артефакта
-- Stage 4 browser readiness hardening добавляет узкий retry на ранние transient browser/runtime ошибки вроде `CDP client not initialized` с пересозданием browser между попытками
-- Stage 5 verification закрепляет behavior тестами на retry budget exhaustion и health/env observability для readiness retry knobs
-- Next readiness warmup slice добавляет bridge-side preflight перед `Agent.run()`, чтобы freshly created browser runtime успевал подключиться до первого `navigate`, а ранний `CDP client not initialized` чаще лечился до запуска агентных шагов
-- Next post-run classification slice теперь различает successful history и internal failed history от `browser_use`: `Agent.run()` больше не считается успехом только потому, что не выбросил Python exception, а readiness-like failed history может получить bridge-side retry
-- Next navigation-only preset slice теперь добавляет bridge-side `Agent` preset для steering tasks: `enable_planning=false`, `use_judge=false`, `max_actions_per_step=1` и строгий `extend_system_message`, чтобы снизить planner overreach на screenshot/extract-oriented runs
-- Next execution-mode slice делает split явным: Rust provider шлет в bridge `execution_mode=autonomous|navigation_only`, а bridge возвращает выбранный режим в session metadata вместо неявной догадки только по steering wrapper
-- Next keep-alive slice включает upstream `keep_alive=True` для `navigation_only`, чтобы после `browser_use_run_task` живая browser session чаще доживала до follow-up `browser_use_screenshot` / `browser_use_extract_content`
-- Next keep-alive observability slice добавляет явные session fields `browser_keep_alive_requested` и `browser_keep_alive_effective`, чтобы было видно, просил ли bridge keep-alive и применился ли он на реальном browser runtime
-- P1 profile housekeeping fix сохраняет live `active` profiles во время orphan reconciliation, чтобы unrelated create/reuse/close operations не stale-или рабочие topic-scoped profiles
-- Next compatibility hardening для `zai/GLM-*` через `openai_compatible` включает softer structured-output preset в bridge (`dont_force_structured_output`, schema hints), чтобы снизить вероятность `AgentOutput` validation errors без смены API
-- Default compose route теперь фиксирует Browser Use на dedicated vision route `zai / GLM-4.6V` (если не задан override), чтобы screenshot/vision задачи не уходили на text-only inheritance route
-- post-v1 decision slice фиксирует, что low-level browser actions пока не выводятся в основной tool surface; следующий приоритет - controlled profile reuse
-- legacy env path остается fallback, когда route inheritance недоступен
+If Browser Use is revived, re-audit the code first and write a fresh enablement runbook from the current implementation.
 
-## Capability Matrix
+## Minimal enable checklist for a future revival
 
-- `gemini` route считается vision-capable
-- dedicated `zai` route с `GLM-4.6V` считается vision-capable для Browser Use
-- `openrouter` route считается vision-capable только для моделей, которые выглядят мультимодальными по model id, например `gemini`, `gpt-4o`, `claude-3`, `vision`, `vl`, `pixtral`
-- `minimax` и остальные `zai` route в текущем inheritance path считаются text-only route
-- text-only route допустимы для summary/extraction/browsing задач
-- для interactive UI задач Browser Use теперь возвращает warning о degraded mode
-- для задач, явно требующих visual grounding, Browser Use завершает tool вызов понятной ошибкой до запуска sidecar session
-- policy теперь учитывает и англоязычные, и русскоязычные формулировки вроде `click button` / `нажми кнопку` и `describe layout` / `опиши визуально`
-- если задача просит screenshot или raw page extraction, `browser_use_run_task` теперь дописывает bridge-side instruction не делать PDF/screenshot/extract в агентном шаге и возвращает follow-up hint с `session_id`
-- если такая steering-задача доходит до bridge, он теперь дополнительно запускает upstream `Agent` в более узком navigation-only preset, а не только надеется на prompt rewrite
-- для обычных run-task вызовов Rust provider теперь явно отправляет `execution_mode=autonomous`, а для steering-задач - `execution_mode=navigation_only`
-- для `navigation_only` bridge теперь дополнительно просит upstream browser runtime остаться живым после `Agent.run()`, тогда как explicit cleanup/retry paths по-прежнему делают hard shutdown
+1. Pick and validate a vision-capable model route.
+2. Start the bridge service and verify `GET /health`.
+3. Set `BROWSER_USE_URL` for Oxide Agent.
+4. Enable Browser Use only for the specific topic/profile that needs it.
+5. Run a smoke task that exercises navigation, screenshot/content extraction, and session cleanup.
+6. Confirm logs do not leak provider API keys or browser-session secrets.
 
-## Важные переменные окружения
+## Non-goals while disabled
 
-### В `oxide_agent`
-
-- `BROWSER_USE_URL=http://127.0.0.1:8002` — enables Browser Use when set and non-empty
-- `BROWSER_USE_TIMEOUT_SECS=300`
-- `BROWSER_USE_MAX_CONCURRENT=2`
-- `BROWSER_USE_MODEL_ID=GLM-4.6V` - dedicated Browser Use route (default in `docker-compose`)
-- `BROWSER_USE_MODEL_PROVIDER=zai` - dedicated Browser Use provider (default in `docker-compose`)
-
-### В `browser_use` sidecar
-
-Ниже перечислены fallback-переменные sidecar. Начиная со Stage C основной Rust provider уже сам прокидывает request-level `browser_llm_config` из активного Oxide route для `gemini`, `minimax`, `zai` и `openrouter`.
-
-Начиная со Stage 1 dedicated browser route Rust provider сначала смотрит на `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`, и только если они не заданы, откатывается к текущему active Oxide route.
-
-Начиная со Stage F дефолтный `docker-compose.yml` больше не прокидывает `BROWSER_USE_BRIDGE_LLM_PROVIDER` и `BROWSER_USE_BRIDGE_LLM_MODEL` в sidecar. Если legacy env path все еще нужен, его надо включать через compose override или отдельное runtime env для контейнера `browser_use`.
-
-- `BROWSER_USE_BRIDGE_HOST=0.0.0.0`
-- `BROWSER_USE_BRIDGE_PORT=8000`
-- `BROWSER_USE_BRIDGE_DATA_DIR=/data`
-- `BROWSER_USE_BRIDGE_DEFAULT_TIMEOUT_SECS=120`
-- `BROWSER_USE_BRIDGE_MAX_TIMEOUT_SECS=300`
-- `BROWSER_USE_BRIDGE_MAX_CONCURRENT_SESSIONS=2`
-- `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3`
-- `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=604800` - idle/stale profile TTL; `0` disables pruning
-- `BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=2` - retry count for narrow transient browser readiness failures
-- `BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750` - delay between readiness retries in milliseconds
-- `BROWSER_USE_BRIDGE_LLM_PROVIDER=google|anthropic|browser_use`
-- `BROWSER_USE_BRIDGE_LLM_MODEL=<optional-model-id>`
-
-Для inherited route отдельные sidecar env c ключами `MINIMAX_API_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY` больше не обязательны в дефолтном compose: Oxide Agent отправляет нужный key во внутреннем запросе к bridge через `X-Oxide-Browser-Llm-Api-Key`.
-
-### Upstream credentials
-
-Нужно передать API key для выбранного bridge LLM provider:
-
-- `GEMINI_API_KEY` для `BROWSER_USE_BRIDGE_LLM_PROVIDER=google`
-- `ANTHROPIC_API_KEY` для `BROWSER_USE_BRIDGE_LLM_PROVIDER=anthropic`
-- provider-specific key для `BROWSER_USE_BRIDGE_LLM_PROVIDER=browser_use`, если этот режим используется
-
-Если используется ручной request-level `browser_llm_config` с `api_key_ref=env:...`, соответствующий env должен существовать внутри контейнера `browser_use`.
-
-Минимально важные случаи:
-
-- `MINIMAX_API_KEY` в `oxide_agent` для inherited route `provider=minimax`
-- `ZAI_API_KEY` в `oxide_agent` для dedicated Browser Use route `provider=zai` или inherited route `provider=zai`
-- `OPENROUTER_API_KEY` в `oxide_agent` для inherited route `provider=openrouter`
-
-Если ключа нет, bridge поднимется, но `browser_use_run_task` будет завершаться ошибкой на этапе создания LLM.
-
-## Сборка и запуск
-
-После Stage 8 основной Docker image собирается с feature-флагом `oxide-agent-core/browser_use`, поэтому отдельная ручная сборка feature больше не нужна при запуске через основной `Dockerfile`.
-
-Стандартный запуск:
-
-```bash
-docker compose up --build -d browser_use oxide_agent
-```
-
-Проверка статуса:
-
-```bash
-docker compose ps browser_use oxide_agent
-curl -f http://127.0.0.1:8002/health
-```
-
-Ожидаемый healthy-ответ bridge:
-
-```json
-{
-  "status": "ok",
-  "browser_use_available": true,
-  "import_error": null,
-  "preferred_browser_llm_source": "request_browser_llm_config",
-  "legacy_env_fallback_configured": false
-}
-```
-
-Полезные поля в `/health`:
-
-- `preferred_browser_llm_source` показывает, что primary path идет через request-level `browser_llm_config`
-- `legacy_env_fallback_configured` показывает, включен ли старый env fallback на этом sidecar
-- `supported_inherited_route_providers` показывает, какие route provider-ы Rust provider умеет прокидывать автоматически
-- `supported_legacy_env_providers` показывает, какие bridge-local adapter-ы еще остаются для fallback-сценариев
-- `profile_idle_ttl_secs` показывает, через сколько bridge auto-prune-ит idle/stale profiles
-- `browser_ready_retries` и `browser_ready_retry_delay_ms` показывают активный Stage 4 retry policy для transient readiness failures
-- `browser_ready_retry_supported` показывает, что bridge умеет автоматически пересоздавать browser после раннего readiness failure
-- `execution_mode_split_supported` показывает, что bridge понимает явный `execution_mode` в `POST /sessions/run`
-- `navigation_only_keep_alive_supported` показывает, что `navigation_only` runs просят upstream держать browser runtime живым для follow-up tool-ов
-- `browser_runtime_observability_supported` показывает, что session responses публикуют runtime liveness/dead-reason поля
-- `browser_keep_alive_observability_supported` показывает, что session responses публикуют keep-alive requested/effective поля
-- `orphan_profile_recovery_supported` показывает, что bridge умеет self-heal-ить `active` profiles, оставшиеся после рестарта
-
-Полезные поля в `POST /sessions/run` и `GET /sessions/{id}`:
-
-- `execution_mode` показывает, был ли run запущен как `autonomous` или `navigation_only`
-- `browser_runtime_alive` показывает, был ли browser runtime жив на последней bridge-side проверке
-- `browser_runtime_last_check_at` показывает timestamp последней liveness проверки
-- `browser_runtime_dead_reason` показывает последнюю зафиксированную причину, почему runtime считается мертвым или закрытым
-- `browser_keep_alive_requested` показывает, просил ли bridge keep-alive для этой сессии (обычно `true` для `navigation_only`)
-- `browser_keep_alive_effective` показывает, применился ли keep-alive на фактическом browser object
-
-## Topic-Agent UX
-
-Browser Use не включается через alias `search`. Для него есть отдельная provider-group `browser_use`.
-
-В manager control plane можно включать Browser Use так:
-
-```json
-{
-  "topic_id": "topic-a",
-  "tools": ["browser"]
-}
-```
-
-или так:
-
-```json
-{
-  "topic_id": "topic-a",
-  "tools": ["browser_use"]
-}
-```
-
-Это раскрывается в:
-
-- `browser_use_run_task`
-- `browser_use_get_session`
-- `browser_use_close_session`
-- `browser_use_extract_content`
-- `browser_use_screenshot`
-
-Если нужен точечный контроль, можно включать и блокировать отдельные инструменты по именам.
-
-## Быстрые проверки после запуска
-
-1. Убедиться, что compose healthcheck зеленый для `browser_use`.
-2. Убедиться, что `BROWSER_USE_URL` задан и виден контейнеру `oxide_agent`.
-3. Для legacy env path убедиться, что bridge-side LLM provider и его API key переданы в контейнер `browser_use`.
-4. Для Stage C inheritance path убедиться, что активный route агента использует совместимый provider: `gemini`, `minimax`, `zai` или `openrouter`.
-5. Для inherited route убедиться, что нужный provider key задан в `oxide_agent`, а не только в `browser_use` sidecar.
-6. Если используется fallback/request-level path вручную, убедиться, что `browser_llm_config` содержит совместимый provider/model и корректный `api_key_ref`.
-7. Через manager `topic_agent_tools_get` проверить, что в `provider_statuses` появился `browser_use`.
-8. Выполнить smoke task через `browser_use_run_task` с простой страницей и коротким timeout.
-9. Если нужен reuse, запустить `browser_use_run_task` с `reuse_profile=true` и сохранить возвращенный `profile_id`.
-10. При reuse убедиться, что вызов идет из того же topic/context: Stage 2 теперь шьет hidden `profile_scope` из runtime context и не даст reuse-ить profile из другого topic.
-11. После restart bridge не очищать metadata вручную: Stage 3 сам переведет orphaned `active` profile в recoverable state при следующем reuse.
-12. В ответе `browser_use_run_task` или `GET /sessions/{id}` проверить поля `llm_source`, `llm_provider`, `llm_transport`, `vision_mode`, `profile_id`, `profile_scope`, `profile_status` и `profile_attached`, чтобы убедиться, что реально используется inherited route и при необходимости привязан reusable profile.
-13. Для Stage 4/5 readiness hardening убедиться, что `/health` возвращает ожидаемые `browser_ready_retries` и `browser_ready_retry_delay_ms` из текущего runtime env.
-14. При нестабильном старте browser runtime сначала проверить, что transient ошибки вроде `CDP client not initialized` не превышают retry budget; после исчерпания budget bridge должен завершать сессию в `failed`, а не зависать в повторных попытках.
-15. Для `navigation_only` run проверить, что follow-up `browser_use_screenshot` или `browser_use_extract_content` проходит без немедленного rerun, а `/health` содержит `navigation_only_keep_alive_supported=true`.
-
-## Типичные сбои
-
-### `/health` возвращает `503`
-
-Обычно это означает, что Python runtime sidecar не смог импортировать `browser_use` или его зависимости.
-
-Что проверить:
-
-- логи контейнера `browser_use`
-- успешность build-а image
-- наличие Chromium и Python dependencies в sidecar image
-
-### Tool не появляется у агента
-
-Что проверить:
-
-- контейнер `oxide_agent` пересобран после Stage 8
-- feature `oxide-agent-core/browser_use` включен в основном `Dockerfile`
-- `BROWSER_USE_URL` задан и непустой
-
-### `browser_use_run_task` падает сразу
-
-Частые причины:
-
-- активный inherited route использует пока неподдерживаемый provider, например `groq`, `mistral` или `nvidia`
-- для inherited route отсутствует нужный provider key в `oxide_agent`, поэтому Rust provider не может передать secret в bridge
-- inherited route text-only, а задача явно просит visual analysis, screenshot-like reasoning или оценку layout/colors
-- `profile_id` пытаются reuse-ить из другого topic/context, и bridge режет запрос по injected `profile_scope`
-- в текущем topic/context уже достигнут quota `BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE`, и bridge не создает новый retained profile
-- quota не освобождается так быстро, как ожидается: проверить `BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS` и помнить, что prune применяется к idle/stale profiles, а не к активно прикрепленным
-- не задан `BROWSER_USE_BRIDGE_LLM_PROVIDER` для legacy env path
-- не передан API key для выбранного provider
-- `browser_llm_config.api_key_ref` указывает на отсутствующий env
-- bridge не может создать совместимый Browser Use LLM wrapper для выбранного transport-а
-
-Если в ответе видно `llm_source=legacy_env`, хотя ожидался inheritance path, это операторский сигнал, что route context не был передан или запрос шел вне обычного agent execution path.
-
-После перехода на Stage A основным классом ошибок станет уже не отсутствие bridge env, а несовместимость inherited route или его credentials.
-
-### Session создается, но браузерные задачи нестабильны
-
-Что проверить:
-
-- хватает ли `shm_size` для Chromium
-- не слишком ли низкий `timeout_secs`
-- нет ли перегруза по `BROWSER_USE_MAX_CONCURRENT` или `BROWSER_USE_BRIDGE_MAX_CONCURRENT_SESSIONS`
-- не слишком ли агрессивно уменьшены `BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES` или `BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS`
-
-Bridge теперь сам делает узкий retry только для ранних transient readiness ошибок вроде `CDP client not initialized`; если ошибка повторяется или выглядит как обычный task/browser failure, сессия по-прежнему завершится `failed` без бесконечных повторов.
-
-Перед первым `Agent.run()` bridge теперь также делает короткий warmup preflight browser runtime. Это снижает вероятность раннего падения initial action на freshly created browser, но не заменяет post-run failure classification и не лечит site-specific anti-bot кейсы.
-
-Если upstream `browser_use` вернул history object без Python exception, но сам остановился на internal failure (`is_done=false` / failed history), bridge теперь помечает такой run как `failed` вместо ложного `completed`. Для readiness-like history ошибок (`CDP client not initialized` и рядом) bridge может сделать повторную попытку так же, как и для exception-based startup race.
-
-Если upstream `browser_use` успел reset-нуть runtime после `browser_use_run_task`, follow-up вызовы теперь завершаются terminal ошибкой `browser_session_not_alive` вместо generic `500`, и Oxide больше не ретраит такой случай как transient.
-
-Для `zai/GLM-*` через `openai_compatible` bridge теперь создает `ChatOpenAI` с relaxed schema preset, чтобы уменьшить structured-output/schema mismatch на agentic шагах. Это не гарантирует идеальное поведение planner-а, но убирает часть ложных `AgentOutput` validation errors без смены tool surface.
-
-## Рекомендуемый v1 usage pattern
-
-- использовать Browser Use для задач уровня “открой сайт, пройди пару шагов, собери summary”
-- если конечная цель - PNG или raw page text/HTML, использовать `browser_use_run_task` только чтобы довести сессию до нужного состояния, а затем вызывать `browser_use_screenshot` или `browser_use_extract_content`
-- `browser_use_run_task` теперь сам подсказывает follow-up tool, когда видит screenshot/content-oriented задачу, но если bridge уже сообщает `browser_runtime_alive=false`, вместо этого вернет note о необходимости заново запустить `browser_use_run_task`
-- для steering-задач bridge теперь дополнительно сужает upstream `Agent`: отключает planning/judge, ограничивает шаг до одного browser action и усиливает system-level navigation-only contract
-- split теперь явный: bridge и session metadata хранят `execution_mode`, поэтому navigation-only vs autonomous run видно не только по тексту task wrapper
-- если нужен controlled reuse login/cookie state между задачами, сначала вызвать `browser_use_run_task` с `reuse_profile=true`, а затем переиспользовать возвращенный `profile_id` в следующем `browser_use_run_task`
-- не расширять без необходимости tool surface до raw click/type/eval action-ов; это отложено отдельным post-v1 decision slice
-- не рассматривать его как замену `searxng` или `crawl4ai`
-- закрывать долгоживущие сессии через `browser_use_close_session`, если reuse больше не нужен
-- не держать бесконечно много idle profiles в одном topic: Stage 3 чистит их по TTL, поэтому для реально долгого reuse TTL нужно держать осознанно настроенным
-- включать Browser Use topic-by-topic, а не глобально для всех профилей без необходимости
-- рассчитывать на то, что persistent profile reuse теперь topic/context-scoped: reuse одного `profile_id` из другого topic будет отвергнут bridge-ом
+- Do not expand the public browser tool surface.
+- Do not add new Browser Use rollout stages.
+- Do not enable Browser Use globally by default.
+- Do not optimize the bridge until the model/cost constraint is resolved.

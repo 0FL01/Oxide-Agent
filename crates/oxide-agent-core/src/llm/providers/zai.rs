@@ -1,5 +1,7 @@
+pub(crate) mod module;
 mod sdk;
 
+pub(crate) use module::ZaiProviderModule;
 pub use sdk::parse_zai_flush_time;
 
 use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
@@ -54,7 +56,7 @@ impl LlmProvider for ZaiProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown("ZAI_FALLBACK_TO_GEMINI".to_string()))
+        Err(LlmError::Unknown("ZAI_FALLBACK_TO_MEDIA".to_string()))
     }
 
     async fn analyze_image(

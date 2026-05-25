@@ -44,7 +44,9 @@ const TOPIC_AGENT_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
 ];
 
 const MANAGER_DEFAULT_BLOCKED_TOOLS: &[&str] = &[
-    "delegate_to_sub_agent",
+    "spawn_sub_agents",
+    "wait_sub_agents",
+    "cancel_sub_agents",
     "ytdlp_get_video_metadata",
     "ytdlp_download_transcript",
     "ytdlp_search_videos",
@@ -95,8 +97,6 @@ const DM_ALLOWED_TOOLS_ENV: &str = "DM_ALLOWED_TOOLS";
 const DM_BLOCKED_TOOLS_ENV: &str = "DM_BLOCKED_TOOLS";
 
 const TOPIC_AGENT_MANAGEABLE_HOOKS: &[&str] = &[
-    "workload_distributor",
-    "delegation_guard",
     "search_budget",
     "timeout_report",
     "retrieval_advisor",
@@ -471,17 +471,16 @@ mod tests {
         let parsed = parse_agent_profile(&json!({
             "systemPrompt": "  you are infra  ",
             "allowedTools": ["todos_write", "execute_command", "execute_command"],
-            "blockedTools": ["delegate_to_sub_agent"],
-            "enabledHooks": ["workload_distributor", "search_budget"],
-            "disabledHooks": ["delegation_guard"]
+            "blockedTools": ["spawn_sub_agents"],
+            "enabledHooks": ["search_budget"],
+            "disabledHooks": ["timeout_report"]
         }));
 
         assert_eq!(parsed.prompt_instructions.as_deref(), Some("you are infra"));
         assert!(parsed.tool_policy.allows("todos_write"));
-        assert!(!parsed.tool_policy.allows("delegate_to_sub_agent"));
+        assert!(!parsed.tool_policy.allows("spawn_sub_agents"));
         assert!(!parsed.tool_policy.allows("unknown_tool"));
-        assert!(parsed.hook_policy.allows("workload_distributor"));
-        assert!(!parsed.hook_policy.allows("delegation_guard"));
+        assert!(parsed.hook_policy.allows("search_budget"));
         assert!(!parsed.hook_policy.allows("timeout_report"));
     }
 
@@ -521,7 +520,7 @@ mod tests {
     fn additional_blocked_tools_override_existing_policy() {
         let policy = ToolAccessPolicy::new(
             Some(HashSet::from([
-                "delegate_to_sub_agent".to_string(),
+                "spawn_sub_agents".to_string(),
                 "execute_command".to_string(),
             ])),
             HashSet::new(),
@@ -529,7 +528,7 @@ mod tests {
         .with_additional_blocked_tools(manager_default_blocked_tools());
 
         assert!(policy.allows("execute_command"));
-        assert!(!policy.allows("delegate_to_sub_agent"));
+        assert!(!policy.allows("spawn_sub_agents"));
     }
 
     #[test]
@@ -557,22 +556,22 @@ mod tests {
             blocked.len(),
             "All blocked tools should be from stack_logs/ytdlp/jira/mattermost categories"
         );
-        assert!(!blocked.iter().any(|tool| tool == "delegate_to_sub_agent"));
+        assert!(!blocked.iter().any(|tool| tool == "spawn_sub_agents"));
     }
 
     #[test]
     fn additional_disabled_hooks_override_existing_policy() {
         let policy = HookAccessPolicy::new(
             Some(HashSet::from([
-                "delegation_guard".to_string(),
-                "workload_distributor".to_string(),
+                "search_budget".to_string(),
+                "timeout_report".to_string(),
             ])),
             HashSet::new(),
         )
-        .with_additional_disabled_hooks(["delegation_guard"]);
+        .with_additional_disabled_hooks(["search_budget"]);
 
-        assert!(policy.allows("workload_distributor"));
-        assert!(!policy.allows("delegation_guard"));
+        assert!(policy.allows("timeout_report"));
+        assert!(!policy.allows("search_budget"));
     }
 
     #[test]
@@ -580,7 +579,6 @@ mod tests {
         let manageable = topic_agent_manageable_hooks();
         let protected = topic_agent_protected_hooks();
 
-        assert!(manageable.iter().any(|hook| hook == "workload_distributor"));
         assert!(manageable.iter().any(|hook| hook == "timeout_report"));
         assert!(protected.iter().any(|hook| hook == "completion_check"));
         assert!(protected.iter().any(|hook| hook == "tool_access_policy"));
@@ -642,7 +640,7 @@ mod tests {
 
         // Regular tools should still be allowed (unless blocked by default)
         assert!(policy.allows("todos_write"));
-        assert!(policy.allows("delegate_to_sub_agent"));
+        assert!(policy.allows("spawn_sub_agents"));
     }
 
     #[test]

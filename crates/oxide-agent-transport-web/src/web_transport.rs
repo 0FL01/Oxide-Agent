@@ -35,11 +35,10 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::Error(_) => "error".to_string(),
         AgentEvent::Reasoning { .. } => "reasoning".to_string(),
         AgentEvent::LoopDetected { .. } => "loop_detected".to_string(),
-        AgentEvent::Narrative { .. } => "narrative".to_string(),
-        AgentEvent::CompactionStarted { .. } => "compaction_started".to_string(),
-        AgentEvent::PruningApplied { .. } => "pruning_applied".to_string(),
-        AgentEvent::CompactionCompleted { .. } => "compaction_completed".to_string(),
-        AgentEvent::CompactionFailed { .. } => "compaction_failed".to_string(),
+        AgentEvent::RuntimeCompactionStarted { .. } => "compaction_started".to_string(),
+        AgentEvent::RuntimeCompactionCompleted { .. } => "compaction_completed".to_string(),
+        AgentEvent::RuntimeCompactionFailed { .. } => "compaction_failed".to_string(),
+        AgentEvent::RuntimeCompactionSkipped { .. } => "compaction_skipped".to_string(),
         AgentEvent::RepeatedCompactionWarning { .. } => "repeated_compaction_warning".to_string(),
         AgentEvent::HistoryRepairApplied { .. } => "history_repair_applied".to_string(),
         AgentEvent::RateLimitRetrying { .. } => "rate_limit_retrying".to_string(),
@@ -319,5 +318,126 @@ pub async fn collect_events(
         state,
         timestamps,
         tool_calls,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{collect_events, event_variant_name, TaskEventLog};
+    use oxide_agent_core::agent::compaction::{
+        CompactionBackend, CompactionPhase, CompactionReason,
+    };
+    use oxide_agent_core::agent::progress::AgentEvent;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn runtime_compaction_events_use_stable_web_event_names() {
+        assert_eq!(
+            event_variant_name(&AgentEvent::RuntimeCompactionStarted {
+                reason: CompactionReason::Manual,
+                phase: CompactionPhase::Manual,
+                backend: CompactionBackend::LocalLlmSummary,
+                provider: None,
+                route: None,
+                token_before: 1200,
+                history_items_before: 8,
+            }),
+            "compaction_started"
+        );
+        assert_eq!(
+            event_variant_name(&AgentEvent::RuntimeCompactionCompleted {
+                reason: CompactionReason::Manual,
+                phase: CompactionPhase::Manual,
+                backend: CompactionBackend::LocalLlmSummary,
+                provider: "mock".to_string(),
+                route: "compact".to_string(),
+                token_before: 1200,
+                token_after: 700,
+                history_items_before: 8,
+                history_items_after: 3,
+                generation: 1,
+                repair_applied: false,
+            }),
+            "compaction_completed"
+        );
+        assert_eq!(
+            event_variant_name(&AgentEvent::RuntimeCompactionFailed {
+                reason: CompactionReason::ContextLimit,
+                phase: CompactionPhase::MidTurn,
+                backend: CompactionBackend::LocalLlmSummary,
+                provider: Some("mock".to_string()),
+                route: Some("compact".to_string()),
+                error: "summary failed".to_string(),
+            }),
+            "compaction_failed"
+        );
+        assert_eq!(
+            event_variant_name(&AgentEvent::RuntimeCompactionSkipped {
+                reason: CompactionReason::PreTurn,
+                phase: CompactionPhase::PreSampling,
+                skipped_reason: "already within budget".to_string(),
+            }),
+            "compaction_skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_events_records_runtime_compaction_without_pruning_event() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::RuntimeCompactionStarted {
+            reason: CompactionReason::Manual,
+            phase: CompactionPhase::Manual,
+            backend: CompactionBackend::LocalLlmSummary,
+            provider: None,
+            route: None,
+            token_before: 1200,
+            history_items_before: 8,
+        })
+        .await
+        .expect("send runtime compaction start");
+        tx.send(AgentEvent::RuntimeCompactionCompleted {
+            reason: CompactionReason::Manual,
+            phase: CompactionPhase::Manual,
+            backend: CompactionBackend::LocalLlmSummary,
+            provider: "mock".to_string(),
+            route: "compact".to_string(),
+            token_before: 1200,
+            token_after: 700,
+            history_items_before: 8,
+            history_items_after: 3,
+            generation: 1,
+            repair_applied: false,
+        })
+        .await
+        .expect("send runtime compaction completion");
+        tx.send(AgentEvent::Finished)
+            .await
+            .expect("send finished event");
+        drop(tx);
+
+        let result = collect_events(event_log.clone(), rx).await;
+        let event_names: Vec<String> = event_log
+            .drain()
+            .await
+            .into_iter()
+            .map(|entry| entry.event_name)
+            .collect();
+
+        assert_eq!(
+            event_names,
+            vec![
+                "compaction_started".to_string(),
+                "compaction_completed".to_string(),
+                "finished".to_string(),
+            ]
+        );
+        assert!(!event_names.iter().any(|event| event == "pruning_applied"));
+        assert!(result
+            .state
+            .last_compaction_status
+            .as_deref()
+            .is_some_and(|status| status.contains("Compaction: compacted history")));
     }
 }

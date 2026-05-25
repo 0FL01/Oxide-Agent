@@ -20,9 +20,8 @@
 Следующие инструменты считаются поисковыми и учитываются в лимите:
 - `web_search`
 - `web_extract`
-- `deep_crawl`
+- `searxng_search`
 - `web_markdown`
-- `web_pdf`
 
 ## Логика работы
 
@@ -61,7 +60,7 @@ impl SearchBudgetHook {
     fn is_search_tool(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "web_search" | "web_extract" | "deep_crawl" | "web_markdown" | "web_pdf"
+            "web_search" | "web_extract" | "searxng_search" | "web_markdown"
         )
     }
 }
@@ -98,7 +97,7 @@ impl Hook for SearchBudgetHook {
 Вызовы:
 1. web_search → count=1 (≤10) → Continue
 2. web_extract → count=2 (≤10) → Continue
-3. deep_crawl → count=3 (≤10) → Continue
+3. searxng_search → count=3 (≤10) → Continue
 ...
 10. web_markdown → count=10 (≤10) → Continue
 ```

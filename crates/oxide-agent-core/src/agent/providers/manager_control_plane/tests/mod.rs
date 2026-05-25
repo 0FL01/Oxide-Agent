@@ -2,7 +2,6 @@
 #![allow(clippy::clone_on_ref_ptr)]
 
 pub(super) use super::*;
-pub(super) use crate::agent::registry::ToolRegistry;
 pub(super) use crate::storage::{
     AgentProfileRecord, AppendAuditEventOptions, TopicAgentsMdRecord, TopicBindingRecord,
     TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UserConfig,

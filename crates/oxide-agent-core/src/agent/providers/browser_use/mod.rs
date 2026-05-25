@@ -7,14 +7,18 @@ mod response;
 #[cfg(test)]
 mod tests;
 
-use crate::agent::provider::ToolProvider;
-use crate::agent::tool_runtime::current_tool_model_route;
+use crate::agent::providers::SandboxRuntime;
+use crate::agent::tool_model_route::current_tool_model_route;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::config::{
     get_browser_use_initial_backoff, get_browser_use_max_backoff, get_browser_use_max_concurrent,
     get_browser_use_max_retries, get_browser_use_timeout,
 };
-use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::llm::{providers::provider_module_id, ToolDefinition};
+use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use lazy_regex::lazy_regex;
@@ -42,6 +46,10 @@ const TOOL_EXTRACT_CONTENT: &str = "browser_use_extract_content";
 const TOOL_SCREENSHOT: &str = "browser_use_screenshot";
 const MINIMAX_DEFAULT_API_BASE: &str = "https://api.minimax.io/anthropic";
 const OPENROUTER_DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
+const MINIMAX_PROVIDER_MODULE_ID: &str = "llm-provider/minimax";
+const ZAI_PROVIDER_MODULE_ID: &str = "llm-provider/zai";
+const OPENROUTER_PROVIDER_MODULE_ID: &str = "llm-provider/openrouter";
+const ZAI_DEFAULT_API_BASE: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
 const OXIDE_BROWSER_LLM_API_KEY_HEADER: &str = "x-oxide-browser-llm-api-key";
 const BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV: &str = "BROWSER_USE_UNSTABLE_VISUAL_ROUTES";
 
@@ -89,8 +97,8 @@ pub struct BrowserUseProvider {
     client: reqwest::Client,
     settings: Arc<crate::config::AgentSettings>,
     profile_scope: Option<String>,
-    sandbox: Arc<Mutex<Option<SandboxManager>>>,
-    sandbox_scope: Option<SandboxScope>,
+    fileops: Option<Arc<dyn SandboxFileOps>>,
+    exec: Option<Arc<dyn SandboxExec>>,
     timeout: Duration,
     max_retries: usize,
     initial_backoff: Duration,
@@ -222,6 +230,16 @@ impl BrowserUseProvider {
         }
     }
 
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        vec![
+            Self::run_task_definition(),
+            Self::get_session_definition(),
+            Self::close_session_definition(),
+            Self::extract_content_definition(),
+            Self::screenshot_definition(),
+        ]
+    }
+
     /// Create a new Browser Use provider with default config and shared semaphore.
     #[must_use]
     pub fn new_with_semaphore(
@@ -283,8 +301,8 @@ impl BrowserUseProvider {
             client,
             settings,
             profile_scope: None,
-            sandbox: Arc::new(Mutex::new(None)),
-            sandbox_scope: None,
+            fileops: None,
+            exec: None,
             timeout,
             max_retries,
             initial_backoff,
@@ -338,9 +356,45 @@ impl BrowserUseProvider {
 
     /// Attach sandbox scope so screenshot artifacts can be materialized for file tools.
     #[must_use]
-    pub fn with_sandbox_scope(mut self, scope: impl Into<SandboxScope>) -> Self {
-        self.sandbox_scope = Some(scope.into());
+    pub fn with_sandbox_scope(self, scope: impl Into<SandboxScope>) -> Self {
+        self.with_sandbox_runtime(Arc::new(SandboxRuntime::new(scope.into())))
+    }
+
+    /// Attach shared sandbox runtime so screenshot artifacts can be materialized for file tools.
+    #[must_use]
+    pub fn with_sandbox_runtime(self, runtime: Arc<SandboxRuntime>) -> Self {
+        let fileops: Arc<dyn SandboxFileOps> = Arc::<SandboxRuntime>::clone(&runtime);
+        let exec: Arc<dyn SandboxExec> = runtime;
+        self.with_sandbox_backends(fileops, exec)
+    }
+
+    /// Attach narrow sandbox capabilities for Browser Use artifact hydration.
+    #[must_use]
+    pub fn with_sandbox_backends(
+        mut self,
+        fileops: Arc<dyn SandboxFileOps>,
+        exec: Arc<dyn SandboxExec>,
+    ) -> Self {
+        self.fileops = Some(fileops);
+        self.exec = Some(exec);
         self
+    }
+
+    /// Build native typed runtime executors for Browser Use tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(BrowserUseToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
     }
 
     fn endpoint_url(&self, path: &str) -> String {
@@ -385,37 +439,51 @@ impl BrowserUseProvider {
         &self,
         route: &crate::config::ModelInfo,
     ) -> Result<(BrowserLlmConfig, String)> {
-        let provider = route.provider.to_ascii_lowercase();
+        let configured_provider = route.provider.trim();
+        let provider = canonical_browser_route_provider(configured_provider);
         let supports_vision = route_supports_vision(&provider, &route.id);
-        let supports_tools = !matches!(provider.as_str(), "groq");
+        let supports_tools = !matches!(provider.as_str(), "llm-provider/groq" | "groq");
 
         let (bridge_provider, api_base, api_key) = match provider.as_str() {
-            "gemini" => (
-                "google",
-                None,
-                self.require_route_api_key("gemini", self.settings.gemini_api_key.as_deref())?,
-            ),
-            "minimax" => (
+            "llm-provider/minimax" | "minimax" => (
                 "minimax",
                 Some(MINIMAX_DEFAULT_API_BASE.to_string()),
-                self.require_route_api_key("minimax", self.settings.minimax_api_key.as_deref())?,
+                self.require_route_api_key_for_module(
+                    "minimax",
+                    MINIMAX_PROVIDER_MODULE_ID,
+                    "MINIMAX_API_KEY",
+                )?,
             ),
-            "zai" => (
+            "llm-provider/zai" | "zai" => (
                 "zai",
-                Some(self.settings.zai_api_base.clone()),
-                self.require_route_api_key("zai", self.settings.zai_api_key.as_deref())?,
+                Some(self.route_api_base_for_module(
+                    ZAI_PROVIDER_MODULE_ID,
+                    "ZAI_API_BASE",
+                    ZAI_DEFAULT_API_BASE,
+                )),
+                self.require_route_api_key_for_module(
+                    "zai",
+                    ZAI_PROVIDER_MODULE_ID,
+                    "ZAI_API_KEY",
+                )?,
             ),
-            "openrouter" => (
+            "llm-provider/openrouter" | "openrouter" => (
                 "openrouter",
                 Some(OPENROUTER_DEFAULT_API_BASE.to_string()),
-                self.require_route_api_key(
+                self.require_route_api_key_for_module(
                     "openrouter",
-                    self.settings.openrouter_api_key.as_deref(),
+                    OPENROUTER_PROVIDER_MODULE_ID,
+                    "OPENROUTER_API_KEY",
                 )?,
             ),
             unsupported => {
                 return Err(anyhow!(
-                    "Browser Use route inheritance does not support provider `{unsupported}` yet; supported routes: gemini, minimax, zai, openrouter"
+                    "Browser Use route inheritance does not support provider `{}` yet; supported routes: minimax, zai, openrouter",
+                    if configured_provider.is_empty() {
+                        unsupported
+                    } else {
+                        configured_provider
+                    }
                 ));
             }
         };
@@ -431,6 +499,23 @@ impl BrowserUseProvider {
             },
             api_key,
         ))
+    }
+
+    fn require_route_api_key_for_module(
+        &self,
+        provider: &str,
+        module_id: &str,
+        env_name: &str,
+    ) -> Result<String> {
+        let api_key = self
+            .settings
+            .module_string_value_or_env(module_id, "api_key", env_name);
+        self.require_route_api_key(provider, api_key.as_deref())
+    }
+
+    fn route_api_base_for_module(&self, module_id: &str, env_name: &str, default: &str) -> String {
+        self.settings
+            .module_string_value_or_env_or_default(module_id, "api_base", env_name, default)
     }
 
     fn require_route_api_key(&self, provider: &str, api_key: Option<&str>) -> Result<String> {
@@ -464,7 +549,7 @@ impl BrowserUseProvider {
                 "Warning: Browser Use is running with text-only route `{route_label}`. This task looks UI-heavy, so execution may run in degraded mode without visual grounding."
             ))),
             VisionRequirement::Required => Err(anyhow!(
-                "Browser Use task appears to require visual grounding, but selected route `{route_label}` is text-only. Switch to a vision-capable route such as Gemini, `zai/GLM-4.6V`, or a vision-capable OpenRouter model, or simplify the task to text-only browsing/extraction."
+                "Browser Use task appears to require visual grounding, but selected route `{route_label}` is text-only. Switch to a vision-capable route such as `zai/GLM-4.6V` or an OpenRouter vision model, or simplify the task to text-only browsing/extraction."
             )),
         }
     }
@@ -673,25 +758,8 @@ impl BrowserUseProvider {
         Ok(bytes.to_vec())
     }
 
-    async fn ensure_sandbox(&self) -> Result<()> {
-        if self
-            .sandbox
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(SandboxManager::is_running)
-        {
-            return Ok(());
-        }
-
-        let sandbox_scope = self
-            .sandbox_scope
-            .clone()
-            .ok_or_else(|| anyhow!("Sandbox scope is not configured for Browser Use"))?;
-        let mut sandbox = SandboxManager::new(sandbox_scope).await?;
-        sandbox.create_sandbox().await?;
-        *self.sandbox.lock().await = Some(sandbox);
-        Ok(())
+    fn sandbox_backends(&self) -> Option<(&dyn SandboxFileOps, &dyn SandboxExec)> {
+        Some((self.fileops.as_deref()?, self.exec.as_deref()?))
     }
 
     async fn write_screenshot_file(
@@ -700,14 +768,9 @@ impl BrowserUseProvider {
         file_name: &str,
         content: &[u8],
     ) -> Result<HydratedScreenshotPaths> {
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-        };
+        let (fileops, exec) = self
+            .sandbox_backends()
+            .ok_or_else(|| anyhow!("Sandbox backends are not configured for Browser Use"))?;
 
         let sanitized_name = Path::new(file_name)
             .file_name()
@@ -716,10 +779,9 @@ impl BrowserUseProvider {
             .ok_or_else(|| anyhow!("Browser Use screenshot is missing a valid file name"))?;
         let captured_path = format!("/workspace/browser_use/{session_id}/{sanitized_name}");
         let stable_path = format!("/workspace/browser_use/{session_id}/latest.png");
-        ensure_parent_dir(&mut sandbox, &captured_path).await?;
-        sandbox.write_file(&captured_path, content).await?;
-        sandbox.write_file(&stable_path, content).await?;
-        *self.sandbox.lock().await = Some(sandbox);
+        ensure_parent_dir(exec, &captured_path).await?;
+        fileops.write_file(&captured_path, content).await?;
+        fileops.write_file(&stable_path, content).await?;
         Ok(HydratedScreenshotPaths {
             captured_path,
             stable_path,
@@ -732,14 +794,9 @@ impl BrowserUseProvider {
         file_name: &str,
         content: &[u8],
     ) -> Result<HydratedArtifactPath> {
-        self.ensure_sandbox().await?;
-        let mut sandbox = {
-            let guard = self.sandbox.lock().await;
-            guard
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| anyhow!("Sandbox not initialized"))?
-        };
+        let (fileops, exec) = self
+            .sandbox_backends()
+            .ok_or_else(|| anyhow!("Sandbox backends are not configured for Browser Use"))?;
 
         let sanitized_name = Path::new(file_name)
             .file_name()
@@ -747,9 +804,8 @@ impl BrowserUseProvider {
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow!("Browser Use artifact is missing a valid file name"))?;
         let sandbox_path = format!("/workspace/browser_use/{session_id}/{sanitized_name}");
-        ensure_parent_dir(&mut sandbox, &sandbox_path).await?;
-        sandbox.write_file(&sandbox_path, content).await?;
-        *self.sandbox.lock().await = Some(sandbox);
+        ensure_parent_dir(exec, &sandbox_path).await?;
+        fileops.write_file(&sandbox_path, content).await?;
         Ok(HydratedArtifactPath { sandbox_path })
     }
 
@@ -758,7 +814,7 @@ impl BrowserUseProvider {
         payload: ResponsePayload,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<ResponsePayload> {
-        if self.sandbox_scope.is_none() {
+        if self.sandbox_backends().is_none() {
             return Ok(payload);
         }
 
@@ -840,7 +896,7 @@ impl BrowserUseProvider {
         payload: ResponsePayload,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<ResponsePayload> {
-        if self.sandbox_scope.is_none() {
+        if self.sandbox_backends().is_none() {
             return Ok(payload);
         }
 
@@ -1167,15 +1223,53 @@ impl BrowserUseProvider {
             .await?;
         Ok(format_tool_output(payload))
     }
+
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
+            return Err(anyhow!("Browser Use request cancelled"));
+        }
+
+        let _permit = if let Some(semaphore) = &self.semaphore {
+            let permit = semaphore.acquire().await.map_err(|_| {
+                anyhow!("Browser Use semaphore acquisition failed (shutdown in progress)")
+            })?;
+            Some(permit)
+        } else {
+            None
+        };
+
+        match tool_name {
+            TOOL_RUN_TASK => self.execute_run_task(arguments, cancellation_token).await,
+            TOOL_GET_SESSION => {
+                self.execute_get_session(arguments, cancellation_token)
+                    .await
+            }
+            TOOL_CLOSE_SESSION => {
+                self.execute_close_session(arguments, cancellation_token)
+                    .await
+            }
+            TOOL_EXTRACT_CONTENT => {
+                self.execute_extract_content(arguments, cancellation_token)
+                    .await
+            }
+            TOOL_SCREENSHOT => self.execute_screenshot(arguments, cancellation_token).await,
+            _ => Err(anyhow!("Unknown Browser Use tool: {tool_name}")),
+        }
+    }
 }
 
-async fn ensure_parent_dir(sandbox: &mut SandboxManager, path: &str) -> Result<()> {
+async fn ensure_parent_dir(exec: &dyn SandboxExec, path: &str) -> Result<()> {
     let parent = Path::new(path).parent().map_or_else(
         || "/workspace".to_string(),
         |value| value.to_string_lossy().to_string(),
     );
     let command = format!("mkdir -p {}", escape(parent.as_str().into()));
-    let result = sandbox.exec_command(&command, None).await?;
+    let result = exec.exec(&command, None).await?;
     if result.success() {
         Ok(())
     } else {
@@ -1236,6 +1330,13 @@ fn execution_mode_for_steering(steering: RunTaskSteering) -> RunTaskExecutionMod
     }
 }
 
+fn canonical_browser_route_provider(provider: &str) -> String {
+    let provider = provider.trim();
+    provider_module_id(provider)
+        .unwrap_or(provider)
+        .to_ascii_lowercase()
+}
+
 #[derive(Debug, Deserialize)]
 struct ExtractContentArgs {
     session_id: String,
@@ -1263,9 +1364,8 @@ struct ScreenshotRequestBody {
 
 fn route_supports_vision(provider: &str, model: &str) -> bool {
     match provider {
-        "gemini" => true,
-        "zai" => is_zai_vision_model(model),
-        "openrouter" => is_openrouter_vision_model(model),
+        "llm-provider/zai" | "zai" => is_zai_vision_model(model),
+        "llm-provider/openrouter" | "openrouter" => is_openrouter_vision_model(model),
         _ => false,
     }
 }
@@ -1754,69 +1854,54 @@ where
     }
 }
 
+struct BrowserUseToolExecutor {
+    provider: Arc<BrowserUseProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
 #[async_trait]
-impl ToolProvider for BrowserUseProvider {
-    fn name(&self) -> &'static str {
-        "browser_use"
+impl ToolExecutor for BrowserUseToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
     }
 
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            Self::run_task_definition(),
-            Self::get_session_definition(),
-            Self::close_session_definition(),
-            Self::extract_content_definition(),
-            Self::screenshot_definition(),
-        ]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_RUN_TASK
-                | TOOL_GET_SESSION
-                | TOOL_CLOSE_SESSION
-                | TOOL_EXTRACT_CONTENT
-                | TOOL_SCREENSHOT
-        )
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
     }
 
     async fn execute(
         &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
-        if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
-            return Err(anyhow!("Browser Use request cancelled"));
-        }
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(
+                self.name.as_str(),
+                &invocation.raw_arguments,
+                Some(&invocation.cancellation_token),
+            )
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(browser_use_runtime_error)
+    }
+}
 
-        let _permit = if let Some(semaphore) = &self.semaphore {
-            let permit = semaphore.acquire().await.map_err(|_| {
-                anyhow!("Browser Use semaphore acquisition failed (shutdown in progress)")
-            })?;
-            Some(permit)
-        } else {
-            None
-        };
-
-        match tool_name {
-            TOOL_RUN_TASK => self.execute_run_task(arguments, cancellation_token).await,
-            TOOL_GET_SESSION => {
-                self.execute_get_session(arguments, cancellation_token)
-                    .await
-            }
-            TOOL_CLOSE_SESSION => {
-                self.execute_close_session(arguments, cancellation_token)
-                    .await
-            }
-            TOOL_EXTRACT_CONTENT => {
-                self.execute_extract_content(arguments, cancellation_token)
-                    .await
-            }
-            TOOL_SCREENSHOT => self.execute_screenshot(arguments, cancellation_token).await,
-            _ => Err(anyhow!("Unknown Browser Use tool: {tool_name}")),
-        }
+fn browser_use_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    let message = error.to_string();
+    if error.downcast_ref::<serde_json::Error>().is_some()
+        || message.contains("requires a non-empty task")
+        || message.contains("requires a session_id")
+        || message.contains("format must be either 'text' or 'html'")
+    {
+        ToolRuntimeError::InvalidArguments(message)
+    } else {
+        ToolRuntimeError::Failure(message)
     }
 }

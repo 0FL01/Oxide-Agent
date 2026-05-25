@@ -4,13 +4,14 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    count_tokens_cached, AgentMessageKind, ArchiveRef, BreadcrumbCard, CompactionRetention,
-    CompactionSummary,
+    count_tokens_cached, AgentMessageKind, ArchiveRef, CompactedSummaryMetadata,
+    CompactionRetention, OXIDE_COMPACTED_SUMMARY_PREFIX,
 };
 use crate::agent::providers::TodoList;
-use crate::agent::recovery::repair_agent_message_history_runtime;
+use crate::agent::recovery::{repair_agent_message_history_runtime, HistoryRepairOutcome};
 use crate::llm::{TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tracing::warn;
 
 pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
@@ -19,7 +20,6 @@ pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMessage {
     /// Semantic kind used by compaction policies.
-    #[serde(default)]
     pub kind: AgentMessageKind,
     /// Role of the message sender
     pub role: MessageRole,
@@ -28,7 +28,7 @@ pub struct AgentMessage {
     /// Optional reasoning/thinking content (for models that support it, e.g., GLM-4.7)
     /// This is counted towards token limits but not shown to user
     pub reasoning: Option<String>,
-    /// Legacy tool call id echoed by chat-like providers and persisted for compatibility.
+    /// Provider-facing tool call id echoed by chat-like providers.
     pub tool_call_id: Option<String>,
     /// Canonical correlation metadata for a tool result message.
     #[serde(default)]
@@ -46,15 +46,6 @@ pub struct AgentMessage {
     /// Metadata for tool payloads already pruned down to a placeholder.
     #[serde(default)]
     pub pruned_artifact: Option<PrunedArtifact>,
-    /// Structured summary metadata for compaction-generated summary entries.
-    #[serde(default)]
-    pub structured_summary: Option<CompactionSummary>,
-    /// Lightweight archive ref for displaced context chunks.
-    #[serde(default)]
-    pub archive_ref: Option<ArchiveRef>,
-    /// Deterministic breadcrumb handoff state preserved after post-run cleanup.
-    #[serde(default)]
-    pub breadcrumb_card: Option<BreadcrumbCard>,
 }
 
 /// Metadata describing a tool payload externalized out of hot memory.
@@ -85,6 +76,29 @@ pub struct PrunedArtifact {
     /// Optional archive reference when the payload was also externalized.
     #[serde(default)]
     pub archive_ref: Option<ArchiveRef>,
+}
+
+/// Outcome of an atomic compacted-history replacement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactedHistoryReplacementOutcome {
+    /// Approximate token count before replacement.
+    pub token_before: usize,
+    /// Approximate token count after replacement.
+    pub token_after: usize,
+    /// Message count before replacement.
+    pub history_items_before: usize,
+    /// Message count after replacement.
+    pub history_items_after: usize,
+    /// Validation repair result. Normal replacement requires `applied == false`.
+    pub repair_outcome: HistoryRepairOutcome,
+}
+
+/// Error that prevents compacted-history replacement before mutation.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum CompactedHistoryReplacementError {
+    /// Replacement would require runtime history repair, so the builder is unsafe.
+    #[error("compacted history replacement failed tool-history validation")]
+    InvalidToolHistory(HistoryRepairOutcome),
 }
 
 /// Role of a message sender in agent memory
@@ -120,9 +134,14 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
+        }
+    }
+
+    /// Create a system-facing note for assistant text that was generated but not delivered.
+    pub fn undelivered_assistant_draft(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::UndeliveredAssistantDraft,
+            ..Self::system_context(content)
         }
     }
 
@@ -140,9 +159,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -165,9 +181,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -185,9 +198,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -205,9 +215,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -225,9 +232,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -248,9 +252,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -258,7 +259,7 @@ impl AgentMessage {
     pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
         Self::tool_with_correlation(
             tool_call_id,
-            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            ToolCallCorrelation::new(tool_call_id),
             name,
             content,
         )
@@ -283,9 +284,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -298,7 +296,7 @@ impl AgentMessage {
     ) -> Self {
         Self::externalized_tool_with_correlation(
             tool_call_id,
-            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            ToolCallCorrelation::new(tool_call_id),
             name,
             content,
             externalized_payload,
@@ -325,9 +323,6 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: Some(externalized_payload),
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
@@ -341,7 +336,7 @@ impl AgentMessage {
     ) -> Self {
         Self::pruned_tool_with_correlation(
             tool_call_id,
-            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            ToolCallCorrelation::new(tool_call_id),
             name,
             content,
             pruned_artifact,
@@ -370,21 +365,27 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload,
             pruned_artifact: Some(pruned_artifact),
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
     /// Create a new assistant message with tool calls
     pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self::assistant_with_tools_and_reasoning(content, None, tool_calls)
+    }
+
+    /// Create a new assistant message with optional reasoning and tool calls.
+    pub fn assistant_with_tools_and_reasoning(
+        content: impl Into<String>,
+        reasoning: Option<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
         let tool_call_correlations = (!tool_calls.is_empty())
             .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             kind: AgentMessageKind::AssistantToolCall,
             role: MessageRole::Assistant,
             content: content.into(),
-            reasoning: None,
+            reasoning,
             tool_call_id: None,
             tool_call_correlation: None,
             tool_name: None,
@@ -392,17 +393,6 @@ impl AgentMessage {
             tool_call_correlations,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
-        }
-    }
-
-    /// Create a message carrying dynamically loaded skill instructions.
-    pub fn skill_context(content: impl Into<String>) -> Self {
-        Self {
-            kind: AgentMessageKind::SkillContext,
-            ..Self::system_context(content)
         }
     }
 
@@ -430,12 +420,15 @@ impl AgentMessage {
         }
     }
 
-    /// Create a summary entry backed by structured compaction data.
-    pub fn from_compaction_summary(summary: CompactionSummary) -> Self {
+    /// Create a Codex-style runtime compacted summary message.
+    pub fn compacted_summary(
+        summary_text: impl AsRef<str>,
+        metadata: &CompactedSummaryMetadata,
+    ) -> Self {
         Self {
             kind: AgentMessageKind::Summary,
             role: MessageRole::System,
-            content: format_compaction_summary(&summary),
+            content: format_compacted_summary(summary_text.as_ref(), metadata),
             reasoning: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -444,86 +437,13 @@ impl AgentMessage {
             tool_call_correlations: None,
             externalized_payload: None,
             pruned_artifact: None,
-            structured_summary: Some(summary),
-            archive_ref: None,
-            breadcrumb_card: None,
         }
     }
 
-    /// Create a breadcrumb entry backed by structured handoff metadata.
-    pub fn from_breadcrumb_card(breadcrumb: BreadcrumbCard) -> Self {
-        Self {
-            kind: AgentMessageKind::Breadcrumb,
-            role: MessageRole::System,
-            content: format_breadcrumb_card(&breadcrumb),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: Some(breadcrumb),
-        }
-    }
-
-    /// Create a lightweight reference to archived context.
-    pub fn archive_reference(content: impl Into<String>) -> Self {
-        Self {
-            kind: AgentMessageKind::ArchiveReference,
-            ..Self::archive_reference_with_ref(content, None)
-        }
-    }
-
-    /// Create a lightweight archive reference entry backed by structured metadata.
-    pub fn archive_reference_with_ref(
-        content: impl Into<String>,
-        archive_ref: Option<ArchiveRef>,
-    ) -> Self {
-        Self {
-            kind: AgentMessageKind::ArchiveReference,
-            role: MessageRole::System,
-            content: content.into(),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-            structured_summary: None,
-            archive_ref,
-            breadcrumb_card: None,
-        }
-    }
-
-    /// Resolve the semantic kind for this message, including legacy fallbacks.
+    /// Resolve the semantic kind for this message.
     #[must_use]
     pub fn resolved_kind(&self) -> AgentMessageKind {
-        if self.kind != AgentMessageKind::Legacy {
-            return self.kind;
-        }
-
-        if self.is_topic_agents_md() {
-            return AgentMessageKind::TopicAgentsMd;
-        }
-
-        match self.role {
-            MessageRole::System => AgentMessageKind::SystemContext,
-            MessageRole::User => AgentMessageKind::UserTurn,
-            MessageRole::Assistant if self.tool_calls.is_some() => {
-                AgentMessageKind::AssistantToolCall
-            }
-            MessageRole::Assistant if self.reasoning.is_some() => {
-                AgentMessageKind::AssistantReasoning
-            }
-            MessageRole::Assistant => AgentMessageKind::AssistantResponse,
-            MessageRole::Tool => AgentMessageKind::ToolResult,
-        }
+        self.kind
     }
 
     /// Retention class used by compaction policies.
@@ -544,32 +464,12 @@ impl AgentMessage {
         self.pruned_artifact.is_some()
     }
 
-    /// Returns structured compaction summary metadata when available.
-    #[must_use]
-    pub fn summary_payload(&self) -> Option<&CompactionSummary> {
-        self.structured_summary.as_ref()
-    }
-
-    /// Returns structured archive ref metadata when available.
-    #[must_use]
-    pub fn archive_ref_payload(&self) -> Option<&ArchiveRef> {
-        self.archive_ref.as_ref()
-    }
-
-    /// Returns structured breadcrumb metadata when available.
-    #[must_use]
-    pub fn breadcrumb_payload(&self) -> Option<&BreadcrumbCard> {
-        self.breadcrumb_card.as_ref()
-    }
-
     /// Resolve the canonical correlation for a tool result message.
     #[must_use]
     pub fn resolved_tool_call_correlation(&self) -> Option<ToolCallCorrelation> {
-        self.tool_call_correlation.clone().or_else(|| {
-            self.tool_call_id
-                .as_deref()
-                .map(ToolCallCorrelation::from_legacy_tool_call_id)
-        })
+        self.tool_call_correlation
+            .clone()
+            .or_else(|| self.tool_call_id.as_deref().map(ToolCallCorrelation::new))
     }
 
     /// Resolve canonical correlations for an assistant tool call batch.
@@ -733,6 +633,36 @@ impl AgentMemory {
         self.repair_history_after_mutation("replace_messages");
     }
 
+    /// Atomically replace hot memory with prevalidated compacted history.
+    ///
+    /// Unlike `replace_messages`, this method validates the replacement before
+    /// mutation and rejects histories that would need tool-call repair.
+    pub fn replace_compacted_history(
+        &mut self,
+        messages: Vec<AgentMessage>,
+    ) -> Result<CompactedHistoryReplacementOutcome, CompactedHistoryReplacementError> {
+        let token_before = self.token_count;
+        let history_items_before = self.messages.len();
+        let (validated, repair_outcome) = repair_agent_message_history_runtime(&messages);
+        if repair_outcome.applied || validated.len() != messages.len() {
+            return Err(CompactedHistoryReplacementError::InvalidToolHistory(
+                repair_outcome,
+            ));
+        }
+
+        self.messages = messages;
+        self.last_api_usage = None;
+        self.recalculate_token_count();
+
+        Ok(CompactedHistoryReplacementOutcome {
+            token_before,
+            token_after: self.token_count,
+            history_items_before,
+            history_items_after: self.messages.len(),
+            repair_outcome,
+        })
+    }
+
     fn repair_history_after_mutation(&mut self, boundary: &'static str) {
         let (repaired_messages, outcome) = repair_agent_message_history_runtime(&self.messages);
         if !outcome.applied {
@@ -782,64 +712,39 @@ impl AgentMemory {
     }
 }
 
-fn format_compaction_summary(summary: &CompactionSummary) -> String {
-    let mut sections = vec!["[COMPACTION_SUMMARY]".to_string()];
-
-    if !summary.goal.trim().is_empty() {
-        sections.push(format!("Goal:\n{}", summary.goal.trim()));
-    }
-    push_summary_list(&mut sections, "Constraints", &summary.constraints);
-    push_summary_list(&mut sections, "Decisions", &summary.decisions);
-    push_summary_list(&mut sections, "Discoveries", &summary.discoveries);
-    push_summary_list(
-        &mut sections,
-        "Relevant Files And Entities",
-        &summary.relevant_files_entities,
-    );
-    push_summary_list(&mut sections, "Remaining Work", &summary.remaining_work);
-    push_summary_list(&mut sections, "Risks", &summary.risks);
-
-    sections.join("\n\n")
-}
-
-fn push_summary_list(sections: &mut Vec<String>, title: &str, items: &[String]) {
-    if items.is_empty() {
-        return;
-    }
-
-    sections.push(format!("{title}:\n- {}", items.join("\n- ")));
-}
-
-fn format_breadcrumb_card(breadcrumb: &BreadcrumbCard) -> String {
-    let mut sections = vec!["[BREADCRUMB_CARD]".to_string()];
-
-    if !breadcrumb.current_goal.trim().is_empty() {
-        sections.push(format!("Current Goal:\n{}", breadcrumb.current_goal.trim()));
-    }
-    push_summary_list(
-        &mut sections,
-        "Authoritative State",
-        &breadcrumb.authoritative_state,
-    );
-    push_summary_list(
-        &mut sections,
-        "Recent User Requests",
-        &breadcrumb.recent_user_requests,
-    );
-    push_summary_list(
-        &mut sections,
-        "Recent Assistant Updates",
-        &breadcrumb.recent_assistant_updates,
-    );
-    push_summary_list(
-        &mut sections,
-        "Recent Tool Outcomes",
-        &breadcrumb.recent_tool_outcomes,
-    );
-    push_summary_list(&mut sections, "Next Steps", &breadcrumb.next_steps);
-    push_summary_list(&mut sections, "Open Questions", &breadcrumb.open_questions);
-
-    sections.join("\n\n")
+fn format_compacted_summary(summary_text: &str, metadata: &CompactedSummaryMetadata) -> String {
+    format!(
+        "{prefix}\n\
+generation: {generation}\n\
+reason: {reason:?}\n\
+phase: {phase:?}\n\
+provider: {provider}\n\
+route: {route}\n\
+backend: {backend}\n\
+token_before: {token_before}\n\
+token_after: {token_after}\n\
+history_items_before: {history_items_before}\n\
+history_items_after: {history_items_after}\n\
+created_at: {created_at}\n\
+previous_summary_detected: {previous_summary_detected}\n\
+repair_applied: {repair_applied}\n\n\
+{summary}",
+        prefix = OXIDE_COMPACTED_SUMMARY_PREFIX,
+        generation = metadata.generation,
+        reason = metadata.reason,
+        phase = metadata.phase,
+        provider = metadata.provider,
+        route = metadata.route,
+        backend = metadata.backend.as_str(),
+        token_before = metadata.token_before,
+        token_after = metadata.token_after,
+        history_items_before = metadata.history_items_before,
+        history_items_after = metadata.history_items_after,
+        created_at = metadata.created_at,
+        previous_summary_detected = metadata.previous_summary_detected,
+        repair_applied = metadata.repair_applied,
+        summary = summary_text.trim(),
+    )
 }
 
 impl AgentMessage {
@@ -962,6 +867,50 @@ mod tests {
     }
 
     #[test]
+    fn replace_compacted_history_replaces_valid_history_atomically() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user("Before"));
+        let token_before = memory.token_count();
+
+        let outcome = memory
+            .replace_compacted_history(vec![
+                AgentMessage::summary("[OXIDE_COMPACTED_SUMMARY_V1]\nsummary"),
+                AgentMessage::user("After"),
+            ])
+            .expect("valid compacted history replaces memory");
+
+        assert_eq!(outcome.token_before, token_before);
+        assert_eq!(outcome.history_items_before, 1);
+        assert_eq!(outcome.history_items_after, 2);
+        assert!(!outcome.repair_outcome.applied);
+        assert_eq!(memory.get_messages()[1].content, "After");
+        assert!(memory.token_count() > 0);
+    }
+
+    #[test]
+    fn replace_compacted_history_rejects_invalid_history_without_mutation() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user("Before"));
+        let token_before = memory.token_count();
+
+        let err = memory
+            .replace_compacted_history(vec![AgentMessage::tool(
+                "call-orphan",
+                "search",
+                "orphan result",
+            )])
+            .expect_err("orphan tool result is rejected");
+
+        assert!(matches!(
+            err,
+            CompactedHistoryReplacementError::InvalidToolHistory(_)
+        ));
+        assert_eq!(memory.get_messages().len(), 1);
+        assert_eq!(memory.get_messages()[0].content, "Before");
+        assert_eq!(memory.token_count(), token_before);
+    }
+
+    #[test]
     fn test_topic_agents_md_detection() {
         let mut memory = AgentMemory::new(100_000);
         assert!(!memory.has_topic_agents_md());
@@ -999,14 +948,8 @@ mod tests {
         let topic_agents_md = AgentMessage::topic_agents_md("# Topic AGENTS");
         let task = AgentMessage::user_task("Investigate failure");
         let runtime = AgentMessage::runtime_context("User added a new constraint");
-        let skill = AgentMessage::skill_context("[Loaded skill: deploy]\nUse checklist");
         let tool = AgentMessage::tool("call-1", "execute_command", "cargo check");
         let summary = AgentMessage::summary("[Previous context compressed]\n...");
-        let breadcrumb = AgentMessage::from_breadcrumb_card(BreadcrumbCard {
-            current_goal: "Investigate failure".to_string(),
-            authoritative_state: vec!["Last known good SNI: google.com".to_string()],
-            ..BreadcrumbCard::default()
-        });
 
         assert_eq!(
             topic_agents_md.resolved_kind(),
@@ -1020,93 +963,11 @@ mod tests {
         assert_eq!(runtime.resolved_kind(), AgentMessageKind::RuntimeContext);
         assert_eq!(runtime.retention(), CompactionRetention::ProtectedLive);
 
-        assert_eq!(skill.resolved_kind(), AgentMessageKind::SkillContext);
-        assert_eq!(skill.retention(), CompactionRetention::ProtectedLive);
-
         assert_eq!(tool.resolved_kind(), AgentMessageKind::ToolResult);
         assert_eq!(tool.retention(), CompactionRetention::PrunableArtifact);
 
         assert_eq!(summary.resolved_kind(), AgentMessageKind::Summary);
         assert_eq!(summary.retention(), CompactionRetention::Pinned);
-
-        assert_eq!(breadcrumb.resolved_kind(), AgentMessageKind::Breadcrumb);
-        assert_eq!(breadcrumb.retention(), CompactionRetention::Pinned);
-    }
-
-    #[test]
-    fn test_structured_summary_message_keeps_payload() {
-        let summary = CompactionSummary {
-            goal: "Ship stage 8".to_string(),
-            decisions: vec!["Use a first-class summary entry.".to_string()],
-            ..CompactionSummary::default()
-        };
-
-        let message = AgentMessage::from_compaction_summary(summary.clone());
-
-        assert_eq!(message.resolved_kind(), AgentMessageKind::Summary);
-        assert_eq!(message.summary_payload(), Some(&summary));
-        assert!(message.content.contains("[COMPACTION_SUMMARY]"));
-        assert!(message.content.contains("Goal:"));
-    }
-
-    #[test]
-    fn test_breadcrumb_message_keeps_payload() {
-        let breadcrumb = BreadcrumbCard {
-            current_goal: "Recover Xray access".to_string(),
-            authoritative_state: vec!["Current SNI: google.com".to_string()],
-            recent_tool_outcomes: vec!["xray restart succeeded".to_string()],
-            next_steps: vec!["Re-emit VLESS link from latest config".to_string()],
-            ..BreadcrumbCard::default()
-        };
-
-        let message = AgentMessage::from_breadcrumb_card(breadcrumb.clone());
-
-        assert_eq!(message.resolved_kind(), AgentMessageKind::Breadcrumb);
-        assert_eq!(message.breadcrumb_payload(), Some(&breadcrumb));
-        assert!(message.content.contains("[BREADCRUMB_CARD]"));
-        assert!(message.content.contains("Authoritative State:"));
-    }
-
-    #[test]
-    fn test_legacy_messages_resolve_to_role_based_kinds() {
-        let legacy_assistant = AgentMessage {
-            kind: AgentMessageKind::Legacy,
-            role: MessageRole::Assistant,
-            content: "Done".to_string(),
-            reasoning: None,
-            tool_call_id: None,
-            tool_call_correlation: None,
-            tool_name: None,
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
-        };
-        let legacy_tool = AgentMessage {
-            kind: AgentMessageKind::Legacy,
-            role: MessageRole::Tool,
-            content: "stdout".to_string(),
-            reasoning: None,
-            tool_call_id: Some("call-1".to_string()),
-            tool_call_correlation: None,
-            tool_name: Some("execute_command".to_string()),
-            tool_calls: None,
-            tool_call_correlations: None,
-            externalized_payload: None,
-            pruned_artifact: None,
-            structured_summary: None,
-            archive_ref: None,
-            breadcrumb_card: None,
-        };
-
-        assert_eq!(
-            legacy_assistant.resolved_kind(),
-            AgentMessageKind::AssistantResponse
-        );
-        assert_eq!(legacy_tool.resolved_kind(), AgentMessageKind::ToolResult);
     }
 
     #[test]
@@ -1122,26 +983,24 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_tool_message_resolves_correlation_from_tool_call_id() {
-        let legacy = json!({
-            "kind": "Legacy",
+    fn test_tool_message_resolves_correlation_from_tool_call_id() {
+        let value = json!({
+            "kind": "ToolResult",
             "role": "Tool",
             "content": "stdout",
             "reasoning": null,
-            "tool_call_id": "call-legacy",
+            "tool_call_id": "call-wire",
             "tool_name": "execute_command",
             "tool_calls": null,
             "externalized_payload": null,
-            "pruned_artifact": null,
-            "structured_summary": null,
-            "archive_ref": null
+            "pruned_artifact": null
         });
-        let message: AgentMessage = serde_json::from_value(legacy).expect("message deserializes");
+        let message: AgentMessage = serde_json::from_value(value).expect("message deserializes");
 
         assert_eq!(message.tool_call_correlation, None);
         assert_eq!(
             message.resolved_tool_call_correlation(),
-            Some(ToolCallCorrelation::from_legacy_tool_call_id("call-legacy"))
+            Some(ToolCallCorrelation::new("call-wire"))
         );
     }
 
@@ -1161,16 +1020,29 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
-        let legacy = json!({
-            "kind": "Legacy",
+    fn test_assistant_tool_batch_preserves_reasoning() {
+        let message = AgentMessage::assistant_with_tools_and_reasoning(
+            "Calling tools",
+            Some("thinking trace".to_string()),
+            vec![tool_call("call-1", "search")],
+        );
+        let value = serde_json::to_value(&message).expect("message serializes");
+
+        assert_eq!(value["reasoning"], json!("thinking trace"));
+        assert_eq!(value["tool_calls"][0]["id"], json!("call-1"));
+    }
+
+    #[test]
+    fn test_assistant_tool_batch_resolves_correlations_from_tool_call_ids() {
+        let value = json!({
+            "kind": "AssistantToolCall",
             "role": "Assistant",
             "content": "Calling tools",
             "reasoning": null,
             "tool_call_id": null,
             "tool_name": null,
             "tool_calls": [{
-                "id": "call-legacy",
+                "id": "call-wire",
                 "function": {
                     "name": "search",
                     "arguments": "{}"
@@ -1178,18 +1050,14 @@ mod tests {
                 "is_recovered": false
             }],
             "externalized_payload": null,
-            "pruned_artifact": null,
-            "structured_summary": null,
-            "archive_ref": null
+            "pruned_artifact": null
         });
-        let message: AgentMessage = serde_json::from_value(legacy).expect("message deserializes");
+        let message: AgentMessage = serde_json::from_value(value).expect("message deserializes");
 
         assert_eq!(message.tool_call_correlations, None);
         assert_eq!(
             message.resolved_tool_call_correlations(),
-            Some(vec![ToolCallCorrelation::from_legacy_tool_call_id(
-                "call-legacy"
-            )])
+            Some(vec![ToolCallCorrelation::new("call-wire")])
         );
     }
 

@@ -222,19 +222,19 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_encoder_upgrades_legacy_tool_messages_to_provider_protocol() {
+    fn anthropic_encoder_maps_wire_tool_messages_to_provider_protocol() {
         let encoder = ProviderToolResultEncoder::new(
             ToolProtocol::AnthropicClientTools,
             ToolTransport::ClientRoundTrip,
         );
-        let message = Message::tool("legacy-call", "search", "done");
+        let message = Message::tool("wire-call", "search", "done");
 
         let encoded = encoder.encode(&message).expect("tool result encodes");
 
         assert_eq!(
             encoded,
             EncodedToolResult::Anthropic(super::AnthropicToolResult {
-                tool_use_id: "legacy-call".to_string(),
+                tool_use_id: "wire-call".to_string(),
                 content: "done".to_string(),
                 is_error: None,
             })

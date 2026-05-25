@@ -1,35 +1,21 @@
 name: ${COMPOSE_PROJECT_NAME:-oxide-agent}
 
-services:
-  postgres:
-    image: pgvector/pgvector:pg17
-    container_name: oxide_agent_postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-oxide_agent}
-      - POSTGRES_USER=${POSTGRES_USER:-oxide_agent}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_me}
-      - TZ=Europe/Moscow
-    ports:
-      - "127.0.0.1:5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "export PGPASSWORD=${POSTGRES_PASSWORD:-change_me} && pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-oxide_agent} -d ${POSTGRES_DB:-oxide_agent} && psql -h 127.0.0.1 -U ${POSTGRES_USER:-oxide_agent} -d ${POSTGRES_DB:-oxide_agent} -Atqc 'SELECT 1'"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "1m"
-        max-file: "3"
+x-oxide-app-build: &oxide_app_build
+  context: .
+  dockerfile: docker/Dockerfile.app
+  args:
+    CARGO_FEATURES: oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full
+    PACKAGES: oxide-agent-telegram-bot oxide-agent-sandboxd
+    BINARIES: oxide-agent-telegram-bot oxide-agent-sandboxd
+    MCP_BINARIES: ssh-mcp jira-mcp mattermost-mcp
+    ENTRYPOINT_BINARY: oxide-agent-telegram-bot
+    RUNTIME_APT_PACKAGES: openssh-client
 
+services:
   sandbox_image:
     build:
       context: .
-      dockerfile: sandbox/Dockerfile.sandbox
+      dockerfile: sandbox/Dockerfile.dev
     image: ${SANDBOX_IMAGE:-agent-sandbox:latest}
     command: ["true"]
     restart: "no"
@@ -37,23 +23,16 @@ services:
       - TZ=Europe/Moscow
 
   oxide_agent:
-    build:
-      context: .
+    build: *oxide_app_build
     image: oxide-agent:latest
     container_name: oxide_agent
     restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
-      - CRAWL4AI_URL=http://127.0.0.1:11235
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
-      - MEMORY_DATABASE_URL=${MEMORY_DATABASE_URL:-postgres://oxide_agent:change_me@127.0.0.1:5432/oxide_agent}
-      - MEMORY_DATABASE_MAX_CONNECTIONS=${MEMORY_DATABASE_MAX_CONNECTIONS:-5}
-      - MEMORY_DATABASE_AUTO_MIGRATE=${MEMORY_DATABASE_AUTO_MIGRATE:-true}
-      - MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS=${MEMORY_DATABASE_STARTUP_MAX_ATTEMPTS:-12}
-      - MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS=${MEMORY_DATABASE_STARTUP_RETRY_DELAY_MS:-2000}
-      - MEMORY_DATABASE_STARTUP_TIMEOUT_SECS=${MEMORY_DATABASE_STARTUP_TIMEOUT_SECS:-10}
       - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
@@ -65,11 +44,7 @@ services:
       - sandboxd-run:/run/sandboxd
     network_mode: host
     depends_on:
-      postgres:
-        condition: service_healthy
       sandboxd:
-        condition: service_healthy
-      crawl4ai:
         condition: service_healthy
       searxng:
         condition: service_healthy
@@ -80,8 +55,7 @@ services:
         max-file: "3"
 
   sandboxd:
-    build:
-      context: .
+    build: *oxide_app_build
     image: oxide-agent:latest
     container_name: oxide_agent_sandboxd
     restart: unless-stopped
@@ -112,30 +86,6 @@ services:
         max-size: "1m"
         max-file: "3"
 
-  crawl4ai:
-    image: unclecode/crawl4ai:0.8.5
-    container_name: crawl4ai
-    restart: unless-stopped
-    shm_size: '2gb'
-    ports:
-      - "127.0.0.1:11235:11235"
-    deploy:
-      resources:
-        limits:
-          memory: 6G
-          cpus: '4'
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
-    logging:
-      driver: json-file
-      options:
-        max-size: "1m"
-        max-file: "3"
-
 #  browser_use:
 #    build:
 #      context: ./services/browser_use_bridge
@@ -152,8 +102,6 @@ services:
 #      - BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=${BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES:-2}
 #      - BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=${BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS:-750}
 #      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-#      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-#      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
 #      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
 #    shm_size: '2gb'
 #    ports:
@@ -198,6 +146,4 @@ services:
         max-file: "3"
 
 volumes:
-  browser-use-data:
-  postgres-data:
   sandboxd-run:

@@ -4,7 +4,6 @@
 //! at various points in the agent lifecycle.
 
 pub mod completion;
-pub mod delegation_guard;
 pub mod hot_context;
 pub mod memory;
 pub mod registry;
@@ -13,10 +12,8 @@ pub mod sub_agent_safety;
 pub mod timeout_report;
 pub mod tool_access;
 pub mod types;
-pub mod workload;
 
 pub use completion::CompletionCheckHook;
-pub use delegation_guard::DelegationGuardHook;
 pub use hot_context::HotContextHealthHook;
 pub use memory::{EpisodicExtractHook, RetrievalAdvisorHook};
 pub use registry::{Hook, HookRegistry};
@@ -25,4 +22,3 @@ pub use sub_agent_safety::{SubAgentSafetyConfig, SubAgentSafetyHook};
 pub use timeout_report::TimeoutReportHook;
 pub use tool_access::ToolAccessPolicyHook;
 pub use types::{HookContext, HookEvent, HookResult};
-pub use workload::WorkloadDistributorHook;

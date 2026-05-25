@@ -7,7 +7,7 @@ use oxide_agent_core::storage::{
 use std::sync::Arc;
 use teloxide::types::ChatId;
 
-fn should_use_legacy_fallback(thread_spec: TelegramThreadSpec) -> bool {
+fn should_mirror_dm_global_state(thread_spec: TelegramThreadSpec) -> bool {
     matches!(thread_spec.kind, TelegramThreadKind::Dm)
 }
 
@@ -60,7 +60,7 @@ pub(crate) fn current_context_state_from_config(
         .get(context_key)
         .and_then(|context| context.state.clone())
         .or_else(|| {
-            should_use_legacy_fallback(thread_spec)
+            should_mirror_dm_global_state(thread_spec)
                 .then(|| config.state.clone())
                 .flatten()
         })
@@ -92,7 +92,7 @@ pub(crate) async fn set_current_context_state(
     let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
     context.state = state.map(str::to_string);
 
-    if should_use_legacy_fallback(thread_spec) {
+    if should_mirror_dm_global_state(thread_spec) {
         config.state = context.state.clone();
     }
 
@@ -117,7 +117,7 @@ pub(crate) async fn ensure_current_chat_uuid(
         return Ok(chat_uuid);
     }
 
-    if should_use_legacy_fallback(thread_spec) {
+    if should_mirror_dm_global_state(thread_spec) {
         if let Some(chat_uuid) = config.current_chat_uuid.clone() {
             let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
             context.current_chat_uuid = Some(chat_uuid.clone());
@@ -130,7 +130,7 @@ pub(crate) async fn ensure_current_chat_uuid(
     let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
     context.current_chat_uuid = Some(chat_uuid.clone());
 
-    if should_use_legacy_fallback(thread_spec) {
+    if should_mirror_dm_global_state(thread_spec) {
         config.current_chat_uuid = Some(chat_uuid.clone());
     }
 
@@ -150,7 +150,7 @@ pub(crate) async fn reset_current_chat_uuid(
     let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
     context.current_chat_uuid = Some(chat_uuid.clone());
 
-    if should_use_legacy_fallback(thread_spec) {
+    if should_mirror_dm_global_state(thread_spec) {
         config.current_chat_uuid = Some(chat_uuid.clone());
     }
 
@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn forum_context_state_does_not_fall_back_to_legacy_global_state() {
+    fn forum_context_state_does_not_read_dm_global_state() {
         let mut contexts = HashMap::new();
         contexts.insert(
             "-1001:42".to_string(),

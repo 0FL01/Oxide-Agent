@@ -1,106 +1,106 @@
+#[cfg(feature = "storage-s3-r2")]
 use crate::bot;
+#[cfg(feature = "storage-s3-r2")]
 use crate::bot::handlers::Command;
+#[cfg(feature = "storage-s3-r2")]
 use crate::bot::state::State;
+#[cfg(feature = "storage-s3-r2")]
 use crate::bot::UnauthorizedCache;
+use crate::config::BotSettings;
+#[cfg(feature = "storage-s3-r2")]
 use crate::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
-    BotSettings,
 };
-use crate::startup_maintenance::run_startup_tool_drift_prune;
-use oxide_agent_core::agent::{connect_postgres_memory_store, PersistentMemoryStore};
-use oxide_agent_core::storage::StorageProvider;
+#[cfg(feature = "storage-s3-r2")]
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
+#[cfg(feature = "storage-s3-r2")]
 use teloxide::dispatching::dialogue::InMemStorage;
+#[cfg(feature = "storage-s3-r2")]
 use teloxide::dispatching::UpdateHandler;
+#[cfg(feature = "storage-s3-r2")]
 use teloxide::prelude::*;
+#[cfg(feature = "storage-s3-r2")]
 use teloxide::types::{CallbackQuery, Message, User};
-use tracing::{error, info};
+use tracing::error;
+#[cfg(feature = "storage-s3-r2")]
+use tracing::info;
 
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
-    let storage = init_storage(&settings).await;
-    let persistent_memory_store = init_persistent_memory_store(&settings).await;
-    let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
-    info!("LLM Client initialized.");
-
-    if let Err(error) = run_startup_tool_drift_prune(
-        Arc::clone(&storage),
-        Arc::clone(&persistent_memory_store),
-        Arc::clone(&llm_client),
-        Arc::clone(&settings),
-    )
-    .await
+    #[cfg(not(feature = "storage-s3-r2"))]
     {
-        error!(%error, "Startup tool drift prune failed");
+        let _ = settings;
+        error!("Telegram transport requires the storage-s3-r2 feature because R2 is the only durable storage backend");
+        std::process::exit(1);
     }
 
-    let storage: Arc<dyn storage::StorageProvider> = storage;
+    #[cfg(feature = "storage-s3-r2")]
+    {
+        let storage_services = init_storage(&settings).await;
+        let storage = Arc::clone(&storage_services.provider);
+        let llm_client = Arc::new(llm::LlmClient::new(settings.agent.as_ref()));
+        info!("LLM Client initialized.");
 
-    let bot = Bot::new(settings.telegram.telegram_token.clone());
-    bot::agent_handlers::spawn_reminder_scheduler(
-        bot.clone(),
-        storage.clone(),
-        llm_client.clone(),
-        persistent_memory_store.clone(),
-        settings.clone(),
-    );
-    let bot_state = init_bot_state();
-    let unauthorized_cache = init_unauthorized_cache();
-    let handler = setup_handler();
+        let bot = Bot::new(settings.telegram.telegram_token.clone());
+        bot::agent_handlers::spawn_reminder_scheduler(
+            bot.clone(),
+            storage.clone(),
+            llm_client.clone(),
+            settings.clone(),
+        );
+        let bot_state = init_bot_state();
+        let unauthorized_cache = init_unauthorized_cache();
+        let handler = setup_handler();
 
-    info!("Bot is running...");
+        info!("Bot is running with Telegram long polling...");
 
-    Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![
-            storage,
-            persistent_memory_store,
-            llm_client,
-            settings,
-            bot_state,
-            unauthorized_cache
-        ])
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
+        Dispatcher::builder(bot, handler)
+            .dependencies(dptree::deps![
+                storage,
+                llm_client,
+                settings,
+                bot_state,
+                unauthorized_cache
+            ])
+            .enable_ctrlc_handler()
+            .build()
+            .dispatch()
+            .await;
+    }
 }
 
-async fn init_storage(settings: &BotSettings) -> Arc<storage::R2Storage> {
-    match storage::R2Storage::new(settings.agent.as_ref()).await {
-        Ok(s) => {
-            info!("R2 Storage initialized.");
-            if s.check_connection().await.is_ok() {
+#[cfg(feature = "storage-s3-r2")]
+async fn init_storage(settings: &BotSettings) -> storage::BuiltStorageBackend {
+    match storage::build_primary_storage(settings.agent.as_ref()).await {
+        Ok(services) => {
+            info!(
+                storage_module = services.module_id,
+                "Storage backend initialized."
+            );
+            if services.provider.check_connection().await.is_ok() {
                 // Success message already logged in check_connection
             } else {
-                error!("R2 Storage connection check returned error.");
+                error!(
+                    storage_module = services.module_id,
+                    "Storage backend connection check returned error."
+                );
             }
-            Arc::new(s)
+            services
         }
         Err(e) => {
-            error!("Failed to initialize R2 Storage: {}", e);
+            error!("Failed to initialize storage backend: {}", e);
             std::process::exit(1);
         }
     }
 }
 
-async fn init_persistent_memory_store(settings: &BotSettings) -> Arc<dyn PersistentMemoryStore> {
-    match connect_postgres_memory_store(settings.agent.as_ref()).await {
-        Ok(store) => {
-            info!("Postgres persistent memory initialized.");
-            store
-        }
-        Err(error) => {
-            error!(%error, "Failed to initialize Postgres persistent memory");
-            std::process::exit(1);
-        }
-    }
-}
-
+#[cfg(feature = "storage-s3-r2")]
 fn init_bot_state() -> Arc<InMemStorage<State>> {
     InMemStorage::<State>::new()
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
     let cooldown = get_unauthorized_cooldown();
     let ttl = get_unauthorized_cache_ttl();
@@ -114,6 +114,7 @@ fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
     Arc::new(UnauthorizedCache::new(cooldown, ttl, max_size))
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
     dptree::entry()
         .branch(
@@ -209,14 +210,17 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
         )
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn access_control_user(message: &Message) -> Option<&User> {
     message.from.as_ref().filter(|user| !user.is_bot)
 }
 
+#[cfg(feature = "storage-s3-r2")]
 fn access_control_user_id(message: &Message) -> Option<i64> {
     access_control_user(message).map(|user| user.id.0.cast_signed())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_unauthorized(
     bot: Bot,
     msg: Message,
@@ -247,6 +251,7 @@ async fn handle_unauthorized(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_command(
     bot: Bot,
     msg: Message,
@@ -268,23 +273,17 @@ async fn handle_command(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_text(
     bot: Bot,
     msg: Message,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::handlers::handle_text(
-        bot,
-        msg,
-        storage,
-        llm,
-        dialogue,
-        persistent_memory_store,
-        settings,
+        bot, msg, storage, llm, dialogue, settings,
     ))
     .await
     {
@@ -293,23 +292,17 @@ async fn handle_start_text(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_voice(
     bot: Bot,
     msg: Message,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::handlers::handle_voice(
-        bot,
-        msg,
-        storage,
-        llm,
-        dialogue,
-        persistent_memory_store,
-        settings,
+        bot, msg, storage, llm, dialogue, settings,
     ))
     .await
     {
@@ -318,81 +311,53 @@ async fn handle_start_voice(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_photo(
     bot: Bot,
     msg: Message,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_photo(
-        bot,
-        msg,
-        storage,
-        llm,
-        dialogue,
-        persistent_memory_store,
-        settings,
-    )
-    .await
-    {
+    if let Err(e) = bot::handlers::handle_photo(bot, msg, storage, llm, dialogue, settings).await {
         error!("Photo handler error: {}", e);
     }
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_video(
     bot: Bot,
     msg: Message,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_video(
-        bot,
-        msg,
-        storage,
-        llm,
-        dialogue,
-        persistent_memory_store,
-        settings,
-    )
-    .await
-    {
+    if let Err(e) = bot::handlers::handle_video(bot, msg, storage, llm, dialogue, settings).await {
         error!("Video handler error: {}", e);
     }
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_start_document(
     bot: Bot,
     msg: Message,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_document(
-        bot,
-        msg,
-        dialogue,
-        storage,
-        llm,
-        persistent_memory_store,
-        settings,
-    )
-    .await
+    if let Err(e) = bot::handlers::handle_document(bot, msg, dialogue, storage, llm, settings).await
     {
         error!("Document handler error: {}", e);
     }
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_editing_prompt(
     bot: Bot,
     msg: Message,
@@ -405,23 +370,17 @@ async fn handle_editing_prompt(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_agent_message(
     bot: Bot,
     msg: Message,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
     dialogue: Dialogue<State, InMemStorage<State>>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = Box::pin(bot::agent_handlers::handle_agent_message(
-        bot,
-        msg,
-        storage,
-        llm,
-        dialogue,
-        persistent_memory_store,
-        settings,
+        bot, msg, storage, llm, dialogue, settings,
     ))
     .await
     {
@@ -430,12 +389,12 @@ async fn handle_agent_message(
     respond(())
 }
 
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_callback(
     bot: Bot,
     q: CallbackQuery,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
     bot_state: Arc<InMemStorage<State>>,
 ) -> Result<(), teloxide::RequestError> {
@@ -456,16 +415,8 @@ async fn handle_callback(
     }
 
     if let Some(dialogue) = &dialogue {
-        match bot::handlers::handle_menu_callback(
-            &bot,
-            &q,
-            &storage,
-            &llm,
-            &persistent_memory_store,
-            &settings,
-            dialogue,
-        )
-        .await
+        match bot::handlers::handle_menu_callback(&bot, &q, &storage, &llm, &settings, dialogue)
+            .await
         {
             Ok(true) => {
                 return respond(());
@@ -490,16 +441,8 @@ async fn handle_callback(
         return respond(());
     };
 
-    if let Err(e) = bot::agent_handlers::handle_agent_callback(
-        bot,
-        q,
-        storage,
-        llm,
-        persistent_memory_store,
-        settings,
-        dialogue,
-    )
-    .await
+    if let Err(e) =
+        bot::agent_handlers::handle_agent_callback(bot, q, storage, llm, settings, dialogue).await
     {
         error!("Agent callback handler error: {}", e);
     }
@@ -507,6 +450,7 @@ async fn handle_callback(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "storage-s3-r2")]
 async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,
@@ -514,18 +458,10 @@ async fn handle_agent_confirmation(
     action: bot::state::ConfirmationType,
     storage: Arc<dyn storage::StorageProvider>,
     llm: Arc<llm::LlmClient>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<(), teloxide::RequestError> {
     if let Err(e) = bot::agent_handlers::handle_agent_confirmation(
-        bot,
-        msg,
-        dialogue,
-        action,
-        storage,
-        llm,
-        persistent_memory_store,
-        settings,
+        bot, msg, dialogue, action, storage, llm, settings,
     )
     .await
     {

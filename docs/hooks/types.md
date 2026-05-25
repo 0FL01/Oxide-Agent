@@ -43,10 +43,9 @@ pub enum HookEvent {
 
 | Событие | Хуки |
 |---------|-------|
-| `BeforeAgent` | `WorkloadDistributorHook` |
 | `BeforeIteration` | `SubAgentSafetyHook` |
 | `AfterAgent` | `CompletionCheckHook` |
-| `BeforeTool` | `DelegationGuardHook`, `WorkloadDistributorHook`, `SubAgentSafetyHook`, `SearchBudgetHook` |
+| `BeforeTool` | `SubAgentSafetyHook`, `SearchBudgetHook` |
 | `AfterTool` | (логирование/метрики) |
 | `Timeout` | `TimeoutReportHook` |
 
@@ -92,17 +91,6 @@ let HookEvent::AfterAgent { response: _ } = event else {
 };
 ```
 
-#### InjectContext
-```rust
-// src/agent/hooks/workload.rs:119-130
-if self.is_complex_prompt(prompt) {
-    return HookResult::InjectContext(
-        "[SYSTEM NOTICE: High Complexity Detected]\n\
-        You must SPLIT your workflow to handle this request efficiently...".to_string(),
-    );
-}
-```
-
 #### ForceIteration
 ```rust
 // src/agent/hooks/completion.rs:91-94
@@ -114,13 +102,9 @@ HookResult::ForceIteration {
 
 #### Block
 ```rust
-// src/agent/hooks/delegation_guard.rs:80-87
+// src/agent/hooks/sub_agent_safety.rs
 return HookResult::Block {
-    reason: format!(
-        "⛔ Delegation Blocked: The task contains an analytical keyword ('{}'). \
-         Sub-agents are restricted to raw data retrieval...",
-        keyword
-    ),
+    reason: format!("Tool '{tool_name}' is blocked for sub-agents"),
 };
 ```
 
@@ -221,7 +205,6 @@ if context.at_continuation_limit() {
 
 #### Проверка типа агента
 ```rust
-// src/agent/hooks/workload.rs:140-142
 if context.is_sub_agent {
     return HookResult::Continue;
 }

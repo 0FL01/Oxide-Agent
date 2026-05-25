@@ -6,16 +6,15 @@
 use super::compaction::CompactionScope;
 use super::identity::SessionId;
 use super::memory::AgentMemory;
-use super::persistent_memory::MemoryBehaviorRuntime;
+use super::memory_behavior::MemoryBehaviorRuntime;
 // use super::providers::TodoList;
-use crate::config::AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS;
-use crate::llm::InvocationId;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
+use crate::sandbox::{SandboxAdmin, SandboxAdminRuntime, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -29,19 +28,6 @@ use tracing::{debug, info, warn};
 pub struct RuntimeContextInjection {
     /// User-visible text payload to append on the next safe iteration boundary.
     pub content: String,
-}
-
-/// Exact SSH tool call that is paused pending operator approval.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingSshReplay {
-    /// Approval request identifier returned by the SSH provider.
-    pub request_id: String,
-    /// Stable internal invocation id for the paused tool call.
-    pub invocation_id: InvocationId,
-    /// Original tool name.
-    pub tool_name: String,
-    /// Original JSON arguments before approval credentials were injected.
-    pub arguments: String,
 }
 
 /// Type of user input required before the task can continue.
@@ -147,7 +133,7 @@ fn checkpoint_debounce_duration() -> Duration {
 }
 
 fn memory_checkpoint_hash(memory: &AgentMemory) -> Result<u64> {
-    let encoded = bincode::serialize(memory)?;
+    let encoded = serde_json::to_vec(memory)?;
     let mut hasher = DefaultHasher::new();
     encoded.hash(&mut hasher);
     Ok(hasher.finish())
@@ -290,10 +276,10 @@ pub struct AgentSession {
     pub session_id: SessionId,
     /// Conversation memory for the active agent hot context
     pub memory: AgentMemory,
-    /// Docker sandbox for code execution (lazily initialized)
-    sandbox: Option<SandboxManager>,
     /// Stable scope used to resolve this session's persistent sandbox container.
     sandbox_scope: SandboxScope,
+    /// Sandbox administration facade for session-level lifecycle controls.
+    sandbox_admin: Arc<dyn SandboxAdmin>,
     /// Stable scope used by long-term memory and archive persistence.
     memory_scope: AgentMemoryScope,
     /// When the current task started
@@ -308,14 +294,8 @@ pub struct AgentSession {
     pub cancellation_token: CancellationToken,
     /// Last task text for retry actions.
     pub last_task: Option<String>,
-    /// Loaded skills for the current system prompt or dynamic context.
-    loaded_skills: HashSet<String>,
-    /// Token count for loaded skills.
-    skill_token_count: usize,
     /// Additional user context waiting for the next safe iteration boundary.
     runtime_context_inbox: RuntimeContextInbox,
-    /// Exact SSH tool calls paused pending operator approval.
-    pending_ssh_replays: Vec<PendingSshReplay>,
     /// Pending user input required before the task can resume.
     pending_user_input: Option<PendingUserInput>,
     /// Optional sink used to persist memory snapshots during long-running tasks.
@@ -358,19 +338,16 @@ impl AgentSession {
     ) -> Self {
         Self {
             session_id,
-            memory: AgentMemory::new(AGENT_INTERNAL_CONTEXT_WINDOW_CAP_TOKENS),
-            sandbox: None,
+            memory: AgentMemory::new(DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS),
             sandbox_scope,
+            sandbox_admin: Arc::new(SandboxAdminRuntime::new()),
             memory_scope,
             started_at: None,
             current_task_id: None,
             status: AgentStatus::Idle,
             cancellation_token: CancellationToken::new(),
             last_task: None,
-            loaded_skills: HashSet::new(),
-            skill_token_count: 0,
             runtime_context_inbox: RuntimeContextInbox::new(),
-            pending_ssh_replays: Vec::new(),
             pending_user_input: None,
             memory_checkpoint: None,
             checkpoint_state: Arc::new(AsyncMutex::new(MemoryCheckpointState::default())),
@@ -556,31 +533,6 @@ impl AgentSession {
         self.runtime_context_inbox.has_pending()
     }
 
-    /// Store or replace a pending SSH replay payload.
-    pub fn store_pending_ssh_replay(&mut self, replay: PendingSshReplay) {
-        self.pending_ssh_replays
-            .retain(|entry| entry.request_id != replay.request_id);
-        self.pending_ssh_replays.push(replay);
-    }
-
-    /// Return a pending SSH replay payload by request id.
-    #[must_use]
-    pub fn pending_ssh_replay(&self, request_id: &str) -> Option<PendingSshReplay> {
-        self.pending_ssh_replays
-            .iter()
-            .find(|entry| entry.request_id == request_id)
-            .cloned()
-    }
-
-    /// Remove and return a pending SSH replay payload by request id.
-    pub fn take_pending_ssh_replay(&mut self, request_id: &str) -> Option<PendingSshReplay> {
-        let index = self
-            .pending_ssh_replays
-            .iter()
-            .position(|entry| entry.request_id == request_id)?;
-        Some(self.pending_ssh_replays.remove(index))
-    }
-
     /// Store or replace the pending user input request.
     pub fn set_pending_user_input(&mut self, request: PendingUserInput) {
         self.pending_user_input = Some(request);
@@ -660,10 +612,7 @@ impl AgentSession {
         self.started_at = None;
         self.current_task_id = None;
         self.last_task = None;
-        self.loaded_skills.clear();
-        self.skill_token_count = 0;
         let _ = self.runtime_context_inbox.drain();
-        self.pending_ssh_replays.clear();
         self.pending_user_input = None;
         if let Ok(mut state) = self.checkpoint_state.try_lock() {
             *state = MemoryCheckpointState::default();
@@ -678,32 +627,26 @@ impl AgentSession {
         self.last_task = Some(task.to_string());
     }
 
-    /// Reset loaded skills based on the active system prompt.
-    pub fn set_loaded_skills(&mut self, skills: &[crate::agent::skills::SkillContext]) {
-        self.loaded_skills = skills.iter().map(|skill| skill.name.clone()).collect();
-        self.skill_token_count = skills.iter().map(|skill| skill.token_count).sum();
-    }
-
-    /// Register a dynamically loaded skill, returns true if it was new.
-    pub fn register_loaded_skill(&mut self, name: &str, token_count: usize) -> bool {
-        if self.loaded_skills.insert(name.to_string()) {
-            self.skill_token_count = self.skill_token_count.saturating_add(token_count);
-            return true;
+    /// Restore volatile execution metadata that is derivable from persisted memory.
+    ///
+    /// Transport session registries are in-memory, while `AgentMemory` is durable.
+    /// After a backend restart we can still recover the last top-level task from
+    /// the most recent `UserTask` entry and make continuation flows deterministic.
+    pub fn restore_last_task_from_memory(&mut self) {
+        if self.last_task.is_some() {
+            return;
         }
 
-        false
-    }
-
-    /// Check if a skill is already loaded.
-    #[must_use]
-    pub fn is_skill_loaded(&self, name: &str) -> bool {
-        self.loaded_skills.contains(name)
-    }
-
-    /// Get total tokens used by loaded skills.
-    #[must_use]
-    pub const fn skill_token_count(&self) -> usize {
-        self.skill_token_count
+        self.last_task = self
+            .memory
+            .get_messages()
+            .iter()
+            .rev()
+            .find(|message| {
+                message.resolved_kind() == crate::agent::compaction::AgentMessageKind::UserTask
+                    && !message.content.trim().is_empty()
+            })
+            .map(|message| message.content.clone());
     }
 
     /// Clear only the todos list (keeps memory intact)
@@ -717,73 +660,31 @@ impl AgentSession {
         matches!(self.status, AgentStatus::Processing { .. })
     }
 
-    /// Check if sandbox is available
-    #[must_use]
-    pub fn has_sandbox(&self) -> bool {
-        self.sandbox
-            .as_ref()
-            .is_some_and(SandboxManager::is_running)
-    }
-
-    /// Ensure sandbox is running, creating it if necessary
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if sandbox creation fails.
-    pub async fn ensure_sandbox(&mut self) -> Result<&mut SandboxManager> {
-        let needs_new = self.sandbox.as_ref().is_none_or(|s| !s.is_running());
-
-        if needs_new {
-            debug!(session_id = %self.session_id, "Creating new sandbox");
-            let mut sandbox = SandboxManager::new(self.sandbox_scope.clone()).await?;
-            sandbox.create_sandbox().await?;
-            self.sandbox = Some(sandbox);
-            info!(session_id = %self.session_id, "Sandbox created for session");
-        }
-
-        self.sandbox
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
-    }
-
     /// Force sandbox recreation, wiping previous container state.
     ///
     /// # Errors
     ///
-    /// Returns an error if sandbox manager initialization or recreation fails.
+    /// Returns an error if sandbox recreation fails.
     pub async fn force_recreate_sandbox(&mut self) -> Result<()> {
-        if self.sandbox.is_none() {
-            self.sandbox = Some(SandboxManager::new(self.sandbox_scope.clone()).await?);
-        }
-
-        if let Some(sandbox) = self.sandbox.as_mut() {
-            sandbox.recreate().await?;
-            info!(session_id = %self.session_id, "Sandbox force recreated for session");
-            return Ok(());
-        }
-
-        Err(anyhow::anyhow!("Sandbox not initialized"))
+        self.sandbox_admin
+            .recreate_scope_sandbox(self.sandbox_scope.clone())
+            .await?;
+        info!(session_id = %self.session_id, "Sandbox force recreated for session");
+        Ok(())
     }
 
-    /// Get sandbox reference if running
-    #[must_use]
-    pub fn sandbox(&self) -> Option<&SandboxManager> {
-        self.sandbox.as_ref().filter(|s| s.is_running())
-    }
-
-    /// Get mutable sandbox reference if running
-    pub fn sandbox_mut(&mut self) -> Option<&mut SandboxManager> {
-        self.sandbox.as_mut().filter(|s| s.is_running())
-    }
-
-    /// Destroy sandbox if running
+    /// Destroy the session sandbox if it exists.
     ///
     /// # Errors
     ///
     /// Returns an error if sandbox destruction fails.
     pub async fn destroy_sandbox(&mut self) -> Result<()> {
-        if let Some(mut sandbox) = self.sandbox.take() {
-            sandbox.destroy().await?;
+        let container_name = self.sandbox_scope.container_name();
+        let deleted = self
+            .sandbox_admin
+            .delete_sandbox_by_name(self.sandbox_scope.owner_id(), &container_name)
+            .await?;
+        if deleted {
             info!(session_id = %self.session_id, "Sandbox destroyed");
         }
         Ok(())
@@ -796,11 +697,9 @@ mod tests {
     #![allow(clippy::clone_on_ref_ptr)]
 
     use super::{
-        AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, PendingSshReplay, PendingUserInput,
-        UserInputKind,
+        AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, PendingUserInput, UserInputKind,
     };
     use crate::agent::memory::AgentMessage;
-    use crate::llm::InvocationId;
     use crate::sandbox::SandboxScope;
     use anyhow::Result;
     use async_trait::async_trait;
@@ -840,23 +739,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_pending_ssh_replays() {
-        let mut session = AgentSession::new(42_i64.into());
-        session.store_pending_ssh_replay(PendingSshReplay {
-            request_id: "req-1".to_string(),
-            invocation_id: InvocationId::from("call-1"),
-            tool_name: "ssh_sudo_exec".to_string(),
-            arguments: r#"{"command":"journalctl"}"#.to_string(),
-        });
-
-        assert!(session.pending_ssh_replay("req-1").is_some());
-
-        session.reset();
-
-        assert!(session.pending_ssh_replay("req-1").is_none());
-    }
-
-    #[test]
     fn start_task_clears_pending_user_input() {
         let mut session = AgentSession::new(42_i64.into());
         session.set_pending_user_input(PendingUserInput {
@@ -867,6 +749,37 @@ mod tests {
         session.start_task();
 
         assert!(session.pending_user_input().is_none());
+    }
+
+    #[test]
+    fn restore_last_task_from_memory_uses_latest_user_task() {
+        let mut session = AgentSession::new(42_i64.into());
+        session
+            .memory
+            .add_message(AgentMessage::user_task("first task"));
+        session
+            .memory
+            .add_message(AgentMessage::assistant("first answer"));
+        session
+            .memory
+            .add_message(AgentMessage::user_task("second task"));
+
+        session.restore_last_task_from_memory();
+
+        assert_eq!(session.last_task.as_deref(), Some("second task"));
+    }
+
+    #[test]
+    fn restore_last_task_from_memory_keeps_existing_last_task() {
+        let mut session = AgentSession::new(42_i64.into());
+        session.remember_task("current volatile task");
+        session
+            .memory
+            .add_message(AgentMessage::user_task("persisted task"));
+
+        session.restore_last_task_from_memory();
+
+        assert_eq!(session.last_task.as_deref(), Some("current volatile task"));
     }
 
     #[test]

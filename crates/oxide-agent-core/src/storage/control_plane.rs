@@ -160,7 +160,6 @@ pub struct TopicBindingRecord {
     /// Agent identifier bound to topic.
     pub agent_id: String,
     /// Binding source kind.
-    #[serde(default)]
     pub binding_kind: TopicBindingKind,
     /// Optional transport chat identifier for runtime resolution.
     #[serde(default)]

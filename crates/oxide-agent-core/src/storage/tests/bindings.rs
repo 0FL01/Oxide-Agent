@@ -109,26 +109,6 @@ fn upsert_topic_binding_initial_insert_starts_version_and_sets_timestamps() {
 }
 
 #[test]
-fn topic_binding_record_backward_compatible_deserialization_defaults_new_fields() {
-    let raw = r#"{
-            "schema_version": 1,
-            "version": 3,
-            "user_id": 7,
-            "topic_id": "topic-a",
-            "agent_id": "agent-a",
-            "created_at": 100,
-            "updated_at": 200
-        }"#;
-
-    let record: TopicBindingRecord = serde_json::from_str(raw).expect("record must deserialize");
-    assert_eq!(record.binding_kind, TopicBindingKind::Manual);
-    assert_eq!(record.chat_id, None);
-    assert_eq!(record.thread_id, None);
-    assert_eq!(record.expires_at, None);
-    assert_eq!(record.last_activity_at, None);
-}
-
-#[test]
 fn topic_binding_record_roundtrip_preserves_runtime_metadata() {
     let record = TopicBindingRecord {
         schema_version: 2,

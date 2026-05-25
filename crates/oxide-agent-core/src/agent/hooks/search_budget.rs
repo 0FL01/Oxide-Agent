@@ -25,12 +25,7 @@ impl SearchBudgetHook {
     fn is_search_tool(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "web_search"
-                | "web_extract"
-                | "searxng_search"
-                | "deep_crawl"
-                | "web_markdown"
-                | "web_pdf"
+            "web_search" | "web_extract" | "searxng_search" | "web_markdown"
         )
     }
 }

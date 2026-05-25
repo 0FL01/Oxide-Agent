@@ -7,7 +7,9 @@ use crate::config::get_llm_http_timeout_secs;
 use crate::llm::LlmError;
 use reqwest::{Client as HttpClient, ClientBuilder as HttpClientBuilder};
 use serde_json::Value;
-use std::time::Duration;
+use std::error::Error;
+use std::time::{Duration, Instant};
+use tracing::{debug, trace};
 
 /// Application name and version for User-Agent and provider attribution headers.
 pub const APP_USER_AGENT: &str = "Oxide-Agent/0.1.0";
@@ -62,6 +64,19 @@ pub async fn send_json_request(
     extra_headers: &[(&str, &str)],
 ) -> Result<Value, LlmError> {
     let mut request = client.post(url).json(body);
+    let started_at = Instant::now();
+    let (url_host, url_path) = sanitized_url_parts(url);
+    let body_bytes = json_body_len(body);
+
+    debug!(
+        method = "POST",
+        url_host = url_host.as_str(),
+        url_path = url_path.as_str(),
+        body_bytes,
+        has_auth = auth_header.is_some(),
+        extra_headers_count = extra_headers.len(),
+        "Sending LLM JSON request"
+    );
 
     // Always include User-Agent for provider identification
     request = request.header("User-Agent", APP_USER_AGENT);
@@ -74,17 +89,54 @@ pub async fn send_json_request(
         request = request.header(*key, *value);
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|e| LlmError::NetworkError(e.to_string()))?;
+    let response = request.send().await.map_err(|e| {
+        let diagnostic = format_reqwest_error(&e);
+        debug!(
+            method = "POST",
+            url_host = url_host.as_str(),
+            url_path = url_path.as_str(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            error = %diagnostic,
+            is_timeout = e.is_timeout(),
+            is_connect = e.is_connect(),
+            is_request = e.is_request(),
+            is_body = e.is_body(),
+            "LLM JSON request failed before response"
+        );
+        LlmError::NetworkError(diagnostic)
+    })?;
+
+    let status = response.status();
+    debug!(
+        method = "POST",
+        url_host = url_host.as_str(),
+        url_path = url_path.as_str(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        status = status.as_u16(),
+        "LLM JSON request received response"
+    );
 
     if !response.status().is_success() {
-        let status = response.status();
-
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
             let wait_secs = parse_retry_after(response.headers());
             let error_text = response.text().await.unwrap_or_default();
+            debug!(
+                method = "POST",
+                url_host = url_host.as_str(),
+                url_path = url_path.as_str(),
+                elapsed_ms = started_at.elapsed().as_millis(),
+                status = status.as_u16(),
+                retry_after_secs = wait_secs,
+                body_chars = error_text.chars().count(),
+                "LLM JSON request hit provider rate limit"
+            );
+            trace!(
+                method = "POST",
+                url_host = url_host.as_str(),
+                url_path = url_path.as_str(),
+                body_preview = truncate_for_log(&error_text, 500).as_str(),
+                "LLM rate limit response body"
+            );
             return Err(LlmError::RateLimit {
                 wait_secs,
                 message: error_text,
@@ -92,6 +144,23 @@ pub async fn send_json_request(
         }
 
         let error_text = response.text().await.unwrap_or_default();
+        debug!(
+            method = "POST",
+            url_host = url_host.as_str(),
+            url_path = url_path.as_str(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            status = status.as_u16(),
+            body_chars = error_text.chars().count(),
+            "LLM JSON request returned non-success status"
+        );
+        trace!(
+            method = "POST",
+            url_host = url_host.as_str(),
+            url_path = url_path.as_str(),
+            status = status.as_u16(),
+            body_preview = truncate_for_log(&error_text, 500).as_str(),
+            "LLM error response body"
+        );
 
         let is_html = error_text.trim_start().starts_with("<!DOCTYPE")
             || error_text.trim_start().starts_with("<html")
@@ -100,21 +169,112 @@ pub async fn send_json_request(
         let clean_message = if is_html {
             format!("API error: {status} (Server returned HTML error page)")
         } else {
-            let truncated = if error_text.len() > 500 {
-                format!("{}... (truncated)", &error_text[..500])
-            } else {
-                error_text
-            };
+            let truncated = truncate_for_log(&error_text, 500);
             format!("API error: {status} - {truncated}")
         };
 
         return Err(LlmError::ApiError(clean_message));
     }
 
-    response
-        .json()
-        .await
-        .map_err(|e| LlmError::JsonError(e.to_string()))
+    let response_text = response.text().await.map_err(|e| {
+        let diagnostic = format_reqwest_error(&e);
+        debug!(
+            method = "POST",
+            url_host = url_host.as_str(),
+            url_path = url_path.as_str(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            status = status.as_u16(),
+            error = %diagnostic,
+            is_timeout = e.is_timeout(),
+            is_connect = e.is_connect(),
+            is_request = e.is_request(),
+            is_body = e.is_body(),
+            "LLM JSON response body read failed"
+        );
+        LlmError::NetworkError(diagnostic)
+    })?;
+
+    trace!(
+        method = "POST",
+        url_host = url_host.as_str(),
+        url_path = url_path.as_str(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        status = status.as_u16(),
+        body_chars = response_text.chars().count(),
+        body_preview = truncate_for_log(&response_text, 500).as_str(),
+        "LLM success response body"
+    );
+
+    serde_json::from_str(&response_text).map_err(|e| {
+        debug!(
+            method = "POST",
+            url_host = url_host.as_str(),
+            url_path = url_path.as_str(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            status = status.as_u16(),
+            body_chars = response_text.chars().count(),
+            error = %e,
+            "LLM JSON response parse failed"
+        );
+        trace!(
+            method = "POST",
+            url_host = url_host.as_str(),
+            url_path = url_path.as_str(),
+            body_preview = truncate_for_log(&response_text, 500).as_str(),
+            "Invalid LLM JSON response body"
+        );
+        LlmError::JsonError(e.to_string())
+    })
+}
+
+fn json_body_len(body: &Value) -> usize {
+    serde_json::to_vec(body).map_or(0, |bytes| bytes.len())
+}
+
+fn sanitized_url_parts(url: &str) -> (String, String) {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => (
+            parsed.host_str().unwrap_or("unknown").to_string(),
+            parsed.path().to_string(),
+        ),
+        Err(_) => ("invalid-url".to_string(), "invalid-url".to_string()),
+    }
+}
+
+fn truncate_for_log(input: &str, max_chars: usize) -> String {
+    let mut chars = input.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{truncated}... (truncated)")
+    } else {
+        truncated
+    }
+}
+
+fn format_reqwest_error(error: &reqwest::Error) -> String {
+    let mut source_chain = Vec::new();
+    let mut current = error.source();
+    while let Some(source) = current {
+        source_chain.push(source.to_string());
+        current = source.source();
+    }
+
+    let source_chain = if source_chain.is_empty() {
+        "none".to_string()
+    } else {
+        source_chain.join(" | ")
+    };
+
+    format!(
+        "request failed: timeout={} connect={} request={} body={} decode={} status={:?} source_chain={}",
+        error.is_timeout(),
+        error.is_connect(),
+        error.is_request(),
+        error.is_body(),
+        error.is_decode(),
+        error.status(),
+        source_chain
+    )
 }
 
 /// Extracts text content from a JSON response by navigating a path.

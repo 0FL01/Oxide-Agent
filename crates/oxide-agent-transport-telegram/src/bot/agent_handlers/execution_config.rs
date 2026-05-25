@@ -10,6 +10,8 @@ use oxide_agent_core::agent::{
     },
     AgentExecutionProfile, SessionId,
 };
+use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::{StorageProvider, TopicInfraConfigRecord};
 use std::sync::Arc;
 use teloxide::types::ChatId;
@@ -19,6 +21,8 @@ use tracing::warn;
 pub(crate) struct ActiveSessionConfig {
     pub(crate) session_id: SessionId,
     pub(crate) storage: Arc<dyn StorageProvider>,
+    pub(crate) llm: Arc<LlmClient>,
+    pub(crate) agent_settings: Arc<AgentSettings>,
     pub(crate) user_id: i64,
     pub(crate) context_key: String,
     pub(crate) agent_flow_id: String,

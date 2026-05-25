@@ -15,7 +15,6 @@ too_many_arguments = "forbid"
 
 [dependencies]
 oxide-agent-core = { path = "../oxide-agent-core" }
-oxide-agent-memory = { path = "../oxide-agent-memory" }
 oxide-agent-runtime = { path = "../oxide-agent-runtime" }
 tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
@@ -32,6 +31,10 @@ tower = "0.4"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = []
+socket_e2e = []
 
 [dev-dependencies]
 tokio-test = "0.4"

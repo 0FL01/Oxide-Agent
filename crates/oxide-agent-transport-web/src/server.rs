@@ -67,7 +67,6 @@ pub struct SerializableProgress {
     pub is_finished: bool,
     pub error: Option<String>,
     pub current_thought: Option<String>,
-    pub narrative_headline: Option<String>,
     pub last_compaction_status: Option<String>,
     pub repeated_compaction_warning: Option<String>,
     pub last_history_repair_status: Option<String>,
@@ -82,7 +81,6 @@ impl SerializableProgress {
             is_finished: state.is_finished,
             error: state.error.clone(),
             current_thought: state.current_thought.clone(),
-            narrative_headline: state.narrative_headline.clone(),
             last_compaction_status: state.last_compaction_status.clone(),
             repeated_compaction_warning: state.repeated_compaction_warning.clone(),
             last_history_repair_status: state.last_history_repair_status.clone(),
@@ -94,7 +92,7 @@ impl SerializableProgress {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Milestones {
-    /// HTTP request received (legacy, kept for compatibility).
+    /// HTTP request accepted by the web transport.
     pub session_ready_ms: Option<i64>,
     /// When executor lock was actually acquired (real session ready).
     pub executor_lock_acquired_ms: Option<i64>,

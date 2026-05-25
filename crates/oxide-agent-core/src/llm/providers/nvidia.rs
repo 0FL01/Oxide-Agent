@@ -1,3 +1,7 @@
+pub(crate) mod module;
+
+pub(crate) use module::NvidiaProviderModule;
+
 use crate::config::NVIDIA_CHAT_TEMPERATURE;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::support::http::{extract_text_content, send_json_request};

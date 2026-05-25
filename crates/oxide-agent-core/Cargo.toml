@@ -26,57 +26,214 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0.17"
 regex = "1.10"
-aws-sdk-s3 = "1.119.0"
-aws-config = "1.8.12"
-aws-credential-types = "1.2.11"
-aws-types = "1.3.11"
-async-openai = { version = "0.33.1", default-features = false, features = ["rustls", "chat-completion", "audio", "image"] }
-reqwest = { version = "0.12", features = ["cookies", "json", "multipart", "rustls-tls", "stream"], default-features = false }
+aws-sdk-s3 = { version = "1.119.0", optional = true }
+aws-config = { version = "1.8.12", optional = true }
+aws-credential-types = { version = "1.2.11", optional = true }
+aws-types = { version = "1.3.11", optional = true }
+async-openai = { version = "0.33.1", default-features = false, features = ["rustls", "chat-completion", "audio", "image"], optional = true }
+reqwest = { version = "0.12", features = ["cookies", "json", "multipart", "rustls-tls", "stream"], default-features = false, optional = true }
 base64 = "0.22.1"
 async-trait = "0.1.89"
 html-escape = "0.2.13"
 anyhow = "1.0.100"
-rmcp = { version = "1.2.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "1.2.0", default-features = false, features = ["client", "transport-child-process"], optional = true }
 tiktoken-rs = "0.9.1"
-bollard = "0.20.2"
+bollard = { version = "0.20.2", optional = true }
 futures-util = "0.3.31"
 uuid = { version = "1.19.0", features = ["v4", "v5"] }
 shell-escape = "0.1.5"
 tavily = { version = "2.0", optional = true }
 chrono = { version = "0.4.42", features = ["serde"] }
-tar = "0.4"
-bytes = "1.11"
-http-body-util = "0.1"
-serde_bytes = "0.11.19"
+tar = { version = "0.4", optional = true }
+bytes = { version = "1.11", optional = true }
+http-body-util = { version = "0.1", optional = true }
+serde_bytes = { version = "0.11.19", optional = true }
 lazy-regex = "3.5.1"
 moka = { version = "0.12", features = ["future"] }
 tokio-retry = "0.3"
 unicode-segmentation = "1.12.0"
 sha2 = "0.10.9"
 serde_yaml = "0.9.34"
-zai-rs = "0.1.15"
-claudius = "0.19.0"
+zai-rs = { version = "0.1.15", optional = true }
+claudius = { version = "0.19.0", optional = true }
 mockall = "0.14.0"
 insta = "1.46.1"
-bincode = "1.3.3"
+bincode = { version = "1.3.3", optional = true }
 tempfile = "3.27.0"
 cron = "0.15.0"
 chrono-tz = "0.10.4"
 fastrand = "2.3.0"
-gemini-rust = "1.7.1"
-oxide-agent-memory = { path = "../oxide-agent-memory" }
+htmd = { version = "0.5.4", optional = true }
+url = "2.5.7"
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]
 
 [features]
-default = ["tavily", "searxng"]
-tavily = ["dep:tavily"]
-searxng = []
-crawl4ai = []
-browser_use = []
-jira = []
-mattermost = []
+default = []
+
+# Profile features are compositions of atomic capability features. Atomic
+# features own heavy dependencies directly so slim profiles can prove their
+# dependency boundary with cargo tree checks.
+profile-full = [
+    "transport-telegram",
+    "transport-web",
+    "storage-s3-r2",
+    "llm-chatgpt",
+    "llm-groq",
+    "llm-mistral",
+    "llm-minimax",
+    "llm-zai",
+    "llm-nvidia",
+    "llm-opencode-go",
+    "llm-openrouter",
+    "tool-todos",
+    "tool-compression",
+    "tool-delegation",
+    "tool-agents-md",
+    "tool-reminder",
+    "tool-wiki-memory",
+    "tool-webfetch-md",
+    "tool-tavily",
+    "tool-searxng",
+    "tool-browser-use",
+    "tool-sandbox-fileops",
+    "tool-sandbox-exec",
+    "tool-sandbox-recreate",
+    "tool-file-delivery",
+    "tool-media-audio",
+    "tool-media-image",
+    "tool-media-video",
+    "tool-ytdlp",
+    "tool-tts-kokoro",
+    "tool-tts-silero",
+    "tool-stack-logs",
+    "sandbox-backend-docker-direct",
+    "sandbox-backend-sandboxd-client",
+    "sandbox-daemon",
+    "integration-mcp-jira",
+    "integration-mcp-mattermost",
+    "integration-ssh-mcp",
+    "manager-control-plane",
+]
+profile-embedded-opencode-local = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-todos",
+    "tool-compression",
+    "tool-delegation",
+    "tool-agents-md",
+    "tool-reminder",
+    "tool-wiki-memory",
+    "tool-webfetch-md",
+    "tool-file-delivery",
+    "tool-media-audio",
+    "tool-media-image",
+    "tool-media-video",
+    "tool-tavily",
+    "tool-sandbox-fileops",
+    "tool-sandbox-exec",
+    "tool-sandbox-recreate",
+    "sandbox-backend-docker-direct",
+]
+profile-lite = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-todos",
+    "tool-webfetch-md",
+    "tool-reminder",
+]
+profile-search-only = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-webfetch-md",
+    "tool-tavily",
+]
+profile-no-sandbox = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-todos",
+    "tool-webfetch-md",
+    "tool-reminder",
+    "tool-wiki-memory",
+]
+profile-media-enabled = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-media-audio",
+    "tool-media-image",
+    "tool-media-video",
+    "tool-file-delivery",
+]
+
+# Transports
+transport-telegram = []
+transport-web = []
+transport-cli = []
+transport-http-api = []
+
+# Storage
+storage-s3-r2 = [
+    "dep:aws-sdk-s3",
+    "dep:aws-config",
+    "dep:aws-credential-types",
+    "dep:aws-types",
+]
+storage-local-fs = []
+
+# LLM providers
+llm-chatgpt = ["dep:reqwest"]
+llm-groq = ["dep:async-openai"]
+llm-mistral = ["dep:async-openai", "dep:reqwest"]
+llm-minimax = ["dep:claudius"]
+llm-zai = ["dep:zai-rs", "dep:reqwest"]
+llm-nvidia = ["dep:reqwest"]
+llm-opencode-go = ["dep:reqwest"]
+llm-openrouter = ["dep:reqwest"]
+
+# Tools
+tool-todos = []
+tool-compression = []
+tool-delegation = []
+tool-agents-md = []
+tool-reminder = []
+tool-wiki-memory = []
+tool-webfetch-md = ["dep:htmd", "dep:reqwest"]
+tool-tavily = ["dep:tavily"]
+tool-searxng = ["dep:reqwest"]
+tool-browser-use = ["dep:reqwest"]
+tool-sandbox-fileops = []
+tool-sandbox-exec = []
+tool-sandbox-recreate = []
+tool-file-delivery = []
+tool-media-audio = ["dep:reqwest"]
+tool-media-image = ["dep:reqwest"]
+tool-media-video = ["dep:reqwest"]
+tool-ytdlp = []
+tool-tts-kokoro = ["dep:reqwest"]
+tool-tts-silero = ["dep:reqwest"]
+tool-stack-logs = ["sandbox-backend-docker-direct"]
+
+# Sandbox and integrations
+sandbox-backend-docker-direct = [
+    "dep:bollard",
+    "dep:tar",
+    "dep:bytes",
+    "dep:http-body-util",
+    "sandbox-broker-protocol",
+]
+sandbox-backend-sandboxd-client = ["sandbox-broker-protocol"]
+sandbox-broker-protocol = ["dep:bincode", "dep:serde_bytes"]
+sandbox-daemon = ["sandbox-backend-docker-direct"]
+integration-mcp-jira = ["dep:rmcp"]
+integration-mcp-mattermost = ["dep:rmcp"]
+integration-ssh-mcp = ["dep:rmcp"]
+manager-control-plane = []
 
 [dev-dependencies]
 dotenvy = "0.15"

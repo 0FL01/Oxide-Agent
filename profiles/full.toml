@@ -1,0 +1,43 @@
+profile = "full"
+cargo_features = ["profile-full"]
+
+[modules]
+"integration/mcp-jira" = { enabled = true }
+"integration/mcp-mattermost" = { enabled = true }
+"integration/ssh-mcp" = { enabled = true }
+"llm-provider/groq" = { enabled = true }
+"llm-provider/minimax" = { enabled = true }
+"llm-provider/mistral" = { enabled = true }
+"llm-provider/nvidia" = { enabled = true }
+"llm-provider/openai-chatgpt" = { enabled = true }
+"llm-provider/opencode-go" = { enabled = true }
+"llm-provider/openrouter" = { enabled = true }
+"llm-provider/zai" = { enabled = true }
+"manager/control-plane" = { enabled = true }
+"sandbox-backend/docker-direct" = { enabled = true }
+"sandbox-backend/sandboxd-client" = { enabled = true }
+"sandbox-daemon/sandboxd" = { enabled = true }
+"storage/r2" = { enabled = true }
+"tool/agents-md" = { enabled = true }
+"tool/browser-use" = { enabled = true }
+"tool/compression" = { enabled = true }
+"tool/delegation" = { enabled = true }
+"tool/file-delivery" = { enabled = true }
+"tool/media-audio" = { enabled = true }
+"tool/media-image" = { enabled = true }
+"tool/media-video" = { enabled = true }
+"tool/reminder" = { enabled = true }
+"tool/sandbox-exec" = { enabled = true }
+"tool/sandbox-fileops" = { enabled = true }
+"tool/sandbox-recreate" = { enabled = true }
+"tool/searxng" = { enabled = true }
+"tool/stack-logs" = { enabled = true }
+"tool/tavily" = { enabled = true }
+"tool/todos" = { enabled = true }
+"tool/tts-kokoro" = { enabled = true }
+"tool/tts-silero" = { enabled = true }
+"tool/webfetch-md" = { enabled = true }
+"tool/wiki-memory" = { enabled = true }
+"tool/ytdlp" = { enabled = true }
+"transport/telegram" = { enabled = true }
+"transport/web" = { enabled = true }

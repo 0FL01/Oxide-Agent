@@ -1,40 +1,50 @@
 //! Sandbox Provider - executes tools in Docker sandbox
 //!
-//! Provides `execute_command`, `read_file`, `write_file`, `send_file_to_user`,
-//! `list_files`, and `recreate_sandbox` tools.
+//! Provides `execute_command`, `read_file`, `write_file`, `list_files`, and
+//! `recreate_sandbox` tools.
 
 use crate::agent::progress::AgentEvent;
-use crate::agent::progress::FileDeliveryKind;
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    CleanupStatus, OutputNormalizer, OutputPreview, ToolExecutor, ToolInvocation, ToolName,
+    ToolOutput, ToolRuntimeConfig, ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxManager, SandboxScope};
+use crate::sandbox::{
+    ExecResult, SandboxBackend, SandboxBackendId, SandboxCapability, SandboxExec,
+    SandboxFileListing, SandboxFileOps, SandboxLifecycle, SandboxManager, SandboxScope,
+};
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use shell_escape::escape;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::debug;
 
-use super::file_delivery::{
-    deliver_file_via_progress, format_generic_delivery_report, FileDeliveryReport,
-    FileDeliveryRequest, FileDeliveryStatus, CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
-};
-use super::path::resolve_file_path;
+const SANDBOX_EXEC_TOOL_NAMES: &[&str] = &["execute_command"];
+const SANDBOX_FILEOPS_TOOL_NAMES: &[&str] = &["write_file", "read_file", "list_files"];
+const SANDBOX_LIFECYCLE_TOOL_NAMES: &[&str] = &["recreate_sandbox"];
+const SANDBOX_RUNTIME_BACKEND_ID: SandboxBackendId = SandboxBackendId::new("sandbox/runtime");
+const SANDBOX_RUNTIME_CAPABILITIES: &[SandboxCapability] = &[
+    SandboxCapability::FileOps,
+    SandboxCapability::Exec,
+    SandboxCapability::Lifecycle,
+];
 
-/// Provider for Docker sandbox tools
-pub struct SandboxProvider {
+/// Shared runtime state used by sandbox tool capability slices.
+pub struct SandboxRuntime {
     sandbox: Arc<Mutex<Option<SandboxManager>>>,
     execution_gate: Arc<RwLock<()>>,
     sandbox_scope: SandboxScope,
     progress_tx: Option<Sender<AgentEvent>>,
 }
 
-impl SandboxProvider {
-    /// Create a new sandbox provider (sandbox is lazily initialized)
+impl SandboxRuntime {
+    /// Create a new sandbox runtime (sandbox is lazily initialized).
     #[must_use]
     pub fn new(sandbox_scope: impl Into<SandboxScope>) -> Self {
         Self {
@@ -45,20 +55,20 @@ impl SandboxProvider {
         }
     }
 
-    /// Set the progress channel for sending events (like file transfers)
+    /// Set the progress channel for sending events (like file transfers).
     #[must_use]
     pub fn with_progress_tx(mut self, tx: Sender<AgentEvent>) -> Self {
         self.progress_tx = Some(tx);
         self
     }
 
-    /// Set the sandbox manager (for when sandbox is created externally)
+    /// Set the sandbox manager (for when sandbox is created externally).
     pub async fn set_sandbox(&self, sandbox: SandboxManager) {
         let mut guard = self.sandbox.lock().await;
         *guard = Some(sandbox);
     }
 
-    async fn get_or_create_sandbox(&self) -> Result<SandboxManager> {
+    pub(crate) async fn get_or_create_sandbox(&self) -> Result<SandboxManager> {
         let mut guard = self.sandbox.lock().await;
 
         if guard.as_ref().is_none_or(|sandbox| !sandbox.is_running()) {
@@ -72,6 +82,12 @@ impl SandboxProvider {
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
+    }
+
+    /// Returns the progress channel associated with this runtime, if any.
+    #[must_use]
+    pub(crate) fn progress_tx(&self) -> Option<&Sender<AgentEvent>> {
+        self.progress_tx.as_ref()
     }
 
     async fn get_or_init_sandbox_manager(&self) -> Result<SandboxManager> {
@@ -90,291 +106,506 @@ impl SandboxProvider {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Sandbox not initialized"))
     }
+}
 
-    async fn handle_execute_command(
-        sandbox: &mut SandboxManager,
-        arguments: &str,
+impl SandboxBackend for SandboxRuntime {
+    fn id(&self) -> SandboxBackendId {
+        SANDBOX_RUNTIME_BACKEND_ID
+    }
+
+    fn capabilities(&self) -> &'static [SandboxCapability] {
+        SANDBOX_RUNTIME_CAPABILITIES
+    }
+}
+
+#[async_trait]
+impl SandboxExec for SandboxRuntime {
+    async fn exec(
+        &self,
+        command: &str,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
+    ) -> Result<ExecResult> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        sandbox.exec_command(command, cancellation_token).await
+    }
+}
 
-        // Pass cancellation_token to exec_command
-        match sandbox
-            .exec_command(&args.command, cancellation_token)
-            .await
-        {
-            Ok(result) => serialize_json(json!({
-                "ok": result.success(),
-                "command": args.command,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "exit_code": result.exit_code,
-            })),
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "command": args.command,
-                "error": error.to_string(),
-            })),
+#[async_trait]
+impl SandboxFileOps for SandboxRuntime {
+    async fn write_file(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        sandbox.write_file(path, bytes).await
+    }
+
+    async fn read_file(&self, path: &str) -> Result<Vec<u8>> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        sandbox.read_file(path).await
+    }
+
+    async fn file_size_bytes(
+        &self,
+        path: &str,
+        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<u64> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        sandbox.file_size_bytes(path, cancellation_token).await
+    }
+
+    async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {
+        let _shared = self.execution_gate.read().await;
+        let mut sandbox = self.get_or_create_sandbox().await?;
+        let result = sandbox
+            .exec_command(&list_files_command(path), None)
+            .await?;
+        Ok(SandboxFileListing {
+            path: path.to_string(),
+            listing: result.stdout,
+            stderr: result.stderr,
+            exit_code: result.exit_code,
+        })
+    }
+}
+
+#[async_trait]
+impl SandboxLifecycle for SandboxRuntime {
+    async fn recreate(&self) -> Result<()> {
+        let _exclusive = self.execution_gate.write().await;
+        let mut sandbox = self.get_or_init_sandbox_manager().await?;
+        let result = sandbox.recreate().await;
+        self.set_sandbox(sandbox).await;
+        result
+    }
+}
+
+struct SandboxToolHandlers;
+
+impl SandboxToolHandlers {
+    async fn execute_typed_exec_tool(
+        exec: &dyn SandboxExec,
+        invocation: &ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        debug!(tool = %invocation.tool_name, "Executing typed sandbox tool");
+
+        match invocation.tool_name.as_str() {
+            "execute_command" => {
+                let args: ExecuteCommandArgs = parse_invocation_args(invocation)?;
+                let result = exec
+                    .exec(&args.command, Some(&invocation.cancellation_token))
+                    .await;
+                Ok(match result {
+                    Ok(result) => typed_exec_result(invocation, &args.command, result),
+                    Err(error) => typed_simple_result::<Value>(
+                        invocation,
+                        Err(anyhow::anyhow!("sandbox command failed: {error}")),
+                    ),
+                })
+            }
+            other => Err(ToolRuntimeError::Internal(format!(
+                "typed sandbox exec executor received unknown tool: {other}"
+            ))),
         }
     }
 
-    async fn handle_write_file(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
-        let args: WriteFileArgs = serde_json::from_str(arguments)?;
-        match sandbox
-            .write_file(&args.path, args.content.as_bytes())
-            .await
-        {
-            Ok(()) => serialize_json(json!({
-                "ok": true,
-                "path": args.path,
-                "bytes_written": args.content.len(),
-            })),
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "path": args.path,
-                "error": error.to_string(),
-            })),
+    async fn execute_typed_fileops_tool(
+        fileops: &dyn SandboxFileOps,
+        invocation: &ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        debug!(tool = %invocation.tool_name, "Executing typed sandbox tool");
+
+        match invocation.tool_name.as_str() {
+            "write_file" => {
+                let args: WriteFileArgs = parse_invocation_args(invocation)?;
+                let result = fileops
+                    .write_file(&args.path, args.content.as_bytes())
+                    .await;
+                Ok(typed_simple_result(
+                    invocation,
+                    result.map(|()| {
+                        json!({
+                            "ok": true,
+                            "path": args.path,
+                            "bytes_written": args.content.len(),
+                        })
+                    }),
+                ))
+            }
+            "read_file" => {
+                let args: ReadFileArgs = parse_invocation_args(invocation)?;
+                let result = fileops.read_file(&args.path).await;
+                Ok(match result {
+                    Ok(content) => typed_read_file_result(invocation, &args.path, &content),
+                    Err(error) => typed_simple_result::<Value>(
+                        invocation,
+                        Err(anyhow::anyhow!("sandbox read_file failed: {error}")),
+                    ),
+                })
+            }
+            "list_files" => {
+                let args: ListFilesArgs = parse_invocation_args(invocation)?;
+                let result = fileops.list_files(&args.path).await;
+                Ok(match result {
+                    Ok(listing) => typed_list_files_result(invocation, listing),
+                    Err(error) => typed_simple_result::<Value>(
+                        invocation,
+                        Err(anyhow::anyhow!("sandbox list_files failed: {error}")),
+                    ),
+                })
+            }
+            other => Err(ToolRuntimeError::Internal(format!(
+                "typed sandbox fileops executor received unknown tool: {other}"
+            ))),
         }
     }
 
-    async fn handle_read_file(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
-        let args: ReadFileArgs = serde_json::from_str(arguments)?;
-        match sandbox.read_file(&args.path).await {
-            Ok(content) => serialize_json(json!({
-                "ok": true,
-                "path": args.path,
-                "content": String::from_utf8_lossy(&content).to_string(),
-            })),
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "path": args.path,
-                "error": error.to_string(),
-            })),
-        }
-    }
+    async fn execute_typed_lifecycle_tool(
+        lifecycle: &dyn SandboxLifecycle,
+        invocation: &ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        debug!(tool = %invocation.tool_name, "Executing typed sandbox tool");
 
-    async fn handle_send_file(
-        progress_tx: Option<&Sender<AgentEvent>>,
-        sandbox: &mut SandboxManager,
-        arguments: &str,
-    ) -> Result<String> {
-        let args: SendFileArgs = serde_json::from_str(arguments)?;
-        info!(path = %args.path, "send_file_to_user called");
-
-        let resolved_path = match resolve_file_path(sandbox, &args.path).await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(path = %args.path, error = %e, "Failed to resolve file path");
-                return serialize_json(json!({
-                    "ok": false,
-                    "path": args.path,
-                    "status": "resolve_failed",
-                    "error": e.to_string(),
-                }));
+        match invocation.tool_name.as_str() {
+            "recreate_sandbox" => {
+                let _args: RecreateSandboxArgs = parse_invocation_args(invocation)?;
+                let result = lifecycle.recreate().await;
+                Ok(typed_simple_result(
+                    invocation,
+                    result.map(|()| {
+                        json!({
+                            "ok": true,
+                            "status": "recreated",
+                            "message": "Sandbox recreated successfully. Previous workspace contents were removed.",
+                        })
+                    }),
+                ))
             }
-        };
-
-        let file_name = std::path::Path::new(&resolved_path)
-            .file_name()
-            .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().to_string());
-
-        let file_size = match sandbox.file_size_bytes(&resolved_path, None).await {
-            Ok(size) => size,
-            Err(e) => {
-                error!(resolved_path = %resolved_path, error = %e, "Failed to check file size");
-                return serialize_json(json!({
-                    "ok": false,
-                    "path": resolved_path,
-                    "status": "size_check_failed",
-                    "error": e.to_string(),
-                }));
-            }
-        };
-
-        if file_size == 0 {
-            return serialize_json(json!({
-                "ok": false,
-                "path": resolved_path,
-                "file_name": file_name,
-                "size_bytes": file_size,
-                "status": "empty_content",
-                "message": format!(
-                    "❌ ERROR: File '{file_name}' is empty (0 bytes) and cannot be sent.\nSource path: {resolved_path}"
-                ),
-            }));
-        }
-
-        if file_size > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
-            return serialize_json(json!({
-                "ok": false,
-                "path": resolved_path,
-                "file_name": file_name,
-                "size_bytes": file_size,
-                "status": "too_large",
-                "message": "⚠️ ERROR: File too large for chat delivery (>50 MB). Please use the upload_file tool to upload it to the cloud.",
-            }));
-        }
-
-        match sandbox.download_file(&resolved_path).await {
-            Ok(content) => {
-                let report = deliver_file_via_progress(
-                    progress_tx,
-                    FileDeliveryRequest {
-                        kind: FileDeliveryKind::Auto,
-                        file_name: file_name.clone(),
-                        content,
-                        source_path: resolved_path.clone(),
-                    },
-                )
-                .await;
-                serialize_json(build_send_file_response(&resolved_path, &report))
-            }
-            Err(e) => {
-                error!(path = %args.path, resolved_path = %resolved_path, error = %e, "Failed to download file");
-                serialize_json(json!({
-                    "ok": false,
-                    "path": resolved_path,
-                    "file_name": file_name,
-                    "status": "download_failed",
-                    "error": e.to_string(),
-                }))
-            }
-        }
-    }
-
-    async fn handle_list_files(sandbox: &mut SandboxManager, arguments: &str) -> Result<String> {
-        #[derive(Debug, Deserialize)]
-        struct ListFilesArgs {
-            #[serde(default = "default_workspace_path")]
-            path: String,
-        }
-
-        fn default_workspace_path() -> String {
-            "/workspace".to_string()
-        }
-
-        let args: ListFilesArgs = serde_json::from_str(arguments)?;
-        let cmd = format!(
-            "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
-            escape(args.path.as_str().into()),
-            escape(args.path.as_str().into())
-        );
-
-        match sandbox.exec_command(&cmd, None).await {
-            Ok(result) => {
-                if result.success() {
-                    serialize_json(json!({
-                        "ok": true,
-                        "path": args.path,
-                        "listing": result.stdout,
-                        "stderr": result.stderr,
-                        "exit_code": result.exit_code,
-                        "is_empty": result.stdout.is_empty(),
-                    }))
-                } else {
-                    serialize_json(json!({
-                        "ok": false,
-                        "path": args.path,
-                        "listing": result.stdout,
-                        "stderr": result.stderr,
-                        "exit_code": result.exit_code,
-                    }))
-                }
-            }
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "path": args.path,
-                "error": error.to_string(),
-            })),
-        }
-    }
-
-    async fn handle_recreate_sandbox(
-        sandbox: &mut SandboxManager,
-        arguments: &str,
-    ) -> Result<String> {
-        let _: RecreateSandboxArgs = if arguments.trim().is_empty() {
-            RecreateSandboxArgs::default()
-        } else {
-            serde_json::from_str(arguments)?
-        };
-
-        match sandbox.recreate().await {
-            Ok(()) => serialize_json(json!({
-                "ok": true,
-                "status": "recreated",
-                "message": "Sandbox recreated successfully. Previous workspace contents were removed.",
-            })),
-            Err(error) => serialize_json(json!({
-                "ok": false,
-                "status": "recreate_failed",
-                "error": error.to_string(),
-            })),
+            other => Err(ToolRuntimeError::Internal(format!(
+                "typed sandbox lifecycle executor received unknown tool: {other}"
+            ))),
         }
     }
 }
 
-fn serialize_json(value: serde_json::Value) -> Result<String> {
-    serde_json::to_string(&value).map_err(Into::into)
+#[derive(Debug, Deserialize, serde::Serialize)]
+struct ListFilesArgs {
+    #[serde(default = "default_workspace_path")]
+    path: String,
 }
 
-fn file_delivery_status_code(status: &FileDeliveryStatus) -> &'static str {
-    match status {
-        FileDeliveryStatus::Delivered => "delivered",
-        FileDeliveryStatus::DeliveryFailed(_) => "delivery_failed",
-        FileDeliveryStatus::ConfirmationChannelClosed => "confirmation_channel_closed",
-        FileDeliveryStatus::TimedOut => "timed_out",
-        FileDeliveryStatus::QueueUnavailable(_) => "queue_unavailable",
-        FileDeliveryStatus::EmptyContent => "empty_content",
+fn default_workspace_path() -> String {
+    "/workspace".to_string()
+}
+
+fn list_files_command(path: &str) -> String {
+    format!(
+        "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
+        escape(path.into()),
+        escape(path.into())
+    )
+}
+
+fn parse_invocation_args<T>(invocation: &ToolInvocation) -> std::result::Result<T, ToolRuntimeError>
+where
+    T: DeserializeOwned,
+{
+    match serde_json::from_value(invocation.normalized_arguments.clone()) {
+        Ok(args) => Ok(args),
+        Err(value_error) => {
+            serde_json::from_str(&invocation.raw_arguments).map_err(|string_error| {
+                ToolRuntimeError::InvalidArguments(format!(
+                "invalid sandbox arguments: {value_error}; raw JSON parse error: {string_error}"
+            ))
+            })
+        }
     }
 }
 
-fn build_send_file_response(path: &str, report: &FileDeliveryReport) -> serde_json::Value {
-    let mut payload = json!({
-        "ok": matches!(report.status, FileDeliveryStatus::Delivered),
-        "status": file_delivery_status_code(&report.status),
+fn typed_exec_result(invocation: &ToolInvocation, command: &str, result: ExecResult) -> ToolOutput {
+    let normalizer = sandbox_normalizer(invocation);
+    let mut output = if result.success() {
+        normalizer.success(invocation, &result.stdout, &result.stderr)
+    } else {
+        normalizer
+            .failure(
+                invocation,
+                format!("sandbox command exited with code {}", result.exit_code),
+            )
+            .with_streams(
+                normalizer.stdout_preview(&result.stdout),
+                normalizer.stderr_preview(&result.stderr),
+            )
+    };
+    output.exit_code = Some(i32::try_from(result.exit_code).unwrap_or(-1));
+    output.cleanup_status = CleanupStatus::NotNeeded;
+    output.structured_payload = Some(json!({
+        "ok": result.success(),
+        "command": command,
+        "exit_code": result.exit_code,
+    }));
+    output
+}
+
+fn typed_list_files_result(invocation: &ToolInvocation, listing: SandboxFileListing) -> ToolOutput {
+    let normalizer = sandbox_normalizer(invocation);
+    let mut output = if listing.success() {
+        normalizer.success(invocation, &listing.listing, &listing.stderr)
+    } else {
+        normalizer
+            .failure(
+                invocation,
+                format!("sandbox list_files exited with code {}", listing.exit_code),
+            )
+            .with_streams(
+                normalizer.stdout_preview(&listing.listing),
+                normalizer.stderr_preview(&listing.stderr),
+            )
+    };
+    output.exit_code = Some(i32::try_from(listing.exit_code).unwrap_or(-1));
+    output.cleanup_status = CleanupStatus::NotNeeded;
+    output.structured_payload = Some(json!({
+        "ok": listing.success(),
+        "path": listing.path,
+        "exit_code": listing.exit_code,
+        "is_empty": listing.is_empty(),
+    }));
+    output
+}
+
+fn typed_read_file_result(invocation: &ToolInvocation, path: &str, content: &[u8]) -> ToolOutput {
+    let normalizer = sandbox_normalizer(invocation);
+    let binary = bytes_look_binary(content);
+    let text = String::from_utf8_lossy(content);
+    let mut output = normalizer.success(invocation, "", "");
+    output.cleanup_status = CleanupStatus::NotNeeded;
+    output.structured_payload = Some(json!({
+        "ok": true,
         "path": path,
-        "file_name": report.file_name,
-        "size_bytes": report.size_bytes,
-        "message": format_generic_delivery_report(report),
-    });
-
-    if let Some(object) = payload.as_object_mut() {
-        match &report.status {
-            FileDeliveryStatus::DeliveryFailed(error)
-            | FileDeliveryStatus::QueueUnavailable(error) => {
-                object.insert("error".to_string(), json!(error));
-            }
-            FileDeliveryStatus::ConfirmationChannelClosed
-            | FileDeliveryStatus::TimedOut
-            | FileDeliveryStatus::Delivered
-            | FileDeliveryStatus::EmptyContent => {}
+        "bytes": content.len(),
+        "binary": binary,
+    }));
+    output.stdout = if binary {
+        OutputPreview {
+            text: None,
+            bytes_captured: 0,
+            bytes_total_known: Some(content.len()),
+            truncated: false,
+            binary: true,
+            ..OutputPreview::default()
         }
+    } else {
+        normalizer.stdout_preview(&text)
+    };
+    output.truncation.stdout_truncated = output.stdout.truncated;
+    output
+}
+
+fn typed_simple_result<T>(invocation: &ToolInvocation, result: Result<T>) -> ToolOutput
+where
+    T: Into<Value>,
+{
+    let normalizer = sandbox_normalizer(invocation);
+    match result {
+        Ok(payload) => {
+            let mut output = normalizer.success(invocation, "", "");
+            output.structured_payload = Some(payload.into());
+            output.cleanup_status = CleanupStatus::NotNeeded;
+            output
+        }
+        Err(error) => normalizer
+            .failure(invocation, error.to_string())
+            .with_cleanup_status(CleanupStatus::NotNeeded),
+    }
+}
+
+fn sandbox_normalizer(invocation: &ToolInvocation) -> OutputNormalizer {
+    let config = ToolRuntimeConfig {
+        timeout: invocation.timeout.clone(),
+        artifact_dir: invocation.execution_context.artifact_dir.clone(),
+        ..ToolRuntimeConfig::default()
+    };
+    OutputNormalizer::new(config)
+}
+
+fn bytes_look_binary(bytes: &[u8]) -> bool {
+    let inspected = &bytes[..bytes.len().min(65_536)];
+    inspected.contains(&0)
+}
+
+#[derive(Clone)]
+enum SandboxToolExecutorBackend {
+    Exec(Arc<dyn SandboxExec>),
+    FileOps(Arc<dyn SandboxFileOps>),
+    Lifecycle(Arc<dyn SandboxLifecycle>),
+}
+
+fn sandbox_tool_runtime_executors(
+    backend: SandboxToolExecutorBackend,
+    specs: Vec<ToolDefinition>,
+) -> Vec<Arc<dyn ToolExecutor>> {
+    specs
+        .into_iter()
+        .map(|spec| {
+            Arc::new(SandboxToolExecutor {
+                backend: backend.clone(),
+                name: ToolName::from(spec.name.clone()),
+                spec,
+            }) as Arc<dyn ToolExecutor>
+        })
+        .collect()
+}
+
+fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "execute_command".to_string(),
+            description: "Execute a bash command in the isolated sandbox environment. Returns JSON with ok, stdout, stderr, and exit_code. Available commands include: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The bash command to execute"
+                    }
+                },
+                "required": ["command"]
+            }),
+        },
+        ToolDefinition {
+            name: "write_file".to_string(),
+            description: "Write content to a file in the sandbox. Creates parent directories if needed. Returns JSON with ok, path, and bytes_written or error.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file (relative to /workspace or absolute)"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to write to the file"
+                    }
+                },
+                "required": ["path", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read content from a file in the sandbox. Returns JSON with ok, path, and content or error.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to read"
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_files".to_string(),
+            description: "List files in the sandbox workspace. Returns JSON with ok, path, listing, and exit_code. Useful for finding file paths before file operations.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Optional path to list (defaults to /workspace)"
+                    }
+                }
+            }),
+        },
+        ToolDefinition {
+            name: "recreate_sandbox".to_string(),
+            description: "Recreate the sandbox container from scratch, wiping all previous workspace contents. Returns JSON with ok, status, and message or error.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+    ]
+}
+
+fn sandbox_tool_definitions_for(tool_names: &[&str]) -> Vec<ToolDefinition> {
+    sandbox_tool_definitions()
+        .into_iter()
+        .filter(|definition| tool_names.contains(&definition.name.as_str()))
+        .collect()
+}
+
+struct SandboxToolExecutor {
+    backend: SandboxToolExecutorBackend,
+    name: ToolName,
+    spec: ToolDefinition,
+}
+
+#[async_trait]
+impl ToolExecutor for SandboxToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
     }
 
-    payload
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        match &self.backend {
+            SandboxToolExecutorBackend::Exec(exec) => {
+                SandboxToolHandlers::execute_typed_exec_tool(exec.as_ref(), &invocation).await
+            }
+            SandboxToolExecutorBackend::FileOps(fileops) => {
+                SandboxToolHandlers::execute_typed_fileops_tool(fileops.as_ref(), &invocation).await
+            }
+            SandboxToolExecutorBackend::Lifecycle(lifecycle) => {
+                SandboxToolHandlers::execute_typed_lifecycle_tool(lifecycle.as_ref(), &invocation)
+                    .await
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use chrono::Utc;
     use serde_json::Value;
+    use std::path::PathBuf;
 
     #[test]
     fn recreate_sandbox_is_registered() {
-        let provider = SandboxProvider::new(1);
-        let tools = provider.tools();
+        let provider = Arc::new(SandboxLifecycleProvider::new(Arc::new(
+            SandboxRuntime::new(1),
+        )));
+        let executors = provider.tool_runtime_executors();
 
-        assert!(tools.iter().any(|tool| tool.name == "recreate_sandbox"));
-        assert!(provider.can_handle("recreate_sandbox"));
+        assert!(executors
+            .iter()
+            .any(|executor| executor.name().as_str() == "recreate_sandbox"));
+        assert!(executors
+            .iter()
+            .any(|executor| executor.spec().name == "recreate_sandbox"));
     }
 
     #[test]
     fn execute_command_tool_description_mentions_json_response() {
-        let provider = SandboxProvider::new(1);
-        let tools = provider.tools();
-        let execute_command = tools
-            .iter()
+        let provider = Arc::new(SandboxExecProvider::new(Arc::new(SandboxRuntime::new(1))));
+        let execute_command = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
             .find(|tool| tool.name == "execute_command")
             .expect("execute_command registered");
 
@@ -384,47 +615,150 @@ mod tests {
     }
 
     #[test]
-    fn build_send_file_response_serializes_delivery_status() {
-        let payload = build_send_file_response(
-            "/workspace/report.txt",
-            &FileDeliveryReport {
-                file_name: "report.txt".to_string(),
-                source_path: "/workspace/report.txt".to_string(),
-                size_bytes: 12,
-                status: FileDeliveryStatus::DeliveryFailed("upload refused".to_string()),
-            },
-        );
+    fn sandbox_runtime_exposes_narrow_backend_capabilities() {
+        let runtime = SandboxRuntime::new(1);
+        let capabilities = SandboxBackend::capabilities(&runtime);
 
-        assert_eq!(payload["ok"], Value::Bool(false));
+        assert_eq!(SandboxBackend::id(&runtime).as_str(), "sandbox/runtime");
+        assert!(capabilities.contains(&SandboxCapability::Exec));
+        assert!(capabilities.contains(&SandboxCapability::FileOps));
+        assert!(capabilities.contains(&SandboxCapability::Lifecycle));
+    }
+
+    #[test]
+    fn runtime_executors_cover_sandbox_tool_specs() {
+        let runtime = Arc::new(SandboxRuntime::new(1));
+        let exec_provider = Arc::new(SandboxExecProvider::new(Arc::clone(&runtime)));
+        let fileops_provider = Arc::new(SandboxFileOpsProvider::new(Arc::clone(&runtime)));
+        let lifecycle_provider = Arc::new(SandboxLifecycleProvider::new(runtime));
+
+        let executor_names: Vec<String> = exec_provider
+            .tool_runtime_executors()
+            .into_iter()
+            .chain(fileops_provider.tool_runtime_executors())
+            .chain(lifecycle_provider.tool_runtime_executors())
+            .map(|executor| executor.name().into_inner())
+            .collect();
+
         assert_eq!(
-            payload["status"],
-            Value::String("delivery_failed".to_string())
-        );
-        assert_eq!(
-            payload["error"],
-            Value::String("upload refused".to_string())
-        );
-        assert_eq!(
-            payload["file_name"],
-            Value::String("report.txt".to_string())
+            executor_names,
+            vec![
+                "execute_command",
+                "write_file",
+                "read_file",
+                "list_files",
+                "recreate_sandbox"
+            ]
         );
     }
 
     #[test]
-    fn serialize_json_preserves_command_fields() {
-        let payload = serialize_json(json!({
-            "ok": true,
-            "command": "pwd",
-            "stdout": "/workspace\n",
-            "stderr": "",
-            "exit_code": 0,
-        }))
-        .expect("json serialization succeeds");
-        let parsed: Value = serde_json::from_str(&payload).expect("valid json payload");
+    fn narrow_sandbox_providers_expose_disjoint_tool_slices() {
+        let runtime = Arc::new(SandboxRuntime::new(1));
+        let exec_provider = Arc::new(SandboxExecProvider::new(Arc::clone(&runtime)));
+        let fileops_provider = Arc::new(SandboxFileOpsProvider::new(Arc::clone(&runtime)));
+        let fileops_without_delivery_provider = Arc::new(SandboxFileOpsProvider::without_delivery(
+            Arc::clone(&runtime),
+        ));
+        let lifecycle_provider = Arc::new(SandboxLifecycleProvider::new(runtime));
 
-        assert_eq!(parsed["ok"], Value::Bool(true));
-        assert_eq!(parsed["command"], Value::String("pwd".to_string()));
-        assert_eq!(parsed["exit_code"], Value::Number(0.into()));
+        let exec_tools: Vec<_> = exec_provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec().name)
+            .collect();
+        let fileops_tools: Vec<_> = fileops_provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec().name)
+            .collect();
+        let lifecycle_tools: Vec<_> = lifecycle_provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec().name)
+            .collect();
+        let fileops_without_delivery_tools: Vec<_> = fileops_without_delivery_provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec().name)
+            .collect();
+
+        assert_eq!(exec_tools, ["execute_command"]);
+        assert_eq!(fileops_tools, ["write_file", "read_file", "list_files"]);
+        assert_eq!(
+            fileops_without_delivery_tools,
+            ["write_file", "read_file", "list_files"]
+        );
+        assert_eq!(lifecycle_tools, ["recreate_sandbox"]);
+    }
+
+    #[test]
+    fn typed_exec_result_preserves_nonzero_exit_and_streams() {
+        let invocation = test_invocation("execute_command");
+        let output = typed_exec_result(
+            &invocation,
+            "false",
+            ExecResult {
+                stdout: "out".to_string(),
+                stderr: "err".to_string(),
+                exit_code: 7,
+            },
+        );
+
+        assert_eq!(output.status, ToolOutputStatus::Failure);
+        assert_eq!(output.exit_code, Some(7));
+        assert_eq!(output.stdout.text.as_deref(), Some("out"));
+        assert_eq!(output.stderr.text.as_deref(), Some("err"));
+        assert_eq!(output.cleanup_status, CleanupStatus::NotNeeded);
+    }
+
+    #[test]
+    fn typed_read_file_result_marks_binary_output_without_inlining() {
+        let invocation = test_invocation("read_file");
+        let output = typed_read_file_result(&invocation, "/workspace/blob.bin", b"abc\0def");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        assert!(output.stdout.binary);
+        assert!(output.stdout.text.is_none());
+        assert_eq!(
+            output
+                .structured_payload
+                .as_ref()
+                .and_then(|payload| payload.get("binary"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    fn test_invocation(tool_name: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(42),
+            turn_id: TurnId::from("turn_sandbox"),
+            batch_id: ToolBatchId::from("batch_sandbox"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invocation_{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call_{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: "{}".to_string(),
+            normalized_arguments: json!({}),
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(PathBuf::from(".oxide/tool-artifacts")),
+            provider_metadata: ProviderMetadata {
+                provider: "opencode-go".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "deepseek-v4-flash".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
     }
 }
 
@@ -447,164 +781,94 @@ struct ReadFileArgs {
     path: String,
 }
 
-/// Arguments for `send_file_to_user` tool
-#[derive(Debug, Deserialize)]
-struct SendFileArgs {
-    path: String,
-}
-
 /// Arguments for `recreate_sandbox` tool
 #[derive(Debug, Default, Deserialize)]
 struct RecreateSandboxArgs {}
 
-#[async_trait]
-impl ToolProvider for SandboxProvider {
-    fn name(&self) -> &'static str {
-        "sandbox"
+/// Provider for sandbox command execution tools.
+pub struct SandboxExecProvider {
+    exec: Arc<dyn SandboxExec>,
+}
+
+impl SandboxExecProvider {
+    /// Create an exec-only provider backed by a narrow sandbox exec capability.
+    #[must_use]
+    pub fn new<T>(exec: Arc<T>) -> Self
+    where
+        T: SandboxExec + 'static,
+    {
+        Self { exec }
     }
 
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: "execute_command".to_string(),
-                description: "Execute a bash command in the isolated sandbox environment. Returns JSON with ok, stdout, stderr, and exit_code. Available commands include: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "The bash command to execute"
-                        }
-                    },
-                    "required": ["command"]
-                }),
-            },
-            ToolDefinition {
-                name: "write_file".to_string(),
-                description: "Write content to a file in the sandbox. Creates parent directories if needed. Returns JSON with ok, path, and bytes_written or error.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file (relative to /workspace or absolute)"
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Content to write to the file"
-                        }
-                    },
-                    "required": ["path", "content"]
-                }),
-            },
-            ToolDefinition {
-                name: "read_file".to_string(),
-                description: "Read content from a file in the sandbox. Returns JSON with ok, path, and content or error.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file to read"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
-            ToolDefinition {
-                name: "send_file_to_user".to_string(),
-                description: "Send a file from the sandbox to the user via the chat transport. Returns JSON with ok, status, file_name, size_bytes, and message. Supports both absolute paths (/workspace/file.txt) and relative paths (file.txt) - will automatically search in /workspace if not found.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file in the sandbox to send to the user (relative or absolute)"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-            },
-            ToolDefinition {
-                name: "list_files".to_string(),
-                description: "List files in the sandbox workspace. Returns JSON with ok, path, listing, and exit_code. Useful for finding file paths before using send_file_to_user.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Optional path to list (defaults to /workspace)"
-                        }
-                    }
-                }),
-            },
-            ToolDefinition {
-                name: "recreate_sandbox".to_string(),
-                description: "Recreate the sandbox container from scratch, wiping all previous workspace contents. Returns JSON with ok, status, and message or error.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {}
-                }),
-            },
-        ]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            "execute_command"
-                | "read_file"
-                | "write_file"
-                | "send_file_to_user"
-                | "list_files"
-                | "recreate_sandbox"
+    /// Build typed runtime executors for exec tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        sandbox_tool_runtime_executors(
+            SandboxToolExecutorBackend::Exec(Arc::clone(&self.exec)),
+            sandbox_tool_definitions_for(SANDBOX_EXEC_TOOL_NAMES),
         )
     }
+}
 
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
-        debug!(tool = tool_name, "Executing sandbox tool");
+/// Provider for sandbox file operation tools.
+pub struct SandboxFileOpsProvider {
+    fileops: Arc<dyn SandboxFileOps>,
+    tool_names: &'static [&'static str],
+}
 
-        let progress_tx = self.progress_tx.clone();
-        match tool_name {
-            "recreate_sandbox" => {
-                let _exclusive = self.execution_gate.write().await;
-                let mut sandbox = self.get_or_init_sandbox_manager().await?;
-                let result = Self::handle_recreate_sandbox(&mut sandbox, arguments).await;
-                self.set_sandbox(sandbox).await;
-                result
-            }
-            "execute_command" => {
-                let _shared = self.execution_gate.read().await;
-                let mut sandbox = self.get_or_create_sandbox().await?;
-                Self::handle_execute_command(&mut sandbox, arguments, cancellation_token).await
-            }
-            "write_file" => {
-                let _shared = self.execution_gate.read().await;
-                let mut sandbox = self.get_or_create_sandbox().await?;
-                Self::handle_write_file(&mut sandbox, arguments).await
-            }
-            "read_file" => {
-                let _shared = self.execution_gate.read().await;
-                let mut sandbox = self.get_or_create_sandbox().await?;
-                Self::handle_read_file(&mut sandbox, arguments).await
-            }
-            "send_file_to_user" => {
-                let _shared = self.execution_gate.read().await;
-                let mut sandbox = self.get_or_create_sandbox().await?;
-                Self::handle_send_file(progress_tx.as_ref(), &mut sandbox, arguments).await
-            }
-            "list_files" => {
-                let _shared = self.execution_gate.read().await;
-                let mut sandbox = self.get_or_create_sandbox().await?;
-                Self::handle_list_files(&mut sandbox, arguments).await
-            }
-            _ => anyhow::bail!("Unknown sandbox tool: {tool_name}"),
+impl SandboxFileOpsProvider {
+    /// Create a fileops-only provider backed by a narrow sandbox fileops capability.
+    #[must_use]
+    pub fn new<T>(fileops: Arc<T>) -> Self
+    where
+        T: SandboxFileOps + 'static,
+    {
+        Self {
+            fileops,
+            tool_names: SANDBOX_FILEOPS_TOOL_NAMES,
         }
+    }
+
+    /// Create a fileops provider without chat/file-delivery tools.
+    #[must_use]
+    pub fn without_delivery<T>(fileops: Arc<T>) -> Self
+    where
+        T: SandboxFileOps + 'static,
+    {
+        Self::new(fileops)
+    }
+
+    /// Build typed runtime executors for file operation tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        sandbox_tool_runtime_executors(
+            SandboxToolExecutorBackend::FileOps(Arc::clone(&self.fileops)),
+            sandbox_tool_definitions_for(self.tool_names),
+        )
+    }
+}
+
+/// Provider for sandbox lifecycle tools.
+pub struct SandboxLifecycleProvider {
+    lifecycle: Arc<dyn SandboxLifecycle>,
+}
+
+impl SandboxLifecycleProvider {
+    /// Create a lifecycle-only provider backed by a narrow sandbox lifecycle capability.
+    #[must_use]
+    pub fn new<T>(lifecycle: Arc<T>) -> Self
+    where
+        T: SandboxLifecycle + 'static,
+    {
+        Self { lifecycle }
+    }
+
+    /// Build typed runtime executors for lifecycle tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        sandbox_tool_runtime_executors(
+            SandboxToolExecutorBackend::Lifecycle(Arc::clone(&self.lifecycle)),
+            sandbox_tool_definitions_for(SANDBOX_LIFECYCLE_TOOL_NAMES),
+        )
     }
 }

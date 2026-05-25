@@ -1,15 +1,12 @@
 //! Runner configuration and context types.
 
-use crate::agent::compaction::CompactionService;
+use crate::agent::compaction::CompactionController;
 use crate::agent::context::AgentContext;
-use crate::agent::persistent_memory::{
-    MemoryBehaviorRuntime, MemoryClassificationDecision, PersistentMemoryCoordinator,
-};
+use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
-use crate::agent::registry::ToolRegistry;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
-use crate::agent::skills::SkillRegistry;
+use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
     get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
 };
@@ -113,8 +110,8 @@ pub struct AgentRunnerContext<'a> {
     pub system_prompt: &'a str,
     /// Available tools for the model.
     pub tools: &'a [ToolDefinition],
-    /// Tool registry for executing tool calls.
-    pub registry: &'a ToolRegistry,
+    /// Optional typed runtime registry for v1 async tool execution.
+    pub tool_runtime_registry: Option<Arc<RuntimeToolRegistry>>,
     /// Progress event channel.
     pub progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     /// Shared todo list state.
@@ -125,20 +122,14 @@ pub struct AgentRunnerContext<'a> {
     pub messages: &'a mut Vec<Message>,
     /// Agent context abstraction (memory + cancellation).
     pub agent: &'a mut dyn AgentContext,
-    /// Optional skill registry for dynamic skill injection.
-    pub skill_registry: Option<&'a mut SkillRegistry>,
-    /// Optional compaction service for pre-turn context maintenance.
-    pub compaction_service: Option<&'a CompactionService>,
-    /// Optional Stage-4 persistent-memory coordinator.
-    pub persistent_memory: Option<&'a PersistentMemoryCoordinator>,
+    /// Optional runtime/session-level compaction controller.
+    pub compaction_controller: Option<&'a CompactionController>,
     /// Stable top-level session identity when available.
     pub session_id: Option<String>,
     /// Stable top-level memory scope when available.
     pub memory_scope: Option<AgentMemoryScope>,
     /// Task-local Stage-14 memory behavior runtime.
     pub memory_behavior: Option<Arc<MemoryBehaviorRuntime>>,
-    /// Single per-task persistent-memory routing decision.
-    pub(crate) memory_classification: Option<MemoryClassificationDecision>,
     /// Runner configuration.
     pub config: AgentRunnerConfig,
 }
@@ -147,7 +138,6 @@ pub(crate) struct AgentRunnerContextBase<'a> {
     pub(crate) task: &'a str,
     pub(crate) system_prompt: &'a str,
     pub(crate) tools: &'a [ToolDefinition],
-    pub(crate) registry: &'a ToolRegistry,
     pub(crate) progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     pub(crate) todos_arc: &'a Arc<Mutex<TodoList>>,
     pub(crate) task_id: &'a str,
@@ -159,26 +149,23 @@ impl<'a> AgentRunnerContext<'a> {
     #[must_use]
     pub(crate) fn new_base(
         base: AgentRunnerContextBase<'a>,
-        compaction_service: Option<&'a CompactionService>,
+        compaction_controller: Option<&'a CompactionController>,
         config: AgentRunnerConfig,
     ) -> Self {
         Self {
             task: base.task,
             system_prompt: base.system_prompt,
             tools: base.tools,
-            registry: base.registry,
+            tool_runtime_registry: None,
             progress_tx: base.progress_tx,
             todos_arc: base.todos_arc,
             task_id: base.task_id,
             messages: base.messages,
             agent: base.agent,
-            skill_registry: None,
-            compaction_service,
-            persistent_memory: None,
+            compaction_controller,
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            memory_classification: None,
             config,
         }
     }
@@ -222,8 +209,6 @@ pub(super) struct RunState {
     pub structured_output_failures: usize,
     /// Number of applied compaction passes in this run.
     pub compaction_count: usize,
-    /// Number of deterministic cleanup passes in this run.
-    pub cleanup_count: usize,
     /// Whether the next pre-LLM turn should run manual compaction.
     pub force_manual_compaction: bool,
 }
@@ -236,7 +221,6 @@ impl RunState {
             continuation_count: 0,
             structured_output_failures: 0,
             compaction_count: 0,
-            cleanup_count: 0,
             force_manual_compaction: false,
         }
     }

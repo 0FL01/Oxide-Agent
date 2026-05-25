@@ -325,7 +325,7 @@ async fn topic_agent_tools_disable_accepts_stack_logs_provider_alias() {
         }));
 }
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 #[tokio::test]
 async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled() {
     let _guard = crate::config::test_env_async_mutex().lock().await;
@@ -374,7 +374,7 @@ async fn topic_agent_tools_get_reports_browser_use_provider_status_when_enabled(
     std::env::remove_var("BROWSER_USE_URL");
 }
 
-#[cfg(feature = "browser_use")]
+#[cfg(feature = "tool-browser-use")]
 #[tokio::test]
 async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
     let _guard = crate::config::test_env_async_mutex().lock().await;
@@ -681,7 +681,7 @@ async fn topic_agent_hooks_get_reports_manageable_and_protected_hooks() {
     let parsed = parse_json_response(&response);
     assert_eq!(
         parsed["hooks"]["active_hooks"].as_array().map(Vec::len),
-        Some(7)
+        Some(5)
     );
     assert_eq!(parsed["hooks"]["disabled_hooks"], json!(["search_budget"]));
     assert!(parsed["hooks"]["hook_statuses"]

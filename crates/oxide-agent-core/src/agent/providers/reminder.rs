@@ -1,6 +1,9 @@
 //! Reminder scheduling provider.
 
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use crate::storage::{
     compute_cron_next_run_at, compute_next_reminder_run_at, format_reminder_unix_in_timezone,
@@ -15,6 +18,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 
 const TOOL_REMINDER_SCHEDULE: &str = "reminder_schedule";
 const TOOL_REMINDER_LIST: &str = "reminder_list";
@@ -173,6 +177,34 @@ impl ReminderProvider {
     #[must_use]
     pub const fn new(context: ReminderContext) -> Self {
         Self { context }
+    }
+
+    /// Build native typed runtime executors for reminder tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        self.tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(ReminderToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions(&self) -> Vec<ToolDefinition> {
+        vec![
+            reminder_schedule_definition(),
+            reminder_list_definition(),
+            reminder_cancel_definition(),
+            reminder_pause_definition(),
+            reminder_resume_definition(),
+            reminder_retry_definition(),
+        ]
     }
 
     async fn notify_schedule_event(&self, event: ReminderScheduleEvent) {
@@ -472,44 +504,8 @@ impl ReminderProvider {
             })
             .await;
     }
-}
 
-#[async_trait]
-impl ToolProvider for ReminderProvider {
-    fn name(&self) -> &'static str {
-        "reminder"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        vec![
-            reminder_schedule_definition(),
-            reminder_list_definition(),
-            reminder_cancel_definition(),
-            reminder_pause_definition(),
-            reminder_resume_definition(),
-            reminder_retry_definition(),
-        ]
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            TOOL_REMINDER_SCHEDULE
-                | TOOL_REMINDER_LIST
-                | TOOL_REMINDER_CANCEL
-                | TOOL_REMINDER_PAUSE
-                | TOOL_REMINDER_RESUME
-                | TOOL_REMINDER_RETRY
-        )
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
         match tool_name {
             TOOL_REMINDER_SCHEDULE => self.execute_schedule(arguments).await,
             TOOL_REMINDER_LIST => self.execute_list(arguments).await,
@@ -519,6 +515,41 @@ impl ToolProvider for ReminderProvider {
             TOOL_REMINDER_RETRY => self.execute_retry(arguments).await,
             _ => bail!("Unknown reminder tool: {tool_name}"),
         }
+    }
+}
+
+struct ReminderToolExecutor {
+    provider: Arc<ReminderProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for ReminderToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
     }
 }
 
@@ -1013,7 +1044,15 @@ fn now_unix_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use crate::testing::mock_storage_noop;
     use chrono::{TimeZone, Utc};
+    use tokio_util::sync::CancellationToken;
 
     fn base_args(kind: ReminderScheduleKind) -> ReminderScheduleArgs {
         ReminderScheduleArgs {
@@ -1028,6 +1067,73 @@ mod tests {
             timezone: None,
             weekdays: None,
         }
+    }
+
+    fn provider() -> Arc<ReminderProvider> {
+        Arc::new(ReminderProvider::new(ReminderContext {
+            storage: Arc::new(mock_storage_noop()),
+            user_id: 77,
+            context_key: "topic-a".to_string(),
+            flow_id: "flow-a".to_string(),
+            chat_id: 77,
+            thread_id: None,
+            thread_kind: ReminderThreadKind::None,
+            notifier: None,
+        }))
+    }
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-reminder"),
+            batch_id: ToolBatchId::from("batch-reminder"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_lists_empty_topic_reminders() {
+        let provider = provider();
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_REMINDER_LIST)
+            .expect("typed reminder list executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(TOOL_REMINDER_LIST, "{}"))
+            .await
+            .expect("typed reminder list succeeds");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        assert!(output
+            .stdout
+            .text
+            .as_deref()
+            .expect("stdout text")
+            .contains("No reminders found"));
     }
 
     #[test]
@@ -1077,7 +1183,7 @@ mod tests {
     }
 
     #[test]
-    fn schedule_args_reject_legacy_fields() {
+    fn schedule_args_reject_removed_single_timestamp_shape() {
         let parsed = serde_json::from_value::<ReminderScheduleArgs>(serde_json::json!({
             "kind": "once",
             "task": "Ping",

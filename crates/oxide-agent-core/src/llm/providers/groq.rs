@@ -1,3 +1,7 @@
+pub(crate) mod module;
+
+pub(crate) use module::GroqProviderModule;
+
 use crate::config::GROQ_CHAT_TEMPERATURE;
 use crate::llm::{support::openai_compat, LlmError, LlmProvider, Message};
 use async_openai::{config::OpenAIConfig, Client};

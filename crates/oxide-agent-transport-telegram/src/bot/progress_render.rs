@@ -1,4 +1,4 @@
-use oxide_agent_core::agent::progress::{ProgressState, RateLimitRetryState, Step, StepStatus};
+use oxide_agent_core::agent::progress::{LlmRetryState, ProgressState, Step, StepStatus};
 
 /// Render a progress state into Telegram-ready HTML.
 pub fn render_progress_html(state: &ProgressState) -> String {
@@ -10,7 +10,7 @@ pub fn render_progress_html(state: &ProgressState) -> String {
     ));
     lines.push(String::new());
 
-    push_narrative_or_thought(&mut lines, state);
+    push_current_thought(&mut lines, state);
     push_todos(&mut lines, state);
     push_context(&mut lines, state);
 
@@ -45,12 +45,12 @@ pub fn render_progress_html(state: &ProgressState) -> String {
         ));
     }
 
-    // Render rate limit retry status if active
-    if let Some(retry) = &state.rate_limit_retry {
+    // Render LLM retry status if active
+    if let Some(retry) = &state.llm_retry {
         if !lines.last().is_some_and(String::is_empty) {
             lines.push(String::new());
         }
-        push_rate_limit_retry(&mut lines, retry);
+        push_llm_retry(&mut lines, retry);
     }
 
     if state.is_finished {
@@ -65,20 +65,8 @@ pub fn render_progress_html(state: &ProgressState) -> String {
     lines.join("\n")
 }
 
-fn push_narrative_or_thought(lines: &mut Vec<String>, state: &ProgressState) {
-    if let (Some(ref headline), Some(ref content)) =
-        (&state.narrative_headline, &state.narrative_content)
-    {
-        lines.push(format!(
-            "🧠 <b>{}</b>",
-            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(headline, 50))
-        ));
-        lines.push(format!(
-            "   {}",
-            html_escape::encode_text(&oxide_agent_core::utils::truncate_str(content, 150))
-        ));
-        lines.push(String::new());
-    } else if let Some(ref thought) = state.current_thought {
+fn push_current_thought(lines: &mut Vec<String>, state: &ProgressState) {
+    if let Some(ref thought) = state.current_thought {
         lines.push("💭 <i>Agent thoughts:</i>".to_string());
         lines.push(format!(
             "   {}",
@@ -115,7 +103,7 @@ fn push_todos(lines: &mut Vec<String>, state: &ProgressState) {
     }
 }
 
-fn push_rate_limit_retry(lines: &mut Vec<String>, retry: &RateLimitRetryState) {
+fn push_llm_retry(lines: &mut Vec<String>, retry: &LlmRetryState) {
     // Format wait time display
     let wait_display = if let Some(secs) = retry.wait_secs {
         if secs >= 60 {
@@ -127,14 +115,30 @@ fn push_rate_limit_retry(lines: &mut Vec<String>, retry: &RateLimitRetryState) {
         String::new()
     };
 
+    let title = if retry.error_class.is_some() {
+        "LLM retrying"
+    } else {
+        "Rate limited"
+    };
+    let provider = match retry.error_class.as_deref() {
+        Some(error_class) => format!("{} [{}]", retry.provider, error_class),
+        None => retry.provider.clone(),
+    };
+    let attempt_display = if retry.unbounded {
+        format!("Attempt {} - retrying{}", retry.attempt, wait_display)
+    } else {
+        format!(
+            "Attempt {}/{} - retrying{}",
+            retry.attempt, retry.max_attempts, wait_display
+        )
+    };
+
     lines.push(format!(
-        "🔄 <b>Rate limited</b> ({})",
-        html_escape::encode_text(&retry.provider)
+        "🔄 <b>{}</b> ({})",
+        title,
+        html_escape::encode_text(&provider)
     ));
-    lines.push(format!(
-        "   Attempt {}/{} - retrying{}",
-        retry.attempt, retry.max_attempts, wait_display
-    ));
+    lines.push(format!("   {attempt_display}"));
 }
 
 fn push_context(lines: &mut Vec<String>, state: &ProgressState) {
@@ -220,11 +224,10 @@ fn current_step(state: &ProgressState) -> Option<&Step> {
 
 fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "flow {} | prompt {} | tools {} | skills {}",
+        "flow {} | prompt {} | tools {}",
         oxide_agent_core::utils::format_tokens(snapshot.hot_memory_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.system_prompt_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.tool_schema_tokens),
-        oxide_agent_core::utils::format_tokens(snapshot.loaded_skill_tokens),
     )
 }
 
@@ -264,7 +267,6 @@ fn budget_state_label(state: oxide_agent_core::agent::compaction::BudgetState) -
     match state {
         oxide_agent_core::agent::compaction::BudgetState::Healthy => "healthy",
         oxide_agent_core::agent::compaction::BudgetState::Warning => "warning",
-        oxide_agent_core::agent::compaction::BudgetState::ShouldPrune => "prune soon",
         oxide_agent_core::agent::compaction::BudgetState::ShouldCompact => "compact soon",
         oxide_agent_core::agent::compaction::BudgetState::OverLimit => "over limit",
     }
@@ -275,6 +277,7 @@ mod tests {
     use oxide_agent_core::agent::compaction::BudgetState;
     use oxide_agent_core::agent::loop_detection::LoopType;
     use oxide_agent_core::agent::progress::{AgentEvent, ProgressState, TokenSnapshot};
+    use oxide_agent_core::agent::providers::{TodoItem, TodoList, TodoStatus};
     use oxide_agent_core::llm::TokenUsage;
 
     use super::render_progress_html;
@@ -284,7 +287,6 @@ mod tests {
             hot_memory_tokens: 5_700,
             system_prompt_tokens: 1_200,
             tool_schema_tokens: 1_100,
-            loaded_skill_tokens: 0,
             total_input_tokens: 8_000,
             reserved_output_tokens: 8_000,
             hard_reserve_tokens: 8_192,
@@ -321,7 +323,7 @@ mod tests {
         let output = render_progress_html(&state);
 
         assert!(output.contains("Iteration 1/5"));
-        assert!(output.contains("flow 5.7k | prompt 1.2k | tools 1.1k | skills 0"));
+        assert!(output.contains("flow 5.7k | prompt 1.2k | tools 1.1k"));
         assert!(output.contains("📤 8k + 🛡️ 8.2k = 📊 24k | 🟢 176k free"));
         assert!(output.contains("Budget: healthy"));
         assert!(!output.contains("Last API usage:"));
@@ -361,6 +363,33 @@ mod tests {
 
         assert!(output.contains("✅ web_search ×2"));
         assert!(output.contains("⏳ 🔧 ls -la"));
+    }
+
+    #[test]
+    fn renders_todos_after_todos_updated_event() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::TodosUpdated {
+            todos: TodoList {
+                items: vec![
+                    TodoItem {
+                        description: "Finished task".to_string(),
+                        status: TodoStatus::Completed,
+                    },
+                    TodoItem {
+                        description: "Active task".to_string(),
+                        status: TodoStatus::InProgress,
+                    },
+                ],
+                updated_at: None,
+            },
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("📋 <b>Tasks [1/2]:</b>"));
+        assert!(output.contains("✅ 1. Finished task"));
+        assert!(output.contains("🔄 2. Active task"));
     }
 
     #[test]
@@ -421,31 +450,39 @@ mod tests {
     }
 
     #[test]
-    fn renders_compaction_status_and_warning() {
+    fn renders_runtime_compaction_status() {
         let mut state = ProgressState::new(10);
 
-        state.update(AgentEvent::CompactionStarted {
-            trigger: oxide_agent_core::agent::CompactionTrigger::Manual,
+        state.update(AgentEvent::RuntimeCompactionStarted {
+            reason: oxide_agent_core::agent::compaction::CompactionReason::Manual,
+            phase: oxide_agent_core::agent::compaction::CompactionPhase::Manual,
+            backend: oxide_agent_core::agent::compaction::CompactionBackend::LocalLlmSummary,
+            provider: None,
+            route: None,
+            token_before: 2400,
+            history_items_before: 12,
         });
-        state.update(AgentEvent::CompactionCompleted {
-            trigger: oxide_agent_core::agent::CompactionTrigger::Manual,
-            applied: true,
-            externalized_count: 1,
-            pruned_count: 2,
-            reclaimed_tokens: 1800,
-            archived_chunk_count: 1,
-            summary_updated: true,
-        });
-        state.update(AgentEvent::RepeatedCompactionWarning {
-            kind: oxide_agent_core::agent::RepeatedCompactionKind::Compaction,
-            count: 2,
+        state.update(AgentEvent::RuntimeCompactionCompleted {
+            reason: oxide_agent_core::agent::compaction::CompactionReason::Manual,
+            phase: oxide_agent_core::agent::compaction::CompactionPhase::Manual,
+            backend: oxide_agent_core::agent::compaction::CompactionBackend::LocalLlmSummary,
+            provider: "mock".to_string(),
+            route: "compact".to_string(),
+            token_before: 2400,
+            token_after: 900,
+            history_items_before: 12,
+            history_items_after: 4,
+            generation: 1,
+            repair_applied: false,
         });
 
         let output = render_progress_html(&state);
 
         assert!(output.contains("<b>Context:</b>"));
-        assert!(output.contains("Compaction: refreshed summary and rebuilt active context"));
-        assert!(output.contains("🗜 History compaction: 2x"));
+        assert!(output.contains("Compaction: compacted history"));
+        assert!(output.contains("manual/manual"));
+        assert!(output.contains("local_llm_summary"));
+        assert!(output.contains("mock/compact"));
     }
 
     #[test]
@@ -455,6 +492,7 @@ mod tests {
         state.update(AgentEvent::RateLimitRetrying {
             attempt: 2,
             max_attempts: 5,
+            unbounded: false,
             wait_secs: Some(30),
             provider: "mistral".to_string(),
         });
@@ -474,6 +512,7 @@ mod tests {
         state.update(AgentEvent::RateLimitRetrying {
             attempt: 1,
             max_attempts: 5,
+            unbounded: false,
             wait_secs: Some(125),
             provider: "openrouter".to_string(),
         });
@@ -484,5 +523,27 @@ mod tests {
         assert!(output.contains("openrouter"));
         assert!(output.contains("Attempt 1/5"));
         assert!(output.contains("~2m 5s"));
+    }
+
+    #[test]
+    fn renders_unbounded_llm_retry_without_attempt_cap() {
+        let mut state = ProgressState::new(10);
+
+        state.update(AgentEvent::LlmRetrying {
+            attempt: 16,
+            max_attempts: 16,
+            unbounded: true,
+            wait_secs: Some(30),
+            provider: "opencode-go".to_string(),
+            error_class: "server_error".to_string(),
+        });
+
+        let output = render_progress_html(&state);
+
+        assert!(output.contains("🔄 <b>LLM retrying</b>"));
+        assert!(output.contains("opencode-go [server_error]"));
+        assert!(output.contains("Attempt 16 - retrying"));
+        assert!(!output.contains("Attempt 16/16"));
+        assert!(!output.contains("Rate limited"));
     }
 }

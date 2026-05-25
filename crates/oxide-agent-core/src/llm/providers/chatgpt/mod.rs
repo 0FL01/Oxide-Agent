@@ -1,9 +1,11 @@
 mod auth;
+pub(crate) mod module;
 
 pub use auth::{
     resolve_auth_file_path, ChatGptAuthFlow, ChatGptAuthRecord, ChatGptAuthStatus,
     ChatGptDeviceAuthorization,
 };
+pub(crate) use module::ChatGptProviderModule;
 
 use self::auth::ChatGptAuthManager;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;

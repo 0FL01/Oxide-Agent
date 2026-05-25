@@ -88,7 +88,7 @@ impl ScriptedResponse {
 ///     ScriptedResponse::ToolCalls {
 ///         tool_calls: vec![ScriptedToolCall {
 ///             id: "call_1".to_string(),
-///             name: "todos_write".to_string(),
+///             name: "write_todos".to_string(),
 ///             arguments: r#"{"todos":[{"description":"Test","status":"in_progress"}]}"#.to_string(),
 ///         }],
 ///         final_text: None,
@@ -229,7 +229,7 @@ mod tests {
         let correlation = tool_call.correlation();
 
         assert_eq!(tool_call.invocation_id().as_str(), "call_1");
-        assert_eq!(correlation.legacy_tool_call_id(), "call_1");
+        assert_eq!(correlation.invocation_id.as_str(), "call_1");
         assert_eq!(correlation.wire_tool_call_id(), "scripted-call_1");
     }
 }

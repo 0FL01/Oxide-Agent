@@ -9,7 +9,10 @@ pub struct Message {
     pub role: String,
     /// Text content of the message
     pub content: String,
-    /// Legacy tool call id echoed by chat-like providers and persisted for compatibility.
+    /// Optional reasoning/thinking content required by some thinking-mode chat providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    /// Provider-facing tool call id echoed by chat-like providers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// Canonical correlation metadata for a tool result message.
@@ -33,6 +36,7 @@ impl Message {
         Self {
             role: "user".to_string(),
             content: content.to_string(),
+            reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
@@ -47,6 +51,7 @@ impl Message {
         Self {
             role: "assistant".to_string(),
             content: content.to_string(),
+            reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
@@ -58,11 +63,22 @@ impl Message {
     /// Create a new assistant message with tool calls
     #[must_use]
     pub fn assistant_with_tools(content: &str, tool_calls: Vec<ToolCall>) -> Self {
+        Self::assistant_with_tools_and_reasoning(content, None, tool_calls)
+    }
+
+    /// Create a new assistant message with optional reasoning and tool calls.
+    #[must_use]
+    pub fn assistant_with_tools_and_reasoning(
+        content: &str,
+        reasoning_content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
         let tool_call_correlations = (!tool_calls.is_empty())
             .then(|| tool_calls.iter().map(ToolCall::correlation).collect());
         Self {
             role: "assistant".to_string(),
             content: content.to_string(),
+            reasoning_content,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
@@ -76,7 +92,7 @@ impl Message {
     pub fn tool(tool_call_id: &str, name: &str, content: &str) -> Self {
         Self::tool_with_correlation(
             tool_call_id,
-            ToolCallCorrelation::from_legacy_tool_call_id(tool_call_id),
+            ToolCallCorrelation::new(tool_call_id),
             name,
             content,
         )
@@ -93,6 +109,7 @@ impl Message {
         Self {
             role: "tool".to_string(),
             content: content.to_string(),
+            reasoning_content: None,
             tool_call_id: Some(tool_call_id.to_string()),
             tool_call_correlation: Some(tool_call_correlation),
             name: Some(name.to_string()),
@@ -107,6 +124,7 @@ impl Message {
         Self {
             role: "system".to_string(),
             content: content.to_string(),
+            reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
@@ -118,11 +136,9 @@ impl Message {
     /// Resolve the canonical correlation for a tool result message.
     #[must_use]
     pub fn resolved_tool_call_correlation(&self) -> Option<ToolCallCorrelation> {
-        self.tool_call_correlation.clone().or_else(|| {
-            self.tool_call_id
-                .as_deref()
-                .map(ToolCallCorrelation::from_legacy_tool_call_id)
-        })
+        self.tool_call_correlation
+            .clone()
+            .or_else(|| self.tool_call_id.as_deref().map(ToolCallCorrelation::new))
     }
 
     /// Resolve canonical correlations for an assistant tool call batch.
@@ -153,7 +169,7 @@ pub struct ToolDefinition {
 /// Tool call from LLM response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    /// Legacy/internal identifier for the tool call.
+    /// Runtime invocation identifier for the tool call.
     pub id: String,
     /// Canonical correlation metadata for provider-specific tool transports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,7 +183,7 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
-    /// Build a legacy tool call with an internal invocation id and no provider metadata.
+    /// Build a tool call with an invocation id and no provider-specific correlation metadata.
     #[must_use]
     pub fn new(id: impl Into<String>, function: ToolCallFunction, is_recovered: bool) -> Self {
         Self {
@@ -194,12 +210,12 @@ impl ToolCall {
             .unwrap_or_else(|| InvocationId::from(self.id.clone()))
     }
 
-    /// Resolve the canonical correlation for this tool call using the legacy id.
+    /// Resolve the canonical correlation for this tool call using its invocation id.
     #[must_use]
     pub fn correlation(&self) -> ToolCallCorrelation {
         self.tool_call_correlation
             .clone()
-            .unwrap_or_else(|| ToolCallCorrelation::from_legacy_tool_call_id(self.id.clone()))
+            .unwrap_or_else(|| ToolCallCorrelation::new(self.id.clone()))
     }
 
     /// Resolve the provider-facing tool call id for outbound history.
@@ -430,12 +446,6 @@ impl ToolCallCorrelation {
         }
     }
 
-    /// Convert a legacy single-string tool call id into the new correlation record.
-    #[must_use]
-    pub fn from_legacy_tool_call_id(id: impl Into<InvocationId>) -> Self {
-        Self::new(id)
-    }
-
     /// Attach the opaque provider correlation id used for outbound tool results.
     #[must_use]
     pub fn with_provider_tool_call_id(
@@ -467,19 +477,13 @@ impl ToolCallCorrelation {
         self
     }
 
-    /// Return the provider-facing tool call id, falling back to the invocation id for legacy flows.
+    /// Return the provider-facing tool call id, falling back to the invocation id.
     #[must_use]
     pub fn wire_tool_call_id(&self) -> &str {
         match &self.provider_tool_call_id {
             Some(provider_tool_call_id) => provider_tool_call_id.as_str(),
             None => self.invocation_id.as_str(),
         }
-    }
-
-    /// Return the legacy internal id used by the current runtime and persisted history.
-    #[must_use]
-    pub fn legacy_tool_call_id(&self) -> &str {
-        self.invocation_id.as_str()
     }
 }
 

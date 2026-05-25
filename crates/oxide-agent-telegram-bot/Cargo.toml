@@ -23,8 +23,58 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 regex = "1.10"
 
+[features]
+default = []
+transport-telegram = ["oxide-agent-core/transport-telegram"]
+llm-chatgpt = ["oxide-agent-core/llm-chatgpt"]
+storage-s3-r2 = [
+    "oxide-agent-core/storage-s3-r2",
+    "oxide-agent-transport-telegram/storage-s3-r2",
+]
+profile-full = [
+    "transport-telegram",
+    "oxide-agent-core/profile-full",
+    "llm-chatgpt",
+    "storage-s3-r2",
+]
+profile-embedded-opencode-local = [
+    "transport-telegram",
+    "oxide-agent-core/profile-embedded-opencode-local",
+    "storage-s3-r2",
+]
+profile-lite = [
+    "transport-telegram",
+    "oxide-agent-core/profile-lite",
+    "storage-s3-r2",
+]
+profile-search-only = [
+    "transport-telegram",
+    "oxide-agent-core/profile-search-only",
+    "storage-s3-r2",
+]
+profile-no-sandbox = [
+    "transport-telegram",
+    "oxide-agent-core/profile-no-sandbox",
+    "storage-s3-r2",
+]
+profile-media-enabled = [
+    "transport-telegram",
+    "oxide-agent-core/profile-media-enabled",
+    "storage-s3-r2",
+]
+
 [dev-dependencies]
 aws-config = "1.8.12"
 aws-credential-types = "1.2.11"
 aws-sdk-s3 = "1.119.0"
 aws-types = "1.3.11"
+
+[[bin]]
+name = "oxide-agent-telegram-bot"
+path = "src/main.rs"
+required-features = ["transport-telegram", "storage-s3-r2"]
+
+[[bin]]
+name = "chatgpt-login"
+path = "src/bin/chatgpt-login.rs"
+required-features = ["llm-chatgpt"]

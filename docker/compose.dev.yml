@@ -1,0 +1,112 @@
+name: ${COMPOSE_PROJECT_NAME:-oxide-agent-dev}
+
+services:
+  sandbox_image:
+    build:
+      context: ..
+      dockerfile: sandbox/Dockerfile.dev
+    image: ${SANDBOX_IMAGE:-agent-sandbox:dev}
+    command: ["true"]
+    restart: "no"
+    environment:
+      TZ: Europe/Moscow
+
+  oxide_agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+      args:
+        CARGO_FEATURES: oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full
+        PACKAGES: oxide-agent-telegram-bot oxide-agent-sandboxd
+        BINARIES: oxide-agent-telegram-bot oxide-agent-sandboxd
+        MCP_BINARIES: ssh-mcp jira-mcp mattermost-mcp
+        ENTRYPOINT_BINARY: oxide-agent-telegram-bot
+        RUNTIME_APT_PACKAGES: openssh-client
+    image: oxide-agent:dev
+    container_name: oxide_agent_dev
+    restart: unless-stopped
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      TZ: Europe/Moscow
+      RUST_LOG: oxide_agent_core=debug,oxide_agent_transport_telegram=debug,oxide_agent_runtime=debug,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+      DEBUG_MODE: "true"
+      SEARXNG_URL: http://127.0.0.1:8081
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-agent-sandbox:dev}
+      SANDBOX_BACKEND: broker
+      SANDBOXD_SOCKET: /run/sandboxd/sandboxd.sock
+    volumes:
+      - ../config:/app/config:ro
+      - sandboxd-run:/run/sandboxd
+    network_mode: host
+    depends_on:
+      sandboxd:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  sandboxd:
+    image: oxide-agent:dev
+    container_name: oxide_agent_sandboxd_dev
+    restart: unless-stopped
+    user: "0"
+    command: ["./oxide-agent-sandboxd"]
+    environment:
+      TZ: Europe/Moscow
+      RUST_LOG: oxide_agent_core=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
+      DEBUG_MODE: "true"
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-agent-sandbox:dev}
+      SANDBOXD_SOCKET: /run/sandboxd/sandboxd.sock
+      STACK_LOGS_PROJECT: ${COMPOSE_PROJECT_NAME:-oxide-agent-dev}
+    depends_on:
+      sandbox_image:
+        condition: service_completed_successfully
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandboxd-run:/run/sandboxd
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/sandboxd/sandboxd.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  searxng:
+    image: searxng/searxng:2026.3.24-054174a19
+    container_name: searxng_dev
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Moscow
+      SEARXNG_BASE_URL: http://127.0.0.1:8081/
+      GRANIAN_HOST: 0.0.0.0
+      GRANIAN_PORT: "8080"
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+volumes:
+  sandboxd-run:

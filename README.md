@@ -1,7 +1,5 @@
 # Oxide Agent TG Bot
 
-[(Russian README)](README-ru.md)
-
 Universal Telegram bot with AI assistant, supporting multiple models, multimodality, and advanced **Agent Mode** with code execution.
 
 ## Description
@@ -11,7 +9,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, NVIDIA NIM, OpenRouter, Mistral, Google Gemini), along with Groq support.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, NVIDIA NIM), along with Groq support.
 
 ### Architecture Highlights
 
@@ -25,7 +23,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 ## Features
 
 *   **🏗️ Workspace Architecture:** Modular crate design with clear separation of concerns:
-    - `oxide-agent-core` - Domain logic, LLM integrations, hooks, skills, storage
+    - `oxide-agent-core` - Domain logic, LLM integrations, hooks, compaction, storage
     - `oxide-agent-runtime` - Session orchestration, execution cycle, tool providers, sandbox
     - `oxide-agent-transport-telegram` - Telegram transport layer (teloxide integration)
     - `oxide-agent-transport-web` - E2E testing infrastructure with HTTP API
@@ -42,18 +40,17 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Cold-Start Tool Drift Pruning:** Removes stale tool calls from persisted memories on startup.
     *   **Tools:** Read/write files, execute commands, web search, work with video and file hosting.
     *   **📋 Task Management (Todos):** `write_todos` system for planning and tracking progress of complex requests.
-    *   **🎯 Skills System:** RAG system with embeddings to automatically provide relevant context from markdown documents (9 skills: core, delegation_manager, ffmpeg-conversion, file-hosting, file-management, html-report, task-planning, video-processing, web-search).
+    *   **Durable Context:** Topic `AGENTS.md`, wiki memory, runtime injections, and enabled tools provide deterministic prompt context.
     *   **📁 File Handling:** Accept files from user (up to 20MB), send to Telegram (up to 50MB), or upload to cloud (up to 4GB) with link generation.
     *   **🎬 Video Processing:** `yt-dlp` integration for downloading video and media files from the internet.
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
 
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
-    *   **Web Search and Data Extraction:** Multiple independent search providers — SearXNG (self-hosted, default), Tavily (API), Crawl4AI (deep crawling) — can run simultaneously.
+    *   **Web Search and Data Extraction:** SearXNG (self-hosted, default) and Tavily (API) handle discovery; local `web_markdown` fetches one known URL as Markdown.
     *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
         - Completion Check Hook - validates task completion
-        - Workload Distributor - enforces separation of duties by blocking heavy manual operations in the Main Agent
+        - Tool Access Policy - enforces profile-level tool allowlists and blocklists
         - Search Budget Hook - prevents infinite loops in tool calls
-        - Delegation Guard - controls sub-agent delegation behavior
         - Soft Timeout Report Hook - provides detailed timeout reporting
         - Sub-Agent Safety - ensures safe execution environments
         - Registry - centralized hook management
@@ -64,12 +61,11 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **Autonomy:** Agent plans steps and selects tools itself.
     *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
-    *   **🗣️ Narrator:** Separate model for summarizing agent thoughts and actions in chat.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (Zhipu AI/ZAI, MiniMax, NVIDIA NIM, OpenRouter, Mistral, Google Gemini). Groq is supported in **Chat Mode only**.
+*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, NVIDIA NIM). Groq is supported in **Chat Mode only**.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Multimedia Processing:**
-    *   Voice and video messages (speech recognition via Gemini or Voxtral).
+    *   Voice and video messages (speech recognition via OpenRouter-hosted Gemini-family models or Voxtral).
     *   Images (analysis and description via multimodal models).
     *   Work with documents of various formats.
 *   **🗣️ Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
@@ -84,19 +80,20 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 ### 🔑 API Keys (Mandatory)
 | Provider | Variable | Description |
 | :--- | :--- | :--- |
-| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | **Mandatory for Agent** (`glm-4.7`, Default Agent Model). [Zhipu AI](https://z.ai/) |
+| **OpenCode Go** | `OPENCODE_GO_API_KEY` | **Primary Agent Mode provider** — recommended route: `deepseek-v4-flash` via `opencode-go`. [OpenCode](https://opencode.ai/) |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
-| **Cloudflare R2** | `R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
-| **Mistral AI** | `MISTRAL_API_KEY` | **Critical for Agent** (`mistral-embed` model for skill selection) |
+| **Cloudflare R2** | `OXIDE_R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
+| **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when using ZAI routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
+| **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
 ### 🤖 Supported LLM Providers for Chat/Agent Mode
-The bot supports **5 main providers** for both standard chat and advanced Agent mode (with tool calling):
+The bot supports **6 main providers** for both standard chat and advanced Agent mode (with tool calling):
 
-*   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — primary provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
+*   **OpenCode Go** (`OPENCODE_GO_API_KEY`) — **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls (strict), structured JSON for DeepSeek V4 routes, adaptive throttling, unbounded retry, and reasoning content parsing.
+*   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — alternative provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) — Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
-*   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
 *   **Mistral** (`MISTRAL_API_KEY`) — great for cost-effective agent/chat combos (e.g., `mistral-large-latest`, `pixtral-large-latest`). Supports tool calling via JSON mode or native tools. Includes Voxtral audio transcription (`voxtral-mini-latest`).
-*   **Google Gemini** (`GEMINI_API_KEY`) — direct integration for Gemini models, primarily used for multimodal tasks or as a fallback.
+*   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
 
 #### Other Providers (Chat only)
 *   **Groq** (`GROQ_API_KEY`) — optional provider for fast specialized chat workloads (e.g. `llama-3.3-70b-versatile`).
@@ -109,7 +106,7 @@ The bot supports **5 main providers** for both standard chat and advanced Agent 
 *   **Sandbox Broker** — optional Unix socket broker for security isolation (`SANDBOX_BACKEND=broker`)
 *   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
 *   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
-*   **Crawl4AI** — deep web crawling provider with markdown extraction and PDF parsing capabilities
+*   **Local Web Markdown** — lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
 *   **Browser Use Bridge** — self-hosted browser automation sidecar for high-level browser tasks (`BROWSER_USE_URL`) — **currently disabled**, requires a quality vision-capable agent model at a reasonable price-per-token
 *   **Kokoro TTS Server** — optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** — optional for Russian voice message synthesis (`SILERO_TTS_URL`)
@@ -152,29 +149,29 @@ REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: stay silent on no
 
 # Agent Configuration
 AGENT_TIMEOUT_SECS=300          # Agent execution timeout
-SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / SEARXNG_ENABLED / CRAWL4AI_ENABLED
+SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / SEARXNG_ENABLED
 DEBUG_MODE=false                # Debug logging mode
 
 # Cloudflare R2 (S3)
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_ENDPOINT_URL=...
-R2_BUCKET_NAME=...
-R2_REGION=auto                 # S3-compatible storage region
+OXIDE_R2_ACCESS_KEY_ID=...
+OXIDE_R2_SECRET_ACCESS_KEY=...
+OXIDE_R2_ENDPOINT_URL=...
+OXIDE_R2_BUCKET_NAME=...
+OXIDE_R2_REGION=auto           # S3-compatible storage region
 
 # API Keys
 GROQ_API_KEY=...
 MISTRAL_API_KEY=...
-GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
 NVIDIA_API_KEY=...              # NVIDIA NIM / hosted integrate.api.nvidia.com
 NVIDIA_API_BASE=https://integrate.api.nvidia.com/v1
 ZAI_API_KEY=...                 # Zhipu AI / ZAI Provider
+OPENCODE_GO_API_KEY=...         # OpenCode Go subscription provider
+OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
 MINIMAX_API_KEY=...             # MiniMax Provider (Claude SDK-compatible)
 TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enable via TAVILY_ENABLED=true)
 SEARXNG_URL=http://127.0.0.1:8081  # SearXNG self-hosted search (auto-enabled when set)
 SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
-CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
 # Browser Use self-hosted bridge (disabled: requires a quality vision-capable agent model)
 # BROWSER_USE_URL=http://127.0.0.1:8002
 # BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3 # Optional retained reusable profiles per topic/context scope
@@ -183,12 +180,10 @@ CRAWL4AI_ENABLED=true           # Enable Crawl4AI deep crawling provider
 # BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750 # Delay between bridge readiness retries in milliseconds
 # BROWSER_USE_MODEL_ID="GLM-4.6V" # Browser Use dedicated route
 # BROWSER_USE_MODEL_PROVIDER="zai" # Browser Use dedicated provider
-# BROWSER_USE_BRIDGE_LLM_PROVIDER=google # Legacy browser_use sidecar fallback
-# BROWSER_USE_BRIDGE_LLM_MODEL=gemini-2.5-flash # Optional legacy fallback model override
 ```
 </details>
 
-For Browser Use task execution, the bridge container also needs the matching upstream API key for the selected provider, for example `GEMINI_API_KEY` or `ANTHROPIC_API_KEY`.
+For Browser Use task execution, Oxide sends the configured dedicated or inherited route to the bridge server-to-server. The bridge stays disabled by default until a cost-effective high-quality vision-agent model is available.
 
 ## Model Configuration
 
@@ -203,7 +198,16 @@ CHAT_MODEL_NAME="✨ Gemini 3.0 Flash"
 Swap `CHAT_MODEL_PROVIDER`/`CHAT_MODEL_ID` and adjust the name when you need a different multimodal provider (e.g., `mistral-large-latest`).
 
 *   **Agent & Sub-agent (Recommended Models)**
-  For the best performance in Agent Mode, it is highly recommended to use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent (both via **ZAI** provider).
+  For the best performance in Agent Mode, it is highly recommended to use **deepseek-v4-flash** for both the Main Agent and Sub-Agent (via **OpenCode Go** provider). This route offers strict tool calling, structured output support, reasoning content, adaptive throttling, and unlimited retry for reliable agent execution.
+```dotenv
+AGENT_MODEL_ID="deepseek-v4-flash"
+AGENT_MODEL_PROVIDER="opencode-go"
+
+SUB_AGENT_MODEL_ID="deepseek-v4-flash"
+SUB_AGENT_MODEL_PROVIDER="opencode-go"
+```
+
+  **Alternative (ZAI):** If you prefer the ZAI provider, use **glm-4.7** for the Main Agent and **glm-4.5-air** for the Sub-Agent:
 ```dotenv
 AGENT_MODEL_ID="glm-4.7"
 AGENT_MODEL_PROVIDER="zai"
@@ -217,18 +221,15 @@ Omitting the sub-agent block falls back to the agent model settings.
 ```dotenv
 MEDIA_MODEL_ID="google/gemini-3.1-flash-lite-preview"
 MEDIA_MODEL_PROVIDER="openrouter"
-
-NARRATOR_MODEL_ID="labs-mistral-small-creative"
-NARRATOR_MODEL_PROVIDER="mistral"
 ```
 
 ### Weighted Model Routes (Failover)
 Configure multiple weighted routes for automatic failover after persistent 429 errors:
 
 ```dotenv
-# Priority: MiniMax > ZAI > Mistral
-AGENT_MODEL_ROUTES__0__ID="MiniMax-M2.7"
-AGENT_MODEL_ROUTES__0__PROVIDER="minimax"
+# Priority: OpenCode Go (DeepSeek V4 Flash) > ZAI (GLM-4.7) > Mistral
+AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
+AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=10
 
 AGENT_MODEL_ROUTES__1__ID="glm-4.7"
@@ -240,20 +241,20 @@ AGENT_MODEL_ROUTES__2__PROVIDER="mistral"
 AGENT_MODEL_ROUTES__2__WEIGHT=2
 ```
 
-### NVIDIA NIM agent route example
-Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven backup route first:
+### Weighted failover with NVIDIA NIM
+Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven primary route first:
 
 ```dotenv
 NVIDIA_API_KEY=...
 NVIDIA_API_BASE="https://integrate.api.nvidia.com/v1"
 
-AGENT_MODEL_ROUTES__0__ID="meta/llama-3.1-70b-instruct"
-AGENT_MODEL_ROUTES__0__PROVIDER="nvidia"
-AGENT_MODEL_ROUTES__0__WEIGHT=3
+AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
+AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
+AGENT_MODEL_ROUTES__0__WEIGHT=5
 
-AGENT_MODEL_ROUTES__1__ID="glm-4.7"
-AGENT_MODEL_ROUTES__1__PROVIDER="zai"
-AGENT_MODEL_ROUTES__1__WEIGHT=5
+AGENT_MODEL_ROUTES__1__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__1__PROVIDER="nvidia"
+AGENT_MODEL_ROUTES__1__WEIGHT=3
 ```
 
 The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
@@ -264,7 +265,7 @@ The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled ex
 > at a reasonable price-per-token. To re-enable, set `BROWSER_USE_URL` and optionally
 > `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`. See `docs/browser-use.md`.
 
-When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `gemini / gemma-4-31b-it`) even when main/sub-agent stay on a different route:
+When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `openrouter / google/gemini-3-flash-preview`) even when main/sub-agent stay on a different route:
 
 ```dotenv
 BROWSER_USE_MODEL_ID="GLM-4.6V"
@@ -282,18 +283,18 @@ AGENT_MODEL_ID="devstral-2512"
 AGENT_MODEL_PROVIDER="mistral"
 ```
 
-Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, Gemini-specific IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
+Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-family IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
 
 ## Available LLM Providers
 
 | Provider | Description |
 | :--- | :--- |
-| **ZAI (Zhipu AI)** | Default agent model, native tool-aware chat |
+| **OpenCode Go** | Primary (recommended) agent provider, subscription OpenAI-compatible API, DeepSeek V4 Flash, strict tool calling, structured output |
+| **ZAI (Zhipu AI)** | Alternative agent provider, native tool-aware chat, GLM-4.7 / GLM-4.5-Air |
 | **MiniMax** | Claude SDK-compatible, high context |
-| **NVIDIA NIM** | Tool calling support, hosted inference |
 | **Mistral** | Generous free tier, includes Voxtral audio transcription |
-| **Google Gemini** | Multimodal, efficient |
-| **OpenRouter** | Aggregator for various models |
+| **OpenRouter** | Aggregator for various models, including Gemini-family model IDs |
+| **NVIDIA NIM** | Tool calling support, hosted inference |
 | **Groq** | Fast inference (Chat Mode only) |
 
 > **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
@@ -420,7 +421,7 @@ SSH, Jira, and Mattermost tools are **blocked by default in private/DM chats** f
 
 **Configuration:**
 ```dotenv
-DM_ALLOWED_TOOLS=todos_write,todos_list,delegate_to_sub_agent  # Allowlist mode
+DM_ALLOWED_TOOLS=todos_write,todos_list,spawn_sub_agents,wait_sub_agents,cancel_sub_agents  # Allowlist mode
 DM_BLOCKED_TOOLS=sandbox_exec  # Additional blocklist
 ```
 
@@ -460,10 +461,10 @@ Startup maintenance sweep that removes stale tool calls from persisted memories.
 
 **Migration:** Monitor first startup after upgrade for memory rewrites. Disable with `STARTUP_TOOL_DRIFT_PRUNE_ENABLED=false` if needed.
 
-### 4. Compaction Token-Based Window
-Token-based protected tool window instead of fixed count.
+### 4. Codex-Style Runtime Compaction
+Agent Mode uses session-level compaction that replaces hot history with one local LLM summary. The old staged prune/archive pipeline is removed from runtime code.
 
-**Migration:** Adjust `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS` (default: 8192) if needed. Recommended: 12k-16k for DevOps workflows.
+**Migration:** Codex-style compaction is enabled by default and uses the active runtime model route. `OXIDE_CODEX_STYLE_COMPACTION=false` is a short-lived emergency disable for runner auto-compaction; it does not restore the removed staged pipeline. Legacy compaction data remains readable and is migrated lazily on the next compact.
 
 ### 5. TTS Tool Split (English/Russian)
 Legacy `text_to_speech` has been replaced by language-specific tools.
@@ -475,26 +476,14 @@ Legacy `text_to_speech` has been replaced by language-specific tools.
 
 
 <details>
-<summary>🏗 Internal Structure, Skills, Hooks, Compaction</summary>
+<summary>🏗 Internal Structure, Context, Hooks, Compaction</summary>
 
-### 🎯 Skills System
-The agent uses a RAG approach with embeddings to automatically provide relevant context:
-- **9 skills** as markdown documents (`skills/`)
-- **Semantic matching** of user requests with skills via cosine similarity (threshold: 0.6)
-- **Embeddings caching** for fast access
-- **Automatic injection** of relevant instructions into the system prompt
-- **Configuration:** `SKILL_TOKEN_BUDGET` (4096 tokens), `SKILL_SEMANTIC_THRESHOLD` (0.6), `SKILL_MAX_SELECTED` (3)
-
-**Available Skills:**
-- `core` - Basic agent rules (always loaded)
-- `delegation_manager` - Sub-agent delegation patterns
-- `file-management` - Sandbox operations
-- `file-hosting` - Large file uploads
-- `task-planning` - Todo management for multistep tasks
-- `web-search` - Web search and extraction tools
-- `video-processing` - YT-DLP integration
-- `ffmpeg-conversion` - Media conversion
-- `html-report` - Design style guide
+### Deterministic Context
+The legacy skills RAG subsystem has been removed. The agent prompt is assembled from explicit deterministic sources:
+- Topic-scoped `AGENTS.md`
+- S3/R2-backed wiki memory
+- Runtime context injections
+- Enabled tools and profile instructions
 
 ### 🔄 Loop Protection
 Three-level loop detection system (`agent/loop_detection/`):
@@ -504,26 +493,20 @@ Three-level loop detection system (`agent/loop_detection/`):
 
 **Configuration:** `LOOP_DETECTION_ENABLED`, `LOOP_TOOL_CALL_THRESHOLD` (5), `LOOP_LLM_CHECK_AFTER_TURNS` (30), `LOOP_SCOUT_MODEL`
 
-### 🔄 Compaction Pipeline
-Advanced context compression with token-based protected window:
-1. **Budget Estimation** - Estimate memory usage
-2. **Classify** - Categorize messages by importance
-3. **Externalize** - Move payloads to archive
-4. **Prune** - Remove less important messages (respects protected window)
-5. **Summarize** - Generate concise summary with retry backoff
-6. **Rebuild** - Reconstruct hot context
+### 🔄 Runtime Compaction
+Codex-style Agent Mode compaction is a runtime/session-level operation:
+1. **Detect** - Pre-sampling, context-limit retry, manual compact, or model-route downshift.
+2. **Summarize** - Use a normal configured LLM route as a provider-agnostic local summary backend.
+3. **Replace Atomically** - Build one `[OXIDE_COMPACTED_SUMMARY_V1]` handoff, preserve pinned state and safe recent text, validate tool history, then replace hot memory in one step.
+
+The runtime path does not call OpenAI `/responses/compact`, does not create new R2 archive/payload objects, and does not emit `pruning_applied` events. Old `[COMPACTION_SUMMARY]` and `[BREADCRUMB_CARD]` entries are detected and folded into the next compacted summary.
 
 **Configuration:**
-- `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS` (8192 tokens)
-- `COMPACTION_MODEL_ID`, `COMPACTION_MODEL_PROVIDER` - Dedicated LLM for summarization
-- `COMPACTION_MODEL_MAX_OUTPUT_TOKENS` (512)
-- `COMPACTION_MODEL_TIMEOUT_SECS` (20)
+- `OXIDE_CODEX_STYLE_COMPACTION` (`true` by default; set `false` only as a short-lived auto-compaction disable)
 
 ### 🔗 Hooks System
 Extensible architecture for personalizing agent behavior:
 - **Completion Hook** — task completion handling
-- **Workload Distributor** — enforces separation of duties by blocking heavy manual operations in the Main Agent and encouraging delegation
-- **Delegation Guard** — prevents delegation of high-level analytical tasks ("think", "analyze"), restricting sub-agents to mechanical retrieval
 - **Sub-Agent Safety** — ensures safe execution environments for delegated tasks
 - **Search Budget** — limits search tool calls (10 per session)
 - **Timeout Report** — provides detailed timeout reporting
@@ -531,18 +514,18 @@ Extensible architecture for personalizing agent behavior:
 
 **Protected Hooks (cannot be disabled):** `completion_check`, `tool_access_policy`
 
-**Manageable Hooks:** `workload_distributor`, `delegation_guard`, `search_budget`, `timeout_report`
+**Manageable Hooks:** `search_budget`, `timeout_report`, `retrieval_advisor`, `episodic_extract`
 
 ### 🛠️ Tool Providers
 The agent uses a modular provider system, each offering a specialized set of tools:
 - **Sandbox Provider** (`sandbox.rs`) — code execution, file read/write, shell commands
 - **SearXNG Provider** (`searxng/`) — self-hosted web search via JSON API
 - **Tavily Provider** (`tavily.rs`) — web search and data extraction
-- **Crawl4AI Provider** (`crawl4ai.rs`) — deep web crawling with markdown extraction and PDF parsing (retry with backoff, concurrency limit)
+- **WebFetch Markdown Provider** (`webfetch_md.rs`) — single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 - **Todos Provider** (`todos.rs`) — task list management for long-term planning
 - **YT-DLP Provider** (`ytdlp.rs`) — video and audio download from various platforms
 - **File Hoster Provider** (`filehoster.rs`) — public file upload to temporary hosting (up to 4GB)
-- **Delegation Provider** (`delegation.rs`) — sub-agent delegation for complex task decomposition
+- **Delegation Provider** (`delegation.rs`) — async sub-agent spawn, wait, and cancellation for complex task decomposition
 - **Reminder Provider** (`reminder.rs`) — reminder scheduling with pause/resume/retry
 - **Kokoro TTS Provider** (`tts/`) — English voice message synthesis
 - **Silero TTS Provider** (`silero_tts/`) — Russian voice message synthesis with SSML support
@@ -601,28 +584,23 @@ Enhanced reminder scheduling with pause/resume/retry support.
 ### Services
 
 1. **sandbox_image**
-    - Builds agent-sandbox image from `sandbox/Dockerfile.sandbox`
+    - Builds the selected sandbox image variant, with full/dev using `sandbox/Dockerfile.dev`
     - One-shot build service used during `docker compose up --build`
 
 2. **oxide_agent** (main bot)
-   - Builds from root Dockerfile
+   - Builds from `docker/Dockerfile.app` with the full profile by default
    - Network mode: `host`
    - Mounts: `./config:/app/config`, `sandboxd-run:/run/sandboxd`
    - Environment: `SANDBOX_BACKEND=broker`, `SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock`
 
 3. **sandboxd** (broker daemon)
-   - Builds from root Dockerfile
+   - Uses the same full-profile `docker/Dockerfile.app` image
    - Command: `./oxide-agent-sandboxd`
    - Runs as user 0 (privileged for Docker access)
    - Mounts: `/var/run/docker.sock:/var/run/docker.sock` (only sandboxd has Docker access)
    - Socket: `/run/sandboxd/sandboxd.sock`
 
-4. **crawl4ai** (web crawler)
-    - Image: `unclecode/crawl4ai:0.8.5`
-    - Health check: `curl -f http://localhost:11235/health`
-    - Resources: 6GB RAM, 4 CPUs, 2GB shared memory
-
-5. **searxng** (self-hosted search)
+4. **searxng** (self-hosted search)
     - Image: `searxng/searxng:2026.3.24-054174a19`
     - Port: `127.0.0.1:8081:8080`
     - Health check: `wget -qO- http://localhost:8080/healthz`
@@ -671,7 +649,7 @@ Enhanced reminder scheduling with pause/resume/retry support.
 
 ```text
 crates/
-├── oxide-agent-core/           # Domain logic, LLM integrations, hooks, skills, storage
+├── oxide-agent-core/           # Domain logic, LLM integrations, hooks, compaction, storage
 │   └── src/
 │       ├── agent/              # Agent core and execution logic
 │       │   ├── compaction/     # Compaction pipeline (12 modules)
@@ -687,9 +665,8 @@ crates/
 │       │   │   └── ...
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
-│       │   └── skills/         # Skills subsystem (RAG/embeddings)
 │       ├── llm/                # LLM provider integrations
-│       │   ├── providers/      # 5+ providers (zai, minimax, mistral, gemini, groq)
+│       │   ├── providers/      # Providers (zai, minimax, mistral, openrouter, groq, ...)
 │       │   └── tool_correlation.rs
 │       ├── storage/            # Storage facade, R2 backend, control-plane records
 │       └── config.rs
@@ -714,7 +691,6 @@ crates/
 └── oxide-agent-telegram-bot/   # Binary entry point and configuration
     └── src/main.rs
 
-skills/                         # Skill definitions (markdown)
 tests/                          # Integration and functional tests
 ├── e2e/                        # E2E tests for web transport
 │   ├── session_tests.rs
@@ -775,7 +751,7 @@ cargo clippy --workspace --tests -- -D warnings
 cargo fmt --all
 
 # Build with feature flags
-cargo build --release --features searxng,crawl4ai,jira,mattermost
+cargo build --release --features searxng,jira,mattermost
 
 # Run E2E tests (requires transport-web crate)
 cargo test -p oxide-agent-transport-web --test e2e
@@ -812,7 +788,7 @@ The project uses GitHub Actions for automatic testing and deployment:
   - `unwrap_used = "forbid"` — all Result/Option must be handled via `?` or `match`
   - `too_many_lines = "forbid"` — files >300 lines must be split
   - `too_many_arguments = "forbid"` — functions >3 arguments require Context/Config struct
-- **Feature flags:** Tavily, SearXNG, Crawl4AI, Jira, Mattermost available via `--features`
+- **Feature flags:** Tavily, SearXNG, Jira, Mattermost available via `--features`
 - **Error Handling:** Using `thiserror` for library errors, `anyhow` for application
 </details>
 
@@ -822,13 +798,12 @@ The project uses GitHub Actions for automatic testing and deployment:
 |---------|-------------|---------|
 | `tavily` | Enable Tavily web search provider | Enabled |
 | `searxng` | Enable SearXNG self-hosted search provider | Enabled |
-| `crawl4ai` | Enable Crawl4AI web search provider | Disabled |
 | `jira` | Enable Jira MCP integration | Disabled |
 | `mattermost` | Enable Mattermost MCP integration | Disabled |
 
 Build with features:
 ```bash
-cargo build --release --features searxng,crawl4ai,jira,mattermost
+cargo build --release --features searxng,jira,mattermost
 ```
 
 ## License

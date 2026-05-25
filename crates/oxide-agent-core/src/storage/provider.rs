@@ -7,13 +7,6 @@ use super::{
 };
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
-use oxide_agent_memory::{
-    ArtifactRef, EmbeddingBackfillRequest, EmbeddingFailureUpdate, EmbeddingOwnerType,
-    EmbeddingPendingUpdate, EmbeddingReadyUpdate, EmbeddingRecord, EpisodeEmbeddingCandidate,
-    EpisodeListFilter, EpisodeRecord, EpisodeSearchFilter, EpisodeSearchHit,
-    MemoryEmbeddingCandidate, MemoryListFilter, MemoryRecord, MemorySearchFilter, MemorySearchHit,
-    SessionStateRecord, ThreadRecord,
-};
 
 /// Interface for storage providers.
 #[cfg_attr(test, mockall::automock)]
@@ -182,288 +175,6 @@ pub trait StorageProvider: Send + Sync {
         context_key: String,
         flow_id: String,
     ) -> Result<AgentFlowRecord, StorageError>;
-    /// Upsert a persistent memory thread record.
-    async fn upsert_memory_thread(
-        &self,
-        record: ThreadRecord,
-    ) -> Result<ThreadRecord, StorageError> {
-        let _ = record;
-        Err(StorageError::Config(
-            "persistent memory threads are not implemented for this storage provider".to_string(),
-        ))
-    }
-    /// Create a persistent memory episode record.
-    async fn create_memory_episode(
-        &self,
-        record: EpisodeRecord,
-    ) -> Result<EpisodeRecord, StorageError> {
-        let _ = record;
-        Err(StorageError::Config(
-            "persistent memory episodes are not implemented for this storage provider".to_string(),
-        ))
-    }
-    /// Link or merge one artifact into a persistent memory episode.
-    async fn link_memory_episode_artifact(
-        &self,
-        episode_id: String,
-        artifact: ArtifactRef,
-    ) -> Result<Option<EpisodeRecord>, StorageError> {
-        let _ = episode_id;
-        let _ = artifact;
-        Err(StorageError::Config(
-            "persistent memory artifact linking is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Create a reusable persistent memory record.
-    async fn create_memory_record(
-        &self,
-        record: MemoryRecord,
-    ) -> Result<MemoryRecord, StorageError> {
-        let _ = record;
-        Err(StorageError::Config(
-            "reusable persistent memories are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Create or update a reusable persistent memory record.
-    async fn upsert_memory_record(
-        &self,
-        record: MemoryRecord,
-    ) -> Result<MemoryRecord, StorageError> {
-        let _ = record;
-        Err(StorageError::Config(
-            "reusable persistent memory upsert is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Upsert a persistent memory session-state record.
-    async fn upsert_memory_session_state(
-        &self,
-        record: SessionStateRecord,
-    ) -> Result<SessionStateRecord, StorageError> {
-        let _ = record;
-        Err(StorageError::Config(
-            "persistent memory session state is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Get a persistent memory thread record by identifier.
-    async fn get_memory_thread(
-        &self,
-        thread_id: String,
-    ) -> Result<Option<ThreadRecord>, StorageError> {
-        let _ = thread_id;
-        Err(StorageError::Config(
-            "persistent memory thread reads are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Get a persistent memory episode record by identifier.
-    async fn get_memory_episode(
-        &self,
-        episode_id: String,
-    ) -> Result<Option<EpisodeRecord>, StorageError> {
-        let _ = episode_id;
-        Err(StorageError::Config(
-            "persistent memory episode reads are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// List persistent memory episodes for one thread.
-    async fn list_memory_episodes_for_thread(
-        &self,
-        thread_id: String,
-        filter: EpisodeListFilter,
-    ) -> Result<Vec<EpisodeRecord>, StorageError> {
-        let _ = thread_id;
-        let _ = filter;
-        Err(StorageError::Config(
-            "persistent memory episode listing is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Get a reusable persistent memory record by identifier.
-    async fn get_memory_record(
-        &self,
-        memory_id: String,
-    ) -> Result<Option<MemoryRecord>, StorageError> {
-        let _ = memory_id;
-        Err(StorageError::Config(
-            "reusable persistent memory reads are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Soft-delete a reusable persistent memory record by identifier.
-    async fn delete_memory_record(
-        &self,
-        memory_id: String,
-    ) -> Result<Option<MemoryRecord>, StorageError> {
-        let _ = memory_id;
-        Err(StorageError::Config(
-            "reusable persistent memory deletion is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// List reusable persistent memory records for one context.
-    async fn list_memory_records(
-        &self,
-        context_key: String,
-        filter: MemoryListFilter,
-    ) -> Result<Vec<MemoryRecord>, StorageError> {
-        let _ = context_key;
-        let _ = filter;
-        Err(StorageError::Config(
-            "reusable persistent memory listing is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Get a persistent session-state record by identifier.
-    async fn get_memory_session_state(
-        &self,
-        session_id: String,
-    ) -> Result<Option<SessionStateRecord>, StorageError> {
-        let _ = session_id;
-        Err(StorageError::Config(
-            "persistent memory session-state reads are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// List persistent session-state records.
-    async fn list_memory_session_states(
-        &self,
-        filter: oxide_agent_memory::SessionStateListFilter,
-    ) -> Result<Vec<SessionStateRecord>, StorageError> {
-        let _ = filter;
-        Err(StorageError::Config(
-            "persistent memory session-state listing is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Search episode records lexically.
-    async fn search_memory_episodes_lexical(
-        &self,
-        query: String,
-        filter: EpisodeSearchFilter,
-    ) -> Result<Vec<EpisodeSearchHit>, StorageError> {
-        let _ = query;
-        let _ = filter;
-        Err(StorageError::Config(
-            "persistent memory episode lexical search is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Search reusable memory records lexically.
-    async fn search_memory_records_lexical(
-        &self,
-        query: String,
-        filter: MemorySearchFilter,
-    ) -> Result<Vec<MemorySearchHit>, StorageError> {
-        let _ = query;
-        let _ = filter;
-        Err(StorageError::Config(
-            "persistent memory record lexical search is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Read embedding state for one owner.
-    async fn get_memory_embedding(
-        &self,
-        owner_type: EmbeddingOwnerType,
-        owner_id: String,
-    ) -> Result<Option<EmbeddingRecord>, StorageError> {
-        let _ = owner_type;
-        let _ = owner_id;
-        Err(StorageError::Config(
-            "persistent memory embeddings are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Mark one embedding row as pending generation.
-    async fn upsert_memory_embedding_pending(
-        &self,
-        update: EmbeddingPendingUpdate,
-    ) -> Result<EmbeddingRecord, StorageError> {
-        let _ = update;
-        Err(StorageError::Config(
-            "persistent memory embedding pending writes are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Persist a successful embedding vector.
-    async fn upsert_memory_embedding_ready(
-        &self,
-        update: EmbeddingReadyUpdate,
-    ) -> Result<EmbeddingRecord, StorageError> {
-        let _ = update;
-        Err(StorageError::Config(
-            "persistent memory embedding writes are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Persist a failed embedding attempt.
-    async fn upsert_memory_embedding_failure(
-        &self,
-        update: EmbeddingFailureUpdate,
-    ) -> Result<EmbeddingRecord, StorageError> {
-        let _ = update;
-        Err(StorageError::Config(
-            "persistent memory embedding failure writes are not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Discover episode records that still need embeddings.
-    async fn list_memory_episode_embedding_backfill_candidates(
-        &self,
-        request: EmbeddingBackfillRequest,
-    ) -> Result<Vec<EpisodeEmbeddingCandidate>, StorageError> {
-        let _ = request;
-        Err(StorageError::Config(
-            "persistent memory episode embedding backfill is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Discover memory records that still need embeddings.
-    async fn list_memory_record_embedding_backfill_candidates(
-        &self,
-        request: EmbeddingBackfillRequest,
-    ) -> Result<Vec<MemoryEmbeddingCandidate>, StorageError> {
-        let _ = request;
-        Err(StorageError::Config(
-            "persistent memory record embedding backfill is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Vector search over episode records.
-    async fn search_memory_episodes_vector(
-        &self,
-        query_embedding: Vec<f32>,
-        model_id: String,
-        filter: EpisodeSearchFilter,
-    ) -> Result<Vec<EpisodeSearchHit>, StorageError> {
-        let _ = query_embedding;
-        let _ = model_id;
-        let _ = filter;
-        Err(StorageError::Config(
-            "persistent memory episode vector search is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
-    /// Vector search over reusable memory records.
-    async fn search_memory_records_vector(
-        &self,
-        query_embedding: Vec<f32>,
-        model_id: String,
-        filter: MemorySearchFilter,
-    ) -> Result<Vec<MemorySearchHit>, StorageError> {
-        let _ = query_embedding;
-        let _ = model_id;
-        let _ = filter;
-        Err(StorageError::Config(
-            "persistent memory record vector search is not implemented for this storage provider"
-                .to_string(),
-        ))
-    }
     /// Load archived or artifact text payload by storage key.
     async fn load_text_artifact(
         &self,
@@ -472,6 +183,28 @@ pub trait StorageProvider: Send + Sync {
         let _ = storage_key;
         Err(StorageError::Config(
             "artifact text loading is not implemented for this storage provider".to_string(),
+        ))
+    }
+    /// Load a durable LLM Wiki Markdown object by deterministic storage key.
+    async fn load_wiki_text(&self, storage_key: String) -> Result<Option<String>, StorageError> {
+        let _ = storage_key;
+        Ok(None)
+    }
+    /// Save a durable LLM Wiki Markdown object by deterministic storage key.
+    async fn save_wiki_text(
+        &self,
+        storage_key: String,
+        content: String,
+    ) -> Result<(), StorageError> {
+        let _ = storage_key;
+        let _ = content;
+        Ok(())
+    }
+    /// Delete a durable LLM Wiki Markdown object by deterministic storage key.
+    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
+        let _ = storage_key;
+        Err(StorageError::Config(
+            "wiki text deletion is not implemented for this storage provider".to_string(),
         ))
     }
     /// Clear all context (history and memory) for a user.

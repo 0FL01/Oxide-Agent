@@ -12,7 +12,6 @@ mod types;
 use crate::agent::hooks::HookRegistry;
 use crate::agent::loop_detection::{LoopDetectionConfig, LoopDetectionService};
 use crate::agent::memory::AgentMessage;
-use crate::agent::narrator::Narrator;
 use crate::llm::{LlmClient, Message};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,7 +29,6 @@ pub struct AgentRunner {
     hook_registry: HookRegistry,
     loop_detector: Arc<Mutex<LoopDetectionService>>,
     loop_detection_disabled_next_run: bool,
-    narrator: Arc<Narrator>,
     route_failover_state: RouteFailoverState,
 }
 
@@ -52,14 +50,11 @@ impl AgentRunner {
             loop_config,
         )));
 
-        let narrator = Arc::new(Narrator::new(Arc::clone(&llm_client)));
-
         Self {
             llm_client,
             hook_registry: HookRegistry::new(),
             loop_detector,
             loop_detection_disabled_next_run: false,
-            narrator,
             route_failover_state: RouteFailoverState::default(),
         }
     }
@@ -67,6 +62,11 @@ impl AgentRunner {
     /// Register a new hook.
     pub fn register_hook(&mut self, hook: Box<dyn crate::agent::hooks::Hook>) {
         self.hook_registry.register(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_registered_hook(&self, name: &str) -> bool {
+        self.hook_registry.contains_hook(name)
     }
 
     /// Get access to the internal LLM client.
@@ -104,6 +104,7 @@ impl AgentRunner {
                 Message {
                     role: role.to_string(),
                     content: msg.content.clone(),
+                    reasoning_content: msg.reasoning.clone(),
                     tool_call_id: msg.tool_call_id.clone(),
                     tool_call_correlation: msg.resolved_tool_call_correlation(),
                     name: msg.tool_name.clone(),

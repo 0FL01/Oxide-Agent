@@ -1,7 +1,7 @@
 use super::{
-    ensure_session_exists, remove_sessions_with_compat, save_memory_after_task,
-    spawn_manual_compaction_task, AgentDialogue, AgentModeSessionKeys, EnsureSessionContext,
-    RunManualCompactionContext, SessionTransportContext, SESSION_REGISTRY,
+    ensure_session_exists, remove_session, save_memory_after_task, spawn_manual_compaction_task,
+    AgentDialogue, AgentModeSessionKeys, EnsureSessionContext, RunManualCompactionContext,
+    SessionTransportContext, SESSION_REGISTRY,
 };
 use crate::bot::context::{ensure_current_agent_flow_id, reset_current_agent_flow_id};
 use crate::bot::resilient;
@@ -165,7 +165,6 @@ pub(crate) async fn start_manual_compaction(
     msg: Message,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let thread_spec = resolve_thread_spec(&msg);
@@ -196,7 +195,6 @@ pub(crate) async fn start_manual_compaction(
         },
         llm: &llm,
         storage: &storage,
-        persistent_memory_store: &persistent_memory_store,
         settings: &settings,
     })
     .await;
@@ -543,7 +541,6 @@ pub(crate) async fn handle_recreate_container_confirmation(
     session_keys: AgentModeSessionKeys,
     storage: &Arc<dyn StorageProvider>,
     llm: &Arc<LlmClient>,
-    persistent_memory_store: &Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: &Arc<BotSettings>,
     send_ctx: &ConfirmationSendCtx<'_>,
 ) -> Result<()> {
@@ -574,7 +571,6 @@ pub(crate) async fn handle_recreate_container_confirmation(
         },
         llm,
         storage,
-        persistent_memory_store,
         settings,
     })
     .await;
@@ -657,7 +653,7 @@ pub(crate) async fn exit_agent_mode(
         .await
         .unwrap_or(session_keys.primary);
     save_memory_after_task(session_id, user_id, &context_key, &agent_flow_id, &storage).await;
-    remove_sessions_with_compat(session_keys).await;
+    remove_session(session_keys).await;
 
     let _ = crate::bot::context::set_current_context_state(
         &storage,
@@ -720,7 +716,6 @@ pub(crate) async fn handle_agent_confirmation(
     action: ConfirmationType,
     storage: Arc<dyn StorageProvider>,
     llm: Arc<LlmClient>,
-    persistent_memory_store: Arc<dyn oxide_agent_core::agent::PersistentMemoryStore>,
     settings: Arc<BotSettings>,
 ) -> Result<()> {
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
@@ -770,15 +765,7 @@ pub(crate) async fn handle_agent_confirmation(
                 .await?;
             }
             ConfirmationType::CompactContext => {
-                start_manual_compaction(
-                    bot.clone(),
-                    msg,
-                    storage,
-                    llm,
-                    persistent_memory_store.clone(),
-                    settings,
-                )
-                .await?;
+                start_manual_compaction(bot.clone(), msg, storage, llm, settings).await?;
             }
             ConfirmationType::RecreateContainer => {
                 handle_recreate_container_confirmation(
@@ -786,7 +773,6 @@ pub(crate) async fn handle_agent_confirmation(
                     session_keys,
                     &storage,
                     &llm,
-                    &persistent_memory_store,
                     &settings,
                     &send_ctx,
                 )

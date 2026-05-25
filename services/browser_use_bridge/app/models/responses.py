@@ -18,7 +18,7 @@ class RunTaskResponse(BaseModel):
     summary: str | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
-    llm_source: Literal["request_config", "legacy_env"] | None = None
+    llm_source: Literal["request_config"] | None = None
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None
@@ -46,7 +46,7 @@ class SessionResponse(BaseModel):
     current_url: str | None = None
     summary: str | None = None
     last_error: str | None = None
-    llm_source: Literal["request_config", "legacy_env"] | None = None
+    llm_source: Literal["request_config"] | None = None
     llm_provider: str | None = None
     llm_transport: str | None = None
     vision_mode: Literal["auto", "disabled"] | None = None

@@ -198,7 +198,7 @@ impl ManagerControlPlaneProvider {
                         "hooks": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Hook names such as workload_distributor, delegation_guard, search_budget, timeout_report"
+                            "description": "Hook names such as search_budget, timeout_report, retrieval_advisor"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -216,7 +216,7 @@ impl ManagerControlPlaneProvider {
                         "hooks": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Hook names such as workload_distributor, delegation_guard, search_budget, timeout_report"
+                            "description": "Hook names such as search_budget, timeout_report, retrieval_advisor"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -228,8 +228,19 @@ impl ManagerControlPlaneProvider {
 
     fn configured_search_tool_groups() -> Vec<TopicAgentToolGroup> {
         let mut groups = Vec::new();
+        Self::push_configured_search_tool_groups(&mut groups);
+        groups
+    }
 
-        #[cfg(feature = "tavily")]
+    fn push_configured_search_tool_groups(groups: &mut Vec<TopicAgentToolGroup>) {
+        #[cfg(not(any(
+            feature = "tool-tavily",
+            feature = "tool-searxng",
+            feature = "tool-webfetch-md"
+        )))]
+        let _ = groups;
+
+        #[cfg(feature = "tool-tavily")]
         if crate::config::is_tavily_enabled() {
             groups.push(TopicAgentToolGroup {
                 provider: "tavily",
@@ -238,7 +249,7 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "searxng")]
+        #[cfg(feature = "tool-searxng")]
         if crate::config::is_searxng_enabled() {
             groups.push(TopicAgentToolGroup {
                 provider: "searxng",
@@ -247,22 +258,18 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "crawl4ai")]
-        if crate::config::is_crawl4ai_enabled() {
-            groups.push(TopicAgentToolGroup {
-                provider: "crawl4ai",
-                aliases: &["search", "crawl4ai"],
-                tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
-            });
-        }
-
-        groups
+        #[cfg(feature = "tool-webfetch-md")]
+        groups.push(TopicAgentToolGroup {
+            provider: "webfetch_md",
+            aliases: &["search", "webfetch", "web_markdown"],
+            tools: TOPIC_AGENT_WEBFETCH_TOOLS,
+        });
     }
 
     fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
         // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
         // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
-        #[cfg(feature = "browser_use")]
+        #[cfg(feature = "tool-browser-use")]
         if crate::config::is_browser_use_enabled() {
             return vec![TopicAgentToolGroup {
                 provider: "browser_use",
@@ -278,6 +285,9 @@ impl ManagerControlPlaneProvider {
         &self,
         topic_id: &str,
     ) -> Result<TopicAgentToolCatalog> {
+        #[cfg(not(feature = "integration-ssh-mcp"))]
+        let _ = topic_id;
+
         let mut groups = vec![
             TopicAgentToolGroup {
                 provider: "todos",
@@ -324,20 +334,23 @@ impl ManagerControlPlaneProvider {
         groups.extend(Self::configured_search_tool_groups());
         groups.extend(Self::configured_browser_tool_groups());
 
-        let topic_infra = self
-            .storage
-            .get_topic_infra_config(self.user_id, topic_id.to_string())
-            .await
-            .map_err(|err| anyhow!("failed to get topic infra config: {err}"))?;
-        if topic_infra.is_some() {
-            groups.push(TopicAgentToolGroup {
-                provider: "ssh",
-                aliases: &["ssh"],
-                tools: TOPIC_AGENT_SSH_TOOLS,
-            });
+        #[cfg(feature = "integration-ssh-mcp")]
+        {
+            let topic_infra = self
+                .storage
+                .get_topic_infra_config(self.user_id, topic_id.to_string())
+                .await
+                .map_err(|err| anyhow!("failed to get topic infra config: {err}"))?;
+            if topic_infra.is_some() {
+                groups.push(TopicAgentToolGroup {
+                    provider: "ssh",
+                    aliases: &["ssh"],
+                    tools: TOPIC_AGENT_SSH_TOOLS,
+                });
+            }
         }
 
-        #[cfg(feature = "jira")]
+        #[cfg(feature = "integration-mcp-jira")]
         {
             groups.push(TopicAgentToolGroup {
                 provider: "jira",
@@ -346,7 +359,7 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "mattermost")]
+        #[cfg(feature = "integration-mcp-mattermost")]
         {
             if crate::agent::providers::MattermostMcpConfig::from_env().is_some() {
                 groups.push(TopicAgentToolGroup {
@@ -357,17 +370,23 @@ impl ManagerControlPlaneProvider {
             }
         }
 
-        // TTS groups - always added as they're conditionally enabled via env vars at runtime
+        #[cfg(any(
+            feature = "tool-media-audio",
+            feature = "tool-media-image",
+            feature = "tool-media-video"
+        ))]
         groups.push(TopicAgentToolGroup {
             provider: "media_file",
             aliases: &["media", "media_file"],
             tools: TOPIC_AGENT_MEDIA_FILE_TOOLS,
         });
+        #[cfg(feature = "tool-tts-kokoro")]
         groups.push(TopicAgentToolGroup {
             provider: "tts_en",
             aliases: &["tts", "tts_en", "kokoro"],
             tools: TOPIC_AGENT_TTS_EN_TOOLS,
         });
+        #[cfg(feature = "tool-tts-silero")]
         groups.push(TopicAgentToolGroup {
             provider: "tts_ru",
             aliases: &["tts_ru", "silero"],
@@ -795,8 +814,6 @@ impl ManagerControlPlaneProvider {
 
     fn normalize_topic_agent_hook_name(token: &str) -> Option<&'static str> {
         match token {
-            "workload" => Some("workload_distributor"),
-            "delegation" => Some("delegation_guard"),
             "search" => Some("search_budget"),
             "timeout" => Some("timeout_report"),
             _ => None,
@@ -1435,8 +1452,18 @@ impl ManagerControlPlaneProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(
+        feature = "tool-media-audio",
+        feature = "tool-media-image",
+        feature = "tool-media-video"
+    ))]
     use std::sync::Arc;
 
+    #[cfg(any(
+        feature = "tool-media-audio",
+        feature = "tool-media-image",
+        feature = "tool-media-video"
+    ))]
     #[tokio::test]
     async fn topic_agent_tool_catalog_includes_media_file_tools() {
         let mut mock = crate::storage::MockStorageProvider::new();
@@ -1469,7 +1496,7 @@ mod tests {
         assert!(catalog.tool_names.contains("describe_video_file"));
     }
 
-    #[cfg(feature = "browser_use")]
+    #[cfg(feature = "tool-browser-use")]
     #[tokio::test]
     async fn topic_agent_tool_catalog_includes_browser_use_tools_when_enabled() {
         let _guard = crate::config::test_env_async_mutex().lock().await;
@@ -1567,17 +1594,21 @@ mod tests {
                     tools: &["web_search", "web_extract"],
                 },
                 TopicAgentToolGroup {
-                    provider: "crawl4ai",
-                    aliases: &["search", "crawl4ai"],
-                    tools: &["deep_crawl", "web_markdown", "web_pdf"],
+                    provider: "searxng",
+                    aliases: &["search", "searxng"],
+                    tools: &["searxng_search"],
+                },
+                TopicAgentToolGroup {
+                    provider: "webfetch_md",
+                    aliases: &["search", "webfetch", "web_markdown"],
+                    tools: &["web_markdown"],
                 },
             ],
             tool_names: [
                 "web_search",
                 "web_extract",
-                "deep_crawl",
+                "searxng_search",
                 "web_markdown",
-                "web_pdf",
             ]
             .into_iter()
             .map(str::to_string)
@@ -1593,10 +1624,9 @@ mod tests {
         assert_eq!(
             expanded,
             vec![
-                "deep_crawl".to_string(),
+                "searxng_search".to_string(),
                 "web_extract".to_string(),
                 "web_markdown".to_string(),
-                "web_pdf".to_string(),
                 "web_search".to_string(),
             ]
         );

@@ -7,6 +7,7 @@ use crate::setup::setup_test;
 
 /// Test: SSE endpoint streams events as a task executes and milestones are recorded.
 #[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_sse_stream() {
     let test_start = std::time::Instant::now();
 

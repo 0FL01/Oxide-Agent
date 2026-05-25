@@ -1,6 +1,9 @@
 //! Lightweight topic-scoped `AGENTS.md` tools for the active agent context.
 
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use crate::storage::{
     validate_topic_agents_md_content, StorageProvider, UpsertTopicAgentsMdOptions,
@@ -10,6 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 const TOOL_AGENTS_MD_GET: &str = "agents_md_get";
 const TOOL_AGENTS_MD_UPDATE: &str = "agents_md_update";
@@ -46,6 +50,23 @@ impl AgentsMdProvider {
             user_id,
             topic_id,
         }
+    }
+
+    /// Build native typed runtime executors for topic AGENTS.md tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tools_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(AgentsMdToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
     }
 
     fn tools_definitions() -> Vec<ToolDefinition> {
@@ -146,29 +167,8 @@ impl AgentsMdProvider {
         })
         .to_string())
     }
-}
 
-#[async_trait]
-impl ToolProvider for AgentsMdProvider {
-    fn name(&self) -> &'static str {
-        "agents_md"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        Self::tools_definitions()
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        matches!(tool_name, TOOL_AGENTS_MD_GET | TOOL_AGENTS_MD_UPDATE)
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::progress::AgentEvent>>,
-        _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
         match tool_name {
             TOOL_AGENTS_MD_GET => self.execute_get(arguments).await,
             TOOL_AGENTS_MD_UPDATE => self.execute_update(arguments).await,
@@ -177,11 +177,93 @@ impl ToolProvider for AgentsMdProvider {
     }
 }
 
+struct AgentsMdToolExecutor {
+    provider: Arc<AgentsMdProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for AgentsMdToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
     use crate::storage::{MockStorageProvider, TopicAgentsMdRecord};
+    use chrono::Utc;
     use mockall::predicate::eq;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-agents-md"),
+            batch_id: ToolBatchId::from("batch-agents-md"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
+
+    fn typed_executor(provider: &Arc<AgentsMdProvider>, tool_name: &str) -> Arc<dyn ToolExecutor> {
+        provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == tool_name)
+            .expect("typed AGENTS.md executor registered")
+    }
 
     #[tokio::test]
     async fn get_returns_current_topic_record() {
@@ -201,18 +283,61 @@ mod tests {
                 }))
             });
 
-        let provider = AgentsMdProvider::new(Arc::new(storage), 77, "topic-a".to_string());
-        let result = provider
-            .execute(TOOL_AGENTS_MD_GET, "{}", None, None)
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
+        let output = typed_executor(&provider, TOOL_AGENTS_MD_GET)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_GET, "{}"))
             .await
             .expect("get must succeed");
+        assert_eq!(output.status, ToolOutputStatus::Success);
 
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
         assert_eq!(parsed["found"], true);
         assert_eq!(
             parsed["topic_agents_md"]["agents_md"],
             "# Topic AGENTS\nStay focused."
         );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_gets_current_topic_record() {
+        let mut storage = MockStorageProvider::new();
+        storage
+            .expect_get_topic_agents_md()
+            .with(eq(77_i64), eq("topic-a".to_string()))
+            .returning(|user_id, topic_id| {
+                Ok(Some(TopicAgentsMdRecord {
+                    schema_version: 1,
+                    version: 2,
+                    user_id,
+                    topic_id,
+                    agents_md: "# Topic AGENTS\nStay focused.".to_string(),
+                    created_at: 10,
+                    updated_at: 20,
+                }))
+            });
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
+        let output = typed_executor(&provider, TOOL_AGENTS_MD_GET)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_GET, "{}"))
+            .await
+            .expect("typed AGENTS.md get succeeds");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        assert!(output
+            .stdout
+            .text
+            .as_deref()
+            .expect("stdout text")
+            .contains("Stay focused"));
     }
 
     #[tokio::test]
@@ -224,18 +349,25 @@ mod tests {
             .returning(|_, _| Ok(None));
         storage.expect_upsert_topic_agents_md().times(0);
 
-        let provider = AgentsMdProvider::new(Arc::new(storage), 77, "topic-a".to_string());
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
         let arguments = json!({
             "agents_md": "# Topic AGENTS\nUse checklists",
             "dry_run": true,
         })
         .to_string();
-        let result = provider
-            .execute(TOOL_AGENTS_MD_UPDATE, &arguments, None, None)
+        let output = typed_executor(&provider, TOOL_AGENTS_MD_UPDATE)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_UPDATE, &arguments))
             .await
             .expect("dry run must succeed");
+        assert_eq!(output.status, ToolOutputStatus::Success);
 
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
         assert_eq!(parsed["dry_run"], true);
         assert_eq!(
             parsed["preview"]["agents_md"],
@@ -269,17 +401,24 @@ mod tests {
                 })
             });
 
-        let provider = AgentsMdProvider::new(Arc::new(storage), 77, "topic-a".to_string());
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
         let arguments = json!({
             "agents_md": "# Topic AGENTS\nUse checklists",
         })
         .to_string();
-        let result = provider
-            .execute(TOOL_AGENTS_MD_UPDATE, &arguments, None, None)
+        let output = typed_executor(&provider, TOOL_AGENTS_MD_UPDATE)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_UPDATE, &arguments))
             .await
             .expect("update must succeed");
+        assert_eq!(output.status, ToolOutputStatus::Success);
 
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(output.stdout.text.as_deref().expect("stdout text"))
+                .expect("valid json");
         assert_eq!(parsed["topic_agents_md"]["topic_id"], "topic-a");
         assert_eq!(parsed["topic_agents_md"]["version"], 3);
     }
@@ -287,12 +426,16 @@ mod tests {
     #[tokio::test]
     async fn update_rejects_more_than_300_lines() {
         let storage = MockStorageProvider::new();
-        let provider = AgentsMdProvider::new(Arc::new(storage), 77, "topic-a".to_string());
+        let provider = Arc::new(AgentsMdProvider::new(
+            Arc::new(storage),
+            77,
+            "topic-a".to_string(),
+        ));
         let oversized = vec!["line"; 301].join("\n");
         let arguments = json!({ "agents_md": oversized }).to_string();
 
-        let error = provider
-            .execute(TOOL_AGENTS_MD_UPDATE, &arguments, None, None)
+        let error = typed_executor(&provider, TOOL_AGENTS_MD_UPDATE)
+            .execute(runtime_invocation(TOOL_AGENTS_MD_UPDATE, &arguments))
             .await
             .expect_err("oversized AGENTS.md must be rejected");
 

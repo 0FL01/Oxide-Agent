@@ -1,7 +1,7 @@
 //! Image analysis for Mistral provider
 //!
 //! NOTE: Mistral's vision capabilities are currently limited and produce
-//! low-quality results compared to other providers (Gemini, OpenRouter).
+//! low-quality results compared to OpenRouter-hosted vision models.
 //! Implementation is not recommended at this time.
 //!
 //! When Mistral improves their vision models, this can be implemented
@@ -12,7 +12,7 @@ use crate::llm::LlmError;
 /// Analyze image using Mistral Vision API
 ///
 /// Currently not implemented due to poor quality of Mistral vision models.
-/// Use Gemini or OpenRouter for image analysis instead.
+/// Use an OpenRouter-hosted vision model for image analysis instead.
 pub async fn analyze_image(
     _image_bytes: Vec<u8>,
     _text_prompt: &str,

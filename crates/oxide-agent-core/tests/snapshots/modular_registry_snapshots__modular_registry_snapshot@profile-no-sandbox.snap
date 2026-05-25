@@ -1,0 +1,196 @@
+---
+source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
+expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
+---
+{
+  "profile": "profile-no-sandbox",
+  "compiled_manifest": {
+    "capabilities": [
+      {
+        "id": "llm-provider/opencode-go",
+        "module": "llm-provider/opencode-go"
+      },
+      {
+        "id": "storage/r2",
+        "module": "storage/r2"
+      },
+      {
+        "id": "tool/reminder",
+        "module": "tool/reminder"
+      },
+      {
+        "id": "tool/todos",
+        "module": "tool/todos"
+      },
+      {
+        "id": "tool/webfetch-md",
+        "module": "tool/webfetch-md"
+      },
+      {
+        "id": "tool/wiki-memory",
+        "module": "tool/wiki-memory"
+      },
+      {
+        "id": "transport/telegram",
+        "module": "transport/telegram"
+      }
+    ],
+    "modules": [
+      {
+        "cargo_feature": "llm-opencode-go",
+        "config_properties": [
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/chat/completions",
+            "description": "OpenCode Go Chat Completions endpoint.",
+            "env": "OPENCODE_GO_API_BASE",
+            "name": "api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenCode Go API key.",
+            "env": "OPENCODE_GO_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/opencode-go",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-go"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "storage-s3-r2",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "storage/r2",
+        "kind": "storage-backend",
+        "provides": [
+          "storage/r2"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-reminder",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/reminder",
+        "kind": "reminder",
+        "provides": [
+          "tool/reminder"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-todos",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/todos",
+        "kind": "tool",
+        "provides": [
+          "tool/todos"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/webfetch-md",
+        "kind": "search",
+        "provides": [
+          "tool/webfetch-md"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-wiki-memory",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/wiki-memory",
+        "kind": "memory",
+        "provides": [
+          "tool/wiki-memory"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "transport-telegram",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "transport/telegram",
+        "kind": "transport",
+        "provides": [
+          "transport/telegram"
+        ],
+        "requires": []
+      }
+    ]
+  },
+  "enabled_manifest_default_config": {
+    "capabilities": [
+      "llm-provider/opencode-go",
+      "storage/r2",
+      "tool/reminder",
+      "tool/todos",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "transport/telegram"
+    ],
+    "modules": [
+      "llm-provider/opencode-go",
+      "storage/r2",
+      "tool/reminder",
+      "tool/todos",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "transport/telegram"
+    ]
+  },
+  "registered_tool_names_default_config": [
+    "web_markdown",
+    "write_todos"
+  ],
+  "registered_llm_provider_ids_dummy_config": [
+    "llm-provider/opencode-go"
+  ],
+  "registered_llm_provider_aliases_dummy_config": [
+    "opencode-go",
+    "opencode_go"
+  ],
+  "storage_backend_module_ids": [
+    "storage/r2"
+  ],
+  "sandbox_backend_module_ids": [],
+  "external_service_requirements": [
+    {
+      "module_id": "llm-provider/opencode-go",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-opencode-go",
+      "config_env": [
+        "OPENCODE_GO_API_BASE",
+        "OPENCODE_GO_API_KEY"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "storage/r2",
+      "kind": "storage-backend",
+      "cargo_feature": "storage-s3-r2",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/webfetch-md",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
+      "config_env": [],
+      "requires_capabilities": []
+    }
+  ]
+}

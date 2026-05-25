@@ -1,0 +1,11 @@
+profile = "no-sandbox"
+cargo_features = ["profile-no-sandbox"]
+
+[modules]
+"transport/telegram" = { enabled = true }
+"storage/r2" = { enabled = true }
+"llm-provider/opencode-go" = { enabled = true }
+"tool/todos" = { enabled = true }
+"tool/reminder" = { enabled = true }
+"tool/wiki-memory" = { enabled = true }
+"tool/webfetch-md" = { enabled = true }

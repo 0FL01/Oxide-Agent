@@ -4,7 +4,9 @@
 
 mod client;
 mod messages;
+pub(crate) mod module;
 mod response;
 mod tools;
 
 pub use client::MiniMaxProvider;
+pub(crate) use module::MiniMaxProviderModule;

@@ -2,15 +2,16 @@
 //!
 //! Disabled by default - must be enabled via `topic_agent_tools_enable`.
 
-use crate::agent::progress::AgentEvent;
-use crate::agent::provider::ToolProvider;
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
 use crate::llm::ToolDefinition;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 mod client;
 mod config;
@@ -92,6 +93,33 @@ impl MattermostMcpProvider {
         }
     }
 
+    /// Build native typed runtime executors for Mattermost MCP tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let execution_lock = Arc::new(Mutex::new(()));
+        Self::tool_definitions()
+            .into_iter()
+            .map(|spec| {
+                Arc::new(MattermostMcpToolExecutor {
+                    provider: Arc::clone(self),
+                    name: ToolName::from(spec.name.clone()),
+                    spec,
+                    execution_lock: Arc::clone(&execution_lock),
+                }) as Arc<dyn ToolExecutor>
+            })
+            .collect()
+    }
+
+    fn tool_definitions() -> Vec<ToolDefinition> {
+        let mut tools = Vec::new();
+        tools.extend(team_tools());
+        tools.extend(channel_tools());
+        tools.extend(message_tools());
+        tools.extend(user_tools());
+        tools.extend(file_tools());
+        tools
+    }
+
     async fn ensure_client(&self) -> Result<Arc<MattermostMcpClient>> {
         let mut guard = self.client.lock().await;
 
@@ -108,37 +136,18 @@ impl MattermostMcpProvider {
         *guard = Some(Arc::clone(&client));
         Ok(client)
     }
-}
 
-#[async_trait]
-impl ToolProvider for MattermostMcpProvider {
-    fn name(&self) -> &'static str {
-        "mattermost_mcp"
-    }
-
-    fn tools(&self) -> Vec<ToolDefinition> {
-        let mut tools = Vec::new();
-        tools.extend(team_tools());
-        tools.extend(channel_tools());
-        tools.extend(message_tools());
-        tools.extend(user_tools());
-        tools.extend(file_tools());
-        tools
-    }
-
-    fn can_handle(&self, tool_name: &str) -> bool {
-        upstream_tool_name(tool_name).is_some()
-    }
-
-    async fn execute(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        _progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-        _cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
         let upstream_tool_name = upstream_tool_name(tool_name)
             .ok_or_else(|| anyhow!("unknown mattermost tool: {tool_name}"))?;
+
+        let args_value: serde_json::Value =
+            serde_json::from_str(arguments).context("failed to parse tool arguments as JSON")?;
+        let args = args_value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| anyhow!("tool arguments must be a JSON object"))?;
+
         let client = self
             .ensure_client()
             .await
@@ -151,17 +160,57 @@ impl ToolProvider for MattermostMcpProvider {
             );
         }
 
-        let args_value: serde_json::Value =
-            serde_json::from_str(arguments).context("failed to parse tool arguments as JSON")?;
-        let args = args_value
-            .as_object()
-            .cloned()
-            .ok_or_else(|| anyhow!("tool arguments must be a JSON object"))?;
-
         client
             .call_tool(upstream_tool_name, args)
             .await
             .with_context(|| format!("mattermost-mcp tool '{}' execution failed", tool_name))
+    }
+}
+
+struct MattermostMcpToolExecutor {
+    provider: Arc<MattermostMcpProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+    execution_lock: Arc<Mutex<()>>,
+}
+
+#[async_trait]
+impl ToolExecutor for MattermostMcpToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let _guard = self.execution_lock.lock().await;
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(mattermost_mcp_runtime_error)
+    }
+}
+
+fn mattermost_mcp_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
+    let message = error.to_string();
+    if error.downcast_ref::<serde_json::Error>().is_some()
+        || message.contains("failed to parse tool arguments as JSON")
+        || message.contains("tool arguments must be a JSON object")
+    {
+        ToolRuntimeError::InvalidArguments(message)
+    } else {
+        ToolRuntimeError::Failure(message)
     }
 }
 
@@ -434,6 +483,45 @@ fn file_tools() -> Vec<ToolDefinition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, OutputNormalizer, ProviderMetadata, ToolBatchId, ToolCallId,
+        ToolExecutionContext, ToolOutputStatus, ToolRuntimeConfig, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use chrono::Utc;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-mattermost-mcp"),
+            batch_id: ToolBatchId::from("batch-mattermost-mcp"),
+            batch_index: 0,
+            invocation_id: InvocationId::from(format!("invoke-{tool_name}")),
+            tool_call_id: ToolCallId::from(format!("call-{tool_name}")),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(tool_name),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
 
     fn test_config() -> MattermostMcpConfig {
         MattermostMcpConfig {
@@ -447,15 +535,13 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_name() {
-        let provider = MattermostMcpProvider::new(test_config());
-        assert_eq!(provider.name(), "mattermost_mcp");
-    }
-
-    #[test]
-    fn test_provider_tools() {
-        let provider = MattermostMcpProvider::new(test_config());
-        let tools = provider.tools();
+    fn typed_runtime_specs_include_mattermost_tool_definitions() {
+        let provider = Arc::new(MattermostMcpProvider::new(test_config()));
+        let tools = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect::<Vec<_>>();
 
         assert_eq!(tools.len(), TOOL_MAPPINGS.len());
         assert!(tools
@@ -470,13 +556,18 @@ mod tests {
     }
 
     #[test]
-    fn test_can_handle() {
-        let provider = MattermostMcpProvider::new(test_config());
+    fn typed_runtime_executors_register_only_oxide_mattermost_tools() {
+        let provider = Arc::new(MattermostMcpProvider::new(test_config()));
+        let names = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<std::collections::BTreeSet<_>>();
 
-        assert!(provider.can_handle(TOOL_MATTERMOST_LIST_CHANNELS));
-        assert!(provider.can_handle(TOOL_MATTERMOST_GET_THREAD));
-        assert!(!provider.can_handle("post_message"));
-        assert!(!provider.can_handle("unknown_tool"));
+        assert!(names.contains(TOOL_MATTERMOST_LIST_CHANNELS));
+        assert!(names.contains(TOOL_MATTERMOST_GET_THREAD));
+        assert!(!names.contains("post_message"));
+        assert!(!names.contains("unknown_tool"));
     }
 
     #[test]
@@ -487,5 +578,40 @@ mod tests {
             Some("get_thread")
         );
         assert_eq!(upstream_tool_name("nope"), None);
+    }
+
+    #[test]
+    fn typed_runtime_executors_register_mattermost_tools() {
+        let provider = Arc::new(MattermostMcpProvider::new(test_config()));
+
+        let names = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.name().into_inner())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(names.contains(TOOL_MATTERMOST_LIST_TEAMS));
+        assert!(names.contains(TOOL_MATTERMOST_POST_MESSAGE));
+        assert!(names.contains(TOOL_MATTERMOST_UPLOAD_FILE));
+        assert_eq!(names.len(), TOOL_MAPPINGS.len());
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_rejects_malformed_arguments_before_mcp() {
+        let provider = Arc::new(MattermostMcpProvider::new(test_config()));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_MATTERMOST_LIST_TEAMS)
+            .expect("mattermost_list_teams executor");
+
+        let error = executor
+            .execute(runtime_invocation(TOOL_MATTERMOST_LIST_TEAMS, "{"))
+            .await
+            .expect_err("malformed args must fail before MCP init");
+
+        let output = OutputNormalizer::new(ToolRuntimeConfig::default())
+            .executor_error(&runtime_invocation(TOOL_MATTERMOST_LIST_TEAMS, "{"), error);
+        assert_eq!(output.status, ToolOutputStatus::InvalidArguments);
     }
 }
