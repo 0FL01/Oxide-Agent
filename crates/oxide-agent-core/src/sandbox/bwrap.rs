@@ -50,6 +50,7 @@ struct BwrapSandboxConfig {
     state_dir: PathBuf,
     lock_dir: PathBuf,
     root_upper_dir: Option<PathBuf>,
+    pinned_system_dir: Option<PathBuf>,
     net: BwrapNetworkMode,
     root_mode: BwrapRootMode,
     command_timeout: Duration,
@@ -198,6 +199,8 @@ struct BwrapScopeMetadata {
     package_manager: Option<String>,
     rootfs: String,
     workspace: String,
+    #[serde(default)]
+    system_dir: Option<String>,
     root_mode: BwrapRootMode,
     network_mode: BwrapNetworkMode,
     created_at: i64,
@@ -209,10 +212,11 @@ impl BwrapSandboxManager {
     /// Create a bwrap manager for the provided scope.
     pub(crate) async fn new(scope: SandboxScope) -> Result<Self> {
         let mut config = BwrapSandboxConfig::from_env()?;
-        let state = BwrapScopeState::new(&config, &scope);
-        if let Some(metadata) = BwrapScopeMetadata::read(&state.metadata)? {
+        let initial_state = BwrapScopeState::new(&config, &scope);
+        if let Some(metadata) = BwrapScopeMetadata::read(&initial_state.metadata)? {
             config.apply_scope_pin(&metadata)?;
         }
+        let state = BwrapScopeState::new(&config, &scope);
         config.validate()?;
 
         let instance_id = format!("bwrap:{}", scope.stable_name());
@@ -457,7 +461,9 @@ impl BwrapSandboxManager {
             return Ok(false);
         }
         let scope_dir = config.state_dir.join(container_name);
-        if let Some(root_upper_dir) = &config.root_upper_dir {
+        if let Some(system_dir) = metadata.system_dir.as_deref() {
+            remove_dir_if_exists(Path::new(system_dir))?;
+        } else if let Some(root_upper_dir) = &config.root_upper_dir {
             remove_dir_if_exists(&root_upper_dir.join(container_name))?;
         }
         remove_dir_if_exists(&scope_dir)?;
@@ -551,6 +557,7 @@ impl BwrapSandboxManager {
             package_manager: self.config.package_manager.clone(),
             rootfs: self.config.rootfs.display().to_string(),
             workspace: self.state.workspace.display().to_string(),
+            system_dir: Some(self.state.system_dir.display().to_string()),
             root_mode: self.config.root_mode,
             network_mode: self.config.net,
             created_at: previous.map_or(now, |metadata| metadata.created_at),
@@ -835,6 +842,7 @@ impl BwrapSandboxConfig {
             state_dir,
             lock_dir,
             root_upper_dir,
+            pinned_system_dir: None,
             net,
             root_mode,
             command_timeout,
@@ -863,6 +871,7 @@ impl BwrapSandboxConfig {
         self.manifest_sha256 = metadata.image_manifest_sha256.clone();
         self.package_manager = metadata.package_manager.clone();
         self.rootfs = absolute_existing_path(Path::new(&metadata.rootfs))?;
+        self.pinned_system_dir = metadata.system_dir.as_deref().map(PathBuf::from);
         self.root_mode = metadata.root_mode;
         Ok(())
     }
@@ -905,6 +914,7 @@ impl BwrapScopeState {
             || scope_dir.join("system"),
             |parent| parent.join(&scope_name),
         );
+        let system_dir = config.pinned_system_dir.clone().unwrap_or(system_dir);
         Self {
             workspace: scope_dir.join("workspace"),
             system_dir: system_dir.clone(),
@@ -2083,6 +2093,14 @@ mod tests {
         let mut manager = manager;
         manager.create_sandbox().await.unwrap();
         assert!(root_upper_parent.join(scope.stable_name()).exists());
+        let changed_root_upper_parent = temp.path().join("changed-root-upper");
+        std::env::set_var("BWRAP_ROOT_UPPER_DIR", &changed_root_upper_parent);
+        let pinned_manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
+        assert_eq!(
+            pinned_manager.state.system_dir,
+            root_upper_parent.join(scope.stable_name())
+        );
+        assert!(!changed_root_upper_parent.join(scope.stable_name()).exists());
         manager.destroy().await.unwrap();
         assert!(!root_upper_parent.join(scope.stable_name()).exists());
         assert!(root_upper_parent.exists());
@@ -2101,6 +2119,27 @@ mod tests {
                 .unwrap()
         );
         assert!(!root_upper_parent.join(delete_scope.stable_name()).exists());
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
+        let changed_delete_scope = SandboxScope::new(42, "upper-delete-after-env-change");
+        let mut manager = BwrapSandboxManager::new(changed_delete_scope.clone())
+            .await
+            .unwrap();
+        manager.create_sandbox().await.unwrap();
+        std::env::set_var("BWRAP_ROOT_UPPER_DIR", &changed_root_upper_parent);
+        assert!(BwrapSandboxManager::delete_sandbox_by_name(
+            42,
+            &changed_delete_scope.stable_name()
+        )
+        .await
+        .unwrap());
+        assert!(!root_upper_parent
+            .join(changed_delete_scope.stable_name())
+            .exists());
+        assert!(!changed_root_upper_parent
+            .join(changed_delete_scope.stable_name())
+            .exists());
 
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         let file_upper = temp.path().join("file-upper");
