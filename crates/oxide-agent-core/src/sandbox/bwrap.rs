@@ -264,7 +264,8 @@ impl BwrapSandboxManager {
         self.config.validate()?;
 
         let work_dir = self.prepare_overlay_workdir()?;
-        let args = self.bwrap_args(work_dir.as_deref(), cmd);
+        let resolv_conf = self.prepare_resolv_conf_bind()?;
+        let args = self.bwrap_args(work_dir.as_deref(), resolv_conf.as_deref(), cmd);
         debug!(
             scope = %self.state.scope_name,
             root_mode = %self.config.root_mode,
@@ -586,7 +587,12 @@ impl BwrapSandboxManager {
         Ok(Some(work_dir))
     }
 
-    fn bwrap_args(&self, work_dir: Option<&Path>, command: &str) -> Vec<OsString> {
+    fn bwrap_args(
+        &self,
+        work_dir: Option<&Path>,
+        resolv_conf: Option<&Path>,
+        command: &str,
+    ) -> Vec<OsString> {
         let mut args = vec![
             "--unshare-user".into(),
             "--uid".into(),
@@ -645,9 +651,9 @@ impl BwrapSandboxManager {
             WORKSPACE_PREFIX.into(),
         ]);
 
-        if let Some(resolv_conf) = self.resolv_conf_bind() {
+        if let Some(resolv_conf) = resolv_conf {
             args.push("--ro-bind".into());
-            args.push(resolv_conf.into_os_string());
+            args.push(resolv_conf.as_os_str().into());
             args.push("/etc/resolv.conf".into());
         }
 
@@ -663,17 +669,26 @@ impl BwrapSandboxManager {
         args
     }
 
-    fn resolv_conf_bind(&self) -> Option<PathBuf> {
+    fn prepare_resolv_conf_bind(&self) -> Result<Option<PathBuf>> {
         if self.config.net != BwrapNetworkMode::Host {
-            return None;
+            return Ok(None);
         }
         match &self.config.resolv_conf {
-            BwrapResolvConf::None => None,
-            BwrapResolvConf::Path(path) => Some(path.clone()),
+            BwrapResolvConf::None => Ok(None),
+            BwrapResolvConf::Path(path) => Ok(Some(path.clone())),
             BwrapResolvConf::Auto => {
                 let host = PathBuf::from("/etc/resolv.conf");
                 let rootfs_target = self.config.rootfs.join("etc/resolv.conf");
-                (host.is_file() && rootfs_target.exists()).then_some(host)
+                if !host.exists() || !rootfs_target.exists() {
+                    return Ok(None);
+                }
+                let bytes = fs::read(&host)
+                    .with_context(|| format!("Failed to read host resolver {}", host.display()))?;
+                let path = self.state.scope_dir.join("resolv.conf");
+                fs::write(&path, bytes).with_context(|| {
+                    format!("Failed to stage bwrap resolver config {}", path.display())
+                })?;
+                Ok(Some(path))
             }
         }
     }
@@ -1748,6 +1763,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let rootfs = temp.path().join("rootfs");
         create_fake_rootfs(&rootfs);
+        std::fs::create_dir_all(rootfs.join("etc")).expect("fake rootfs etc");
+        std::fs::write(rootfs.join("etc/resolv.conf"), b"").expect("fake rootfs resolv");
         let fake_bwrap = temp.path().join("bwrap");
         create_fake_bwrap(&fake_bwrap);
 
@@ -1790,11 +1807,14 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let rootfs = temp.path().join("rootfs");
         create_fake_rootfs(&rootfs);
+        std::fs::create_dir_all(rootfs.join("etc")).expect("fake rootfs etc");
+        std::fs::write(rootfs.join("etc/resolv.conf"), b"").expect("fake rootfs resolv");
         let fake_bwrap = temp.path().join("bwrap");
         create_fake_bwrap(&fake_bwrap);
 
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         std::env::set_var("BWRAP_NET", "host");
+        std::env::set_var("BWRAP_RESOLV_CONF", "auto");
         std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
         let overlay_manager = BwrapSandboxManager::new(SandboxScope::new(42, "args-overlay-host"))
             .await
@@ -1803,7 +1823,8 @@ mod tests {
             .prepare_overlay_workdir()
             .unwrap()
             .expect("overlay mode should create a workdir");
-        let overlay_args = args_to_strings(overlay_manager.bwrap_args(Some(&work_dir), "true"));
+        let overlay_args =
+            args_to_strings(overlay_manager.bwrap_args(Some(&work_dir), None, "true"));
 
         assert!(overlay_args.contains(&"--overlay-src".to_string()));
         assert!(overlay_args.contains(&"--overlay".to_string()));
@@ -1820,13 +1841,38 @@ mod tests {
         assert!(!overlay_args.contains(&"--unshare-net".to_string()));
         assert_args_do_not_bind_host_control_paths(&overlay_args);
 
+        if Path::new("/etc/resolv.conf").exists() {
+            overlay_manager.ensure_scope_dirs_locked().unwrap();
+            let staged_resolv = overlay_manager
+                .prepare_resolv_conf_bind()
+                .unwrap()
+                .expect("auto resolver should stage a bind source");
+            assert!(staged_resolv.starts_with(&overlay_manager.state.scope_dir));
+            assert_ne!(staged_resolv, PathBuf::from("/etc/resolv.conf"));
+            assert!(!staged_resolv
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            let overlay_args_with_resolv = args_to_strings(overlay_manager.bwrap_args(
+                Some(&work_dir),
+                Some(&staged_resolv),
+                "true",
+            ));
+            assert!(contains_arg_pair(
+                &overlay_args_with_resolv,
+                "--ro-bind",
+                &staged_resolv.display().to_string()
+            ));
+        }
+
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         std::env::set_var("BWRAP_NET", "none");
         std::env::set_var("BWRAP_ROOT_MODE", "ro");
         let readonly_manager = BwrapSandboxManager::new(SandboxScope::new(42, "args-ro-none"))
             .await
             .unwrap();
-        let readonly_args = args_to_strings(readonly_manager.bwrap_args(None, "printf ok"));
+        let readonly_args = args_to_strings(readonly_manager.bwrap_args(None, None, "printf ok"));
 
         assert!(readonly_args.contains(&"--unshare-net".to_string()));
         assert!(contains_arg_pair(
