@@ -7,7 +7,7 @@ Usage:
   scripts/check-compiled-capabilities.sh <embedded-opencode-local|lite|search-only|no-sandbox|media-enabled|full>
 
 Runs the Telegram app capability CLI for a profile and verifies the compiled
-capability manifest stays deterministic and aligned with the PRD profile
+capability manifest stays deterministic and aligned with the selected profile
 contract.
 USAGE
 }

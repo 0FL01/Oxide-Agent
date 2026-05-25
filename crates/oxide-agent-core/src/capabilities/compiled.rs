@@ -180,7 +180,7 @@ pub fn compiled_capability_manifest() -> Result<CompiledCapabilityManifest, Mani
     CompiledCapabilityManifest::from_modules(&modules)
 }
 
-/// Returns the selected named profile when exactly one PRD profile feature is active.
+/// Returns the selected named profile when exactly one profile feature is active.
 #[must_use]
 pub fn compiled_profile_name() -> Option<&'static str> {
     let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize

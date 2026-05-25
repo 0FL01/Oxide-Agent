@@ -470,9 +470,9 @@ mod tests {
     }
 
     #[test]
-    fn startup_command_parses_prd_config_schema_alias() {
+    fn startup_command_parses_config_schema_command() {
         let command = parse_startup_command(["config", "schema", "--compiled", "--json"])
-            .expect("PRD config schema command should parse");
+            .expect("config schema command should parse");
 
         assert_eq!(command, StartupCommand::PrintCompiledConfigSchemaJson);
     }

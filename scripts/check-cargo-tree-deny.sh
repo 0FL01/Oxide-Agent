@@ -13,7 +13,7 @@ Examples:
 
 The first argument is passed to cargo as --features for oxide-agent-core.
 Additional arguments override the deny list. Without overrides, the script uses
-the PRD Milestone 1 deny list for known profiles/features.
+the repository deny list for known profiles/features.
 USAGE
 }
 

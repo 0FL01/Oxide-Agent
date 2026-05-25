@@ -548,7 +548,7 @@ fn workspace_binaries_expose_capability_manifest_output() {
 
     assert!(
         offenders.is_empty(),
-        "all workspace binaries must expose deterministic capability manifest output for PRD 8.5/25; offenders: {offenders:?}"
+        "all workspace binaries must expose deterministic capability manifest output; offenders: {offenders:?}"
     );
 }
 

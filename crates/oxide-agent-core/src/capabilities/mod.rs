@@ -1,8 +1,6 @@
 //! Capability module manifest primitives.
 //!
-//! This module is the first stable surface for the PRD capability architecture:
-//! compile-time modules expose deterministic manifests before runtime
-//! registration is migrated to the unified registry.
+//! Compile-time modules expose deterministic manifests before runtime startup.
 
 mod compiled;
 mod manifest;

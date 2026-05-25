@@ -135,10 +135,10 @@ Default branch: `dev`.
 ## Development practice
 
 ### Modular architecture references
-- `docs/modular-architecture/final-completion-audit.md` - full modular architecture completion audit and final verification command set.
-- `docs/modular-architecture/final-acceptance-audit.md` - acceptance matrix for architecture, profiles, providers, tools, storage, sandbox, Docker/Compose, CI, and output guarantees.
-- `docs/modular-architecture/dependency-audit.md` - dependency ownership, feature/profile map, and leakage-check context.
 - `profiles/*.toml` - runtime/profile defaults that must stay aligned with compiled capability manifests.
+- `crates/oxide-agent-core/src/capabilities/` - compiled module and capability manifests.
+- `crates/oxide-agent-core/src/agent/tool_runtime/` - typed tool registration and execution.
+- `scripts/check-*.sh` - profile, capability, dependency, Docker/Compose, and runtime-surface guards.
 
 ### Build and dependencies
 - Use `cargo check` for quick verification; use `cargo build` only when you need the final binary.
@@ -195,7 +195,6 @@ feat(sources): add bybit proof of reserves source
 
 - `docs/hooks/` - hook lifecycle and managed hook behavior.
 - `docs/browser-use.md` - disabled browser-use bridge details.
-- `docs/modular-architecture/` - modular architecture completion, acceptance, and dependency audit docs.
 - `README.md` / `README-ru.md` - product overview and user-facing setup notes.
 - `config/` and `.env.example` - runtime configuration examples.
 
