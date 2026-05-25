@@ -12,6 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -97,6 +98,34 @@ impl Drop for ScopeLock {
 struct OutputTruncation {
     original_bytes: usize,
     captured_bytes: usize,
+}
+
+#[derive(Debug)]
+struct CappedOutput {
+    bytes: Vec<u8>,
+    original_bytes: usize,
+    max_bytes: usize,
+}
+
+impl CappedOutput {
+    const fn empty() -> Self {
+        Self {
+            bytes: Vec::new(),
+            original_bytes: 0,
+            max_bytes: 0,
+        }
+    }
+
+    fn into_output(self) -> (String, Option<OutputTruncation>) {
+        let truncation = (self.original_bytes > self.bytes.len()).then_some(OutputTruncation {
+            original_bytes: self.original_bytes,
+            captured_bytes: self.max_bytes,
+        });
+        (
+            String::from_utf8_lossy(&self.bytes).into_owned(),
+            truncation,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -737,47 +766,75 @@ impl BwrapSandboxManager {
         args: Vec<OsString>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<ExecResult> {
-        let child = Command::new(&self.config.bwrap_bin)
+        let mut command = Command::new(&self.config.bwrap_bin);
+        command
             .args(args)
             .kill_on_drop(true)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn bwrap at {}. Install bubblewrap or set BWRAP_BIN=/path/to/bwrap.",
-                    self.config.bwrap_bin.display()
-                )
-            })?;
+            .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        {
+            command.process_group(0);
+        }
+        let mut child = command.spawn().with_context(|| {
+            format!(
+                "Failed to spawn bwrap at {}. Install bubblewrap or set BWRAP_BIN=/path/to/bwrap.",
+                self.config.bwrap_bin.display()
+            )
+        })?;
+        let child_pid = child.id();
+        let stdout_task = child
+            .stdout
+            .take()
+            .map(|stdout| tokio::spawn(read_capped_counted(stdout, self.config.max_output_bytes)));
+        let stderr_task = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(read_capped_counted(stderr, self.config.max_output_bytes)));
 
         let timeout = tokio::time::sleep(self.config.command_timeout);
         tokio::pin!(timeout);
 
-        let output = if let Some(token) = cancellation_token {
+        let status = if let Some(token) = cancellation_token {
             tokio::select! {
-                output = child.wait_with_output() => output.context("Failed to wait for bwrap command")?,
-                () = &mut timeout => bail!("Bwrap command timed out after {}s and the process was killed.", self.config.command_timeout.as_secs()),
-                () = token.cancelled() => bail!("Bwrap command cancelled by user and the process was killed."),
+                status = child.wait() => status.context("Failed to wait for bwrap command")?,
+                () = &mut timeout => {
+                    let cleanup = cleanup_bwrap_child(&mut child, child_pid).await;
+                    let _ = await_capped_output(stdout_task).await;
+                    let _ = await_capped_output(stderr_task).await;
+                    bail!("Bwrap command timed out after {}s and the {cleanup}.", self.config.command_timeout.as_secs());
+                }
+                () = token.cancelled() => {
+                    let cleanup = cleanup_bwrap_child(&mut child, child_pid).await;
+                    let _ = await_capped_output(stdout_task).await;
+                    let _ = await_capped_output(stderr_task).await;
+                    bail!("Bwrap command cancelled by user and the {cleanup}.");
+                }
             }
         } else {
             tokio::select! {
-                output = child.wait_with_output() => output.context("Failed to wait for bwrap command")?,
-                () = &mut timeout => bail!("Bwrap command timed out after {}s and the process was killed.", self.config.command_timeout.as_secs()),
+                status = child.wait() => status.context("Failed to wait for bwrap command")?,
+                () = &mut timeout => {
+                    let cleanup = cleanup_bwrap_child(&mut child, child_pid).await;
+                    let _ = await_capped_output(stdout_task).await;
+                    let _ = await_capped_output(stderr_task).await;
+                    bail!("Bwrap command timed out after {}s and the {cleanup}.", self.config.command_timeout.as_secs());
+                }
             }
         };
 
-        let (stdout, stdout_truncation) =
-            capture_output(output.stdout, self.config.max_output_bytes);
-        let (mut stderr, stderr_truncation) =
-            capture_output(output.stderr, self.config.max_output_bytes);
-        if let Some(truncation) = stdout_truncation {
+        let stdout_capture = await_capped_output(stdout_task).await;
+        let stderr_capture = await_capped_output(stderr_task).await;
+        let (stdout, stdout_truncation) = stdout_capture.into_output();
+        let (mut stderr, stderr_truncation) = stderr_capture.into_output();
+        if let Some(truncation) = &stdout_truncation {
             stderr.push_str(&format!(
                 "\n[oxide-agent] stdout truncated by BWRAP_MAX_OUTPUT_BYTES: captured {} of {} bytes",
                 truncation.captured_bytes,
                 truncation.original_bytes
             ));
         }
-        if let Some(truncation) = stderr_truncation {
+        if let Some(truncation) = &stderr_truncation {
             stderr.push_str(&format!(
                 "\n[oxide-agent] stderr truncated by BWRAP_MAX_OUTPUT_BYTES: captured {} of {} bytes",
                 truncation.captured_bytes,
@@ -788,7 +845,7 @@ impl BwrapSandboxManager {
         Ok(ExecResult {
             stdout,
             stderr,
-            exit_code: i64::from(output.status.code().unwrap_or(-1)),
+            exit_code: i64::from(status.code().unwrap_or(-1)),
         })
     }
 
@@ -1575,17 +1632,94 @@ fn ensure_configured_dir(env_key: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn capture_output(bytes: Vec<u8>, max_bytes: usize) -> (String, Option<OutputTruncation>) {
-    if bytes.len() <= max_bytes {
-        return (String::from_utf8_lossy(&bytes).into_owned(), None);
+async fn read_capped_counted<R>(mut reader: R, max_bytes: usize) -> CappedOutput
+where
+    R: AsyncRead + Unpin,
+{
+    let mut bytes = Vec::with_capacity(max_bytes.min(8192));
+    let mut original_bytes = 0usize;
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        let Ok(read) = reader.read(&mut chunk).await else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        original_bytes = original_bytes.saturating_add(read);
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        if remaining > 0 {
+            bytes.extend_from_slice(&chunk[..read.min(remaining)]);
+        }
     }
-    (
-        String::from_utf8_lossy(&bytes[..max_bytes]).into_owned(),
-        Some(OutputTruncation {
-            original_bytes: bytes.len(),
-            captured_bytes: max_bytes,
-        }),
+
+    CappedOutput {
+        bytes,
+        original_bytes,
+        max_bytes,
+    }
+}
+
+async fn await_capped_output(task: Option<tokio::task::JoinHandle<CappedOutput>>) -> CappedOutput {
+    match task {
+        Some(task) => task.await.unwrap_or_else(|_| CappedOutput::empty()),
+        None => CappedOutput::empty(),
+    }
+}
+
+async fn cleanup_bwrap_child(child: &mut tokio::process::Child, pid: Option<u32>) -> &'static str {
+    match child.try_wait() {
+        Ok(Some(_)) => return "process already exited",
+        Ok(None) => {}
+        Err(_) => return "process cleanup status could not be inspected",
+    }
+
+    if let Some(pid) = pid {
+        let _ = send_process_group_signal(pid, "TERM").await;
+        if wait_for_bwrap_child(child, Duration::from_secs(2)).await {
+            return "process group terminated";
+        }
+
+        if send_process_group_signal(pid, "KILL").await
+            && wait_for_bwrap_child(child, Duration::from_secs(2)).await
+        {
+            return "process group was killed";
+        }
+    }
+
+    if child.kill().await.is_ok() && wait_for_bwrap_child(child, Duration::from_secs(2)).await {
+        return "process was killed";
+    }
+
+    "process cleanup failed"
+}
+
+async fn wait_for_bwrap_child(child: &mut tokio::process::Child, duration: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(duration, child.wait()).await,
+        Ok(Ok(_))
     )
+}
+
+async fn send_process_group_signal(pid: u32, signal: &str) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .arg(format!("-{signal}"))
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status()
+            .await
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, signal);
+        false
+    }
 }
 
 #[cfg(test)]
@@ -2545,7 +2679,14 @@ mod tests {
             .stderr
             .contains("stderr truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 10 bytes"));
 
-        create_fake_bwrap_script(&fake_bwrap, "#!/bin/sh\nsleep 5\n");
+        let child_pid_file = temp.path().join("bwrap-child.pid");
+        create_fake_bwrap_script(
+            &fake_bwrap,
+            &format!(
+                "#!/bin/sh\nsleep 30 &\nprintf '%s' \"$!\" > {}\nwait\n",
+                child_pid_file.display()
+            ),
+        );
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "1");
         let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "exec-timeout"))
@@ -2558,6 +2699,21 @@ mod tests {
             .expect("sleeping bwrap should time out")
             .to_string();
         assert!(error.contains("timed out after 1s"));
+        assert!(error.contains("process group"));
+        let child_pid = std::fs::read_to_string(child_pid_file)
+            .expect("child pid")
+            .trim()
+            .to_string();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let child_alive = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(&child_pid)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        assert!(!child_alive, "timeout left child process {child_pid} alive");
     }
 
     #[cfg(unix)]
