@@ -137,6 +137,14 @@ impl AgentMessage {
         }
     }
 
+    /// Create a system-facing note for assistant text that was generated but not delivered.
+    pub fn undelivered_assistant_draft(content: impl Into<String>) -> Self {
+        Self {
+            kind: AgentMessageKind::UndeliveredAssistantDraft,
+            ..Self::system_context(content)
+        }
+    }
+
     /// Create a pinned system message carrying topic-scoped `AGENTS.md` content.
     pub fn topic_agents_md(content: impl AsRef<str>) -> Self {
         Self {

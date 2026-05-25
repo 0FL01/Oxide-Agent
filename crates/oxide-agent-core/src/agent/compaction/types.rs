@@ -25,6 +25,8 @@ pub enum AgentMessageKind {
     AssistantReasoning,
     /// Assistant message that requests tool execution.
     AssistantToolCall,
+    /// Assistant draft generated in a turn that was not delivered to the user.
+    UndeliveredAssistantDraft,
     /// Raw tool result retained in hot memory.
     ToolResult,
     /// System replay instruction after operator approval.
@@ -63,7 +65,8 @@ impl AgentMessageKind {
             Self::UserTurn
             | Self::AssistantResponse
             | Self::AssistantReasoning
-            | Self::AssistantToolCall => CompactionRetention::CompactableHistory,
+            | Self::AssistantToolCall
+            | Self::UndeliveredAssistantDraft => CompactionRetention::CompactableHistory,
         }
     }
 }

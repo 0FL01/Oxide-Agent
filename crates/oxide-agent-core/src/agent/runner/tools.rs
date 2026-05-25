@@ -248,7 +248,7 @@ if any of it is needed for the user, include it explicitly in a later final_answ
         ctx.messages.push(Message::system(&notice));
         ctx.agent
             .memory_mut()
-            .add_message(AgentMessage::system_context(notice));
+            .add_message(AgentMessage::undelivered_assistant_draft(notice));
     }
 
     async fn emit_runtime_tool_call(&self, ctx: &mut AgentRunnerContext<'_>, tool_call: &ToolCall) {
@@ -611,7 +611,7 @@ mod tests {
             "native tool-call content must not be replayed as delivered assistant prose"
         );
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[2].kind, AgentMessageKind::SystemContext);
+        assert_eq!(memory[2].kind, AgentMessageKind::UndeliveredAssistantDraft);
         assert!(memory[2].content.contains("not delivered to the user"));
         assert!(memory[2].content.contains(draft));
     }
