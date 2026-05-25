@@ -450,12 +450,7 @@ impl BwrapSandboxManager {
     }
 
     fn lock_scope(&self) -> Result<ScopeLock> {
-        fs::create_dir_all(&self.config.lock_dir).with_context(|| {
-            format!(
-                "Failed to create bwrap lock directory {}",
-                self.config.lock_dir.display()
-            )
-        })?;
+        ensure_configured_dir("BWRAP_LOCK_DIR", &self.config.lock_dir)?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -488,6 +483,7 @@ impl BwrapSandboxManager {
     }
 
     fn ensure_scope_dirs_locked(&self) -> Result<()> {
+        ensure_configured_dir("BWRAP_STATE_DIR", &self.config.state_dir)?;
         for path in [
             &self.state.scope_dir,
             &self.state.workspace,
@@ -1371,6 +1367,14 @@ fn remove_dir_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_configured_dir(env_key: &str, path: &Path) -> Result<()> {
+    if path.exists() && !path.is_dir() {
+        bail!("{env_key} must be a directory: {}", path.display());
+    }
+    fs::create_dir_all(path)
+        .with_context(|| format!("Failed to create {env_key} directory {}", path.display()))
+}
+
 fn capture_output(bytes: Vec<u8>, max_bytes: usize) -> (String, Option<OutputTruncation>) {
     if bytes.len() <= max_bytes {
         return (String::from_utf8_lossy(&bytes).into_owned(), None);
@@ -1819,6 +1823,52 @@ mod tests {
                 .to_string();
         assert!(zero_lock_timeout.contains("BWRAP_RECREATE_LOCK_TIMEOUT_SECS"));
         assert!(zero_lock_timeout.contains("greater than zero"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let state_file = temp.path().join("not-a-state-dir");
+        std::fs::write(&state_file, b"file").expect("state file");
+        std::env::set_var("BWRAP_STATE_DIR", &state_file);
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-state-dir"))
+            .await
+            .unwrap();
+        let state_error = manager
+            .create_sandbox()
+            .await
+            .err()
+            .expect("state file should fail")
+            .to_string();
+        assert!(state_error.contains("BWRAP_STATE_DIR"));
+        assert!(state_error.contains("must be a directory"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let lock_file = temp.path().join("not-a-lock-dir");
+        std::fs::write(&lock_file, b"file").expect("lock file");
+        std::env::set_var("BWRAP_LOCK_DIR", &lock_file);
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-lock-dir"))
+            .await
+            .unwrap();
+        let lock_error = manager
+            .create_sandbox()
+            .await
+            .err()
+            .expect("lock file should fail")
+            .to_string();
+        assert!(lock_error.contains("BWRAP_LOCK_DIR"));
+        assert!(lock_error.contains("must be a directory"));
     }
 
     #[cfg(unix)]
