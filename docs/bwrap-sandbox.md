@@ -1,0 +1,122 @@
+# Bubblewrap Sandbox Backend
+
+`SANDBOX_BACKEND=bwrap` runs sandbox tools with `bubblewrap` on a bare Linux host. It is additive: the default Docker Compose deployment still uses `SANDBOX_BACKEND=broker` and `oxide-agent-sandboxd`.
+
+## Build
+
+Use the dedicated host profile so Docker/Bollard are not pulled into the bwrap binary:
+
+```bash
+cargo build -p oxide-agent-telegram-bot \
+  --no-default-features \
+  --features profile-host-bwrap
+```
+
+Dependency boundary checks:
+
+```bash
+scripts/check-cargo-tree-deny.sh sandbox-backend-bwrap
+scripts/check-cargo-tree-deny.sh profile-host-bwrap
+```
+
+## Host Requirements
+
+Debian 13 / trixie:
+
+```bash
+sudo apt update
+sudo apt install bubblewrap ca-certificates tar xz-utils
+sudo apt install mmdebstrap # only when building the rootfs locally
+```
+
+Alpine:
+
+```bash
+apk add bubblewrap ca-certificates tar xz
+```
+
+The host kernel must allow user, mount, PID, IPC, UTS, and optionally network namespaces. Overlay mode also requires overlayfs support.
+
+## Rootfs
+
+Build the first Debian image locally:
+
+```bash
+scripts/build-bwrap-rootfs-debian.sh \
+  --suite trixie \
+  --image-id debian-13-dev \
+  --output .oxide/sandbox/images/debian-13-dev
+```
+
+Expected layout:
+
+```text
+.oxide/sandbox/images/debian-13-dev/
+  image.json
+  checksums.txt
+  provenance.json
+  rootfs/
+```
+
+The rootfs is the immutable lower layer. Runtime package installs and system writes go into the per-scope overlay under `BWRAP_STATE_DIR`.
+
+## Configuration
+
+Development example:
+
+```env
+SANDBOX_BACKEND=bwrap
+BWRAP_BIN=bwrap
+BWRAP_IMAGE=debian-13-dev
+BWRAP_IMAGE_STORE=.oxide/sandbox/images
+BWRAP_STATE_DIR=.oxide/sandbox/scopes
+BWRAP_LOCK_DIR=.oxide/sandbox/locks
+BWRAP_NET=host
+BWRAP_ROOT_MODE=overlay-rw
+BWRAP_COMMAND_TIMEOUT_SECS=60
+BWRAP_MAX_OUTPUT_BYTES=16777216
+BWRAP_MAX_READ_FILE_BYTES=52428800
+BWRAP_ALLOW_OVERLAY=true
+BWRAP_RESOLV_CONF=auto
+BWRAP_DISABLE_NESTED_USERNS=true
+```
+
+Service-style paths should be absolute:
+
+```env
+BWRAP_IMAGE_STORE=/opt/oxide-agent/bwrap-images
+BWRAP_STATE_DIR=/var/lib/oxide-agent/sandbox/scopes
+BWRAP_LOCK_DIR=/var/lib/oxide-agent/sandbox/locks
+```
+
+## Smoke Test
+
+Run:
+
+```bash
+SANDBOX_BACKEND=bwrap \
+BWRAP_IMAGE=debian-13-dev \
+BWRAP_NET=host \
+scripts/smoke-bwrap.sh debian-13-dev
+```
+
+The script writes a JSON result under `.oxide/sandbox/smoke/`. It reports whether the current environment appears nested and whether basic create/exec/workspace persistence passed.
+
+## Security Notes
+
+- File tools are restricted to `/workspace`.
+- Relative paths resolve under `/workspace`; absolute paths must start with `/workspace/`.
+- `..`, NUL bytes, non-workspace absolute paths, and symlink escapes are rejected.
+- The backend does not mount host home, repo root, `.git`, `.env`, config, SSH keys, Docker socket, or `/run/sandboxd`.
+- `BWRAP_NET=host` is the compatibility default and allows network access. Use `BWRAP_NET=none` for restricted deployments.
+- `BWRAP_ROOT_MODE=overlay-rw` allows per-scope package installs without mutating the shared image rootfs. `BWRAP_ROOT_MODE=ro` keeps the rootfs read-only but package managers will fail.
+
+## Docker Compose Compatibility
+
+Docker Compose plus bwrap is not the default or safest deployment path. Bwrap needs namespace and mount syscalls that Docker default seccomp/AppArmor profiles often restrict. Keep normal Compose deployments on the existing broker path:
+
+```text
+oxide_agent -> /run/sandboxd/sandboxd.sock -> oxide-agent-sandboxd -> Docker socket
+```
+
+If a future dev-only Compose override is added, it must document any elevated namespace/seccomp requirements and must not mount host home, the repo root, or the Docker socket into the bwrap sandbox.

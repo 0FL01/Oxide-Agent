@@ -98,8 +98,9 @@ The bot supports **6 main providers** for both standard chat and advanced Agent 
 > Voice recognition and image analysis depend on whichever multimodal model you configure via `CHAT_MODEL_*`/`MEDIA_MODEL_*`. The bot exposes only the models you declare in `.env`, so `Change Model` will only list those names.
 
 ### 🛠 Infrastructure
-*   **Docker** — run code sandbox (`agent-sandbox:latest`)
-*   **Sandbox Broker** — optional Unix socket broker for security isolation (`SANDBOX_BACKEND=broker`)
+*   **Docker** — run the default code sandbox (`agent-sandbox:latest`)
+*   **Sandbox Broker** — Unix socket broker for Docker access isolation in Docker Compose (`SANDBOX_BACKEND=broker`)
+*   **Bubblewrap** — optional bare-host sandbox backend without Docker daemon/socket access (`SANDBOX_BACKEND=bwrap`, see `docs/bwrap-sandbox.md`)
 *   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
 *   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
 *   **Local Web Markdown** — lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
@@ -127,7 +128,7 @@ The bot supports **6 main providers** for both standard chat and advanced Agent 
     docker-compose up --build -d
     ```
 
-**Note:** The default configuration uses `SANDBOX_BACKEND=broker` which requires the `oxide-agent-sandboxd` container. To use direct Docker access, set `SANDBOX_BACKEND=docker`.
+**Note:** The default Docker Compose configuration uses `SANDBOX_BACKEND=broker` which requires the `oxide-agent-sandboxd` container. To use direct Docker access, set `SANDBOX_BACKEND=docker`. For bare-host Bubblewrap mode, build `profile-host-bwrap` and follow `docs/bwrap-sandbox.md`.
 </details>
 
 ## Configuration (.env)
