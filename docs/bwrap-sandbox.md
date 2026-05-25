@@ -137,6 +137,12 @@ scripts/smoke-bwrap.sh debian-13-dev
 
 The script writes a JSON result under `.oxide/sandbox/smoke/`. It reports `environment_kind` (`bare-host`, `docker-container`, or `kubernetes-container`), whether the current environment appears nested, and whether basic create/exec/workspace persistence passed. It also checks that the bwrap sandbox did not expose `/var/run/docker.sock` or `/run/sandboxd`.
 
+Package-manager checks are controlled by `BWRAP_SMOKE_PACKAGE_TESTS=auto|required|skip`:
+
+- `auto` runs `apt`/`apk` and `pip` checks when the manifest declares `package_manager=apt|apk`, `BWRAP_ROOT_MODE=overlay-rw`, and `BWRAP_NET=host`.
+- `required` treats missing or failing package-manager checks as smoke failures.
+- `skip` is useful for the host-derived smoke rootfs, which intentionally does not certify package-manager behavior.
+
 The Rust integration-style smoke tests are ignored by default and can be run against the same prepared rootfs:
 
 ```bash
@@ -158,6 +164,7 @@ BWRAP_STATE_DIR=.oxide/sandbox/scopes \
 BWRAP_LOCK_DIR=.oxide/sandbox/locks \
 BWRAP_NET=host \
 BWRAP_ROOT_MODE=overlay-rw \
+BWRAP_SMOKE_PACKAGE_TESTS=skip \
 scripts/smoke-bwrap.sh host-smoke-dev
 
 SANDBOX_BACKEND=bwrap \
@@ -196,8 +203,15 @@ Expected successful smoke result shape:
     "create_scope": "pass",
     "exec_command": "pass",
     "workspace_persistence": "pass",
+    "system_overlay_persistence": "pass",
+    "apt_or_apk_install": "pass",
+    "pip_install": "pass",
+    "apply_file_edit": "pass",
+    "path_escape_rejected": "covered_by_rust_tests",
+    "timeout": "pass",
     "docker_socket_absent": "pass",
-    "sandboxd_socket_absent": "pass"
+    "sandboxd_socket_absent": "pass",
+    "destroy_scope": "pass"
   }
 }
 ```
