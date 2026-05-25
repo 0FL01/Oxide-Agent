@@ -60,6 +60,8 @@ Expected layout:
 
 The rootfs is the immutable lower layer. Runtime package installs and system writes go into the per-scope overlay under `BWRAP_STATE_DIR`.
 
+The Debian builder tracks the practical `sandbox/Dockerfile.dev` baseline with Debian packages for the Python modules used there: `python3-bs4`, `python3-httpx`, `python3-lxml`, `python3-requests`, and `yt-dlp`.
+
 Import a prebuilt, checksum-verified rootfs tarball when local `mmdebstrap` is unavailable or when preparing an Alpine host:
 
 ```bash

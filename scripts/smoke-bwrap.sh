@@ -238,9 +238,9 @@ fi
 
 if [[ "$should_run_package_tests" == "true" ]]; then
   if [[ "$package_manager" == "apt" ]]; then
-    package_command='export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y jq && jq --version >/workspace/package-tool.txt'
+    package_command='export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y bc && test "$(printf "2+2\n" | bc)" = 4 && bc --version >/workspace/package-tool.txt'
   elif [[ "$package_manager" == "apk" ]]; then
-    package_command='apk add --no-cache jq && jq --version >/workspace/package-tool.txt'
+    package_command='apk add --no-cache bc && test "$(printf "2+2\n" | bc)" = 4 && bc --version >/workspace/package-tool.txt'
   else
     package_command='exit 42'
   fi

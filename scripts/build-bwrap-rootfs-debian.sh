@@ -78,13 +78,18 @@ packages=(
   nmap
   procps
   python3
+  python3-bs4
+  python3-httpx
+  python3-lxml
   python3-pip
+  python3-requests
   ripgrep
   telnet
   traceroute
   tzdata
   unzip
   whois
+  yt-dlp
   zip
 )
 
