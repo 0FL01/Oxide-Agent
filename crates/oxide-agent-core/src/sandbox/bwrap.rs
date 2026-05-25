@@ -43,7 +43,9 @@ pub(crate) struct BwrapSandboxManager {
 struct BwrapSandboxConfig {
     bwrap_bin: PathBuf,
     image_id: String,
+    manifest_path: Option<PathBuf>,
     manifest_sha256: Option<String>,
+    package_manager: Option<String>,
     rootfs: PathBuf,
     state_dir: PathBuf,
     lock_dir: PathBuf,
@@ -165,6 +167,8 @@ struct BwrapImageManifest {
     schema_version: u32,
     id: String,
     arch: String,
+    #[serde(default)]
+    package_manager: Option<String>,
     #[serde(default = "default_manifest_rootfs")]
     rootfs: String,
     #[serde(default = "default_manifest_shell")]
@@ -185,7 +189,11 @@ struct BwrapScopeMetadata {
     chat_id: Option<i64>,
     thread_id: Option<i64>,
     image_id: String,
+    #[serde(default)]
+    image_manifest_path: Option<String>,
     image_manifest_sha256: Option<String>,
+    #[serde(default)]
+    package_manager: Option<String>,
     rootfs: String,
     workspace: String,
     root_mode: BwrapRootMode,
@@ -521,7 +529,13 @@ impl BwrapSandboxManager {
             chat_id: self.scope.chat_id(),
             thread_id: self.scope.thread_id(),
             image_id: self.config.image_id.clone(),
+            image_manifest_path: self
+                .config
+                .manifest_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
             image_manifest_sha256: self.config.manifest_sha256.clone(),
+            package_manager: self.config.package_manager.clone(),
             rootfs: self.config.rootfs.display().to_string(),
             workspace: self.state.workspace.display().to_string(),
             root_mode: self.config.root_mode,
@@ -766,28 +780,32 @@ impl BwrapSandboxConfig {
         let disable_nested_userns = env_bool("BWRAP_DISABLE_NESTED_USERNS", true)?;
         let resolv_conf = parse_resolv_conf()?;
 
-        let (manifest, manifest_sha256, rootfs) = if let Some(rootfs) = rootfs_override {
-            let manifest_path = rootfs.parent().map(|parent| parent.join("image.json"));
-            let (manifest, manifest_sha256) =
-                match manifest_path.as_ref().filter(|path| path.is_file()) {
-                    Some(path) => load_manifest(path)?,
-                    None => (BwrapImageManifest::fallback(&image_id), None),
-                };
-            (manifest, manifest_sha256, rootfs)
-        } else {
-            let image_dir = image_store.join(&image_id);
-            let manifest_path = image_dir.join("image.json");
-            if !manifest_path.is_file() {
-                bail!(
-                    "Bwrap image manifest not found at {}. {}",
-                    manifest_path.display(),
-                    bwrap_rootfs_hint()
-                );
-            }
-            let (manifest, manifest_sha256) = load_manifest(&manifest_path)?;
-            let rootfs = resolve_image_rootfs(&image_dir, &manifest.rootfs)?;
-            (manifest, manifest_sha256, rootfs)
-        };
+        let (manifest, manifest_path, manifest_sha256, rootfs) =
+            if let Some(rootfs) = rootfs_override {
+                let manifest_path = rootfs.parent().map(|parent| parent.join("image.json"));
+                let (manifest, loaded_manifest_path, manifest_sha256) =
+                    match manifest_path.as_ref().filter(|path| path.is_file()) {
+                        Some(path) => {
+                            let (manifest, manifest_sha256) = load_manifest(path)?;
+                            (manifest, Some(path.clone()), manifest_sha256)
+                        }
+                        None => (BwrapImageManifest::fallback(&image_id), None, None),
+                    };
+                (manifest, loaded_manifest_path, manifest_sha256, rootfs)
+            } else {
+                let image_dir = image_store.join(&image_id);
+                let manifest_path = image_dir.join("image.json");
+                if !manifest_path.is_file() {
+                    bail!(
+                        "Bwrap image manifest not found at {}. {}",
+                        manifest_path.display(),
+                        bwrap_rootfs_hint()
+                    );
+                }
+                let (manifest, manifest_sha256) = load_manifest(&manifest_path)?;
+                let rootfs = resolve_image_rootfs(&image_dir, &manifest.rootfs)?;
+                (manifest, Some(manifest_path), manifest_sha256, rootfs)
+            };
 
         let mut default_env = default_manifest_env();
         default_env.extend(manifest.default_env.clone());
@@ -795,7 +813,9 @@ impl BwrapSandboxConfig {
         Ok(Self {
             bwrap_bin,
             image_id: manifest.id.clone(),
+            manifest_path: manifest_path.map(absolute_path).transpose()?,
             manifest_sha256,
+            package_manager: manifest.package_manager.clone(),
             rootfs: absolute_maybe_existing_path(&rootfs)?,
             state_dir,
             lock_dir,
@@ -823,6 +843,9 @@ impl BwrapSandboxConfig {
             );
         }
         self.image_id.clone_from(&metadata.image_id);
+        self.manifest_path = metadata.image_manifest_path.as_deref().map(PathBuf::from);
+        self.manifest_sha256 = metadata.image_manifest_sha256.clone();
+        self.package_manager = metadata.package_manager.clone();
         self.rootfs = absolute_existing_path(Path::new(&metadata.rootfs))?;
         self.root_mode = metadata.root_mode;
         Ok(())
@@ -906,6 +929,15 @@ impl BwrapScopeMetadata {
             ),
             ("agent.updated_at".to_string(), self.updated_at.to_string()),
         ]);
+        if let Some(path) = &self.image_manifest_path {
+            labels.insert("agent.image_manifest_path".to_string(), path.clone());
+        }
+        if let Some(sha256) = &self.image_manifest_sha256 {
+            labels.insert("agent.image_manifest_sha256".to_string(), sha256.clone());
+        }
+        if let Some(package_manager) = &self.package_manager {
+            labels.insert("agent.package_manager".to_string(), package_manager.clone());
+        }
         if let Some(chat_id) = self.chat_id {
             labels.insert("agent.chat_id".to_string(), chat_id.to_string());
         }
@@ -919,10 +951,7 @@ impl BwrapScopeMetadata {
             image: Some(self.image_id.clone()),
             created_at: Some(self.created_at),
             state: Some("ready".to_string()),
-            status: Some(format!(
-                "bwrap root_mode={} net={} rootfs={}",
-                self.root_mode, self.network_mode, self.rootfs
-            )),
+            status: Some(self.status_text()),
             running: false,
             user_id: Some(self.owner_id),
             scope: Some(self.namespace.clone()),
@@ -930,6 +959,15 @@ impl BwrapScopeMetadata {
             thread_id: self.thread_id,
             labels,
         }
+    }
+
+    fn status_text(&self) -> String {
+        let package_manager = self.package_manager.as_deref().unwrap_or("unknown");
+        let manifest = self.image_manifest_path.as_deref().unwrap_or("none");
+        format!(
+            "bwrap root_mode={} net={} package_manager={} manifest={} rootfs={}",
+            self.root_mode, self.network_mode, package_manager, manifest, self.rootfs
+        )
     }
 }
 
@@ -939,6 +977,7 @@ impl BwrapImageManifest {
             schema_version: 1,
             id: image_id.to_string(),
             arch: host_arch().to_string(),
+            package_manager: None,
             rootfs: ".".to_string(),
             default_shell: default_manifest_shell(),
             default_workdir: default_manifest_workdir(),
@@ -1823,6 +1862,67 @@ mod tests {
                 .to_string();
         assert!(zero_lock_timeout.contains("BWRAP_RECREATE_LOCK_TIMEOUT_SECS"));
         assert!(zero_lock_timeout.contains("greater than zero"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_metadata_reports_manifest_path_package_manager_and_sha() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        let image_dir = temp.path().join("images/debian-test");
+        let rootfs = image_dir.join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let manifest_path = image_dir.join("image.json");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "id": "debian-test",
+  "arch": "{}",
+  "package_manager": "apt",
+  "rootfs": "rootfs",
+  "default_shell": "/bin/sh",
+  "default_workdir": "/workspace"
+}}"#,
+                host_arch()
+            ),
+        )
+        .expect("image manifest");
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::remove_var("BWRAP_ROOTFS");
+        std::env::set_var("BWRAP_IMAGE_STORE", temp.path().join("images"));
+        std::env::set_var("BWRAP_IMAGE", "debian-test");
+
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "metadata-status"))
+            .await
+            .unwrap();
+        manager.create_sandbox().await.unwrap();
+        let record = manager.current_record().unwrap();
+
+        assert_eq!(
+            record.labels.get("agent.image_manifest_path"),
+            Some(&manifest_path.display().to_string())
+        );
+        assert!(record
+            .labels
+            .get("agent.image_manifest_sha256")
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(
+            record.labels.get("agent.package_manager"),
+            Some(&"apt".to_string())
+        );
+        let status = record.status.expect("status");
+        assert!(status.contains("package_manager=apt"));
+        assert!(status.contains(&format!("manifest={}", manifest_path.display())));
+        assert!(status.contains(&format!("rootfs={}", rootfs.display())));
     }
 
     #[cfg(unix)]
