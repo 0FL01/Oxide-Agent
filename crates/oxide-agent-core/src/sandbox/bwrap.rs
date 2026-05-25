@@ -796,6 +796,7 @@ impl BwrapSandboxConfig {
 
         let (manifest, manifest_path, manifest_sha256, rootfs) =
             if let Some(rootfs) = rootfs_override {
+                validate_direct_rootfs_override(&rootfs)?;
                 let manifest_path = rootfs.parent().map(|parent| parent.join("image.json"));
                 let (manifest, loaded_manifest_path, manifest_sha256) =
                     match manifest_path.as_ref().filter(|path| path.is_file()) {
@@ -1136,6 +1137,16 @@ fn validate_root_upper_dir(root_upper_dir: &Path, rootfs: &Path) -> Result<()> {
             "BWRAP_ROOT_UPPER_DIR must not be inside the bwrap rootfs image: {}",
             root_upper_dir.display()
         );
+    }
+    Ok(())
+}
+
+fn validate_direct_rootfs_override(rootfs: &Path) -> Result<()> {
+    if rootfs
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        bail!("BWRAP_ROOTFS must not be a symlink: {}", rootfs.display());
     }
     Ok(())
 }
@@ -1826,6 +1837,19 @@ mod tests {
             .to_string();
         assert!(missing_rootfs.contains("rootfs not found"));
         assert!(missing_rootfs.contains("scripts/build-bwrap-rootfs-debian.sh"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let rootfs_symlink = temp.path().join("rootfs-symlink");
+        symlink(&rootfs, &rootfs_symlink).expect("rootfs symlink");
+        std::env::set_var("BWRAP_ROOTFS", &rootfs_symlink);
+        let rootfs_symlink_error =
+            BwrapSandboxManager::new(SandboxScope::new(42, "rootfs-symlink"))
+                .await
+                .err()
+                .expect("rootfs symlink should fail")
+                .to_string();
+        assert!(rootfs_symlink_error.contains("BWRAP_ROOTFS"));
+        assert!(rootfs_symlink_error.contains("must not be a symlink"));
 
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         std::env::remove_var("BWRAP_ROOTFS");
