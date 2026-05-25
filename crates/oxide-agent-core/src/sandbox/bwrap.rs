@@ -781,7 +781,7 @@ impl BwrapSandboxConfig {
                 );
             }
             let (manifest, manifest_sha256) = load_manifest(&manifest_path)?;
-            let rootfs = image_dir.join(&manifest.rootfs);
+            let rootfs = resolve_image_rootfs(&image_dir, &manifest.rootfs)?;
             (manifest, manifest_sha256, rootfs)
         };
 
@@ -1051,6 +1051,31 @@ fn bwrap_rootfs_hint() -> String {
         hint.push_str(" SANDBOX_IMAGE is Docker-only and is ignored by SANDBOX_BACKEND=bwrap.");
     }
     hint
+}
+
+fn resolve_image_rootfs(image_dir: &Path, rootfs: &str) -> Result<PathBuf> {
+    let image_dir = image_dir.canonicalize().with_context(|| {
+        format!(
+            "Failed to canonicalize bwrap image directory {}",
+            image_dir.display()
+        )
+    })?;
+    let rootfs = image_dir.join(rootfs);
+    let canonical_rootfs = rootfs.canonicalize().with_context(|| {
+        format!(
+            "Bwrap backend selected, but rootfs not found at {}. {}",
+            rootfs.display(),
+            bwrap_rootfs_hint()
+        )
+    })?;
+    if !canonical_rootfs.starts_with(&image_dir) {
+        bail!(
+            "Bwrap image rootfs {} resolves outside image directory {}. Refusing unsafe rootfs symlink.",
+            canonical_rootfs.display(),
+            image_dir.display()
+        );
+    }
+    Ok(canonical_rootfs)
 }
 
 fn bwrap_supports_disable_userns(bwrap_bin: &Path) -> Result<bool> {
@@ -1707,6 +1732,38 @@ mod tests {
         assert!(docker_image_only.contains("Bwrap image manifest not found"));
         assert!(docker_image_only.contains("BWRAP_IMAGE/BWRAP_ROOTFS"));
         assert!(docker_image_only.contains("SANDBOX_IMAGE is Docker-only"));
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let image_store = temp.path().join("images");
+        let unsafe_image = image_store.join("unsafe-rootfs-link");
+        std::fs::create_dir_all(&unsafe_image).expect("unsafe image dir");
+        std::fs::write(
+            unsafe_image.join("image.json"),
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "id": "unsafe-rootfs-link",
+  "arch": "{}",
+  "rootfs": "rootfs",
+  "default_shell": "/bin/sh",
+  "default_workdir": "/workspace"
+}}"#,
+                host_arch()
+            ),
+        )
+        .expect("unsafe image manifest");
+        symlink(&rootfs, unsafe_image.join("rootfs")).expect("unsafe rootfs symlink");
+        std::env::remove_var("BWRAP_ROOTFS");
+        std::env::set_var("BWRAP_IMAGE_STORE", &image_store);
+        std::env::set_var("BWRAP_IMAGE", "unsafe-rootfs-link");
+        let unsafe_rootfs_symlink =
+            BwrapSandboxManager::new(SandboxScope::new(42, "unsafe-rootfs-symlink"))
+                .await
+                .err()
+                .expect("unsafe rootfs symlink should fail")
+                .to_string();
+        assert!(unsafe_rootfs_symlink.contains("resolves outside image directory"));
+        assert!(unsafe_rootfs_symlink.contains("unsafe rootfs symlink"));
 
         configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
         std::env::set_var("BWRAP_ROOT_MODE", "tmp-overlay");
