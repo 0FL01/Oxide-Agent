@@ -102,6 +102,17 @@ scripts/smoke-bwrap.sh debian-13-dev
 
 The script writes a JSON result under `.oxide/sandbox/smoke/`. It reports `environment_kind` (`bare-host`, `docker-container`, or `kubernetes-container`), whether the current environment appears nested, and whether basic create/exec/workspace persistence passed. It also checks that the bwrap sandbox did not expose `/var/run/docker.sock` or `/run/sandboxd`.
 
+The Rust integration-style smoke tests are ignored by default and can be run against the same prepared rootfs:
+
+```bash
+SANDBOX_BACKEND=bwrap \
+BWRAP_ROOTFS=.oxide/sandbox/images/debian-13-dev/rootfs \
+cargo test -p oxide-agent-core \
+  --no-default-features \
+  --features 'sandbox-backend-bwrap,tool-sandbox-exec,tool-sandbox-fileops,tool-sandbox-recreate' \
+  bwrap_smoke --lib -- --ignored
+```
+
 ## Security Notes
 
 - File tools are restricted to `/workspace`.

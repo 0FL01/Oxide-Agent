@@ -1304,6 +1304,8 @@ mod tests {
     use crate::sandbox::SandboxScope;
     use std::ffi::OsString;
     #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
@@ -1494,6 +1496,133 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_workspace_file_ops_reject_symlink_escapes() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "topic-symlinks"))
+            .await
+            .unwrap();
+        manager.create_sandbox().await.unwrap();
+
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&outside).expect("outside dir");
+        std::fs::write(outside.join("secret.txt"), b"secret").expect("outside secret");
+
+        symlink(&outside, manager.state.workspace.join("linked-dir")).expect("parent symlink");
+        assert!(manager
+            .write_file("linked-dir/new.txt", b"nope")
+            .await
+            .is_err());
+        assert!(manager.list_files("linked-dir").await.is_err());
+
+        symlink(
+            outside.join("secret.txt"),
+            manager.state.workspace.join("secret-link.txt"),
+        )
+        .expect("final symlink");
+        assert!(manager.read_file("secret-link.txt").await.is_err());
+        assert!(manager
+            .write_file("secret-link.txt", b"nope")
+            .await
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires host bubblewrap support and BWRAP_ROOTFS pointing at a prepared rootfs"]
+    async fn bwrap_smoke_exec_persists_workspace_and_overlay_rw() {
+        let Some(rootfs) = std::env::var_os("BWRAP_ROOTFS").map(PathBuf::from) else {
+            eprintln!("skipping ignored bwrap smoke: BWRAP_ROOTFS is not set");
+            return;
+        };
+        if !rootfs.is_dir() {
+            eprintln!(
+                "skipping ignored bwrap smoke: BWRAP_ROOTFS is not a directory: {}",
+                rootfs.display()
+            );
+            return;
+        }
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        configure_real_bwrap_env(temp.path(), &rootfs, BwrapRootMode::OverlayRw);
+
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "smoke-overlay-rw"))
+            .await
+            .unwrap();
+        manager.create_sandbox().await.unwrap();
+        let first = manager
+            .exec_command(
+                "pwd && printf persisted >/workspace/hello.txt && printf system >/etc/oxide-test && test ! -S /var/run/docker.sock && test ! -e /run/sandboxd",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.exit_code, 0, "stderr={}", first.stderr);
+        assert_eq!(first.stdout.lines().next(), Some("/workspace"));
+
+        let second = manager
+            .exec_command(
+                "cat /workspace/hello.txt && printf '\\n' && cat /etc/oxide-test",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.exit_code, 0, "stderr={}", second.stderr);
+        assert_eq!(second.stdout, "persisted\nsystem");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires host bubblewrap support and BWRAP_ROOTFS pointing at a prepared rootfs"]
+    async fn bwrap_smoke_ro_root_rejects_system_writes() {
+        let Some(rootfs) = std::env::var_os("BWRAP_ROOTFS").map(PathBuf::from) else {
+            eprintln!("skipping ignored bwrap smoke: BWRAP_ROOTFS is not set");
+            return;
+        };
+        if !rootfs.is_dir() {
+            eprintln!(
+                "skipping ignored bwrap smoke: BWRAP_ROOTFS is not a directory: {}",
+                rootfs.display()
+            );
+            return;
+        }
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        configure_real_bwrap_env(temp.path(), &rootfs, BwrapRootMode::ReadOnly);
+
+        let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "smoke-ro"))
+            .await
+            .unwrap();
+        manager.create_sandbox().await.unwrap();
+        let output = manager
+            .exec_command(
+                "printf workspace >/workspace/ok.txt && printf system >/etc/oxide-ro-test",
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(output.exit_code, 0, "system write unexpectedly succeeded");
+        assert_eq!(manager.read_file("ok.txt").await.unwrap(), b"workspace");
+    }
+
+    #[cfg(unix)]
     fn create_fake_rootfs(rootfs: &Path) {
         for directory in ["bin", "dev", "proc", "tmp", "workspace"] {
             std::fs::create_dir_all(rootfs.join(directory)).expect("fake rootfs dir");
@@ -1509,5 +1638,39 @@ mod tests {
             .permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(path, permissions).expect("fake bwrap permissions");
+    }
+
+    #[cfg(unix)]
+    fn configure_fake_bwrap_env(temp: &Path, rootfs: &Path, fake_bwrap: &Path) {
+        std::env::set_var("BWRAP_ALLOW_OVERLAY", "true");
+        std::env::set_var("BWRAP_BIN", fake_bwrap);
+        std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "5");
+        std::env::set_var("BWRAP_DISABLE_NESTED_USERNS", "false");
+        std::env::set_var("BWRAP_IMAGE", "test-dev");
+        std::env::set_var("BWRAP_LOCK_DIR", temp.join("locks"));
+        std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "1024");
+        std::env::set_var("BWRAP_MAX_READ_FILE_BYTES", "1024");
+        std::env::set_var("BWRAP_NET", "none");
+        std::env::set_var("BWRAP_RESOLV_CONF", "none");
+        std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
+        std::env::set_var("BWRAP_ROOTFS", rootfs);
+        std::env::set_var("BWRAP_STATE_DIR", temp.join("scopes"));
+        std::env::remove_var("SANDBOX_EXEC_TIMEOUT_SECS");
+    }
+
+    #[cfg(unix)]
+    fn configure_real_bwrap_env(temp: &Path, rootfs: &Path, root_mode: BwrapRootMode) {
+        std::env::set_var("BWRAP_ALLOW_OVERLAY", "true");
+        std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "15");
+        std::env::set_var("BWRAP_IMAGE", "ignored-test-rootfs");
+        std::env::set_var("BWRAP_LOCK_DIR", temp.join("locks"));
+        std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "1048576");
+        std::env::set_var("BWRAP_MAX_READ_FILE_BYTES", "1048576");
+        std::env::set_var("BWRAP_NET", "host");
+        std::env::set_var("BWRAP_RESOLV_CONF", "auto");
+        std::env::set_var("BWRAP_ROOT_MODE", root_mode.to_string());
+        std::env::set_var("BWRAP_ROOTFS", rootfs);
+        std::env::set_var("BWRAP_STATE_DIR", temp.join("scopes"));
+        std::env::remove_var("SANDBOX_EXEC_TIMEOUT_SECS");
     }
 }
