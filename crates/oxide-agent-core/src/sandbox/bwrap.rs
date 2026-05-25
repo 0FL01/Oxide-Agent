@@ -1313,7 +1313,7 @@ fn capture_output(bytes: Vec<u8>, max_bytes: usize) -> (String, bool) {
 mod tests {
     use super::{
         host_arch, load_manifest, resolve_workspace_path, BwrapNetworkMode, BwrapRootMode,
-        BwrapSandboxManager,
+        BwrapSandboxManager, WORKSPACE_PREFIX,
     };
     use crate::sandbox::SandboxScope;
     use std::ffi::OsString;
@@ -1550,6 +1550,74 @@ mod tests {
             .write_file("secret-link.txt", b"nope")
             .await
             .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_invocation_args_encode_network_root_modes_and_bind_policy() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_NET", "host");
+        std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
+        let overlay_manager = BwrapSandboxManager::new(SandboxScope::new(42, "args-overlay-host"))
+            .await
+            .unwrap();
+        let work_dir = overlay_manager
+            .prepare_overlay_workdir()
+            .unwrap()
+            .expect("overlay mode should create a workdir");
+        let overlay_args = args_to_strings(overlay_manager.bwrap_args(Some(&work_dir), "true"));
+
+        assert!(overlay_args.contains(&"--overlay-src".to_string()));
+        assert!(overlay_args.contains(&"--overlay".to_string()));
+        assert!(contains_arg_pair(
+            &overlay_args,
+            "--bind",
+            &overlay_manager.state.workspace.display().to_string()
+        ));
+        assert!(contains_arg_pair(
+            &overlay_args,
+            "--chdir",
+            WORKSPACE_PREFIX
+        ));
+        assert!(!overlay_args.contains(&"--unshare-net".to_string()));
+        assert_args_do_not_bind_host_control_paths(&overlay_args);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_NET", "none");
+        std::env::set_var("BWRAP_ROOT_MODE", "ro");
+        let readonly_manager = BwrapSandboxManager::new(SandboxScope::new(42, "args-ro-none"))
+            .await
+            .unwrap();
+        let readonly_args = args_to_strings(readonly_manager.bwrap_args(None, "printf ok"));
+
+        assert!(readonly_args.contains(&"--unshare-net".to_string()));
+        assert!(contains_arg_pair(
+            &readonly_args,
+            "--ro-bind",
+            &readonly_manager.config.rootfs.display().to_string()
+        ));
+        assert!(!readonly_args.contains(&"--overlay".to_string()));
+        assert!(contains_arg_pair(
+            &readonly_args,
+            "--bind",
+            &readonly_manager.state.workspace.display().to_string()
+        ));
+        assert_args_do_not_bind_host_control_paths(&readonly_args);
+        assert!(readonly_args.ends_with(&[
+            "/bin/sh".to_string(),
+            "-lc".to_string(),
+            "printf ok".to_string()
+        ]));
     }
 
     #[cfg(unix)]
@@ -1837,5 +1905,31 @@ mod tests {
         std::env::set_var("BWRAP_ROOTFS", rootfs);
         std::env::set_var("BWRAP_STATE_DIR", temp.join("scopes"));
         std::env::remove_var("SANDBOX_EXEC_TIMEOUT_SECS");
+    }
+
+    #[cfg(unix)]
+    fn args_to_strings(args: Vec<OsString>) -> Vec<String> {
+        args.into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    fn contains_arg_pair(args: &[String], first: &str, second: &str) -> bool {
+        args.windows(2)
+            .any(|window| window[0] == first && window[1] == second)
+    }
+
+    #[cfg(unix)]
+    fn assert_args_do_not_bind_host_control_paths(args: &[String]) {
+        let joined = args.join("\n");
+        assert!(!joined.contains("/var/run/docker.sock"));
+        assert!(!joined.contains("/run/sandboxd"));
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            let home = home.display().to_string();
+            if !home.is_empty() && args.iter().all(|arg| !arg.starts_with(&home)) {
+                assert!(!joined.contains(&home));
+            }
+        }
     }
 }
