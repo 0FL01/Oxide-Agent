@@ -10,6 +10,8 @@ use crate::llm::providers::{provider_missing_route_config_message, provider_modu
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
+use std::str::FromStr;
 
 // LLM provider defaults
 /// Default temperature used for Groq chat completions.
@@ -1912,6 +1914,54 @@ pub const SANDBOX_CPU_QUOTA: i64 = 200_000; // 2 CPUs (200% of period)
 /// Timeout for individual command execution in sandbox
 pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 60; // 1 minute per command
 
+/// Explicit sandbox backend selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SandboxBackendConfig {
+    /// Direct Docker backend.
+    Docker,
+    /// Unix-socket sandboxd broker backend.
+    Broker,
+    /// Bubblewrap host backend.
+    Bwrap,
+}
+
+impl SandboxBackendConfig {
+    /// Valid environment/config values.
+    pub const VALID_VALUES: &'static [&'static str] = &["docker", "broker", "bwrap"];
+
+    /// Returns the stable environment string for this backend.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Broker => "broker",
+            Self::Bwrap => "bwrap",
+        }
+    }
+}
+
+impl fmt::Display for SandboxBackendConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SandboxBackendConfig {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "docker" => Ok(Self::Docker),
+            "broker" => Ok(Self::Broker),
+            "bwrap" => Ok(Self::Bwrap),
+            invalid => Err(format!(
+                "Invalid SANDBOX_BACKEND='{invalid}'. Valid values: {}.",
+                Self::VALID_VALUES.join(", ")
+            )),
+        }
+    }
+}
+
 /// Get sandbox image from env or default.
 ///
 /// Environment variable: `SANDBOX_IMAGE`
@@ -1932,10 +1982,20 @@ pub fn get_sandbox_backend() -> String {
         .unwrap_or_else(|| SANDBOX_BACKEND.to_string())
 }
 
+/// Parse sandbox backend mode from env or default.
+///
+/// # Errors
+///
+/// Returns an actionable error when `SANDBOX_BACKEND` is not one of the
+/// supported backend names.
+pub fn get_sandbox_backend_config() -> Result<SandboxBackendConfig, String> {
+    get_sandbox_backend().parse()
+}
+
 /// Check whether sandbox broker mode is enabled.
 #[must_use]
 pub fn sandbox_uses_broker() -> bool {
-    get_sandbox_backend().eq_ignore_ascii_case("broker")
+    get_sandbox_backend_config() == Ok(SandboxBackendConfig::Broker)
 }
 
 /// Get sandbox broker Unix socket path from env or default.

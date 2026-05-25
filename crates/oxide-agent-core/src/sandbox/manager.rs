@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
 
-//! Docker sandbox manager using Bollard
+//! Sandbox manager facade.
 //!
-//! Manages Docker containers for isolated code execution.
+//! Dispatches sandbox operations to the selected compiled backend.
 
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use anyhow::Context;
@@ -48,12 +48,12 @@ use tracing::instrument;
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use tracing::{debug, info, warn};
 
-use crate::config::get_sandbox_image;
-#[cfg(all(
+#[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client"
 ))]
-use crate::config::sandbox_uses_broker;
+use crate::config::get_sandbox_image;
+use crate::config::{get_sandbox_backend_config, SandboxBackendConfig};
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use crate::config::{
     get_stack_logs_project, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS,
@@ -66,10 +66,13 @@ use crate::sandbox::broker::{
     ResolvedStackLogsSelector, StackLogCursor, StackLogEntry, StackLogSource, StackLogSuppression,
     StackLogsSelector, StackLogsWindow,
 };
+#[cfg(any(feature = "sandbox-backend-docker-direct", feature = "tool-stack-logs"))]
 use crate::sandbox::broker::{
     StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
     StackLogsListSourcesResponse,
 };
+#[cfg(feature = "sandbox-backend-bwrap")]
+use crate::sandbox::bwrap::BwrapSandboxManager;
 use crate::sandbox::SandboxScope;
 
 #[cfg(feature = "sandbox-backend-docker-direct")]
@@ -145,6 +148,8 @@ enum SandboxManagerInner {
     Docker(DockerSandboxManager),
     #[cfg(feature = "sandbox-backend-sandboxd-client")]
     Broker(BrokerSandboxManager),
+    #[cfg(feature = "sandbox-backend-bwrap")]
+    Bwrap(BwrapSandboxManager),
 }
 
 #[cfg(feature = "sandbox-backend-sandboxd-client")]
@@ -330,213 +335,287 @@ fn docker_backend_not_compiled() -> anyhow::Error {
     anyhow!("sandbox Docker direct backend is not compiled; enable sandbox-backend-docker-direct")
 }
 
-fn compiled_sandbox_backend_prefers_broker() -> bool {
-    #[cfg(all(
-        feature = "sandbox-backend-sandboxd-client",
-        not(feature = "sandbox-backend-docker-direct")
-    ))]
-    {
-        true
+#[cfg(not(feature = "sandbox-backend-bwrap"))]
+fn bwrap_backend_not_compiled() -> anyhow::Error {
+    anyhow!("SANDBOX_BACKEND=bwrap was selected, but this binary was not compiled with sandbox-backend-bwrap. Build with --features sandbox-backend-bwrap or select SANDBOX_BACKEND=docker/broker.")
+}
+
+fn compiled_sandbox_backends() -> Vec<&'static str> {
+    let mut backends = Vec::new();
+    if cfg!(feature = "sandbox-backend-docker-direct") {
+        backends.push("docker");
     }
-    #[cfg(all(
-        feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client"
-    ))]
-    {
-        sandbox_uses_broker()
+    if cfg!(feature = "sandbox-backend-sandboxd-client") {
+        backends.push("broker");
     }
-    #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-    {
-        false
+    if cfg!(feature = "sandbox-backend-bwrap") {
+        backends.push("bwrap");
     }
+    backends
+}
+
+fn selected_sandbox_backend() -> Result<SandboxBackendConfig> {
+    let backend = get_sandbox_backend_config().map_err(anyhow::Error::msg)?;
+    let compiled = compiled_sandbox_backends();
+
+    let selected_is_compiled = match backend {
+        SandboxBackendConfig::Docker => cfg!(feature = "sandbox-backend-docker-direct"),
+        SandboxBackendConfig::Broker => cfg!(feature = "sandbox-backend-sandboxd-client"),
+        SandboxBackendConfig::Bwrap => cfg!(feature = "sandbox-backend-bwrap"),
+    };
+
+    if selected_is_compiled {
+        return Ok(backend);
+    }
+
+    Err(anyhow!(
+        "SANDBOX_BACKEND={} was selected, but this binary was not compiled with that backend. Compiled sandbox backends: {}.",
+        backend,
+        if compiled.is_empty() {
+            "none".to_string()
+        } else {
+            compiled.join(", ")
+        }
+    ))
 }
 
 impl SandboxManager {
     #[instrument(skip_all)]
     pub async fn new(scope: impl Into<SandboxScope>) -> Result<Self> {
         let scope = scope.into();
-        if compiled_sandbox_backend_prefers_broker() {
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
-            {
-                return Ok(Self {
-                    inner: SandboxManagerInner::Broker(BrokerSandboxManager::new(scope)),
-                });
+        match selected_sandbox_backend()? {
+            SandboxBackendConfig::Broker => {
+                #[cfg(feature = "sandbox-backend-sandboxd-client")]
+                {
+                    return Ok(Self {
+                        inner: SandboxManagerInner::Broker(BrokerSandboxManager::new(scope)),
+                    });
+                }
+
+                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                return Err(broker_backend_not_compiled());
             }
+            SandboxBackendConfig::Bwrap => {
+                #[cfg(feature = "sandbox-backend-bwrap")]
+                {
+                    return Ok(Self {
+                        inner: SandboxManagerInner::Bwrap(BwrapSandboxManager::new(scope).await?),
+                    });
+                }
 
-            #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-            return Err(broker_backend_not_compiled());
+                #[cfg(not(feature = "sandbox-backend-bwrap"))]
+                return Err(bwrap_backend_not_compiled());
+            }
+            SandboxBackendConfig::Docker => {
+                #[cfg(feature = "sandbox-backend-docker-direct")]
+                {
+                    return Ok(Self {
+                        inner: SandboxManagerInner::Docker(DockerSandboxManager::new(scope).await?),
+                    });
+                }
+
+                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                return Err(docker_backend_not_compiled());
+            }
         }
-
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        {
-            Ok(Self {
-                inner: SandboxManagerInner::Docker(DockerSandboxManager::new(scope).await?),
-            })
-        }
-
-        #[cfg(not(feature = "sandbox-backend-docker-direct"))]
-        Err(docker_backend_not_compiled())
     }
 
     pub async fn list_user_sandboxes(user_id: i64) -> Result<Vec<SandboxContainerRecord>> {
-        if compiled_sandbox_backend_prefers_broker() {
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
-            {
+        match selected_sandbox_backend()? {
+            SandboxBackendConfig::Broker => {
+                #[cfg(feature = "sandbox-backend-sandboxd-client")]
                 return SandboxBrokerClient::from_env()
                     .list_user_sandboxes(user_id)
                     .await;
+
+                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                return Err(broker_backend_not_compiled());
             }
+            SandboxBackendConfig::Bwrap => {
+                #[cfg(feature = "sandbox-backend-bwrap")]
+                return BwrapSandboxManager::list_user_sandboxes(user_id).await;
 
-            #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-            return Err(broker_backend_not_compiled());
+                #[cfg(not(feature = "sandbox-backend-bwrap"))]
+                return Err(bwrap_backend_not_compiled());
+            }
+            SandboxBackendConfig::Docker => {
+                #[cfg(feature = "sandbox-backend-docker-direct")]
+                return DockerSandboxManager::list_user_sandboxes(user_id).await;
+
+                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                return Err(docker_backend_not_compiled());
+            }
         }
-
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        {
-            DockerSandboxManager::list_user_sandboxes(user_id).await
-        }
-
-        #[cfg(not(feature = "sandbox-backend-docker-direct"))]
-        Err(docker_backend_not_compiled())
     }
 
     pub async fn inspect_sandbox_by_name(
         user_id: i64,
         container_name: &str,
     ) -> Result<Option<SandboxContainerRecord>> {
-        if compiled_sandbox_backend_prefers_broker() {
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
-            {
+        match selected_sandbox_backend()? {
+            SandboxBackendConfig::Broker => {
+                #[cfg(feature = "sandbox-backend-sandboxd-client")]
                 return SandboxBrokerClient::from_env()
                     .inspect_sandbox_by_name(user_id, container_name)
                     .await;
+
+                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                return Err(broker_backend_not_compiled());
             }
+            SandboxBackendConfig::Bwrap => {
+                #[cfg(feature = "sandbox-backend-bwrap")]
+                return BwrapSandboxManager::inspect_sandbox_by_name(user_id, container_name).await;
 
-            #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-            return Err(broker_backend_not_compiled());
+                #[cfg(not(feature = "sandbox-backend-bwrap"))]
+                return Err(bwrap_backend_not_compiled());
+            }
+            SandboxBackendConfig::Docker => {
+                #[cfg(feature = "sandbox-backend-docker-direct")]
+                return DockerSandboxManager::inspect_sandbox_by_name(user_id, container_name)
+                    .await;
+
+                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                return Err(docker_backend_not_compiled());
+            }
         }
-
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        {
-            DockerSandboxManager::inspect_sandbox_by_name(user_id, container_name).await
-        }
-
-        #[cfg(not(feature = "sandbox-backend-docker-direct"))]
-        Err(docker_backend_not_compiled())
     }
 
     pub async fn ensure_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        if compiled_sandbox_backend_prefers_broker() {
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
-            {
+        match selected_sandbox_backend()? {
+            SandboxBackendConfig::Broker => {
+                #[cfg(feature = "sandbox-backend-sandboxd-client")]
                 return SandboxBrokerClient::from_env()
                     .ensure_scope_sandbox(scope, get_sandbox_image())
                     .await;
+
+                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                return Err(broker_backend_not_compiled());
             }
+            SandboxBackendConfig::Bwrap => {
+                #[cfg(feature = "sandbox-backend-bwrap")]
+                return BwrapSandboxManager::ensure_scope_sandbox(scope).await;
 
-            #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-            return Err(broker_backend_not_compiled());
+                #[cfg(not(feature = "sandbox-backend-bwrap"))]
+                return Err(bwrap_backend_not_compiled());
+            }
+            SandboxBackendConfig::Docker => {
+                #[cfg(feature = "sandbox-backend-docker-direct")]
+                return DockerSandboxManager::ensure_scope_sandbox(scope).await;
+
+                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                return Err(docker_backend_not_compiled());
+            }
         }
-
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        {
-            DockerSandboxManager::ensure_scope_sandbox(scope).await
-        }
-
-        #[cfg(not(feature = "sandbox-backend-docker-direct"))]
-        Err(docker_backend_not_compiled())
     }
 
     pub async fn recreate_scope_sandbox(scope: SandboxScope) -> Result<SandboxContainerRecord> {
-        if compiled_sandbox_backend_prefers_broker() {
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
-            {
+        match selected_sandbox_backend()? {
+            SandboxBackendConfig::Broker => {
+                #[cfg(feature = "sandbox-backend-sandboxd-client")]
                 return SandboxBrokerClient::from_env()
                     .recreate_scope_sandbox(scope, get_sandbox_image())
                     .await;
+
+                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                return Err(broker_backend_not_compiled());
             }
+            SandboxBackendConfig::Bwrap => {
+                #[cfg(feature = "sandbox-backend-bwrap")]
+                return BwrapSandboxManager::recreate_scope_sandbox(scope).await;
 
-            #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-            return Err(broker_backend_not_compiled());
+                #[cfg(not(feature = "sandbox-backend-bwrap"))]
+                return Err(bwrap_backend_not_compiled());
+            }
+            SandboxBackendConfig::Docker => {
+                #[cfg(feature = "sandbox-backend-docker-direct")]
+                return DockerSandboxManager::recreate_scope_sandbox(scope).await;
+
+                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                return Err(docker_backend_not_compiled());
+            }
         }
-
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        {
-            DockerSandboxManager::recreate_scope_sandbox(scope).await
-        }
-
-        #[cfg(not(feature = "sandbox-backend-docker-direct"))]
-        Err(docker_backend_not_compiled())
     }
 
     pub async fn delete_sandbox_by_name(user_id: i64, container_name: &str) -> Result<bool> {
-        if compiled_sandbox_backend_prefers_broker() {
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
-            {
+        match selected_sandbox_backend()? {
+            SandboxBackendConfig::Broker => {
+                #[cfg(feature = "sandbox-backend-sandboxd-client")]
                 return SandboxBrokerClient::from_env()
                     .delete_sandbox_by_name(user_id, container_name)
                     .await;
+
+                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                return Err(broker_backend_not_compiled());
             }
+            SandboxBackendConfig::Bwrap => {
+                #[cfg(feature = "sandbox-backend-bwrap")]
+                return BwrapSandboxManager::delete_sandbox_by_name(user_id, container_name).await;
 
-            #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-            return Err(broker_backend_not_compiled());
+                #[cfg(not(feature = "sandbox-backend-bwrap"))]
+                return Err(bwrap_backend_not_compiled());
+            }
+            SandboxBackendConfig::Docker => {
+                #[cfg(feature = "sandbox-backend-docker-direct")]
+                return DockerSandboxManager::delete_sandbox_by_name(user_id, container_name).await;
+
+                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                return Err(docker_backend_not_compiled());
+            }
         }
-
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        {
-            DockerSandboxManager::delete_sandbox_by_name(user_id, container_name).await
-        }
-
-        #[cfg(not(feature = "sandbox-backend-docker-direct"))]
-        Err(docker_backend_not_compiled())
     }
 
+    #[cfg(feature = "tool-stack-logs")]
     pub async fn list_stack_log_sources(
         request: StackLogsListSourcesRequest,
     ) -> Result<StackLogsListSourcesResponse> {
-        if compiled_sandbox_backend_prefers_broker() {
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
-            {
+        match selected_sandbox_backend()? {
+            SandboxBackendConfig::Broker => {
+                #[cfg(feature = "sandbox-backend-sandboxd-client")]
                 return SandboxBrokerClient::from_env()
                     .list_stack_log_sources(request)
                     .await;
+
+                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                return Err(broker_backend_not_compiled());
             }
+            SandboxBackendConfig::Bwrap => Err(anyhow!(
+                "Stack logs are Docker/Compose diagnostics and are not supported by SANDBOX_BACKEND=bwrap."
+            )),
+            SandboxBackendConfig::Docker => {
+                #[cfg(feature = "sandbox-backend-docker-direct")]
+                return DockerSandboxManager::list_stack_log_sources(request).await;
 
-            #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-            return Err(broker_backend_not_compiled());
+                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                return Err(docker_backend_not_compiled());
+            }
         }
-
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        {
-            DockerSandboxManager::list_stack_log_sources(request).await
-        }
-
-        #[cfg(not(feature = "sandbox-backend-docker-direct"))]
-        Err(docker_backend_not_compiled())
     }
 
+    #[cfg(feature = "tool-stack-logs")]
     pub async fn fetch_stack_logs(
         request: StackLogsFetchRequest,
     ) -> Result<StackLogsFetchResponse> {
-        if compiled_sandbox_backend_prefers_broker() {
-            #[cfg(feature = "sandbox-backend-sandboxd-client")]
-            {
+        match selected_sandbox_backend()? {
+            SandboxBackendConfig::Broker => {
+                #[cfg(feature = "sandbox-backend-sandboxd-client")]
                 return SandboxBrokerClient::from_env()
                     .fetch_stack_logs(request)
                     .await;
+
+                #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
+                return Err(broker_backend_not_compiled());
             }
+            SandboxBackendConfig::Bwrap => Err(anyhow!(
+                "Stack logs are Docker/Compose diagnostics and are not supported by SANDBOX_BACKEND=bwrap."
+            )),
+            SandboxBackendConfig::Docker => {
+                #[cfg(feature = "sandbox-backend-docker-direct")]
+                return DockerSandboxManager::fetch_stack_logs(request).await;
 
-            #[cfg(not(feature = "sandbox-backend-sandboxd-client"))]
-            return Err(broker_backend_not_compiled());
+                #[cfg(not(feature = "sandbox-backend-docker-direct"))]
+                return Err(docker_backend_not_compiled());
+            }
         }
-
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        {
-            DockerSandboxManager::fetch_stack_logs(request).await
-        }
-
-        #[cfg(not(feature = "sandbox-backend-docker-direct"))]
-        Err(docker_backend_not_compiled())
     }
 
     #[must_use]
@@ -546,6 +625,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.is_running(),
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.is_running(),
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.is_running(),
         }
     }
 
@@ -556,6 +637,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.container_id(),
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.container_id(),
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.container_id(),
         }
     }
 
@@ -566,6 +649,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.scope(),
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.scope(),
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.scope(),
         }
     }
 
@@ -575,6 +660,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.create_sandbox().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.create_sandbox().await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.create_sandbox().await,
         }
     }
 
@@ -592,6 +679,10 @@ impl SandboxManager {
             SandboxManagerInner::Broker(manager) => {
                 manager.exec_command(cmd, cancellation_token).await
             }
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => {
+                manager.exec_command(cmd, cancellation_token).await
+            }
         }
     }
 
@@ -601,6 +692,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.write_file(path, content).await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.write_file(path, content).await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.write_file(path, content).await,
         }
     }
 
@@ -610,6 +703,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.read_file(path).await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.read_file(path).await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.read_file(path).await,
         }
     }
 
@@ -623,6 +718,10 @@ impl SandboxManager {
             SandboxManagerInner::Broker(manager) => {
                 manager.upload_file(container_path, content).await
             }
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => {
+                manager.upload_file(container_path, content).await
+            }
         }
     }
 
@@ -632,6 +731,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.download_file(container_path).await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.download_file(container_path).await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.download_file(container_path).await,
         }
     }
 
@@ -641,6 +742,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.get_uploads_size().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.get_uploads_size().await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.get_uploads_size().await,
         }
     }
 
@@ -650,6 +753,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.cleanup_old_downloads().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.cleanup_old_downloads().await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.cleanup_old_downloads().await,
         }
     }
 
@@ -659,6 +764,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.destroy().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.destroy().await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.destroy().await,
         }
     }
 
@@ -668,6 +775,8 @@ impl SandboxManager {
             SandboxManagerInner::Docker(manager) => manager.recreate().await,
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => manager.recreate().await,
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => manager.recreate().await,
         }
     }
 
@@ -685,6 +794,12 @@ impl SandboxManager {
             }
             #[cfg(feature = "sandbox-backend-sandboxd-client")]
             SandboxManagerInner::Broker(manager) => {
+                manager
+                    .file_size_bytes(container_path, cancellation_token)
+                    .await
+            }
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            SandboxManagerInner::Bwrap(manager) => {
                 manager
                     .file_size_bytes(container_path, cancellation_token)
                     .await

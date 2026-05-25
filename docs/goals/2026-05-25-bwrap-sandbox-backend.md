@@ -73,12 +73,14 @@ Out of scope:
 ## Progress Log
 
 - 2026-05-25 19:29 +03: Read `docs/prd/prd.md`, repository instructions, README overview, and initial sandbox/Cargo files. Created active Codex goal and this repo-local goal contract. Next checkpoint: commit goal doc, then start feature/config/capability wiring.
+- 2026-05-25 19:45 +03: Added `sandbox-backend-bwrap`, `profile-host-bwrap`, backend parsing for `docker|broker|bwrap`, bwrap module gates, stable scope naming, capability manifest entries, `profiles/host-bwrap.toml`, and cargo-tree deny coverage. Verified `cargo check -p oxide-agent-core --no-default-features --features sandbox-backend-bwrap`, bwrap+sandbox-tool core check, `profile-host-bwrap` core check, Telegram bot profile check, `scripts/check-cargo-tree-deny.sh sandbox-backend-bwrap`, `scripts/check-cargo-tree-deny.sh profile-host-bwrap`, and `scripts/check-compiled-capabilities.sh host-bwrap`. Next checkpoint: implement bwrap config/state/manifest/locking core.
 
 ## Risks and Blockers
 
 - Bwrap smoke execution may be limited by the current nested environment, missing `bwrap`, missing user namespace support, or absent rootfs. Mitigation: keep tests gated/ignored and provide scripts with actionable diagnostics.
 - Full path race hardening may require adding a small bwrap-scoped dependency such as `cap-std` or `fs2`. Mitigation: keep dependencies optional under `sandbox-backend-bwrap` and prove `bollard` remains absent.
 - Existing admin/control-plane APIs use container naming. Mitigation: introduce neutral naming where feasible while preserving serialized compatibility fields for existing clients.
+- `http-body-util` cannot be denied at the full `profile-host-bwrap` cargo-tree level because reqwest-backed LLM/search/media modules pull it transitively. The backend-only deny still includes `http-body-util` and proves bwrap itself does not enable the Docker direct dependency path.
 
 ## Final Verification
 

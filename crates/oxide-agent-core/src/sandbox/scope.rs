@@ -1,4 +1,4 @@
-//! Stable sandbox identity for persistent Docker containers.
+//! Stable sandbox identity for persistent sandbox instances.
 
 use std::collections::HashMap;
 
@@ -60,14 +60,20 @@ impl SandboxScope {
         self.thread_id
     }
 
-    /// Deterministic Docker container name for this scope.
+    /// Backend-neutral deterministic instance name for this scope.
     #[must_use]
-    pub fn container_name(&self) -> String {
+    pub fn stable_name(&self) -> String {
         format!(
             "agent-sandbox-u{}-{:016x}",
             self.owner_id,
             self.namespace_hash()
         )
+    }
+
+    /// Deterministic Docker container name for this scope.
+    #[must_use]
+    pub fn container_name(&self) -> String {
+        self.stable_name()
     }
 
     /// Docker labels for diagnostics and cleanup.

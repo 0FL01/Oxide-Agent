@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/check-compiled-capabilities.sh <embedded-opencode-local|lite|search-only|no-sandbox|media-enabled|full>
+  scripts/check-compiled-capabilities.sh <embedded-opencode-local|lite|search-only|no-sandbox|media-enabled|host-bwrap|full>
 
 Runs the Telegram app capability CLI for a profile and verifies the compiled
 capability manifest stays deterministic and aligned with the selected profile
@@ -19,7 +19,7 @@ fi
 
 profile="$1"
 case "${profile}" in
-  embedded-opencode-local | lite | search-only | no-sandbox | media-enabled | full)
+  embedded-opencode-local | lite | search-only | no-sandbox | media-enabled | host-bwrap | full)
     cargo_feature="profile-${profile}"
     ;;
   *)
@@ -293,6 +293,68 @@ profile_requirements = {
             "tool/tavily",
             "tool/tts-",
             "tool/webfetch-md",
+            "tool/ytdlp",
+        ),
+    },
+    "host-bwrap": {
+        "exact_modules": {
+            "llm-provider/opencode-go",
+            "sandbox-backend/bwrap",
+            "storage/r2",
+            "tool/agents-md",
+            "tool/compression",
+            "tool/delegation",
+            "tool/file-delivery",
+            "tool/media-audio",
+            "tool/media-image",
+            "tool/media-video",
+            "tool/reminder",
+            "tool/sandbox-exec",
+            "tool/sandbox-fileops",
+            "tool/sandbox-recreate",
+            "tool/tavily",
+            "tool/todos",
+            "tool/webfetch-md",
+            "tool/wiki-memory",
+            "transport/telegram",
+        },
+        "required_capabilities": {
+            "llm-provider/opencode-go",
+            "sandbox-backend/bwrap",
+            "sandbox-backend/bwrap/exec",
+            "sandbox-backend/bwrap/fileops",
+            "sandbox-backend/bwrap/lifecycle",
+            "storage/r2",
+            "tool/agents-md",
+            "tool/compression",
+            "tool/delegation",
+            "tool/file-delivery",
+            "tool/media-audio-transcription",
+            "tool/media-image-description",
+            "tool/media-video-description",
+            "tool/reminder",
+            "tool/sandbox-exec",
+            "tool/sandbox-fileops",
+            "tool/sandbox-list-files",
+            "tool/sandbox-recreate",
+            "tool/tavily-extract",
+            "tool/tavily-search",
+            "tool/todos",
+            "tool/webfetch-md",
+            "tool/wiki-memory",
+            "transport/telegram",
+        },
+        "forbidden_modules": common_forbidden_ids | {
+            "sandbox-backend/docker-direct",
+            "sandbox-backend/sandboxd-client",
+            "sandbox-daemon/sandboxd",
+        },
+        "forbidden_prefixes": (
+            "integration/",
+            "tool/browser-use",
+            "tool/searxng",
+            "tool/stack-logs",
+            "tool/tts-",
             "tool/ytdlp",
         ),
     },
