@@ -145,6 +145,8 @@ Package-manager checks are controlled by `BWRAP_SMOKE_PACKAGE_TESTS=auto|require
 - `required` treats missing or failing package-manager checks as smoke failures.
 - `skip` is useful for the host-derived smoke rootfs, which intentionally does not certify package-manager behavior.
 
+For Debian rootfs package checks the smoke script passes `APT::Sandbox::User=root`. This avoids `_apt` privilege-drop failures inside bwrap's root-in-user-namespace mapping while still proving that package-manager writes persist in the per-scope overlay.
+
 The Rust integration-style smoke tests are ignored by default and can be run against the same prepared rootfs:
 
 ```bash
