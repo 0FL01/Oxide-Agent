@@ -1,5 +1,6 @@
 //! Core execution loop for the agent runner.
 
+use super::tools::ToolTurnAssistantContent;
 use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
@@ -915,7 +916,7 @@ impl AgentRunner {
         self.execute_tools_with_runtime(
             ctx,
             state,
-            &raw_json,
+            ToolTurnAssistantContent::StructuredControlEnvelope,
             response.reasoning_content,
             tool_calls,
         )
@@ -1306,7 +1307,7 @@ impl AgentRunner {
                 .execute_tools_with_runtime(
                     ctx,
                     state,
-                    raw_json,
+                    ToolTurnAssistantContent::NativeModelContent(raw_json),
                     response.reasoning_content.take(),
                     tool_calls,
                 )
@@ -1385,17 +1386,12 @@ impl AgentRunner {
             }
 
             return self
-                .handle_tool_calls_response(
-                    &mut ChatResponse {
-                        content: Some(raw_output.clone()),
-                        tool_calls,
-                        finish_reason: "stop".to_string(),
-                        reasoning_content: reasoning,
-                        usage: None,
-                    },
-                    &raw_output,
+                .execute_tools_with_runtime(
                     ctx,
                     state,
+                    ToolTurnAssistantContent::StructuredControlEnvelope,
+                    reasoning,
+                    tool_calls,
                 )
                 .await;
         }
