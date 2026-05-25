@@ -111,7 +111,54 @@ pub struct ExecResult {
     pub exit_code: i64,
 }
 
-/// Docker metadata for a user-owned sandbox container.
+/// Backend-neutral metadata for a user-owned sandbox instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxInstanceRecord {
+    /// Runtime backend that owns this instance, such as `docker` or `bwrap`.
+    pub backend: String,
+    /// Stable backend instance id.
+    pub instance_id: String,
+    /// Stable backend instance name.
+    pub instance_name: String,
+    /// Logical sandbox scope identifier.
+    pub scope_id: Option<String>,
+    /// Image id or image reference.
+    pub image_id: Option<String>,
+    /// Rootfs path for directory-backed backends.
+    pub rootfs_path: Option<String>,
+    /// Runtime state directory for directory-backed backends.
+    pub state_dir: Option<String>,
+    /// Persistent workspace directory for directory-backed backends.
+    pub workspace_dir: Option<String>,
+    /// Root write mode, when known.
+    pub root_mode: Option<String>,
+    /// Network mode, when known.
+    pub network_mode: Option<String>,
+    /// Creation timestamp.
+    pub created_at: Option<i64>,
+    /// Last observed update timestamp, when known.
+    pub last_used_at: Option<i64>,
+    /// Low-level backend state such as `running`, `ready`, or `exited`.
+    pub state: Option<String>,
+    /// Human-readable status string.
+    pub status: Option<String>,
+    /// Whether the backend currently reports active execution.
+    pub running: bool,
+    /// Owning user id.
+    pub user_id: Option<i64>,
+    /// Optional transport chat id.
+    pub chat_id: Option<i64>,
+    /// Optional transport thread id.
+    pub thread_id: Option<i64>,
+    /// Full backend labels/metadata flattened for compatibility.
+    pub labels: HashMap<String, String>,
+    /// Compatibility field for existing Docker-oriented clients.
+    pub container_id: String,
+    /// Compatibility field for existing Docker-oriented clients.
+    pub container_name: String,
+}
+
+/// Docker-compatible metadata for a user-owned sandbox container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxContainerRecord {
     /// Docker container id.
@@ -138,6 +185,49 @@ pub struct SandboxContainerRecord {
     pub thread_id: Option<i64>,
     /// Full Docker labels attached to the container.
     pub labels: HashMap<String, String>,
+}
+
+impl From<SandboxContainerRecord> for SandboxInstanceRecord {
+    fn from(record: SandboxContainerRecord) -> Self {
+        let backend = record
+            .labels
+            .get("agent.sandbox_backend")
+            .cloned()
+            .unwrap_or_else(|| "docker".to_string());
+        let rootfs_path = record.labels.get("agent.rootfs").cloned();
+        let state_dir = record.labels.get("agent.state_dir").cloned();
+        let workspace_dir = record.labels.get("agent.workspace_dir").cloned();
+        let root_mode = record.labels.get("agent.root_mode").cloned();
+        let network_mode = record.labels.get("agent.network_mode").cloned();
+        let last_used_at = record
+            .labels
+            .get("agent.updated_at")
+            .and_then(|value| value.parse::<i64>().ok());
+
+        Self {
+            backend,
+            instance_id: record.container_id.clone(),
+            instance_name: record.container_name.clone(),
+            scope_id: record.scope.clone(),
+            image_id: record.image.clone(),
+            rootfs_path,
+            state_dir,
+            workspace_dir,
+            root_mode,
+            network_mode,
+            created_at: record.created_at,
+            last_used_at,
+            state: record.state.clone(),
+            status: record.status.clone(),
+            running: record.running,
+            user_id: record.user_id,
+            chat_id: record.chat_id,
+            thread_id: record.thread_id,
+            labels: record.labels,
+            container_id: record.container_id,
+            container_name: record.container_name,
+        }
+    }
 }
 
 #[derive(Clone)]

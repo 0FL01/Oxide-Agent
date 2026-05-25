@@ -54,7 +54,7 @@ pub use diagnostics::SandboxDiagnosticsRuntime;
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 ))]
-pub use manager::{ExecResult, SandboxContainerRecord, SandboxManager};
+pub use manager::{ExecResult, SandboxContainerRecord, SandboxInstanceRecord, SandboxManager};
 #[cfg(not(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
@@ -62,7 +62,7 @@ pub use manager::{ExecResult, SandboxContainerRecord, SandboxManager};
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 )))]
-pub use manager_stub::{ExecResult, SandboxContainerRecord, SandboxManager};
+pub use manager_stub::{ExecResult, SandboxContainerRecord, SandboxInstanceRecord, SandboxManager};
 pub use scope::SandboxScope;
 pub use traits::SandboxAdmin;
 #[cfg(feature = "tool-stack-logs")]

@@ -858,6 +858,20 @@ impl BwrapScopeMetadata {
             ("agent.sandbox_backend".to_string(), "bwrap".to_string()),
             ("agent.user_id".to_string(), self.owner_id.to_string()),
             ("agent.scope".to_string(), self.namespace.clone()),
+            ("agent.rootfs".to_string(), self.rootfs.clone()),
+            ("agent.workspace_dir".to_string(), self.workspace.clone()),
+            (
+                "agent.state_dir".to_string(),
+                Path::new(&self.workspace)
+                    .parent()
+                    .map_or_else(String::new, |path| path.display().to_string()),
+            ),
+            ("agent.root_mode".to_string(), self.root_mode.to_string()),
+            (
+                "agent.network_mode".to_string(),
+                self.network_mode.to_string(),
+            ),
+            ("agent.updated_at".to_string(), self.updated_at.to_string()),
         ]);
         if let Some(chat_id) = self.chat_id {
             labels.insert("agent.chat_id".to_string(), chat_id.to_string());

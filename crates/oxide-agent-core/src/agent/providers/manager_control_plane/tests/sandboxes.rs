@@ -13,6 +13,7 @@ async fn topic_sandbox_list_marks_disabled_container_as_orphaned() {
         .with(eq(77_i64), eq("-100777:240".to_string()))
         .times(1)
         .returning(|_, _| Ok(Some(binding(77, "-100777:240", "agent-a", 1))));
+    #[cfg(feature = "integration-ssh-mcp")]
     mock.expect_get_topic_infra_config()
         .with(eq(77_i64), eq("-100777:240".to_string()))
         .times(1)
@@ -49,6 +50,15 @@ async fn topic_sandbox_list_marks_disabled_container_as_orphaned() {
 
     let parsed = parse_json_response(&response);
     assert_eq!(parsed["count"], 1);
+    assert_eq!(parsed["sandboxes"][0]["backend"], "docker");
+    assert_eq!(
+        parsed["sandboxes"][0]["instance_name"],
+        parsed["sandboxes"][0]["container_name"]
+    );
+    assert_eq!(
+        parsed["sandboxes"][0]["instance_id"],
+        parsed["sandboxes"][0]["container_id"]
+    );
     assert_eq!(parsed["sandboxes"][0]["orphan_reason"], "sandbox_disabled");
     assert_eq!(parsed["sandboxes"][0]["sandbox_tools_enabled"], false);
 }
@@ -93,7 +103,48 @@ async fn topic_sandbox_create_ensures_container_for_tracked_topic() {
 
     let parsed = parse_json_response(&response);
     assert_eq!(parsed["sandbox"]["topic_id"], "-100777:240");
+    assert_eq!(
+        parsed["sandbox"]["instance_name"],
+        parsed["sandbox"]["container_name"]
+    );
     assert_eq!(sandbox_control.ensured(), vec!["-100777:240".to_string()]);
+}
+
+#[tokio::test]
+async fn topic_sandbox_get_supports_instance_name_lookup() {
+    let sandbox_record = FakeTopicSandboxControl::sandbox_record(77, "-100777:240");
+    let instance_name = sandbox_record.container_name.clone();
+
+    let mut mock = crate::storage::MockStorageProvider::new();
+    mock.expect_get_user_config().times(1).returning(|_| {
+        Ok(user_config_with_contexts([(
+            "-100777:240".to_string(),
+            forum_topic_context(-100777, 240, None, None, None, false),
+        )]))
+    });
+    mock.expect_get_topic_binding()
+        .with(eq(77_i64), eq("-100777:240".to_string()))
+        .times(1)
+        .returning(|_, _| Ok(None));
+
+    let sandbox_control = Arc::new(FakeTopicSandboxControl::new(vec![sandbox_record]));
+    let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77)
+        .with_topic_sandbox_control(sandbox_control);
+    let response = provider
+        .execute(
+            TOOL_TOPIC_SANDBOX_GET,
+            &format!(r#"{{"instance_name":"{instance_name}"}}"#),
+            None,
+            None,
+        )
+        .await
+        .expect("topic sandbox get should support instance_name");
+
+    let parsed = parse_json_response(&response);
+    assert_eq!(parsed["found"], true);
+    assert_eq!(parsed["instance_name"], instance_name);
+    assert_eq!(parsed["container_name"], instance_name);
+    assert_eq!(parsed["sandbox"]["instance_name"], instance_name);
 }
 
 #[tokio::test]
