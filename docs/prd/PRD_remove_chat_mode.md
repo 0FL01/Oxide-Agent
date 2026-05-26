@@ -758,6 +758,23 @@ Media capability is separate from agent compatibility:
 - Missing `MEDIA_MODEL_*` must disable media understanding gracefully; it must not fallback to `CHAT_MODEL_*`, `chat_model_name` or plain chat completion.
 - Direct provider IDs such as `gemini`, `google-gemini` or `llm-provider/gemini` remain forbidden unless a separate provider integration PR intentionally changes repo policy.
 
+### Browser Use and removed providers
+
+Browser Use must not maintain a separate compatibility matrix for removed
+chat-only providers. Groq is removed globally and must not remain as a
+Browser Use special case.
+
+Browser Use keeps only its explicit bridge-supported providers:
+`minimax`, `zai`, and `openrouter`. A dedicated Browser Use route may be
+configured with `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`; otherwise
+Browser Use inherits the active agent/tool route. If the provider is not one of
+the bridge-supported providers, Browser Use fails fast with a generic unsupported
+provider error.
+
+This work must not introduce new Browser Use-specific provider registries,
+Groq rejection code, fallback routes, or migration behavior for old Groq config.
+Old `BROWSER_USE_MODEL_PROVIDER=groq` config is invalid after Groq removal.
+
 ### Required Provider Categories
 
 #### Keep
@@ -814,7 +831,29 @@ Media capability is separate from agent compatibility:
 - Internal auxiliary routes for compaction/loop detection/wiki writer/input classifier. They may use plain text completion, but must be renamed/internal-only and must not be reachable from Telegram/user transport.
 - OpenRouter route/model compatibility source. Current code has no model-level OpenRouter allowlist.
 - Media-only routes. They may remain for Agent Mode attachments/transcription, but must not become a user-facing chat path.
-- Browser Use model route references. `agent/providers/browser_use/mod.rs` mentions `llm-provider/groq`; verify and remove Groq from Browser Use defaults/config if present.
+- Browser Use route mapper contains a stale Groq-specific tool-support check in
+  `agent/providers/browser_use/mod.rs`.
+
+  Decision: do not introduce a separate Browser Use/Groq compatibility layer.
+  Groq is removed globally as a chat-only provider. Browser Use must not contain
+  any Groq-specific branch, fallback, env handling, docs, tests, snapshots, or
+  route defaults.
+
+  Browser Use should keep its existing narrow route mapper:
+
+  - dedicated route via `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`;
+  - otherwise inherited active agent/tool route;
+  - supported bridge providers only: `minimax`, `zai`, `openrouter`;
+  - unsupported providers fail fast with a generic unsupported-provider error.
+
+  Implementation guidance:
+
+  - remove `matches!(provider.as_str(), "llm-provider/groq" | "groq")`;
+  - do not add a Groq-specific rejection path;
+  - set `supports_tools=true` only for routes that already passed the supported-provider match;
+  - keep `supports_vision` as the existing Browser Use vision heuristic;
+  - update tests to use a generic unsupported provider instead of literal `groq`;
+  - final grep must show no live `Groq`, `GROQ`, `llm-groq`, or `llm-provider/groq` references.
 - ChatGPT canonical id vs aliases in structured-output restrictions and route selection.
 
 ## 8. Functional Requirements
