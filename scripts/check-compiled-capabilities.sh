@@ -299,6 +299,7 @@ profile_requirements = {
     "host-bwrap": {
         "exact_modules": {
             "llm-provider/opencode-go",
+            "llm-provider/openrouter",
             "sandbox-backend/bwrap",
             "storage/r2",
             "tool/agents-md",
@@ -320,6 +321,7 @@ profile_requirements = {
         },
         "required_capabilities": {
             "llm-provider/opencode-go",
+            "llm-provider/openrouter",
             "sandbox-backend/bwrap",
             "sandbox-backend/bwrap/exec",
             "sandbox-backend/bwrap/fileops",

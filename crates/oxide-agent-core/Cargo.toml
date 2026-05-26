@@ -175,6 +175,7 @@ profile-host-bwrap = [
     "transport-telegram",
     "storage-s3-r2",
     "llm-opencode-go",
+    "llm-openrouter",
     "tool-todos",
     "tool-compression",
     "tool-delegation",
