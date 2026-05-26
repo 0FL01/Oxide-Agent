@@ -342,7 +342,7 @@ Findings:
 ### 5.9 Findings that require decision
 
 - **Internal plain completion API:** `chat_completion_for_model_info()` is used by compaction, loop detection, wiki writer and Agent input classifier. Product decision: keep these as internal-only `internal_text_completion*` APIs, or force every internal LLM task through `chat_with_tools` without tools. PRD recommends internal-only rename/isolation to avoid broad agent semantic changes.
-- **Per-user prompt:** `UserConfig.system_prompt` and `storage.update_user_prompt()` are used by Chat Mode prompt editing, while topic-level system prompts are separate. Decision: remove per-user prompt editing if it exists only for Chat Mode; keep topic/profile prompts if they are agent runtime features.
+- **Per-user prompt:** `UserConfig.system_prompt` and `storage.update_user_prompt()` are used by Chat Mode prompt editing, while topic-level system prompts are separate. Decision: remove per-user prompt editing if it exists only for Chat Mode; keep topic/profile prompts if they are agent runtime features. *(Resolved: см. решение DR-001 ниже)*
 - **Existing agent media surface:** repo already has agent-side media primitives: `crates/oxide-agent-core/src/agent/preprocessor.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent/media.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs` and sandbox media tools in `crates/oxide-agent-core/src/agent/providers/media_file.rs` (`transcribe_audio_file`, `describe_image_file`, `describe_video_file`). The refactor should reuse these instead of preserving Chat Mode media handlers.
 - **Media route semantics:** decision for this PRD is not "attachments or reject" anymore. Target behavior is: voice is immediately transcribed through explicit `MEDIA_MODEL_*` STT route and then injected into Agent Mode as text; photo/video/audio/document are preserved in sandbox as agent attachments when media/file capability is enabled, and the agent may call media tools with a prompt. If required route/capability is absent, reject clearly. No chat fallback is allowed.
 - **Direct Gemini provider:** current repo policy keeps direct Google Gemini provider absent; Gemini-family media/STT means OpenRouter model IDs such as `google/gemini-*` routed through `llm-provider/openrouter`, not a new `llm-provider/gemini` integration.
@@ -351,6 +351,44 @@ Findings:
 - **NVIDIA allowlist ownership:** NVIDIA model support is code allowlist/wildcards. Decide whether this remains in code or moves to config/metadata, but selection must reject unsupported models before execution attempt.
 - **ChatGPT alias safety:** `json_mode_forbids_route()` checks `route.provider.eq_ignore_ascii_case("chatgpt")`; canonical provider id is `llm-provider/openai-chatgpt`. This needs alias/canonical-aware checks.
 - **Old persisted `chat_mode`:** No migration should be built. Runtime must normalize or ignore old `chat_mode` by treating it as no state / agent-only access evaluation.
+
+### 5.10 Resolved Decisions
+
+#### DR-001: Per-user prompt (`UserConfig.system_prompt`) — удалить полностью
+
+**Статус:** решено.
+
+**Исходный вопрос (секция 5.9):** `UserConfig.system_prompt` и `storage.update_user_prompt()` используются Chat Mode prompt editing. Оставлять или удалять?
+
+**Анализ:**
+
+| Аспект | Детали |
+|--------|--------|
+| Где используется | `handlers.rs:1219` (handle_editing_prompt → update_user_prompt), `handlers.rs:1758` (resolve_system_prompt → get_user_prompt) |
+| Оба вызова | Только в Chat Mode UX (возврат в `State::ChatMode`, `pick_system_prompt()` вызывается только из chat text/voice/photo/video) |
+| Agent Mode читает? | Нет. Agent Mode использует `compose_execution_prompt_instructions()` в `execution_config.rs`, который не читает `UserConfig.system_prompt` |
+| Зависимости | Ни один agent handler, executor, provider или runner не читает и не пишет per-user prompt |
+| Моки | Только boilerplate в тестах, нигде не вызываются в agent-тестах |
+
+**Agent prompt surfaces, которые остаются:**
+
+- **Topic-level prompt** (`TelegramTopicSettings.system_prompt`) — мержится в `compose_execution_prompt_instructions()`
+- **Profile prompt instructions** (`AgentExecutionProfile.prompt_instructions`) — загружаются через `resolve_execution_profile()`
+- **Topic context** (`topic_context_*` tools) — инжектится в system prompt агента через `compose_execution_prompt_instructions()`
+- **Topic AGENTS.md** — живой документ, закреплённый в памяти агента, наследуется саб-агентами
+
+**Решение:** удалить полностью:
+- Поле `system_prompt` из `UserConfig`
+- `update_user_prompt` / `get_user_prompt` из `StorageProvider` trait и всех impl
+- `State::EditingPrompt` и ветку в `runner.rs`
+- `handle_editing_prompt()`, `begin_prompt_editing()`
+- `MenuCallbackData::EditPrompt` и колбэк
+- `pick_system_prompt()`, `resolve_system_prompt()`
+- Env fallback `SYSTEM_MESSAGE`
+
+**Обоснование:** per-user prompt — чистый Chat Mode legacy. Ни одна Agent Mode функциональность на нём не держится. Topic/profile/admin-controlled prompt поверхности покрывают все нужные сценарии.
+
+---
 
 ## 6. Target Architecture
 
