@@ -918,8 +918,10 @@ mod tests {
         fn resolve_audio_model_name_supports_mistral_stt_route() {
             let settings = with_provider_key(
                 AgentSettings {
-                    chat_model_id: Some("chat-mistral".to_string()),
-                    chat_model_provider: Some("mistral".to_string()),
+                    agent_model_id: Some("agent-mistral".to_string()),
+                    agent_model_provider: Some("mistral".to_string()),
+                    media_model_id: Some("media-mistral".to_string()),
+                    media_model_provider: Some("mistral".to_string()),
                     ..AgentSettings::default()
                 },
                 "llm-provider/mistral",
@@ -929,17 +931,17 @@ mod tests {
 
             assert_eq!(
                 provider.resolve_audio_model_name().expect("audio model"),
-                "chat-mistral"
+                "media-mistral"
             );
         }
 
         #[test]
-        fn resolve_video_model_name_falls_back_to_chat_route() {
+        fn resolve_video_model_name_requires_video_capable_media_route() {
             let settings = with_provider_key(
                 with_provider_key(
                     AgentSettings {
-                        chat_model_id: Some("chat-openrouter".to_string()),
-                        chat_model_provider: Some("openrouter".to_string()),
+                        agent_model_id: Some("agent-openrouter".to_string()),
+                        agent_model_provider: Some("openrouter".to_string()),
                         media_model_id: Some("media-mistral".to_string()),
                         media_model_provider: Some("mistral".to_string()),
                         ..AgentSettings::default()
@@ -952,18 +954,21 @@ mod tests {
             );
             let provider = MediaFileProvider::new(Arc::new(LlmClient::new(&settings)), 42_i64);
 
-            assert_eq!(
-                provider.resolve_video_model_name().expect("video model"),
-                "chat-openrouter"
-            );
+            let error = provider
+                .resolve_video_model_name()
+                .expect_err("video model unavailable")
+                .to_string();
+            assert!(error.contains("Video understanding route unavailable"));
         }
 
         #[test]
         fn resolve_image_model_name_reports_unavailable_route() {
             let settings = with_provider_key(
                 AgentSettings {
-                    chat_model_id: Some("chat-mistral".to_string()),
-                    chat_model_provider: Some("mistral".to_string()),
+                    agent_model_id: Some("agent-mistral".to_string()),
+                    agent_model_provider: Some("mistral".to_string()),
+                    media_model_id: Some("media-mistral".to_string()),
+                    media_model_provider: Some("mistral".to_string()),
                     ..AgentSettings::default()
                 },
                 "llm-provider/mistral",

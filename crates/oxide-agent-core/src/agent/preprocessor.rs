@@ -708,8 +708,8 @@ mod tests {
     #[tokio::test]
     async fn preprocess_video_uses_media_model() {
         let mut settings = AgentSettings {
-            chat_model_id: Some("chat-model".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
             media_model_id: Some("video-model".to_string()),
             media_model_provider: Some("openrouter".to_string()),
             ..AgentSettings::default()

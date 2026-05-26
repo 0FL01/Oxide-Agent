@@ -14,13 +14,11 @@ pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
-    /// Default chat model name for user-facing requests
-    pub chat_model_name: String,
-    /// Optional media model name for multimodal requests
+    /// Optional explicit media model name for multimodal requests.
     pub media_model_name: Option<String>,
-    /// Optional media model ID for audio/image/video fallbacks
+    /// Optional media model ID for audio/image/video requests.
     pub media_model_id: Option<String>,
-    /// Optional media model provider for audio/image/video fallbacks
+    /// Optional media model provider for audio/image/video requests.
     pub media_model_provider: Option<String>,
 }
 
@@ -33,45 +31,39 @@ impl LlmClient {
         &self,
         modality: capabilities::MediaModality,
     ) -> Result<(String, crate::config::ModelInfo), LlmError> {
-        let mut candidates = Vec::with_capacity(2);
-        if let Some(name) = self.media_model_name.as_deref() {
-            if !name.is_empty() {
-                candidates.push(name);
-            }
+        let Some(model_name) = self
+            .media_model_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+        else {
+            return Err(LlmError::MissingConfig(format!(
+                "No explicit MEDIA_MODEL route is configured for {}",
+                modality.label()
+            )));
+        };
+
+        let model_info = self.get_model_info(model_name)?;
+
+        if !self.is_provider_available(&model_info.provider) {
+            return Err(LlmError::MissingConfig(format!(
+                "Configured MEDIA_MODEL provider '{}' is not available",
+                model_info.provider
+            )));
         }
 
-        if !self.chat_model_name.is_empty()
-            && !candidates
-                .iter()
-                .any(|candidate| *candidate == self.chat_model_name)
-        {
-            candidates.push(&self.chat_model_name);
-        }
-
-        for model_name in candidates {
-            let Ok(model_info) = self.get_model_info(model_name) else {
-                continue;
-            };
-
-            if !self.is_provider_available(&model_info.provider) {
-                continue;
-            }
-
-            if capabilities::provider_media_capabilities_for_model(&model_info).supports(modality) {
-                return Ok((model_name.to_string(), model_info));
-            }
+        if capabilities::provider_media_capabilities_for_model(&model_info).supports(modality) {
+            return Ok((model_name.to_string(), model_info));
         }
 
         Err(LlmError::MissingConfig(format!(
-            "No configured route supports {} (expected providers: openrouter, mistral for STT)",
+            "Configured MEDIA_MODEL route does not support {} (expected providers: openrouter, mistral for STT)",
             modality.label()
         )))
     }
 
     /// Resolve the model route for audio transcription.
     ///
-    /// Prefers explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER` and falls back to chat model
-    /// when it supports audio transcription.
+    /// Requires explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER`.
     ///
     /// # Errors
     ///
@@ -83,8 +75,7 @@ impl LlmClient {
 
     /// Resolve the model route for image understanding.
     ///
-    /// Prefers explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER` and falls back to chat model
-    /// when it supports image understanding.
+    /// Requires explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER`.
     ///
     /// # Errors
     ///
@@ -96,8 +87,7 @@ impl LlmClient {
 
     /// Resolve the model route for video understanding.
     ///
-    /// Prefers explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER` and falls back to chat model
-    /// when it supports video understanding.
+    /// Requires explicit `MEDIA_MODEL_ID`/`MEDIA_MODEL_PROVIDER`.
     ///
     /// # Errors
     ///
@@ -158,7 +148,6 @@ impl LlmClient {
     /// Create a new LLM client with providers configured from settings
     #[must_use]
     pub fn new(settings: &crate::config::AgentSettings) -> Self {
-        let chat_model_name = settings.get_default_chat_model_name();
         let (media_model_id, media_model_provider) = match settings.get_media_model() {
             (id, provider) if !id.is_empty() && !provider.is_empty() => (Some(id), Some(provider)),
             _ => (None, None),
@@ -170,7 +159,6 @@ impl LlmClient {
         Self {
             providers,
             models: settings.get_available_models(),
-            chat_model_name,
             media_model_name,
             media_model_id,
             media_model_provider,
@@ -752,12 +740,13 @@ mod tests {
         settings
     }
 
+    #[cfg(feature = "llm-openrouter")]
     #[test]
     fn media_resolver_prefers_explicit_media_route_for_video() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-openrouter".to_string()),
-                chat_model_provider: Some("openrouter".to_string()),
+                agent_model_id: Some("agent-openrouter".to_string()),
+                agent_model_provider: Some("openrouter".to_string()),
                 media_model_id: Some("media-gemini".to_string()),
                 media_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
@@ -775,13 +764,14 @@ mod tests {
         assert_eq!(route.provider, "openrouter");
     }
 
+    #[cfg(all(feature = "llm-openrouter", feature = "llm-mistral"))]
     #[test]
-    fn media_resolver_falls_back_to_chat_route_when_media_is_stt_only() {
+    fn media_resolver_rejects_media_route_when_modality_is_not_supported() {
         let settings = with_provider_key(
             with_provider_key(
                 AgentSettings {
-                    chat_model_id: Some("chat-openrouter".to_string()),
-                    chat_model_provider: Some("openrouter".to_string()),
+                    agent_model_id: Some("agent-openrouter".to_string()),
+                    agent_model_provider: Some("openrouter".to_string()),
                     media_model_id: Some("media-mistral".to_string()),
                     media_model_provider: Some("mistral".to_string()),
                     ..AgentSettings::default()
@@ -794,20 +784,26 @@ mod tests {
         );
 
         let llm = LlmClient::new(&settings);
-        let image_route = llm
+        let error = llm
             .resolve_media_model_for_image()
-            .expect("chat route should be used for image modality");
+            .expect_err("media route should not fall back to agent route");
 
-        assert_eq!(image_route.id, "chat-openrouter");
-        assert_eq!(image_route.provider, "openrouter");
+        assert!(matches!(
+            error,
+            crate::llm::LlmError::MissingConfig(message)
+                if message.contains("image understanding")
+        ));
     }
 
+    #[cfg(feature = "llm-mistral")]
     #[test]
     fn media_resolver_allows_mistral_for_audio_stt_only() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-mistral".to_string()),
-                chat_model_provider: Some("mistral".to_string()),
+                agent_model_id: Some("agent-mistral".to_string()),
+                agent_model_provider: Some("mistral".to_string()),
+                media_model_id: Some("media-mistral".to_string()),
+                media_model_provider: Some("mistral".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/mistral",
@@ -819,17 +815,17 @@ mod tests {
             .resolve_media_model_for_audio_stt()
             .expect("mistral should support stt route");
 
-        assert_eq!(audio_route.id, "chat-mistral");
+        assert_eq!(audio_route.id, "media-mistral");
         assert_eq!(audio_route.provider, "mistral");
         assert!(llm.resolve_media_model_for_video().is_err());
     }
 
     #[test]
-    fn media_resolver_skips_unconfigured_provider_routes() {
+    fn media_resolver_rejects_unconfigured_provider_routes() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-openrouter".to_string()),
-                chat_model_provider: Some("openrouter".to_string()),
+                agent_model_id: Some("agent-openrouter".to_string()),
+                agent_model_provider: Some("openrouter".to_string()),
                 media_model_id: Some("media-mistral".to_string()),
                 media_model_provider: Some("mistral".to_string()),
                 ..AgentSettings::default()
@@ -839,20 +835,24 @@ mod tests {
         );
 
         let llm = LlmClient::new(&settings);
-        let route = llm
+        let error = llm
             .resolve_media_model_for_image()
-            .expect("chat route should be used when media provider is unavailable");
+            .expect_err("unavailable media provider must not fall back");
 
-        assert_eq!(route.id, "chat-openrouter");
-        assert_eq!(route.provider, "openrouter");
+        assert!(matches!(
+            error,
+            crate::llm::LlmError::MissingConfig(message)
+                if message.contains("not available")
+        ));
     }
 
+    #[cfg(feature = "llm-openrouter")]
     #[test]
     fn media_model_name_resolvers_return_selected_route_names() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-openrouter".to_string()),
-                chat_model_provider: Some("openrouter".to_string()),
+                agent_model_id: Some("agent-openrouter".to_string()),
+                agent_model_provider: Some("openrouter".to_string()),
                 media_model_id: Some("media-gemini".to_string()),
                 media_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
@@ -879,13 +879,14 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "llm-openrouter", feature = "llm-mistral"))]
     #[test]
-    fn media_name_resolver_falls_back_to_chat_for_non_stt_modalities() {
+    fn media_name_resolver_does_not_fallback_to_agent_for_non_stt_modalities() {
         let settings = with_provider_key(
             with_provider_key(
                 AgentSettings {
-                    chat_model_id: Some("chat-openrouter".to_string()),
-                    chat_model_provider: Some("openrouter".to_string()),
+                    agent_model_id: Some("agent-openrouter".to_string()),
+                    agent_model_provider: Some("openrouter".to_string()),
                     media_model_id: Some("media-mistral".to_string()),
                     media_model_provider: Some("mistral".to_string()),
                     ..AgentSettings::default()
@@ -903,24 +904,19 @@ mod tests {
                 .expect("audio stt route"),
             "media-mistral"
         );
-        assert_eq!(
-            llm.resolve_media_model_name_for_image()
-                .expect("image route"),
-            "chat-openrouter"
-        );
-        assert_eq!(
-            llm.resolve_media_model_name_for_video()
-                .expect("video route"),
-            "chat-openrouter"
-        );
+        assert!(llm.resolve_media_model_name_for_image().is_err());
+        assert!(llm.resolve_media_model_name_for_video().is_err());
     }
 
+    #[cfg(feature = "llm-mistral")]
     #[test]
     fn multimodal_availability_is_modality_specific() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-mistral".to_string()),
-                chat_model_provider: Some("mistral".to_string()),
+                agent_model_id: Some("agent-mistral".to_string()),
+                agent_model_provider: Some("mistral".to_string()),
+                media_model_id: Some("media-mistral".to_string()),
+                media_model_provider: Some("mistral".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/mistral",
@@ -938,12 +934,12 @@ mod tests {
     fn multimodal_is_unavailable_when_no_supported_media_routes_exist() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-groq".to_string()),
-                chat_model_provider: Some("groq".to_string()),
+                agent_model_id: Some("agent-openrouter".to_string()),
+                agent_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
-            "llm-provider/groq",
-            "test-groq-key",
+            "llm-provider/openrouter",
+            "test-openrouter-key",
         );
 
         let llm = LlmClient::new(&settings);
@@ -959,16 +955,17 @@ mod tests {
             error,
             crate::llm::LlmError::MissingConfig(message)
                 if message.contains("video understanding")
-                    && message.contains("openrouter")
+                    && message.contains("MEDIA_MODEL")
         ));
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn llm_client_registers_opencode_go_when_key_present() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("deepseek-v4-flash".to_string()),
-                chat_model_provider: Some("opencode-go".to_string()),
+                agent_model_id: Some("deepseek-v4-flash".to_string()),
+                agent_model_provider: Some("opencode-go".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/opencode-go",
@@ -988,8 +985,8 @@ mod tests {
     async fn main_agent_tool_request_uses_configured_temperature() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-openrouter".to_string()),
-                chat_model_provider: Some("openrouter".to_string()),
+                agent_model_id: Some("chat-openrouter".to_string()),
+                agent_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/openrouter",
@@ -1037,8 +1034,8 @@ mod tests {
     async fn chat_completion_folds_system_history_into_prompt() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-openrouter".to_string()),
-                chat_model_provider: Some("openrouter".to_string()),
+                agent_model_id: Some("chat-openrouter".to_string()),
+                agent_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/openrouter",
@@ -1092,8 +1089,8 @@ mod tests {
     async fn tool_requests_fold_system_history_into_prompt() {
         let settings = with_provider_key(
             AgentSettings {
-                chat_model_id: Some("chat-openrouter".to_string()),
-                chat_model_provider: Some("openrouter".to_string()),
+                agent_model_id: Some("chat-openrouter".to_string()),
+                agent_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
             "llm-provider/openrouter",
