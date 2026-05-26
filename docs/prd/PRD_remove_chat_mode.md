@@ -348,7 +348,7 @@ Findings:
 - **Direct Gemini provider:** current repo policy keeps direct Google Gemini provider absent; Gemini-family media/STT means OpenRouter model IDs such as `google/gemini-*` routed through `llm-provider/openrouter`, not a new `llm-provider/gemini` integration.
 - **Media model defaults:** `media_model_spec()` currently reuses chat token/context defaults. Need new `MEDIA_MODEL_MAX_OUTPUT_TOKENS` / `MEDIA_MODEL_CONTEXT_WINDOW_TOKENS` or reuse agent defaults deliberately.
 - **OpenRouter compatibility source:** Current code treats OpenRouter provider-level capabilities as tool-capable. Need an explicit allowlist, config flag, metadata source, or route capability field. Default should be deny for agent routes. *(Resolved: см. DR-003 ниже)*
-- **NVIDIA allowlist ownership:** NVIDIA model support is code allowlist/wildcards. Decide whether this remains in code or moves to config/metadata, but selection must reject unsupported models before execution attempt.
+- **NVIDIA allowlist ownership:** Resolved in DR-004. Keep code-owned exact-match allowlist. Config overrides, wildcards and generic model registry are out of scope for this refactor.
 - **ChatGPT alias safety:** `json_mode_forbids_route()` checks `route.provider.eq_ignore_ascii_case("chatgpt")`; canonical provider id is `llm-provider/openai-chatgpt`. This needs alias/canonical-aware checks.
 - **Old persisted `chat_mode`:** No migration should be built. Runtime must normalize or ignore old `chat_mode` by treating it as no state / agent-only access evaluation.
 
@@ -506,6 +506,66 @@ Unknown OpenRouter model ids must be rejected for Agent Mode and media routes by
 - `google/gemini-2.5-flash-lite` passes media route validation and fails main Agent Mode validation.
 - `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` pass main Agent Mode validation and fail media route validation.
 - Tests cover all five sanctioned model ids plus one unknown OpenRouter model id.
+
+#### DR-004: NVIDIA NIM compatibility — code-owned exact-match allowlist, no config/metadata/registry
+
+**Статус:** решено.
+
+**Исходный вопрос (секция 5.9):** NVIDIA model support is a code allowlist/wildcard. Keep in code or move to config/metadata?
+
+**Анализ:**
+
+NVIDIA NIM compatibility varies per model. The current code has a mix of allowlist and wildcard logic. For this refactor — removing Chat Mode and legacy tails — a generic provider capability framework would be over-engineering.
+
+Options considered:
+1. **User-configurable capability metadata** (`supports_tools = true` in config). Rejected: creates a new legacy surface where incompatible models can be accidentally declared tool-capable. Defeats the PRD goal of "no provider taken on faith".
+2. **External model registry / runtime metadata discovery**. Rejected: adds runtime dependency, background sync, and complexity unjustified for 2-3 users and the current set of known NVIDIA models.
+3. **Wildcard rules** (e.g. `deepseek-ai/*`). Rejected: too broad. New DeepSeek or NVIDIA models should be explicitly reviewed, not automatically inherited.
+4. **Experimental allow flags**. Rejected: softens the policy without solving the underlying safety issue.
+
+**Решение:** Keep a small compile-time exact-match allowlist in the NVIDIA provider module.
+
+```rust
+fn is_supported_nvidia_agent_model(model_id: &str) -> bool {
+    matches!(
+        model_id,
+        "deepseek-ai/deepseek-v4-pro"
+            | "deepseek-ai/deepseek-v4-flash"
+    )
+}
+```
+
+Initial allowed NVIDIA Agent Mode text/tool models:
+- `deepseek-ai/deepseek-v4-pro`
+- `deepseek-ai/deepseek-v4-flash`
+
+These models are allowed only for Agent Mode text/tool execution. They must not be treated as media, vision, video, audio, or STT-capable. Media/STT routing must use the explicit `MEDIA_MODEL_*` configuration, not NVIDIA agent model fallback.
+
+All other NVIDIA NIM models are default-denied for Agent Mode unless added to the code allowlist in a deliberate future change.
+
+**Rules:**
+- No config-level capability overrides for NVIDIA in this refactor.
+- No runtime model metadata discovery.
+- No wildcard matching.
+- No experimental allow flags.
+- Exact string match only.
+- The allowlist is easy to test with static unit tests and route-selection regression tests.
+
+**Rationale:**
+- The current refactor is about removing Chat Mode, not building a provider capability framework.
+- A code-owned allowlist is sufficient for the current set of supported NVIDIA models.
+- User-configurable capability declarations can accidentally mark unsupported models as tool-capable.
+- Default-deny prevents hidden fallback into plain chat completion.
+- The allowlist is trivial to review, test, and extend later.
+
+**Acceptance criteria:**
+- NVIDIA route selection accepts `deepseek-ai/deepseek-v4-pro` for Agent Mode text/tools.
+- NVIDIA route selection accepts `deepseek-ai/deepseek-v4-flash` for Agent Mode text/tools.
+- NVIDIA route selection rejects unknown NVIDIA models before execution.
+- NVIDIA route selection does not use wildcard matching.
+- NVIDIA route selection does not rely on `CHAT_MODEL_*`.
+- NVIDIA models are never selected for media/STT/vision/video routes.
+- Tests cover allowed model IDs and at least one rejected NVIDIA model ID.
 
 ---
 
@@ -665,8 +725,16 @@ Media capability is separate from agent compatibility:
 #### Keep with model-level gating
 
 - `llm-provider/nvidia`
-  - Evidence: `nvidia/module.rs` delegates capabilities to `nvidia::model_capabilities()`; `nvidia.rs` has explicit allowlists/wildcards and rejects unsupported model ids in `chat_with_tools()`.
-  - Required change: route selection and config validation must call model-level capabilities before selecting/attempting a route. Unsupported NVIDIA models must be excluded before execution attempt.
+  - Evidence: `nvidia/module.rs` delegates capabilities to `nvidia::model_capabilities()`; `nvidia.rs` currently has allowlist + wildcard logic and rejects unsupported model ids in `chat_with_tools()`.
+  - Policy: NVIDIA NIM is supported only through an explicit code-owned exact-match allowlist (DR-004).
+  - Initial allowed Agent Mode text/tool models:
+    - `deepseek-ai/deepseek-v4-pro`
+    - `deepseek-ai/deepseek-v4-flash`
+  - No config-level capability overrides, wildcard matching, runtime metadata discovery or experimental allow flags in this refactor.
+  - The allowlist must not be user-overridable through config.
+  - NVIDIA models are text-only unless separately listed in the media route.
+  - Unsupported NVIDIA models must be rejected before provider execution.
+  - Required change: replace wildcard logic with the exact-match allowlist from DR-004; route selection and config validation must call model-level capabilities before selecting/attempting a route; remove `CHAT_MODEL_*` fallback from NVIDIA path.
 
 - `llm-provider/openrouter`
   - Evidence: current `openrouter/module.rs` marks provider-level `supports_tool_calling=true`, but OpenRouter compatibility is route/model-dependent.
@@ -1204,43 +1272,65 @@ Edge Cases:
 - Alias/canonical provider id mismatch.
 - Weighted failover prefers OpenRouter route with high weight.
 
-### FR-013: Harden NVIDIA NIM compatibility
+### FR-013: Harden NVIDIA NIM compatibility with a minimal allowlist
 
 ID: `FR-013`
 
-Название: NVIDIA NIM model-level checks before route execution.
+Название: Restrict NVIDIA NIM to explicitly approved Agent Mode text/tool models.
 
 Описание:
 
-- Keep NVIDIA provider only for models whose `model_capabilities()` supports tool calling.
-- Move model-level gate into route availability / config validation, not only provider call.
-- Unsupported NVIDIA models must be excluded before execution attempt.
-- Preserve existing provider-level guard as defense-in-depth.
+NVIDIA NIM must not be treated as provider-wide agent-compatible.
+
+For this refactor, NVIDIA compatibility must be implemented as a small exact-match code-owned allowlist, as specified in DR-004.
+
+Initial allowed models:
+
+- `deepseek-ai/deepseek-v4-pro`
+- `deepseek-ai/deepseek-v4-flash`
+
+These models are allowed only for Agent Mode text/tool execution.
+
+Do not add config-level capability overrides, runtime model metadata discovery, wildcard matching, or experimental allow flags as part of this PRD.
+
+The implementation must replace any existing wildcard or broad NVIDIA compatibility logic with the exact-match allowlist.
 
 Rationale:
 
-- NVIDIA compatibility varies by model and current provider rejects unsupported models only when `chat_with_tools()` is attempted.
+The goal is to remove Chat Mode and unsafe provider tails with minimal architectural churn. NVIDIA model support varies by model, but the current product decision only needs two known Agent Mode text/tool models. A code-owned allowlist is simpler and safer than allowing config to declare arbitrary models as tool-capable.
 
 Acceptance Criteria:
 
-- `select_model_route_index()` or equivalent route availability does not return unsupported NVIDIA route.
-- Existing test `run_skips_unsupported_nvidia_route_and_uses_backup` remains or is strengthened to assert unsupported provider is not called and route was skipped before attempt.
-- Single-route unsupported NVIDIA fails fast with clear config/runtime error.
+- `deepseek-ai/deepseek-v4-pro` is accepted by NVIDIA Agent Mode route selection.
+- `deepseek-ai/deepseek-v4-flash` is accepted by NVIDIA Agent Mode route selection.
+- Any other NVIDIA model ID is rejected before execution unless added to the allowlist in code.
+- Rejection message clearly says the selected NVIDIA model is not approved for Agent Mode tool execution.
+- NVIDIA route does not use `CHAT_MODEL_*` fallback.
+- NVIDIA route is not used for media/STT/vision/video.
+- Existing test `run_skips_unsupported_nvidia_route_and_uses_backup` is strengthened to assert the unsupported provider is skipped before execution attempt (not just at provider call).
+- Single-route unsupported NVIDIA fails fast with a clear config/runtime error.
+- Unit tests cover both allowed model IDs.
+- Unit tests cover at least one rejected model ID.
+- Route-selection tests prove unsupported NVIDIA models cannot be selected through failover.
 
 Affected Areas:
 
-- `nvidia.rs:model_capabilities()`
-- `nvidia/module.rs:capabilities_for_model()`
-- `llm/capabilities.rs`
-- `agent/runner/execution.rs:654-741`
-- tests around NVIDIA route selection
+- NVIDIA provider capability checks (`is_supported_nvidia_agent_model`).
+- `nvidia.rs:model_capabilities()` — replace wildcards with exact-match allowlist.
+- `nvidia/module.rs:capabilities_for_model()`.
+- Route selection / provider registry (`agent/runner/execution.rs:654-741`).
+- Agent model validation.
+- Config validation.
+- Provider capability tests.
+- Documentation/examples mentioning NVIDIA models.
 
 Edge Cases:
 
-- Unsupported NVIDIA route is primary and backup is valid.
-- Unsupported NVIDIA route is the only route.
-- NVIDIA model supports structured output but not tools.
-- New NVIDIA model not present in allowlist.
+- Model ID casing or alias mismatch.
+- Existing config references an older NVIDIA model.
+- Failover tries NVIDIA after primary provider fails.
+- NVIDIA endpoint accepts a model but tool calling fails at runtime.
+- Media route tries to reuse the NVIDIA agent model.
 
 ### FR-014: Preserve ChatGPT as agent provider
 
@@ -1691,6 +1781,16 @@ rg -n "resolve_media_model|MEDIA_MODEL|transcribe_audio_file|describe_image_file
 # Direct Gemini provider remains absent; Gemini-family model IDs are allowed only as OpenRouter model IDs.
 rg -n "llm-provider/gemini|llm-provider/google-gemini|GOOGLE_GEMINI_API_KEY" \
   crates Cargo.toml profiles scripts .github .env.example README.md AGENTS.md
+
+# NVIDIA allowlist verification: should show allowed model ids and no wildcards/supports_tools overrides.
+rg -n "deepseek-ai/deepseek-v4-pro|deepseek-ai/deepseek-v4-flash" .
+rg -n "nvidia.*wildcard|wildcard.*nvidia|supports_tools.*nvidia" .
+rg -n "CHAT_MODEL.*nvidia|nvidia.*CHAT_MODEL" .
+
+# NVIDIA route selection tests.
+cargo test --workspace --all-features nvidia
+cargo test --workspace --all-features provider
+cargo test --workspace --all-features route
 
 # Targeted media tests after implementation.
 cargo test -p oxide-agent-core preprocessor --all-features
