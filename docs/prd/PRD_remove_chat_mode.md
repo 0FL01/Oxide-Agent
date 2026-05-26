@@ -73,6 +73,7 @@ Agent-only архитектура должна быть однозначной: 
 - Не добавлять новые provider integrations, если они не нужны для замены удалённого chat-only route.
 - Не вводить dual-mode runtime.
 - Не мигрировать старые persisted `chat_mode`. Clean-on-read при старте: authorized users переходят в `State::AgentMode`, unauthorized получают access guidance. См. DR-005.
+- **Fresh DB**: деплой выполняется на пустом storage. Никакие старые `chat_mode` state-записи физически отсутствуют. Все пользователи с первого запуска находятся в Agent Mode. Регресс «юзер застрял в chat_mode» невозможен.
 - Не переносить Chat Mode prompt editor в Agent Mode.
 - Не добавлять новый Telegram UX для редактирования agent/system prompt.
 - Не мигрировать старые per-user prompts и не сохранять `user_prompt` как hidden compatibility layer.
@@ -576,70 +577,57 @@ All other NVIDIA NIM models are default-denied for Agent Mode unless added to th
 
 **Статус:** решено.
 
+> **Fresh DB note:** Деплой выполняется на пустом storage (fresh DB). Старых `chat_mode` state-записей нет ни у кого из пользователей. Весь DR-005 — информационно, для совместимости на случай, если в будущем кто-то развернёт поверх существующей базы. В текущей имплементации clean-on-read логика **может быть опущена**: при fresh DB read-path нормализация никогда не срабатывает.
+
 **Исходный вопрос (секция 5.9):** как обращаться со старым persisted `chat_mode` значением: игнорировать, нормализовать, мигрировать или clean-on-read?
 
 **Анализ:**
 
 | Аспект | Детали |
 |--------|--------|
-| Цель рефакторинга | Удалить Chat Mode как runtime, но не требовать fresh DB для развёртывания. |
-| Hard delete / fresh DB only | Технически самый чистый вариант, но требует ручного сброса storage при каждом развёртывании на существующей инсталляции. Для личного проекта и 2-3 пользователей это приемлемо, но не обязательно. |
-| Clean-on-read | Единственная точка знания о `chat_mode` — read path при загрузке persisted state. После нормализации runtime работает в pure Agent Mode. Не требует миграции данных. Не добавляет compatibility layers в execution path. |
+| Цель рефакторинга | Удалить Chat Mode как runtime. При fresh DB цель достигается автоматически — старых записей нет. Clean-on-read нужен только для развёртывания поверх существующей инсталляции. |
+| Fresh DB | Storage пуст. `chat_mode` не существует ни в одной записи. Все пользователи с первого сообщения попадают в Agent Mode. |
+| Hard delete / fresh DB only | Технически самый чистый вариант. В проекте используется fresh DB, поэтому это де-факто текущее состояние. |
+| Clean-on-read | Единственная точка знания о `chat_mode` — read path при загрузке persisted state. Не требуется для fresh DB, но безвреден. |
 | ignore option | Пользователь остаётся в нерабочем состоянии — хуже, чем явная нормализация. |
-| normalize option | То же, что clean-on-read, но термин менее конкретный. |
 
-**Решение:** Clean-on-read, без отдельной migration job.
-
-При загрузке persisted state:
-
-```text
-on state read:
-  if state == "chat_mode":
-      if user has agent access:
-          overwrite state with AgentMode
-      else:
-          clear state (set to None/Start)
-          return access/configuration guidance
-  else:
-      normal agent state flow
-```
+**Решение:** Clean-on-read **не имплементировать**. Fresh DB гарантирует отсутствие старых `chat_mode` записей. Нормализация на read path, парсинг `"chat_mode"` и сопутствующие тесты не требуются и не реализуются.
 
 Ключевые правила:
 
-- `State::ChatMode` удаляется из кода как variant. Старое строковое значение `"chat_mode"` распознаётся только на read path для нормализации.
-- Парсер/serde/mapping для `"chat_mode"` существует ровно в одном месте — на входе загрузки persisted state, и преобразует его в `AgentMode` (или `None` для unauthorized).
+- `State::ChatMode` удаляется из кода как variant.
+- Парсер/serde/mapping для `"chat_mode"` **не добавляется** — fresh DB не содержит таких записей.
 - Storage layer не содержит chat-specific state branches для runtime execution.
 - Никаких `LegacyChatMode`, `UnknownChatMode` как runtime enum variants.
 - Никаких фоновых миграций или batch-операций по очистке старых state rows.
-- Никаких тестов, проверяющих поведение `chat_mode` как активного режима — только тесты нормализации на read path.
-- Если у пользователя нет agent access, `chat_mode` нормализуется в `None`, и пользователь получает guidance вместо автоматического Agent Mode.
+- Никаких тестов нормализации `chat_mode` на read path.
+- Если storage по какой-то причине содержит неизвестный state — он обрабатывается как `None` (без специальной логики для `chat_mode`).
 
-**Обоснование:** Clean-on-read — прагматичный компромисс. Он не требует fresh DB, не создаёт скрытого compatibility layer в runtime execution path, и при этом не оставляет пользователя "застрявшим" в несуществующем Chat Mode после обновления. Единственная точка знания о `chat_mode` — read path загрузки state, и после нормализации runtime работает как чистый Agent Mode. Hard delete был бы чище, но clean-on-read достаточен для данного масштаба проекта (2-3 пользователя) и избавляет от ручного сброса storage.
+**Обоснование:** Fresh DB устраняет саму проблему — старых `chat_mode` записей нет. Имплементация clean-on-read была бы мёртвым кодом, который никогда не выполняется. Любая нормализация на read path — лишние токены на разработку и тестирование, zero value для fresh DB.
 
 **Implementation requirements:**
 
 - удалить `State::ChatMode` как runtime variant;
-- добавить нормализацию `"chat_mode"` → `AgentMode` / `None` на read path persisted state;
+- ~~добавить нормализацию `"chat_mode"` → `AgentMode` / `None` на read path persisted state~~ — **не требуется** (fresh DB);
 - не добавлять `LegacyChatMode`, `UnknownChatMode`, `normalize_chat_mode_state` как публичные символы;
 - не писать миграцию для старых chat state rows;
 - storage layer не должен иметь chat-specific execution branches.
 
 **Deployment assumption:**
 
-- production/staging rollout может быть выполнен на существующей базе;
-- старые записи `"chat_mode"` в state нормализуются при первой загрузке;
-- старые chat histories, current chat UUID, per-user chat model и prompt editing state не читаются и не используются runtime;
-- никакого ручного сброса storage не требуется.
+- деплой выполняется на **fresh DB** (пустой storage);
+- старых записей `"chat_mode"`, chat histories, current chat UUID, per-user chat model и prompt editing state **не существует** — storage пуст;
+- clean-on-read не срабатывает, потому что нечего нормализовать;
+- все пользователи с первого сообщения находятся в Agent Mode;
+- регресс «юзер застрял в chat_mode» невозможен физически.
 
 **Acceptance criteria:**
 
 - `State::ChatMode` отсутствует как runtime enum variant;
-- read path нормализует `"chat_mode"` в `AgentMode` для authorized пользователей;
-- read path нормализует `"chat_mode"` в `None` для unauthorized пользователей;
-- после нормализации runtime работает исключительно в Agent Mode;
-- grep по `chat_mode` находит только read path нормализации и этот PRD;
+- read path нормализации `"chat_mode"` **отсутствует** — не реализована, не требуется;
+- grep по `chat_mode` находит только упоминания в этом PRD (код не содержит обработки `chat_mode`);
 - `/start` не восстанавливает и не предлагает Chat Mode;
-- тесты покрывают нормализацию `chat_mode` на read path для authorized и unauthorized пользователей.
+- тесты нормализации `chat_mode` на read path — **не требуются**, не реализуются.
 
 #### DR-006: Rejected alternative — remove all plain/internal text completion
 
