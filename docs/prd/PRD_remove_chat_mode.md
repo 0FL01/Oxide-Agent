@@ -818,13 +818,13 @@ Cancellation/reset behavior:
 - `Reset agent session` clears current agent flow/session context only. It must not clear unrelated persistent agent memory/profile data unless that is already the documented behavior of the existing agent reset control.
 - If no active run exists, cancel/reset is a no-op that keeps `State::AgentMode` and replies with "Agent Mode is ready. Send a task."
 - Stale inline callbacks from old Chat Mode or old confirmations must be rejected with a short expired/unsupported message. They must not restore Chat Mode or execute stale actions.
-- Existing persisted `chat_mode` is not supported. Fresh DB is assumed; any unknown/invalid persisted state is treated as `None` and flows through agent-only access/configuration handling. See DR-005.
+- Existing persisted state contains any unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
 
 ### 6.2 State and persisted config
 
 - No `State::ChatMode` variant.
 - No `chat_mode` persisted state accepted as active runtime.
-- Existing persisted `chat_mode` is not supported. Fresh DB is assumed; any unknown/invalid persisted state is treated as `None` and flows through agent-only access/configuration handling. See DR-005.
+- Existing persisted state contains any unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
 - `State::EditingPrompt` is removed completely. This PRD does not introduce, rename, or preserve any Telegram user-facing prompt editor.
 - `MENU_CALLBACK_EDIT_PROMPT`, `MenuCallbackData::EditPrompt`, text-menu "Edit Prompt" branches, and the handler that stores edited prompt text are deleted.
 - Per-user prompt editing via `storage.update_user_prompt()` / `storage.get_user_prompt()` is treated as Chat Mode surface and removed from Telegram runtime.
@@ -873,7 +873,7 @@ Cancellation/reset behavior:
 - Provider selection only through agent-compatible routes.
 - Unknown provider capabilities are default-deny.
 - `supports_tool_calling=false` excludes a route from agent loop even if structured output is supported.
-- OpenRouter requires explicit model/route allowlist or metadata flag.
+- OpenRouter default-deny for agent and media routes unless the selected model id exists in the static in-code allowlist from DR-003 with required approval flag.
 - NVIDIA requires model-level capability check before route selection.
 - ChatGPT provider remains only as agent provider with tool calling support; JSON/structured-output limitations must be handled alias-safely.
 - Groq is removed.
@@ -1010,7 +1010,7 @@ Old `BROWSER_USE_MODEL_PROVIDER=groq` config is invalid after Groq removal.
 
 - `llm-provider/openrouter`
   - Evidence: current `openrouter/module.rs` marks provider-level `supports_tool_calling=true`, but OpenRouter compatibility is route/model-dependent.
-  - Required change: default-deny OpenRouter for agent routes unless model/route is explicitly marked compatible. Add allowlist/metadata/config capability flag and tests.
+  - Required change: default-deny OpenRouter for agent and media routes unless the selected model id exists in the static in-code allowlist from DR-003 with the required approval flag. Do not add user-editable config capability flags, runtime metadata discovery, or dynamic capability cache in this refactor.
 
 #### Remove
 
@@ -1064,7 +1064,7 @@ ID: `FR-001`
 - Remove `State::ChatMode` from `crates/oxide-agent-transport-telegram/src/bot/state.rs`.
 - Remove `State::ChatMode` branch from `crates/oxide-agent-transport-telegram/src/runner.rs`.
 - Remove code paths that set, restore, compare or persist `"chat_mode"`.
-- Existing persisted `chat_mode` is not supported. Fresh DB is assumed; any unknown/invalid persisted state is treated as `None` and flows through agent-only access/configuration handling. See DR-005.
+- Existing persisted state contains any unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
 
 Rationale:
 
@@ -1074,7 +1074,7 @@ Acceptance Criteria:
 
 - `rg -n "ChatMode|chat_mode" crates/oxide-agent-transport-telegram/src` returns no live runtime references.
 - Dialogue can compile without `State::ChatMode` branch.
-- Existing persisted `chat_mode` is not supported. Fresh DB is assumed; any unknown/invalid persisted state is treated as `None` and flows through agent-only access/configuration handling. See DR-005.
+- Existing persisted state contains any unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
 - Agent confirmation and Agent Mode states still work.
 
 Affected Areas:
@@ -1088,7 +1088,7 @@ Affected Areas:
 
 Edge Cases:
 
-- User sends message with old persisted `chat_mode`: legacy mode is not supported; unknown/invalid persisted state falls back to agent-only access/configuration flow.
+- User sends message with unsupported persisted state string: generic parser treats it as `None`; no legacy mode is restored and no state-specific compatibility branch is added.
 - User has no persisted state.
 - Confirmation flow is active while old chat state exists in storage.
 - Group topic has context state `chat_mode` while DM global state differs.
@@ -1609,7 +1609,7 @@ Affected Areas:
 - `llm/capabilities.rs`
 - `llm/providers/modules.rs`
 - `agent/runner/execution.rs`
-- config schema for route metadata if added
+- OpenRouter static allowlist module/tests
 - docs/env examples
 - route selection tests
 
@@ -1983,7 +1983,7 @@ Both must return empty.
 
 - Private Telegram chat without agent access: return access/config guidance; do not activate Chat Mode.
 - Group chat/thread context: topic routing and mention policy remain, but allowed input goes to Agent Mode only.
-- Existing user state was `chat_mode`: legacy mode is not supported; unknown/invalid persisted state falls back to agent-only access/configuration flow.
+- Existing persisted state has an unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow.
 - Old persisted chat histories in R2: leave orphaned, do not load, do not migrate, do not clear unless broader cleanup tool is separately requested.
 - Old `current_chat_uuid`: ignore after schema cleanup; serde defaults should not require it.
 - Missing `CHAT_MODEL_*`: should be normal; no startup error.
@@ -2079,7 +2079,7 @@ Both must return empty.
 
 - Change unknown provider capability fallback to default-deny.
 - Add route/model capability check to route availability before selection.
-- Harden OpenRouter with explicit allowlist/route flag/metadata.
+- Harden OpenRouter with the static in-code allowlist from DR-003.
 - Keep NVIDIA model-level check and move it before route selection.
 - Preserve ChatGPT as agent provider and fix alias/canonical JSON-mode checks.
 - Add regression tests for incompatible provider rejection and failover.
