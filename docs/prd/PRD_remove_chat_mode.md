@@ -1189,6 +1189,55 @@ rg -n "LlmClient::chat_completion|chat_completion_for_model_info|process_llm_req
 
 Это жёстко, но не overengineering. Наоборот: меньше интерфейсов, меньше legacy, меньше шансов случайно вернуть Chat Mode.
 
+#### DR-007: `SYSTEM_MESSAGE` env var — удалить полностью (Variant A)
+
+**Статус:** решено.
+
+**Исходный вопрос (секция 5.9):** `SYSTEM_MESSAGE` env var используется в `pick_system_prompt()` как fallback для system prompt. Оставлять (возможно, переименовав) или удалять?
+
+**Анализ:**
+
+Исследование кода показало, что `SYSTEM_MESSAGE` — Chat Mode-only legacy:
+
+| Аспект | Детали |
+|--------|--------|
+| Где читается | `handlers.rs:1759`: `std::env::var("SYSTEM_MESSAGE").ok()` внутри `resolve_system_prompt()` |
+| Кто вызывает `resolve_system_prompt()` | Только Chat Mode: `process_llm_request` (текст), `handle_photo`, `handle_video` |
+| Agent Mode читает? | Нет. Цепочка `compose_execution_prompt_instructions()` → `create_agent_system_prompt()` не использует ни `SYSTEM_MESSAGE`, ни `get_user_prompt()`, ни `system_message` поле |
+| Поле `AgentSettings.system_message` (`config.rs:86`) | Десериализуется, но **никогда не читается** runtime-кодом (`\.system_message` — 0 совпадений в `crates/`) |
+| Другие `system_message` в коде | `inject_system_message()` (AgentSession runtime injection), `fold_system_messages_into_prompt()` (LLM history folding), `inject_ssh_approval_system_message()` (SSH approval) — всё разные концепции, не связанные с env var |
+| CI/CD | `.github/workflows/ci-cd.yml` передаёт `SYSTEM_MESSAGE` как секрет и пишет в `.env` — только для Chat Mode |
+| `.env.example` | Комментированная строка `# SYSTEM_MESSAGE="Your custom system prompt"` — Chat Mode legacy |
+
+**Agent prompt surfaces, которые остаются (неизменно):**
+
+- **Topic-level prompt** (`TelegramTopicSettings.system_prompt`) — мержится в `compose_execution_prompt_instructions()`
+- **Profile prompt instructions** (`AgentExecutionProfile.prompt_instructions`) — загружаются через `resolve_execution_profile()`
+- **Topic context** (`topic_context_*` tools) — инжектится в system prompt агента
+- **Topic AGENTS.md** — живой документ, закреплённый в памяти агента
+
+Ни одна из этих поверхностей не использует и не зависит от `SYSTEM_MESSAGE`.
+
+**Решение:** удалить полностью (Variant A):
+
+- Удалить `std::env::var("SYSTEM_MESSAGE")` из `handlers.rs:1759` (вместе с `resolve_system_prompt()` и `pick_system_prompt()` — они уже в DR-001)
+- Удалить поле `system_message` из `AgentSettings` в `config.rs`
+- Удалить `SYSTEM_MESSAGE` из `.env.example`
+- Удалить `SYSTEM_MESSAGE` из `.github/workflows/ci-cd.yml` (секрет, envs list, `.env` write)
+- Не добавлять `AGENT_SYSTEM_PROMPT`, не переименовывать — Agent Mode не нуждается в глобальной env-based системной инструкции
+
+**Обоснование:** `SYSTEM_MESSAGE` — чистый Chat Mode fallback (3-й приоритет после topic override и user prompt). Agent Mode имеет собственную multi-source prompt композицию (profile + topic + context + AGENTS.md), которая покрывает все сценарии. Хранение env var "на всякий случай" создаёт двусмысленность: новый разработчик может подумать, что это Agent Mode system prompt, и начать на него полагаться. Удаление жёсткое, без deprecated aliases.
+
+**Кросс-ссылка:** DR-001 уже включает удаление `resolve_system_prompt()`, `pick_system_prompt()` и `SYSTEM_MESSAGE` как env fallback. DR-007 фиксирует дополнительный анализ поля `AgentSettings.system_message` и CI/CD-поверхностей.
+
+**Acceptance criteria:**
+
+- `SYSTEM_MESSAGE` отсутствует во всех crates (grep даёт 0 совпадений в `crates/`)
+- `AgentSettings.system_message` поле удалено из `config.rs`
+- `.env.example` не содержит `SYSTEM_MESSAGE`
+- `.github/workflows/ci-cd.yml` не передаёт и не пишет `SYSTEM_MESSAGE`
+- Agent Mode prompt composition не изменилась (проверка: `compose_execution_prompt_instructions()` и `create_agent_system_prompt()` не читают `SYSTEM_MESSAGE` — это не меняется, но должно остаться верным)
+
 ---
 
 ## 6. Target Architecture
