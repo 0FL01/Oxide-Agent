@@ -72,8 +72,10 @@ Agent-only архитектура должна быть однозначной: 
 - Не переписывать весь проект ради эстетической чистоты, если участок не связан с удалением Chat Mode, chat-only provider или unsafe capability gate.
 - Не добавлять новые provider integrations, если они не нужны для замены удалённого chat-only route.
 - Не вводить dual-mode runtime.
-- Не мигрировать старые persisted `chat_mode`. Fresh DB only: legacy `chat_mode` states are not supported; unknown/invalid persisted state values fall back to agent-only access/configuration flow. См. DR-005.
-- **Fresh DB**: деплой выполняется на пустом storage. Никакие старые `chat_mode` state-записи физически отсутствуют. Все authorized users с `agent access` с первого запуска попадают в Agent Mode. Пользователи без `agent access` получают access/configuration guidance без fallback в Chat Mode. Регресс «юзер застрял в chat_mode» невозможен.
+
+- **Fresh DB:** деплой выполняется на пустом storage. Legacy `chat_mode` state-записи, старые chat histories, `current_chat_uuid`, per-user chat model и prompt editing state физически отсутствуют и не поддерживаются как runtime input.
+- Не добавлять read-path compatibility, parser branch, migration job или тесты совместимости для legacy persisted-state literals вроде `chat_mode` / `EditingPrompt`.
+- Unknown/invalid persisted state values обрабатываются generic-путём как `None` и проходят через agent-only access/configuration flow.
 - Не переносить Chat Mode prompt editor в Agent Mode.
 - Не добавлять новый Telegram UX для редактирования agent/system prompt.
 - Не мигрировать старые per-user prompts и не сохранять `user_prompt` как hidden compatibility layer.
@@ -345,442 +347,180 @@ Findings:
 - Many test mocks implement `StorageProvider` chat APIs because trait currently requires them.
 - Several provider/test mocks implement `chat_completion` because `LlmProvider` currently requires it.
 
-### 5.9 Findings that require decision
+### 5.9 Decisions and implementation notes
 
-- **Internal plain completion API:** `chat_completion_for_model_info()` is used by compaction, loop detection, wiki writer and Agent input classifier. Decision resolved in DR-002: keep as internal-only `complete_internal_text` with purpose-based routing (`InternalTextPurpose`), enforce caller boundaries at compile time (`pub(crate)`), never force through `chat_with_tools`, and never fallback to `CHAT_MODEL_*`.
-- **Per-user prompt:** `UserConfig.system_prompt` and `storage.update_user_prompt()` are used by Chat Mode prompt editing, while topic-level system prompts are separate. Decision: remove per-user prompt editing if it exists only for Chat Mode; keep topic/profile prompts if they are agent runtime features. *(Resolved: см. решение DR-001 ниже)*
-- **Existing agent media surface:** repo already has agent-side media primitives: `crates/oxide-agent-core/src/agent/preprocessor.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent/media.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs` and sandbox media tools in `crates/oxide-agent-core/src/agent/providers/media_file.rs` (`transcribe_audio_file`, `describe_image_file`, `describe_video_file`). The refactor should reuse these instead of preserving Chat Mode media handlers.
-- **Media route semantics:** decision for this PRD is not "attachments or reject" anymore. Target behavior is: voice is immediately transcribed through explicit `MEDIA_MODEL_*` STT route and then injected into Agent Mode as text; photo/video/audio/document are preserved in sandbox as agent attachments when media/file capability is enabled, and the agent may call media tools with a prompt. If required route/capability is absent, reject clearly. No chat fallback is allowed.
-- **Direct Gemini provider:** current repo policy keeps direct Google Gemini provider absent; Gemini-family media/STT means OpenRouter model IDs such as `google/gemini-*` routed through `llm-provider/openrouter`, not a new `llm-provider/gemini` integration.
-- **Media model defaults:** `media_model_spec()` currently reuses chat token/context defaults. Need new `MEDIA_MODEL_MAX_OUTPUT_TOKENS` / `MEDIA_MODEL_CONTEXT_WINDOW_TOKENS` or reuse agent defaults deliberately.
-- **OpenRouter compatibility source:** Current code treats OpenRouter provider-level capabilities as tool-capable. Need an explicit allowlist, config flag, metadata source, or route capability field. Default should be deny for agent routes. *(Resolved: см. DR-003 ниже)*
-- **NVIDIA allowlist ownership:** Resolved in DR-004. Keep code-owned exact-match allowlist. Config overrides, wildcards and generic model registry are out of scope for this refactor.
-- **ChatGPT alias safety:** `json_mode_forbids_route()` currently checks only `route.provider.eq_ignore_ascii_case("chatgpt")`, while ChatGPT routes may be configured as `chatgpt`, `openai-chatgpt`, or canonical `llm-provider/openai-chatgpt`. Do not introduce a broad provider identity refactor for this PR. Add a small local helper, e.g. `is_chatgpt_provider_id(&str)`, and use it in route policy checks that enforce ChatGPT structured-output / JSON-mode restrictions. Cover all three accepted provider id forms with unit tests.
-- **Old persisted `chat_mode`:** Fresh DB only. Legacy persisted `chat_mode` states are not supported and are not normalized. If storage contains an unknown/invalid persisted state value, treat it as no valid state (`None`) and route through the normal agent-only access/configuration flow. See DR-005.
+Эти пункты больше не являются открытыми product decisions. Они оставлены здесь как implementation notes, чтобы исполнитель не переоткрыл уже принятые решения.
+
+- **Internal plain completion API:** resolved in DR-002. Keep auxiliary text completion only as crate-private `complete_internal_text` with mandatory `InternalTextPurpose`, purpose-based routing, no chat context and no transport visibility.
+- **Per-user prompt:** resolved in DR-001. Delete `UserConfig.system_prompt`, `update_user_prompt`, `get_user_prompt`, `State::EditingPrompt`, `EditPrompt` callbacks, `pick_system_prompt()`, `resolve_system_prompt()` and `SYSTEM_MESSAGE` fallback if they are only Chat Mode surfaces.
+- **Existing agent media surface:** repo already has agent-side media primitives: `crates/oxide-agent-core/src/agent/preprocessor.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent/media.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs` and sandbox media tools in `crates/oxide-agent-core/src/agent/providers/media_file.rs` (`transcribe_audio_file`, `describe_image_file`, `describe_video_file`). Reuse these instead of preserving Chat Mode media handlers.
+- **Media route semantics:** resolved. Voice is transcribed through explicit `MEDIA_MODEL_*` STT route and then injected into Agent Mode as text. Photo/video/audio/document are preserved in sandbox as agent attachments when media/file capability is enabled, and the agent may call media tools with a prompt. If required route/capability is absent, reject clearly. No chat fallback is allowed.
+- **Direct Gemini provider:** resolved. Do not add direct `llm-provider/gemini`. Gemini-family media/STT means OpenRouter model IDs such as `google/gemini-*` routed through `llm-provider/openrouter`, unless a separate provider-integration PR changes repo policy.
+- **Media/internal defaults:** resolved in DR-009. Delete chat-named defaults and introduce media/internal constants with non-chat ownership.
+- **OpenRouter compatibility source:** resolved in DR-003. Use a small static in-code allowlist with separate observed/provider-declared capabilities and product-approved usage flags. Unknown OpenRouter model ids are default-denied.
+- **NVIDIA allowlist ownership:** resolved in DR-004. Use a code-owned exact-match allowlist for the initial approved NVIDIA Agent Mode text/tool models. No config overrides, wildcards or runtime metadata discovery in this refactor.
+- **ChatGPT alias safety:** resolved. Do not do a broad identity refactor; add a small local helper such as `is_chatgpt_provider_id(&str)` covering `chatgpt`, `openai-chatgpt`, and `llm-provider/openai-chatgpt` wherever route policy enforces ChatGPT structured-output / JSON restrictions.
+- **Old persisted state:** resolved in DR-005. Fresh DB only. Do not implement legacy `chat_mode` compatibility. Unknown/invalid state values use generic `None` fallback through agent-only access/configuration flow.
 
 ### 5.10 Resolved Decisions
 
-#### DR-001: Per-user prompt (`UserConfig.system_prompt`) — удалить полностью
+#### DR-001: Per-user prompt (`UserConfig.system_prompt`) — delete completely
 
-**Статус:** решено.
+Status: resolved.
 
-**Исходный вопрос (секция 5.9):** `UserConfig.system_prompt` и `storage.update_user_prompt()` используются Chat Mode prompt editing. Оставлять или удалять?
+Decision: delete the per-user prompt editing surface completely. This includes `UserConfig.system_prompt`, `update_user_prompt`, `get_user_prompt`, `State::EditingPrompt`, `MenuCallbackData::EditPrompt`, `MENU_CALLBACK_EDIT_PROMPT`, `handle_editing_prompt()`, `begin_prompt_editing()`, `pick_system_prompt()`, `resolve_system_prompt()` and any Telegram UX that treats the next user message as a new prompt value.
 
-**Анализ:**
+Keep only existing Agent Mode prompt surfaces that are already agent-owned and independent from Chat Mode: topic-level prompt, profile prompt instructions, topic context tools and Topic `AGENTS.md`.
 
-| Аспект | Детали |
-|--------|--------|
-| Где используется | `handlers.rs:1219` (handle_editing_prompt → update_user_prompt), `handlers.rs:1758` (resolve_system_prompt → get_user_prompt) |
-| Оба вызова | Только в Chat Mode UX (возврат в `State::ChatMode`, `pick_system_prompt()` вызывается только из chat text/voice/photo/video) |
-| Agent Mode читает? | Нет. Agent Mode использует `compose_execution_prompt_instructions()` в `execution_config.rs`, который не читает `UserConfig.system_prompt` |
-| Зависимости | Ни один agent handler, executor, provider или runner не читает и не пишет per-user prompt |
-| Моки | Только boilerplate в тестах, нигде не вызываются в agent-тестах |
+Rationale: per-user prompt editing is Chat Mode legacy. Agent prompt editing would be a new product feature and is out of scope for this deletion PRD.
 
-**Agent prompt surfaces, которые остаются:**
+#### DR-002: Internal text completion — keep as crate-private `complete_internal_text`
 
-- **Topic-level prompt** (`TelegramTopicSettings.system_prompt`) — мержится в `compose_execution_prompt_instructions()`
-- **Profile prompt instructions** (`AgentExecutionProfile.prompt_instructions`) — загружаются через `resolve_execution_profile()`
-- **Topic context** (`topic_context_*` tools) — инжектится в system prompt агента через `compose_execution_prompt_instructions()`
-- **Topic AGENTS.md** — живой документ, закреплённый в памяти агента, наследуется саб-агентами
+Status: resolved.
 
-**Решение:** удалить полностью:
-- Поле `system_prompt` из `UserConfig`
-- `update_user_prompt` / `get_user_prompt` из `StorageProvider` trait и всех impl
-- `State::EditingPrompt` и ветку в `runner.rs`
-- `handle_editing_prompt()`, `begin_prompt_editing()`
-- `MenuCallbackData::EditPrompt` и колбэк
-- `pick_system_prompt()`, `resolve_system_prompt()`
-- Env fallback `SYSTEM_MESSAGE`
+Decision: auxiliary LLM tasks remain, but not as public/user-facing chat completion. Rename project-level plain completion to `complete_internal_text`, make it crate-private inside `oxide-agent-core`, require an `InternalTextPurpose` enum, and restrict request shape so it cannot carry `chat_id`, Telegram user id, chat history, stored user prompt, reply markup or chat flow metadata.
 
-**Обоснование:** per-user prompt — чистый Chat Mode legacy. Ни одна Agent Mode функциональность на нём не держится. Topic/profile/admin-controlled prompt поверхности покрывают все нужные сценарии.
+Allowed purposes:
 
-#### DR-002: Internal text completion — keep as internal-only `complete_internal_text`
+- `CompactionSummary`
+- `LoopDetection`
+- `WikiMemoryWriter`
+- `InputIntentClassification`
 
-**Статус:** решено.
+Allowed callers:
 
-**Исходный вопрос (секция 5.9):** внутренние LLM-задачи (compaction summary, loop detection, wiki writer, input classifier) используют `chat_completion_for_model_info()`. Оставлять, удалять, или загонять через `chat_with_tools`?
+- `agent/compaction/*`
+- `agent/loop_detection/*`
+- `agent/executor/*` for wiki writer
+- `agent/input_intent/*` after moving classifier code from Telegram transport into core
 
-**Анализ:**
+Forbidden callers:
 
-| Аспект | Детали |
-|--------|--------|
-| Почему не `chat_with_tools` | Это агентный контракт с tool schemas, history validation и capability gates. Auxiliary LLM-задачи не должны зависеть от tool-calling semantics. Лишняя связность, риск случайно сломать compaction/wiki writer при изменении tool-history validation. Тесты сложнее. |
-| Почему не оставить `chat_completion` | Символ двусмыслен: transport layer может вызвать "потому что он публичный". Имя не должно подразумевать Chat Mode. |
-| Имя и visibility | `pub(crate) fn complete_internal_text(...)` — не `chat`, не `pub`, не re-exported. |
-| Purpose | Обязательный параметр `InternalTextPurpose`: `CompactionSummary`, `LoopDetection`, `WikiMemoryWriter`, `InputIntentClassification`. Нельзя вызвать "просто спросить модель". |
-| Request restrictions | Нет `chat_id`, `telegram_user_id`, `chat_history`, `stored_user_prompt`, `per_user_prompt`, `reply_markup`. Только `system_instruction`, `task_input`, `messages` (if needed), `max_output_tokens`, `temperature`, `response_format`, `timeout`. |
-| Route resolution | Purpose-based или main agent route. Не `CHAT_MODEL_*`. Не новые env vars на первом шаге (кроме возможно `INTERNAL_TEXT_MODEL_*`). Default: main agent route. |
-| Trait design | Phase 1: rename+hide в `LlmProvider`. Phase 2: split на `AgentToolProvider` и `InternalTextCompletionProvider` если cleanup небольшой. |
-| Provider policy | Не сохранять chat-only providers (Groq) ради internal задач. Internal completion использует только agent-compatible provider. |
-| Callers allowed | `agent/compaction/*`, `agent/loop_detection/*`, `agent/executor/*` (wiki writer), `agent/input_intent/*` (перенести из Telegram transport в core). |
-| Callers forbidden | `transport-telegram/*`, `transport-web/*`, bot handlers/callbacks/menu, storage, commands, model picker. |
-| Fail-soft: compaction | Deterministic/extractive fallback или conservative truncation. |
-| Fail-soft: loop detection | Heuristic-only detector. Не отключать agent loop. |
-| Fail-soft: wiki writer | Skip + log. User run не падает. |
-| Fail-soft: input classifier | Deterministic classification. Safe default = normal agent task. |
+- `crates/oxide-agent-transport-telegram/*`
+- `crates/oxide-agent-transport-web/*`
+- bot handlers, callbacks, menus, storage, commands and model picker code
 
-**Решение:** Internal text completion остаётся, но только как `pub(crate)` API с новым именем (`complete_internal_text`), обязательным `InternalTextPurpose`, ограниченным request (без chat контекста), purpose-based route resolution, и compile-time запретом для transport crates. `chat_with_tools` не используется для auxiliary задач. Chat-only providers не сохраняются ради internal completion.
+Do not force these auxiliary tasks through `chat_with_tools`; they are not agent loops and should not depend on tool-call history semantics. Do not keep chat-only providers such as Groq for these tasks.
 
-**Обоснование:** Самый дешёвый и безопасный путь: удаляет Chat Mode как runtime/user surface, но не ломает агентные auxiliary задачи, которые технически не являются чатом. Force через `chat_with_tools` увеличит риск, связность и сложность тестов без выгоды для пользователя. Оставить `chat_completion` как public API сохраняет двусмысленность, которую PRD требует устранить.
+Minimum acceptable implementation: transport crates cannot call any plain text completion API at compile time. If a full provider-trait split is too large, provider-internal plumbing may remain inside `oxide-agent-core`, but no public `LlmClient` method or public re-export may expose plain text completion outside core.
 
 #### DR-003: OpenRouter capability source — static in-code allowlist
 
-**Статус:** решено.
+Status: resolved.
 
-**Исходный вопрос (секция 5.9):** OpenRouter provider-level capabilities недостаточны. Как определять agent-совместимость OpenRouter моделей: allowlist, config flag, metadata source?
+Decision: OpenRouter provider-level capability is not enough. Use a compact in-code allowlist keyed by OpenRouter model id. Each entry must separate two planes:
 
-**Анализ:**
+- observed/provider-declared capabilities: what OpenRouter metadata or a checked fixture says the model/provider route supports;
+- Oxide-approved usage: what this product intentionally allows for main Agent Mode and each media modality.
 
-OpenRouter — агрегатор множества upstream моделей. Provider-level `supports_tool_calling=true` недостаточен, потому что OpenRouter сам по себе не является моделью. Реальная capability boundary определяется конкретным model ID (например `google/gemini-3-flash-preview` vs `deepseek/deepseek-v4-flash`).
+Required approval flags:
 
-Варианты:
-1. **Dynamic discovery** — запрашивать `/models` endpoint OpenRouter, кешировать, парсить capabilities. Сложно, добавляет runtime-зависимость и фоновую синхронизацию. Неоправданно для текущего масштаба.
-2. **Config/metadata-driven** — пользователь указывает capabilities в `.yaml` / env для каждой модели. Гибко, но добавляет surface для ошибок конфигурации и не нужен для 2-3 пользователей.
-3. **Static in-code allowlist** — компактный список утверждённых model ID с их capabilities в коде. Просто, проверяемо, CI-верифицируемо. Недостаток: требует обновления кода для новых моделей.
+- `approved_for_main_agent`
+- `approved_for_media_audio`
+- `approved_for_media_image`
+- `approved_for_media_video`
+- `approved_for_media_document`
 
-**Решение:** Use a small static in-code allowlist with split planes for OpenRouter routes.
+Required observed capability fields:
 
-OpenRouter provider-level capability must not be treated as sufficient for Agent Mode. The provider is only a transport. The selected OpenRouter model id is the actual capability boundary.
+- `supports_tools_parameter`
+- `supports_structured_outputs`
+- `input_modalities`
+- equivalent document/PDF support signal when document understanding is enabled
 
-To avoid conflating capability facts with PRD policy, each allowlist entry must keep two independent concepts:
-
-- **Observed / provider-declared capabilities** (what OpenRouter metadata reports for the model):
-  - `supports_tools_parameter`
-  - `supports_structured_outputs`
-  - `input_modalities`
-- **Oxide-approved usage for this refactor** (what we intentionally allow runtime to use):
-  - `approved_for_main_agent`
-  - `approved_for_media_audio`
-  - `approved_for_media_image`
-  - `approved_for_media_video`
-  - `approved_for_media_document`
-
-Do not implement dynamic OpenRouter model discovery, background sync, endpoint-level capability cache, or user-editable capability metadata as part of this refactor. That would be out of scope for removing Chat Mode legacy.
-
-The implementation must define a compact in-code allowlist of OpenRouter model entries with both planes:
+Initial allowlist scope:
 
 - `google/gemini-3-flash-preview`
-  - provider-declared:
-    - supports_tools_parameter: yes
-    - supports_structured_outputs: no
-    - input_modalities: text,image,audio,video,file
-  - approved for this refactor:
-    - main Agent Mode: yes
-    - media_audio: yes
-    - media_image: yes
-    - media_video: yes
-    - media_document: yes
-
 - `google/gemini-3.1-flash-lite-preview`
-  - provider-declared:
-    - supports_tools_parameter: yes
-    - supports_structured_outputs: no
-    - input_modalities: text,image,audio,video,file
-  - approved for this refactor:
-    - main Agent Mode: yes
-    - media_audio: yes
-    - media_image: yes
-    - media_video: yes
-    - media_document: yes
-
 - `google/gemini-2.5-flash-lite`
-  - provider-declared:
-    - supports_tools_parameter: yes
-    - supports_structured_outputs: no
-    - input_modalities: text,image,audio,video,file
-  - approved for this refactor:
-    - main Agent Mode: no
-    - media_audio: yes
-    - media_image: yes
-    - media_video: yes
-    - media_document: yes
-
 - `deepseek/deepseek-v4-flash`
-  - provider-declared:
-    - supports_tools_parameter: yes
-    - supports_structured_outputs: no
-    - input_modalities: text
-  - approved for this refactor:
-    - main Agent Mode: yes
-    - media_audio: no
-    - media_image: no
-    - media_video: no
-    - media_document: no
-
 - `deepseek/deepseek-v4-pro`
-  - provider-declared:
-    - supports_tools_parameter: yes
-    - supports_structured_outputs: no
-    - input_modalities: text
-  - approved for this refactor:
-    - main Agent Mode: yes
-    - media_audio: no
-    - media_image: no
-    - media_video: no
-    - media_document: no
 
-Unknown OpenRouter model ids must be rejected for Agent Mode and media routes by default.
+Policy notes:
 
-Important: a model having `supports_tools_parameter: yes` is still not automatically approved for Agent Mode if `approved_for_main_agent` is `no` (product safety decision).
+- Unknown OpenRouter model ids are rejected for Agent Mode and media routes by default.
+- A model with `supports_tools_parameter=true` is still not automatically approved for Agent Mode if `approved_for_main_agent=false`.
+- Do not implement dynamic OpenRouter discovery, background sync, endpoint-level cache or user-editable capability metadata in this refactor.
+- For `google/gemini-3-flash-preview`, current OpenRouter metadata indicates tool use, structured output and multimodal inputs, so do not mark structured output as unsupported without a newer checked fixture.
+- For other OpenRouter entries, do not invent capability facts. Implementation must add a checked capability fixture or smoke test for every observed field used by validation.
+- OpenRouter agent/tool requests must use provider routing safeguards such as `require_parameters=true` where supported, so routes do not silently ignore required parameters.
 
-**Validation rules:**
+Validation rules:
 
-- `AGENT_MODEL_PROVIDER=llm-provider/openrouter` requires allowlist entry with:
-  - `supports_tools_parameter=true` and
-  - `approved_for_main_agent=true`.
-- `MEDIA_MODEL_PROVIDER=llm-provider/openrouter` requires allowlist entry and the corresponding approval flag for the requested modality:
-  - `approved_for_media_audio` + `audio_input=true` for STT;
-  - `approved_for_media_image` + `image_input=true` for image;
-  - `approved_for_media_video` + `video_input=true` for video;
-- `approved_for_media_document` + `supports_document_understanding=true` (or provider-equivalent `pdf_input=true`) for document/PDF visual analysis.
-- OpenRouter requests that include tools or structured output must set provider routing with `require_parameters=true`. This is mandatory for OpenRouter agent/tool routes to avoid silent parameter drops by downstream providers.
-- Text-only DeepSeek models must never be selected for media handling.
-- Media-only Gemini 2.5 Flash Lite must not be selected for main Agent Mode unless explicitly promoted in a future PRD/change.
+- `AGENT_MODEL_PROVIDER=llm-provider/openrouter` requires allowlist entry with `supports_tools_parameter=true` and `approved_for_main_agent=true`.
+- `MEDIA_MODEL_PROVIDER=llm-provider/openrouter` requires allowlist entry plus the approval flag and observed input modality needed for the requested media operation.
+- Text-only DeepSeek entries must never be selected for media handling.
+- Media-only Gemini entries must not be selected for main Agent Mode unless explicitly promoted in a future PRD/change.
 
-**Acceptance criteria:**
+Acceptance criteria:
 
 - OpenRouter provider-level `supports_tool_calling=true` is no longer sufficient to pass Agent Mode validation.
-- An unknown OpenRouter model fails configuration validation before runtime execution.
-- `google/gemini-3-flash-preview` and `google/gemini-3.1-flash-lite-preview` pass both Agent Mode and media route validation.
-- `google/gemini-2.5-flash-lite` passes media route validation and fails main Agent Mode validation.
-- `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` pass main Agent Mode validation and fail media route validation.
-- Tests cover all five sanctioned model ids plus one unknown OpenRouter model id.
+- Unknown OpenRouter model id fails validation before runtime execution.
+- Every allowlisted OpenRouter main-agent model has a minimal tool-call fixture or smoke test.
+- Every allowlisted OpenRouter media model has a modality-specific routing test.
+- Tests cover all sanctioned model ids plus at least one unknown OpenRouter model id.
 
-#### DR-004: NVIDIA NIM compatibility — code-owned exact-match allowlist, no config/metadata/registry
+#### DR-004: NVIDIA NIM compatibility — code-owned exact-match allowlist
 
-**Статус:** решено.
+Status: resolved.
 
-**Исходный вопрос (секция 5.9):** NVIDIA model support is a code allowlist/wildcard. Keep in code or move to config/metadata?
+Decision: keep a small compile-time exact-match allowlist in the NVIDIA provider module. Initial allowed NVIDIA Agent Mode text/tool models:
 
-**Анализ:**
-
-NVIDIA NIM compatibility varies per model. The current code has a mix of allowlist and wildcard logic. For this refactor — removing Chat Mode and legacy tails — a generic provider capability framework would be over-engineering.
-
-Options considered:
-1. **User-configurable capability metadata** (`supports_tools = true` in config). Rejected: creates a new legacy surface where incompatible models can be accidentally declared tool-capable. Defeats the PRD goal of "no provider taken on faith".
-2. **External model registry / runtime metadata discovery**. Rejected: adds runtime dependency, background sync, and complexity unjustified for 2-3 users and the current set of known NVIDIA models.
-3. **Wildcard rules** (e.g. `deepseek-ai/*`). Rejected: too broad. New DeepSeek or NVIDIA models should be explicitly reviewed, not automatically inherited.
-4. **Experimental allow flags**. Rejected: softens the policy without solving the underlying safety issue.
-
-**Решение:** Keep a small compile-time exact-match allowlist in the NVIDIA provider module.
-
-```rust
-fn is_supported_nvidia_agent_model(model_id: &str) -> bool {
-    matches!(
-        model_id,
-        "deepseek-ai/deepseek-v4-pro"
-            | "deepseek-ai/deepseek-v4-flash"
-    )
-}
-```
-
-Initial allowed NVIDIA Agent Mode text/tool models:
 - `deepseek-ai/deepseek-v4-pro`
 - `deepseek-ai/deepseek-v4-flash`
 
-These models are allowed only for Agent Mode text/tool execution. They must not be treated as media, vision, video, audio, or STT-capable. Media/STT routing must use the explicit `MEDIA_MODEL_*` configuration, not NVIDIA agent model fallback.
+Rules:
 
-All other NVIDIA NIM models are default-denied for Agent Mode unless added to the code allowlist in a deliberate future change.
-
-**Rules:**
-- No config-level capability overrides for NVIDIA in this refactor.
+- No config-level capability overrides.
 - No runtime model metadata discovery.
 - No wildcard matching.
 - No experimental allow flags.
 - Exact string match only.
-- The allowlist is easy to test with static unit tests and route-selection regression tests.
-
-**Rationale:**
-- The current refactor is about removing Chat Mode, not building a provider capability framework.
-- A code-owned allowlist is sufficient for the current set of supported NVIDIA models.
-- User-configurable capability declarations can accidentally mark unsupported models as tool-capable.
-- Default-deny prevents hidden fallback into plain chat completion.
-- The allowlist is trivial to review, test, and extend later.
-
-**Acceptance criteria:**
-- NVIDIA route selection accepts `deepseek-ai/deepseek-v4-pro` for Agent Mode text/tools.
-- NVIDIA route selection accepts `deepseek-ai/deepseek-v4-flash` for Agent Mode text/tools.
-- NVIDIA route selection rejects unknown NVIDIA models before execution.
-- NVIDIA route selection does not use wildcard matching.
-- NVIDIA route selection does not rely on `CHAT_MODEL_*`.
-- NVIDIA models are never selected for media/STT/vision/video routes.
-- Tests cover allowed model IDs and at least one rejected NVIDIA model ID.
+- NVIDIA routes are text/tool routes only and must not be reused for media/STT/vision/video.
 
 #### DR-005: Fresh DB only; no legacy `chat_mode` compatibility
 
-**Статус:** решено.
+Status: resolved.
 
-> **Fresh DB note:** Деплой выполняется на пустом storage (fresh DB). Legacy `chat_mode` state-записи не поддерживаются и не нормализуются. Если storage повреждён и возвращает unknown persisted state value, оно трактуется как `None` и проходит через обычный agent-only access/configuration flow. Никакой compatibility path, migration job или legacy read-path handling не требуется.
+Decision: deployment uses fresh DB. Legacy `chat_mode` state rows are not supported and are not normalized through a special branch. Do not add `LegacyChatMode`, `UnknownChatMode`, `normalize_chat_mode_state`, parser cases, fixtures or migrations for the legacy literal.
 
-**Исходный вопрос (секция 5.9):** как обращаться со старым persisted `chat_mode` значением при условии fresh DB и возможного повреждения storage?
-
-**Анализ:**
-
-| Аспект | Детали |
-|--------|--------|
-| Цель рефакторинга | Удалить Chat Mode как runtime. При fresh DB цель достигается автоматически — старых записей нет. Legacy compatibility для `chat_mode` не нужна. |
-| Fresh DB | Storage пуст. `chat_mode` не существует ни в одной записи. Все пользователи с первого сообщения попадают в Agent Mode. |
-| Hard delete / fresh DB only | Технически самый чистый вариант. В проекте используется fresh DB, поэтому это де-факто текущее состояние. |
-| Unknown state fallback | Единственная точка поведения для повреждённого storage — трактовать unknown/invalid persisted state как `None` и продолжать agent-only access/configuration flow. |
-| ignore option | Пользователь остаётся в нерабочем состоянии — хуже, чем явный agent-only fallback. |
-
-**Решение:** Legacy `chat_mode` compatibility **не имплементировать**. Fresh DB гарантирует отсутствие старых `chat_mode` записей. Нормализация на read path, parser branch и сопутствующие тесты не требуются. Если storage возвращает unknown persisted state value, он обрабатывается как `None` и попадает в normal agent-only access/configuration flow.
-
-Ключевые правила:
-
-- `State::ChatMode` удаляется из кода как variant.
-- Парсер/serde/mapping для `"chat_mode"` **не добавляется** — fresh DB не содержит таких записей.
-- Storage layer не содержит chat-specific state branches для runtime execution.
-- Никаких `LegacyChatMode`, `UnknownChatMode` как runtime enum variants.
-- Никаких фоновых миграций или batch-операций по очистке старых state rows.
-- Никаких тестов legacy read-path compatibility для `chat_mode`.
-- Если storage по какой-то причине содержит неизвестный state — он обрабатывается как `None` и идёт через обычный agent-only access/configuration flow.
-
-**Обоснование:** Fresh DB устраняет саму проблему — старых `chat_mode` записей нет. Любая legacy compatibility branch была бы мёртвым кодом, который никогда не выполняется. Для повреждённого storage достаточно generic unknown-state fallback в `None`, без отдельной `chat_mode` логики.
-
-**Implementation requirements:**
-
-- удалить `State::ChatMode` как runtime variant;
-- не добавлять нормализацию `"chat_mode"` на read path persisted state;
-- не добавлять `LegacyChatMode`, `UnknownChatMode`, `normalize_chat_mode_state` как публичные символы;
-- не писать миграцию для старых chat state rows;
-- storage layer не должен иметь chat-specific execution branches;
-- unknown/invalid persisted state values должны обрабатываться как `None` и не должны ронять startup.
-
-**Deployment assumption:**
-
-- деплой выполняется на **fresh DB** (пустой storage);
-- старых записей `"chat_mode"`, chat histories, current chat UUID, per-user chat model и prompt editing state **не существует** — storage пуст;
-- unknown/invalid persisted state values are treated as `None`; они не активируют legacy runtime и не роняют startup;
-- все пользователи с первого сообщения находятся в Agent Mode;
-- регресс «юзер застрял в chat_mode» невозможен физически.
-
-**Acceptance criteria:**
-
-- `State::ChatMode` отсутствует как runtime enum variant;
-- read path legacy compatibility для `"chat_mode"` **отсутствует** — не реализована, не требуется;
-- grep по `chat_mode` находит только упоминания в этом PRD (код не содержит обработки `chat_mode`);
-- `/start` не восстанавливает и не предлагает Chat Mode;
-- unknown/invalid persisted state values do not panic and fall back to agent-only access/configuration flow.
+If storage returns an unknown/invalid persisted state value, treat it generically as `None` and route through normal agent-only access/configuration flow. Tests for invalid persisted state must use generic invalid values, not legacy literals such as `chat_mode` or `EditingPrompt`, so final hard-zero grep remains meaningful.
 
 #### DR-006: Rejected alternative — remove all plain/internal text completion
 
-**Статус:** rejected.
+Status: rejected.
 
-Этот вариант рассматривался как более жёсткий cleanup, но не выбран для текущего PRD, потому что compaction, loop detection, wiki writer и input classifier являются auxiliary LLM tasks, а не agent loop. Принято решение DR-002: оставить `complete_internal_text` как `pub(crate)` internal-only API с purpose-based routing.
+Reason: compaction, loop detection, wiki writer and input classifier are auxiliary LLM tasks, not agent loops. The accepted decision is DR-002.
 
-**Подробное описание альтернативы** см. git history или исходный PRD-черновик. Ключевое отличие от DR-002: удалить `chat_completion` из `LlmProvider` и `LlmClient` полностью, переписав все internal uses (compaction, loop detection, wiki writer, input classifier) через `chat_with_tools` с пустыми tools. Отклонено, так как auxiliary LLM задачи не должны зависеть от tool-calling семантики agent loop.
+#### DR-007: `SYSTEM_MESSAGE` env var — delete completely
 
-#### DR-007: `SYSTEM_MESSAGE` env var — удалить полностью (Variant A)
+Status: resolved.
 
-**Статус:** решено.
+Decision: remove `SYSTEM_MESSAGE` and `AgentSettings.system_message` if they are only Chat Mode fallback surfaces. Do not add `AGENT_SYSTEM_PROMPT` in this PRD. Agent Mode keeps its existing prompt composition from profiles, topic settings, topic context and Topic `AGENTS.md`.
 
-**Исходный вопрос (секция 5.9):** `SYSTEM_MESSAGE` env var используется в `pick_system_prompt()` как fallback для system prompt. Оставлять (возможно, переименовав) или удалять?
+Acceptance criteria:
 
-**Анализ:**
+- `SYSTEM_MESSAGE` is absent from crates, `.env.example` and CI/deployment env writing.
+- Agent Mode prompt composition does not start reading `SYSTEM_MESSAGE`.
 
-Исследование кода показало, что `SYSTEM_MESSAGE` — Chat Mode-only legacy:
+#### DR-008: `/clear` becomes reset agent session
 
-| Аспект | Детали |
-|--------|--------|
-| Где читается | `handlers.rs:1759`: `std::env::var("SYSTEM_MESSAGE").ok()` внутри `resolve_system_prompt()` |
-| Кто вызывает `resolve_system_prompt()` | Только Chat Mode: `process_llm_request` (текст), `handle_photo`, `handle_video` |
-| Agent Mode читает? | Нет. Цепочка `compose_execution_prompt_instructions()` → `create_agent_system_prompt()` не использует ни `SYSTEM_MESSAGE`, ни `get_user_prompt()`, ни `system_message` поле |
-| Поле `AgentSettings.system_message` (`config.rs:86`) | Десериализуется, но **никогда не читается** runtime-кодом (`\.system_message` — 0 совпадений в `crates/`) |
-| Другие `system_message` в коде | `inject_system_message()` (AgentSession runtime injection), `fold_system_messages_into_prompt()` (LLM history folding), `inject_ssh_approval_system_message()` (SSH approval) — всё разные концепции, не связанные с env var |
-| CI/CD | `.github/workflows/ci-cd.yml` передаёт `SYSTEM_MESSAGE` как секрет и пишет в `.env` — только для Chat Mode |
-| `.env.example` | Комментированная строка `# SYSTEM_MESSAGE="Your custom system prompt"` — Chat Mode legacy |
+Status: resolved.
 
-**Agent prompt surfaces, которые остаются (неизменно):**
-
-- **Topic-level prompt** (`TelegramTopicSettings.system_prompt`) — мержится в `compose_execution_prompt_instructions()`
-- **Profile prompt instructions** (`AgentExecutionProfile.prompt_instructions`) — загружаются через `resolve_execution_profile()`
-- **Topic context** (`topic_context_*` tools) — инжектится в system prompt агента
-- **Topic AGENTS.md** — живой документ, закреплённый в памяти агента
-
-Ни одна из этих поверхностей не использует и не зависит от `SYSTEM_MESSAGE`.
-
-**Решение:** удалить полностью (Variant A):
-
-- Удалить `std::env::var("SYSTEM_MESSAGE")` из `handlers.rs:1759` (вместе с `resolve_system_prompt()` и `pick_system_prompt()` — они уже в DR-001)
-- Удалить поле `system_message` из `AgentSettings` в `config.rs`
-- Удалить `SYSTEM_MESSAGE` из `.env.example`
-- Удалить `SYSTEM_MESSAGE` из `.github/workflows/ci-cd.yml` (секрет, envs list, `.env` write)
-- Не добавлять `AGENT_SYSTEM_PROMPT`, не переименовывать — Agent Mode не нуждается в глобальной env-based системной инструкции
-
-**Обоснование:** `SYSTEM_MESSAGE` — чистый Chat Mode fallback (3-й приоритет после topic override и user prompt). Agent Mode имеет собственную multi-source prompt композицию (profile + topic + context + AGENTS.md), которая покрывает все сценарии. Хранение env var "на всякий случай" создаёт двусмысленность: новый разработчик может подумать, что это Agent Mode system prompt, и начать на него полагаться. Удаление жёсткое, без deprecated aliases.
-
-**Кросс-ссылка:** DR-001 уже включает удаление `resolve_system_prompt()`, `pick_system_prompt()` и `SYSTEM_MESSAGE` как env fallback. DR-007 фиксирует дополнительный анализ поля `AgentSettings.system_message` и CI/CD-поверхностей.
-
-**Acceptance criteria:**
-
-- `SYSTEM_MESSAGE` отсутствует во всех crates (grep даёт 0 совпадений в `crates/`)
-- `AgentSettings.system_message` поле удалено из `config.rs`
-- `.env.example` не содержит `SYSTEM_MESSAGE`
-- `.github/workflows/ci-cd.yml` не передаёт и не пишет `SYSTEM_MESSAGE`
-- Agent Mode prompt composition не изменилась (проверка: `compose_execution_prompt_instructions()` и `create_agent_system_prompt()` не читают `SYSTEM_MESSAGE` — это не меняется, но должно остаться верным)
-
-#### DR-008: `/clear` становится reset agent session
-
-**Статус:** решено.
-
-**Исходный вопрос:** в Edge Case формулировка для `/clear` оставалась открытой (`should become agent memory/flow clear or be removed/renamed`), а поведение влияло на безопасный runtime.
-
-**Анализ:**
-
-- `State::ChatMode` и chat history удаляются в этой PRD, поэтому `/clear`, ориентированный на chat flow, должен быть переосмыслен как команда управления транзитным agent-сессией.
-- Долгосрочная память (topic profile, Topic AGENTS.md, audit records, agent memory, topic bindings, профили и т.д.) не является частью runtime session reset и не должна очищаться через `/clear`.
-- Для UX это должно соответствовать уже существующему `Reset agent session`: очистка текущего agent flow/transient context и отмена активной задачи.
-- При отсутствии активной сессии `/clear` обязан быть no-op с guidance, чтобы не изменять состояние пользователя.
-
-**Решение:**
-
-- Изменить семантику `/clear` на `agent session reset`:
-  - очищает только текущий agent flow/session и transient context;
-  - **не** очищает chat history (он удалён из runtime) и **не** очищает long-term agent memory/профили/AGENTS.md/аудит.
-- `State::AgentMode` всегда сохраняется после `/clear`.
-- `/clear` возвращает guidance типа `Agent Mode is ready. Send a task.` если нет активной сессии.
-
-**Acceptance criteria:**
-
-- `/clear` no longer clears legacy chat history (chat history runtime уже удалён в этой PRD).
-- `/clear` resets only current agent session/flow/transient context.
-- `/clear` does not clear persistent agent memory, topic profile, topic AGENTS.md, audit trail, or long-term storage.
-- После `/clear` состояние остаётся `State::AgentMode`.
-- Если активной сессии нет, `/clear` выполняется как no-op с readiness guidance.
-- Командное поведение соответствует `Cancellation/reset` policy из раздела 6.1.1 и не возвращает/не восстанавливает Chat Mode.
+Decision: `/clear` resets only current agent session/flow/transient context and keeps `State::AgentMode`. It must not clear long-term memory, topic profile, topic `AGENTS.md`, audit records, topic bindings or persistent agent profile data. If there is no active session, `/clear` is a no-op with readiness guidance.
 
 #### DR-009: Media/internal auxiliary defaults after `CHAT_MODEL_*` removal
 
-**Статус:** решено.
+Status: resolved.
 
-**Актуальность:** после удаления `CHAT_MODEL_*` runtime не должен ссылаться на `DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS` и `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS` из любых новых или внутренних путей.
+Decision: delete `DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS` and `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS`. Introduce non-chat constants for media and internal auxiliary routes:
 
-В текущем состоянии уже исправлен `media_model_spec()`, однако в recon остаётся `wiki_memory_writer_model_spec()`, который всё ещё опирается на `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS`. Это создаёт риск возврата к hard-zero проверкам `CHAT_MODEL_*` в случае валидации и конфигурации.
+- `DEFAULT_MEDIA_MODEL_MAX_OUTPUT_TOKENS`
+- `DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS`
+- `DEFAULT_INTERNAL_TEXT_MAX_OUTPUT_TOKENS`
+- `DEFAULT_INTERNAL_TEXT_CONTEXT_WINDOW_TOKENS`
 
-**Решение:**
-
-- Удалить `DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS`.
-- Удалить `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS`.
-- Ввести отдельные constants для media route:
-  - `DEFAULT_MEDIA_MODEL_MAX_OUTPUT_TOKENS`
-  - `DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS`
-- Ввести отдельные constants для internal auxiliary LLM routes:
-  - `DEFAULT_INTERNAL_TEXT_MAX_OUTPUT_TOKENS`
-  - `DEFAULT_INTERNAL_TEXT_CONTEXT_WINDOW_TOKENS`
-- Если требуется сохранить старое поведение, новые constants могут временно использовать те же численные значения, что и прежние chat defaults, но ownership и namespace должны быть не chat-related.
-- `wiki_memory_writer_model_spec()` не должен fallback-иться на `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS`; он должен использовать internal/wiki-specific default или основной agent default.
-- `media_model_spec()` не должен читать chat defaults и не должен зависеть от `chat_model_max_output_tokens` / `chat_model_context_window_tokens`.
-
-**Acceptance criteria:**
-
-- `rg -n "DEFAULT_CHAT_MODEL|chat_model_max_output_tokens|chat_model_context_window_tokens" crates/oxide-agent-core/src/config.rs` не находит runtime-ссылок на chat defaults.
-- `MEDIA_MODEL_*` route строится без `CHAT_MODEL_*`.
-- Wiki memory writer / internal completion route строится без `CHAT_MODEL_*`.
-
-Данное решение критично для прохождения hard-zero grep по `CHAT_MODEL_*`.
-
----
+`media_model_spec()`, wiki memory writer and internal completion routes must not depend on chat defaults or `chat_model_*` fields.
 
 ## 6. Target Architecture
 
@@ -788,14 +528,14 @@ All other NVIDIA NIM models are default-denied for Agent Mode unless added to th
 
 - `/start` is agent-only.
 - Private Telegram chat:
-  - if user is allowed and has agent access, activate Agent Mode or show Agent Mode controls;
+  - if user is allowed and has agent access, activate `State::AgentMode` or show Agent Mode controls;
   - if user is allowed but not agent-enabled, return a clear access/configuration message;
   - do not set `chat_mode` and do not show mode selection.
 - Supergroup/topic:
   - topic routing and mention policy may still control whether bot processes the message;
   - when processing is allowed, route user input to Agent Mode / agent handler only;
   - no Chat Mode menu or “Please select a mode” fallback.
-- Agent cancellation/exit must never leave Agent Mode. `/start` activates `State::AgentMode` immediately for authorized users. There is no mode picker and no "exit to chat". Cancellation only clears the current agent run, pending confirmation, or transient flow state, then keeps/persists `State::AgentMode` and replies with short guidance such as "Agent task cancelled. Send a new task."
+- Agent cancellation/exit must never leave Agent Mode. `/start` activates `State::AgentMode` immediately for authorized users. There is no mode picker and no “exit to chat”. Cancellation only clears the current agent run, pending confirmation, or transient flow state, then keeps/persists `State::AgentMode` and replies with short guidance such as “Agent task cancelled. Send a new task.”
 
 ### 6.1.1 Agent activation, cancellation and reset policy
 
@@ -811,24 +551,24 @@ Product decision: after Chat Mode removal, Agent Mode is the only supported user
 
 Cancellation/reset behavior:
 
-- Remove user-facing "Exit Agent Mode" semantics. In an agent-only product there is no alternate mode to exit into.
+- Remove user-facing “Exit Agent Mode” semantics. In an agent-only product there is no alternate mode to exit into.
 - Existing exit callbacks, if kept temporarily during refactor, must be remapped to agent cancellation/reset semantics and must never set `chat_mode`.
 - Preferred UX labels are `Cancel current task` and `Reset agent session`, not `Exit Agent Mode`.
 - `Cancel current task` cancels the active run, pending confirmation, or in-flight tool execution where possible, then keeps `State::AgentMode`.
-- `Reset agent session` clears current agent flow/session context only. It must not clear unrelated persistent agent memory/profile data unless that is already the documented behavior of the existing agent reset control.
-- If no active run exists, cancel/reset is a no-op that keeps `State::AgentMode` and replies with "Agent Mode is ready. Send a task."
-- Stale inline callbacks from old Chat Mode or old confirmations must be rejected with a short expired/unsupported message. They must not restore Chat Mode or execute stale actions.
-- Existing persisted state contains any unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
+- `Reset agent session` clears only current agent flow/session/transient context. It must not clear long-term agent memory, topic profile, topic `AGENTS.md`, audit records, topic bindings or persistent agent profile data.
+- If no active run exists, cancel/reset is a no-op that keeps `State::AgentMode` and replies with “Agent Mode is ready. Send a task.”
+- Stale inline callbacks from old messages or old confirmations must be rejected with a short expired/unsupported message. They must not restore any removed runtime or execute stale actions.
+- Unsupported/unknown persisted state values are treated as no valid runtime state (`None`) and routed through agent-only access/configuration flow. Do not add special branches, parser cases, test fixtures or compatibility paths for legacy literals. See DR-005.
 
 ### 6.2 State and persisted config
 
 - No `State::ChatMode` variant.
 - No `chat_mode` persisted state accepted as active runtime.
-- Existing persisted state contains any unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
+- Unsupported/unknown persisted state values are treated as no valid runtime state (`None`) and routed through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
 - `State::EditingPrompt` is removed completely. This PRD does not introduce, rename, or preserve any Telegram user-facing prompt editor.
-- `MENU_CALLBACK_EDIT_PROMPT`, `MenuCallbackData::EditPrompt`, text-menu "Edit Prompt" branches, and the handler that stores edited prompt text are deleted.
+- `MENU_CALLBACK_EDIT_PROMPT`, `MenuCallbackData::EditPrompt`, text-menu “Edit Prompt” branches, and the handler that stores edited prompt text are deleted.
 - Per-user prompt editing via `storage.update_user_prompt()` / `storage.get_user_prompt()` is treated as Chat Mode surface and removed from Telegram runtime.
-- Existing agent-owned prompt mechanisms (topic/profile/admin-controlled profile configuration) are preserved only if they are already used by Agent Mode and do not depend on `SYSTEM_MESSAGE` or per-user prompt editing.
+- Existing agent-owned prompt mechanisms are preserved only if they are already used by Agent Mode and do not depend on `SYSTEM_MESSAGE` or per-user prompt editing.
 - Adding Agent prompt editing is explicitly out of scope and requires a separate PRD.
 - `current_chat_uuid` is removed from `UserConfig` and `UserContextConfig`.
 - Agent flow ID remains, but any helper named `generate_chat_uuid()` is renamed to a generic flow/run ID generator.
@@ -849,7 +589,7 @@ Cancellation/reset behavior:
 - Remove per-user chat model storage.
 - Remove user prompt storage if it is only used by chat prompt editing.
 - Keep agent memory, agent flow records, topic contexts, topic bindings, agent profiles and audit storage.
-- `clear_all_context()` must clear agent-only context data and must not reference chat histories.
+- `clear_all_context()` must stop referencing chat histories. It must not be used for `/clear` unless audited to affect only transient agent session/flow data. `/clear` must not delete long-term memory, topic profile, topic `AGENTS.md`, audit records, topic bindings or persistent agent profile data.
 
 ### 6.5 LLM API
 
@@ -858,12 +598,12 @@ Cancellation/reset behavior:
 - Provider trait should make agent capability explicit. Preferred target:
   - `chat_with_tools` / agent request interface is the primary provider contract for agent routes;
   - plain text completion is removed from public `LlmProvider` contract or split into an internal trait not visible to transport.
-- Internal completion is kept but only as `pub(crate)` API:
-  - renamed to `complete_internal_text` (not `chat_completion`, not `internal_text_completion`);
+- Internal completion is kept only as crate-private API:
+  - renamed to `complete_internal_text`;
   - requires `InternalTextPurpose` enum (`CompactionSummary`, `LoopDetection`, `WikiMemoryWriter`, `InputIntentClassification`);
-   - request is restricted: no `chat_id`, `telegram_user_id`, `chat_history`, `stored_user_prompt`, `per_user_prompt`, `reply_markup`;
-  - route resolution uses purpose-based or main agent route; never falls back to `CHAT_MODEL_*`;
-  - callable only from core agent internals (compaction, loop detection, wiki writer, input classifier after moving to core);
+  - request is restricted: no `chat_id`, `telegram_user_id`, `chat_history`, `stored_user_prompt`, `per_user_prompt`, `reply_markup` or chat flow metadata;
+  - route resolution uses purpose-based route or main agent route; never falls back to `CHAT_MODEL_*`;
+  - callable only from core agent internals;
   - prohibited from transport crates at compile time (`pub(crate)` in core crate, no re-export).
 - Do not force compaction, loop detection, wiki writer or input classifier through `chat_with_tools`. These are auxiliary LLM tasks, not agent loops, and should not depend on tool-call history semantics.
 - Tests must assert no transport module references internal completion.
@@ -873,8 +613,8 @@ Cancellation/reset behavior:
 - Provider selection only through agent-compatible routes.
 - Unknown provider capabilities are default-deny.
 - `supports_tool_calling=false` excludes a route from agent loop even if structured output is supported.
-- OpenRouter default-deny for agent and media routes unless the selected model id exists in the static in-code allowlist from DR-003 with required approval flag.
-- NVIDIA requires model-level capability check before route selection.
+- OpenRouter default-deny for agent and media routes unless the selected model id exists in the static in-code allowlist from DR-003 with the required observed capability and product approval flag.
+- NVIDIA requires the exact-match code-owned allowlist from DR-004 before route selection/execution.
 - ChatGPT provider remains only as agent provider with tool calling support; JSON/structured-output limitations must be handled alias-safely.
 - Groq is removed.
 
@@ -899,28 +639,13 @@ Photo, video, audio files and documents:
 - The agent receives an attachment descriptor/path plus user caption/task text; the raw file is not written to chat history or R2 chat history.
 - Preferred behavior is tool-first: expose `describe_image_file`, `describe_video_file` and `transcribe_audio_file` from `MediaFileProvider` so the agent can decide when and how to inspect the file.
 - Eager preprocessing is allowed only as an agent input preprocessor that converts media into agent context text. Its output must be fed into Agent Mode, not sent directly to the user as a chat response.
-- Generic file upload to sandbox for `documents` does **not** require document-understanding capability; documents are delivered as attachment descriptors by default.
-- If this PRD does not implement document/PDF analysis via media model, documents are sandbox attachments only and are not sent to media-model analysis.
 - Missing media model, missing media feature/profile, unsupported MIME type, oversize files or sandbox write failure must produce explicit unsupported/error messages.
-
-Required target shape for media capability handling:
-
-- `MediaModality` enum/capability model must include:
-  - `AudioTranscription`
-  - `ImageUnderstanding`
-  - `VideoUnderstanding`
-  - `DocumentUnderstanding`
-- `MediaCapabilities` must include:
-  - `supports_audio_transcription`
-  - `supports_image_understanding`
-  - `supports_video_understanding`
-  - `supports_document_understanding`
 
 Media tool safety:
 
 - Tool arguments must resolve through sandbox path validation; no arbitrary host paths.
 - Agent-provided prompts to media tools are task prompts, not replacement system prompts. Keep a fixed tool/system instruction that asks for faithful description/transcription and preserves user intent separation.
-- Media route selection must check modality capability: audio transcription, image understanding, video understanding, and document understanding are separate capabilities.
+- Media route selection must check modality capability: audio transcription, image understanding and video understanding are separate capabilities.
 - Media capability does not imply agent tool-calling capability. A route may be valid for media tools while still invalid as the main Agent Mode LLM route.
 
 ## 7. Provider Compatibility Policy
@@ -947,28 +672,28 @@ Media capability is separate from agent compatibility:
 
 - `MEDIA_MODEL_*` routes are auxiliary media routes, not replacements for `AGENT_MODEL_*` / `AGENT_MODEL_ROUTES__*`.
 - A media route may support audio/image/video/document understanding while not supporting tool calling; that route can be used only by media tools/preprocessor, not as the main agent route.
-- Audio STT, image understanding, video understanding, and document understanding must be checked independently via `MediaModality` / `MediaCapabilities` or equivalent route metadata.
+- Audio STT, image understanding, video understanding and document understanding must be checked independently via `MediaModality` / `MediaCapabilities` or equivalent route metadata.
 - OpenRouter media routes are model-dependent. Gemini-family model IDs can be valid through OpenRouter, but OpenRouter should still be default-deny for main agent tool routes unless explicitly marked agent-compatible.
 - Mistral/Voxtral-style audio STT can be valid for voice transcription even if the selected main agent model is another provider.
 - Missing `MEDIA_MODEL_*` must disable media understanding gracefully; it must not fallback to `CHAT_MODEL_*`, `chat_model_name` or plain chat completion.
 - Direct provider IDs such as `gemini`, `google-gemini` or `llm-provider/gemini` remain forbidden unless a separate provider integration PR intentionally changes repo policy.
 
+
 ### Browser Use and removed providers
 
-Browser Use must not maintain a separate compatibility matrix for removed
-chat-only providers. Groq is removed globally and must not remain as a
-Browser Use special case.
+Browser Use must not maintain a separate compatibility matrix for removed chat-only providers. Groq is removed globally and must not remain as a Browser Use special case.
 
-Browser Use keeps only its explicit bridge-supported providers:
-`minimax`, `zai`, and `openrouter`. A dedicated Browser Use route may be
-configured with `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`; otherwise
-Browser Use inherits the active agent/tool route. If the provider is not one of
-the bridge-supported providers, Browser Use fails fast with a generic unsupported
-provider error.
+Browser Use keeps only its explicit bridge-supported providers: `minimax`, `zai`, and `openrouter`. A dedicated Browser Use route may be configured with `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`; otherwise Browser Use inherits the active agent/tool route. If the provider is not one of the bridge-supported providers, Browser Use fails fast with a generic unsupported-provider error.
 
-This work must not introduce new Browser Use-specific provider registries,
-Groq rejection code, fallback routes, or migration behavior for old Groq config.
-Old `BROWSER_USE_MODEL_PROVIDER=groq` config is invalid after Groq removal.
+This work must not introduce new Browser Use-specific provider registries, Groq rejection code, fallback routes, migration behavior for old Groq config, or tests that preserve Groq as a literal unsupported-provider fixture. Old `BROWSER_USE_MODEL_PROVIDER=groq` config is invalid because Groq is removed globally.
+
+Implementation guidance:
+
+- remove `matches!(provider.as_str(), "llm-provider/groq" | "groq")` and any equivalent Groq-specific branch;
+- do not add a Groq-specific rejection path;
+- set `supports_tools=true` only for routes that already passed the supported-provider match;
+- keep `supports_vision` as the existing Browser Use vision heuristic;
+- update tests to use a generic unsupported provider instead of literal `groq`.
 
 ### Required Provider Categories
 
@@ -997,20 +722,16 @@ Old `BROWSER_USE_MODEL_PROVIDER=groq` config is invalid after Groq removal.
 #### Keep with model-level gating
 
 - `llm-provider/nvidia`
-  - Evidence: `nvidia/module.rs` delegates capabilities to `nvidia::model_capabilities()`; `nvidia.rs` currently has allowlist + wildcard logic and rejects unsupported model ids in `chat_with_tools()`.
-  - Policy: NVIDIA NIM is supported only through an explicit code-owned exact-match allowlist (DR-004).
+  - Evidence: `nvidia/module.rs` delegates capabilities to `nvidia::model_capabilities()`; `nvidia.rs` currently has allowlist/wildcard logic and rejects unsupported model ids in `chat_with_tools()`.
+  - Policy: NVIDIA NIM is supported only through the code-owned exact-match allowlist from DR-004.
   - Initial allowed Agent Mode text/tool models:
     - `deepseek-ai/deepseek-v4-pro`
     - `deepseek-ai/deepseek-v4-flash`
-  - No config-level capability overrides, wildcard matching, runtime metadata discovery or experimental allow flags in this refactor.
-  - The allowlist must not be user-overridable through config.
-  - NVIDIA models are text-only unless separately listed in the media route.
-  - Unsupported NVIDIA models must be rejected before provider execution.
-  - Required change: replace wildcard logic with the exact-match allowlist from DR-004; route selection and config validation must call model-level capabilities before selecting/attempting a route; remove `CHAT_MODEL_*` fallback from NVIDIA path.
+  - Required change: replace wildcard/broad compatibility logic with exact-match allowlist; route selection and config validation must reject unsupported NVIDIA models before execution attempt. NVIDIA must not be selected for media/STT/vision/video.
 
 - `llm-provider/openrouter`
   - Evidence: current `openrouter/module.rs` marks provider-level `supports_tool_calling=true`, but OpenRouter compatibility is route/model-dependent.
-  - Required change: default-deny OpenRouter for agent and media routes unless the selected model id exists in the static in-code allowlist from DR-003 with the required approval flag. Do not add user-editable config capability flags, runtime metadata discovery, or dynamic capability cache in this refactor.
+  - Required change: default-deny OpenRouter for agent and media routes unless the selected model id exists in the static in-code allowlist from DR-003 with the required observed capability and approval flag. Do not add user-editable capability config, runtime discovery, or dynamic capability cache in this refactor.
 
 #### Remove
 
@@ -1023,33 +744,9 @@ Old `BROWSER_USE_MODEL_PROVIDER=groq` config is invalid after Groq removal.
 
 #### Requires verification
 
-- Internal auxiliary routes for compaction/loop detection/wiki writer/input classifier. They may use plain text completion, but must be renamed/internal-only and must not be reachable from Telegram/user transport.
-- OpenRouter route/model compatibility source. Current code has no model-level OpenRouter allowlist.
-- Media-only routes. They may remain for Agent Mode attachments/transcription, but must not become a user-facing chat path.
-- Browser Use route mapper contains a stale Groq-specific tool-support check in
-  `agent/providers/browser_use/mod.rs`.
+- None for provider category policy.
 
-  Decision: do not introduce a separate Browser Use/Groq compatibility layer.
-  Groq is removed globally as a chat-only provider. Browser Use must not contain
-  any Groq-specific branch, fallback, env handling, docs, tests, snapshots, or
-  route defaults.
-
-  Browser Use should keep its existing narrow route mapper:
-
-  - dedicated route via `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`;
-  - otherwise inherited active agent/tool route;
-  - supported bridge providers only: `minimax`, `zai`, `openrouter`;
-  - unsupported providers fail fast with a generic unsupported-provider error.
-
-  Implementation guidance:
-
-  - remove `matches!(provider.as_str(), "llm-provider/groq" | "groq")`;
-  - do not add a Groq-specific rejection path;
-  - set `supports_tools=true` only for routes that already passed the supported-provider match;
-  - keep `supports_vision` as the existing Browser Use vision heuristic;
-  - update tests to use a generic unsupported provider instead of literal `groq`;
-  - final grep must show no live `Groq`, `GROQ`, `llm-groq`, or `llm-provider/groq` references.
-- ChatGPT canonical id vs aliases in structured-output restrictions and route selection.
+Implementation still must verify exact code locations and update tests/snapshots, but product decisions for internal completion, OpenRouter, NVIDIA, Browser Use/Groq, media routes and ChatGPT alias handling are resolved by DR-002, DR-003, DR-004 and the policy sections above.
 
 ## 8. Functional Requirements
 
@@ -1064,7 +761,7 @@ ID: `FR-001`
 - Remove `State::ChatMode` from `crates/oxide-agent-transport-telegram/src/bot/state.rs`.
 - Remove `State::ChatMode` branch from `crates/oxide-agent-transport-telegram/src/runner.rs`.
 - Remove code paths that set, restore, compare or persist `"chat_mode"`.
-- Existing persisted state contains any unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
+- Unsupported/unknown persisted state values must not activate any removed runtime. Treat them as absent state (`None`) and apply agent-only access/configuration flow. Do not add a special parser branch, compatibility path, or test fixture for legacy `chat_mode`; see DR-005.
 
 Rationale:
 
@@ -1074,7 +771,7 @@ Acceptance Criteria:
 
 - `rg -n "ChatMode|chat_mode" crates/oxide-agent-transport-telegram/src` returns no live runtime references.
 - Dialogue can compile without `State::ChatMode` branch.
-- Existing persisted state contains any unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Do not add a special branch, parser case, test fixture, or compatibility path for legacy `chat_mode`. See DR-005.
+- Unsupported/unknown persisted state does not activate any plain chat path.
 - Agent confirmation and Agent Mode states still work.
 
 Affected Areas:
@@ -1084,14 +781,14 @@ Affected Areas:
 - `bot/handlers.rs`
 - `bot/context.rs`
 - `bot/agent_handlers/controls.rs`
-- Telegram tests/mocks referencing `chat_mode`
+- Telegram tests/mocks referencing removed state; invalid-state tests must use generic invalid values, not legacy literals
 
 Edge Cases:
 
-- User sends message with unsupported persisted state string: generic parser treats it as `None`; no legacy mode is restored and no state-specific compatibility branch is added.
+- User sends message with unsupported/unknown persisted state.
 - User has no persisted state.
-- Confirmation flow is active while old chat state exists in storage.
-- Group topic has context state `chat_mode` while DM global state differs.
+- Confirmation flow is active while unknown/invalid state exists elsewhere in storage.
+- Group topic has unsupported/unknown context state while DM global state differs.
 
 ### FR-002: Remove Chat Mode menu/callbacks
 
@@ -1102,11 +799,10 @@ ID: `FR-002`
 Описание:
 
 - Remove “💬 Chat Mode” button and `MENU_CALLBACK_CHAT_MODE`.
-- Remove `MENU_CALLBACK_EDIT_PROMPT` and all callback branches for `EditPrompt` — prompt editing is Chat Mode surface, not agent feature.
-- Remove `Clear Flow`, `Change Model`, `Extra Functions`, `Edit Prompt`, `Back` chat menu entries.
+- Remove Chat Mode menu entries: `Clear Flow`, `Change Model`, `Extra Functions`, `Edit Prompt`, `Back`. `/clear` is redefined separately as agent session reset in DR-008, not preserved as chat flow clear.
 - Remove model keyboard driven by `settings.agent.get_chat_models()`.
 - Remove chat attach/detach controls and callbacks: `CHAT_ATTACH_PREFIX`, `CHAT_DETACH_CALLBACK`, `handle_chat_flow_callback()`.
-- Remove `MenuCallbackData::ChatMode`, `ChangeModel`, `ExtraFunctions`, `EditPrompt`, `Model(usize)` unconditionally — these are Chat Mode callbacks with no agent-equivalent UX in this PRD.
+- Remove `MenuCallbackData::ChatMode`, `ChangeModel`, `ExtraFunctions`, `EditPrompt`, `Model(usize)` unconditionally in this PRD; no agent-equivalent model/prompt UX is introduced here.
 
 Rationale:
 
@@ -1156,9 +852,7 @@ Acceptance Criteria:
 - `/start` never writes `chat_mode` to storage.
 - `/start` never reads per-user chat model.
 - `/start` response contains no “Chat Mode” wording.
-- Authorized private-chat users are immediately placed into `State::AgentMode`.
-- Repeated `/start` calls are idempotent and keep `State::AgentMode`.
-- Unauthorized or misconfigured users receive guidance and are not placed into Chat Mode.
+- Private chats and groups have deterministic agent-only behavior.
 
 Affected Areas:
 
@@ -1220,23 +914,23 @@ ID: `FR-004A`
 
 Описание:
 
-- Remove or rename any user-facing "Exit Agent Mode" action.
+- Remove or rename any user-facing “Exit Agent Mode” action.
 - Existing exit callbacks must not set `chat_mode`, clear to Chat Mode, or show mode picker.
 - If a run is active, cancel it and keep `State::AgentMode`.
 - If a confirmation is pending, expire it and keep `State::AgentMode`.
 - If no run is active, keep `State::AgentMode` and show readiness guidance.
-- Reset controls may clear current agent session/flow but must not clear unrelated persistent agent memory/profile unless already explicitly designed.
+- Reset controls may clear current agent session/flow but must not clear unrelated persistent agent memory/profile.
 
 Rationale:
 
-- Agent-only UX has no second runtime to exit into. "Exit" was previously a Chat Mode fallback and must be removed with Chat Mode.
+- Agent-only UX has no second runtime to exit into. “Exit” was previously a Chat Mode fallback and must be removed with Chat Mode.
 
 Acceptance Criteria:
 
 - No callback or command can transition from Agent Mode to Chat Mode.
 - No callback or command shows a mode picker.
 - Cancellation leaves the user able to send the next task immediately.
-- Stale exit/cancel callbacks do not resurrect old state.
+- Stale exit/cancel callbacks do not resurrect removed state.
 - Agent confirmation flow remains safe: expired confirmations cannot execute tools.
 
 Affected Areas:
@@ -1249,14 +943,14 @@ Affected Areas:
 
 Edge Cases:
 
-- User presses old "Exit Agent Mode" inline button.
-- User presses old Chat Mode callback.
+- User presses old “Exit Agent Mode” inline button.
+- User presses old removed-mode callback.
 - User cancels while a tool is running.
 - User cancels while confirmation is pending.
 - User sends `/start` while a run is active.
 - User has unknown/invalid persisted state from damaged storage; it must fall back to agent-only access/configuration flow.
 - User has no agent access.
-- Group topic has stale `chat_mode` context.
+- Group topic has unsupported/unknown context state.
 
 ### FR-005: Remove `CHAT_MODEL_*` config
 
@@ -1379,7 +1073,7 @@ Edge Cases:
 
 - Old R2 chat history files exist.
 - Old `current_chat_uuid` exists in `config.json`.
-- `clear_all_context()` currently clears both chat and agent context.
+- `clear_all_context()` currently clears both chat and agent context; it must stop referencing chat histories and must not be wired to `/clear` unless audited to affect only transient agent session data.
 - Tests rely on `Message` chat history struct.
 
 ### FR-008: Remove user-facing chat completion
@@ -1421,20 +1115,17 @@ Edge Cases:
 
 ID: `FR-009`
 
-Название: internal-only text completion isolation with purpose-based routing and compile-time caller restrictions.
+Название: isolate internal-only text completion with purpose-based routing and compile-time caller restrictions.
 
 Описание:
 
 - Remove public `LlmClient::chat_completion()` and `LlmClient::chat_completion_for_model_info()`.
-- Add `pub(crate)` method `complete_internal_text` that requires `InternalTextPurpose` and a restricted `InternalTextCompletionRequest` without chat context.
-- Do not force compaction, loop detection, wiki writer or input classifier through `chat_with_tools` — they are auxiliary LLM tasks, not agent loops, and should not depend on tool-call semantics.
+- Add crate-private `complete_internal_text` that requires `InternalTextPurpose` and a restricted `InternalTextCompletionRequest` without chat context.
+- Do not force compaction, loop detection, wiki writer or input classifier through `chat_with_tools`.
 - Restrict visibility so transport/user layers cannot call it at compile time (`pub(crate)`, no re-export).
 - Keep internal uses only where required: local compaction summary, loop detection, wiki memory writer, input intent classification.
-- Move `input_intent.rs` from Telegram transport (`crates/oxide-agent-transport-telegram/src/bot/agent_handlers/`) to core (`crates/oxide-agent-core/src/agent/input_intent.rs`), so transport calls a high-level service interface (`agent_input_classifier.classify(input)`) instead of LLM client directly.
-- Provider trait boundary must be closed in this refactor. Do not leave a public `LlmProvider::chat_completion` or equivalent plain text method. Either:
-  - make the plain text completion trait crate-private inside `oxide-agent-core`; or
-  - split provider traits into public `AgentToolProvider` and crate-private `InternalTextCompletionProvider`.
-  - A later phase may improve naming/organization, but the compile-time transport boundary is mandatory in this PR.
+- Move `input_intent.rs` from Telegram transport to core so transport calls a high-level classifier service rather than the LLM client directly.
+- Provider boundary must be closed enough that transport crates cannot call any plain text completion API. A full trait split is preferred, but the minimum acceptable implementation is no public `LlmClient` method and no public re-export outside `oxide-agent-core`.
 
 Rationale:
 
@@ -1443,30 +1134,19 @@ Rationale:
 Acceptance Criteria:
 
 - No public `LlmClient::chat_completion()` user-facing method remains.
-- Internal completion API is named `complete_internal_text`, is `pub(crate)`, and is not re-exported from public API.
+- Internal completion API is named `complete_internal_text`, is crate-private, and is not re-exported from public API.
 - Internal completion API requires `InternalTextPurpose` and uses a request without `chat_id`, `telegram_user_id`, `chat_history`, `stored_user_prompt`, `per_user_prompt` or `reply_markup`.
 - Route resolution for internal completion never falls back to `CHAT_MODEL_*`.
-- Chat-only providers (e.g. removed Groq) are not kept or used for internal completion.
-- Allowed callers: `agent/compaction/*`, `agent/loop_detection/*`, `agent/executor/*` (wiki writer), `agent/input_intent/*`.
-- Forbidden callers: `crates/oxide-agent-transport-telegram/*`, `crates/oxide-agent-transport-web/*`, bot handlers/callbacks/menu, storage, commands, model picker.
+- Chat-only providers are not kept or used for internal completion.
+- Allowed callers: `agent/compaction/*`, `agent/loop_detection/*`, `agent/executor/*` for wiki writer, `agent/input_intent/*`.
+- Forbidden callers: Telegram transport, web transport, bot handlers/callbacks/menu, storage, commands, model picker.
 - Each internal task has a working fallback when internal route is unavailable:
   - Compaction: deterministic/extractive fallback or conservative truncation.
   - Loop detection: heuristic-only mode; agent loop is not disabled.
   - Wiki writer: skip write and log; user run does not fail.
   - Input classifier: deterministic classification; safe default treats input as normal agent task.
 - `input_intent.rs` lives in core crate, not in Telegram transport.
-- No public core API exposes plain text completion to transport crates.
-- Tests assert transport crate does not reference internal completion:
-  ```bash
-  rg -n "chat_completion|chat_completion_for_model_info" crates/oxide-agent-transport-telegram crates/oxide-agent-transport-web
-  # must return no live references
-  ```
-  ```bash
-  rg -n "complete_internal_text" crates/oxide-agent-transport-telegram crates/oxide-agent-transport-web
-  # must return no live references
-  ```
-- `cargo doc` / public exports do not expose `chat_completion`, `complete_internal_text`, or internal text completion traits.
-- Internal tasks still pass their tests or are explicitly refactored.
+- Tests assert transport crates do not reference `chat_completion`, `chat_completion_for_model_info` or `complete_internal_text`.
 
 Affected Areas:
 
@@ -1477,7 +1157,7 @@ Affected Areas:
 - `agent/compaction/local_llm_summary.rs`
 - `agent/loop_detection/llm_detector.rs`
 - `agent/executor/execution.rs`
-- `bot/agent_handlers/input_intent.rs` (move to core)
+- `bot/agent_handlers/input_intent.rs` move to core
 - mocks/tests implementing `chat_completion`
 
 Edge Cases:
@@ -1544,6 +1224,7 @@ ID: `FR-011`
 - Remove `GROQ_API_KEY` from config schema/capabilities, env examples, workflows and docs.
 - Remove `llm-provider/groq` from `profiles/full.toml` and `scripts/check-compiled-capabilities.sh`.
 - Update snapshots and tests that expect Groq registration/capabilities.
+- Remove Groq-specific Browser Use branches, defaults, rejection paths, docs, tests or provider mappings; Browser Use unsupported-provider tests must use a generic unsupported provider fixture instead of literal `groq`.
 
 Rationale:
 
@@ -1551,7 +1232,7 @@ Rationale:
 
 Acceptance Criteria:
 
-- `rg -n "Groq|GROQ|llm-groq|llm-provider/groq" . --glob '!target' --glob '!Cargo.lock' --glob '!PRD*.md' --glob '!*.patch' --glob '!docs/decisions/*chat*mode*'` has no live runtime/docs/profile references after cleanup.
+- `rg -n "Groq|GROQ|llm-groq|llm-provider/groq" .` has no live runtime/docs/profile references after cleanup.
 - `cargo check --workspace --all-features` succeeds without `llm-groq`.
 - No capability manifest or profile contains Groq.
 - README no longer advertises Groq.
@@ -1560,6 +1241,7 @@ Affected Areas:
 
 - `llm/providers/groq.rs`
 - `llm/providers/groq/module.rs`
+- `crates/oxide-agent-core/src/agent/providers/browser_use/mod.rs`
 - `llm/providers/mod.rs`
 - `llm/providers/modules.rs`
 - `config.rs`
@@ -1573,34 +1255,36 @@ Edge Cases:
 - Browser Use or docs reference `llm-provider/groq` indirectly.
 - `async-openai` dependency might still be needed by Mistral; remove only `llm-groq` feature, not shared dependencies used by other providers.
 - Snapshot tests with profile-full/all-features.
+- `BROWSER_USE_MODEL_PROVIDER=groq` old config must be invalid because Groq is removed globally, not because Browser Use has a special Groq compatibility rule.
 
 ### FR-012: Harden OpenRouter compatibility
 
 ID: `FR-012`
 
-Название: OpenRouter default-deny for agent routes unless model/route is verified.
+Название: OpenRouter default-deny for agent and media routes unless model/route is verified.
 
 Описание:
 
-- Replace provider-level blanket `supports_tool_calling=true` for OpenRouter with model-level capability decision based on the static in-code allowlist defined in DR-003.
-- Implement the allowlist from DR-003 as a compact in-code data structure covering all five sanctioned model ids.
+- Replace provider-level blanket `supports_tool_calling=true` for OpenRouter with model-level decision based on the static in-code allowlist from DR-003.
+- Implement the allowlist as a compact in-code data structure covering the sanctioned model ids.
+- Store observed/provider-declared capabilities separately from Oxide approval flags.
 - Route selection must reject OpenRouter routes without allowlist confirmation before LLM attempt.
-- OpenRouter requests with tools must set `require_parameters=true` or equivalent defensive provider routing parameters where supported.
-- Tests must include all five sanctioned model ids from DR-003 plus one unknown OpenRouter model id.
+- OpenRouter requests with tools must use provider routing safeguards such as `require_parameters=true` where supported.
+- Tests must include all sanctioned model ids from DR-003 plus one unknown OpenRouter model id.
 
 Rationale:
 
-- OpenRouter aggregates many upstream models; provider-level capability is not enough. DR-003 provides the exact decision and allowlist.
+- OpenRouter aggregates many upstream models; provider-level capability is not enough. DR-003 provides the exact decision model.
 
 Acceptance Criteria:
 
 - OpenRouter route without allowlist entry is not selected for Agent Mode or media routes.
-- Compatible OpenRouter route (allowlist entry with matching capability) can be selected when credentials exist.
+- Compatible OpenRouter route can be selected when allowlisted and credentials exist.
 - Failover does not pick unverified OpenRouter route.
-- `google/gemini-3-flash-preview` and `google/gemini-3.1-flash-lite-preview` pass both Agent Mode and media route validation.
-- `google/gemini-2.5-flash-lite` passes media route validation and fails main Agent Mode validation.
-- `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` pass main Agent Mode validation and fail media route validation.
-- An unknown OpenRouter model id fails configuration validation before runtime execution.
+- Every OpenRouter model approved for main Agent Mode has a minimal multi-turn or tool-call fixture/smoke test.
+- Every OpenRouter model approved for media has a modality-specific media routing test.
+- For `google/gemini-3-flash-preview`, do not mark structured output unsupported unless a newer checked fixture proves it; current OpenRouter metadata advertises structured output and tool use.
+- Unknown OpenRouter model id fails configuration validation before runtime execution.
 - Error message explains missing model-level tool capability or missing allowlist entry.
 
 Affected Areas:
@@ -1624,13 +1308,11 @@ Edge Cases:
 
 ID: `FR-013`
 
-Название: Restrict NVIDIA NIM to explicitly approved Agent Mode text/tool models.
+Название: restrict NVIDIA NIM to explicitly approved Agent Mode text/tool models.
 
 Описание:
 
-NVIDIA NIM must not be treated as provider-wide agent-compatible.
-
-For this refactor, NVIDIA compatibility must be implemented as a small exact-match code-owned allowlist, as specified in DR-004.
+NVIDIA NIM must not be treated as provider-wide agent-compatible. For this refactor, NVIDIA compatibility must be implemented as a small exact-match code-owned allowlist, as specified in DR-004.
 
 Initial allowed models:
 
@@ -1639,13 +1321,11 @@ Initial allowed models:
 
 These models are allowed only for Agent Mode text/tool execution.
 
-Do not add config-level capability overrides, runtime model metadata discovery, wildcard matching, or experimental allow flags as part of this PRD.
-
-The implementation must replace any existing wildcard or broad NVIDIA compatibility logic with the exact-match allowlist.
+Do not add config-level capability overrides, runtime model metadata discovery, wildcard matching, or experimental allow flags as part of this PRD. Replace existing wildcard/broad NVIDIA compatibility logic with exact-match allowlist.
 
 Rationale:
 
-The goal is to remove Chat Mode and unsafe provider tails with minimal architectural churn. NVIDIA model support varies by model, but the current product decision only needs two known Agent Mode text/tool models. A code-owned allowlist is simpler and safer than allowing config to declare arbitrary models as tool-capable.
+- The goal is to remove Chat Mode and unsafe provider tails with minimal architectural churn. NVIDIA model support varies by model, but current product decision only needs two known Agent Mode text/tool models.
 
 Acceptance Criteria:
 
@@ -1655,18 +1335,17 @@ Acceptance Criteria:
 - Rejection message clearly says the selected NVIDIA model is not approved for Agent Mode tool execution.
 - NVIDIA route does not use `CHAT_MODEL_*` fallback.
 - NVIDIA route is not used for media/STT/vision/video.
-- Existing test `run_skips_unsupported_nvidia_route_and_uses_backup` is strengthened to assert the unsupported provider is skipped before execution attempt (not just at provider call).
+- Existing test `run_skips_unsupported_nvidia_route_and_uses_backup` is strengthened to assert unsupported route is skipped before provider execution attempt.
 - Single-route unsupported NVIDIA fails fast with a clear config/runtime error.
-- Unit tests cover both allowed model IDs.
-- Unit tests cover at least one rejected model ID.
+- Unit tests cover both allowed model IDs and at least one rejected model ID.
 - Route-selection tests prove unsupported NVIDIA models cannot be selected through failover.
 
 Affected Areas:
 
-- NVIDIA provider capability checks (`is_supported_nvidia_agent_model`).
+- NVIDIA provider capability checks.
 - `nvidia.rs:model_capabilities()` — replace wildcards with exact-match allowlist.
 - `nvidia/module.rs:capabilities_for_model()`.
-- Route selection / provider registry (`agent/runner/execution.rs:654-741`).
+- Route selection / provider registry.
 - Agent model validation.
 - Config validation.
 - Provider capability tests.
@@ -1702,9 +1381,7 @@ Acceptance Criteria:
 
 - ChatGPT provider still builds under `llm-chatgpt`.
 - Agent Mode can select ChatGPT route when tools are required and JSON/structured-output constraints permit it.
-- `json_mode_forbids_route()` or equivalent route policy rejects ChatGPT JSON-mode routes for all accepted ids: `chatgpt`, `openai-chatgpt`, `llm-provider/openai-chatgpt`.
-- The fix is limited to route policy matching; no global provider-id refactor or config migration is required.
-- Public docs should avoid the phrase “Chat Mode” entirely after removal. If ChatGPT needs clarification, phrase it positively: “ChatGPT is available as an Agent Mode provider when configured,” without referencing the removed mode.
+- Search for “Chat Mode” does not match ChatGPT provider documentation except explicit “not Chat Mode” notes if retained.
 
 Affected Areas:
 
@@ -1736,13 +1413,12 @@ ID: `FR-015`
   - require explicit STT-capable `MEDIA_MODEL_ID` + `MEDIA_MODEL_PROVIDER`;
   - use `LlmClient::resolve_media_model_name_for_audio_stt()` / `transcribe_audio*` through the media route;
   - dispatch the transcript as normal Agent Mode text input;
-  - if STT route is absent/unsupported, reject with "voice messages require a configured media/STT provider" style message.
+  - if STT route is absent/unsupported, reject with “voice messages require a configured media/STT provider” style message.
 - Photo/video/audio-file/document inputs:
   - download into the agent sandbox/per-run upload area when media/file capability is enabled;
   - sanitize filenames and enforce Telegram/agent upload size limits;
   - pass an attachment descriptor/path and caption/task text to the agent;
   - expose/use sandbox media tools (`describe_image_file`, `describe_video_file`, `transcribe_audio_file`) so the agent can request analysis with a prompt;
-  - if document/PDF understanding route is not implemented in this PR, documents remain sandbox attachments only and are not passed to media model analysis;
   - allow eager preprocessor output only as agent context text, never as direct chat response.
 - Remove media writes to chat history: no `save_message_for_chat`, no scoped chat UUID, no chat flow controls.
 - Remove media route fallback to `chat_model_name` / `CHAT_MODEL_*`; media either uses explicit `MEDIA_MODEL_*` or returns unsupported.
@@ -1751,7 +1427,7 @@ ID: `FR-015`
 Rationale:
 
 - Current voice/photo/video handlers are hidden Chat Mode paths: voice transcribes then calls `process_llm_request()`, image/video analyze directly and write assistant replies into chat history.
-- The repo already contains agent-side media primitives. Reusing them preserves Agent Mode semantics, lets the agent decide when to inspect media, and avoids lossy "describe immediately then answer as chat" behavior.
+- The repo already contains agent-side media primitives. Reusing them preserves Agent Mode semantics, lets the agent decide when to inspect media, and avoids lossy “describe immediately then answer as chat” behavior.
 
 Acceptance Criteria:
 
@@ -1786,7 +1462,7 @@ Edge Cases:
 - Agent has pending input that specifically requires preserving the binary file.
 - Sandbox path sanitization rejects or rewrites unsafe filenames.
 - OpenRouter Gemini-family model is configured for media but not for main agent tools.
-- User asks for "Gemini" directly; config must use OpenRouter route, not direct `llm-provider/gemini`.
+- User asks for “Gemini” directly; config must use OpenRouter route, not direct `llm-provider/gemini`.
 - Topic route requires mention.
 - Agent access missing.
 
@@ -1919,21 +1595,21 @@ ID: `FR-019`
 
 - Delete `State::EditingPrompt` from `bot/state.rs`.
 - Delete `MENU_CALLBACK_EDIT_PROMPT` and `MenuCallbackData::EditPrompt` from Telegram handlers.
-- Delete "Edit Prompt" menu entries and text command branches.
+- Delete “Edit Prompt” menu entries and text command branches.
 - Delete the prompt-editing handler that accepts the next user message and calls `storage.update_user_prompt()`.
 - Remove `storage.get_user_prompt()` from user-facing prompt construction unless the call is proven to be required by Agent Mode independent of Chat Mode.
 - Preserve topic/profile/global agent prompt configuration only if it is not controlled through the deleted Telegram prompt editing flow.
 
 Rationale:
 
-Prompt editing is part of the old Chat Mode UX and writes per-user chat prompt state. Reusing it for Agent Mode would create a new product feature and unclear prompt precedence. This PRD removes Chat Mode; it does not introduce Agent prompt management.
+- Prompt editing is part of the old Chat Mode UX and writes per-user chat prompt state. Reusing it for Agent Mode would create a new product feature and unclear prompt precedence.
 
 Acceptance Criteria:
 
 - `State::EditingPrompt` no longer exists.
-- Telegram UI contains no "Edit Prompt" action.
+- Telegram UI contains no “Edit Prompt” action.
 - Telegram callbacks contain no `EditPrompt` variant.
-- No user text can be interpreted as "new prompt value".
+- No user text can be interpreted as “new prompt value”.
 - `storage.update_user_prompt()` is not called from Telegram transport.
 - Agent Mode still uses existing topic/profile/global prompt sources if they already existed independently.
 - No fallback from deleted per-user prompt to Chat Mode exists.
@@ -1950,19 +1626,19 @@ Affected Areas:
 
 Edge Cases:
 
-- User was already in persisted `EditingPrompt`: treat as no valid state and route through agent-only access evaluation.
-- User sends text after pressing old inline button from a stale Telegram message: ignore callback or show "This action is no longer supported."
+- User has an unsupported/unknown prompt-editing persisted state: treat as no valid state and route through agent-only access evaluation.
+- User presses old inline button from a stale Telegram message: ignore callback or show “This action is no longer supported.”
 - Existing `UserConfig.system_prompt` remains in storage data: do not migrate; stop reading it for runtime unless separately required by Agent Mode.
 - Topic/profile prompt still exists: preserve it because it is not user Chat Mode prompt editing.
 
-Grep verification (final state):
+Grep verification:
 
 ```bash
 rg -n "EditingPrompt|EditPrompt|MENU_CALLBACK_EDIT_PROMPT|Edit Prompt" crates/oxide-agent-transport-telegram
 rg -n "update_user_prompt|get_user_prompt" crates/oxide-agent-transport-telegram
 ```
 
-Both must return empty.
+Both commands must return empty.
 
 ## 9. Non-Functional Requirements
 
@@ -1983,7 +1659,7 @@ Both must return empty.
 
 - Private Telegram chat without agent access: return access/config guidance; do not activate Chat Mode.
 - Group chat/thread context: topic routing and mention policy remain, but allowed input goes to Agent Mode only.
-- Existing persisted state has an unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow.
+- Existing persisted state has an unsupported/unknown value: treat it as no valid runtime state (`None`) and route through agent-only access/configuration flow. Tests should use generic invalid values, not legacy literals such as `chat_mode`.
 - Old persisted chat histories in R2: leave orphaned, do not load, do not migrate, do not clear unless broader cleanup tool is separately requested.
 - Old `current_chat_uuid`: ignore after schema cleanup; serde defaults should not require it.
 - Missing `CHAT_MODEL_*`: should be normal; no startup error.
@@ -2007,8 +1683,8 @@ Both must return empty.
 - Tests/mocks broken after storage trait cleanup: update all StorageProvider mocks in Telegram/web/core tests.
 - Binary/profile scripts still expecting deleted feature: update `profiles/full.toml`, `check-compiled-capabilities.sh`, Docker/workflow feature bundles.
 - User sends message before any state exists: agent-only access policy decides; no mode menu fallback.
-- Confirmation flow active while chat state is removed: confirmation should remain isolated to `AgentConfirmation`.
-- Agent flow cancellation vs chat flow clearing: `/clear` is a no-op when no active agent flow exists, and otherwise performs agent session reset (current agent flow/session/context only). It must not clear chat UUID or long-term memory/profile data.
+- Confirmation flow active while removed/unknown state exists elsewhere in storage: confirmation should remain isolated to `AgentConfirmation`.
+- Agent flow cancellation vs chat flow clearing: `/clear` performs only agent session reset (current flow/session/transient context) or no-op readiness guidance. It must not clear long-term memory/profile data and must not reset chat UUID.
 - Provider failover selecting incompatible route: route availability must include capability check.
 - Route registry containing stale provider IDs: config validation must reject `llm-provider/groq`, `groq`, or any disabled provider.
 - Aliases/canonical IDs mismatch, especially ChatGPT/OpenRouter/NVIDIA: canonicalize before capability checks and docs.
@@ -2032,7 +1708,7 @@ Both must return empty.
 - Remove Groq module from `providers/mod.rs`, `providers/modules.rs` and provider tests.
 - Remove `llm-groq` from `Cargo.toml` feature graph and profile-full.
 - Remove Groq from `capabilities/compiled.rs`, `profiles/full.toml`, `scripts/check-compiled-capabilities.sh`, registry snapshots, README, `.env.example`, workflows and integration validation.
-- Verify `rg -n "Groq|GROQ|llm-groq|llm-provider/groq" . --glob '!target' --glob '!Cargo.lock' --glob '!PRD*.md' --glob '!*.patch' --glob '!docs/decisions/*chat*mode*'` returns no live references.
+- Verify `rg -n "Groq|GROQ|llm-groq|llm-provider/groq" .` returns no live references.
 
 ### Phase 3: Remove chat config
 
@@ -2052,7 +1728,7 @@ Both must return empty.
 - Refactor agent exit/cancel flows so they do not write `chat_mode`.
 - Handle stale callback data with a harmless “This control is no longer supported” response or no-op, not chat activation.
 
-### Phase 5: Remove chat storage and legacy state compatibility
+### Phase 5: Remove chat storage
 
 - Remove chat history and per-user chat model methods from `StorageProvider`.
 - Remove R2 key helpers for chat history.
@@ -2060,26 +1736,20 @@ Both must return empty.
 - Remove `ensure_current_chat_uuid`, `reset_current_chat_uuid`, `scoped_chat_storage_id`.
 - Rename `generate_chat_uuid` to generic agent flow/run ID helper if still needed.
 - Update R2 storage, in-memory storage, telemetry and all mocks/tests.
-- **Do not add legacy read-path compatibility for `chat_mode`; fresh DB makes legacy state absent.**
-  - Legacy persisted `chat_mode` state is not supported.
-  - Unknown/invalid persisted state values must be treated as `None` and routed through the normal agent-only access/configuration flow.
-  - Do not add a migration job or a `chat_mode` compatibility parser.
-  - Keep runtime execution free of `chat_mode` branches.
 
 ### Phase 6: Refactor LLM trait
 
 - Remove user-facing `LlmClient::chat_completion()`.
-- Rename `chat_completion_for_model_info()` to an internal-only text completion API if internal tasks still need it.
-- Move or restrict internal completion so Telegram transport cannot call it.
-- Close the provider boundary in this refactor: remove public `LlmProvider::chat_completion` or move plain-text completion behind a crate-private internal trait. Transport crates must not be able to call any plain text completion API at compile time.
-- Do not satisfy FR-009 by merely renaming `chat_completion` while keeping it public. Public plain text completion is considered a failed implementation.
+- Rename `chat_completion_for_model_info()` to crate-private `complete_internal_text` if internal tasks still need it.
+- Move or restrict internal completion so Telegram and web transports cannot call it at compile time.
+- Decide whether `LlmProvider` remains dual-method or splits into agent-capable provider + internal text provider.
 - Update provider implementations and mocks accordingly.
 
 ### Phase 7: Provider compatibility gates
 
 - Change unknown provider capability fallback to default-deny.
 - Add route/model capability check to route availability before selection.
-- Harden OpenRouter with the static in-code allowlist from DR-003.
+- Harden OpenRouter with explicit allowlist/route flag/metadata.
 - Keep NVIDIA model-level check and move it before route selection.
 - Preserve ChatGPT as agent provider and fix alias/canonical JSON-mode checks.
 - Add regression tests for incompatible provider rejection and failover.
@@ -2129,8 +1799,8 @@ Both must return empty.
 - Internal plain text completion, if still needed, is renamed/internal-only and inaccessible from transport.
 - Groq provider is removed if classified incompatible; current recon classifies it as incompatible.
 - `llm-groq`, `llm-provider/groq`, `GROQ_API_KEY` and Groq snapshots/profiles/docs are removed.
-- OpenRouter requires explicit model-level or route-level agent compatibility.
-- NVIDIA NIM routes are checked by model capability before selection/execution.
+- OpenRouter requires the static in-code model allowlist from DR-003 and matching approval/capability flags.
+- NVIDIA NIM routes are checked by exact-match code-owned allowlist before selection/execution.
 - Unsupported providers/routes are skipped or rejected before execution attempt.
 - ChatGPT provider remains available as agent-compatible provider when configured.
 - Voice/photo/video/document flows do not fallback to Chat Mode.
@@ -2156,37 +1826,30 @@ COMMON_GLOBS=(
   --glob '!docs/decisions/*chat*mode*'
 )
 
-# Hard-zero invariants (no exceptions):
-# - ChatMode runtime state / mode surface
-# - legacy persisted chat_mode/runtime branches
-# - chat model env/config names in active runtime surface
-# - incompatible Groq provider identifiers
+# Hard-zero invariants: no live runtime/docs/profile references.
 rg -n "Chat Mode|chat mode|chat_mode|ChatMode|State::ChatMode|persisted chat_mode|CHAT_MODEL_|llm-groq|llm-provider/groq" . "${COMMON_GLOBS[@]}"
 
-# Removed chat model config invariant is included in hard-zero checks above.
+# Transport/user layers must not call plain/internal completion APIs.
+rg -n "chat_completion|chat_completion_for_model_info|complete_internal_text|process_llm_request" \
+  crates/oxide-agent-transport-telegram/src \
+  crates/oxide-agent-transport-web/src
 
-# User-facing plain completion/invocation invariant:
-# transport/user layers must not call plain-completion APIs.
-rg -n "chat_completion|chat_completion_for_model_info|process_llm_request" crates/oxide-agent-transport-telegram/src crates/oxide-agent-transport-web/src
+# Provider-internal endpoint terminology requires manual review only.
+# Allowed examples may include upstream `/chat/completions` endpoint names or SDK helper names inside provider internals.
+rg -n "chat_completion|/chat/completions" . "${COMMON_GLOBS[@]}"
 
-# chat_completion is allowlisted only as upstream/provider-internal terminology and should be
-# reviewed manually (eg /chat/completions endpoint names, SDK method names, ChatGPT docs names).
-rg -n "chat_completion|/chat/completions|ChatGPT|chat_id" . "${COMMON_GLOBS[@]}"
-
-# Groq removal invariant is included in hard-zero checks above.
-
-# Chat storage invariant: should be empty.
+# Chat storage invariant: should be empty in live code.
 rg -n "get_chat_history|save_message_for_chat|clear_chat_history|current_chat_uuid|user_prompt|user_model" . "${COMMON_GLOBS[@]}"
 
-# Prompt editing invariant: EditingPrompt state, EditPrompt callbacks and update_user_prompt must be removed from Telegram transport.
+# Prompt editing invariant: should be empty in Telegram transport.
 rg -n "EditingPrompt|EditPrompt|MENU_CALLBACK_EDIT_PROMPT|Edit Prompt" crates/oxide-agent-transport-telegram
 rg -n "update_user_prompt|get_user_prompt|pick_system_prompt|resolve_system_prompt|SYSTEM_MESSAGE" crates/oxide-agent-transport-telegram
 
-# Telegram transport must not call direct/internal text completion.
-rg -n "chat_completion|internal_text_completion|process_llm_request" crates/oxide-agent-transport-telegram/src
-
 # Provider features/profiles must not contain Groq.
 rg -n "llm-groq|llm-provider/groq|GROQ_API_KEY" Cargo.toml crates profiles scripts .github .env.example README.md AGENTS.md
+
+# Browser Use must not preserve Groq as a special case.
+rg -n "Groq|GROQ|llm-provider/groq|groq" crates/oxide-agent-core/src/agent/providers/browser_use crates/oxide-agent-core/tests crates/oxide-agent-transport-telegram/tests
 
 # Media/modality invariant: Telegram media handlers must not use Chat Mode storage/controls.
 rg -n "chat_mode|save_message_for_chat|ensure_scoped_chat_uuid|send_chat_flow_controls|process_llm_request" \
@@ -2203,17 +1866,17 @@ rg -n "resolve_media_model|MEDIA_MODEL|transcribe_audio_file|describe_image_file
 rg -n "llm-provider/gemini|llm-provider/google-gemini|GOOGLE_GEMINI_API_KEY" \
   crates Cargo.toml profiles scripts .github .env.example README.md AGENTS.md
 
-# NVIDIA allowlist verification: should show allowed model ids and no wildcards/supports_tools overrides.
-rg -n "deepseek-ai/deepseek-v4-pro|deepseek-ai/deepseek-v4-flash" .
-rg -n "nvidia.*wildcard|wildcard.*nvidia|supports_tools.*nvidia" .
-rg -n "CHAT_MODEL.*nvidia|nvidia.*CHAT_MODEL" .
+# NVIDIA allowlist verification: should show only exact allowed model ids and no wildcard/config override path.
+rg -n "deepseek-ai/deepseek-v4-pro|deepseek-ai/deepseek-v4-flash" crates/oxide-agent-core/src
+rg -n "nvidia.*wildcard|wildcard.*nvidia|supports_tools.*nvidia|CHAT_MODEL.*nvidia|nvidia.*CHAT_MODEL" crates/oxide-agent-core/src
 
-# NVIDIA route selection tests.
+# Unknown/invalid persisted-state fallback must not introduce legacy-state compatibility symbols.
+rg -n "legacy read-path compatibility|normalize_chat_mode|LegacyChatMode|UnknownChatMode" crates/oxide-agent-core/src crates/oxide-agent-transport-telegram/src
+
+# Targeted provider/media tests after implementation.
 cargo test --workspace --all-features nvidia
 cargo test --workspace --all-features provider
 cargo test --workspace --all-features route
-
-# Targeted media tests after implementation.
 cargo test -p oxide-agent-core preprocessor --all-features
 cargo test -p oxide-agent-core media_file --all-features
 
@@ -2247,20 +1910,9 @@ cargo check --workspace --no-default-features --features profile-host-bwrap
 cargo check --workspace --no-default-features --features profile-full
 ```
 
-If internal provider implementations still need to call upstream `/chat/completions`, do not whitelist the old public symbol casually. Rename project-level APIs first; then document any remaining provider-internal endpoint helper as an allowed exception in code review.
+If internal provider implementations still need to call upstream `/chat/completions`, do not whitelist the old public project-level symbol casually. Rename project-level APIs first; then document any remaining provider-internal endpoint helper as an allowed exception in code review.
 
-### Unknown persisted `chat_mode` fallback
-
-```bash
-# ChatMode/chat_mode runtime compatibility — should be absent from code.
-# No execution branches, no runtime state handling, no legacy read-path handling.
-rg -n "ChatMode|chat_mode" crates
-```
-
-```bash
-# Unknown/invalid persisted-state fallback must not introduce chat_mode-specific logic.
-rg -n "legacy read-path compatibility|normalize_chat_mode|LegacyChatMode|UnknownChatMode|chat_mode" crates/oxide-agent-core/src/storage crates/oxide-agent-transport-telegram/src/bot/state.rs
-```
+Tests for invalid persisted state must use generic invalid values, not legacy literals such as `chat_mode` or `EditingPrompt`, so hard-zero grep remains meaningful.
 
 ## 14. Risks
 
@@ -2334,18 +1986,18 @@ Mitigation:
 Mitigation:
 
 - Delete `process_llm_request()`.
-- Remove public `LlmClient::chat_completion()` or rename it internal-only.
+- Remove public `LlmClient::chat_completion()` and replace allowed auxiliary use with crate-private `complete_internal_text`.
 - Add transport-level grep/test ensuring Telegram handlers cannot call completion directly.
 
 ### Risk: unknown persisted state resurrects legacy behavior
 
 Mitigation:
 
-- Treat unknown/invalid persisted state as `None` and route it through agent-only access/configuration handling.
-- Remove `State::ChatMode` as a runtime variant; no code path should recognize legacy `"chat_mode"` as active runtime.
+- Treat unsupported/unknown persisted state as `None` and route it through agent-only access/configuration handling.
+- Remove `State::ChatMode` as a runtime variant; no code path should recognize legacy persisted-state literals as active runtime.
 - Storage must not have chat-specific execution branches.
-- No `LegacyChatMode`, `UnknownChatMode` as runtime symbols.
-- Add regression test proving unknown persisted state does not activate any legacy mode and falls back to agent-only access evaluation.
+- No `LegacyChatMode`, `UnknownChatMode` or `normalize_chat_mode_state` runtime symbols.
+- Tests for invalid persisted state must use generic invalid values, not legacy literals such as `chat_mode` or `EditingPrompt`, so hard-zero grep stays meaningful.
 
 ### Risk: failover selects incompatible route
 
