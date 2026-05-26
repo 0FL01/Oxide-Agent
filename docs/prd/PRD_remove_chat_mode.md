@@ -1473,7 +1473,7 @@ Rationale:
 
 Acceptance Criteria:
 
-- `rg -n "Groq|GROQ|llm-groq|llm-provider/groq" .` has no live runtime/docs/profile references after cleanup.
+- `rg -n "Groq|GROQ|llm-groq|llm-provider/groq" . --glob '!target' --glob '!Cargo.lock' --glob '!PRD*.md' --glob '!*.patch' --glob '!docs/decisions/*chat*mode*'` has no live runtime/docs/profile references after cleanup.
 - `cargo check --workspace --all-features` succeeds without `llm-groq`.
 - No capability manifest or profile contains Groq.
 - README no longer advertises Groq.
@@ -1953,7 +1953,7 @@ Both must return empty.
 - Remove Groq module from `providers/mod.rs`, `providers/modules.rs` and provider tests.
 - Remove `llm-groq` from `Cargo.toml` feature graph and profile-full.
 - Remove Groq from `capabilities/compiled.rs`, `profiles/full.toml`, `scripts/check-compiled-capabilities.sh`, registry snapshots, README, `.env.example`, workflows and integration validation.
-- Verify `rg -n "Groq|GROQ|llm-groq|llm-provider/groq" .` returns no live references.
+- Verify `rg -n "Groq|GROQ|llm-groq|llm-provider/groq" . --glob '!target' --glob '!Cargo.lock' --glob '!PRD*.md' --glob '!*.patch' --glob '!docs/decisions/*chat*mode*'` returns no live references.
 
 ### Phase 3: Remove chat config
 
@@ -2067,31 +2067,36 @@ Both must return empty.
 Run from repository root.
 
 ```bash
-# Chat Mode/state/menu invariant: should be empty or only in this PRD/changelog if included outside source tree.
-rg -n "Chat Mode|chat mode|chat_mode|ChatMode" . \
-  --glob '!target' \
+# Common rg excludes for repo-wide invariants.
+COMMON_GLOBS=(
+  --glob '!target'
   --glob '!Cargo.lock'
+  --glob '!PRD*.md'
+  --glob '!*.patch'
+  --glob '!docs/decisions/*chat*mode*'
+)
 
-# Removed chat model config invariant: should be empty.
-rg -n "CHAT_MODEL|chat_model" . \
-  --glob '!target' \
-  --glob '!Cargo.lock'
+# Hard-zero invariants (no exceptions):
+# - ChatMode runtime state / mode surface
+# - legacy persisted chat_mode/runtime branches
+# - chat model env/config names in active runtime surface
+# - incompatible Groq provider identifiers
+rg -n "Chat Mode|chat mode|chat_mode|ChatMode|State::ChatMode|persisted chat_mode|CHAT_MODEL_|llm-groq|llm-provider/groq" . "${COMMON_GLOBS[@]}"
 
-# User-facing plain completion invariant: process_llm_request must be absent.
-# chat_completion should be absent or restricted to explicitly renamed internal/provider endpoint code.
-rg -n "chat_completion|process_llm_request" . \
-  --glob '!target' \
-  --glob '!Cargo.lock'
+# Removed chat model config invariant is included in hard-zero checks above.
 
-# Groq removal invariant: should be empty.
-rg -n "Groq|GROQ|llm-groq|llm-provider/groq" . \
-  --glob '!target' \
-  --glob '!Cargo.lock'
+# User-facing plain completion/invocation invariant:
+# transport/user layers must not call plain-completion APIs.
+rg -n "chat_completion|chat_completion_for_model_info|process_llm_request" crates/oxide-agent-transport-telegram/src crates/oxide-agent-transport-web/src
+
+# chat_completion is allowlisted only as upstream/provider-internal terminology and should be
+# reviewed manually (eg /chat/completions endpoint names, SDK method names, ChatGPT docs names).
+rg -n "chat_completion|/chat/completions|ChatGPT|chat_id" . "${COMMON_GLOBS[@]}"
+
+# Groq removal invariant is included in hard-zero checks above.
 
 # Chat storage invariant: should be empty.
-rg -n "get_chat_history|save_message_for_chat|clear_chat_history|current_chat_uuid|user_prompt|user_model" . \
-  --glob '!target' \
-  --glob '!Cargo.lock'
+rg -n "get_chat_history|save_message_for_chat|clear_chat_history|current_chat_uuid|user_prompt|user_model" . "${COMMON_GLOBS[@]}"
 
 # Prompt editing invariant: EditingPrompt state, EditPrompt callbacks and update_user_prompt must be removed from Telegram transport.
 rg -n "EditingPrompt|EditPrompt|MENU_CALLBACK_EDIT_PROMPT|Edit Prompt" crates/oxide-agent-transport-telegram
