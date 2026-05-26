@@ -407,7 +407,7 @@ Findings:
 | Почему не оставить `chat_completion` | Символ двусмыслен: transport layer может вызвать "потому что он публичный". Имя не должно подразумевать Chat Mode. |
 | Имя и visibility | `pub(crate) fn complete_internal_text(...)` — не `chat`, не `pub`, не re-exported. |
 | Purpose | Обязательный параметр `InternalTextPurpose`: `CompactionSummary`, `LoopDetection`, `WikiMemoryWriter`, `InputIntentClassification`. Нельзя вызвать "просто спросить модель". |
-| Request restrictions | Нет `chat_id`, `telegram_user_id`, `chat_history`, `user_prompt`, `reply_markup`. Только `system_prompt`, `user_prompt`, `max_output_tokens`, `temperature`, `response_format`, `timeout`. |
+| Request restrictions | Нет `chat_id`, `telegram_user_id`, `chat_history`, `stored_user_prompt`, `per_user_prompt`, `reply_markup`. Только `system_instruction`, `task_input`, `messages` (if needed), `max_output_tokens`, `temperature`, `response_format`, `timeout`. |
 | Route resolution | Purpose-based или main agent route. Не `CHAT_MODEL_*`. Не новые env vars на первом шаге (кроме возможно `INTERNAL_TEXT_MODEL_*`). Default: main agent route. |
 | Trait design | Phase 1: rename+hide в `LlmProvider`. Phase 2: split на `AgentToolProvider` и `InternalTextCompletionProvider` если cleanup небольшой. |
 | Provider policy | Не сохранять chat-only providers (Groq) ради internal задач. Internal completion использует только agent-compatible provider. |
@@ -779,7 +779,7 @@ Cancellation/reset behavior:
 - Internal completion is kept but only as `pub(crate)` API:
   - renamed to `complete_internal_text` (not `chat_completion`, not `internal_text_completion`);
   - requires `InternalTextPurpose` enum (`CompactionSummary`, `LoopDetection`, `WikiMemoryWriter`, `InputIntentClassification`);
-  - request is restricted: no `chat_id`, `telegram_user_id`, `chat_history`, `user_prompt`, `reply_markup`;
+   - request is restricted: no `chat_id`, `telegram_user_id`, `chat_history`, `stored_user_prompt`, `per_user_prompt`, `reply_markup`;
   - route resolution uses purpose-based or main agent route; never falls back to `CHAT_MODEL_*`;
   - callable only from core agent internals (compaction, loop detection, wiki writer, input classifier after moving to core);
   - prohibited from transport crates at compile time (`pub(crate)` in core crate, no re-export).
@@ -1344,7 +1344,7 @@ Acceptance Criteria:
 
 - No public `LlmClient::chat_completion()` user-facing method remains.
 - Internal completion API is named `complete_internal_text`, is `pub(crate)`, and is not re-exported from public API.
-- Internal completion API requires `InternalTextPurpose` and uses a request without `chat_id`, `telegram_user_id`, `chat_history`, `user_prompt` or `reply_markup`.
+- Internal completion API requires `InternalTextPurpose` and uses a request without `chat_id`, `telegram_user_id`, `chat_history`, `stored_user_prompt`, `per_user_prompt` or `reply_markup`.
 - Route resolution for internal completion never falls back to `CHAT_MODEL_*`.
 - Chat-only providers (e.g. removed Groq) are not kept or used for internal completion.
 - Allowed callers: `agent/compaction/*`, `agent/loop_detection/*`, `agent/executor/*` (wiki writer), `agent/input_intent/*`.
