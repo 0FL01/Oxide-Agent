@@ -347,7 +347,7 @@ Findings:
 - **Media route semantics:** decision for this PRD is not "attachments or reject" anymore. Target behavior is: voice is immediately transcribed through explicit `MEDIA_MODEL_*` STT route and then injected into Agent Mode as text; photo/video/audio/document are preserved in sandbox as agent attachments when media/file capability is enabled, and the agent may call media tools with a prompt. If required route/capability is absent, reject clearly. No chat fallback is allowed.
 - **Direct Gemini provider:** current repo policy keeps direct Google Gemini provider absent; Gemini-family media/STT means OpenRouter model IDs such as `google/gemini-*` routed through `llm-provider/openrouter`, not a new `llm-provider/gemini` integration.
 - **Media model defaults:** `media_model_spec()` currently reuses chat token/context defaults. Need new `MEDIA_MODEL_MAX_OUTPUT_TOKENS` / `MEDIA_MODEL_CONTEXT_WINDOW_TOKENS` or reuse agent defaults deliberately.
-- **OpenRouter compatibility source:** Current code treats OpenRouter provider-level capabilities as tool-capable. Need an explicit allowlist, config flag, metadata source, or route capability field. Default should be deny for agent routes.
+- **OpenRouter compatibility source:** Current code treats OpenRouter provider-level capabilities as tool-capable. Need an explicit allowlist, config flag, metadata source, or route capability field. Default should be deny for agent routes. *(Resolved: см. DR-003 ниже)*
 - **NVIDIA allowlist ownership:** NVIDIA model support is code allowlist/wildcards. Decide whether this remains in code or moves to config/metadata, but selection must reject unsupported models before execution attempt.
 - **ChatGPT alias safety:** `json_mode_forbids_route()` checks `route.provider.eq_ignore_ascii_case("chatgpt")`; canonical provider id is `llm-provider/openai-chatgpt`. This needs alias/canonical-aware checks.
 - **Old persisted `chat_mode`:** No migration should be built. Runtime must normalize or ignore old `chat_mode` by treating it as no state / agent-only access evaluation.
@@ -416,6 +416,96 @@ Findings:
 **Решение:** Internal text completion остаётся, но только как `pub(crate)` API с новым именем (`complete_internal_text`), обязательным `InternalTextPurpose`, ограниченным request (без chat контекста), purpose-based route resolution, и compile-time запретом для transport crates. `chat_with_tools` не используется для auxiliary задач. Chat-only providers не сохраняются ради internal completion.
 
 **Обоснование:** Самый дешёвый и безопасный путь: удаляет Chat Mode как runtime/user surface, но не ломает агентные auxiliary задачи, которые технически не являются чатом. Force через `chat_with_tools` увеличит риск, связность и сложность тестов без выгоды для пользователя. Оставить `chat_completion` как public API сохраняет двусмысленность, которую PRD требует устранить.
+
+#### DR-003: OpenRouter capability source — static in-code allowlist
+
+**Статус:** решено.
+
+**Исходный вопрос (секция 5.9):** OpenRouter provider-level capabilities недостаточны. Как определять agent-совместимость OpenRouter моделей: allowlist, config flag, metadata source?
+
+**Анализ:**
+
+OpenRouter — агрегатор множества upstream моделей. Provider-level `supports_tool_calling=true` недостаточен, потому что OpenRouter сам по себе не является моделью. Реальная capability boundary определяется конкретным model ID (например `google/gemini-3-flash-preview` vs `deepseek/deepseek-v4-flash`).
+
+Варианты:
+1. **Dynamic discovery** — запрашивать `/models` endpoint OpenRouter, кешировать, парсить capabilities. Сложно, добавляет runtime-зависимость и фоновую синхронизацию. Неоправданно для текущего масштаба.
+2. **Config/metadata-driven** — пользователь указывает capabilities в `.yaml` / env для каждой модели. Гибко, но добавляет surface для ошибок конфигурации и не нужен для 2-3 пользователей.
+3. **Static in-code allowlist** — компактный список утверждённых model ID с их capabilities в коде. Просто, проверяемо, CI-верифицируемо. Недостаток: требует обновления кода для новых моделей.
+
+**Решение:** Use a small static allowlist for OpenRouter model capabilities.
+
+OpenRouter provider-level capability must not be treated as sufficient for Agent Mode. The provider is only a transport. The selected OpenRouter model id is the actual capability boundary.
+
+Do not implement dynamic OpenRouter model discovery, background sync, endpoint-level capability cache, or user-editable capability metadata as part of this refactor. That would be out of scope for removing Chat Mode legacy.
+
+The implementation must define a compact in-code allowlist of approved OpenRouter model ids and their capabilities:
+
+- `google/gemini-3-flash-preview`
+  - agent tools: yes
+  - text input: yes
+  - image input: yes
+  - audio/STT input: yes
+  - video input: yes
+  - PDF/document input: yes
+  - allowed as main agent model: yes
+  - allowed as media model: yes
+
+- `google/gemini-3.1-flash-lite-preview`
+  - agent tools: yes
+  - text input: yes
+  - image input: yes
+  - audio/STT input: yes
+  - video input: yes
+  - PDF/document input: yes
+  - allowed as main agent model: yes
+  - allowed as media model: yes
+
+- `google/gemini-2.5-flash-lite`
+  - agent tools: no for this refactor
+  - text input: yes
+  - image input: yes
+  - audio/STT input: yes
+  - video input: yes
+  - PDF/document input: yes
+  - allowed as main agent model: no
+  - allowed as media model: yes
+
+- `deepseek/deepseek-v4-flash`
+  - agent tools: yes
+  - text input: yes
+  - image/audio/video/PDF input: no
+  - allowed as main agent model: yes
+  - allowed as media model: no
+
+- `deepseek/deepseek-v4-pro`
+  - agent tools: yes
+  - text input: yes
+  - image/audio/video/PDF input: no
+  - allowed as main agent model: yes
+  - allowed as media model: no
+
+Unknown OpenRouter model ids must be rejected for Agent Mode and media routes by default.
+
+**Validation rules:**
+
+- `AGENT_MODEL_PROVIDER=llm-provider/openrouter` requires the model id to exist in the allowlist with `agent_tools=true`.
+- `MEDIA_MODEL_PROVIDER=llm-provider/openrouter` requires the model id to exist in the allowlist and support the requested media input type.
+- Voice/STT requires `audio_input=true` and `stt=true`.
+- Photo/image analysis requires `image_input=true`.
+- Video analysis requires `video_input=true`.
+- PDF/document visual analysis requires `pdf_input=true`.
+- Text-only DeepSeek models must never be selected for media handling.
+- Media-only Gemini 2.5 Flash Lite must not be selected for main Agent Mode unless explicitly promoted in a future PRD/change.
+- OpenRouter requests that include tools must set provider routing defensively, including `require_parameters=true` where supported, so unsupported downstream providers do not silently ignore required parameters.
+
+**Acceptance criteria:**
+
+- OpenRouter provider-level `supports_tool_calling=true` is no longer sufficient to pass Agent Mode validation.
+- An unknown OpenRouter model fails configuration validation before runtime execution.
+- `google/gemini-3-flash-preview` and `google/gemini-3.1-flash-lite-preview` pass both Agent Mode and media route validation.
+- `google/gemini-2.5-flash-lite` passes media route validation and fails main Agent Mode validation.
+- `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` pass main Agent Mode validation and fail media route validation.
+- Tests cover all five sanctioned model ids plus one unknown OpenRouter model id.
 
 ---
 
@@ -1076,21 +1166,26 @@ ID: `FR-012`
 
 Описание:
 
-- Replace provider-level blanket `supports_tool_calling=true` for OpenRouter with model-level or route-level capability decision.
-- Add explicit allowlist, config flag or metadata field for OpenRouter model agent compatibility.
-- Route selection must reject OpenRouter routes without confirmation before LLM attempt.
-- Tests must include compatible and incompatible OpenRouter models.
+- Replace provider-level blanket `supports_tool_calling=true` for OpenRouter with model-level capability decision based on the static in-code allowlist defined in DR-003.
+- Implement the allowlist from DR-003 as a compact in-code data structure covering all five sanctioned model ids.
+- Route selection must reject OpenRouter routes without allowlist confirmation before LLM attempt.
+- OpenRouter requests with tools must set `require_parameters=true` or equivalent defensive provider routing parameters where supported.
+- Tests must include all five sanctioned model ids from DR-003 plus one unknown OpenRouter model id.
 
 Rationale:
 
-- OpenRouter aggregates many upstream models; provider-level capability is not enough.
+- OpenRouter aggregates many upstream models; provider-level capability is not enough. DR-003 provides the exact decision and allowlist.
 
 Acceptance Criteria:
 
-- OpenRouter route without explicit agent compatibility is not selected for Agent Mode.
-- Compatible OpenRouter route can be selected when explicitly allowed and credentials exist.
+- OpenRouter route without allowlist entry is not selected for Agent Mode or media routes.
+- Compatible OpenRouter route (allowlist entry with matching capability) can be selected when credentials exist.
 - Failover does not pick unverified OpenRouter route.
-- Error message explains missing model-level tool capability.
+- `google/gemini-3-flash-preview` and `google/gemini-3.1-flash-lite-preview` pass both Agent Mode and media route validation.
+- `google/gemini-2.5-flash-lite` passes media route validation and fails main Agent Mode validation.
+- `deepseek/deepseek-v4-flash` and `deepseek/deepseek-v4-pro` pass main Agent Mode validation and fail media route validation.
+- An unknown OpenRouter model id fails configuration validation before runtime execution.
+- Error message explains missing model-level tool capability or missing allowlist entry.
 
 Affected Areas:
 
