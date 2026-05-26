@@ -185,8 +185,6 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 
     #[cfg(feature = "llm-chatgpt")]
     modules.push(Box::new(super::chatgpt::ChatGptProviderModule));
-    #[cfg(feature = "llm-groq")]
-    modules.push(Box::new(super::groq::GroqProviderModule));
     #[cfg(feature = "llm-mistral")]
     modules.push(Box::new(super::mistral::MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
@@ -400,29 +398,6 @@ mod tests {
         assert!(capabilities.supports_audio_transcription);
         assert!(capabilities.supports_image_understanding);
         assert!(capabilities.supports_video_understanding);
-    }
-
-    #[cfg(feature = "llm-groq")]
-    #[test]
-    fn groq_module_registers_provider_id_and_aliases() {
-        let settings = settings_with_provider_key("llm-provider/groq", "test-groq-key");
-
-        let providers = build_configured_providers(&settings);
-
-        assert!(providers.contains_key("llm-provider/groq"));
-        assert!(providers.contains_key("groq"));
-        assert_eq!(provider_module_id("groq"), Some("llm-provider/groq"));
-    }
-
-    #[cfg(feature = "llm-groq")]
-    #[test]
-    fn groq_module_owns_base_capabilities() {
-        let capabilities =
-            provider_capabilities("llm-provider/groq").expect("provider should resolve");
-
-        assert_eq!(capabilities.tool_history_label(), "best_effort");
-        assert!(!capabilities.supports_tool_calling);
-        assert!(capabilities.supports_structured_output);
     }
 
     #[cfg(feature = "llm-minimax")]

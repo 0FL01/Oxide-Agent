@@ -14,8 +14,6 @@ use std::fmt;
 use std::str::FromStr;
 
 // LLM provider defaults
-/// Default temperature used for Groq text requests.
-pub const GROQ_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default temperature used for Mistral text requests.
 pub const MISTRAL_CHAT_TEMPERATURE: f32 = 0.9;
 /// Temperature used for Mistral reasoning chat requests.

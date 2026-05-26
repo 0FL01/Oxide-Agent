@@ -1,10 +1,6 @@
 #[allow(missing_docs)]
 #[cfg(feature = "llm-chatgpt")]
 pub mod chatgpt;
-#[allow(missing_docs)]
-#[cfg(feature = "llm-groq")]
-pub mod groq;
-#[allow(missing_docs)]
 #[cfg(feature = "llm-minimax")]
 pub mod minimax;
 #[allow(missing_docs)]
@@ -81,8 +77,6 @@ pub mod zai;
 
 #[cfg(feature = "llm-chatgpt")]
 pub use chatgpt::ChatGptProvider;
-#[cfg(feature = "llm-groq")]
-pub use groq::GroqProvider;
 #[cfg(feature = "llm-minimax")]
 pub use minimax::MiniMaxProvider;
 #[cfg(feature = "llm-mistral")]

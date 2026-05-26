@@ -5,7 +5,6 @@ cargo_features = ["profile-full"]
 "integration/mcp-jira" = { enabled = true }
 "integration/mcp-mattermost" = { enabled = true }
 "integration/ssh-mcp" = { enabled = true }
-"llm-provider/groq" = { enabled = true }
 "llm-provider/minimax" = { enabled = true }
 "llm-provider/mistral" = { enabled = true }
 "llm-provider/nvidia" = { enabled = true }

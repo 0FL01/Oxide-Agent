@@ -1,7 +1,7 @@
 //! OpenAI-compatible provider utilities
 //!
 //! Shared implementation for providers using the async-openai client
-//! (Groq, Mistral, Zai).
+//! (Mistral).
 
 use super::super::{LlmError, Message};
 use super::common::{build_openai_messages, extract_openai_response};

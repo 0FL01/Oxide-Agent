@@ -1,6 +1,6 @@
 //! LLM providers and client
 //!
-//! Provides a unified interface to various LLM providers (Groq, Mistral, OpenRouter).
+//! Provides a unified interface to agent-compatible LLM providers.
 
 mod capabilities;
 mod client;

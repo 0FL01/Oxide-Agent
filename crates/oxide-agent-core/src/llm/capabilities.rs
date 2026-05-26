@@ -151,7 +151,7 @@ pub fn provider_capabilities_for_model(model_info: &ModelInfo) -> ProviderCapabi
 }
 
 fn default_provider_capabilities() -> ProviderCapabilities {
-    ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true)
+    ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, false)
 }
 
 const fn default_media_capabilities() -> MediaCapabilities {
@@ -329,14 +329,12 @@ mod tests {
     #[cfg(all(
         feature = "llm-openrouter",
         feature = "llm-mistral",
-        feature = "llm-groq",
         feature = "llm-opencode-go"
     ))]
     #[test]
     fn media_capabilities_are_modality_specific() {
         let openrouter = super::provider_media_capabilities("openrouter");
         let mistral = super::provider_media_capabilities("mistral");
-        let groq = super::provider_media_capabilities("groq");
         let opencode_go = super::provider_media_capabilities("opencode-go");
 
         assert!(openrouter.supports(super::MediaModality::AudioTranscription));
@@ -347,12 +345,17 @@ mod tests {
         assert!(!mistral.supports(super::MediaModality::ImageUnderstanding));
         assert!(!mistral.supports(super::MediaModality::VideoUnderstanding));
 
-        assert!(!groq.supports(super::MediaModality::AudioTranscription));
-        assert!(!groq.supports(super::MediaModality::ImageUnderstanding));
-        assert!(!groq.supports(super::MediaModality::VideoUnderstanding));
-
         assert!(!opencode_go.supports(super::MediaModality::AudioTranscription));
         assert!(!opencode_go.supports(super::MediaModality::ImageUnderstanding));
         assert!(!opencode_go.supports(super::MediaModality::VideoUnderstanding));
+    }
+
+    #[test]
+    fn unknown_provider_capabilities_are_default_deny() {
+        let capabilities = super::provider_capabilities("removed-provider");
+
+        assert!(!capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
+        assert_eq!(capabilities.tool_history_label(), "best_effort");
     }
 }
