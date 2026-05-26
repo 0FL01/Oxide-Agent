@@ -341,7 +341,7 @@ Findings:
 
 ### 5.9 Findings that require decision
 
-- **Internal plain completion API:** `chat_completion_for_model_info()` is used by compaction, loop detection, wiki writer and Agent input classifier. Product decision: keep these as internal-only `internal_text_completion*` APIs, or force every internal LLM task through `chat_with_tools` without tools. PRD recommends internal-only rename/isolation to avoid broad agent semantic changes.
+- **Internal plain completion API:** `chat_completion_for_model_info()` is used by compaction, loop detection, wiki writer and Agent input classifier. Decision resolved in DR-002: keep as internal-only `complete_internal_text` with purpose-based routing (`InternalTextPurpose`), enforce caller boundaries at compile time (`pub(crate)`), never force through `chat_with_tools`, and never fallback to `CHAT_MODEL_*`.
 - **Per-user prompt:** `UserConfig.system_prompt` and `storage.update_user_prompt()` are used by Chat Mode prompt editing, while topic-level system prompts are separate. Decision: remove per-user prompt editing if it exists only for Chat Mode; keep topic/profile prompts if they are agent runtime features. *(Resolved: см. решение DR-001 ниже)*
 - **Existing agent media surface:** repo already has agent-side media primitives: `crates/oxide-agent-core/src/agent/preprocessor.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent/media.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs` and sandbox media tools in `crates/oxide-agent-core/src/agent/providers/media_file.rs` (`transcribe_audio_file`, `describe_image_file`, `describe_video_file`). The refactor should reuse these instead of preserving Chat Mode media handlers.
 - **Media route semantics:** decision for this PRD is not "attachments or reject" anymore. Target behavior is: voice is immediately transcribed through explicit `MEDIA_MODEL_*` STT route and then injected into Agent Mode as text; photo/video/audio/document are preserved in sandbox as agent attachments when media/file capability is enabled, and the agent may call media tools with a prompt. If required route/capability is absent, reject clearly. No chat fallback is allowed.
@@ -387,6 +387,35 @@ Findings:
 - Env fallback `SYSTEM_MESSAGE`
 
 **Обоснование:** per-user prompt — чистый Chat Mode legacy. Ни одна Agent Mode функциональность на нём не держится. Topic/profile/admin-controlled prompt поверхности покрывают все нужные сценарии.
+
+#### DR-002: Internal text completion — keep as internal-only `complete_internal_text`
+
+**Статус:** решено.
+
+**Исходный вопрос (секция 5.9):** внутренние LLM-задачи (compaction summary, loop detection, wiki writer, input classifier) используют `chat_completion_for_model_info()`. Оставлять, удалять, или загонять через `chat_with_tools`?
+
+**Анализ:**
+
+| Аспект | Детали |
+|--------|--------|
+| Почему не `chat_with_tools` | Это агентный контракт с tool schemas, history validation и capability gates. Auxiliary LLM-задачи не должны зависеть от tool-calling semantics. Лишняя связность, риск случайно сломать compaction/wiki writer при изменении tool-history validation. Тесты сложнее. |
+| Почему не оставить `chat_completion` | Символ двусмыслен: transport layer может вызвать "потому что он публичный". Имя не должно подразумевать Chat Mode. |
+| Имя и visibility | `pub(crate) fn complete_internal_text(...)` — не `chat`, не `pub`, не re-exported. |
+| Purpose | Обязательный параметр `InternalTextPurpose`: `CompactionSummary`, `LoopDetection`, `WikiMemoryWriter`, `InputIntentClassification`. Нельзя вызвать "просто спросить модель". |
+| Request restrictions | Нет `chat_id`, `telegram_user_id`, `chat_history`, `user_prompt`, `reply_markup`. Только `system_prompt`, `user_prompt`, `max_output_tokens`, `temperature`, `response_format`, `timeout`. |
+| Route resolution | Purpose-based или main agent route. Не `CHAT_MODEL_*`. Не новые env vars на первом шаге (кроме возможно `INTERNAL_TEXT_MODEL_*`). Default: main agent route. |
+| Trait design | Phase 1: rename+hide в `LlmProvider`. Phase 2: split на `AgentToolProvider` и `InternalTextCompletionProvider` если cleanup небольшой. |
+| Provider policy | Не сохранять chat-only providers (Groq) ради internal задач. Internal completion использует только agent-compatible provider. |
+| Callers allowed | `agent/compaction/*`, `agent/loop_detection/*`, `agent/executor/*` (wiki writer), `agent/input_intent/*` (перенести из Telegram transport в core). |
+| Callers forbidden | `transport-telegram/*`, `transport-web/*`, bot handlers/callbacks/menu, storage, commands, model picker. |
+| Fail-soft: compaction | Deterministic/extractive fallback или conservative truncation. |
+| Fail-soft: loop detection | Heuristic-only detector. Не отключать agent loop. |
+| Fail-soft: wiki writer | Skip + log. User run не падает. |
+| Fail-soft: input classifier | Deterministic classification. Safe default = normal agent task. |
+
+**Решение:** Internal text completion остаётся, но только как `pub(crate)` API с новым именем (`complete_internal_text`), обязательным `InternalTextPurpose`, ограниченным request (без chat контекста), purpose-based route resolution, и compile-time запретом для transport crates. `chat_with_tools` не используется для auxiliary задач. Chat-only providers не сохраняются ради internal completion.
+
+**Обоснование:** Самый дешёвый и безопасный путь: удаляет Chat Mode как runtime/user surface, но не ломает агентные auxiliary задачи, которые технически не являются чатом. Force через `chat_with_tools` увеличит риск, связность и сложность тестов без выгоды для пользователя. Оставить `chat_completion` как public API сохраняет двусмысленность, которую PRD требует устранить.
 
 ---
 
@@ -438,8 +467,15 @@ Findings:
 - Telegram transport must not call `chat_completion` or any renamed internal text completion.
 - Provider trait should make agent capability explicit. Preferred target:
   - `chat_with_tools` / agent request interface is the primary provider contract for agent routes;
-  - plain text completion is either removed from `LlmProvider` or split into an internal trait/module not available to transport.
-- Internal completion, if kept, is renamed to something like `internal_text_completion_for_model_info()` and restricted to core agent internals: compaction, loop detection, wiki writer, input classifier.
+  - plain text completion is removed from public `LlmProvider` contract or split into an internal trait not visible to transport.
+- Internal completion is kept but only as `pub(crate)` API:
+  - renamed to `complete_internal_text` (not `chat_completion`, not `internal_text_completion`);
+  - requires `InternalTextPurpose` enum (`CompactionSummary`, `LoopDetection`, `WikiMemoryWriter`, `InputIntentClassification`);
+  - request is restricted: no `chat_id`, `telegram_user_id`, `chat_history`, `user_prompt`, `reply_markup`;
+  - route resolution uses purpose-based or main agent route; never falls back to `CHAT_MODEL_*`;
+  - callable only from core agent internals (compaction, loop detection, wiki writer, input classifier after moving to core);
+  - prohibited from transport crates at compile time (`pub(crate)` in core crate, no re-export).
+- Do not force compaction, loop detection, wiki writer or input classifier through `chat_with_tools`. These are auxiliary LLM tasks, not agent loops, and should not depend on tool-call history semantics.
 - Tests must assert no transport module references internal completion.
 
 ### 6.6 Provider route policy
@@ -880,30 +916,51 @@ Edge Cases:
 - Old chat histories are unavailable.
 - Error handling must return agent error/guidance, not chat error.
 
-### FR-009: Preserve or rename internal completion if needed
+### FR-009: Internal-only text completion with purpose-based routing
 
 ID: `FR-009`
 
-Название: internal-only text completion isolation.
+Название: internal-only text completion isolation with purpose-based routing and compile-time caller restrictions.
 
 Описание:
 
-- Audit all `chat_completion` and `chat_completion_for_model_info` usages.
-- Rename internal plain completion API to explicit internal terminology, for example `internal_text_completion_for_model_info()`.
-- Restrict visibility so transport/user layers cannot call it.
+- Remove public `LlmClient::chat_completion()` and `LlmClient::chat_completion_for_model_info()`.
+- Add `pub(crate)` method `complete_internal_text` that requires `InternalTextPurpose` and a restricted `InternalTextCompletionRequest` without chat context.
+- Do not force compaction, loop detection, wiki writer or input classifier through `chat_with_tools` — they are auxiliary LLM tasks, not agent loops, and should not depend on tool-call semantics.
+- Restrict visibility so transport/user layers cannot call it at compile time (`pub(crate)`, no re-export).
 - Keep internal uses only where required: local compaction summary, loop detection, wiki memory writer, input intent classification.
-- Provider trait should not force every provider to expose user-facing `chat_completion`; split trait if necessary.
+- Move `input_intent.rs` from Telegram transport (`crates/oxide-agent-transport-telegram/src/bot/agent_handlers/`) to core (`crates/oxide-agent-core/src/agent/input_intent.rs`), so transport calls a high-level service interface (`agent_input_classifier.classify(input)`) instead of LLM client directly.
+- Provider trait: phase 1 — rename+hide existing `chat_completion` in `LlmProvider`; phase 2 — split into `AgentToolProvider` and `InternalTextCompletionProvider` if cleanup cost is acceptable.
 
 Rationale:
 
-- Some agent internals use plain text completion for auxiliary tasks. Deleting them blindly can regress Agent Mode. Keeping them under `chat_completion` preserves the removed Chat Mode vocabulary and risks future misuse.
+- Some agent internals use plain text completion for auxiliary tasks. Deleting them blindly can regress Agent Mode. Keeping them under `chat_completion` preserves removed Chat Mode vocabulary and risks future misuse. Forcing them through `chat_with_tools` adds coupling to tool-call semantics that these tasks do not need.
 
 Acceptance Criteria:
 
 - No public `LlmClient::chat_completion()` user-facing method remains.
-- Internal completion APIs are named as internal and documented as unavailable to transport/user path.
-- Tests assert Telegram transport cannot import/call internal completion.
-- Internal tasks still pass their tests or are explicitly refactored to `chat_with_tools`.
+- Internal completion API is named `complete_internal_text`, is `pub(crate)`, and is not re-exported from public API.
+- Internal completion API requires `InternalTextPurpose` and uses a request without `chat_id`, `telegram_user_id`, `chat_history`, `user_prompt` or `reply_markup`.
+- Route resolution for internal completion never falls back to `CHAT_MODEL_*`.
+- Chat-only providers (e.g. removed Groq) are not kept or used for internal completion.
+- Allowed callers: `agent/compaction/*`, `agent/loop_detection/*`, `agent/executor/*` (wiki writer), `agent/input_intent/*`.
+- Forbidden callers: `crates/oxide-agent-transport-telegram/*`, `crates/oxide-agent-transport-web/*`, bot handlers/callbacks/menu, storage, commands, model picker.
+- Each internal task has a working fallback when internal route is unavailable:
+  - Compaction: deterministic/extractive fallback or conservative truncation.
+  - Loop detection: heuristic-only mode; agent loop is not disabled.
+  - Wiki writer: skip write and log; user run does not fail.
+  - Input classifier: deterministic classification; safe default treats input as normal agent task.
+- `input_intent.rs` lives in core crate, not in Telegram transport.
+- Tests assert transport crate does not reference internal completion:
+  ```bash
+  rg -n "chat_completion|chat_completion_for_model_info" crates/oxide-agent-transport-telegram crates/oxide-agent-transport-web
+  # must return no live references
+  ```
+  ```bash
+  rg -n "complete_internal_text" crates/oxide-agent-transport-telegram crates/oxide-agent-transport-web
+  # must return no live references
+  ```
+- Internal tasks still pass their tests or are explicitly refactored.
 
 Affected Areas:
 
@@ -914,7 +971,7 @@ Affected Areas:
 - `agent/compaction/local_llm_summary.rs`
 - `agent/loop_detection/llm_detector.rs`
 - `agent/executor/execution.rs`
-- `bot/agent_handlers/input_intent.rs`
+- `bot/agent_handlers/input_intent.rs` (move to core)
 - mocks/tests implementing `chat_completion`
 
 Edge Cases:
@@ -923,6 +980,7 @@ Edge Cases:
 - Loop detector disables itself on LLM errors.
 - Wiki writer runs in background with timeout.
 - Input classifier has deterministic fallback.
+- Internal completion must not accidentally re-introduce chat history dependence.
 
 ### FR-010: Remove chat-only providers
 
