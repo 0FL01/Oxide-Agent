@@ -73,7 +73,7 @@ Agent-only архитектура должна быть однозначной: 
 - Не добавлять новые provider integrations, если они не нужны для замены удалённого chat-only route.
 - Не вводить dual-mode runtime.
 - Не мигрировать старые persisted `chat_mode`. Fresh DB only: legacy `chat_mode` states are not supported; unknown/invalid persisted state values fall back to agent-only access/configuration flow. См. DR-005.
-- **Fresh DB**: деплой выполняется на пустом storage. Никакие старые `chat_mode` state-записи физически отсутствуют. Все пользователи с первого запуска находятся в Agent Mode. Регресс «юзер застрял в chat_mode» невозможен.
+- **Fresh DB**: деплой выполняется на пустом storage. Никакие старые `chat_mode` state-записи физически отсутствуют. Все authorized users с `agent access` с первого запуска попадают в Agent Mode. Пользователи без `agent access` получают access/configuration guidance без fallback в Chat Mode. Регресс «юзер застрял в chat_mode» невозможен.
 - Не переносить Chat Mode prompt editor в Agent Mode.
 - Не добавлять новый Telegram UX для редактирования agent/system prompt.
 - Не мигрировать старые per-user prompts и не сохранять `user_prompt` как hidden compatibility layer.
