@@ -73,6 +73,10 @@ Agent-only архитектура должна быть однозначной: 
 - Не добавлять новые provider integrations, если они не нужны для замены удалённого chat-only route.
 - Не вводить dual-mode runtime.
 - Не читать, не нормализовать и не очищать legacy persisted `chat_mode`. См. DR-005.
+- Не переносить Chat Mode prompt editor в Agent Mode.
+- Не добавлять новый Telegram UX для редактирования agent/system prompt.
+- Не мигрировать старые per-user prompts и не сохранять `user_prompt` как hidden compatibility layer.
+- Не оставлять `State::EditingPrompt`, `MenuCallbackData::EditPrompt` или любую другую форму prompt editing как agent feature в рамках этой задачи.
 
 ## 5. Current Architecture Recon
 
@@ -641,7 +645,11 @@ All other NVIDIA NIM models are default-denied for Agent Mode unless added to th
 - No `State::ChatMode` variant.
 - No `chat_mode` persisted state accepted as active runtime.
 - Existing `chat_mode` persisted value: hard delete / fresh DB only. No runtime normalization, no migration, no clean-on-read. Old persisted state is outside the runtime contract. See DR-005.
-- `State::EditingPrompt` is removed if prompt editing is chat-specific. If an agent prompt editing feature remains, it must be renamed and scoped to agent profile/topic, not user chat flow.
+- `State::EditingPrompt` is removed completely. This PRD does not introduce, rename, or preserve any Telegram user-facing prompt editor.
+- `MENU_CALLBACK_EDIT_PROMPT`, `MenuCallbackData::EditPrompt`, text-menu "Edit Prompt" branches, and the handler that stores edited prompt text are deleted.
+- Per-user prompt editing via `storage.update_user_prompt()` / `storage.get_user_prompt()` is treated as Chat Mode surface and removed from Telegram runtime.
+- Existing agent-owned prompt mechanisms (topic/profile/global system prompt configuration) are preserved only if they are already used by Agent Mode and do not depend on `State::EditingPrompt`.
+- Adding Agent prompt editing is explicitly out of scope and requires a separate PRD.
 - `current_chat_uuid` is removed from `UserConfig` and `UserContextConfig`.
 - Agent flow ID remains, but any helper named `generate_chat_uuid()` is renamed to a generic flow/run ID generator.
 
@@ -860,10 +868,11 @@ ID: `FR-002`
 Описание:
 
 - Remove “💬 Chat Mode” button and `MENU_CALLBACK_CHAT_MODE`.
-- Remove chat menu: `Clear Flow`, `Change Model`, `Extra Functions`, `Edit Prompt`, `Back` if they are chat-specific.
+- Remove `MENU_CALLBACK_EDIT_PROMPT` and all callback branches for `EditPrompt` — prompt editing is Chat Mode surface, not agent feature.
+- Remove `Clear Flow`, `Change Model`, `Extra Functions`, `Edit Prompt`, `Back` chat menu entries.
 - Remove model keyboard driven by `settings.agent.get_chat_models()`.
 - Remove chat attach/detach controls and callbacks: `CHAT_ATTACH_PREFIX`, `CHAT_DETACH_CALLBACK`, `handle_chat_flow_callback()`.
-- Remove `MenuCallbackData::ChatMode`, `ChangeModel`, `ExtraFunctions`, `EditPrompt`, `Model(usize)` if no agent-equivalent UX remains.
+- Remove `MenuCallbackData::ChatMode`, `ChangeModel`, `ExtraFunctions`, `EditPrompt`, `Model(usize)` unconditionally — these are Chat Mode callbacks with no agent-equivalent UX in this PRD.
 
 Rationale:
 
@@ -1612,6 +1621,61 @@ Edge Cases:
 - ChatGPT provider name contains “chat”; do not ban `chatgpt`.
 - Generic Telegram `chat_id` is not Chat Mode and should not be banned.
 
+### FR-019: Remove user-facing prompt editing
+
+ID: `FR-019`
+
+Название: удалить Telegram prompt editing как Chat Mode surface.
+
+Описание:
+
+- Delete `State::EditingPrompt` from `bot/state.rs`.
+- Delete `MENU_CALLBACK_EDIT_PROMPT` and `MenuCallbackData::EditPrompt` from Telegram handlers.
+- Delete "Edit Prompt" menu entries and text command branches.
+- Delete the prompt-editing handler that accepts the next user message and calls `storage.update_user_prompt()`.
+- Remove `storage.get_user_prompt()` from user-facing prompt construction unless the call is proven to be required by Agent Mode independent of Chat Mode.
+- Preserve topic/profile/global agent prompt configuration only if it is not controlled through the deleted Telegram prompt editing flow.
+
+Rationale:
+
+Prompt editing is part of the old Chat Mode UX and writes per-user chat prompt state. Reusing it for Agent Mode would create a new product feature and unclear prompt precedence. This PRD removes Chat Mode; it does not introduce Agent prompt management.
+
+Acceptance Criteria:
+
+- `State::EditingPrompt` no longer exists.
+- Telegram UI contains no "Edit Prompt" action.
+- Telegram callbacks contain no `EditPrompt` variant.
+- No user text can be interpreted as "new prompt value".
+- `storage.update_user_prompt()` is not called from Telegram transport.
+- Agent Mode still uses existing topic/profile/global prompt sources if they already existed independently.
+- No fallback from deleted per-user prompt to Chat Mode exists.
+
+Affected Areas:
+
+- `crates/oxide-agent-transport-telegram/src/bot/state.rs`
+- `crates/oxide-agent-transport-telegram/src/bot/handlers.rs`
+- `crates/oxide-agent-core/src/storage/provider.rs`
+- `crates/oxide-agent-core/src/storage/user.rs`
+- `crates/oxide-agent-core/src/storage/r2_user.rs`
+- `crates/oxide-agent-core/src/storage/r2_provider.rs`
+- Telegram tests/mocks that implement user prompt storage
+
+Edge Cases:
+
+- User was already in persisted `EditingPrompt`: treat as no valid state and route through agent-only access evaluation.
+- User sends text after pressing old inline button from a stale Telegram message: ignore callback or show "This action is no longer supported."
+- Existing `UserConfig.system_prompt` remains in storage data: do not migrate; stop reading it for runtime unless separately required by Agent Mode.
+- Topic/profile prompt still exists: preserve it because it is not user Chat Mode prompt editing.
+
+Grep verification (final state):
+
+```bash
+rg -n "EditingPrompt|EditPrompt|MENU_CALLBACK_EDIT_PROMPT|Edit Prompt" crates/oxide-agent-transport-telegram
+rg -n "update_user_prompt|get_user_prompt" crates/oxide-agent-transport-telegram
+```
+
+Both must return empty.
+
 ## 9. Non-Functional Requirements
 
 - **Maintainability:** after removal, there should be one user runtime path: Agent Mode. Names, states and storage fields must not imply dual runtime.
@@ -1818,6 +1882,10 @@ rg -n "Groq|GROQ|llm-groq|llm-provider/groq" . \
 rg -n "get_chat_history|save_message_for_chat|clear_chat_history|current_chat_uuid|user_prompt|user_model" . \
   --glob '!target' \
   --glob '!Cargo.lock'
+
+# Prompt editing invariant: EditingPrompt state, EditPrompt callbacks and update_user_prompt must be removed from Telegram transport.
+rg -n "EditingPrompt|EditPrompt|MENU_CALLBACK_EDIT_PROMPT|Edit Prompt" crates/oxide-agent-transport-telegram
+rg -n "update_user_prompt|get_user_prompt|pick_system_prompt|resolve_system_prompt|SYSTEM_MESSAGE" crates/oxide-agent-transport-telegram
 
 # Telegram transport must not call direct/internal text completion.
 rg -n "chat_completion|internal_text_completion|process_llm_request" crates/oxide-agent-transport-telegram/src
