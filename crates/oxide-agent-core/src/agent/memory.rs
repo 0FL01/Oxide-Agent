@@ -814,6 +814,12 @@ fn format_duration_part(value: i64, unit: &str) -> String {
 }
 
 fn format_compacted_summary(summary_text: &str, metadata: &CompactedSummaryMetadata) -> String {
+    let guidance = compacted_summary_guidance(metadata.wiki_memory_lookup_available);
+    let wiki_metadata_line = if metadata.wiki_memory_lookup_available {
+        "wiki_memory_lookup_available: true\n"
+    } else {
+        ""
+    };
     format!(
         "{prefix}\n\
 generation: {generation}\n\
@@ -828,7 +834,9 @@ history_items_before: {history_items_before}\n\
 history_items_after: {history_items_after}\n\
 created_at: {created_at}\n\
 previous_summary_detected: {previous_summary_detected}\n\
-repair_applied: {repair_applied}\n\n\
+repair_applied: {repair_applied}\n\
+{wiki_metadata_line}\n\
+{guidance}\n\n\
 {summary}",
         prefix = OXIDE_COMPACTED_SUMMARY_PREFIX,
         generation = metadata.generation,
@@ -844,8 +852,18 @@ repair_applied: {repair_applied}\n\n\
         created_at = metadata.created_at,
         previous_summary_detected = metadata.previous_summary_detected,
         repair_applied = metadata.repair_applied,
+        wiki_metadata_line = wiki_metadata_line,
+        guidance = guidance,
         summary = summary_text.trim(),
     )
+}
+
+fn compacted_summary_guidance(wiki_memory_lookup_available: bool) -> &'static str {
+    if wiki_memory_lookup_available {
+        "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages. If a missing durable fact, preference, decision, procedure, or project detail matters, use wiki_memory_search, wiki_memory_read, or wiki_memory_list before guessing. Wiki Memory is durable background, not a full transcript."
+    } else {
+        "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages."
+    }
 }
 
 impl AgentMessage {
@@ -1147,6 +1165,55 @@ mod tests {
 
         assert_eq!(summary.resolved_kind(), AgentMessageKind::Summary);
         assert_eq!(summary.retention(), CompactionRetention::Pinned);
+    }
+
+    fn compacted_summary_metadata(wiki_memory_lookup_available: bool) -> CompactedSummaryMetadata {
+        CompactedSummaryMetadata {
+            generation: 1,
+            reason: crate::agent::compaction::CompactionReason::Manual,
+            phase: crate::agent::compaction::CompactionPhase::Manual,
+            token_before: 100,
+            token_after: 10,
+            history_items_before: 3,
+            history_items_after: 1,
+            provider: "mock".to_string(),
+            route: "mock-model".to_string(),
+            backend: crate::agent::compaction::CompactionBackend::LocalLlmSummary,
+            created_at: "2026-05-21T20:10:00+03:00".to_string(),
+            previous_summary_detected: false,
+            repair_applied: false,
+            wiki_memory_lookup_available,
+        }
+    }
+
+    #[test]
+    fn compacted_summary_guidance_mentions_wiki_when_lookup_tools_available() {
+        let summary = AgentMessage::compacted_summary(
+            "Current state and next steps.",
+            &compacted_summary_metadata(true),
+        );
+
+        assert!(summary.content.contains("Agent Mode hot context compacted"));
+        assert!(summary
+            .content
+            .contains("wiki_memory_lookup_available: true"));
+        assert!(summary.content.contains("wiki_memory_search"));
+        assert!(summary
+            .content
+            .contains("Wiki Memory is durable background, not a full transcript."));
+    }
+
+    #[test]
+    fn compacted_summary_fallback_guidance_does_not_mention_wiki() {
+        let summary = AgentMessage::compacted_summary(
+            "Current state and next steps.",
+            &compacted_summary_metadata(false),
+        );
+
+        assert!(summary.content.contains(
+            "Agent Mode hot context compacted; continue from this handoff summary and remaining raw messages."
+        ));
+        assert!(!summary.content.to_ascii_lowercase().contains("wiki"));
     }
 
     #[test]
