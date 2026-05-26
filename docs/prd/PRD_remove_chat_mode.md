@@ -438,71 +438,104 @@ OpenRouter — агрегатор множества upstream моделей. Pr
 2. **Config/metadata-driven** — пользователь указывает capabilities в `.yaml` / env для каждой модели. Гибко, но добавляет surface для ошибок конфигурации и не нужен для 2-3 пользователей.
 3. **Static in-code allowlist** — компактный список утверждённых model ID с их capabilities в коде. Просто, проверяемо, CI-верифицируемо. Недостаток: требует обновления кода для новых моделей.
 
-**Решение:** Use a small static allowlist for OpenRouter model capabilities.
+**Решение:** Use a small static in-code allowlist with split planes for OpenRouter routes.
 
 OpenRouter provider-level capability must not be treated as sufficient for Agent Mode. The provider is only a transport. The selected OpenRouter model id is the actual capability boundary.
 
+To avoid conflating capability facts with PRD policy, each allowlist entry must keep two independent concepts:
+
+- **Observed / provider-declared capabilities** (what OpenRouter metadata reports for the model):
+  - `supports_tools_parameter`
+  - `supports_structured_outputs`
+  - `input_modalities`
+- **Oxide-approved usage for this refactor** (what we intentionally allow runtime to use):
+  - `approved_for_main_agent`
+  - `approved_for_media_audio`
+  - `approved_for_media_image`
+  - `approved_for_media_video`
+  - `approved_for_media_document`
+
 Do not implement dynamic OpenRouter model discovery, background sync, endpoint-level capability cache, or user-editable capability metadata as part of this refactor. That would be out of scope for removing Chat Mode legacy.
 
-The implementation must define a compact in-code allowlist of approved OpenRouter model ids and their capabilities:
+The implementation must define a compact in-code allowlist of OpenRouter model entries with both planes:
 
 - `google/gemini-3-flash-preview`
-  - agent tools: yes
-  - text input: yes
-  - image input: yes
-  - audio/STT input: yes
-  - video input: yes
-  - PDF/document input: yes
-  - allowed as main agent model: yes
-  - allowed as media model: yes
+  - provider-declared:
+    - supports_tools_parameter: yes
+    - supports_structured_outputs: no
+    - input_modalities: text,image,audio,video,file
+  - approved for this refactor:
+    - main Agent Mode: yes
+    - media_audio: yes
+    - media_image: yes
+    - media_video: yes
+    - media_document: yes
 
 - `google/gemini-3.1-flash-lite-preview`
-  - agent tools: yes
-  - text input: yes
-  - image input: yes
-  - audio/STT input: yes
-  - video input: yes
-  - PDF/document input: yes
-  - allowed as main agent model: yes
-  - allowed as media model: yes
+  - provider-declared:
+    - supports_tools_parameter: yes
+    - supports_structured_outputs: no
+    - input_modalities: text,image,audio,video,file
+  - approved for this refactor:
+    - main Agent Mode: yes
+    - media_audio: yes
+    - media_image: yes
+    - media_video: yes
+    - media_document: yes
 
 - `google/gemini-2.5-flash-lite`
-  - agent tools: no for this refactor
-  - text input: yes
-  - image input: yes
-  - audio/STT input: yes
-  - video input: yes
-  - PDF/document input: yes
-  - allowed as main agent model: no
-  - allowed as media model: yes
+  - provider-declared:
+    - supports_tools_parameter: yes
+    - supports_structured_outputs: no
+    - input_modalities: text,image,audio,video,file
+  - approved for this refactor:
+    - main Agent Mode: no
+    - media_audio: yes
+    - media_image: yes
+    - media_video: yes
+    - media_document: yes
 
 - `deepseek/deepseek-v4-flash`
-  - agent tools: yes
-  - text input: yes
-  - image/audio/video/PDF input: no
-  - allowed as main agent model: yes
-  - allowed as media model: no
+  - provider-declared:
+    - supports_tools_parameter: yes
+    - supports_structured_outputs: no
+    - input_modalities: text
+  - approved for this refactor:
+    - main Agent Mode: yes
+    - media_audio: no
+    - media_image: no
+    - media_video: no
+    - media_document: no
 
 - `deepseek/deepseek-v4-pro`
-  - agent tools: yes
-  - text input: yes
-  - image/audio/video/PDF input: no
-  - allowed as main agent model: yes
-  - allowed as media model: no
+  - provider-declared:
+    - supports_tools_parameter: yes
+    - supports_structured_outputs: no
+    - input_modalities: text
+  - approved for this refactor:
+    - main Agent Mode: yes
+    - media_audio: no
+    - media_image: no
+    - media_video: no
+    - media_document: no
 
 Unknown OpenRouter model ids must be rejected for Agent Mode and media routes by default.
 
+Important: a model having `supports_tools_parameter: yes` is still not automatically approved for Agent Mode if `approved_for_main_agent` is `no` (product safety decision).
+
 **Validation rules:**
 
-- `AGENT_MODEL_PROVIDER=llm-provider/openrouter` requires the model id to exist in the allowlist with `agent_tools=true`.
-- `MEDIA_MODEL_PROVIDER=llm-provider/openrouter` requires the model id to exist in the allowlist and support the requested media input type.
-- Voice/STT requires `audio_input=true` and `stt=true`.
-- Photo/image analysis requires `image_input=true`.
-- Video analysis requires `video_input=true`.
-- PDF/document visual analysis requires `pdf_input=true`.
+- `AGENT_MODEL_PROVIDER=llm-provider/openrouter` requires allowlist entry with:
+  - `supports_tools_parameter=true` and
+  - `approved_for_main_agent=true`.
+- `MEDIA_MODEL_PROVIDER=llm-provider/openrouter` requires allowlist entry and the corresponding approval flag for the requested modality:
+  - `approved_for_media_audio` + `audio_input=true` for STT;
+  - `approved_for_media_image` + `image_input=true` for image;
+  - `approved_for_media_video` + `video_input=true` for video;
+  - `approved_for_media_document` + `pdf_input=true` for document/PDF visual analysis.
+- OpenRouter requests that include tools or structured output must set provider routing with `require_parameters=true`. This is mandatory for OpenRouter agent/tool routes to avoid silent parameter drops by downstream providers.
 - Text-only DeepSeek models must never be selected for media handling.
 - Media-only Gemini 2.5 Flash Lite must not be selected for main Agent Mode unless explicitly promoted in a future PRD/change.
-- OpenRouter requests that include tools or structured output must set provider routing with `require_parameters=true`. This is mandatory for OpenRouter agent/tool routes to avoid silent parameter drops by downstream providers.
 
 **Acceptance criteria:**
 
