@@ -2,7 +2,10 @@
 
 //! Sandbox manager facade used when no sandbox backend feature is compiled.
 
-use super::{SandboxFileListing, SandboxScope};
+use super::{
+    SandboxApplyFileEditResult, SandboxEditReadGuard, SandboxFileEdit, SandboxFileListing,
+    SandboxScope,
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -220,6 +223,15 @@ impl SandboxManager {
     }
 
     pub async fn list_files(&mut self, _path: &str) -> Result<SandboxFileListing> {
+        Err(unavailable())
+    }
+
+    pub async fn apply_file_edit(
+        &mut self,
+        _path: &str,
+        _edit: SandboxFileEdit,
+        _read_guard: Option<SandboxEditReadGuard>,
+    ) -> Result<SandboxApplyFileEditResult> {
         Err(unavailable())
     }
 }

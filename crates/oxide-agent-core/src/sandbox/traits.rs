@@ -110,6 +110,14 @@ pub struct SandboxApplyFileEditResult {
 }
 
 /// Internal result of applying a sandbox text edit to in-memory bytes.
+#[cfg_attr(
+    not(any(
+        feature = "sandbox-backend-docker-direct",
+        feature = "sandbox-backend-sandboxd-client",
+        feature = "sandbox-backend-bwrap"
+    )),
+    allow(dead_code)
+)]
 pub(crate) struct SandboxAppliedFileEdit {
     /// Updated bytes to write when the edit changed the file.
     pub updated: Vec<u8>,
@@ -117,6 +125,14 @@ pub(crate) struct SandboxAppliedFileEdit {
     pub result: SandboxApplyFileEditResult,
 }
 
+#[cfg_attr(
+    not(any(
+        feature = "sandbox-backend-docker-direct",
+        feature = "sandbox-backend-sandboxd-client",
+        feature = "sandbox-backend-bwrap"
+    )),
+    allow(dead_code)
+)]
 pub(crate) fn apply_sandbox_file_edit(
     path: &str,
     current: &[u8],
@@ -148,10 +164,26 @@ pub(crate) fn apply_sandbox_file_edit(
     })
 }
 
+#[cfg_attr(
+    not(any(
+        feature = "sandbox-backend-docker-direct",
+        feature = "sandbox-backend-sandboxd-client",
+        feature = "sandbox-backend-bwrap"
+    )),
+    allow(dead_code)
+)]
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+#[cfg_attr(
+    not(any(
+        feature = "sandbox-backend-docker-direct",
+        feature = "sandbox-backend-sandboxd-client",
+        feature = "sandbox-backend-bwrap"
+    )),
+    allow(dead_code)
+)]
 fn validate_edit_read_guard(
     path: &str,
     current_sha256: &str,
@@ -181,6 +213,14 @@ fn validate_edit_read_guard(
     Ok(())
 }
 
+#[cfg_attr(
+    not(any(
+        feature = "sandbox-backend-docker-direct",
+        feature = "sandbox-backend-sandboxd-client",
+        feature = "sandbox-backend-bwrap"
+    )),
+    allow(dead_code)
+)]
 fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<u8>, usize)> {
     if bytes_look_binary(current) {
         anyhow::bail!("apply_file_edit only supports text files; binary content was detected");
@@ -223,6 +263,14 @@ fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<
     ))
 }
 
+#[cfg_attr(
+    not(any(
+        feature = "sandbox-backend-docker-direct",
+        feature = "sandbox-backend-sandboxd-client",
+        feature = "sandbox-backend-bwrap"
+    )),
+    allow(dead_code)
+)]
 fn bytes_look_binary(bytes: &[u8]) -> bool {
     let inspected = &bytes[..bytes.len().min(8192)];
     inspected.contains(&0)
