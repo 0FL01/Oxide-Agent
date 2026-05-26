@@ -72,6 +72,7 @@ Agent-only архитектура должна быть однозначной: 
 - Не переписывать весь проект ради эстетической чистоты, если участок не связан с удалением Chat Mode, chat-only provider или unsafe capability gate.
 - Не добавлять новые provider integrations, если они не нужны для замены удалённого chat-only route.
 - Не вводить dual-mode runtime.
+- Не читать, не нормализовать и не очищать legacy persisted `chat_mode`. См. DR-005.
 
 ## 5. Current Architecture Recon
 
@@ -350,7 +351,7 @@ Findings:
 - **OpenRouter compatibility source:** Current code treats OpenRouter provider-level capabilities as tool-capable. Need an explicit allowlist, config flag, metadata source, or route capability field. Default should be deny for agent routes. *(Resolved: см. DR-003 ниже)*
 - **NVIDIA allowlist ownership:** Resolved in DR-004. Keep code-owned exact-match allowlist. Config overrides, wildcards and generic model registry are out of scope for this refactor.
 - **ChatGPT alias safety:** `json_mode_forbids_route()` currently checks only `route.provider.eq_ignore_ascii_case("chatgpt")`, while ChatGPT routes may be configured as `chatgpt`, `openai-chatgpt`, or canonical `llm-provider/openai-chatgpt`. Do not introduce a broad provider identity refactor for this PR. Add a small local helper, e.g. `is_chatgpt_provider_id(&str)`, and use it in route policy checks that enforce ChatGPT structured-output / JSON-mode restrictions. Cover all three accepted provider id forms with unit tests.
-- **Old persisted `chat_mode`:** No migration should be built. Runtime must normalize or ignore old `chat_mode` by treating it as no state / agent-only access evaluation.
+- **Old persisted `chat_mode`:** Hard delete / fresh DB only. No runtime normalization, no clean-on-read, no migration. Old persisted `chat_mode` is out of scope for runtime compatibility. See DR-005.
 
 ### 5.10 Resolved Decisions
 
@@ -567,6 +568,57 @@ All other NVIDIA NIM models are default-denied for Agent Mode unless added to th
 - NVIDIA models are never selected for media/STT/vision/video routes.
 - Tests cover allowed model IDs and at least one rejected NVIDIA model ID.
 
+#### DR-005: Old persisted `chat_mode` — hard delete / fresh DB only
+
+**Статус:** решено.
+
+**Исходный вопрос (секция 5.9):** как обращаться со старым persisted `chat_mode` значением: игнорировать, нормализовать, мигрировать или clean-on-read?
+
+**Анализ:**
+
+| Аспект | Детали |
+|--------|--------|
+| Цель рефакторинга | Удалить Chat Mode так, будто его не существовало. Не делать compatibility layers. Не поддерживать старые chat histories. Запуск на fresh DB. |
+| clean-on-read option | Противоречит духу PRD: это всё ещё legacy bridge, который учит новый код, что такое `chat_mode`. Любая special-case обработка `chat_mode` повышает риск скрытого возврата Chat Mode через storage/state layer. |
+| ignore option | В runtime старый `chat_mode` проигнорирован, но enum-значение/string mapping может остаться в коде. Это оставляет след, который может быть использован в будущем. |
+| normalize option | Нормализация `chat_mode` → `None` / Agent Mode всё ещё требует знания о legacy Chat Mode на read path. |
+| Hard delete / fresh DB | Не добавляет в новый runtime ни знания о `chat_mode`, ни спец-обработки, ни compatibility layers. |
+
+**Решение:** Hard delete / fresh DB only.
+
+- `State::ChatMode` удаляется.
+- Парсер/serde/mapping для значения `chat_mode` удаляется.
+- Storage не должен содержать chat-specific state branches.
+- Никаких `LegacyChatMode`, `UnknownChatMode`, `normalize_chat_state()`, `clean_chat_mode_on_read()`.
+- Никаких миграций для старых chat state rows.
+- Никаких тестов, подтверждающих backward compatibility со старым `chat_mode`.
+- Если кто-то запускает новый билд на старой базе — это unsupported deployment path.
+- Для старой базы допустим только ручной операционный reset: пересоздать DB или очистить state/chat таблицы до запуска.
+
+**Обоснование:** Hard delete — самый чистый и дешёвый вариант под текущую цель проекта. `clean-on-read` был бы правильным только при требовании "обновиться без потери старой базы". У нас такого требования нет, и оно вредное: оно тащит знание о Chat Mode в новый код. Hard delete явно запрещает compatibility layers и миграции, не оставляет special-case обработки `chat_mode`, и делает fresh DB единственным supported deployment path.
+
+**Implementation requirements:**
+
+- удалить `State::ChatMode` и все enum/string mappings для `chat_mode`;
+- удалить chat-specific persisted state handling;
+- не добавлять `LegacyChatMode`, `UnknownChatMode`, `normalize_chat_mode_state`, `clean_chat_mode_on_read`;
+- не писать миграцию для старых chat state rows;
+- не добавлять тесты, подтверждающие backward compatibility со старым `chat_mode`.
+
+**Deployment assumption:**
+
+- production/staging rollout выполняется на fresh DB или после ручного reset storage;
+- если используется старая база, оператор обязан удалить persisted bot/user state и chat history до запуска нового билда;
+- старые chat histories, current chat UUID, per-user chat model и prompt editing state считаются intentionally discarded.
+
+**Acceptance criteria:**
+
+- grep по `ChatMode|chat_mode` не находит runtime compatibility code;
+- storage layer не содержит веток обработки старого `chat_mode`;
+- тесты покрывают только fresh/no-state поведение;
+- пользователь без persisted state попадает в agent-only access flow;
+- `/start` не восстанавливает и не предлагает Chat Mode.
+
 ---
 
 ## 6. Target Architecture
@@ -588,7 +640,7 @@ All other NVIDIA NIM models are default-denied for Agent Mode unless added to th
 
 - No `State::ChatMode` variant.
 - No `chat_mode` persisted state accepted as active runtime.
-- Existing `chat_mode` persisted value is ignored or normalized to empty/agent-only decision at read time.
+- Existing `chat_mode` persisted value: hard delete / fresh DB only. No runtime normalization, no migration, no clean-on-read. Old persisted state is outside the runtime contract. See DR-005.
 - `State::EditingPrompt` is removed if prompt editing is chat-specific. If an agent prompt editing feature remains, it must be renamed and scoped to agent profile/topic, not user chat flow.
 - `current_chat_uuid` is removed from `UserConfig` and `UserContextConfig`.
 - Agent flow ID remains, but any helper named `generate_chat_uuid()` is renamed to a generic flow/run ID generator.
@@ -770,7 +822,7 @@ ID: `FR-001`
 - Remove `State::ChatMode` from `crates/oxide-agent-transport-telegram/src/bot/state.rs`.
 - Remove `State::ChatMode` branch from `crates/oxide-agent-transport-telegram/src/runner.rs`.
 - Remove code paths that set, restore, compare or persist `"chat_mode"`.
-- Existing persisted `chat_mode` must not reactivate chat runtime. Treat it as absent state and apply agent-only access policy.
+- Existing persisted `chat_mode` is outside the runtime contract. Hard delete / fresh DB only. No runtime normalization, no clean-on-read, no migration. See DR-005.
 
 Rationale:
 
@@ -780,7 +832,7 @@ Acceptance Criteria:
 
 - `rg -n "ChatMode|chat_mode" crates/oxide-agent-transport-telegram/src` returns no live runtime references.
 - Dialogue can compile without `State::ChatMode` branch.
-- Existing storage state `chat_mode` does not activate any plain chat path.
+- Existing storage state `chat_mode` is outside runtime contract; hard delete / fresh DB only (DR-005).
 - Agent confirmation and Agent Mode states still work.
 
 Affected Areas:
@@ -794,7 +846,7 @@ Affected Areas:
 
 Edge Cases:
 
-- User sends message with old persisted `chat_mode`.
+- User sends message with old persisted `chat_mode`: out of scope for runtime compatibility, hard delete / fresh DB only (DR-005).
 - User has no persisted state.
 - Confirmation flow is active while old chat state exists in storage.
 - Group topic has context state `chat_mode` while DM global state differs.
@@ -1579,7 +1631,7 @@ Edge Cases:
 
 - Private Telegram chat without agent access: return access/config guidance; do not activate Chat Mode.
 - Group chat/thread context: topic routing and mention policy remain, but allowed input goes to Agent Mode only.
-- Existing user state was `chat_mode`: ignore/normalize to no state; do not migrate.
+- Existing user state was `chat_mode`: out of scope for runtime compatibility. New deployment assumes fresh DB or manual storage reset before startup. Runtime must not contain special-case code that maps old `chat_mode` to Agent Mode or `None`. See DR-005.
 - Old persisted chat histories in R2: leave orphaned, do not load, do not migrate, do not clear unless broader cleanup tool is separately requested.
 - Old `current_chat_uuid`: ignore after schema cleanup; serde defaults should not require it.
 - Missing `CHAT_MODEL_*`: should be normal; no startup error.
@@ -1648,7 +1700,7 @@ Edge Cases:
 - Refactor agent exit/cancel flows so they do not write `chat_mode`.
 - Handle stale callback data with a harmless “This control is no longer supported” response or no-op, not chat activation.
 
-### Phase 5: Remove chat storage
+### Phase 5: Remove chat storage and legacy state compatibility
 
 - Remove chat history and per-user chat model methods from `StorageProvider`.
 - Remove R2 key helpers for chat history.
@@ -1656,6 +1708,10 @@ Edge Cases:
 - Remove `ensure_current_chat_uuid`, `reset_current_chat_uuid`, `scoped_chat_storage_id`.
 - Rename `generate_chat_uuid` to generic agent flow/run ID helper if still needed.
 - Update R2 storage, in-memory storage, telemetry and all mocks/tests.
+- **Remove legacy state compatibility instead of adding clean-on-read behavior.**
+  - Delete chat state enum/string mappings.
+  - Treat DB reset as deployment responsibility, not application responsibility.
+  - Do not preserve tests for old `chat_mode` deserialization.
 
 ### Phase 6: Refactor LLM trait
 
@@ -1830,6 +1886,18 @@ cargo check --workspace --no-default-features --features profile-full
 
 If internal provider implementations still need to call upstream `/chat/completions`, do not whitelist the old public symbol casually. Rename project-level APIs first; then document any remaining provider-internal endpoint helper as an allowed exception in code review.
 
+### Legacy persisted `chat_mode` cleanup
+
+```bash
+# ChatMode/chat_mode runtime compatibility — must be empty (except this PRD).
+rg -n "ChatMode|chat_mode|clean.*chat|legacy.*chat|normalize.*chat" crates
+```
+
+```bash
+# Storage must not contain chat_mode handling branches.
+rg -n "chat_mode" crates/oxide-agent-core/src/storage crates/oxide-agent-transport-telegram/src/bot/state.rs
+```
+
 ## 14. Risks
 
 ### Risk: accidental deletion of internal summarization path
@@ -1909,9 +1977,12 @@ Mitigation:
 
 Mitigation:
 
-- Treat old `chat_mode` as invalid/empty when reading state.
-- Do not migrate; do not write it back.
-- Add regression test with stored `chat_mode` and new user text.
+- Hard delete / fresh DB only (DR-005). No runtime normalization, no clean-on-read, no migration.
+- Remove `State::ChatMode` and all enum/string mappings for `chat_mode`.
+- Storage must not have chat-specific state branches.
+- No `LegacyChatMode`, `UnknownChatMode`, `normalize_chat_state()`, `clean_chat_mode_on_read()`.
+- Deployment responsibility: fresh DB or manual storage reset before starting new build.
+- Add regression test proving `/start` does not reactivate Chat Mode from old persisted state.
 
 ### Risk: failover selects incompatible route
 
