@@ -186,10 +186,6 @@ async fn forum_topic_delete_cleans_topic_storage_and_sandbox() {
         .with(eq(77_i64), eq("-100999:42".to_string()))
         .times(1)
         .returning(|_, _| Ok(()));
-    mock.expect_clear_chat_history_for_context()
-        .with(eq(77_i64), eq("-100999:42".to_string()))
-        .times(1)
-        .returning(|_, _| Ok(()));
     mock.expect_delete_topic_context()
         .with(eq(77_i64), eq("-100999:42".to_string()))
         .times(1)

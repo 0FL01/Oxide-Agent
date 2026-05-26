@@ -33,9 +33,9 @@ use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::{
-    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message,
-    StorageError, StorageProvider, TopicAgentsMdRecord, TopicBindingRecord,
-    UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
+    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError,
+    StorageProvider, TopicAgentsMdRecord, TopicBindingRecord, UpsertAgentProfileOptions,
+    UpsertTopicBindingOptions, UserConfig,
 };
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -201,84 +201,12 @@ impl StorageProvider for NoopStorage {
         Ok(())
     }
 
-    async fn update_user_prompt(
-        &self,
-        _user_id: i64,
-        _system_prompt: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-        Ok(None)
-    }
-
-    async fn update_user_model(
-        &self,
-        _user_id: i64,
-        _model_name: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-        Ok(None)
-    }
-
     async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
         Ok(())
     }
 
     async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
         Ok(None)
-    }
-
-    async fn save_message(
-        &self,
-        _user_id: i64,
-        _role: String,
-        _content: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_chat_history(
-        &self,
-        _user_id: i64,
-        _limit: usize,
-    ) -> Result<Vec<Message>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn save_message_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-        _role: String,
-        _content: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_chat_history_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-        _limit: usize,
-    ) -> Result<Vec<Message>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn clear_chat_history_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
     }
 
     async fn save_agent_memory(

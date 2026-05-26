@@ -11,9 +11,9 @@ use oxide_agent_core::agent::tool_runtime::{
 use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::llm::InvocationId;
 use oxide_agent_core::storage::{
-    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    Message as StoredMessage, StorageError, StorageProvider, TopicBindingRecord,
-    UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig, UserContextConfig,
+    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError,
+    StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
+    UserConfig, UserContextConfig,
 };
 use oxide_agent_transport_telegram::bot::thread::{
     resolve_thread_spec_from_context, thread_peer_key_from_spec,
@@ -26,7 +26,6 @@ use teloxide::types::{ChatId, MessageId, ThreadId};
 #[derive(Default)]
 struct IntegrationStorage {
     user_config: Mutex<UserConfig>,
-    cleared_histories: Mutex<Vec<String>>,
     cleared_memories: Mutex<Vec<String>>,
     deleted_bindings: Mutex<Vec<String>>,
     audit_events: Mutex<Vec<AppendAuditEventOptions>>,
@@ -44,7 +43,6 @@ impl IntegrationStorage {
                     context_key.to_string(),
                     UserContextConfig {
                         state: Some("agent_mode".to_string()),
-                        current_chat_uuid: Some("chat-1".to_string()),
                         current_agent_flow_id: Some("flow-1".to_string()),
                         chat_id: Some(-100_123),
                         thread_id: Some(77),
@@ -80,96 +78,12 @@ impl StorageProvider for IntegrationStorage {
         Ok(())
     }
 
-    async fn update_user_prompt(
-        &self,
-        _user_id: i64,
-        _system_prompt: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-        Ok(None)
-    }
-
-    async fn update_user_model(
-        &self,
-        _user_id: i64,
-        _model_name: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-        Ok(None)
-    }
-
     async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
         Ok(())
     }
 
     async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
         Ok(None)
-    }
-
-    async fn save_message(
-        &self,
-        _user_id: i64,
-        _role: String,
-        _content: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_chat_history(
-        &self,
-        _user_id: i64,
-        _limit: usize,
-    ) -> Result<Vec<StoredMessage>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn save_message_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-        _role: String,
-        _content: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_chat_history_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-        _limit: usize,
-    ) -> Result<Vec<StoredMessage>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn clear_chat_history_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn clear_chat_history_for_context(
-        &self,
-        _user_id: i64,
-        context_key: String,
-    ) -> Result<(), StorageError> {
-        self.cleared_histories
-            .lock()
-            .map_err(|_| Self::lock_error())?
-            .push(context_key);
-        Ok(())
     }
 
     async fn save_agent_memory(
@@ -497,14 +411,6 @@ async fn manager_forum_topic_delete_cleans_transport_topic_scope() -> anyhow::Re
             .expect("mutex poisoned")
             .as_slice(),
         &[(user_id, -100_123, 77)]
-    );
-    assert_eq!(
-        storage
-            .cleared_histories
-            .lock()
-            .expect("mutex poisoned")
-            .as_slice(),
-        std::slice::from_ref(&context_key)
     );
     assert_eq!(
         storage

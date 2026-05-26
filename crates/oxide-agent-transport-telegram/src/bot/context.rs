@@ -1,9 +1,7 @@
 use crate::bot::{thread_peer_key_from_spec, TelegramThreadKind, TelegramThreadSpec};
 use anyhow::Result;
 use oxide_agent_core::sandbox::SandboxScope;
-use oxide_agent_core::storage::{
-    generate_chat_uuid, StorageProvider, UserConfig, UserContextConfig,
-};
+use oxide_agent_core::storage::{generate_flow_id, StorageProvider, UserConfig, UserContextConfig};
 use std::sync::Arc;
 use teloxide::types::ChatId;
 
@@ -112,7 +110,7 @@ pub(crate) async fn ensure_current_agent_flow_id(
         return Ok((flow_id, false));
     }
 
-    let flow_id = generate_chat_uuid();
+    let flow_id = generate_flow_id();
     let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
     context.current_agent_flow_id = Some(flow_id.clone());
     storage.update_user_config(user_id, config).await?;
@@ -146,7 +144,7 @@ pub(crate) async fn reset_current_agent_flow_id(
     chat_id: ChatId,
     thread_spec: TelegramThreadSpec,
 ) -> Result<String> {
-    let flow_id = generate_chat_uuid();
+    let flow_id = generate_flow_id();
     set_current_agent_flow_id(storage, user_id, chat_id, thread_spec, flow_id.clone()).await?;
     Ok(flow_id)
 }
@@ -161,7 +159,7 @@ mod tests {
     use async_trait::async_trait;
     use oxide_agent_core::agent::AgentMemory;
     use oxide_agent_core::storage::{
-        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message,
+        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
         StorageError, StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions,
         UpsertTopicBindingOptions, UserConfig, UserContextConfig,
     };
@@ -196,30 +194,6 @@ mod tests {
             Ok(())
         }
 
-        async fn update_user_prompt(
-            &self,
-            _user_id: i64,
-            _system_prompt: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-            Ok(None)
-        }
-
-        async fn update_user_model(
-            &self,
-            _user_id: i64,
-            _model_name: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-            Ok(None)
-        }
-
         async fn update_user_state(
             &self,
             _user_id: i64,
@@ -230,54 +204,6 @@ mod tests {
 
         async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
             Ok(None)
-        }
-
-        async fn save_message(
-            &self,
-            _user_id: i64,
-            _role: String,
-            _content: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_chat_history(
-            &self,
-            _user_id: i64,
-            _limit: usize,
-        ) -> Result<Vec<Message>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn save_message_for_chat(
-            &self,
-            _user_id: i64,
-            _chat_uuid: String,
-            _role: String,
-            _content: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_chat_history_for_chat(
-            &self,
-            _user_id: i64,
-            _chat_uuid: String,
-            _limit: usize,
-        ) -> Result<Vec<Message>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn clear_chat_history_for_chat(
-            &self,
-            _user_id: i64,
-            _chat_uuid: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
         }
 
         async fn save_agent_memory(
@@ -440,7 +366,6 @@ mod tests {
             "-1001:42".to_string(),
             UserContextConfig {
                 state: Some("agent_mode".to_string()),
-                current_chat_uuid: None,
                 current_agent_flow_id: None,
                 chat_id: Some(-1001),
                 thread_id: Some(42),
@@ -471,7 +396,6 @@ mod tests {
                     "-1001:77".to_string(),
                     UserContextConfig {
                         state: Some("agent_mode".to_string()),
-                        current_chat_uuid: None,
                         current_agent_flow_id: Some("flow-b".to_string()),
                         chat_id: Some(-1001),
                         thread_id: Some(77),
@@ -521,7 +445,6 @@ mod tests {
                         "-1001:42".to_string(),
                         UserContextConfig {
                             state: Some("agent_mode".to_string()),
-                            current_chat_uuid: None,
                             current_agent_flow_id: Some("flow-a".to_string()),
                             chat_id: Some(-1001),
                             thread_id: Some(42),
@@ -535,7 +458,6 @@ mod tests {
                         "-1001:77".to_string(),
                         UserContextConfig {
                             state: Some("agent_mode".to_string()),
-                            current_chat_uuid: None,
                             current_agent_flow_id: Some("flow-b".to_string()),
                             chat_id: Some(-1001),
                             thread_id: Some(77),

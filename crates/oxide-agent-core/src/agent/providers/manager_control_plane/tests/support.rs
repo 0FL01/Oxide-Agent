@@ -299,7 +299,6 @@ pub(super) fn topic_delete_user_config() -> UserConfig {
             "-100999:42".to_string(),
             UserContextConfig {
                 state: Some("agent_mode".to_string()),
-                current_chat_uuid: Some("chat-1".to_string()),
                 current_agent_flow_id: Some("flow-1".to_string()),
                 chat_id: Some(-100999),
                 thread_id: Some(42),

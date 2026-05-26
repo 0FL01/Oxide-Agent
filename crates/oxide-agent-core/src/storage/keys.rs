@@ -19,24 +19,6 @@ pub fn user_config_key(user_id: i64) -> String {
     format!("users/{user_id}/config.json")
 }
 
-/// Returns the R2 key for a user's chat history file.
-#[must_use]
-pub fn user_history_key(user_id: i64) -> String {
-    format!("users/{user_id}/history.json")
-}
-
-/// Returns the R2 key for a user's chat history file scoped by chat UUID.
-#[must_use]
-pub fn user_chat_history_key(user_id: i64, chat_uuid: &str) -> String {
-    format!("users/{user_id}/chats/{chat_uuid}/history.json")
-}
-
-/// Returns the R2 prefix for all chat histories under a transport context.
-#[must_use]
-pub fn user_context_chat_history_prefix(user_id: i64, context_key: &str) -> String {
-    format!("users/{user_id}/chats/{context_key}/")
-}
-
 /// Returns the R2 key for a user's agent memory file.
 #[must_use]
 pub fn user_agent_memory_key(user_id: i64) -> String {
@@ -176,8 +158,8 @@ pub fn audit_events_key(user_id: i64) -> String {
     format!("users/{user_id}/control_plane/audit/events.json")
 }
 
-/// Generates a new random chat UUID (v4).
+/// Generates a new random flow UUID (v4).
 #[must_use]
-pub fn generate_chat_uuid() -> String {
+pub fn generate_flow_id() -> String {
     Uuid::new_v4().to_string()
 }
