@@ -19,7 +19,7 @@ use crate::agent::wiki_memory::{
     WikiStore,
 };
 use crate::config::{get_agent_max_iterations, ModelInfo};
-use crate::llm::LlmClient;
+use crate::llm::{InternalTextPurpose, LlmClient};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::future::Future;
@@ -612,8 +612,12 @@ impl AgentExecutor {
 
         let system_prompt = wiki_memory_writer_system_prompt();
         let user_prompt = build_wiki_memory_writer_user_prompt(job);
-        let request =
-            llm_client.chat_completion_for_model_info(system_prompt, &[], &user_prompt, model);
+        let request = llm_client.complete_internal_text(
+            InternalTextPurpose::WikiMemoryWriter,
+            system_prompt,
+            &user_prompt,
+            model,
+        );
 
         let response = match tokio::time::timeout(
             std::time::Duration::from_secs(job.writer_timeout_secs),

@@ -12,6 +12,7 @@ mod support;
 mod types;
 
 pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
+pub(crate) use client::InternalTextPurpose;
 pub use client::LlmClient;
 pub use error::LlmError;
 pub use provider::LlmProvider;

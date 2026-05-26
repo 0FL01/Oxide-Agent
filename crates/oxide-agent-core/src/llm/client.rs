@@ -22,6 +22,15 @@ pub struct LlmClient {
     pub media_model_provider: Option<String>,
 }
 
+/// Internal plain-text completion use cases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InternalTextPurpose {
+    CompactionSummary,
+    LoopDetection,
+    WikiMemoryWriter,
+    InputIntentClassification,
+}
+
 impl LlmClient {
     fn provider_key(name: &str) -> String {
         providers::provider_key(name)
@@ -204,52 +213,55 @@ impl LlmClient {
             .ok_or_else(|| LlmError::MissingConfig(provider_name.to_string()))
     }
 
-    /// Perform a chat completion request
+    /// Perform an internal plain-text completion request by configured model name.
     ///
     /// # Errors
     ///
     /// Returns `LlmError::Unknown` if the model is not found, or any error from the provider.
-    #[instrument(skip(self, system_prompt, history))]
-    pub async fn chat_completion(
+    #[instrument(skip(self, system_prompt, user_message))]
+    pub(crate) async fn complete_internal_text_for_model_name(
         &self,
+        purpose: InternalTextPurpose,
         system_prompt: &str,
-        history: &[Message],
         user_message: &str,
         model_name: &str,
     ) -> Result<String, LlmError> {
         let model_info = self.get_model_info(model_name)?;
 
-        self.chat_completion_for_model_info(system_prompt, history, user_message, &model_info)
+        self.complete_internal_text(purpose, system_prompt, user_message, &model_info)
             .await
     }
 
-    /// Perform a chat completion request for an explicit model route.
+    /// Perform an internal plain-text completion request for an explicit model route.
     ///
     /// # Errors
     ///
     /// Returns any provider error for the requested route.
-    #[instrument(skip(self, system_prompt, history, model_info))]
-    pub async fn chat_completion_for_model_info(
+    #[instrument(skip(self, system_prompt, user_message, model_info))]
+    pub(crate) async fn complete_internal_text(
         &self,
+        purpose: InternalTextPurpose,
         system_prompt: &str,
-        history: &[Message],
         user_message: &str,
         model_info: &crate::config::ModelInfo,
     ) -> Result<String, LlmError> {
         let provider = self.get_provider(&model_info.provider)?;
+        let history = [];
         let (system_prompt, history) =
-            support::history::fold_system_messages_into_prompt(system_prompt, history);
+            support::history::fold_system_messages_into_prompt(system_prompt, &history);
 
         debug!(
+            purpose = ?purpose,
             model = model_info.id,
             provider = model_info.provider,
-            "Sending request to LLM"
+            "Sending internal text request to LLM"
         );
         trace!(
+            purpose = ?purpose,
             system_prompt = system_prompt,
             history = ?history,
             user_message = user_message,
-            "Full LLM Request"
+            "Full internal text LLM request"
         );
 
         let start = std::time::Instant::now();
@@ -266,17 +278,19 @@ impl LlmClient {
 
         if let Ok(resp) = &result {
             debug!(
+                purpose = ?purpose,
                 model = model_info.id,
                 duration_ms = duration.as_millis(),
-                "Received success response from LLM"
+                "Received success response from internal text LLM request"
             );
             trace!(response = ?resp, "Full LLM Response");
         } else if let Err(e) = &result {
             warn!(
+                purpose = ?purpose,
                 model = model_info.id,
                 duration_ms = duration.as_millis(),
                 error = %e,
-                "Received error response from LLM"
+                "Received error response from internal text LLM request"
             );
         }
 
@@ -723,7 +737,7 @@ impl LlmClient {
 
 #[cfg(test)]
 mod tests {
-    use super::LlmClient;
+    use super::{InternalTextPurpose, LlmClient};
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
     use crate::llm::{ChatResponse, Message, MockLlmProvider};
     use std::sync::Arc;
@@ -1031,7 +1045,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_completion_folds_system_history_into_prompt() {
+    async fn internal_text_completion_uses_explicit_route() {
         let settings = with_provider_key(
             AgentSettings {
                 agent_model_id: Some("chat-openrouter".to_string()),
@@ -1044,23 +1058,16 @@ mod tests {
 
         let mut llm = LlmClient::new(&settings);
         let mut provider = MockLlmProvider::new();
-        provider
-            .expect_chat_completion()
-            .return_once(|system_prompt, history, user_message, model_id, max_tokens| {
-                assert_eq!(
-                    system_prompt,
-                    "You are helpful.\n\n[TOPIC_AGENTS_MD]\nAlways start with TL;DR.\n\n[SYSTEM: retry with strict JSON]"
-                );
-                assert_eq!(history.len(), 2);
-                assert_eq!(history[0].role, "user");
-                assert_eq!(history[0].content, "older request");
-                assert_eq!(history[1].role, "assistant");
-                assert_eq!(history[1].content, "older answer");
+        provider.expect_chat_completion().return_once(
+            |system_prompt, history, user_message, model_id, max_tokens| {
+                assert_eq!(system_prompt, "You are helpful.");
+                assert!(history.is_empty());
                 assert_eq!(user_message, "new request");
                 assert_eq!(model_id, "chat-openrouter");
                 assert_eq!(max_tokens, 1024);
                 Ok("ok".to_string())
-            });
+            },
+        );
         llm.register_provider("openrouter".to_string(), Arc::new(provider));
 
         let model = crate::config::ModelInfo {
@@ -1070,15 +1077,14 @@ mod tests {
             context_window_tokens: 8192,
             weight: 1,
         };
-        let history = vec![
-            Message::system("[TOPIC_AGENTS_MD]\nAlways start with TL;DR."),
-            Message::user("older request"),
-            Message::system("[SYSTEM: retry with strict JSON]"),
-            Message::assistant("older answer"),
-        ];
 
         let response = llm
-            .chat_completion_for_model_info("You are helpful.", &history, "new request", &model)
+            .complete_internal_text(
+                InternalTextPurpose::InputIntentClassification,
+                "You are helpful.",
+                "new request",
+                &model,
+            )
             .await
             .expect("request should succeed");
 

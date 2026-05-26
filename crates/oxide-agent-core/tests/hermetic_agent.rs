@@ -68,10 +68,10 @@ async fn test_client_uses_registered_provider() {
     client.register_provider("mock-provider".to_string(), Arc::new(SuccessMock));
 
     let response = client
-        .chat_completion("sys", &[], "user", "test-model")
+        .chat_with_tools("sys", &[], &[], "test-model", false)
         .await
         .expect("Should succeed");
-    assert_eq!(response, "Mock Response");
+    assert_eq!(response.content.as_deref(), Some("Success"));
 }
 
 struct RetrySuccessMock {

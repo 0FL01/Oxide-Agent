@@ -17,6 +17,8 @@ pub mod executor;
 pub mod hooks;
 /// Transport-agnostic agent identity types
 pub mod identity;
+/// Core Agent Mode input intent classification helpers.
+pub mod input_intent;
 /// Memory management for agent conversation history
 pub mod memory;
 /// Task-local memory behavior signals for wiki updates.
@@ -65,6 +67,10 @@ pub use context::{AgentContext, EphemeralSession};
 pub use executor::{AgentExecutionOutcome, AgentExecutor};
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
 pub use identity::SessionId;
+pub use input_intent::{
+    classify_agent_input_intent, AgentInputIntentClassification, AgentInputIntentSnapshot,
+    AgentInputSessionStatus,
+};
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::{AgentMemory, ExternalizedPayload, PrunedArtifact};
 pub use memory_behavior::{

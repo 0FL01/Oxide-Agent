@@ -3,7 +3,7 @@
 use super::prompt::{build_local_compaction_user_message, local_compaction_system_prompt};
 use super::{CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest};
 use crate::config::ModelInfo;
-use crate::llm::LlmClient;
+use crate::llm::{InternalTextPurpose, LlmClient};
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,9 +56,9 @@ impl CompactSummaryBackend for LocalLlmSummary {
 
         let mut attempt = 1;
         let output = loop {
-            let llm_call = self.llm_client.chat_completion_for_model_info(
+            let llm_call = self.llm_client.complete_internal_text(
+                InternalTextPurpose::CompactionSummary,
                 local_compaction_system_prompt(),
-                &[],
                 &user_message,
                 &summary_route,
             );

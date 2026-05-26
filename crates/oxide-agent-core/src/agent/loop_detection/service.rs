@@ -187,7 +187,7 @@ impl LoopDetectionService {
 mod tests {
     use super::LoopDetectionService;
     use crate::agent::loop_detection::LoopDetectionConfig;
-    use crate::llm::{LlmError, Message};
+    use crate::llm::LlmError;
     use async_trait::async_trait;
     use std::sync::Arc;
 
@@ -195,10 +195,9 @@ mod tests {
 
     #[async_trait]
     impl super::LoopScoutClient for MockScout {
-        async fn chat_completion(
+        async fn complete_internal_text(
             &self,
             _system_prompt: &str,
-            _history: &[Message],
             _user_message: &str,
             _model_name: &str,
         ) -> Result<String, LlmError> {
