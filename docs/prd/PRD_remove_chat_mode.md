@@ -1704,7 +1704,7 @@ Acceptance Criteria:
 - Agent Mode can select ChatGPT route when tools are required and JSON/structured-output constraints permit it.
 - `json_mode_forbids_route()` or equivalent route policy rejects ChatGPT JSON-mode routes for all accepted ids: `chatgpt`, `openai-chatgpt`, `llm-provider/openai-chatgpt`.
 - The fix is limited to route policy matching; no global provider-id refactor or config migration is required.
-- Search for “Chat Mode” does not match ChatGPT provider documentation except explicit “not Chat Mode” notes if retained.
+- Public docs should avoid the phrase “Chat Mode” entirely after removal. If ChatGPT needs clarification, phrase it positively: “ChatGPT is available as an Agent Mode provider when configured,” without referencing the removed mode.
 
 Affected Areas:
 
@@ -2071,7 +2071,8 @@ Both must return empty.
 - Remove user-facing `LlmClient::chat_completion()`.
 - Rename `chat_completion_for_model_info()` to an internal-only text completion API if internal tasks still need it.
 - Move or restrict internal completion so Telegram transport cannot call it.
-- Decide whether `LlmProvider` remains dual-method or splits into agent-capable provider + internal text provider.
+- Close the provider boundary in this refactor: remove public `LlmProvider::chat_completion` or move plain-text completion behind a crate-private internal trait. Transport crates must not be able to call any plain text completion API at compile time.
+- Do not satisfy FR-009 by merely renaming `chat_completion` while keeping it public. Public plain text completion is considered a failed implementation.
 - Update provider implementations and mocks accordingly.
 
 ### Phase 7: Provider compatibility gates
