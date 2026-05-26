@@ -8,7 +8,9 @@
 
 Desired end-state:
 
-- пользовательский текст, голос, фото, видео, документы и команды из Telegram больше не могут попасть в обычный `chat_completion` path;
+- пользовательский текст, команды и мультимодальные входы из Telegram больше не могут попасть в обычный `chat_completion` path;
+- голосовые сообщения обрабатываются только через явный STT/media route (`MEDIA_MODEL_*` с поддержкой audio transcription; например OpenRouter Gemini-family route или Mistral/Voxtral route). Если media route не настроен или не поддерживает audio, Telegram возвращает явный отказ без agent/chat fallback;
+- фото, видео, аудио-файлы и документы скачиваются только в agent sandbox / per-run upload area при включённой media/file capability, передаются агенту как attachment descriptors, а анализ выполняется через explicit agent tools (`describe_image_file`, `describe_video_file`, `transcribe_audio_file`) или agent preprocessor. При отсутствии media capability возвращается явный unsupported ответ;
 - состояние `ChatMode` отсутствует в state machine и persisted state не восстанавливается как рабочий режим;
 - `CHAT_MODEL_*`, per-user chat model selection, chat history и chat flow UUID удалены из runtime surface;
 - provider route selection допускает только agent-compatible routes;
@@ -49,6 +51,8 @@ Agent-only архитектура должна быть однозначной: 
 - Удалить per-user chat model selection и model keyboard.
 - Удалить chat history storage APIs, chat UUID и scoped chat histories.
 - Перевести `/start`, текст, media и документы в agent-only flow.
+- Зафиксировать explicit modality contract: voice → STT/media route → normal Agent Mode text input; missing media/STT route → clear reject.
+- Зафиксировать media/file contract: photo/video/audio/document → sandbox attachment + agent tool/preprocessor; missing media capability/feature → clear reject.
 - Усилить provider compatibility gates: provider/model нельзя считать agent-compatible только потому, что он умеет обычный chat completion.
 - Сделать route selection безопасным: incompatible routes должны исключаться до execution attempt, включая failover.
 - OpenRouter сделать default-deny без explicit model/route compatibility.
@@ -339,7 +343,9 @@ Findings:
 
 - **Internal plain completion API:** `chat_completion_for_model_info()` is used by compaction, loop detection, wiki writer and Agent input classifier. Product decision: keep these as internal-only `internal_text_completion*` APIs, or force every internal LLM task through `chat_with_tools` without tools. PRD recommends internal-only rename/isolation to avoid broad agent semantic changes.
 - **Per-user prompt:** `UserConfig.system_prompt` and `storage.update_user_prompt()` are used by Chat Mode prompt editing, while topic-level system prompts are separate. Decision: remove per-user prompt editing if it exists only for Chat Mode; keep topic/profile prompts if they are agent runtime features.
-- **Media route semantics:** Current media handlers for voice/photo/video are Chat Mode-only. Agent-only target must decide whether media is converted into Agent attachments/context or explicitly rejected as unsupported agent input. No chat fallback is allowed.
+- **Existing agent media surface:** repo already has agent-side media primitives: `crates/oxide-agent-core/src/agent/preprocessor.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent/media.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input.rs`, `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs` and sandbox media tools in `crates/oxide-agent-core/src/agent/providers/media_file.rs` (`transcribe_audio_file`, `describe_image_file`, `describe_video_file`). The refactor should reuse these instead of preserving Chat Mode media handlers.
+- **Media route semantics:** decision for this PRD is not "attachments or reject" anymore. Target behavior is: voice is immediately transcribed through explicit `MEDIA_MODEL_*` STT route and then injected into Agent Mode as text; photo/video/audio/document are preserved in sandbox as agent attachments when media/file capability is enabled, and the agent may call media tools with a prompt. If required route/capability is absent, reject clearly. No chat fallback is allowed.
+- **Direct Gemini provider:** current repo policy keeps direct Google Gemini provider absent; Gemini-family media/STT means OpenRouter model IDs such as `google/gemini-*` routed through `llm-provider/openrouter`, not a new `llm-provider/gemini` integration.
 - **Media model defaults:** `media_model_spec()` currently reuses chat token/context defaults. Need new `MEDIA_MODEL_MAX_OUTPUT_TOKENS` / `MEDIA_MODEL_CONTEXT_WINDOW_TOKENS` or reuse agent defaults deliberately.
 - **OpenRouter compatibility source:** Current code treats OpenRouter provider-level capabilities as tool-capable. Need an explicit allowlist, config flag, metadata source, or route capability field. Default should be deny for agent routes.
 - **NVIDIA allowlist ownership:** NVIDIA model support is code allowlist/wildcards. Decide whether this remains in code or moves to config/metadata, but selection must reject unsupported models before execution attempt.
@@ -408,6 +414,36 @@ Findings:
 - ChatGPT provider remains only as agent provider with tool calling support; JSON/structured-output limitations must be handled alias-safely.
 - Groq is removed.
 
+
+### 6.7 Modality and media architecture
+
+All user media is agent input. It must never be answered through Chat Mode, chat history, `process_llm_request()` or transport-level `chat_completion`.
+
+Voice messages:
+
+- Telegram voice payload is downloaded only after agent access/topic routing allows processing.
+- STT requires an explicit media route: `MEDIA_MODEL_ID` + `MEDIA_MODEL_PROVIDER` with audio transcription support.
+- Acceptable current providers are the existing media-capable routes, especially OpenRouter Gemini-family models through `llm-provider/openrouter` and Mistral/Voxtral-style STT through `llm-provider/mistral` when configured.
+- Do not add a direct Google Gemini provider as part of this refactor. Direct Gemini provider IDs are currently forbidden by repo checks; Gemini-family means OpenRouter route unless a separate product decision changes that.
+- On successful STT, the transcript is dispatched as normal Agent Mode text input with metadata such as source=`telegram_voice`, mime type and optional caption/context.
+- If no STT route exists, reply with a clear unsupported message: voice messages require a configured media/STT provider. Do not activate chat, do not show mode menu, do not call plain completion.
+
+Photo, video, audio files and documents:
+
+- Telegram handler must gate by agent access, topic route, file size and media/file feature availability before download.
+- Files are stored only in the agent sandbox / per-run upload area using sanitized filenames and existing sandbox scope logic.
+- The agent receives an attachment descriptor/path plus user caption/task text; the raw file is not written to chat history or R2 chat history.
+- Preferred behavior is tool-first: expose `describe_image_file`, `describe_video_file` and `transcribe_audio_file` from `MediaFileProvider` so the agent can decide when and how to inspect the file.
+- Eager preprocessing is allowed only as an agent input preprocessor that converts media into agent context text. Its output must be fed into Agent Mode, not sent directly to the user as a chat response.
+- Missing media model, missing media feature/profile, unsupported MIME type, oversize files or sandbox write failure must produce explicit unsupported/error messages.
+
+Media tool safety:
+
+- Tool arguments must resolve through sandbox path validation; no arbitrary host paths.
+- Agent-provided prompts to media tools are task prompts, not replacement system prompts. Keep a fixed tool/system instruction that asks for faithful description/transcription and preserves user intent separation.
+- Media route selection must check modality capability: audio transcription, image understanding and video understanding are separate capabilities.
+- Media capability does not imply agent tool-calling capability. A route may be valid for media tools while still invalid as the main Agent Mode LLM route.
+
 ## 7. Provider Compatibility Policy
 
 Provider compatibility must be based on concrete agent requirements, not on existence of a chat completion endpoint.
@@ -424,6 +460,19 @@ Rules:
 - Runtime should skip or reject unsupported routes before execution attempt; no provider should be called just to discover missing tool support when capability data says unsupported.
 - Structured output support does not imply agent/tool support.
 - Media support does not imply agent/tool support.
+
+
+### Media Capability Policy
+
+Media capability is separate from agent compatibility:
+
+- `MEDIA_MODEL_*` routes are auxiliary media routes, not replacements for `AGENT_MODEL_*` / `AGENT_MODEL_ROUTES__*`.
+- A media route may support audio/image/video while not supporting tool calling; that route can be used only by media tools/preprocessor, not as the main agent route.
+- Audio STT, image understanding and video understanding must be checked independently via `MediaModality` / `MediaCapabilities` or equivalent route metadata.
+- OpenRouter media routes are model-dependent. Gemini-family model IDs can be valid through OpenRouter, but OpenRouter should still be default-deny for main agent tool routes unless explicitly marked agent-compatible.
+- Mistral/Voxtral-style audio STT can be valid for voice transcription even if the selected main agent model is another provider.
+- Missing `MEDIA_MODEL_*` must disable media understanding gracefully; it must not fallback to `CHAT_MODEL_*`, `chat_model_name` or plain chat completion.
+- Direct provider IDs such as `gemini`, `google-gemini` or `llm-provider/gemini` remain forbidden unless a separate provider integration PR intentionally changes repo policy.
 
 ### Required Provider Categories
 
@@ -1046,43 +1095,66 @@ Edge Cases:
 
 ID: `FR-015`
 
-Название: voice/photo/video/document flows не должны fallback-иться в Chat Mode.
+Название: voice/photo/video/audio/document flows must become agent-only modality inputs.
 
 Описание:
 
-- Remove Chat Mode-only checks from media handlers.
-- Decide and implement one of two allowed behaviors:
-  - pass media to Agent Mode as attachments/context/tool input; or
-  - reject media with explicit unsupported-agent-input message.
-- Voice STT must not call `process_llm_request()` after transcription.
-- Photo/video analysis must not save chat history or send chat flow controls.
-- Documents already route to Agent Mode when state is `agent_mode`; remove mode-selection fallback and align with agent-only access policy.
+- Delete or bypass Chat Mode-only media handlers in `bot/handlers.rs`; Telegram media must enter Agent Mode through `bot/agent/media.rs`, `agent_handlers/input.rs`, `task_runner.rs` and `agent/preprocessor.rs`.
+- Voice messages:
+  - download voice payload only after agent access/topic route checks pass;
+  - require explicit STT-capable `MEDIA_MODEL_ID` + `MEDIA_MODEL_PROVIDER`;
+  - use `LlmClient::resolve_media_model_name_for_audio_stt()` / `transcribe_audio*` through the media route;
+  - dispatch the transcript as normal Agent Mode text input;
+  - if STT route is absent/unsupported, reject with "voice messages require a configured media/STT provider" style message.
+- Photo/video/audio-file/document inputs:
+  - download into the agent sandbox/per-run upload area when media/file capability is enabled;
+  - sanitize filenames and enforce Telegram/agent upload size limits;
+  - pass an attachment descriptor/path and caption/task text to the agent;
+  - expose/use sandbox media tools (`describe_image_file`, `describe_video_file`, `transcribe_audio_file`) so the agent can request analysis with a prompt;
+  - allow eager preprocessor output only as agent context text, never as direct chat response.
+- Remove media writes to chat history: no `save_message_for_chat`, no scoped chat UUID, no chat flow controls.
+- Remove media route fallback to `chat_model_name` / `CHAT_MODEL_*`; media either uses explicit `MEDIA_MODEL_*` or returns unsupported.
+- Do not add direct Google Gemini provider. Gemini-family media/STT is allowed only through existing OpenRouter routes unless a separate product decision introduces a direct provider.
 
 Rationale:
 
-- Current media handling is a major hidden Chat Mode path: voice transcribes then sends text to plain chat completion, image/video analyze directly and save chat history.
+- Current voice/photo/video handlers are hidden Chat Mode paths: voice transcribes then calls `process_llm_request()`, image/video analyze directly and write assistant replies into chat history.
+- The repo already contains agent-side media primitives. Reusing them preserves Agent Mode semantics, lets the agent decide when to inspect media, and avoids lossy "describe immediately then answer as chat" behavior.
 
 Acceptance Criteria:
 
-- `handle_voice`, `handle_photo`, `handle_video`, `handle_document` never require `chat_mode`.
-- Media paths never call `save_message_for_chat`.
-- Media paths either create agent input with attachments or return clear unsupported message.
-- No chat flow controls are sent after media handling.
+- `handle_voice`, `handle_photo`, `handle_video`, `handle_document` never require `chat_mode` and never show mode-selection fallback.
+- Voice with configured STT-capable media route becomes Agent Mode text input; voice without media route returns explicit unsupported message.
+- Photo/video/audio/document files are either preserved in sandbox and made available to the agent/tool runtime, or explicitly rejected when media/file capability is disabled.
+- Media tools can analyze sandbox files by prompt while enforcing sandbox path validation.
+- Media paths never call `save_message_for_chat`, `ensure_scoped_chat_uuid`, `send_chat_flow_controls*`, `process_llm_request` or transport-level `chat_completion`.
+- `LlmClient` media resolution does not fallback to chat model after `CHAT_MODEL_*` removal.
+- Direct Gemini provider IDs remain absent; OpenRouter Gemini-family model IDs remain possible as `MEDIA_MODEL_ID` values through `llm-provider/openrouter`.
 
 Affected Areas:
 
 - `bot/handlers.rs:1336-1750`
-- `bot/agent/media.rs`
-- `bot/agent_handlers/*`
-- `llm/client.rs` media route resolution
-- docs/tests for media UX
+- `crates/oxide-agent-transport-telegram/src/bot/agent/media.rs`
+- `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/input.rs`
+- `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/task_runner.rs`
+- `crates/oxide-agent-core/src/agent/preprocessor.rs`
+- `crates/oxide-agent-core/src/agent/providers/media_file.rs`
+- `crates/oxide-agent-core/src/llm/client.rs`
+- `crates/oxide-agent-core/src/llm/capabilities.rs`
+- media docs/tests/snapshots/profile checks
 
 Edge Cases:
 
-- Voice previously worked only in chat mode.
-- Photo/video have captions that are tasks.
+- Voice previously worked only in Chat Mode.
+- Voice has no STT media route configured.
+- Media route supports image/video but not audio STT.
+- Photo/video have captions that are tasks or tool prompts.
 - Video exceeds inline size limit.
-- Media route missing.
+- File is valid but media/file feature/profile is disabled.
+- Agent has pending input that specifically requires preserving the binary file.
+- Sandbox path sanitization rejects or rewrites unsafe filenames.
+- OpenRouter Gemini-family model is configured for media but not for main agent tools.
+- User asks for "Gemini" directly; config must use OpenRouter route, not direct `llm-provider/gemini`.
 - Topic route requires mention.
 - Agent access missing.
 
@@ -1212,6 +1284,8 @@ Edge Cases:
 - **Fail-fast config validation:** missing or incompatible agent route should fail at startup/config validation when possible.
 - **Zero hidden fallbacks:** no fallback from Agent Mode or `/start` to Chat Mode, chat model or plain chat completion.
 - **Clear error messages:** unsupported provider/model/access should explain which route or capability is missing.
+- **Explicit media degradation:** missing media/STT route should produce a direct unsupported message, not a mode menu, silent ignore or fallback to text chat.
+- **Sandbox media isolation:** downloaded Telegram files must stay inside agent sandbox scope with sanitized names and validated tool paths.
 - **Minimal runtime ambiguity:** internal completion, if kept, must be named internal and not reachable from transport/user handlers.
 - **CI-verifiable removal:** `rg` invariants and profile/snapshot checks must prove removal.
 - **Agent semantics preservation:** agent memory, tool execution, confirmation, topic routing and provider failover should continue working unless explicitly changed by chat removal.
@@ -1234,7 +1308,12 @@ Edge Cases:
 - NVIDIA model support differs by model: use `model_capabilities()` before selection and keep provider-level guard.
 - ChatGPT JSON/structured output restrictions: ensure canonical/alias-safe checks for `chatgpt`, `openai-chatgpt`, `llm-provider/openai-chatgpt`.
 - Internal summarization currently using `chat_completion`: rename/isolate rather than delete blindly.
-- Media input previously worked only in Chat Mode: decide Agent attachments vs explicit unsupported response.
+- Media input previously worked only in Chat Mode: voice must become STT → Agent Mode text; photo/video/audio/document must become sandbox attachment/tool input or explicit unsupported response.
+- Voice without configured STT media route: reject clearly and explain that `MEDIA_MODEL_*` with audio transcription support is required.
+- Photo/video/document with configured media/file capability disabled: reject clearly; do not show Chat Mode menu.
+- OpenRouter Gemini-family media model configured: allowed as `MEDIA_MODEL_ID` through `llm-provider/openrouter`; direct `llm-provider/gemini` remains invalid.
+- Media route supports modality but main agent route does not support tools: media route may be used only by media tools/preprocessor, not selected as agent route.
+- Agent media tool prompt tries to access a path outside sandbox: reject via path resolver.
 - Docs still showing deleted env vars: `rg` invariant must fail review.
 - Cargo feature still compiling deleted provider: `cargo check --workspace --all-features` and `rg llm-groq` must catch it.
 - Capability snapshots still listing deleted provider: update insta snapshots and script checks.
@@ -1314,11 +1393,12 @@ Edge Cases:
 
 ### Phase 8: Media handling
 
-- Refactor voice/photo/video/document handlers to agent-only.
-- If attachments are supported, convert media into agent attachments/context and run agent handler.
-- If not supported, return explicit unsupported message and do not call plain completion.
-- Remove chat history writes and chat flow controls from media handlers.
-- Verify media route resolution has no chat model fallback.
+- Route Telegram voice/photo/video/document handlers through agent access/topic policy and agent input extraction; remove Chat Mode checks from those handlers.
+- Voice: download payload, require explicit STT-capable `MEDIA_MODEL_*`, transcribe through media route, dispatch transcript as Agent Mode text. If route is absent, return explicit unsupported response.
+- Photo/video/audio/document: download into agent sandbox/per-run upload area when media/file feature is enabled; pass attachment descriptor and caption/task text to agent.
+- Prefer tool-first media analysis using `MediaFileProvider` tools (`describe_image_file`, `describe_video_file`, `transcribe_audio_file`); keep eager preprocessor only as agent-context generation, not direct reply.
+- Remove media chat history writes, scoped chat UUID use and chat flow controls from media handlers.
+- Verify media route resolution has no chat model fallback and no direct Gemini provider is introduced.
 
 ### Phase 9: Docs/tests/snapshots
 
@@ -1361,6 +1441,10 @@ Edge Cases:
 - Unsupported providers/routes are skipped or rejected before execution attempt.
 - ChatGPT provider remains available as agent-compatible provider when configured.
 - Voice/photo/video/document flows do not fallback to Chat Mode.
+- Voice requires explicit STT-capable media route and becomes Agent Mode text input; missing route returns explicit unsupported message.
+- Photo/video/audio/document inputs are sandbox attachments/tool inputs or explicit unsupported responses; they are never direct chat replies.
+- Media route resolution uses `MEDIA_MODEL_*` and modality capabilities only; it does not fallback to removed chat model config.
+- Direct Gemini provider IDs remain absent; Gemini-family media use goes through OpenRouter model IDs if configured.
 - README, `.env.example`, workflows, scripts and profiles describe agent-only operation.
 - Tests cover agent-only routing, removed chat path and provider gating.
 - Final grep commands pass with zero live legacy hits, except explicitly documented internal endpoint naming if unavoidable.
@@ -1401,6 +1485,25 @@ rg -n "chat_completion|internal_text_completion|process_llm_request" crates/oxid
 
 # Provider features/profiles must not contain Groq.
 rg -n "llm-groq|llm-provider/groq|GROQ_API_KEY" Cargo.toml crates profiles scripts .github .env.example README.md AGENTS.md
+
+# Media/modality invariant: Telegram media handlers must not use Chat Mode storage/controls.
+rg -n "chat_mode|save_message_for_chat|ensure_scoped_chat_uuid|send_chat_flow_controls|process_llm_request" \
+  crates/oxide-agent-transport-telegram/src/bot/handlers.rs \
+  crates/oxide-agent-transport-telegram/src/bot/agent \
+  crates/oxide-agent-transport-telegram/src/bot/agent_handlers
+
+# Media route/tool surface should remain agent-owned.
+rg -n "resolve_media_model|MEDIA_MODEL|transcribe_audio_file|describe_image_file|describe_video_file|MediaFileProvider|Preprocessor" \
+  crates/oxide-agent-core/src \
+  crates/oxide-agent-transport-telegram/src
+
+# Direct Gemini provider remains absent; Gemini-family model IDs are allowed only as OpenRouter model IDs.
+rg -n "llm-provider/gemini|llm-provider/google-gemini|GOOGLE_GEMINI_API_KEY" \
+  crates Cargo.toml profiles scripts .github .env.example README.md AGENTS.md
+
+# Targeted media tests after implementation.
+cargo test -p oxide-agent-core preprocessor --all-features
+cargo test -p oxide-agent-core media_file --all-features
 
 # Build and tests.
 cargo fmt --check
@@ -1448,9 +1551,10 @@ Mitigation:
 
 Mitigation:
 
-- Decide explicitly between agent attachments vs unsupported-agent-input response.
-- Add tests for voice/photo/video/document in agent-only mode.
-- Do not preserve UX by falling back to Chat Mode.
+- Use the explicit contract: voice → STT media route → Agent Mode text; photo/video/audio/document → sandbox attachment + media tool/preprocessor.
+- Add tests for voice with/without STT route, photo/video/document with/without media feature, and captions as agent tasks.
+- Preserve existing agent-side media primitives instead of direct Chat Mode handlers.
+- Do not preserve UX by falling back to Chat Mode or direct chat completion.
 
 ### Risk: provider false positives
 
