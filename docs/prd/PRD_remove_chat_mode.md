@@ -532,7 +532,7 @@ Important: a model having `supports_tools_parameter: yes` is still not automatic
   - `approved_for_media_audio` + `audio_input=true` for STT;
   - `approved_for_media_image` + `image_input=true` for image;
   - `approved_for_media_video` + `video_input=true` for video;
-  - `approved_for_media_document` + `pdf_input=true` for document/PDF visual analysis.
+- `approved_for_media_document` + `supports_document_understanding=true` (or provider-equivalent `pdf_input=true`) for document/PDF visual analysis.
 - OpenRouter requests that include tools or structured output must set provider routing with `require_parameters=true`. This is mandatory for OpenRouter agent/tool routes to avoid silent parameter drops by downstream providers.
 - Text-only DeepSeek models must never be selected for media handling.
 - Media-only Gemini 2.5 Flash Lite must not be selected for main Agent Mode unless explicitly promoted in a future PRD/change.
@@ -899,13 +899,28 @@ Photo, video, audio files and documents:
 - The agent receives an attachment descriptor/path plus user caption/task text; the raw file is not written to chat history or R2 chat history.
 - Preferred behavior is tool-first: expose `describe_image_file`, `describe_video_file` and `transcribe_audio_file` from `MediaFileProvider` so the agent can decide when and how to inspect the file.
 - Eager preprocessing is allowed only as an agent input preprocessor that converts media into agent context text. Its output must be fed into Agent Mode, not sent directly to the user as a chat response.
+- Generic file upload to sandbox for `documents` does **not** require document-understanding capability; documents are delivered as attachment descriptors by default.
+- If this PRD does not implement document/PDF analysis via media model, documents are sandbox attachments only and are not sent to media-model analysis.
 - Missing media model, missing media feature/profile, unsupported MIME type, oversize files or sandbox write failure must produce explicit unsupported/error messages.
+
+Required target shape for media capability handling:
+
+- `MediaModality` enum/capability model must include:
+  - `AudioTranscription`
+  - `ImageUnderstanding`
+  - `VideoUnderstanding`
+  - `DocumentUnderstanding`
+- `MediaCapabilities` must include:
+  - `supports_audio_transcription`
+  - `supports_image_understanding`
+  - `supports_video_understanding`
+  - `supports_document_understanding`
 
 Media tool safety:
 
 - Tool arguments must resolve through sandbox path validation; no arbitrary host paths.
 - Agent-provided prompts to media tools are task prompts, not replacement system prompts. Keep a fixed tool/system instruction that asks for faithful description/transcription and preserves user intent separation.
-- Media route selection must check modality capability: audio transcription, image understanding and video understanding are separate capabilities.
+- Media route selection must check modality capability: audio transcription, image understanding, video understanding, and document understanding are separate capabilities.
 - Media capability does not imply agent tool-calling capability. A route may be valid for media tools while still invalid as the main Agent Mode LLM route.
 
 ## 7. Provider Compatibility Policy
@@ -931,8 +946,8 @@ Rules:
 Media capability is separate from agent compatibility:
 
 - `MEDIA_MODEL_*` routes are auxiliary media routes, not replacements for `AGENT_MODEL_*` / `AGENT_MODEL_ROUTES__*`.
-- A media route may support audio/image/video while not supporting tool calling; that route can be used only by media tools/preprocessor, not as the main agent route.
-- Audio STT, image understanding and video understanding must be checked independently via `MediaModality` / `MediaCapabilities` or equivalent route metadata.
+- A media route may support audio/image/video/document understanding while not supporting tool calling; that route can be used only by media tools/preprocessor, not as the main agent route.
+- Audio STT, image understanding, video understanding, and document understanding must be checked independently via `MediaModality` / `MediaCapabilities` or equivalent route metadata.
 - OpenRouter media routes are model-dependent. Gemini-family model IDs can be valid through OpenRouter, but OpenRouter should still be default-deny for main agent tool routes unless explicitly marked agent-compatible.
 - Mistral/Voxtral-style audio STT can be valid for voice transcription even if the selected main agent model is another provider.
 - Missing `MEDIA_MODEL_*` must disable media understanding gracefully; it must not fallback to `CHAT_MODEL_*`, `chat_model_name` or plain chat completion.
@@ -1727,6 +1742,7 @@ ID: `FR-015`
   - sanitize filenames and enforce Telegram/agent upload size limits;
   - pass an attachment descriptor/path and caption/task text to the agent;
   - expose/use sandbox media tools (`describe_image_file`, `describe_video_file`, `transcribe_audio_file`) so the agent can request analysis with a prompt;
+  - if document/PDF understanding route is not implemented in this PR, documents remain sandbox attachments only and are not passed to media model analysis;
   - allow eager preprocessor output only as agent context text, never as direct chat response.
 - Remove media writes to chat history: no `save_message_for_chat`, no scoped chat UUID, no chat flow controls.
 - Remove media route fallback to `chat_model_name` / `CHAT_MODEL_*`; media either uses explicit `MEDIA_MODEL_*` or returns unsupported.
