@@ -765,7 +765,7 @@ Cancellation/reset behavior:
 - `State::EditingPrompt` is removed completely. This PRD does not introduce, rename, or preserve any Telegram user-facing prompt editor.
 - `MENU_CALLBACK_EDIT_PROMPT`, `MenuCallbackData::EditPrompt`, text-menu "Edit Prompt" branches, and the handler that stores edited prompt text are deleted.
 - Per-user prompt editing via `storage.update_user_prompt()` / `storage.get_user_prompt()` is treated as Chat Mode surface and removed from Telegram runtime.
-- Existing agent-owned prompt mechanisms (topic/profile/global system prompt configuration) are preserved only if they are already used by Agent Mode and do not depend on `State::EditingPrompt`.
+- Existing agent-owned prompt mechanisms (topic/profile/admin-controlled profile configuration) are preserved only if they are already used by Agent Mode and do not depend on `SYSTEM_MESSAGE` or per-user prompt editing.
 - Adding Agent prompt editing is explicitly out of scope and requires a separate PRD.
 - `current_chat_uuid` is removed from `UserConfig` and `UserContextConfig`.
 - Agent flow ID remains, but any helper named `generate_chat_uuid()` is renamed to a generic flow/run ID generator.
