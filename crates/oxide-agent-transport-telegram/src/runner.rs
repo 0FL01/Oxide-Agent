@@ -167,34 +167,6 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
                                 .endpoint(handle_start_document),
                         ),
                 )
-                .branch(
-                    dptree::case![State::ChatMode]
-                        .branch(
-                            Update::filter_message()
-                                .filter(|msg: Message| msg.text().is_some())
-                                .endpoint(handle_start_text),
-                        )
-                        .branch(
-                            Update::filter_message()
-                                .filter(|msg: Message| msg.voice().is_some())
-                                .endpoint(handle_start_voice),
-                        )
-                        .branch(
-                            Update::filter_message()
-                                .filter(|msg: Message| msg.photo().is_some())
-                                .endpoint(handle_start_photo),
-                        )
-                        .branch(
-                            Update::filter_message()
-                                .filter(|msg: Message| msg.video().is_some())
-                                .endpoint(handle_start_video),
-                        )
-                        .branch(
-                            dptree::filter(|msg: Message| msg.document().is_some())
-                                .endpoint(handle_start_document),
-                        ),
-                )
-                .branch(dptree::case![State::EditingPrompt].endpoint(handle_editing_prompt))
                 .branch(dptree::case![State::AgentMode].endpoint(handle_agent_message))
                 .branch(
                     dptree::case![State::AgentConfirmation(action)]
@@ -358,19 +330,6 @@ async fn handle_start_document(
 }
 
 #[cfg(feature = "storage-s3-r2")]
-async fn handle_editing_prompt(
-    bot: Bot,
-    msg: Message,
-    storage: Arc<dyn storage::StorageProvider>,
-    dialogue: Dialogue<State, InMemStorage<State>>,
-) -> Result<(), teloxide::RequestError> {
-    if let Err(e) = bot::handlers::handle_editing_prompt(bot, msg, storage, dialogue).await {
-        error!("Editing prompt handler error: {}", e);
-    }
-    respond(())
-}
-
-#[cfg(feature = "storage-s3-r2")]
 async fn handle_agent_message(
     bot: Bot,
     msg: Message,
@@ -402,17 +361,6 @@ async fn handle_callback(
         .message
         .as_ref()
         .map(|message| Dialogue::new(bot_state.clone(), message.chat().id));
-
-    match bot::handlers::handle_chat_flow_callback(&bot, &q, &storage).await {
-        Ok(true) => {
-            return respond(());
-        }
-        Ok(false) => {}
-        Err(e) => {
-            error!("Chat flow callback handler error: {}", e);
-            return respond(());
-        }
-    }
 
     if let Some(dialogue) = &dialogue {
         match bot::handlers::handle_menu_callback(&bot, &q, &storage, &llm, &settings, dialogue)

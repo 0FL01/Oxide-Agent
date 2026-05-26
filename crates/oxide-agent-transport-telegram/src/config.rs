@@ -64,7 +64,7 @@ pub struct TelegramSettings {
     /// Forum thread id for the manager control-plane home topic.
     #[serde(default)]
     pub manager_home_thread_id: Option<i32>,
-    /// Enables Attach/Detach flow controls in Agent Mode and Chat Mode.
+    /// Enables Attach/Detach flow controls in Agent Mode.
     #[serde(default = "default_attach_detach_enabled")]
     pub attach_detach_enabled: bool,
     /// Enables progress/status messages for reminder-triggered agent runs.
