@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
-use crate::config::AgentSettings;
-use crate::config::ModelInfo;
+use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::LlmProvider;
 
 #[cfg(any(
@@ -75,6 +74,11 @@ pub(crate) trait LlmProviderModule: Send + Sync {
         MediaCapabilities::new(false, false, false)
     }
 
+    /// Media modality support for a concrete model route.
+    fn media_capabilities_for_model(&self, _model_info: &ModelInfo) -> MediaCapabilities {
+        self.media_capabilities()
+    }
+
     /// Request capabilities for a concrete model route.
     fn capabilities_for_model(&self, _model_info: &ModelInfo) -> ProviderCapabilities {
         self.capabilities()
@@ -132,8 +136,18 @@ pub(crate) fn provider_missing_route_config_message(
 
 /// Returns media capabilities for a compiled provider module.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn provider_media_capabilities(provider_name: &str) -> Option<MediaCapabilities> {
     find_provider_module(provider_name).map(|module| module.media_capabilities())
+}
+
+/// Returns media capabilities for a concrete route handled by a compiled provider module.
+#[must_use]
+pub(crate) fn provider_media_capabilities_for_model(
+    model_info: &ModelInfo,
+) -> Option<MediaCapabilities> {
+    find_provider_module(&model_info.provider)
+        .map(|module| module.media_capabilities_for_model(model_info))
 }
 
 /// Returns request capabilities for a concrete route handled by a compiled provider module.
@@ -391,9 +405,17 @@ mod tests {
 
     #[cfg(feature = "llm-openrouter")]
     #[test]
-    fn openrouter_module_owns_media_capabilities() {
-        let capabilities = super::provider_media_capabilities("llm-provider/openrouter")
-            .expect("provider should resolve");
+    fn openrouter_module_owns_model_specific_media_capabilities() {
+        let route = crate::config::ModelInfo {
+            id: "google/gemini-3-flash-preview".to_string(),
+            provider: "llm-provider/openrouter".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            weight: 1,
+        };
+
+        let capabilities =
+            super::provider_media_capabilities_for_model(&route).expect("provider should resolve");
 
         assert!(capabilities.supports_audio_transcription);
         assert!(capabilities.supports_image_understanding);

@@ -388,6 +388,9 @@ impl LlmProvider for OpenRouterProvider {
 
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);
+            body["provider"] = json!({
+                "require_parameters": true
+            });
         }
 
         // Hardcoded app attribution headers for OpenRouter identification

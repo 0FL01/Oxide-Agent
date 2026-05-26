@@ -133,14 +133,16 @@ pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
 
 #[must_use]
 /// Returns media modality support for a provider.
-pub fn provider_media_capabilities(provider_name: &str) -> MediaCapabilities {
+#[allow(dead_code)]
+fn provider_media_capabilities(provider_name: &str) -> MediaCapabilities {
     providers::provider_media_capabilities(provider_name).unwrap_or_else(default_media_capabilities)
 }
 
 #[must_use]
 /// Returns media modality support for a specific configured model route.
 pub fn provider_media_capabilities_for_model(model_info: &ModelInfo) -> MediaCapabilities {
-    provider_media_capabilities(&model_info.provider)
+    providers::provider_media_capabilities_for_model(model_info)
+        .unwrap_or_else(default_media_capabilities)
 }
 
 #[must_use]
@@ -170,7 +172,7 @@ mod tests {
     #[test]
     fn provider_capabilities_for_nvidia_model_apply_model_specific_overrides() {
         let supported = crate::config::ModelInfo {
-            id: "meta/llama-3.1-70b-instruct".to_string(),
+            id: "deepseek-ai/deepseek-v4-flash".to_string(),
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
             provider: "nvidia".to_string(),
@@ -215,12 +217,56 @@ mod tests {
 
     #[cfg(feature = "llm-openrouter")]
     #[test]
-    fn openrouter_capabilities_disable_structured_output() {
+    fn openrouter_provider_capabilities_are_default_deny_without_model_policy() {
         let capabilities = super::provider_capabilities("openrouter");
 
-        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "best_effort");
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn openrouter_model_policy_allows_only_explicit_agent_routes() {
+        for model_id in ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] {
+            let route = crate::config::ModelInfo {
+                id: model_id.to_string(),
+                max_output_tokens: 4096,
+                context_window_tokens: 128_000,
+                provider: "openrouter".to_string(),
+                weight: 1,
+            };
+            let capabilities = super::provider_capabilities_for_model(&route);
+            assert!(capabilities.supports_tool_calling, "{model_id}");
+            assert!(capabilities.supports_structured_output, "{model_id}");
+        }
+
+        for model_id in [
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-flash-lite-preview",
+            "google/gemini-2.5-flash-lite",
+        ] {
+            let route = crate::config::ModelInfo {
+                id: model_id.to_string(),
+                max_output_tokens: 4096,
+                context_window_tokens: 128_000,
+                provider: "openrouter".to_string(),
+                weight: 1,
+            };
+            let capabilities = super::provider_capabilities_for_model(&route);
+            assert!(!capabilities.supports_tool_calling, "{model_id}");
+            assert!(capabilities.supports_structured_output, "{model_id}");
+        }
+
+        let unknown = crate::config::ModelInfo {
+            id: "unknown/model".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "openrouter".to_string(),
+            weight: 1,
+        };
+
+        assert!(!super::provider_capabilities_for_model(&unknown).supports_tool_calling);
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -333,7 +379,14 @@ mod tests {
     ))]
     #[test]
     fn media_capabilities_are_modality_specific() {
-        let openrouter = super::provider_media_capabilities("openrouter");
+        let openrouter_media = crate::config::ModelInfo {
+            id: "google/gemini-3-flash-preview".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "openrouter".to_string(),
+            weight: 1,
+        };
+        let openrouter = super::provider_media_capabilities_for_model(&openrouter_media);
         let mistral = super::provider_media_capabilities("mistral");
         let opencode_go = super::provider_media_capabilities("opencode-go");
 

@@ -761,7 +761,7 @@ mod tests {
             AgentSettings {
                 agent_model_id: Some("agent-openrouter".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("media-gemini".to_string()),
+                media_model_id: Some("google/gemini-3-flash-preview".to_string()),
                 media_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
@@ -774,7 +774,7 @@ mod tests {
             .resolve_media_model_for_video()
             .expect("media route should resolve");
 
-        assert_eq!(route.id, "media-gemini");
+        assert_eq!(route.id, "google/gemini-3-flash-preview");
         assert_eq!(route.provider, "openrouter");
     }
 
@@ -867,7 +867,7 @@ mod tests {
             AgentSettings {
                 agent_model_id: Some("agent-openrouter".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
-                media_model_id: Some("media-gemini".to_string()),
+                media_model_id: Some("google/gemini-3-flash-preview".to_string()),
                 media_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
@@ -879,17 +879,17 @@ mod tests {
         assert_eq!(
             llm.resolve_media_model_name_for_audio_stt()
                 .expect("audio stt route"),
-            "media-gemini"
+            "google/gemini-3-flash-preview"
         );
         assert_eq!(
             llm.resolve_media_model_name_for_image()
                 .expect("image route"),
-            "media-gemini"
+            "google/gemini-3-flash-preview"
         );
         assert_eq!(
             llm.resolve_media_model_name_for_video()
                 .expect("video route"),
-            "media-gemini"
+            "google/gemini-3-flash-preview"
         );
     }
 
@@ -1000,7 +1000,7 @@ mod tests {
     async fn main_agent_tool_request_uses_configured_temperature() {
         let settings = with_provider_key(
             AgentSettings {
-                agent_model_id: Some("chat-openrouter".to_string()),
+                agent_model_id: Some("deepseek/deepseek-v4-flash".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
@@ -1023,7 +1023,7 @@ mod tests {
         llm.register_provider("openrouter".to_string(), Arc::new(provider));
 
         let model = crate::config::ModelInfo {
-            id: "chat-openrouter".to_string(),
+            id: "deepseek/deepseek-v4-flash".to_string(),
             provider: "openrouter".to_string(),
             max_output_tokens: 1024,
             context_window_tokens: 8192,
@@ -1049,7 +1049,7 @@ mod tests {
     async fn internal_text_completion_uses_explicit_route() {
         let settings = with_provider_key(
             AgentSettings {
-                agent_model_id: Some("chat-openrouter".to_string()),
+                agent_model_id: Some("deepseek/deepseek-v4-flash".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
@@ -1064,7 +1064,7 @@ mod tests {
                 assert_eq!(system_prompt, "You are helpful.");
                 assert!(history.is_empty());
                 assert_eq!(user_message, "new request");
-                assert_eq!(model_id, "chat-openrouter");
+                assert_eq!(model_id, "deepseek/deepseek-v4-flash");
                 assert_eq!(max_tokens, 1024);
                 Ok("ok".to_string())
             },
@@ -1072,7 +1072,7 @@ mod tests {
         llm.register_provider("openrouter".to_string(), Arc::new(provider));
 
         let model = crate::config::ModelInfo {
-            id: "chat-openrouter".to_string(),
+            id: "deepseek/deepseek-v4-flash".to_string(),
             provider: "openrouter".to_string(),
             max_output_tokens: 1024,
             context_window_tokens: 8192,
@@ -1097,7 +1097,7 @@ mod tests {
     async fn tool_requests_fold_system_history_into_prompt() {
         let settings = with_provider_key(
             AgentSettings {
-                agent_model_id: Some("chat-openrouter".to_string()),
+                agent_model_id: Some("deepseek/deepseek-v4-flash".to_string()),
                 agent_model_provider: Some("openrouter".to_string()),
                 ..AgentSettings::default()
             },
@@ -1133,7 +1133,13 @@ mod tests {
         ];
 
         let response = llm
-            .chat_with_tools("You are helpful.", &history, &[], "chat-openrouter", false)
+            .chat_with_tools(
+                "You are helpful.",
+                &history,
+                &[],
+                "deepseek/deepseek-v4-flash",
+                false,
+            )
             .await
             .expect("request should succeed");
 

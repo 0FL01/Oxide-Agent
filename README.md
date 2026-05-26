@@ -233,7 +233,7 @@ AGENT_MODEL_ROUTES__2__WEIGHT=2
 <details>
 <summary>⚖️ Weighted failover with NVIDIA NIM</summary>
 
-Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven primary route first:
+Use NVIDIA NIM only with the explicit Agent Mode allowlist. If you are unsure, keep NIM behind a proven primary route first:
 
 ```dotenv
 NVIDIA_API_KEY=...
@@ -243,12 +243,12 @@ AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
 AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=5
 
-AGENT_MODEL_ROUTES__1__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__1__ID="deepseek-ai/deepseek-v4-flash"
 AGENT_MODEL_ROUTES__1__PROVIDER="nvidia"
 AGENT_MODEL_ROUTES__1__WEIGHT=3
 ```
 
-The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
+The agent runtime skips unsupported NVIDIA NIM routes before tool-enabled execution. Structured output is enabled only for explicitly approved model routes.
 
 </details>
 

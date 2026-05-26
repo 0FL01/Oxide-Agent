@@ -263,7 +263,9 @@ impl AgentRunner {
         self.maybe_run_runtime_pre_sampling_compaction(ctx, state, iteration, &model_info)
             .await?;
 
-        if !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode) {
+        if !capabilities.can_run_agent_tools()
+            || !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode)
+        {
             let error = LlmError::ApiError(format!(
                 "Tool-enabled agent calls are not supported for {} model `{}`",
                 model_info.provider, model_info.id
@@ -373,7 +375,9 @@ impl AgentRunner {
                 json_mode,
             );
 
-            if !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode) {
+            if !capabilities.can_run_agent_tools()
+                || !capabilities.can_run_chat_with_tools_request(!ctx.tools.is_empty(), json_mode)
+            {
                 let error = LlmError::ApiError(format!(
                     "Tool-enabled agent calls are not supported for {} model `{}`",
                     route.provider, route.id
@@ -677,6 +681,7 @@ impl AgentRunner {
             exhausted_routes,
             now,
             json_mode,
+            !ctx.tools.is_empty(),
             require_v1_tool_route,
         ) {
             return Some(0);
@@ -694,6 +699,7 @@ impl AgentRunner {
                     exhausted_routes,
                     now,
                     json_mode,
+                    !ctx.tools.is_empty(),
                     require_v1_tool_route,
                 )
                 .then_some((index, route.weight.max(1) as usize))
@@ -726,11 +732,15 @@ impl AgentRunner {
         exhausted_routes: &std::collections::HashSet<String>,
         now: Instant,
         json_mode: bool,
+        has_tools: bool,
         require_v1_tool_route: bool,
     ) -> bool {
         let route_key = Self::route_key(route);
+        let capabilities = LlmClient::provider_capabilities_for_model(route);
         (!require_v1_tool_route || v1_tool_runtime_enabled_for_model(route))
             && !Self::json_mode_forbids_route(json_mode, route)
+            && capabilities.can_run_agent_tools()
+            && capabilities.can_run_chat_with_tools_request(has_tools, json_mode)
             && !exhausted_routes.contains(&route_key)
             && self.llm_client.is_provider_available(&route.provider)
             && self
@@ -741,7 +751,11 @@ impl AgentRunner {
     }
 
     fn json_mode_forbids_route(json_mode: bool, route: &ModelInfo) -> bool {
-        json_mode && route.provider.eq_ignore_ascii_case("chatgpt")
+        json_mode
+            && matches!(
+                route.provider.trim().to_ascii_lowercase().as_str(),
+                "chatgpt" | "openai-chatgpt" | "llm-provider/openai-chatgpt"
+            )
     }
 
     fn quarantine_model_route(&mut self, route: &ModelInfo, duration: Duration) {
@@ -1930,13 +1944,29 @@ mod tests {
 
     #[test]
     fn json_mode_forbids_chatgpt_routes_only() {
-        let chatgpt_route = ModelInfo {
-            id: "gpt-5.4-mini".to_string(),
-            provider: "chatgpt".to_string(),
-            max_output_tokens: 32_000,
-            context_window_tokens: 200_000,
-            weight: 1,
-        };
+        let chatgpt_routes = [
+            ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            },
+            ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "openai-chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            },
+            ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "llm-provider/openai-chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            },
+        ];
         let zai_route = ModelInfo {
             id: "glm-4.7".to_string(),
             provider: "zai".to_string(),
@@ -1945,8 +1975,10 @@ mod tests {
             weight: 1,
         };
 
-        assert!(AgentRunner::json_mode_forbids_route(true, &chatgpt_route));
-        assert!(!AgentRunner::json_mode_forbids_route(false, &chatgpt_route));
+        for route in chatgpt_routes {
+            assert!(AgentRunner::json_mode_forbids_route(true, &route));
+            assert!(!AgentRunner::json_mode_forbids_route(false, &route));
+        }
         assert!(!AgentRunner::json_mode_forbids_route(true, &zai_route));
     }
 
@@ -2279,8 +2311,8 @@ mod tests {
     async fn run_unstructured_mode_parses_accidental_structured_final_answer() {
         let llm_client = build_llm_client_for_provider(
             accidental_structured_final_answer_provider(),
-            "openrouter",
-            "chat-openrouter",
+            "opencode-go",
+            "unstructured-model",
         );
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
         let mut session = EphemeralSession::new(768);
@@ -2305,7 +2337,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("chat-openrouter".to_string(), 1, 1, 30, 256),
+            config: AgentRunnerConfig::new("unstructured-model".to_string(), 1, 1, 30, 256),
         };
 
         let result = runner.run(&mut ctx).await.expect("runner succeeds");
@@ -3000,7 +3032,7 @@ mod tests {
         };
         let mut llm_client = LlmClient::new(&settings);
         llm_client.register_provider("nvidia".to_string(), Arc::new(unsupported_nvidia));
-        llm_client.register_provider("backup".to_string(), Arc::new(backup));
+        llm_client.register_provider("opencode-go".to_string(), Arc::new(backup));
         let llm_client = Arc::new(llm_client);
 
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
@@ -3038,10 +3070,10 @@ mod tests {
                         weight: 1,
                     },
                     ModelInfo {
-                        id: "backup-model".to_string(),
+                        id: "deepseek-v4-flash".to_string(),
                         max_output_tokens: 256,
                         context_window_tokens: 128_000,
-                        provider: "backup".to_string(),
+                        provider: "opencode-go".to_string(),
                         weight: 1,
                     },
                 ]),
@@ -3053,20 +3085,9 @@ mod tests {
         drop(ctx);
         drop(progress_tx);
         let events = collect_progress_events(&mut progress_rx).await;
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                AgentEvent::ProviderFailoverActivated {
-                    from_provider,
-                    from_model,
-                    to_provider,
-                    to_model,
-                } if from_provider == "nvidia"
-                    && from_model == "deepseek-ai/deepseek-r1"
-                    && to_provider == "backup"
-                    && to_model == "backup-model"
-            )
-        }));
+        assert!(!events
+            .iter()
+            .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) }));
     }
 
     fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {

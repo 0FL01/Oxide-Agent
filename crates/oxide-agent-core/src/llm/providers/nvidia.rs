@@ -51,72 +51,21 @@ pub(crate) struct NvidiaModelCapabilities {
 }
 
 const TOOL_CALLING_SUPPORTED_MODELS: &[&str] = &[
-    // Meta Llama 3.1 instruct models
-    "meta/llama-3.1-8b-instruct",
-    "meta/llama-3.1-70b-instruct",
-    "meta/llama-3.1-405b-instruct",
-    // Meta Llama 3.2 instruct models
-    "meta/llama-3.2-1b-instruct",
-    "meta/llama-3.2-3b-instruct",
-    // Meta Llama 3.3 instruct models
-    "meta/llama-3.3-70b-instruct",
-    // NVIDIA Nemotron models
-    "nvidia/llama3.1-nemotron-nano-4b-v1.1",
-    "nvidia/llama-3.1-nemotron-nano-8b-v1",
-    "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-    "nvidia/llama-3.3-nemotron-super-49b-v1",
-    // Mistral models with tool calling support
-    "mistralai/mixtral-8x22b-instruct-v01",
-    // Korean models
-    "kakaocorp/kanana-1.5-8b-instruct-2505",
-    // Thai models
-    "scb10x/llama3.1-typhoon2-8b-instruct",
-    "scb10x/llama-3.1-typhoon2-70b-instruct",
+    "deepseek-ai/deepseek-v4-pro",
+    "deepseek-ai/deepseek-v4-flash",
 ];
-
-const STRUCTURED_OUTPUT_UNSUPPORTED_PREFIXES: &[&str] =
-    &["deepseek-ai/", "mistralai/mixtral-8x7b-instruct-v01"];
 
 #[must_use]
 pub(crate) fn model_capabilities(model_id: &str) -> NvidiaModelCapabilities {
     let model_id = model_id.trim().to_ascii_lowercase();
 
-    // Check exact matches from the whitelist
-    let exact_match = TOOL_CALLING_SUPPORTED_MODELS
+    let supports_tool_calling = TOOL_CALLING_SUPPORTED_MODELS
         .iter()
         .any(|candidate| model_id == *candidate);
 
-    // Wildcard patterns for model families with verified tool calling support
-    let wildcard_match = model_id.contains("gpt-oss")
-        // Moonshot AI Kimi K2 models
-        || model_id.starts_with("moonshotai/kimi-k2")
-        // Z.AI GLM models
-        || model_id.starts_with("z-ai/glm")
-        // MiniMax M models
-        || model_id.starts_with("minimaxai/minimax-m")
-        // Mistral tool calling models
-        || model_id.starts_with("mistralai/mistral-small")
-        || model_id.starts_with("mistralai/mistral-large-2")
-        || model_id.starts_with("mistralai/mistral-nemotron")
-        || model_id.starts_with("mistralai/devstral")
-        // NVIDIA Nemotron tool calling models
-        || model_id.starts_with("nvidia/llama-3.3-nemotron-super")
-        || model_id.starts_with("nvidia/nemotron-mini")
-        // Qwen3 models with tool calling
-        || model_id.starts_with("qwen/qwen3-next")
-        || model_id.starts_with("qwen/qwen3-coder")
-        // DeepSeek V3 models
-        || model_id.starts_with("deepseek-ai/deepseek-v3");
-
-    let supports_tool_calling = exact_match || wildcard_match;
-
-    let supports_structured_output = !STRUCTURED_OUTPUT_UNSUPPORTED_PREFIXES
-        .iter()
-        .any(|prefix| model_id.starts_with(prefix));
-
     NvidiaModelCapabilities {
         supports_tool_calling,
-        supports_structured_output,
+        supports_structured_output: supports_tool_calling,
     }
 }
 
@@ -536,7 +485,7 @@ mod tests {
             "You are helpful.",
             &[],
             &[],
-            "nvidia/model",
+            "deepseek-ai/deepseek-v4-flash",
             4096,
             None,
             true,
@@ -647,7 +596,12 @@ mod tests {
 
     #[test]
     fn model_capabilities_allow_known_tool_models() {
-        let capabilities = model_capabilities("meta/llama-3.1-70b-instruct");
+        let capabilities = model_capabilities("deepseek-ai/deepseek-v4-flash");
+
+        assert!(capabilities.supports_tool_calling);
+        assert!(capabilities.supports_structured_output);
+
+        let capabilities = model_capabilities("deepseek-ai/deepseek-v4-pro");
 
         assert!(capabilities.supports_tool_calling);
         assert!(capabilities.supports_structured_output);
@@ -662,64 +616,15 @@ mod tests {
     }
 
     #[test]
-    fn model_capabilities_moonshot_kimi_k2_thinking() {
-        let capabilities = model_capabilities("moonshotai/kimi-k2-thinking");
-        assert!(capabilities.supports_tool_calling);
-    }
-
-    #[test]
-    fn model_capabilities_zai_glm() {
-        assert!(model_capabilities("z-ai/glm5").supports_tool_calling);
-        assert!(model_capabilities("z-ai/glm4.7").supports_tool_calling);
-    }
-
-    #[test]
-    fn model_capabilities_minimax_m() {
-        assert!(model_capabilities("minimaxai/minimax-m2.5").supports_tool_calling);
-        assert!(model_capabilities("minimaxai/minimax-m2.1").supports_tool_calling);
-    }
-
-    #[test]
-    fn model_capabilities_mistral_small_large() {
-        assert!(model_capabilities("mistralai/mistral-small-24b-instruct").supports_tool_calling);
-        assert!(model_capabilities("mistralai/mistral-small-4-119b-2603").supports_tool_calling);
-        assert!(model_capabilities("mistralai/mistral-large-2-instruct").supports_tool_calling);
-        assert!(model_capabilities("mistralai/mistral-nemotron").supports_tool_calling);
-        assert!(
-            model_capabilities("mistralai/devstral-2-123b-instruct-2512").supports_tool_calling
-        );
-    }
-
-    #[test]
-    fn model_capabilities_nvidia_nemotron() {
-        assert!(
-            model_capabilities("nvidia/llama-3.3-nemotron-super-49b-v1.5").supports_tool_calling
-        );
-        assert!(model_capabilities("nvidia/nemotron-mini-4b-instruct").supports_tool_calling);
-    }
-
-    #[test]
-    fn model_capabilities_qwen3() {
-        assert!(model_capabilities("qwen/qwen3-next-80b-a3b-instruct").supports_tool_calling);
-        assert!(model_capabilities("qwen/qwen3-next-80b-a3b-thinking").supports_tool_calling);
-        assert!(model_capabilities("qwen/qwen3-coder-480b-a35b-instruct").supports_tool_calling);
-    }
-
-    #[test]
-    fn model_capabilities_deepseek_v3() {
-        assert!(model_capabilities("deepseek-ai/deepseek-v3.1").supports_tool_calling);
-        assert!(model_capabilities("deepseek-ai/deepseek-v3.2").supports_tool_calling);
-    }
-
-    #[test]
     fn model_capabilities_block_unsupported_models() {
-        // Reasoning models without tool calling
+        assert!(!model_capabilities("meta/llama-3.1-70b-instruct").supports_tool_calling);
+        assert!(!model_capabilities("deepseek-ai/deepseek-v3.2").supports_tool_calling);
+        assert!(!model_capabilities("moonshotai/kimi-k2-thinking").supports_tool_calling);
         assert!(!model_capabilities("mistralai/mistral-medium-3-instruct").supports_tool_calling);
         assert!(!model_capabilities("qwen/qwq-32b").supports_tool_calling);
         assert!(
             !model_capabilities("deepseek-ai/deepseek-r1-distill-llama-8b").supports_tool_calling
         );
-        // Qwen 2.5 without tool calling
         assert!(!model_capabilities("qwen/qwen2.5-7b-instruct").supports_tool_calling);
     }
 }

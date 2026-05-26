@@ -7,6 +7,7 @@ use crate::capabilities::{
     ManifestError,
 };
 use crate::llm::providers::{provider_missing_route_config_message, provider_module_id};
+use crate::llm::{provider_capabilities_for_model, provider_media_capabilities_for_model};
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -355,6 +356,7 @@ impl AgentSettings {
         }
         settings.validate_route_providers()?;
         settings.canonicalize_route_provider_ids()?;
+        settings.validate_route_model_capabilities()?;
         settings.validate_route_credentials()?;
 
         Ok(settings)
@@ -454,6 +456,74 @@ impl AgentSettings {
         }
 
         Ok(())
+    }
+
+    fn validate_route_model_capabilities(&self) -> Result<(), ConfigError> {
+        for (source, route) in self.agent_route_capability_entries() {
+            let capabilities = provider_capabilities_for_model(&route);
+            if !capabilities.can_run_agent_tools() {
+                return Err(ConfigError::Message(format!(
+                    "Critical: {source} route {}/{} is not approved for Agent Mode tool execution",
+                    route.provider, route.id
+                )));
+            }
+        }
+
+        if let Some((_, route)) = self.media_model_spec() {
+            let capabilities = provider_media_capabilities_for_model(&route);
+            if !capabilities.supports_audio_transcription
+                && !capabilities.supports_image_understanding
+                && !capabilities.supports_video_understanding
+            {
+                return Err(ConfigError::Message(format!(
+                    "Critical: MEDIA_MODEL route {}/{} is not approved for any media operation",
+                    route.provider, route.id
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn agent_route_capability_entries(&self) -> Vec<(String, ModelInfo)> {
+        let mut routes = Vec::new();
+        if let Some(agent_routes) = self.agent_model_routes.as_deref() {
+            for (index, route) in Self::normalize_model_routes(
+                agent_routes,
+                self.agent_model_max_output_tokens
+                    .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS),
+                self.agent_model_context_window_tokens
+                    .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS),
+            )
+            .into_iter()
+            .enumerate()
+            {
+                routes.push((format!("AGENT_MODEL_ROUTES[{index}]"), route));
+            }
+        } else if let Some((_, route)) = self.agent_model_spec() {
+            routes.push(("AGENT_MODEL".to_string(), route));
+        }
+
+        if let Some(sub_agent_routes) = self.sub_agent_model_routes.as_deref() {
+            for (index, route) in Self::normalize_model_routes(
+                sub_agent_routes,
+                self.sub_agent_max_output_tokens
+                    .unwrap_or(DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS),
+                self.sub_agent_context_window_tokens_or_inherited(),
+            )
+            .into_iter()
+            .enumerate()
+            {
+                routes.push((format!("SUB_AGENT_MODEL_ROUTES[{index}]"), route));
+            }
+        } else if self.sub_agent_model_spec().is_some() {
+            routes.push((
+                "SUB_AGENT_MODEL".to_string(),
+                self.resolve_execution_model(true),
+            ));
+        }
+
+        routes
     }
 
     fn canonicalize_route_provider_ids(&mut self) -> Result<(), ConfigError> {
@@ -1083,9 +1153,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        env::set_var("ZAI_API_KEY", "dummy_zai_key");
+        env::set_var("OPENROUTER_API_KEY", "dummy_openrouter_key");
 
-        env::set_var("AGENT_MODEL_ID", "test-model");
+        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
         env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
         env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
 
@@ -1097,7 +1167,7 @@ mod tests {
         env::remove_var("AGENT_MODEL_TEMPERATURE");
 
         // 2. Test empty env var ignored by direct fallback parsing.
-        env::set_var("AGENT_MODEL_ID", "test-model");
+        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
         env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
         env::set_var("AGENT_MODEL_TEMPERATURE", "");
 
@@ -1109,7 +1179,7 @@ mod tests {
         env::remove_var("AGENT_MODEL_TEMPERATURE");
 
         // 3. Test explicit environment mapping case.
-        env::set_var("AGENT_MODEL_ID", "test-model");
+        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
         env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
         env::set_var("AGENT_MODEL_TEMPERATURE", "0.13");
 
@@ -1120,7 +1190,7 @@ mod tests {
         env::remove_var("AGENT_MODEL_PROVIDER");
         env::remove_var("AGENT_MODEL_TEMPERATURE");
 
-        env::remove_var("ZAI_API_KEY");
+        env::remove_var("OPENROUTER_API_KEY");
         Ok(())
     }
 
@@ -1307,13 +1377,13 @@ mod tests {
     #[test]
     fn route_provider_canonicalization_rewrites_aliases_to_module_ids() {
         let mut settings = AgentSettings {
-            agent_model_id: Some("agent-model".to_string()),
+            agent_model_id: Some("deepseek/deepseek-v4-flash".to_string()),
             agent_model_provider: Some(" OpenRouter ".to_string()),
-            media_model_id: Some("media-model".to_string()),
+            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
             media_model_provider: Some("llm-provider/openrouter".to_string()),
             browser_use_model_provider: Some(" ".to_string()),
             agent_model_routes: Some(vec![ModelInfo {
-                id: "agent-route".to_string(),
+                id: "deepseek/deepseek-v4-flash".to_string(),
                 provider: "openrouter".to_string(),
                 max_output_tokens: 10_000,
                 context_window_tokens: 20_000,
@@ -1365,6 +1435,50 @@ mod tests {
             settings.get_available_models()[0].1.provider,
             "llm-provider/openrouter"
         );
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn route_model_validation_rejects_unapproved_openrouter_agent_model() {
+        let mut settings = AgentSettings {
+            agent_model_id: Some("unknown/model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
+            ..AgentSettings::default()
+        };
+
+        settings
+            .canonicalize_route_provider_ids()
+            .expect("provider should canonicalize");
+        let error = settings
+            .validate_route_model_capabilities()
+            .expect_err("unknown OpenRouter agent model should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("AGENT_MODEL route llm-provider/openrouter/unknown/model is not approved"));
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn route_model_validation_rejects_unapproved_openrouter_media_model() {
+        let mut settings = AgentSettings {
+            agent_model_id: Some("deepseek/deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("unknown/model".to_string()),
+            media_model_provider: Some("openrouter".to_string()),
+            ..AgentSettings::default()
+        };
+
+        settings
+            .canonicalize_route_provider_ids()
+            .expect("provider should canonicalize");
+        let error = settings
+            .validate_route_model_capabilities()
+            .expect_err("unknown OpenRouter media model should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("MEDIA_MODEL route llm-provider/openrouter/unknown/model is not approved"));
     }
 
     #[cfg(feature = "llm-opencode-go")]

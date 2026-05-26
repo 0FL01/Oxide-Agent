@@ -710,7 +710,7 @@ mod tests {
         let mut settings = AgentSettings {
             agent_model_id: Some("agent-model".to_string()),
             agent_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("video-model".to_string()),
+            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
             media_model_provider: Some("openrouter".to_string()),
             ..AgentSettings::default()
         };
@@ -726,7 +726,7 @@ mod tests {
                     && mime_type == "video/mp4"
                     && prompt.contains("release demo")
                     && system_prompt.contains("video analyzer")
-                    && model_id == "video-model"
+                    && model_id == "google/gemini-3-flash-preview"
             })
             .return_once(|_, _, _, _, _| Ok("timeline".to_string()));
 
