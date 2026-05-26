@@ -265,9 +265,17 @@ impl AgentExecutor {
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
         if append_user_message {
             self.session.remember_task(task);
-            self.session
+            let user_message = AgentMessage::user_task(task);
+            if let Some(context) = self
+                .session
                 .memory
-                .add_message(AgentMessage::user_task(task));
+                .soft_temporal_boundary_before_user_task(&user_message)
+            {
+                self.session
+                    .memory
+                    .add_message(AgentMessage::system_context(context));
+            }
+            self.session.memory.add_message(user_message);
         }
         task_id
     }

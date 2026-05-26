@@ -128,6 +128,36 @@ async fn new_task_clears_stale_todos_before_completion_check() {
 }
 
 #[tokio::test]
+async fn new_task_inserts_soft_temporal_boundary_after_long_pause() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"answer ready","tool_call":null,"final_answer":"new topic answer","awaiting_user_input":null}"#,
+    );
+    executor.session_mut().memory.add_message(
+        crate::agent::memory::AgentMessage::user_task("old topic").with_created_at_unix(Some(1)),
+    );
+
+    let result = executor.execute("new topic", None).await;
+
+    assert!(matches!(
+        result,
+        Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "new topic answer"
+    ));
+    let messages = executor.session().memory.get_messages();
+    let boundary_index = messages
+        .iter()
+        .position(|message| message.content.starts_with("[TEMPORAL_CONTEXT]"))
+        .expect("temporal boundary should be inserted");
+    let new_task_index = messages
+        .iter()
+        .position(|message| message.content == "new topic")
+        .expect("new task should be inserted");
+
+    assert!(boundary_index < new_task_index);
+    assert!(messages[boundary_index].content.contains("long pause"));
+    assert!(!messages[boundary_index].content.contains("1779802440"));
+}
+
+#[tokio::test]
 async fn executor_injects_configured_wiki_memory_context() {
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("mock-model".to_string()),

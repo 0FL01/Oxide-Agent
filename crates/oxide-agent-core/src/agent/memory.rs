@@ -11,10 +11,21 @@ use crate::agent::providers::TodoList;
 use crate::agent::recovery::{repair_agent_message_history_runtime, HistoryRepairOutcome};
 use crate::llm::{TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tracing::warn;
 
 pub(crate) const TOPIC_AGENTS_MD_SYSTEM_PREFIX: &str = "[TOPIC_AGENTS_MD]\n";
+/// Default pause length that makes a new Agent Mode user task a potential new topic.
+pub const TEMPORAL_BOUNDARY_THRESHOLD_SECONDS: i64 = 2 * 60 * 60;
+
+#[must_use]
+fn current_timestamp_unix_secs() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs() as i64,
+        Err(_) => 0,
+    }
+}
 
 /// A message in the agent's conversation memory
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +36,9 @@ pub struct AgentMessage {
     pub role: MessageRole,
     /// Text content of the message
     pub content: String,
+    /// Unix timestamp for when this Agent Mode memory entry was created.
+    #[serde(default)]
+    pub created_at_unix: Option<i64>,
     /// Optional reasoning/thinking content (for models that support it, e.g., GLM-4.7)
     /// This is counted towards token limits but not shown to user
     pub reasoning: Option<String>,
@@ -126,6 +140,7 @@ impl AgentMessage {
             kind: AgentMessageKind::SystemContext,
             role: MessageRole::System,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -151,6 +166,7 @@ impl AgentMessage {
             kind: AgentMessageKind::TopicAgentsMd,
             role: MessageRole::System,
             content: format!("{TOPIC_AGENTS_MD_SYSTEM_PREFIX}{}", content.as_ref().trim()),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -173,6 +189,7 @@ impl AgentMessage {
             kind: AgentMessageKind::UserTask,
             role: MessageRole::User,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -190,6 +207,7 @@ impl AgentMessage {
             kind: AgentMessageKind::RuntimeContext,
             role: MessageRole::User,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -207,6 +225,7 @@ impl AgentMessage {
             kind: AgentMessageKind::UserTurn,
             role: MessageRole::User,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -224,6 +243,7 @@ impl AgentMessage {
             kind: AgentMessageKind::AssistantResponse,
             role: MessageRole::Assistant,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -244,6 +264,7 @@ impl AgentMessage {
             kind: AgentMessageKind::AssistantReasoning,
             role: MessageRole::Assistant,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: Some(reasoning.into()),
             tool_call_id: None,
             tool_call_correlation: None,
@@ -276,6 +297,7 @@ impl AgentMessage {
             kind: AgentMessageKind::ToolResult,
             role: MessageRole::Tool,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
             tool_call_correlation: Some(tool_call_correlation),
@@ -315,6 +337,7 @@ impl AgentMessage {
             kind: AgentMessageKind::ToolResult,
             role: MessageRole::Tool,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
             tool_call_correlation: Some(tool_call_correlation),
@@ -357,6 +380,7 @@ impl AgentMessage {
             kind: AgentMessageKind::ToolResult,
             role: MessageRole::Tool,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: Some(tool_call_id.to_string()),
             tool_call_correlation: Some(tool_call_correlation),
@@ -385,6 +409,7 @@ impl AgentMessage {
             kind: AgentMessageKind::AssistantToolCall,
             role: MessageRole::Assistant,
             content: content.into(),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -429,6 +454,7 @@ impl AgentMessage {
             kind: AgentMessageKind::Summary,
             role: MessageRole::System,
             content: format_compacted_summary(summary_text.as_ref(), metadata),
+            created_at_unix: Some(current_timestamp_unix_secs()),
             reasoning: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -444,6 +470,13 @@ impl AgentMessage {
     #[must_use]
     pub fn resolved_kind(&self) -> AgentMessageKind {
         self.kind
+    }
+
+    /// Return a copy with an explicit creation timestamp.
+    #[must_use]
+    pub fn with_created_at_unix(mut self, created_at_unix: Option<i64>) -> Self {
+        self.created_at_unix = created_at_unix;
+        self
     }
 
     /// Retention class used by compaction policies.
@@ -518,6 +551,37 @@ impl AgentMemory {
         self.messages.push(msg);
         self.recalculate_token_count();
         self.repair_history_after_mutation("add_message");
+    }
+
+    /// Build a short temporal boundary context before appending a new top-level user task.
+    #[must_use]
+    pub fn soft_temporal_boundary_before_user_task(
+        &self,
+        current_user_message: &AgentMessage,
+    ) -> Option<String> {
+        let gap_seconds = self.temporal_gap_before_user_task(current_user_message)?;
+        (gap_seconds > TEMPORAL_BOUNDARY_THRESHOLD_SECONDS)
+            .then(|| format_soft_temporal_boundary(gap_seconds))
+    }
+
+    /// Compute the gap between a new top-level user task and the previous top-level user task.
+    #[must_use]
+    pub fn temporal_gap_before_user_task(
+        &self,
+        current_user_message: &AgentMessage,
+    ) -> Option<i64> {
+        if current_user_message.resolved_kind() != AgentMessageKind::UserTask {
+            return None;
+        }
+        let current_created_at = current_user_message.created_at_unix?;
+        let previous_created_at = self
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.resolved_kind() == AgentMessageKind::UserTask)?
+            .created_at_unix?;
+
+        Some(current_created_at.saturating_sub(previous_created_at))
     }
 
     /// Returns true when memory already contains a pinned topic `AGENTS.md` message.
@@ -712,6 +776,43 @@ impl AgentMemory {
     }
 }
 
+fn format_soft_temporal_boundary(gap_seconds: i64) -> String {
+    format!(
+        "[TEMPORAL_CONTEXT]\nThere was a long pause of about {} since the previous top-level user request in this Agent Mode flow. Treat the latest request as potentially a new topic unless the user clearly connects it to earlier context.",
+        format_duration_for_prompt(gap_seconds)
+    )
+}
+
+fn format_duration_for_prompt(gap_seconds: i64) -> String {
+    let total_minutes = (gap_seconds.max(0) / 60).max(1);
+    let days = total_minutes / (24 * 60);
+    let hours = (total_minutes % (24 * 60)) / 60;
+    let minutes = total_minutes % 60;
+
+    if days > 0 {
+        let mut parts = vec![format_duration_part(days, "day")];
+        if hours > 0 {
+            parts.push(format_duration_part(hours, "hour"));
+        }
+        return parts.join(" ");
+    }
+
+    if hours > 0 {
+        let mut parts = vec![format_duration_part(hours, "hour")];
+        if minutes > 0 {
+            parts.push(format_duration_part(minutes, "minute"));
+        }
+        return parts.join(" ");
+    }
+
+    format_duration_part(minutes, "minute")
+}
+
+fn format_duration_part(value: i64, unit: &str) -> String {
+    let suffix = if value == 1 { "" } else { "s" };
+    format!("{value} {unit}{suffix}")
+}
+
 fn format_compacted_summary(summary_text: &str, metadata: &CompactedSummaryMetadata) -> String {
     format!(
         "{prefix}\n\
@@ -776,6 +877,84 @@ mod tests {
         memory.add_message(AgentMessage::user("Hello, agent!"));
         assert_eq!(memory.get_messages().len(), 1);
         assert!(memory.token_count() > 0);
+    }
+
+    #[test]
+    fn new_agent_messages_include_creation_timestamp() {
+        let message = AgentMessage::user_task("Ship temporal context");
+
+        assert!(message.created_at_unix.is_some());
+    }
+
+    #[test]
+    fn agent_message_deserializes_without_creation_timestamp() {
+        let value = json!({
+            "kind": "UserTask",
+            "role": "User",
+            "content": "old task",
+            "reasoning": null,
+            "tool_call_id": null,
+            "tool_call_correlation": null,
+            "tool_name": null,
+            "tool_calls": null,
+            "tool_call_correlations": null,
+            "externalized_payload": null,
+            "pruned_artifact": null
+        });
+
+        let message: AgentMessage = serde_json::from_value(value).expect("message deserializes");
+
+        assert_eq!(message.created_at_unix, None);
+    }
+
+    #[test]
+    fn temporal_gap_detects_long_pause_between_top_level_user_tasks() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user_task("first").with_created_at_unix(Some(100)));
+        let current = AgentMessage::user_task("second")
+            .with_created_at_unix(Some(100 + TEMPORAL_BOUNDARY_THRESHOLD_SECONDS + 60));
+
+        let boundary = memory
+            .soft_temporal_boundary_before_user_task(&current)
+            .expect("long pause should produce context");
+
+        assert!(boundary.contains("[TEMPORAL_CONTEXT]"));
+        assert!(boundary.contains("about 2 hours 1 minute"));
+        assert!(!boundary.contains("7260"));
+    }
+
+    #[test]
+    fn temporal_gap_ignores_short_pause() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user_task("first").with_created_at_unix(Some(100)));
+        let current = AgentMessage::user_task("second")
+            .with_created_at_unix(Some(100 + TEMPORAL_BOUNDARY_THRESHOLD_SECONDS));
+
+        assert!(memory
+            .soft_temporal_boundary_before_user_task(&current)
+            .is_none());
+    }
+
+    #[test]
+    fn temporal_gap_skips_when_previous_user_task_has_no_timestamp() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user_task("first").with_created_at_unix(None));
+        let current = AgentMessage::user_task("second")
+            .with_created_at_unix(Some(100 + TEMPORAL_BOUNDARY_THRESHOLD_SECONDS + 1));
+
+        assert_eq!(memory.temporal_gap_before_user_task(&current), None);
+    }
+
+    #[test]
+    fn temporal_gap_uses_previous_user_task_not_runtime_context() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user_task("first").with_created_at_unix(Some(100)));
+        memory.add_message(
+            AgentMessage::runtime_context("mid-run note").with_created_at_unix(Some(200)),
+        );
+        let current = AgentMessage::user_task("second").with_created_at_unix(Some(7_401));
+
+        assert_eq!(memory.temporal_gap_before_user_task(&current), Some(7_301));
     }
 
     #[test]
