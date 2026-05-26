@@ -717,6 +717,36 @@ All other NVIDIA NIM models are default-denied for Agent Mode unless added to th
 - Если активной сессии нет, `/clear` выполняется как no-op с readiness guidance.
 - Командное поведение соответствует `Cancellation/reset` policy из раздела 6.1.1 и не возвращает/не восстанавливает Chat Mode.
 
+#### DR-009: Media/internal auxiliary defaults after `CHAT_MODEL_*` removal
+
+**Статус:** решено.
+
+**Актуальность:** после удаления `CHAT_MODEL_*` runtime не должен ссылаться на `DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS` и `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS` из любых новых или внутренних путей.
+
+В текущем состоянии уже исправлен `media_model_spec()`, однако в recon остаётся `wiki_memory_writer_model_spec()`, который всё ещё опирается на `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS`. Это создаёт риск возврата к hard-zero проверкам `CHAT_MODEL_*` в случае валидации и конфигурации.
+
+**Решение:**
+
+- Удалить `DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS`.
+- Удалить `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS`.
+- Ввести отдельные constants для media route:
+  - `DEFAULT_MEDIA_MODEL_MAX_OUTPUT_TOKENS`
+  - `DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS`
+- Ввести отдельные constants для internal auxiliary LLM routes:
+  - `DEFAULT_INTERNAL_TEXT_MAX_OUTPUT_TOKENS`
+  - `DEFAULT_INTERNAL_TEXT_CONTEXT_WINDOW_TOKENS`
+- Если требуется сохранить старое поведение, новые constants могут временно использовать те же численные значения, что и прежние chat defaults, но ownership и namespace должны быть не chat-related.
+- `wiki_memory_writer_model_spec()` не должен fallback-иться на `DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS`; он должен использовать internal/wiki-specific default или основной agent default.
+- `media_model_spec()` не должен читать chat defaults и не должен зависеть от `chat_model_max_output_tokens` / `chat_model_context_window_tokens`.
+
+**Acceptance criteria:**
+
+- `rg -n "DEFAULT_CHAT_MODEL|chat_model_max_output_tokens|chat_model_context_window_tokens" crates/oxide-agent-core/src/config.rs` не находит runtime-ссылок на chat defaults.
+- `MEDIA_MODEL_*` route строится без `CHAT_MODEL_*`.
+- Wiki memory writer / internal completion route строится без `CHAT_MODEL_*`.
+
+Данное решение критично для прохождения hard-zero grep по `CHAT_MODEL_*`.
+
 ---
 
 ## 6. Target Architecture
