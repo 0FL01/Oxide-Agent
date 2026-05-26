@@ -502,7 +502,7 @@ Unknown OpenRouter model ids must be rejected for Agent Mode and media routes by
 - PDF/document visual analysis requires `pdf_input=true`.
 - Text-only DeepSeek models must never be selected for media handling.
 - Media-only Gemini 2.5 Flash Lite must not be selected for main Agent Mode unless explicitly promoted in a future PRD/change.
-- OpenRouter requests that include tools must set provider routing defensively, including `require_parameters=true` where supported, so unsupported downstream providers do not silently ignore required parameters.
+- OpenRouter requests that include tools or structured output must set provider routing with `require_parameters=true`. This is mandatory for OpenRouter agent/tool routes to avoid silent parameter drops by downstream providers.
 
 **Acceptance criteria:**
 
@@ -686,6 +686,36 @@ All other NVIDIA NIM models are default-denied for Agent Mode unless added to th
 - `.env.example` не содержит `SYSTEM_MESSAGE`
 - `.github/workflows/ci-cd.yml` не передаёт и не пишет `SYSTEM_MESSAGE`
 - Agent Mode prompt composition не изменилась (проверка: `compose_execution_prompt_instructions()` и `create_agent_system_prompt()` не читают `SYSTEM_MESSAGE` — это не меняется, но должно остаться верным)
+
+#### DR-008: `/clear` становится reset agent session
+
+**Статус:** решено.
+
+**Исходный вопрос:** в Edge Case формулировка для `/clear` оставалась открытой (`should become agent memory/flow clear or be removed/renamed`), а поведение влияло на безопасный runtime.
+
+**Анализ:**
+
+- `State::ChatMode` и chat history удаляются в этой PRD, поэтому `/clear`, ориентированный на chat flow, должен быть переосмыслен как команда управления транзитным agent-сессией.
+- Долгосрочная память (topic profile, Topic AGENTS.md, audit records, agent memory, topic bindings, профили и т.д.) не является частью runtime session reset и не должна очищаться через `/clear`.
+- Для UX это должно соответствовать уже существующему `Reset agent session`: очистка текущего agent flow/transient context и отмена активной задачи.
+- При отсутствии активной сессии `/clear` обязан быть no-op с guidance, чтобы не изменять состояние пользователя.
+
+**Решение:**
+
+- Изменить семантику `/clear` на `agent session reset`:
+  - очищает только текущий agent flow/session и transient context;
+  - **не** очищает chat history (он удалён из runtime) и **не** очищает long-term agent memory/профили/AGENTS.md/аудит.
+- `State::AgentMode` всегда сохраняется после `/clear`.
+- `/clear` возвращает guidance типа `Agent Mode is ready. Send a task.` если нет активной сессии.
+
+**Acceptance criteria:**
+
+- `/clear` no longer clears legacy chat history (chat history runtime уже удалён в этой PRD).
+- `/clear` resets only current agent session/flow/transient context.
+- `/clear` does not clear persistent agent memory, topic profile, topic AGENTS.md, audit trail, or long-term storage.
+- После `/clear` состояние остаётся `State::AgentMode`.
+- Если активной сессии нет, `/clear` выполняется как no-op с readiness guidance.
+- Командное поведение соответствует `Cancellation/reset` policy из раздела 6.1.1 и не возвращает/не восстанавливает Chat Mode.
 
 ---
 
@@ -1323,7 +1353,10 @@ ID: `FR-009`
 - Restrict visibility so transport/user layers cannot call it at compile time (`pub(crate)`, no re-export).
 - Keep internal uses only where required: local compaction summary, loop detection, wiki memory writer, input intent classification.
 - Move `input_intent.rs` from Telegram transport (`crates/oxide-agent-transport-telegram/src/bot/agent_handlers/`) to core (`crates/oxide-agent-core/src/agent/input_intent.rs`), so transport calls a high-level service interface (`agent_input_classifier.classify(input)`) instead of LLM client directly.
-- Provider trait: phase 1 — rename+hide existing `chat_completion` in `LlmProvider`; phase 2 — split into `AgentToolProvider` and `InternalTextCompletionProvider` if cleanup cost is acceptable.
+- Provider trait boundary must be closed in this refactor. Do not leave a public `LlmProvider::chat_completion` or equivalent plain text method. Either:
+  - make the plain text completion trait crate-private inside `oxide-agent-core`; or
+  - split provider traits into public `AgentToolProvider` and crate-private `InternalTextCompletionProvider`.
+  - A later phase may improve naming/organization, but the compile-time transport boundary is mandatory in this PR.
 
 Rationale:
 
@@ -1344,6 +1377,7 @@ Acceptance Criteria:
   - Wiki writer: skip write and log; user run does not fail.
   - Input classifier: deterministic classification; safe default treats input as normal agent task.
 - `input_intent.rs` lives in core crate, not in Telegram transport.
+- No public core API exposes plain text completion to transport crates.
 - Tests assert transport crate does not reference internal completion:
   ```bash
   rg -n "chat_completion|chat_completion_for_model_info" crates/oxide-agent-transport-telegram crates/oxide-agent-transport-web
@@ -1353,6 +1387,7 @@ Acceptance Criteria:
   rg -n "complete_internal_text" crates/oxide-agent-transport-telegram crates/oxide-agent-transport-web
   # must return no live references
   ```
+- `cargo doc` / public exports do not expose `chat_completion`, `complete_internal_text`, or internal text completion traits.
 - Internal tasks still pass their tests or are explicitly refactored.
 
 Affected Areas:
@@ -1894,7 +1929,7 @@ Both must return empty.
 - Binary/profile scripts still expecting deleted feature: update `profiles/full.toml`, `check-compiled-capabilities.sh`, Docker/workflow feature bundles.
 - User sends message before any state exists: agent-only access policy decides; no mode menu fallback.
 - Confirmation flow active while chat state is removed: confirmation should remain isolated to `AgentConfirmation`.
-- Agent flow cancellation vs chat flow clearing: `/clear` should become agent memory/flow clear or be removed/renamed; it must not reset chat UUID.
+- Agent flow cancellation vs chat flow clearing: `/clear` is a no-op when no active agent flow exists, and otherwise performs agent session reset (current agent flow/session/context only). It must not clear chat UUID or long-term memory/profile data.
 - Provider failover selecting incompatible route: route availability must include capability check.
 - Route registry containing stale provider IDs: config validation must reject `llm-provider/groq`, `groq`, or any disabled provider.
 - Aliases/canonical IDs mismatch, especially ChatGPT/OpenRouter/NVIDIA: canonicalize before capability checks and docs.
