@@ -349,7 +349,7 @@ Findings:
 - **Media model defaults:** `media_model_spec()` currently reuses chat token/context defaults. Need new `MEDIA_MODEL_MAX_OUTPUT_TOKENS` / `MEDIA_MODEL_CONTEXT_WINDOW_TOKENS` or reuse agent defaults deliberately.
 - **OpenRouter compatibility source:** Current code treats OpenRouter provider-level capabilities as tool-capable. Need an explicit allowlist, config flag, metadata source, or route capability field. Default should be deny for agent routes. *(Resolved: см. DR-003 ниже)*
 - **NVIDIA allowlist ownership:** Resolved in DR-004. Keep code-owned exact-match allowlist. Config overrides, wildcards and generic model registry are out of scope for this refactor.
-- **ChatGPT alias safety:** `json_mode_forbids_route()` checks `route.provider.eq_ignore_ascii_case("chatgpt")`; canonical provider id is `llm-provider/openai-chatgpt`. This needs alias/canonical-aware checks.
+- **ChatGPT alias safety:** `json_mode_forbids_route()` currently checks only `route.provider.eq_ignore_ascii_case("chatgpt")`, while ChatGPT routes may be configured as `chatgpt`, `openai-chatgpt`, or canonical `llm-provider/openai-chatgpt`. Do not introduce a broad provider identity refactor for this PR. Add a small local helper, e.g. `is_chatgpt_provider_id(&str)`, and use it in route policy checks that enforce ChatGPT structured-output / JSON-mode restrictions. Cover all three accepted provider id forms with unit tests.
 - **Old persisted `chat_mode`:** No migration should be built. Runtime must normalize or ignore old `chat_mode` by treating it as no state / agent-only access evaluation.
 
 ### 5.10 Resolved Decisions
@@ -1354,6 +1354,8 @@ Acceptance Criteria:
 
 - ChatGPT provider still builds under `llm-chatgpt`.
 - Agent Mode can select ChatGPT route when tools are required and JSON/structured-output constraints permit it.
+- `json_mode_forbids_route()` or equivalent route policy rejects ChatGPT JSON-mode routes for all accepted ids: `chatgpt`, `openai-chatgpt`, `llm-provider/openai-chatgpt`.
+- The fix is limited to route policy matching; no global provider-id refactor or config migration is required.
 - Search for “Chat Mode” does not match ChatGPT provider documentation except explicit “not Chat Mode” notes if retained.
 
 Affected Areas:
