@@ -187,8 +187,8 @@ async fn verify_r2_put_and_cleanup(client: &Client, bucket: &str) -> Result<()> 
 
 fn validate_llm_provider_keys() {
     info!("Validating LLM Client configuration...");
-    let has_provider = std::env::var("MISTRAL_API_KEY").is_ok()
-        || std::env::var("OPENROUTER_API_KEY").is_ok();
+    let has_provider =
+        std::env::var("MISTRAL_API_KEY").is_ok() || std::env::var("OPENROUTER_API_KEY").is_ok();
 
     assert!(
         has_provider,

@@ -995,6 +995,7 @@ mod tests {
             .contains(&"opencode-go".to_string()));
     }
 
+    #[cfg(feature = "llm-openrouter")]
     #[tokio::test]
     async fn main_agent_tool_request_uses_configured_temperature() {
         let settings = with_provider_key(
@@ -1091,6 +1092,7 @@ mod tests {
         assert_eq!(response, "ok");
     }
 
+    #[cfg(feature = "llm-openrouter")]
     #[tokio::test]
     async fn tool_requests_fold_system_history_into_prompt() {
         let settings = with_provider_key(
