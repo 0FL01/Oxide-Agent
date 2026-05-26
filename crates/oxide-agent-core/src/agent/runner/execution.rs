@@ -6,9 +6,9 @@ use super::types::{
 };
 use super::AgentRunner;
 use crate::agent::compaction::{
-    count_tokens_cached, estimate_request_budget, BudgetState, CompactRequestContext,
-    CompactRunOutcome, CompactionBackend, CompactionPhase, CompactionPolicy, CompactionReason,
-    CompactionRequest, CompactionTrigger,
+    count_tokens_cached, estimate_request_budget, wiki_memory_lookup_available, BudgetState,
+    CompactRequestContext, CompactRunOutcome, CompactionBackend, CompactionPhase, CompactionPolicy,
+    CompactionReason, CompactionRequest, CompactionTrigger,
 };
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind, TokenSnapshot};
@@ -1191,6 +1191,7 @@ impl AgentRunner {
             phase: request.phase,
             target_token_budget: request.target_token_budget,
             created_at: chrono::Utc::now().to_rfc3339(),
+            wiki_memory_lookup_available: wiki_memory_lookup_available(ctx.tools),
         };
         Self::emit_runtime_compaction_started(
             ctx.progress_tx,
@@ -1908,6 +1909,7 @@ mod tests {
                 created_at: "2026-05-21T20:10:00+03:00".to_string(),
                 previous_summary_detected: false,
                 repair_applied: false,
+                wiki_memory_lookup_available: false,
             },
         )
     }

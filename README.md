@@ -17,7 +17,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 - **Transport-Agnostic Runtime:** Progress rendering and execution model can be adapted for Discord, Slack, etc.
 - **Topic-Scoped Infrastructure:** Per-topic agent profiles, hooks, tools, and memory isolation
 - **Manager Control Plane:** Programmatic topic management with RBAC, audit trail, and rollback support
-- **Sandbox Broker:** Security isolation with Unix socket broker (`oxide-agent-sandboxd`)
+- **Sandbox Backends:** Docker broker isolation by default, plus optional bare-host Bubblewrap mode
 </details>
 
 ## Features
@@ -27,13 +27,13 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     - `oxide-agent-runtime` - Session orchestration, execution cycle, tool providers, sandbox
     - `oxide-agent-transport-telegram` - Telegram transport layer (teloxide integration)
     - `oxide-agent-transport-web` - E2E testing infrastructure with HTTP API
-    - `oxide-agent-sandboxd` - Sandbox broker daemon for Docker access isolation
+    - `oxide-agent-sandboxd` - Sandbox broker daemon for Docker access isolation in the default Compose deployment
     - `oxide-agent-telegram-bot` - Binary entry point and configuration
 
 *   **🤖 Agent Mode:**
         <img width="974" height="747" alt="image_2026-01-11_20-58-21" src="https://github.com/user-attachments/assets/c99e55e4-8933-4ec8-9f50-22f7cbca4c77" />
 
-    *   **Integrated Sandbox:** Safe execution of Python code and Bash commands in isolated Docker containers (`debian:trixie-slim`).
+    *   **Integrated Sandbox:** Safe execution of Python code and shell commands in isolated sandbox instances. Docker/broker is the default deployment path; Bubblewrap is available for bare-host setups.
     *   **Parallel Tool Execution:** Multiple tool calls in one LLM response execute concurrently for faster task completion.
     *   **Fire-and-Forget Checkpoint:** Memory persistence is async, non-blocking for reduced latency.
     *   **History Repair:** Validates tool_call_id before LLM calls; orphaned tool results prevented during compaction.
@@ -98,8 +98,9 @@ The bot supports **6 main providers** for both standard chat and advanced Agent 
 > Voice recognition and image analysis depend on whichever multimodal model you configure via `CHAT_MODEL_*`/`MEDIA_MODEL_*`. The bot exposes only the models you declare in `.env`, so `Change Model` will only list those names.
 
 ### 🛠 Infrastructure
-*   **Docker** — run code sandbox (`agent-sandbox:latest`)
-*   **Sandbox Broker** — optional Unix socket broker for security isolation (`SANDBOX_BACKEND=broker`)
+*   **Docker** — run the default code sandbox (`agent-sandbox:latest`)
+*   **Sandbox Broker** — Unix socket broker for Docker access isolation in Docker Compose (`SANDBOX_BACKEND=broker`)
+*   **Bubblewrap** — optional bare-host sandbox backend without Docker daemon/socket access (`SANDBOX_BACKEND=bwrap`, see `docs/bwrap-sandbox.md`)
 *   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
 *   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
 *   **Local Web Markdown** — lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
@@ -127,7 +128,7 @@ The bot supports **6 main providers** for both standard chat and advanced Agent 
     docker-compose up --build -d
     ```
 
-**Note:** The default configuration uses `SANDBOX_BACKEND=broker` which requires the `oxide-agent-sandboxd` container. To use direct Docker access, set `SANDBOX_BACKEND=docker`.
+**Note:** The default Docker Compose configuration uses `SANDBOX_BACKEND=broker` which requires the `oxide-agent-sandboxd` container. To use direct Docker access, set `SANDBOX_BACKEND=docker`. For bare-host Bubblewrap mode, build `profile-host-bwrap` and follow `docs/bwrap-sandbox.md`.
 </details>
 
 ## Configuration (.env)
@@ -530,6 +531,8 @@ Enhanced reminder scheduling with pause/resume/retry support.
 <summary>🐳 Docker Architecture</summary>
 
 ### Services
+
+The default Docker Compose deployment uses the broker backend. Bare-host Bubblewrap mode is documented separately in `docs/bwrap-sandbox.md` and is not enabled by this Compose file.
 
 1. **sandbox_image**
     - Builds the selected sandbox image variant, with full/dev using `sandbox/Dockerfile.dev`

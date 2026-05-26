@@ -1,6 +1,7 @@
-//! Docker sandbox management for Agent Mode
+//! Sandbox management for Agent Mode.
 //!
-//! Provides isolated execution environments for agents using Docker containers.
+//! Provides isolated execution environments for agents through compiled backends
+//! such as Docker, sandboxd, and Bubblewrap.
 
 pub mod admin;
 /// Unix-socket sandbox broker protocol, client, and server.
@@ -11,11 +12,14 @@ pub mod admin;
     feature = "tool-stack-logs"
 ))]
 pub mod broker;
+#[cfg(feature = "sandbox-backend-bwrap")]
+pub(crate) mod bwrap;
 #[cfg(feature = "tool-stack-logs")]
 pub mod diagnostics;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
+    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 ))]
@@ -23,6 +27,7 @@ pub mod manager;
 #[cfg(not(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
+    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 )))]
@@ -45,22 +50,25 @@ pub use diagnostics::SandboxDiagnosticsRuntime;
 #[cfg(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
+    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 ))]
-pub use manager::{ExecResult, SandboxContainerRecord, SandboxManager};
+pub use manager::{ExecResult, SandboxContainerRecord, SandboxInstanceRecord, SandboxManager};
 #[cfg(not(any(
     feature = "sandbox-backend-docker-direct",
     feature = "sandbox-backend-sandboxd-client",
+    feature = "sandbox-backend-bwrap",
     feature = "sandbox-daemon",
     feature = "tool-stack-logs"
 )))]
-pub use manager_stub::{ExecResult, SandboxContainerRecord, SandboxManager};
+pub use manager_stub::{ExecResult, SandboxContainerRecord, SandboxInstanceRecord, SandboxManager};
 pub use scope::SandboxScope;
 pub use traits::SandboxAdmin;
 #[cfg(feature = "tool-stack-logs")]
 pub use traits::SandboxDiagnostics;
 pub use traits::{
-    SandboxApplyFileEditResult, SandboxBackend, SandboxBackendId, SandboxCapability, SandboxExec,
-    SandboxFileEdit, SandboxFileListing, SandboxFileOps, SandboxLifecycle,
+    SandboxApplyFileEditResult, SandboxBackend, SandboxBackendId, SandboxCapability,
+    SandboxEditReadGuard, SandboxExec, SandboxFileEdit, SandboxFileListing, SandboxFileOps,
+    SandboxLifecycle,
 };

@@ -30,6 +30,8 @@ pub struct CompactRequestContext {
     pub target_token_budget: usize,
     /// Caller-provided timestamp for deterministic tests and event metadata.
     pub created_at: String,
+    /// Whether scoped durable wiki lookup tools are exposed to the next model request.
+    pub wiki_memory_lookup_available: bool,
 }
 
 /// Result of a successful controller compact run.
@@ -145,6 +147,7 @@ impl CompactionController {
             created_at: context.created_at,
             previous_summary_detected: previous_summary.is_some(),
             repair_applied: false,
+            wiki_memory_lookup_available: context.wiki_memory_lookup_available,
         };
 
         let replacement = build_replacement(
@@ -320,6 +323,7 @@ mod tests {
             phase: CompactionPhase::Manual,
             target_token_budget: 10_000,
             created_at: "2026-05-21T20:15:00+03:00".to_string(),
+            wiki_memory_lookup_available: false,
         }
     }
 
@@ -340,6 +344,7 @@ mod tests {
                 created_at: "2026-05-21T20:10:00+03:00".to_string(),
                 previous_summary_detected: false,
                 repair_applied: false,
+                wiki_memory_lookup_available: false,
             },
         )
     }

@@ -1,0 +1,24 @@
+profile = "host-bwrap"
+cargo_features = ["profile-host-bwrap"]
+
+[modules]
+"transport/telegram" = { enabled = true }
+"storage/r2" = { enabled = true }
+"llm-provider/opencode-go" = { enabled = true }
+"llm-provider/openrouter" = { enabled = true }
+"sandbox-backend/bwrap" = { enabled = true }
+"tool/agents-md" = { enabled = true }
+"tool/compression" = { enabled = true }
+"tool/delegation" = { enabled = true }
+"tool/file-delivery" = { enabled = true }
+"tool/media-audio" = { enabled = true }
+"tool/media-image" = { enabled = true }
+"tool/media-video" = { enabled = true }
+"tool/reminder" = { enabled = true }
+"tool/sandbox-exec" = { enabled = true }
+"tool/sandbox-fileops" = { enabled = true }
+"tool/sandbox-recreate" = { enabled = true }
+"tool/tavily" = { enabled = true }
+"tool/todos" = { enabled = true }
+"tool/webfetch-md" = { enabled = true }
+"tool/wiki-memory" = { enabled = true }

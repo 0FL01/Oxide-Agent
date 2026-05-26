@@ -2,14 +2,17 @@
 
 //! Sandbox manager facade used when no sandbox backend feature is compiled.
 
-use super::SandboxScope;
+use super::{
+    SandboxApplyFileEditResult, SandboxEditReadGuard, SandboxFileEdit, SandboxFileListing,
+    SandboxScope,
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 fn unavailable() -> anyhow::Error {
     anyhow::anyhow!(
-        "sandbox support is not compiled; enable sandbox-backend-docker-direct or sandbox-daemon"
+        "sandbox support is not compiled; enable sandbox-backend-docker-direct, sandbox-backend-bwrap, or sandbox-daemon"
     )
 }
 
@@ -39,7 +42,33 @@ impl ExecResult {
     }
 }
 
-/// Docker metadata for a user-owned sandbox container.
+/// Backend-neutral metadata for a user-owned sandbox instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxInstanceRecord {
+    pub backend: String,
+    pub instance_id: String,
+    pub instance_name: String,
+    pub scope_id: Option<String>,
+    pub image_id: Option<String>,
+    pub rootfs_path: Option<String>,
+    pub state_dir: Option<String>,
+    pub workspace_dir: Option<String>,
+    pub root_mode: Option<String>,
+    pub network_mode: Option<String>,
+    pub created_at: Option<i64>,
+    pub last_used_at: Option<i64>,
+    pub state: Option<String>,
+    pub status: Option<String>,
+    pub running: bool,
+    pub user_id: Option<i64>,
+    pub chat_id: Option<i64>,
+    pub thread_id: Option<i64>,
+    pub labels: HashMap<String, String>,
+    pub container_id: String,
+    pub container_name: String,
+}
+
+/// Docker-compatible metadata for a user-owned sandbox container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxContainerRecord {
     pub container_id: String,
@@ -54,6 +83,41 @@ pub struct SandboxContainerRecord {
     pub chat_id: Option<i64>,
     pub thread_id: Option<i64>,
     pub labels: HashMap<String, String>,
+}
+
+impl From<SandboxContainerRecord> for SandboxInstanceRecord {
+    fn from(record: SandboxContainerRecord) -> Self {
+        Self {
+            backend: record
+                .labels
+                .get("agent.sandbox_backend")
+                .cloned()
+                .unwrap_or_else(|| "docker".to_string()),
+            instance_id: record.container_id.clone(),
+            instance_name: record.container_name.clone(),
+            scope_id: record.scope.clone(),
+            image_id: record.image.clone(),
+            rootfs_path: record.labels.get("agent.rootfs").cloned(),
+            state_dir: record.labels.get("agent.state_dir").cloned(),
+            workspace_dir: record.labels.get("agent.workspace_dir").cloned(),
+            root_mode: record.labels.get("agent.root_mode").cloned(),
+            network_mode: record.labels.get("agent.network_mode").cloned(),
+            created_at: record.created_at,
+            last_used_at: record
+                .labels
+                .get("agent.updated_at")
+                .and_then(|value| value.parse::<i64>().ok()),
+            state: record.state.clone(),
+            status: record.status.clone(),
+            running: record.running,
+            user_id: record.user_id,
+            chat_id: record.chat_id,
+            thread_id: record.thread_id,
+            labels: record.labels,
+            container_id: record.container_id,
+            container_name: record.container_name,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -155,6 +219,19 @@ impl SandboxManager {
         _container_path: &str,
         _cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<u64> {
+        Err(unavailable())
+    }
+
+    pub async fn list_files(&mut self, _path: &str) -> Result<SandboxFileListing> {
+        Err(unavailable())
+    }
+
+    pub async fn apply_file_edit(
+        &mut self,
+        _path: &str,
+        _edit: SandboxFileEdit,
+        _read_guard: Option<SandboxEditReadGuard>,
+    ) -> Result<SandboxApplyFileEditResult> {
         Err(unavailable())
     }
 }

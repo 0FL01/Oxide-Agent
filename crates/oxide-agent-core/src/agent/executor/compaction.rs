@@ -1,6 +1,7 @@
 use super::AgentExecutor;
 use crate::agent::compaction::{
-    CompactRequestContext, CompactRunOutcome, CompactionBackend, CompactionPhase, CompactionReason,
+    wiki_memory_lookup_available, CompactRequestContext, CompactRunOutcome, CompactionBackend,
+    CompactionPhase, CompactionReason,
 };
 use crate::agent::progress::AgentEvent;
 use anyhow::{anyhow, Result};
@@ -34,6 +35,8 @@ impl AgentExecutor {
         );
         Self::emit_runtime_manual_compaction_started(progress_tx.as_ref(), &self.session.memory)
             .await;
+        let wiki_memory_lookup_available =
+            wiki_memory_lookup_available(&self.current_tool_definitions());
 
         let cancellation_token = self.session.cancellation_token.clone();
         let context = CompactRequestContext {
@@ -43,6 +46,7 @@ impl AgentExecutor {
             phase: CompactionPhase::Manual,
             target_token_budget: self.session.memory.max_tokens(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            wiki_memory_lookup_available,
         };
         let outcome = match Self::await_until_cancelled(cancellation_token, async {
             self.compaction_controller

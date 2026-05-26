@@ -11,8 +11,8 @@ use crate::agent::tool_runtime::{
 use crate::llm::ToolDefinition;
 use crate::sandbox::{
     ExecResult, SandboxApplyFileEditResult, SandboxBackend, SandboxBackendId, SandboxCapability,
-    SandboxExec, SandboxFileEdit, SandboxFileListing, SandboxFileOps, SandboxLifecycle,
-    SandboxManager, SandboxScope,
+    SandboxEditReadGuard, SandboxExec, SandboxFileEdit, SandboxFileListing, SandboxFileOps,
+    SandboxLifecycle, SandboxManager, SandboxScope,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -20,9 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use shell_escape::escape;
 use std::collections::HashMap;
-use std::str;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
@@ -184,15 +182,7 @@ impl SandboxFileOps for SandboxRuntime {
     async fn list_files(&self, path: &str) -> Result<SandboxFileListing> {
         let _shared = self.execution_gate.read().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
-        let result = sandbox
-            .exec_command(&list_files_command(path), None)
-            .await?;
-        Ok(SandboxFileListing {
-            path: path.to_string(),
-            listing: result.stdout,
-            stderr: result.stderr,
-            exit_code: result.exit_code,
-        })
+        sandbox.list_files(path).await
     }
 
     async fn apply_file_edit(
@@ -202,39 +192,26 @@ impl SandboxFileOps for SandboxRuntime {
     ) -> Result<SandboxApplyFileEditResult> {
         let _exclusive = self.execution_gate.write().await;
         let mut sandbox = self.get_or_create_sandbox().await?;
-        let current = sandbox.read_file(path).await?;
-        let previous_sha256 = sha256_hex(&current);
-
-        if !current.is_empty() {
-            let snapshots = self.read_snapshots.lock().await;
-            validate_edit_read_guard(path, &previous_sha256, current.len(), snapshots.get(path))?;
-        }
-
-        let (updated, replacements) = apply_exact_text_edit(&current, &edit)?;
-        let new_sha256 = sha256_hex(&updated);
-        let changed = current != updated;
-        if changed {
-            sandbox.write_file(path, &updated).await?;
-        }
+        let read_guard =
+            self.read_snapshots
+                .lock()
+                .await
+                .get(path)
+                .map(|snapshot| SandboxEditReadGuard {
+                    sha256: snapshot.sha256.clone(),
+                    bytes: snapshot.bytes,
+                });
+        let result = sandbox.apply_file_edit(path, edit, read_guard).await?;
 
         self.read_snapshots.lock().await.insert(
             path.to_string(),
             ReadSnapshot {
-                sha256: new_sha256.clone(),
-                bytes: updated.len(),
+                sha256: result.new_sha256.clone(),
+                bytes: result.bytes_written,
             },
         );
 
-        Ok(SandboxApplyFileEditResult {
-            path: path.to_string(),
-            status: if changed { "updated" } else { "unchanged" }.to_string(),
-            replacements,
-            previous_sha256,
-            new_sha256,
-            bytes_before: current.len(),
-            bytes_written: updated.len(),
-            changed,
-        })
+        Ok(result)
     }
 }
 
@@ -379,14 +356,6 @@ struct ListFilesArgs {
 
 fn default_workspace_path() -> String {
     "/workspace".to_string()
-}
-
-fn list_files_command(path: &str) -> String {
-    format!(
-        "tree -L 3 -h --du {} 2>/dev/null || find {} -type f -o -type d | head -100",
-        escape(path.into()),
-        escape(path.into())
-    )
 }
 
 fn parse_invocation_args<T>(invocation: &ToolInvocation) -> std::result::Result<T, ToolRuntimeError>
@@ -541,6 +510,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+#[cfg(test)]
 fn validate_edit_read_guard(
     path: &str,
     current_sha256: &str,
@@ -570,12 +540,13 @@ fn validate_edit_read_guard(
     Ok(())
 }
 
+#[cfg(test)]
 fn apply_exact_text_edit(current: &[u8], edit: &SandboxFileEdit) -> Result<(Vec<u8>, usize)> {
     if bytes_look_binary(current) {
         anyhow::bail!("apply_file_edit only supports text files; binary content was detected");
     }
 
-    let current_text = str::from_utf8(current)
+    let current_text = std::str::from_utf8(current)
         .map_err(|error| anyhow::anyhow!("apply_file_edit only supports UTF-8 text: {error}"))?;
 
     if edit.expected_replacements == 0 {
@@ -639,13 +610,13 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "execute_command".to_string(),
-            description: "Execute a bash command in the isolated sandbox environment. Returns JSON with ok, stdout, stderr, and exit_code. Available commands include: python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
+            description: "Execute a shell command in the isolated sandbox environment with /workspace as the working directory. Do not assume Bash-specific syntax unless the sandbox image provides bash. Returns JSON with ok, stdout, stderr, and exit_code. Common commands may include python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The bash command to execute"
+                        "description": "The shell command to execute inside the sandbox"
                     }
                 },
                 "required": ["command"]
@@ -659,7 +630,7 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file (relative to /workspace or absolute)"
+                        "description": "Workspace file path. Relative paths resolve under /workspace; absolute paths must start with /workspace/."
                     },
                     "content": {
                         "type": "string",
@@ -677,7 +648,7 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to read"
+                        "description": "Workspace file path. Relative paths resolve under /workspace; absolute paths must start with /workspace/."
                     }
                 },
                 "required": ["path"]
@@ -691,7 +662,7 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the file to edit"
+                        "description": "Workspace file path. Relative paths resolve under /workspace; absolute paths must start with /workspace/."
                     },
                     "search": {
                         "type": "string",
@@ -717,14 +688,14 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Optional path to list (defaults to /workspace)"
+                        "description": "Optional workspace path to list. Defaults to /workspace; absolute paths must start with /workspace/."
                     }
                 }
             }),
         },
         ToolDefinition {
             name: "recreate_sandbox".to_string(),
-            description: "Recreate the sandbox container from scratch, wiping all previous workspace contents. Returns JSON with ok, status, and message or error.".to_string(),
+            description: "Recreate the sandbox instance from scratch, wiping all previous workspace contents. Returns JSON with ok, status, and message or error.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {}
@@ -816,6 +787,44 @@ mod tests {
         assert!(execute_command.description.contains("JSON"));
         assert!(execute_command.description.contains("stdout"));
         assert!(execute_command.description.contains("exit_code"));
+        assert!(execute_command.description.contains("shell command"));
+        assert!(execute_command.description.contains("/workspace"));
+        assert!(!execute_command.description.contains("bash command"));
+    }
+
+    #[test]
+    fn sandbox_file_tool_descriptions_are_workspace_scoped() {
+        let provider = Arc::new(SandboxFileOpsProvider::new(Arc::new(SandboxRuntime::new(
+            1,
+        ))));
+        let specs: Vec<_> = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .map(|executor| executor.spec())
+            .collect();
+
+        for tool_name in ["write_file", "read_file", "apply_file_edit", "list_files"] {
+            let spec = specs
+                .iter()
+                .find(|tool| tool.name == tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} registered"));
+            let path_description = spec
+                .parameters
+                .get("properties")
+                .and_then(|properties| properties.get("path"))
+                .and_then(|path| path.get("description"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+
+            assert!(
+                path_description.contains("/workspace"),
+                "{tool_name} path description should mention /workspace"
+            );
+            assert!(
+                path_description.contains("absolute paths must start with /workspace/"),
+                "{tool_name} path description should reject non-workspace absolutes"
+            );
+        }
     }
 
     #[test]

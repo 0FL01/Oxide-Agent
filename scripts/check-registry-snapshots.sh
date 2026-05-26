@@ -13,6 +13,7 @@ Profiles:
   search-only
   no-sandbox
   media-enabled
+  host-bwrap
   full
 USAGE
 }
@@ -38,6 +39,9 @@ case "${profile}" in
     ;;
   media-enabled)
     features="profile-media-enabled"
+    ;;
+  host-bwrap)
+    features="profile-host-bwrap"
     ;;
   full)
     features="profile-full"
