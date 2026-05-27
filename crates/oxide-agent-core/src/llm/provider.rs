@@ -4,8 +4,8 @@ use super::{ChatResponse, ChatWithToolsRequest, LlmError, Message};
 #[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Generate a chat completion
-    async fn chat_completion(
+    /// Generate plain text for core-internal helper tasks such as compaction.
+    async fn complete_internal_text(
         &self,
         system_prompt: &str,
         history: &[Message],

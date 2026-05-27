@@ -456,7 +456,10 @@ pub enum AgentInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentSettings, ModuleRuntimeConfig};
+    use crate::config::AgentSettings;
+    #[cfg(feature = "llm-openrouter")]
+    use crate::config::ModuleRuntimeConfig;
+    #[cfg(feature = "llm-openrouter")]
     use crate::llm::MockLlmProvider;
     use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability, SandboxFileListing};
     use std::sync::Arc;
@@ -705,6 +708,7 @@ mod tests {
         assert!(processed.contains("**Message:** caption"));
     }
 
+    #[cfg(feature = "llm-openrouter")]
     #[tokio::test]
     async fn preprocess_video_uses_media_model() {
         let mut settings = AgentSettings {

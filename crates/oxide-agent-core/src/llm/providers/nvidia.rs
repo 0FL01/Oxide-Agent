@@ -335,7 +335,7 @@ fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
 
 #[async_trait]
 impl LlmProvider for NvidiaProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         system_prompt: &str,
         history: &[Message],

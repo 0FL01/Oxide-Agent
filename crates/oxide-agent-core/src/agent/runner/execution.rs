@@ -1917,8 +1917,8 @@ mod tests {
                 token_after: 10,
                 history_items_before: 3,
                 history_items_after: 1,
-                provider: "mock".to_string(),
-                route: "mock-model".to_string(),
+                provider: "opencode-go".to_string(),
+                route: "deepseek-v4-flash".to_string(),
                 backend: CompactionBackend::LocalLlmSummary,
                 created_at: "2026-05-21T20:10:00+03:00".to_string(),
                 previous_summary_detected: false,
@@ -1986,8 +1986,8 @@ mod tests {
     fn structured_output_requirement_uses_active_provider_without_registry_lookup() {
         let llm_client = build_llm_client(single_final_response_provider());
         let runner = AgentRunner::new(llm_client);
-        let config = AgentRunnerConfig::new("glm-4.7".to_string(), 8, 4, 60, 4096)
-            .with_model_provider("zai")
+        let config = AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 8, 4, 60, 4096)
+            .with_model_provider("llm-provider/opencode-go")
             .with_model_routes(vec![ModelInfo {
                 id: "gpt-5.4-mini".to_string(),
                 provider: "chatgpt".to_string(),
@@ -2103,6 +2103,7 @@ mod tests {
         assert!(!runner.structured_output_required_for_config(&config));
     }
 
+    #[cfg(feature = "llm-chatgpt")]
     #[test]
     fn select_model_route_index_keeps_chatgpt_route_when_structured_output_is_disabled() {
         let llm_client = build_llm_client_for_provider(
@@ -2155,7 +2156,7 @@ mod tests {
 
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
-            agent_model_provider: Some("opencode-go".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
             agent_model_max_output_tokens: Some(256),
             ..AgentSettings::default()
         };
@@ -2184,7 +2185,7 @@ mod tests {
             memory_scope: None,
             memory_behavior: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 8, 4, 60, 4096)
-                .with_model_provider("opencode-go")
+                .with_model_provider("llm-provider/opencode-go")
                 .with_model_routes(vec![
                     ModelInfo {
                         id: "deepseek-v4-flash".to_string(),
@@ -2219,8 +2220,8 @@ mod tests {
         let runner = AgentRunner::new(llm_client);
         let config = AgentRunnerConfig::new("missing-model-name".to_string(), 8, 4, 60, 4096)
             .with_model_routes(vec![ModelInfo {
-                id: "glm-4.7".to_string(),
-                provider: "zai".to_string(),
+                id: "deepseek-v4-flash".to_string(),
+                provider: "opencode-go".to_string(),
                 max_output_tokens: 32_000,
                 context_window_tokens: 200_000,
                 weight: 1,
@@ -2281,7 +2282,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 2, 1, 30, 256),
         };
 
         let result = runner.run(&mut ctx).await.expect("runner succeeds");
@@ -2389,7 +2390,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 2, 1, 30, 256),
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 2, 1, 30, 256),
         };
 
         let result = runner
@@ -2476,7 +2477,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
         };
 
         let result = runner.run(&mut ctx).await.expect("runner succeeds");
@@ -2536,11 +2537,11 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 16_000),
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 16_000),
         };
         let route = ModelInfo {
-            id: "mock-model".to_string(),
-            provider: "mock".to_string(),
+            id: "deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
             max_output_tokens: 16_000,
             context_window_tokens: 20_000,
             weight: 1,
@@ -2576,7 +2577,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
         };
 
         AgentRunner::refresh_messages_from_memory(&mut ctx);
@@ -2609,8 +2610,8 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 4, 1, 30, 1024)
-                .with_model_provider("mock"),
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("llm-provider/opencode-go"),
         };
         let mut state = RunState::new();
         let response = ChatResponse {
@@ -2676,7 +2677,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("mock-model".to_string(), 1, 1, 30, 256),
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
         };
         let mut response = ChatResponse {
             content: Some("done".to_string()),
@@ -2720,14 +2721,14 @@ mod tests {
         stub_non_chat_methods(&mut backup);
 
         let settings = AgentSettings {
-            agent_model_id: Some("primary-model".to_string()),
-            agent_model_provider: Some("primary".to_string()),
+            agent_model_id: Some("deepseek-v4-pro".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
             agent_model_max_output_tokens: Some(256),
             ..AgentSettings::default()
         };
         let mut llm_client = LlmClient::new(&settings);
-        llm_client.register_provider("primary".to_string(), Arc::new(primary));
-        llm_client.register_provider("backup".to_string(), Arc::new(backup));
+        llm_client.register_provider("llm-provider/opencode-go".to_string(), Arc::new(primary));
+        llm_client.register_provider("opencode-go".to_string(), Arc::new(backup));
         let llm_client = Arc::new(llm_client);
 
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
@@ -2754,21 +2755,21 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
-                .with_model_provider("primary")
+            config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
+                .with_model_provider("llm-provider/opencode-go")
                 .with_model_routes(vec![
                     ModelInfo {
-                        id: "primary-model".to_string(),
+                        id: "deepseek-v4-pro".to_string(),
                         max_output_tokens: 256,
                         context_window_tokens: 128_000,
-                        provider: "primary".to_string(),
+                        provider: "llm-provider/opencode-go".to_string(),
                         weight: 1,
                     },
                     ModelInfo {
-                        id: "backup-model".to_string(),
+                        id: "deepseek-v4-flash".to_string(),
                         max_output_tokens: 256,
                         context_window_tokens: 128_000,
-                        provider: "backup".to_string(),
+                        provider: "opencode-go".to_string(),
                         weight: 3,
                     },
                 ]),
@@ -2788,10 +2789,10 @@ mod tests {
                     from_model,
                     to_provider,
                     to_model,
-                } if from_provider == "primary"
-                    && from_model == "primary-model"
-                    && to_provider == "backup"
-                    && to_model == "backup-model"
+                } if from_provider == "llm-provider/opencode-go"
+                    && from_model == "deepseek-v4-pro"
+                    && to_provider == "opencode-go"
+                    && to_model == "deepseek-v4-flash"
             )
         }));
     }
@@ -2829,14 +2830,14 @@ mod tests {
         stub_non_chat_methods(&mut backup);
 
         let settings = AgentSettings {
-            agent_model_id: Some("primary-model".to_string()),
-            agent_model_provider: Some("primary".to_string()),
+            agent_model_id: Some("deepseek-v4-pro".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
             agent_model_max_output_tokens: Some(256),
             ..AgentSettings::default()
         };
         let mut llm_client = LlmClient::new(&settings);
-        llm_client.register_provider("primary".to_string(), Arc::new(primary));
-        llm_client.register_provider("backup".to_string(), Arc::new(backup));
+        llm_client.register_provider("llm-provider/opencode-go".to_string(), Arc::new(primary));
+        llm_client.register_provider("opencode-go".to_string(), Arc::new(backup));
         let llm_client = Arc::new(llm_client);
 
         let compaction_controller =
@@ -2873,21 +2874,21 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
-                .with_model_provider("primary")
+            config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
+                .with_model_provider("llm-provider/opencode-go")
                 .with_model_routes(vec![
                     ModelInfo {
-                        id: "primary-model".to_string(),
+                        id: "deepseek-v4-pro".to_string(),
                         max_output_tokens: 256,
                         context_window_tokens: 128_000,
-                        provider: "primary".to_string(),
+                        provider: "llm-provider/opencode-go".to_string(),
                         weight: 1,
                     },
                     ModelInfo {
-                        id: "backup-model".to_string(),
+                        id: "deepseek-v4-flash".to_string(),
                         max_output_tokens: 256,
                         context_window_tokens: 15_000,
-                        provider: "backup".to_string(),
+                        provider: "opencode-go".to_string(),
                         weight: 1,
                     },
                 ]),
@@ -2915,7 +2916,7 @@ mod tests {
                     provider,
                     route,
                     ..
-                } if provider == "backup" && route == "backup-model"
+                } if provider == "opencode-go" && route == "deepseek-v4-flash"
             )
         }));
     }
@@ -2946,14 +2947,14 @@ mod tests {
         stub_non_chat_methods(&mut backup);
 
         let settings = AgentSettings {
-            agent_model_id: Some("primary-model".to_string()),
-            agent_model_provider: Some("primary".to_string()),
+            agent_model_id: Some("deepseek-v4-pro".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
             agent_model_max_output_tokens: Some(256),
             ..AgentSettings::default()
         };
         let mut llm_client = LlmClient::new(&settings);
-        llm_client.register_provider("primary".to_string(), Arc::new(primary));
-        llm_client.register_provider("backup".to_string(), Arc::new(backup));
+        llm_client.register_provider("llm-provider/opencode-go".to_string(), Arc::new(primary));
+        llm_client.register_provider("opencode-go".to_string(), Arc::new(backup));
         let llm_client = Arc::new(llm_client);
 
         let mut runner = AgentRunner::new(Arc::clone(&llm_client));
@@ -2980,21 +2981,21 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            config: AgentRunnerConfig::new("primary-model".to_string(), 1, 1, 30, 256)
-                .with_model_provider("primary")
+            config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
+                .with_model_provider("llm-provider/opencode-go")
                 .with_model_routes(vec![
                     ModelInfo {
-                        id: "primary-model".to_string(),
+                        id: "deepseek-v4-pro".to_string(),
                         max_output_tokens: 256,
                         context_window_tokens: 128_000,
-                        provider: "primary".to_string(),
+                        provider: "llm-provider/opencode-go".to_string(),
                         weight: 1,
                     },
                     ModelInfo {
-                        id: "backup-model".to_string(),
+                        id: "deepseek-v4-flash".to_string(),
                         max_output_tokens: 256,
                         context_window_tokens: 128_000,
-                        provider: "backup".to_string(),
+                        provider: "opencode-go".to_string(),
                         weight: 2,
                     },
                 ]),
@@ -3091,7 +3092,7 @@ mod tests {
     }
 
     fn build_llm_client(provider: MockLlmProvider) -> Arc<LlmClient> {
-        build_llm_client_for_provider(provider, "mock", "mock-model")
+        build_llm_client_for_provider(provider, "opencode-go", "deepseek-v4-flash")
     }
 
     fn build_llm_client_for_provider(
@@ -3122,7 +3123,7 @@ mod tests {
 
     fn stub_non_chat_methods(provider: &mut MockLlmProvider) {
         provider
-            .expect_chat_completion()
+            .expect_complete_internal_text()
             .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
         provider
             .expect_transcribe_audio()
@@ -3144,7 +3145,7 @@ mod tests {
             })
         });
         provider
-            .expect_chat_completion()
+            .expect_complete_internal_text()
             .returning(|_, _, _, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
         provider
             .expect_transcribe_audio()
@@ -3198,14 +3199,13 @@ mod tests {
                     usage: None,
                 })
             });
-        provider
-            .expect_chat_completion()
-            .times(1)
-            .returning(|_, _, user_message, model_id, _| {
-                assert_eq!(model_id, "mock-model");
+        provider.expect_complete_internal_text().times(1).returning(
+            |_, _, user_message, model_id, _| {
+                assert_eq!(model_id, "deepseek-v4-flash");
                 assert!(user_message.contains("## Source History"));
                 Ok("Runtime context-limit handoff summary.".to_string())
-            });
+            },
+        );
         provider
             .expect_transcribe_audio()
             .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));
@@ -3226,14 +3226,13 @@ mod tests {
                 usage: None,
             })
         });
-        provider
-            .expect_chat_completion()
-            .times(1)
-            .returning(|_, _, user_message, model_id, _| {
-                assert_eq!(model_id, "mock-model");
+        provider.expect_complete_internal_text().times(1).returning(
+            |_, _, user_message, model_id, _| {
+                assert_eq!(model_id, "deepseek-v4-flash");
                 assert!(user_message.contains("## Source History"));
                 Ok("Pre-sampling handoff summary.".to_string())
-            });
+            },
+        );
         provider
             .expect_transcribe_audio()
             .returning(|_, _, _| Err(LlmError::Unknown("Not implemented".to_string())));

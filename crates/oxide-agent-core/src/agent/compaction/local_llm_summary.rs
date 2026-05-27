@@ -137,14 +137,14 @@ mod tests {
     fn backend_with_mock_response(response: &'static str) -> LocalLlmSummary {
         let mut provider = MockLlmProvider::new();
         provider
-            .expect_chat_completion()
+            .expect_complete_internal_text()
             .with(always(), always(), always(), always(), always())
             .returning(move |_, _, _, _, _| Ok(response.to_string()));
         backend_with_provider(provider)
     }
 
     #[tokio::test]
-    async fn summarize_uses_plain_text_chat_completion_and_trims_output() {
+    async fn summarize_uses_internal_plain_text_and_trims_output() {
         let backend = backend_with_mock_response("  Handoff summary.\n");
         let messages = vec![AgentMessage::user_task("Ship compaction")];
         let route = route("agent-model", "mock");
@@ -169,7 +169,7 @@ mod tests {
         let mut provider = MockLlmProvider::new();
         let mut sequence = mockall::Sequence::new();
         provider
-            .expect_chat_completion()
+            .expect_complete_internal_text()
             .times(1)
             .in_sequence(&mut sequence)
             .return_once(|_, _, _, model_id, max_tokens| {
@@ -180,7 +180,7 @@ mod tests {
                 ))
             });
         provider
-            .expect_chat_completion()
+            .expect_complete_internal_text()
             .times(1)
             .in_sequence(&mut sequence)
             .return_once(|_, _, _, model_id, max_tokens| {

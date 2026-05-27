@@ -266,7 +266,7 @@ impl LlmClient {
 
         let start = std::time::Instant::now();
         let result = provider
-            .chat_completion(
+            .complete_internal_text(
                 &system_prompt,
                 &history,
                 user_message,
@@ -739,7 +739,9 @@ impl LlmClient {
 mod tests {
     use super::{InternalTextPurpose, LlmClient};
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
-    use crate::llm::{ChatResponse, Message, MockLlmProvider};
+    use crate::llm::MockLlmProvider;
+    #[cfg(feature = "llm-openrouter")]
+    use crate::llm::{ChatResponse, Message};
     use std::sync::Arc;
 
     fn with_provider_key(
@@ -1059,7 +1061,7 @@ mod tests {
 
         let mut llm = LlmClient::new(&settings);
         let mut provider = MockLlmProvider::new();
-        provider.expect_chat_completion().return_once(
+        provider.expect_complete_internal_text().return_once(
             |system_prompt, history, user_message, model_id, max_tokens| {
                 assert_eq!(system_prompt, "You are helpful.");
                 assert!(history.is_empty());

@@ -15,7 +15,7 @@ use mockall::predicate::*;
 /// # Returns
 ///
 /// A `MockLlmProvider` that returns the provided `response_text` for all
-/// `chat_completion` calls. Other methods return error by default.
+/// internal plain-text calls. Other methods return error by default.
 ///
 /// # Example
 ///
@@ -28,7 +28,7 @@ use mockall::predicate::*;
 #[must_use]
 pub fn mock_llm_simple(response_text: &'static str) -> crate::llm::MockLlmProvider {
     let mut mock = crate::llm::MockLlmProvider::new();
-    mock.expect_chat_completion()
+    mock.expect_complete_internal_text()
         .with(always(), always(), always(), always(), always())
         .returning(move |_, _, _, _, _| Ok(response_text.to_string()));
 

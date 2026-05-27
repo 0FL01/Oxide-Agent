@@ -95,7 +95,7 @@ impl SequencedZaiProvider {
 
 #[async_trait]
 impl LlmProvider for SequencedZaiProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
