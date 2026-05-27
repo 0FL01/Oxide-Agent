@@ -250,7 +250,7 @@ sandbox-backend-docker-direct = [
     "sandbox-broker-protocol",
 ]
 sandbox-backend-sandboxd-client = ["sandbox-broker-protocol"]
-sandbox-backend-bwrap = ["dep:fs2"]
+sandbox-backend-bwrap = ["dep:fs2", "dep:reqwest"]
 sandbox-broker-protocol = ["dep:bincode", "dep:serde_bytes"]
 sandbox-daemon = ["sandbox-backend-docker-direct"]
 integration-mcp-jira = ["dep:rmcp"]

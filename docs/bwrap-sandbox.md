@@ -94,6 +94,7 @@ Development example:
 SANDBOX_BACKEND=bwrap
 BWRAP_BIN=bwrap
 BWRAP_IMAGE=debian-13-dev
+BWRAP_IMAGE_BOOTSTRAP=off
 BWRAP_IMAGE_STORE=.oxide/sandbox/images
 BWRAP_STATE_DIR=.oxide/sandbox/scopes
 BWRAP_LOCK_DIR=.oxide/sandbox/locks
@@ -120,7 +121,21 @@ BWRAP_ROOT_UPPER_DIR=/var/lib/oxide-agent/sandbox/root-upper
 
 All bwrap operations for the same scope use an exclusive filesystem lock so package-manager writes and overlay state are serialized. `BWRAP_RECREATE_LOCK_TIMEOUT_SECS` controls how long an operation waits for that lock; by default it is `BWRAP_COMMAND_TIMEOUT_SECS + 5`.
 
+When `SANDBOX_BACKEND=bwrap` is explicitly selected, the Telegram bot performs a startup preflight for `BWRAP_BIN`. If bubblewrap is missing or not executable, startup fails with an actionable error that tells the operator to install `bubblewrap`, set `BWRAP_BIN`, or choose another sandbox backend.
+
 `BWRAP_STATE_DIR` and `BWRAP_LOCK_DIR` must be real directories or absent so the agent can create them. Direct symlink paths are rejected.
+
+`BWRAP_IMAGE_BOOTSTRAP=download` enables fully automated image bootstrap when `<BWRAP_IMAGE_STORE>/<BWRAP_IMAGE>/image.json` is missing. It requires `BWRAP_IMAGE_URL` (`http`, `https`, or `file`) and a mandatory `BWRAP_IMAGE_SHA256`; the agent downloads the tarball, verifies the checksum, extracts it with host `tar`, creates the required `proc`, `dev`, `tmp`, and `workspace` directories, writes `image.json`, and then continues with the normal manifest/rootfs validation. Existing images are not overwritten. `BWRAP_ROOTFS` disables image bootstrap because the operator is explicitly managing the rootfs path.
+
+Example Alpine bootstrap:
+
+```env
+BWRAP_IMAGE=alpine-3.23-dev
+BWRAP_IMAGE_BOOTSTRAP=download
+BWRAP_IMAGE_URL=https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-minirootfs-3.23.4-x86_64.tar.gz
+BWRAP_IMAGE_SHA256=85498865362aa7ebececa0d725a2f2e4db7ac4e4b2850b8df21645afa0d03ee3
+BWRAP_IMAGE_PACKAGE_MANAGER=apk
+```
 
 `BWRAP_ROOT_UPPER_DIR` is optional. When set, each scope stores persistent system overlay writes under `<BWRAP_ROOT_UPPER_DIR>/<scope>/upper` and per-command overlay workdirs under `<BWRAP_ROOT_UPPER_DIR>/<scope>/work`, keeping both on the same filesystem. The path must be a real directory or absent; it must not be a symlink or live inside the shared rootfs image.
 

@@ -179,6 +179,10 @@ This path is for the prebuilt `x86_64` release artifact built with the embedded 
    SANDBOX_BACKEND=bwrap
    BWRAP_BIN=/usr/bin/bwrap
    BWRAP_IMAGE=alpine-3.23-dev
+   BWRAP_IMAGE_BOOTSTRAP=download
+   BWRAP_IMAGE_URL=https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-minirootfs-3.23.4-x86_64.tar.gz
+   BWRAP_IMAGE_SHA256=85498865362aa7ebececa0d725a2f2e4db7ac4e4b2850b8df21645afa0d03ee3
+   BWRAP_IMAGE_PACKAGE_MANAGER=apk
    BWRAP_IMAGE_STORE=/opt/oxide-agent/bwrap-images
    BWRAP_STATE_DIR=/var/lib/oxide-agent/sandbox/scopes
    BWRAP_LOCK_DIR=/var/lib/oxide-agent/sandbox/locks
@@ -193,21 +197,11 @@ This path is for the prebuilt `x86_64` release artifact built with the embedded 
    DEBUG_MODE=false
    ```
 
+   When `SANDBOX_BACKEND=bwrap` is set, startup checks `/usr/bin/bwrap` immediately. If bubblewrap is missing, the bot exits with an error telling you to install `bubblewrap`, set `BWRAP_BIN`, or choose another sandbox backend.
+
    `BWRAP_RESOLV_CONF=auto` stages the host resolver config and bind-mounts it into the sandbox. With `BWRAP_ROOT_MODE=overlay-rw`, the bot also creates the missing `/etc/resolv.conf` bind target for Alpine minirootfs images.
 
-5. Import an Alpine 3.23 minirootfs for `bwrap`. Copy `scripts/import-bwrap-rootfs-tar.sh` from this repository to `/opt/oxide-agent/scripts/import-bwrap-rootfs-tar.sh`, then run:
-
-   ```bash
-   /opt/oxide-agent/scripts/import-bwrap-rootfs-tar.sh \
-     --tarball /opt/oxide-agent/bwrap-images/alpine-minirootfs-3.23.4-x86_64.tar.gz \
-     --sha256 "$(awk '{print $1}' /opt/oxide-agent/bwrap-images/alpine-minirootfs-3.23.4-x86_64.tar.gz.sha256)" \
-     --image-id alpine-3.23-dev \
-     --output /opt/oxide-agent/bwrap-images/alpine-3.23-dev \
-     --distro alpine \
-     --suite v3.23 \
-     --version 3.23.4 \
-     --package-manager apk
-   ```
+5. On startup, `BWRAP_IMAGE_BOOTSTRAP=download` downloads the Alpine minirootfs, verifies `BWRAP_IMAGE_SHA256`, extracts it to `/opt/oxide-agent/bwrap-images/alpine-3.23-dev`, and writes the bwrap `image.json`. If `/opt/oxide-agent/bwrap-images/alpine-3.23-dev/image.json` already exists, bootstrap is a no-op.
 
 6. Optional OpenRC wrapper:
 
