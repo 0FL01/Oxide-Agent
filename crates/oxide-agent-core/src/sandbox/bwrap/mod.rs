@@ -5,19 +5,29 @@ use chrono::Utc;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+mod config;
+mod state;
+mod workspace;
+
+use self::config::BwrapSandboxConfig;
+use self::state::{BwrapScopeMetadata, BwrapScopeState};
+use self::workspace::{
+    cleanup_old_files, dir_size, ensure_no_symlink_escape, list_workspace_entries,
+    resolve_workspace_path,
+};
 use super::traits::apply_sandbox_file_edit;
 use super::{
     ExecResult, SandboxApplyFileEditResult, SandboxContainerRecord, SandboxEditReadGuard,
@@ -45,46 +55,6 @@ pub(crate) struct BwrapSandboxManager {
     scope: SandboxScope,
     state: BwrapScopeState,
     instance_id: String,
-}
-
-#[derive(Debug, Clone)]
-struct BwrapSandboxConfig {
-    bwrap_bin: PathBuf,
-    image_id: String,
-    manifest_path: Option<PathBuf>,
-    manifest_sha256: Option<String>,
-    package_manager: Option<String>,
-    rootfs: PathBuf,
-    state_dir: PathBuf,
-    lock_dir: PathBuf,
-    root_upper_dir: Option<PathBuf>,
-    pinned_system_dir: Option<PathBuf>,
-    net: BwrapNetworkMode,
-    root_mode: BwrapRootMode,
-    command_timeout: Duration,
-    lock_timeout: Duration,
-    max_output_bytes: usize,
-    max_read_file_bytes: u64,
-    allow_overlay: bool,
-    disable_nested_userns: bool,
-    resolv_conf: BwrapResolvConf,
-    default_shell: String,
-    default_workdir: String,
-    default_env: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone)]
-struct BwrapScopeState {
-    scope_name: String,
-    scope_dir: PathBuf,
-    workspace: PathBuf,
-    system_dir: PathBuf,
-    system_upper: PathBuf,
-    system_work: PathBuf,
-    tmp: PathBuf,
-    active: PathBuf,
-    metadata: PathBuf,
-    lock: PathBuf,
 }
 
 struct ScopeLock {
@@ -257,32 +227,6 @@ struct BwrapImageManifest {
     default_workdir: String,
     #[serde(default = "default_manifest_env")]
     default_env: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BwrapScopeMetadata {
-    schema_version: u32,
-    backend: String,
-    scope_name: String,
-    owner_id: i64,
-    namespace: String,
-    chat_id: Option<i64>,
-    thread_id: Option<i64>,
-    image_id: String,
-    #[serde(default)]
-    image_manifest_path: Option<String>,
-    image_manifest_sha256: Option<String>,
-    #[serde(default)]
-    package_manager: Option<String>,
-    rootfs: String,
-    workspace: String,
-    #[serde(default)]
-    system_dir: Option<String>,
-    root_mode: BwrapRootMode,
-    network_mode: BwrapNetworkMode,
-    created_at: i64,
-    updated_at: i64,
-    generation: u64,
 }
 
 pub(crate) fn preflight_from_env() -> Result<()> {
@@ -1120,250 +1064,6 @@ impl BwrapImageBootstrapConfig {
     }
 }
 
-impl BwrapSandboxConfig {
-    fn from_env() -> Result<Self> {
-        let bwrap_bin = resolve_executable(&env_string("BWRAP_BIN", BWRAP_DEFAULT_BIN)?)?;
-        let image_id = env_string("BWRAP_IMAGE", BWRAP_DEFAULT_IMAGE)?;
-        let state_root = absolute_path(".oxide/sandbox")?;
-        let image_store = absolute_path_env("BWRAP_IMAGE_STORE", state_root.join("images"))?;
-        let state_dir = absolute_path_env("BWRAP_STATE_DIR", state_root.join("scopes"))?;
-        let lock_dir = absolute_path_env(
-            "BWRAP_LOCK_DIR",
-            state_dir
-                .parent()
-                .map_or_else(|| state_root.join("locks"), |parent| parent.join("locks")),
-        )?;
-        let rootfs_override = optional_path_env("BWRAP_ROOTFS")?;
-        let root_upper_dir = optional_path_env("BWRAP_ROOT_UPPER_DIR")?;
-        let net = env_parse("BWRAP_NET", BWRAP_DEFAULT_NET)?;
-        let root_mode = env_parse("BWRAP_ROOT_MODE", BWRAP_DEFAULT_ROOT_MODE)?;
-        let allow_overlay = env_bool("BWRAP_ALLOW_OVERLAY", true)?;
-        if root_mode == BwrapRootMode::OverlayRw && !allow_overlay {
-            bail!("BWRAP_ALLOW_OVERLAY=false requires BWRAP_ROOT_MODE=ro.");
-        }
-        let command_timeout = Duration::from_secs(env_u64(
-            "BWRAP_COMMAND_TIMEOUT_SECS",
-            std::env::var("SANDBOX_EXEC_TIMEOUT_SECS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(BWRAP_DEFAULT_TIMEOUT_SECS),
-        )?);
-        let lock_timeout = Duration::from_secs(env_u64(
-            "BWRAP_RECREATE_LOCK_TIMEOUT_SECS",
-            command_timeout.as_secs().saturating_add(5),
-        )?);
-        let max_output_bytes = env_usize("BWRAP_MAX_OUTPUT_BYTES", BWRAP_DEFAULT_MAX_OUTPUT_BYTES)?;
-        let max_read_file_bytes = env_u64(
-            "BWRAP_MAX_READ_FILE_BYTES",
-            BWRAP_DEFAULT_MAX_READ_FILE_BYTES,
-        )?;
-        let disable_nested_userns = env_bool("BWRAP_DISABLE_NESTED_USERNS", true)?;
-        let resolv_conf = parse_resolv_conf()?;
-
-        let (manifest, manifest_path, manifest_sha256, rootfs) =
-            if let Some(rootfs) = rootfs_override {
-                validate_direct_rootfs_override(&rootfs)?;
-                let manifest_path = rootfs.parent().map(|parent| parent.join("image.json"));
-                let (manifest, loaded_manifest_path, manifest_sha256) =
-                    match manifest_path.as_ref().filter(|path| path.is_file()) {
-                        Some(path) => {
-                            let (manifest, manifest_sha256) = load_manifest(path)?;
-                            (manifest, Some(path.clone()), manifest_sha256)
-                        }
-                        None => (BwrapImageManifest::fallback(&image_id), None, None),
-                    };
-                (manifest, loaded_manifest_path, manifest_sha256, rootfs)
-            } else {
-                let image_dir = image_store.join(&image_id);
-                let manifest_path = image_dir.join("image.json");
-                if !manifest_path.is_file() {
-                    bail!(
-                        "Bwrap image manifest not found at {}. {}",
-                        manifest_path.display(),
-                        bwrap_rootfs_hint()
-                    );
-                }
-                let (manifest, manifest_sha256) = load_manifest(&manifest_path)?;
-                let rootfs = resolve_image_rootfs(&image_dir, &manifest.rootfs)?;
-                (manifest, Some(manifest_path), manifest_sha256, rootfs)
-            };
-
-        let mut default_env = default_manifest_env();
-        default_env.extend(manifest.default_env.clone());
-
-        Ok(Self {
-            bwrap_bin,
-            image_id: manifest.id.clone(),
-            manifest_path: manifest_path.map(absolute_path).transpose()?,
-            manifest_sha256,
-            package_manager: manifest.package_manager.clone(),
-            rootfs: absolute_maybe_existing_path(&rootfs)?,
-            state_dir,
-            lock_dir,
-            root_upper_dir,
-            pinned_system_dir: None,
-            net,
-            root_mode,
-            command_timeout,
-            lock_timeout,
-            max_output_bytes,
-            max_read_file_bytes,
-            allow_overlay,
-            disable_nested_userns,
-            resolv_conf,
-            default_shell: manifest.default_shell,
-            default_workdir: manifest.default_workdir,
-            default_env,
-        })
-    }
-
-    fn apply_scope_pin(&mut self, metadata: &BwrapScopeMetadata) -> Result<()> {
-        if metadata.backend != "bwrap" {
-            bail!(
-                "Invalid bwrap metadata backend '{}' in existing scope {}",
-                metadata.backend,
-                metadata.scope_name
-            );
-        }
-        self.image_id.clone_from(&metadata.image_id);
-        self.manifest_path = metadata.image_manifest_path.as_deref().map(PathBuf::from);
-        self.manifest_sha256 = metadata.image_manifest_sha256.clone();
-        self.package_manager = metadata.package_manager.clone();
-        self.rootfs = absolute_existing_path(Path::new(&metadata.rootfs))?;
-        self.pinned_system_dir = metadata.system_dir.as_deref().map(PathBuf::from);
-        self.root_mode = metadata.root_mode;
-        Ok(())
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.root_mode == BwrapRootMode::OverlayRw && !self.allow_overlay {
-            bail!("BWRAP_ALLOW_OVERLAY=false requires BWRAP_ROOT_MODE=ro.");
-        }
-        if self.command_timeout.is_zero() {
-            bail!("BWRAP_COMMAND_TIMEOUT_SECS must be greater than zero.");
-        }
-        if self.lock_timeout.is_zero() {
-            bail!("BWRAP_RECREATE_LOCK_TIMEOUT_SECS must be greater than zero.");
-        }
-        if self.max_output_bytes == 0 {
-            bail!("BWRAP_MAX_OUTPUT_BYTES must be greater than zero.");
-        }
-        if self.max_read_file_bytes == 0 {
-            bail!("BWRAP_MAX_READ_FILE_BYTES must be greater than zero.");
-        }
-        if self.disable_nested_userns && !bwrap_supports_disable_userns(&self.bwrap_bin)? {
-            bail!(
-                "BWRAP_DISABLE_NESTED_USERNS=true, but {} does not support --disable-userns. Upgrade bubblewrap or set BWRAP_DISABLE_NESTED_USERNS=false for development only.",
-                self.bwrap_bin.display()
-            );
-        }
-        validate_rootfs(self)?;
-        if let Some(root_upper_dir) = &self.root_upper_dir {
-            validate_root_upper_dir(root_upper_dir, &self.rootfs)?;
-        }
-        Ok(())
-    }
-}
-
-impl BwrapScopeState {
-    fn new(config: &BwrapSandboxConfig, scope: &SandboxScope) -> Self {
-        let scope_name = scope.stable_name();
-        let scope_dir = config.state_dir.join(&scope_name);
-        let system_dir = config.root_upper_dir.as_ref().map_or_else(
-            || scope_dir.join("system"),
-            |parent| parent.join(&scope_name),
-        );
-        let system_dir = config.pinned_system_dir.clone().unwrap_or(system_dir);
-        Self {
-            workspace: scope_dir.join("workspace"),
-            system_dir: system_dir.clone(),
-            system_upper: system_dir.join("upper"),
-            system_work: system_dir.join("work"),
-            tmp: scope_dir.join("tmp"),
-            active: scope_dir.join("active"),
-            metadata: scope_dir.join("metadata.json"),
-            lock: config.lock_dir.join(format!("{scope_name}.lock")),
-            scope_name,
-            scope_dir,
-        }
-    }
-}
-
-impl BwrapScopeMetadata {
-    fn read(path: &Path) -> Result<Option<Self>> {
-        if !path.is_file() {
-            return Ok(None);
-        }
-        let bytes = fs::read(path)
-            .with_context(|| format!("Failed to read bwrap metadata {}", path.display()))?;
-        let metadata = serde_json::from_slice(&bytes)
-            .with_context(|| format!("Invalid bwrap metadata JSON {}", path.display()))?;
-        Ok(Some(metadata))
-    }
-
-    fn to_record(&self) -> SandboxContainerRecord {
-        let mut labels = HashMap::from([
-            ("agent.sandbox".to_string(), "true".to_string()),
-            ("agent.sandbox_backend".to_string(), "bwrap".to_string()),
-            ("agent.user_id".to_string(), self.owner_id.to_string()),
-            ("agent.scope".to_string(), self.namespace.clone()),
-            ("agent.rootfs".to_string(), self.rootfs.clone()),
-            ("agent.workspace_dir".to_string(), self.workspace.clone()),
-            (
-                "agent.state_dir".to_string(),
-                Path::new(&self.workspace)
-                    .parent()
-                    .map_or_else(String::new, |path| path.display().to_string()),
-            ),
-            ("agent.root_mode".to_string(), self.root_mode.to_string()),
-            (
-                "agent.network_mode".to_string(),
-                self.network_mode.to_string(),
-            ),
-            ("agent.updated_at".to_string(), self.updated_at.to_string()),
-        ]);
-        if let Some(path) = &self.image_manifest_path {
-            labels.insert("agent.image_manifest_path".to_string(), path.clone());
-        }
-        if let Some(sha256) = &self.image_manifest_sha256 {
-            labels.insert("agent.image_manifest_sha256".to_string(), sha256.clone());
-        }
-        if let Some(package_manager) = &self.package_manager {
-            labels.insert("agent.package_manager".to_string(), package_manager.clone());
-        }
-        if let Some(chat_id) = self.chat_id {
-            labels.insert("agent.chat_id".to_string(), chat_id.to_string());
-        }
-        if let Some(thread_id) = self.thread_id {
-            labels.insert("agent.thread_id".to_string(), thread_id.to_string());
-        }
-
-        SandboxContainerRecord {
-            container_id: format!("bwrap:{}", self.scope_name),
-            container_name: self.scope_name.clone(),
-            image: Some(self.image_id.clone()),
-            created_at: Some(self.created_at),
-            state: Some("ready".to_string()),
-            status: Some(self.status_text()),
-            running: false,
-            user_id: Some(self.owner_id),
-            scope: Some(self.namespace.clone()),
-            chat_id: self.chat_id,
-            thread_id: self.thread_id,
-            labels,
-        }
-    }
-
-    fn status_text(&self) -> String {
-        let package_manager = self.package_manager.as_deref().unwrap_or("unknown");
-        let manifest = self.image_manifest_path.as_deref().unwrap_or("none");
-        format!(
-            "bwrap root_mode={} net={} package_manager={} manifest={} rootfs={}",
-            self.root_mode, self.network_mode, package_manager, manifest, self.rootfs
-        )
-    }
-}
-
 impl BwrapImageManifest {
     fn fallback(image_id: &str) -> Self {
         Self {
@@ -1960,141 +1660,6 @@ fn host_arch() -> &'static str {
         "aarch64" => "aarch64",
         other => other,
     }
-}
-
-fn resolve_workspace_path(workspace: &Path, requested: &str) -> Result<PathBuf> {
-    if requested.as_bytes().contains(&0) {
-        bail!("Workspace path contains NUL byte");
-    }
-    let requested = requested.trim();
-    if requested.is_empty() || requested == WORKSPACE_PREFIX {
-        return Ok(workspace.to_path_buf());
-    }
-
-    let relative = if let Some(stripped) = requested.strip_prefix("/workspace/") {
-        stripped
-    } else if requested.starts_with('/') {
-        bail!("Absolute sandbox paths must start with /workspace/: {requested}");
-    } else {
-        requested
-    };
-
-    let path = Path::new(relative);
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => normalized.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => bail!("Workspace path must not contain '..': {requested}"),
-            Component::RootDir | Component::Prefix(_) => {
-                bail!("Workspace path must be relative or under /workspace: {requested}");
-            }
-        }
-    }
-    Ok(workspace.join(normalized))
-}
-
-fn ensure_no_symlink_escape(workspace: &Path, target: &Path) -> Result<()> {
-    let relative = target.strip_prefix(workspace).map_err(|_| {
-        anyhow!(
-            "Resolved workspace path escaped workspace: {}",
-            target.display()
-        )
-    })?;
-    let mut cursor = workspace.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(part) = component else {
-            continue;
-        };
-        cursor.push(part);
-        if cursor
-            .symlink_metadata()
-            .is_ok_and(|metadata| metadata.file_type().is_symlink())
-        {
-            bail!(
-                "Refusing workspace symlink path component: {}",
-                cursor.display()
-            );
-        }
-    }
-    Ok(())
-}
-
-fn list_workspace_entries(
-    workspace: &Path,
-    current: &Path,
-    depth: usize,
-    entries: &mut Vec<String>,
-) -> Result<()> {
-    if entries.len() >= MAX_LIST_ENTRIES {
-        return Ok(());
-    }
-    ensure_no_symlink_escape(workspace, current)?;
-    let metadata = current
-        .symlink_metadata()
-        .with_context(|| format!("Workspace path not found: {}", current.display()))?;
-    let relative = current.strip_prefix(workspace).unwrap_or(current);
-    let display = if relative.as_os_str().is_empty() {
-        WORKSPACE_PREFIX.to_string()
-    } else {
-        format!("{WORKSPACE_PREFIX}/{}", relative.display())
-    };
-    if metadata.is_dir() {
-        entries.push(format!("{display}/"));
-        if depth >= MAX_LIST_DEPTH {
-            return Ok(());
-        }
-        let mut children = fs::read_dir(current)?.collect::<std::result::Result<Vec<_>, _>>()?;
-        children.sort_by_key(|entry| entry.file_name());
-        for child in children {
-            list_workspace_entries(workspace, &child.path(), depth + 1, entries)?;
-            if entries.len() >= MAX_LIST_ENTRIES {
-                break;
-            }
-        }
-    } else if metadata.is_file() {
-        entries.push(format!("{display} ({} bytes)", metadata.len()));
-    }
-    Ok(())
-}
-
-fn dir_size(path: &Path) -> Result<u64> {
-    if !path.exists() {
-        return Ok(0);
-    }
-    let mut total = 0;
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            total += dir_size(&entry.path())?;
-        } else if metadata.is_file() {
-            total += metadata.len();
-        }
-    }
-    Ok(total)
-}
-
-fn cleanup_old_files(path: &Path, max_age: Duration) -> Result<u64> {
-    if !path.exists() {
-        return Ok(0);
-    }
-    let cutoff = SystemTime::now()
-        .checked_sub(max_age)
-        .ok_or_else(|| anyhow!("Invalid cleanup age"))?;
-    let mut deleted = 0;
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            deleted += cleanup_old_files(&entry.path(), max_age)?;
-        } else if metadata.is_file() && metadata.modified().is_ok_and(|modified| modified < cutoff)
-        {
-            fs::remove_file(entry.path())?;
-            deleted += 1;
-        }
-    }
-    Ok(deleted)
 }
 
 fn remove_dir_if_exists(path: &Path) -> Result<()> {
@@ -3458,7 +3023,11 @@ mod tests {
 
     #[cfg(unix)]
     fn create_fake_bwrap_script(path: &PathBuf, script: &str) {
-        std::fs::write(path, script).expect("fake bwrap");
+        let script_body = script.strip_prefix("#!/bin/sh\n").unwrap_or(script);
+        let wrapped = format!(
+            "#!/bin/sh\nif [ \"${{1:-}}\" = \"--help\" ]; then\n  printf '%s\n' '--disable-userns'\n  exit 0\nfi\n{script_body}"
+        );
+        std::fs::write(path, wrapped).expect("fake bwrap");
         let mut permissions = std::fs::metadata(path)
             .expect("fake bwrap metadata")
             .permissions();
