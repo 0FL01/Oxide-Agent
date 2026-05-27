@@ -124,7 +124,7 @@ All bwrap operations for the same scope use an exclusive filesystem lock so pack
 
 `BWRAP_ROOT_UPPER_DIR` is optional. When set, each scope stores persistent system overlay writes under `<BWRAP_ROOT_UPPER_DIR>/<scope>/upper` and per-command overlay workdirs under `<BWRAP_ROOT_UPPER_DIR>/<scope>/work`, keeping both on the same filesystem. The path must be a real directory or absent; it must not be a symlink or live inside the shared rootfs image.
 
-`BWRAP_RESOLV_CONF=auto` copies the host resolver config into the scope state and bind-mounts that staged regular file when networking is shared and the rootfs has `/etc/resolv.conf`. If an explicit resolver path is configured, it must be a regular file and must not be a symlink.
+`BWRAP_RESOLV_CONF=auto` copies the host resolver config into the scope state and bind-mounts that staged regular file when networking is shared. If the image does not contain `/etc/resolv.conf`, `BWRAP_ROOT_MODE=overlay-rw` creates a resolver bind target in the persistent system overlay. Read-only rootfs mode requires the image to contain a regular `/etc/resolv.conf`. If an explicit resolver path is configured, it must be a regular file and must not be a symlink.
 
 ## Smoke Test
 

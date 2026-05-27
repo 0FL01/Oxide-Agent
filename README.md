@@ -193,6 +193,8 @@ This path is for the prebuilt `x86_64` release artifact built with the embedded 
    DEBUG_MODE=false
    ```
 
+   `BWRAP_RESOLV_CONF=auto` stages the host resolver config and bind-mounts it into the sandbox. With `BWRAP_ROOT_MODE=overlay-rw`, the bot also creates the missing `/etc/resolv.conf` bind target for Alpine minirootfs images.
+
 5. Import an Alpine 3.23 minirootfs for `bwrap`. Copy `scripts/import-bwrap-rootfs-tar.sh` from this repository to `/opt/oxide-agent/scripts/import-bwrap-rootfs-tar.sh`, then run:
 
    ```bash

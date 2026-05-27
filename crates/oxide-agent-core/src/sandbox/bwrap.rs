@@ -743,22 +743,87 @@ impl BwrapSandboxManager {
         }
         match &self.config.resolv_conf {
             BwrapResolvConf::None => Ok(None),
-            BwrapResolvConf::Path(path) => Ok(Some(path.clone())),
+            BwrapResolvConf::Path(path) => {
+                let bytes = fs::read(path).with_context(|| {
+                    format!("Failed to read configured resolver {}", path.display())
+                })?;
+                self.ensure_resolv_conf_bind_target(&bytes)?;
+                Ok(Some(path.clone()))
+            }
             BwrapResolvConf::Auto => {
                 let host = PathBuf::from("/etc/resolv.conf");
-                let rootfs_target = self.config.rootfs.join("etc/resolv.conf");
-                if !host.exists() || !rootfs_target.exists() {
+                if !host.exists() {
                     return Ok(None);
                 }
                 let bytes = fs::read(&host)
                     .with_context(|| format!("Failed to read host resolver {}", host.display()))?;
                 let path = self.state.scope_dir.join("resolv.conf");
-                fs::write(&path, bytes).with_context(|| {
+                fs::write(&path, &bytes).with_context(|| {
                     format!("Failed to stage bwrap resolver config {}", path.display())
                 })?;
+                self.ensure_resolv_conf_bind_target(&bytes)?;
                 Ok(Some(path))
             }
         }
+    }
+
+    fn ensure_resolv_conf_bind_target(&self, bytes: &[u8]) -> Result<()> {
+        let rootfs_target = self.config.rootfs.join("etc/resolv.conf");
+        match rootfs_target.symlink_metadata() {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                return Ok(());
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                bail!(
+                    "Bwrap resolver bind target is a directory in rootfs: {}",
+                    rootfs_target.display()
+                );
+            }
+            Ok(_) | Err(_) if self.config.root_mode != BwrapRootMode::OverlayRw => {
+                bail!(
+                    "Bwrap resolver bind target {} is missing or not a regular file. Use BWRAP_ROOT_MODE=overlay-rw or add /etc/resolv.conf to the rootfs image.",
+                    rootfs_target.display()
+                );
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to inspect bwrap resolver bind target {}",
+                        rootfs_target.display()
+                    )
+                });
+            }
+            _ => {}
+        }
+
+        let upper_target = self.state.system_upper.join("etc/resolv.conf");
+        let upper_parent = upper_target
+            .parent()
+            .ok_or_else(|| anyhow!("Invalid bwrap resolver upper path"))?;
+        ensure_no_symlink_escape(&self.state.system_upper, upper_parent)?;
+        fs::create_dir_all(upper_parent).with_context(|| {
+            format!(
+                "Failed to create bwrap resolver upper dir {}",
+                upper_parent.display()
+            )
+        })?;
+        ensure_no_symlink_escape(&self.state.system_upper, upper_parent)?;
+        if upper_target
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            bail!(
+                "Refusing bwrap resolver upper symlink: {}",
+                upper_target.display()
+            );
+        }
+        fs::write(&upper_target, bytes).with_context(|| {
+            format!(
+                "Failed to create bwrap resolver bind target {}",
+                upper_target.display()
+            )
+        })?;
+        Ok(())
     }
 
     async fn run_bwrap(
@@ -2160,6 +2225,61 @@ mod tests {
             "-lc".to_string(),
             "printf ok".to_string()
         ]));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bwrap_auto_resolver_creates_overlay_bind_target_when_rootfs_file_is_missing() {
+        let _env_lock = crate::config::test_env_mutex()
+            .lock()
+            .expect("test env mutex poisoned");
+        let _env_guard = EnvGuard::capture(BWRAP_TEST_ENV_KEYS);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let rootfs = temp.path().join("rootfs");
+        create_fake_rootfs(&rootfs);
+        let fake_bwrap = temp.path().join("bwrap");
+        create_fake_bwrap(&fake_bwrap);
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_NET", "host");
+        std::env::set_var("BWRAP_RESOLV_CONF", "auto");
+        std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
+        let overlay_manager = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-overlay"))
+            .await
+            .unwrap();
+        overlay_manager.ensure_scope_dirs_locked().unwrap();
+
+        if Path::new("/etc/resolv.conf").exists() {
+            let staged_resolv = overlay_manager
+                .prepare_resolv_conf_bind()
+                .unwrap()
+                .expect("auto resolver should stage a bind source");
+            let upper_target = overlay_manager.state.system_upper.join("etc/resolv.conf");
+            assert!(upper_target.is_file());
+            assert_eq!(
+                std::fs::read(&upper_target).unwrap(),
+                std::fs::read(staged_resolv).unwrap()
+            );
+        }
+
+        configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
+        std::env::set_var("BWRAP_NET", "host");
+        std::env::set_var("BWRAP_RESOLV_CONF", "auto");
+        std::env::set_var("BWRAP_ROOT_MODE", "ro");
+        let readonly_manager = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-ro"))
+            .await
+            .unwrap();
+        readonly_manager.ensure_scope_dirs_locked().unwrap();
+
+        if Path::new("/etc/resolv.conf").exists() {
+            let readonly_error = readonly_manager
+                .prepare_resolv_conf_bind()
+                .err()
+                .expect("missing readonly resolver target should fail")
+                .to_string();
+            assert!(readonly_error.contains("BWRAP_ROOT_MODE=overlay-rw"));
+            assert!(readonly_error.contains("/etc/resolv.conf"));
+        }
     }
 
     #[cfg(unix)]
