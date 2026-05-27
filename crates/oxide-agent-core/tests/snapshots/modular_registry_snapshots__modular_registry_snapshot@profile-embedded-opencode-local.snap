@@ -11,6 +11,22 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/opencode-go"
       },
       {
+        "id": "sandbox-backend/bwrap",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/exec",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/fileops",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/lifecycle",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
         "id": "sandbox-backend/docker-direct",
         "module": "sandbox-backend/docker-direct"
       },
@@ -133,6 +149,20 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "llm-provider",
         "provides": [
           "llm-provider/opencode-go"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "sandbox-backend-bwrap",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "sandbox-backend/bwrap",
+        "kind": "sandbox-backend",
+        "provides": [
+          "sandbox-backend/bwrap",
+          "sandbox-backend/bwrap/exec",
+          "sandbox-backend/bwrap/fileops",
+          "sandbox-backend/bwrap/lifecycle"
         ],
         "requires": []
       },
@@ -263,7 +293,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec"
+              "sandbox-backend/sandboxd-client/exec",
+              "sandbox-backend/bwrap/exec"
             ],
             "kind": "any-of"
           }
@@ -283,7 +314,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops"
+              "sandbox-backend/sandboxd-client/fileops",
+              "sandbox-backend/bwrap/fileops"
             ],
             "kind": "any-of"
           }
@@ -302,7 +334,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "capabilities": [
               "sandbox-backend/docker-direct/lifecycle",
-              "sandbox-backend/sandboxd-client/lifecycle"
+              "sandbox-backend/sandboxd-client/lifecycle",
+              "sandbox-backend/bwrap/lifecycle"
             ],
             "kind": "any-of"
           }
@@ -369,6 +402,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "enabled_manifest_default_config": {
     "capabilities": [
       "llm-provider/opencode-go",
+      "sandbox-backend/bwrap",
+      "sandbox-backend/bwrap/exec",
+      "sandbox-backend/bwrap/fileops",
+      "sandbox-backend/bwrap/lifecycle",
       "sandbox-backend/docker-direct",
       "sandbox-backend/docker-direct/diagnostics",
       "sandbox-backend/docker-direct/exec",
@@ -396,6 +433,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     ],
     "modules": [
       "llm-provider/opencode-go",
+      "sandbox-backend/bwrap",
       "sandbox-backend/docker-direct",
       "storage/r2",
       "tool/agents-md",
@@ -446,6 +484,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "storage/r2"
   ],
   "sandbox_backend_module_ids": [
+    "sandbox-backend/bwrap",
     "sandbox-backend/docker-direct"
   ],
   "external_service_requirements": [
@@ -457,6 +496,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "OPENCODE_GO_API_BASE",
         "OPENCODE_GO_API_KEY"
       ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "sandbox-backend/bwrap",
+      "kind": "sandbox-backend",
+      "cargo_feature": "sandbox-backend-bwrap",
+      "config_env": [],
       "requires_capabilities": []
     },
     {

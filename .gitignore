@@ -15,3 +15,6 @@ __pycache__
 .claude
 .env.monitoring
 .oxide/sandbox/
+.cargo-cache/
+.rustup-cache/
+dist/
