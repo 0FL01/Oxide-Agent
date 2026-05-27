@@ -1408,6 +1408,10 @@ fn should_forward_sub_agent_progress_event(event: &AgentEvent) -> bool {
             | AgentEvent::TokenSnapshotUpdated { .. }
             | AgentEvent::FileToSend { .. }
             | AgentEvent::FileToSendWithConfirmation { .. }
+            | AgentEvent::Finished
+            | AgentEvent::Cancelling { .. }
+            | AgentEvent::Cancelled
+            | AgentEvent::Error(_)
             | AgentEvent::LoopDetected { .. }
     )
 }
@@ -1795,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn sub_agent_progress_filter_drops_token_snapshots() {
+    fn sub_agent_progress_filter_drops_agent_scoped_events() {
         assert!(!should_forward_sub_agent_progress_event(
             &AgentEvent::Thinking {
                 snapshot: sample_snapshot(64_000),
@@ -1818,6 +1822,20 @@ mod tests {
                 loop_type: crate::agent::loop_detection::LoopType::ToolCallLoop,
                 iteration: 3,
             }
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Cancelling {
+                tool_name: "execute_command".to_string(),
+            }
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Cancelled
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Error("LLM call failed".to_string())
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Finished
         ));
         assert!(should_forward_sub_agent_progress_event(
             &AgentEvent::ToolCall {
@@ -1881,6 +1899,40 @@ mod tests {
             })
             .await
             .expect("loop send");
+
+        drop(sub_tx);
+        if let Some(task) = relay_task {
+            task.await.expect("relay task join");
+        }
+        drop(parent_tx);
+
+        assert!(parent_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn sub_agent_progress_relay_drops_terminal_status_events() {
+        let (parent_tx, mut parent_rx) = mpsc::channel(8);
+        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let sub_tx = sub_tx.expect("relay tx");
+
+        sub_tx
+            .send(AgentEvent::Cancelling {
+                tool_name: "execute_command".to_string(),
+            })
+            .await
+            .expect("cancelling send");
+        sub_tx
+            .send(AgentEvent::Cancelled)
+            .await
+            .expect("cancelled send");
+        sub_tx
+            .send(AgentEvent::Error("LLM call failed".to_string()))
+            .await
+            .expect("error send");
+        sub_tx
+            .send(AgentEvent::Finished)
+            .await
+            .expect("finished send");
 
         drop(sub_tx);
         if let Some(task) = relay_task {
