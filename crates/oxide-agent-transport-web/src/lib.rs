@@ -59,7 +59,9 @@
 //! `GET /sessions/{id}/tasks/{task_id}/timeline`.
 
 pub mod api;
+pub mod auth;
 pub mod in_memory_storage;
+pub mod persistence;
 pub mod scripted_llm;
 pub mod server;
 pub mod session;

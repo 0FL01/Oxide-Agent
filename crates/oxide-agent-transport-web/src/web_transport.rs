@@ -6,7 +6,9 @@
 
 use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
+use oxide_agent_web_contracts::{PersistedTaskEvent, TaskEventKind};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -45,6 +47,28 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
         AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
+    }
+}
+
+const WEB_EVENT_SCHEMA_VERSION: u32 = 1;
+const EVENT_SUMMARY_MAX_CHARS: usize = 160;
+const EVENT_PREVIEW_MAX_CHARS: usize = 4_000;
+
+#[derive(Debug, Clone)]
+pub struct BrowserEventScope {
+    pub user_id: i64,
+    pub session_id: String,
+    pub task_id: String,
+}
+
+impl BrowserEventScope {
+    #[must_use]
+    pub fn new(user_id: i64, session_id: String, task_id: String) -> Self {
+        Self {
+            user_id,
+            session_id,
+            task_id,
+        }
     }
 }
 
@@ -225,6 +249,7 @@ pub struct EventCollectionResult {
     pub state: ProgressState,
     pub timestamps: MilestoneTimestamps,
     pub tool_calls: Vec<CollectedToolCallTiming>,
+    pub persisted_events: Vec<PersistedTaskEvent>,
 }
 
 /// Start collecting events from a `Receiver<AgentEvent>` and drive the
@@ -235,6 +260,8 @@ pub struct EventCollectionResult {
 pub async fn collect_events(
     event_log: TaskEventLog,
     mut rx: mpsc::Receiver<AgentEvent>,
+    browser_event_scope: Option<BrowserEventScope>,
+    live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
 ) -> EventCollectionResult {
     use oxide_agent_core::agent::progress::ProgressState;
 
@@ -242,8 +269,11 @@ pub async fn collect_events(
     let mut timestamps = MilestoneTimestamps::default();
     let mut tool_calls = Vec::new();
     let mut active_tool_calls: HashMap<String, VecDeque<usize>> = HashMap::new();
+    let mut persisted_events = Vec::new();
+    let mut next_seq = 1;
 
     while let Some(event) = rx.recv().await {
+        let event_received_at = chrono::Utc::now();
         // Classify event type once to avoid borrow-after-move.
         let is_thinking = matches!(&event, AgentEvent::Thinking { .. });
         let is_reasoning = matches!(&event, AgentEvent::Reasoning { .. });
@@ -303,6 +333,16 @@ pub async fn collect_events(
             event_log.push(&event).await;
         }
 
+        if let Some(scope) = browser_event_scope.as_ref() {
+            let persisted_event =
+                persisted_event_from_agent_event(scope, next_seq, event_received_at, &event);
+            if let Some(live_event_tx) = live_event_tx.as_ref() {
+                let _ = live_event_tx.send(persisted_event.clone());
+            }
+            persisted_events.push(persisted_event);
+            next_seq += 1;
+        }
+
         state.update(event);
 
         // Track finished_at.
@@ -318,16 +358,507 @@ pub async fn collect_events(
         state,
         timestamps,
         tool_calls,
+        persisted_events,
     }
+}
+
+fn persisted_event_from_agent_event(
+    scope: &BrowserEventScope,
+    seq: u64,
+    created_at: chrono::DateTime<chrono::Utc>,
+    event: &AgentEvent,
+) -> PersistedTaskEvent {
+    let (kind, summary, payload, redacted, truncated) = browser_event_parts(event);
+    PersistedTaskEvent {
+        schema_version: WEB_EVENT_SCHEMA_VERSION,
+        task_id: scope.task_id.clone(),
+        session_id: scope.session_id.clone(),
+        user_id: scope.user_id,
+        seq,
+        created_at,
+        kind,
+        summary,
+        payload,
+        redacted,
+        truncated,
+    }
+}
+
+fn browser_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    match event {
+        AgentEvent::Thinking { .. } | AgentEvent::TokenSnapshotUpdated { .. } => {
+            token_event_parts(event)
+        }
+        AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. } => tool_event_parts(event),
+        AgentEvent::WaitingForApproval {
+            tool_name,
+            target_name,
+            summary,
+        } => {
+            let (summary_preview, truncated) = truncate_text(summary, EVENT_PREVIEW_MAX_CHARS);
+            (
+                TaskEventKind::TaskStatus,
+                format!("waiting_for_approval:{tool_name}"),
+                json!({
+                    "tool_name": tool_name,
+                    "target_name": target_name,
+                    "summary": summary_preview,
+                }),
+                false,
+                truncated,
+            )
+        }
+        AgentEvent::Continuation { .. }
+        | AgentEvent::Finished
+        | AgentEvent::Cancelling { .. }
+        | AgentEvent::Cancelled
+        | AgentEvent::Error(_)
+        | AgentEvent::Reasoning { .. }
+        | AgentEvent::LoopDetected { .. }
+        | AgentEvent::Milestone { .. } => lifecycle_event_parts(event),
+        AgentEvent::TodosUpdated { todos } => (
+            TaskEventKind::TodosUpdated,
+            "Todos updated".to_string(),
+            json!({ "todos": todos }),
+            false,
+            false,
+        ),
+        AgentEvent::FileToSend { .. } | AgentEvent::FileToSendWithConfirmation { .. } => {
+            file_event_parts(event)
+        }
+        AgentEvent::RuntimeCompactionStarted { .. }
+        | AgentEvent::RuntimeCompactionCompleted { .. }
+        | AgentEvent::RuntimeCompactionFailed { .. }
+        | AgentEvent::RuntimeCompactionSkipped { .. } => compaction_event_parts(event),
+        AgentEvent::RepeatedCompactionWarning { .. }
+        | AgentEvent::HistoryRepairApplied { .. }
+        | AgentEvent::RateLimitRetrying { .. }
+        | AgentEvent::LlmRetrying { .. }
+        | AgentEvent::ProviderFailoverActivated { .. } => maintenance_event_parts(event),
+    }
+}
+
+fn token_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    match event {
+        AgentEvent::Thinking { snapshot } => (
+            TaskEventKind::Thinking,
+            "Thinking".to_string(),
+            json!({ "token_snapshot": snapshot }),
+            false,
+            false,
+        ),
+        AgentEvent::TokenSnapshotUpdated { snapshot } => (
+            TaskEventKind::TokenSnapshotUpdated,
+            "Token snapshot updated".to_string(),
+            json!({ "token_snapshot": snapshot }),
+            false,
+            false,
+        ),
+        _ => unreachable!("token_event_parts called with non-token event"),
+    }
+}
+
+fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    match event {
+        AgentEvent::ToolCall {
+            name,
+            input,
+            command_preview,
+        } => {
+            let (input_preview, input_truncated) = truncate_text(input, EVENT_PREVIEW_MAX_CHARS);
+            let (command_preview, command_truncated) = command_preview
+                .as_ref()
+                .map(|preview| truncate_text(preview, EVENT_PREVIEW_MAX_CHARS))
+                .map_or((None, false), |(preview, truncated)| {
+                    (Some(preview), truncated)
+                });
+            (
+                TaskEventKind::ToolCall,
+                truncate_summary(name),
+                json!({
+                    "name": name,
+                    "input_preview": input_preview,
+                    "command_preview": command_preview,
+                }),
+                false,
+                input_truncated || command_truncated,
+            )
+        }
+        AgentEvent::ToolResult {
+            name,
+            output,
+            success,
+        } => {
+            let (output_preview, truncated) = truncate_text(output, EVENT_PREVIEW_MAX_CHARS);
+            (
+                TaskEventKind::ToolResult,
+                truncate_summary(name),
+                json!({
+                    "name": name,
+                    "success": success,
+                    "output_preview": output_preview,
+                }),
+                false,
+                truncated,
+            )
+        }
+        _ => unreachable!("tool_event_parts called with non-tool event"),
+    }
+}
+
+fn file_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    match event {
+        AgentEvent::FileToSend {
+            kind,
+            file_name,
+            content,
+        } => (
+            TaskEventKind::FileToSend,
+            truncate_summary(file_name),
+            json!({
+                "delivery_kind": kind,
+                "file_name": file_name,
+                "byte_len": content.len(),
+            }),
+            true,
+            false,
+        ),
+        AgentEvent::FileToSendWithConfirmation {
+            kind,
+            file_name,
+            content,
+            source_path,
+            confirmation_tx: _,
+        } => (
+            TaskEventKind::FileToSend,
+            truncate_summary(file_name),
+            json!({
+                "delivery_kind": kind,
+                "file_name": file_name,
+                "byte_len": content.len(),
+                "source_path": source_path,
+            }),
+            true,
+            false,
+        ),
+        _ => unreachable!("file_event_parts called with non-file event"),
+    }
+}
+
+fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    match event {
+        AgentEvent::Continuation { reason, count } => {
+            let (reason_preview, truncated) = truncate_text(reason, EVENT_PREVIEW_MAX_CHARS);
+            (
+                TaskEventKind::Continuation,
+                "Continuation".to_string(),
+                json!({ "reason": reason_preview, "count": count }),
+                false,
+                truncated,
+            )
+        }
+        AgentEvent::Finished => (
+            TaskEventKind::Finished,
+            "Finished".to_string(),
+            json!({}),
+            false,
+            false,
+        ),
+        AgentEvent::Cancelling { tool_name } => (
+            TaskEventKind::Cancelling,
+            truncate_summary(tool_name),
+            json!({ "tool_name": tool_name }),
+            false,
+            false,
+        ),
+        AgentEvent::Cancelled => (
+            TaskEventKind::Cancelled,
+            "Cancelled".to_string(),
+            json!({}),
+            false,
+            false,
+        ),
+        AgentEvent::Error(error) => {
+            let (error_preview, truncated) = truncate_text(error, EVENT_PREVIEW_MAX_CHARS);
+            (
+                TaskEventKind::Error,
+                "Error".to_string(),
+                json!({ "message": error_preview }),
+                false,
+                truncated,
+            )
+        }
+        AgentEvent::Reasoning { summary } => {
+            let (summary_preview, truncated) = truncate_text(summary, EVENT_PREVIEW_MAX_CHARS);
+            (
+                TaskEventKind::Reasoning,
+                "Reasoning".to_string(),
+                json!({ "summary": summary_preview }),
+                false,
+                truncated,
+            )
+        }
+        AgentEvent::LoopDetected {
+            loop_type,
+            iteration,
+        } => (
+            TaskEventKind::LoopDetected,
+            "Loop detected".to_string(),
+            json!({ "loop_type": loop_type, "iteration": iteration }),
+            false,
+            false,
+        ),
+        AgentEvent::Milestone { name, timestamp_ms } => (
+            TaskEventKind::Milestone,
+            truncate_summary(name),
+            json!({ "name": name, "timestamp_ms": timestamp_ms }),
+            false,
+            false,
+        ),
+        _ => unreachable!("lifecycle_event_parts called with wrong event"),
+    }
+}
+
+fn compaction_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    match event {
+        AgentEvent::RuntimeCompactionStarted {
+            reason,
+            phase,
+            backend,
+            provider,
+            route,
+            token_before,
+            history_items_before,
+        } => (
+            TaskEventKind::RuntimeCompactionStarted,
+            "Compaction started".to_string(),
+            json!({
+                "reason": reason,
+                "phase": phase,
+                "backend": backend,
+                "provider": provider,
+                "route": route,
+                "token_before": token_before,
+                "history_items_before": history_items_before,
+            }),
+            false,
+            false,
+        ),
+        AgentEvent::RuntimeCompactionCompleted { .. } => compaction_completed_parts(event),
+        AgentEvent::RuntimeCompactionFailed {
+            reason,
+            phase,
+            backend,
+            provider,
+            route,
+            error,
+        } => {
+            let (error_preview, truncated) = truncate_text(error, EVENT_PREVIEW_MAX_CHARS);
+            (
+                TaskEventKind::RuntimeCompactionFailed,
+                "Compaction failed".to_string(),
+                json!({
+                    "reason": reason,
+                    "phase": phase,
+                    "backend": backend,
+                    "provider": provider,
+                    "route": route,
+                    "error": error_preview,
+                }),
+                false,
+                truncated,
+            )
+        }
+        AgentEvent::RuntimeCompactionSkipped {
+            reason,
+            phase,
+            skipped_reason,
+        } => {
+            let (skipped_reason, truncated) =
+                truncate_text(skipped_reason, EVENT_PREVIEW_MAX_CHARS);
+            (
+                TaskEventKind::RuntimeCompactionSkipped,
+                "Compaction skipped".to_string(),
+                json!({
+                    "reason": reason,
+                    "phase": phase,
+                    "skipped_reason": skipped_reason,
+                }),
+                false,
+                truncated,
+            )
+        }
+        _ => unreachable!("compaction_event_parts called with wrong event"),
+    }
+}
+
+fn compaction_completed_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    let AgentEvent::RuntimeCompactionCompleted {
+        reason,
+        phase,
+        backend,
+        provider,
+        route,
+        token_before,
+        token_after,
+        history_items_before,
+        history_items_after,
+        generation,
+        repair_applied,
+    } = event
+    else {
+        unreachable!("compaction_completed_parts called with wrong event");
+    };
+    (
+        TaskEventKind::RuntimeCompactionCompleted,
+        "Compaction completed".to_string(),
+        json!({
+            "reason": reason,
+            "phase": phase,
+            "backend": backend,
+            "provider": provider,
+            "route": route,
+            "token_before": token_before,
+            "token_after": token_after,
+            "history_items_before": history_items_before,
+            "history_items_after": history_items_after,
+            "generation": generation,
+            "repair_applied": repair_applied,
+        }),
+        false,
+        false,
+    )
+}
+
+fn maintenance_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    match event {
+        AgentEvent::RepeatedCompactionWarning { kind, count } => (
+            TaskEventKind::RepeatedCompactionWarning,
+            "Repeated compaction warning".to_string(),
+            json!({ "kind": kind, "count": count }),
+            false,
+            false,
+        ),
+        AgentEvent::HistoryRepairApplied { .. } => history_repair_event_parts(event),
+        AgentEvent::RateLimitRetrying {
+            attempt,
+            max_attempts,
+            unbounded,
+            wait_secs,
+            provider,
+        } => (
+            TaskEventKind::RateLimitRetrying,
+            "Rate limit retrying".to_string(),
+            json!({
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "unbounded": unbounded,
+                "wait_secs": wait_secs,
+                "provider": provider,
+            }),
+            false,
+            false,
+        ),
+        AgentEvent::LlmRetrying { .. } => llm_retrying_event_parts(event),
+        AgentEvent::ProviderFailoverActivated {
+            from_provider,
+            from_model,
+            to_provider,
+            to_model,
+        } => (
+            TaskEventKind::ProviderFailoverActivated,
+            "Provider failover activated".to_string(),
+            json!({
+                "from_provider": from_provider,
+                "from_model": from_model,
+                "to_provider": to_provider,
+                "to_model": to_model,
+            }),
+            false,
+            false,
+        ),
+        _ => unreachable!("maintenance_event_parts called with wrong event"),
+    }
+}
+
+fn history_repair_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    let AgentEvent::HistoryRepairApplied {
+        provider,
+        strict_tool_history,
+        dropped_tool_results,
+        trimmed_tool_calls,
+        converted_tool_call_messages,
+        dropped_tool_call_messages,
+    } = event
+    else {
+        unreachable!("history_repair_event_parts called with wrong event");
+    };
+    (
+        TaskEventKind::HistoryRepairApplied,
+        "History repair applied".to_string(),
+        json!({
+            "provider": provider,
+            "strict_tool_history": strict_tool_history,
+            "dropped_tool_results": dropped_tool_results,
+            "trimmed_tool_calls": trimmed_tool_calls,
+            "converted_tool_call_messages": converted_tool_call_messages,
+            "dropped_tool_call_messages": dropped_tool_call_messages,
+        }),
+        false,
+        false,
+    )
+}
+
+fn llm_retrying_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+    let AgentEvent::LlmRetrying {
+        attempt,
+        max_attempts,
+        unbounded,
+        wait_secs,
+        provider,
+        error_class,
+    } = event
+    else {
+        unreachable!("llm_retrying_event_parts called with wrong event");
+    };
+    (
+        TaskEventKind::LlmRetrying,
+        "LLM retrying".to_string(),
+        json!({
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "unbounded": unbounded,
+            "wait_secs": wait_secs,
+            "provider": provider,
+            "error_class": error_class,
+        }),
+        false,
+        false,
+    )
+}
+
+fn truncate_summary(value: &str) -> String {
+    truncate_text(value, EVENT_SUMMARY_MAX_CHARS).0
+}
+
+fn truncate_text(value: &str, max_chars: usize) -> (String, bool) {
+    if value.chars().count() <= max_chars {
+        return (value.to_string(), false);
+    }
+
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    (truncated, true)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_events, event_variant_name, TaskEventLog};
+    use super::{collect_events, event_variant_name, BrowserEventScope, TaskEventLog};
     use oxide_agent_core::agent::compaction::{
         CompactionBackend, CompactionPhase, CompactionReason,
     };
     use oxide_agent_core::agent::progress::AgentEvent;
+    use oxide_agent_web_contracts::TaskEventKind;
     use tokio::sync::mpsc;
 
     #[test]
@@ -417,7 +948,7 @@ mod tests {
             .expect("send finished event");
         drop(tx);
 
-        let result = collect_events(event_log.clone(), rx).await;
+        let result = collect_events(event_log.clone(), rx, None, None).await;
         let event_names: Vec<String> = event_log
             .drain()
             .await
@@ -439,5 +970,44 @@ mod tests {
             .last_compaction_status
             .as_deref()
             .is_some_and(|status| status.contains("Compaction: compacted history")));
+    }
+
+    #[tokio::test]
+    async fn collect_events_builds_persisted_browser_events_with_payload_previews() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        let long_output = "x".repeat(super::EVENT_PREVIEW_MAX_CHARS + 10);
+
+        tx.send(AgentEvent::ToolResult {
+            name: "execute_command".to_string(),
+            output: long_output,
+            success: true,
+        })
+        .await
+        .expect("send tool result");
+        tx.send(AgentEvent::Finished).await.expect("send finished");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 2);
+        let tool_result = &result.persisted_events[0];
+        assert_eq!(tool_result.seq, 1);
+        assert_eq!(tool_result.kind, TaskEventKind::ToolResult);
+        assert_eq!(tool_result.summary, "execute_command");
+        assert_eq!(tool_result.payload["name"], "execute_command");
+        assert_eq!(tool_result.payload["success"], true);
+        assert!(tool_result.truncated);
+        assert_eq!(result.persisted_events[1].kind, TaskEventKind::Finished);
     }
 }

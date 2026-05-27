@@ -202,6 +202,24 @@ impl WebSessionManager {
         agent_flow_id: Option<String>,
     ) -> String {
         let session_id = Uuid::new_v4().to_string();
+        let context_key = context_key.unwrap_or_else(|| "default".to_string());
+        let agent_flow_id = agent_flow_id.unwrap_or_else(|| "default".to_string());
+        self.create_session_with_id(user_id, session_id, context_key, agent_flow_id)
+            .await
+    }
+
+    /// Create a new session with an externally selected public session id.
+    ///
+    /// Used by the production `/api/v1` web console API so the persisted web
+    /// session record and runtime memory scope can share the same id-derived
+    /// context key.
+    pub async fn create_session_with_id(
+        &self,
+        user_id: i64,
+        session_id: String,
+        context_key: String,
+        agent_flow_id: String,
+    ) -> String {
         let session_id_i64 = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
@@ -213,8 +231,6 @@ impl WebSessionManager {
 
         let sid = SessionId::from(session_id_i64);
         let sandbox_scope = SandboxScope::new(user_id, "web");
-        let context_key = context_key.unwrap_or_else(|| "default".to_string());
-        let agent_flow_id = agent_flow_id.unwrap_or_else(|| "default".to_string());
 
         let mut session = AgentSession::new_with_scopes(
             sid,
@@ -319,6 +335,52 @@ impl WebSessionManager {
             .write()
             .await
             .insert(task_id.clone(), running.clone());
+
+        Some(running)
+    }
+
+    /// Register an existing task id for a resumed run and return the new
+    /// in-memory running handle.
+    pub async fn register_existing_task(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        task_text: String,
+    ) -> Option<RunningTask> {
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some(meta) = sessions.get_mut(session_id) {
+                meta.last_activity_at = Utc::now();
+                meta.status = SessionStatus::Processing;
+            } else {
+                return None;
+            }
+        }
+
+        let task_id = task_id.to_string();
+        {
+            let mut tasks = self.tasks.write().await;
+            let created_at = tasks
+                .get(&task_id)
+                .map_or_else(Utc::now, |meta| meta.created_at);
+            tasks.insert(
+                task_id.clone(),
+                TaskMeta {
+                    task_id: task_id.clone(),
+                    session_id: session_id.to_string(),
+                    task_text,
+                    status: TaskStatus::Running,
+                    created_at,
+                    finished_at: None,
+                },
+            );
+        }
+
+        let running = RunningTask::new(task_id.clone());
+        self.running_tasks
+            .write()
+            .await
+            .insert(task_id, running.clone());
 
         Some(running)
     }

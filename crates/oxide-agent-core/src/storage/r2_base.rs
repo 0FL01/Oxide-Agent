@@ -429,7 +429,12 @@ impl R2Storage {
         Ok(())
     }
 
-    pub(super) async fn delete_prefix(&self, prefix: &str) -> Result<(), StorageError> {
+    /// Delete all objects whose keys start with the provided prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if object listing or deletion fails.
+    pub async fn delete_prefix(&self, prefix: &str) -> Result<(), StorageError> {
         let mut continuation_token: Option<String> = None;
 
         loop {
@@ -469,7 +474,59 @@ impl R2Storage {
         Ok(())
     }
 
-    pub(super) async fn list_json_under_prefix<T: serde::de::DeserializeOwned>(
+    /// List object keys whose keys start with the provided prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the S3/R2 list operation fails.
+    pub async fn list_keys_under_prefix(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
+        let mut continuation_token: Option<String> = None;
+        let mut keys = Vec::new();
+
+        loop {
+            let response = match self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_continuation_token(continuation_token.clone())
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    self.telemetry
+                        .record_operation(StorageOperation::List, prefix, "error");
+                    return Err(StorageError::S3Put(error.to_string()));
+                }
+            };
+
+            self.telemetry
+                .record_operation(StorageOperation::List, prefix, "ok");
+
+            keys.extend(
+                response
+                    .contents()
+                    .iter()
+                    .filter_map(|object| object.key().map(str::to_string)),
+            );
+
+            if !response.is_truncated().unwrap_or(false) {
+                break;
+            }
+
+            continuation_token = response.next_continuation_token().map(str::to_string);
+        }
+
+        Ok(keys)
+    }
+
+    /// List and deserialize JSON objects whose keys start with the provided prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if listing, loading, or JSON deserialization fails.
+    pub async fn list_json_under_prefix<T: serde::de::DeserializeOwned>(
         &self,
         prefix: &str,
     ) -> Result<Vec<T>, StorageError> {
