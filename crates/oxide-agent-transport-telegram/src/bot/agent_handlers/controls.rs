@@ -55,6 +55,7 @@ pub(crate) struct ConfirmationSendCtx<'a> {
 pub(crate) fn parse_agent_control_command(text: Option<&str>) -> Option<AgentControlCommand> {
     match text {
         Some("❌ Cancel Task") => Some(AgentControlCommand::CancelTask),
+        Some("/cancel") => Some(AgentControlCommand::CancelTask),
         Some("🗑 Clear Memory") => Some(AgentControlCommand::ClearMemory),
         Some("🗜 Compact Context") => Some(AgentControlCommand::CompactContext),
         Some("🔄 Recreate Container") => Some(AgentControlCommand::RecreateContainer),

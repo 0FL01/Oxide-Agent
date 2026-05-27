@@ -141,6 +141,12 @@ pub enum Command {
     /// Start the bot and show welcome message
     #[command(description = "Start the bot.")]
     Start,
+    /// Show help and controls
+    #[command(description = "Show help and controls.")]
+    Help,
+    /// Cancel the current agent task
+    #[command(description = "Cancel the current agent task.")]
+    Cancel,
     /// Reset the current agent session
     #[command(description = "Reset the current agent session.")]
     Clear,
@@ -163,15 +169,15 @@ pub enum Command {
 /// ```
 #[must_use]
 pub fn get_main_keyboard() -> KeyboardMarkup {
-    let keyboard = vec![vec![KeyboardButton::new("🤖 Agent Mode")]];
+    let keyboard = vec![vec![KeyboardButton::new("❌ Cancel Task")]];
     KeyboardMarkup::new(keyboard).resize_keyboard()
 }
 
 #[must_use]
 fn get_main_inline_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-        "Agent Mode",
-        MENU_CALLBACK_AGENT_MODE,
+        "❌ Cancel Task",
+        crate::bot::views::AGENT_CALLBACK_CANCEL_TASK,
     )]])
 }
 
@@ -242,6 +248,70 @@ pub async fn start(
         .map_err(|e| anyhow!(e.to_string()))?;
 
     info!("User {user_id} ({user_name}) is allowed. Activated agent mode.");
+    let model_id = settings.agent.get_configured_agent_model().id;
+    let mut req = bot
+        .send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))
+        .parse_mode(ParseMode::Html);
+    if let Some(thread_id) = outbound_thread.message_thread_id {
+        req = req.message_thread_id(thread_id);
+    }
+
+    if use_inline_topic_controls(thread_spec) {
+        req.await?;
+    } else {
+        req.reply_markup(agent_control_markup(false)).await?;
+    }
+
+    Ok(())
+}
+
+/// Help handler
+///
+/// # Errors
+///
+/// Returns an error if the help message cannot be sent.
+pub async fn help(
+    bot: Bot,
+    msg: Message,
+    storage: Arc<dyn StorageProvider>,
+    settings: Arc<BotSettings>,
+    dialogue: Dialogue<State, InMemStorage<State>>,
+) -> Result<()> {
+    let thread_spec = resolve_thread_spec(&msg);
+    let outbound_thread = build_outbound_thread_params(thread_spec);
+    let user_id = get_user_id_safe(&msg);
+    let user_name = get_user_name(&msg);
+
+    info!("User {user_id} ({user_name}) initiated /help command.");
+
+    if !can_use_agent_mode(settings.as_ref(), user_id) {
+        let text = if settings.telegram.allowed_users().is_empty() {
+            "⛔️ Bot access is not configured. Set TELEGRAM_ALLOWED_USERS and restart the bot."
+        } else {
+            "⛔️ You do not have permission to use this bot."
+        };
+        let mut req = bot.send_message(msg.chat.id, text);
+        if let Some(thread_id) = outbound_thread.message_thread_id {
+            req = req.message_thread_id(thread_id);
+        }
+
+        req.await?;
+        return Ok(());
+    }
+
+    set_current_context_state(
+        &storage,
+        user_id,
+        msg.chat.id,
+        thread_spec,
+        Some("agent_mode"),
+    )
+    .await?;
+    dialogue
+        .update(State::AgentMode)
+        .await
+        .map_err(|e| anyhow!(e.to_string()))?;
+
     let model_id = settings.agent.get_configured_agent_model().id;
     let mut req = bot
         .send_message(msg.chat.id, DefaultAgentView::welcome_message(&model_id))

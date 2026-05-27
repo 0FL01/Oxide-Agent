@@ -324,14 +324,7 @@ pub fn loop_type_label(loop_type: LoopType) -> &'static str {
 /// ```
 #[must_use]
 pub fn get_agent_keyboard() -> KeyboardMarkup {
-    KeyboardMarkup::new(vec![
-        vec![KeyboardButton::new("❌ Cancel Task")],
-        vec![KeyboardButton::new("🗑 Clear Memory")],
-        vec![KeyboardButton::new("🗜 Compact Context")],
-        vec![KeyboardButton::new("🔄 Recreate Container")],
-        vec![KeyboardButton::new("⬅️ Exit Agent Mode")],
-    ])
-    .resize_keyboard()
+    KeyboardMarkup::new(vec![vec![KeyboardButton::new("❌ Cancel Task")]]).resize_keyboard()
 }
 
 /// Get topic-friendly inline controls for agent mode.
@@ -343,47 +336,14 @@ pub fn get_agent_inline_keyboard(agent_flow_id: Option<&str>) -> InlineKeyboardM
 /// Get topic-friendly inline controls for agent mode with optional exit action.
 #[must_use]
 pub fn get_agent_inline_keyboard_with_exit(
-    include_exit: bool,
-    agent_flow_id: Option<&str>,
-    attach_detach_enabled: bool,
+    _include_exit: bool,
+    _agent_flow_id: Option<&str>,
+    _attach_detach_enabled: bool,
 ) -> InlineKeyboardMarkup {
-    let mut keyboard = vec![
-        vec![InlineKeyboardButton::callback(
-            "❌ Cancel Task",
-            AGENT_CALLBACK_CANCEL_TASK,
-        )],
-        vec![InlineKeyboardButton::callback(
-            "🗑 Clear Memory",
-            AGENT_CALLBACK_CLEAR_MEMORY,
-        )],
-        vec![InlineKeyboardButton::callback(
-            "🗜 Compact Context",
-            AGENT_CALLBACK_COMPACT_CONTEXT,
-        )],
-        vec![InlineKeyboardButton::callback(
-            "🔄 Recreate Container",
-            AGENT_CALLBACK_RECREATE_CONTAINER,
-        )],
-    ];
-    if attach_detach_enabled {
-        if let Some(agent_flow_id) = agent_flow_id {
-            keyboard.push(vec![
-                InlineKeyboardButton::callback(
-                    "🔗 Attach",
-                    format!("{AGENT_CALLBACK_ATTACH_PREFIX}{agent_flow_id}"),
-                ),
-                InlineKeyboardButton::callback("✂️ Detach", AGENT_CALLBACK_DETACH),
-            ]);
-        }
-    }
-    if include_exit {
-        keyboard.push(vec![InlineKeyboardButton::callback(
-            "⬅️ Exit Agent Mode",
-            AGENT_CALLBACK_EXIT,
-        )]);
-    }
-
-    InlineKeyboardMarkup::new(keyboard)
+    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+        "❌ Cancel Task",
+        AGENT_CALLBACK_CANCEL_TASK,
+    )]])
 }
 
 /// Get inline controls for an active progress message in topics.
@@ -540,20 +500,16 @@ mod tests {
     }
 
     #[test]
-    fn keyboards_include_manual_compaction_control() {
+    fn agent_control_keyboards_only_include_cancel_task() {
         let keyboard = get_agent_keyboard();
-        assert!(keyboard
-            .keyboard
-            .iter()
-            .flatten()
-            .any(|button| button.text == "🗜 Compact Context"));
+        let buttons: Vec<_> = keyboard.keyboard.iter().flatten().collect();
+        assert_eq!(buttons.len(), 1);
+        assert_eq!(buttons[0].text, "❌ Cancel Task");
 
         let inline = get_agent_inline_keyboard(Some("flow-1"));
-        assert!(inline
-            .inline_keyboard
-            .iter()
-            .flatten()
-            .any(|button| button.text == "🗜 Compact Context"));
+        let inline_buttons: Vec<_> = inline.inline_keyboard.iter().flatten().collect();
+        assert_eq!(inline_buttons.len(), 1);
+        assert_eq!(inline_buttons[0].text, "❌ Cancel Task");
     }
 
     #[test]
