@@ -306,6 +306,91 @@ async fn manual_compaction_uses_current_compaction_controller() {
 }
 
 #[tokio::test]
+async fn manual_compaction_runtime_generations_increment_across_repeated_compactions() {
+    let settings = Arc::new(crate::config::AgentSettings {
+        agent_model_id: Some("deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
+        ..crate::config::AgentSettings::default()
+    });
+    let mut provider = crate::llm::MockLlmProvider::new();
+    provider.expect_complete_internal_text().times(3).returning(
+        |_, _, user_message, model_id, _| {
+            assert_eq!(model_id, "deepseek-v4-flash");
+            assert!(user_message.contains("## Source History"));
+            Ok("Current compact handoff summary.".to_string())
+        },
+    );
+    provider
+        .expect_transcribe_audio()
+        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+    provider
+        .expect_analyze_image()
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+
+    let mut llm = LlmClient::new(settings.as_ref());
+    llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+    let session = AgentSession::new(9_i64.into());
+    let mut executor = AgentExecutor::new(Arc::new(llm), session, settings);
+    executor.session_mut().last_task = Some("Ship compaction".to_string());
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user_task(
+            "Ship compaction",
+        ));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue"));
+
+    let mut outcome_generations = Vec::new();
+    let mut event_generations = Vec::new();
+    for turn in [
+        "after first compact",
+        "after second compact",
+        "after third compact",
+    ] {
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(8);
+        let outcome = executor
+            .compact_current_context(Some(progress_tx))
+            .await
+            .expect("manual compaction succeeds");
+        outcome_generations.push(outcome.metadata.generation);
+
+        while let Some(event) = progress_rx.recv().await {
+            if let crate::agent::progress::AgentEvent::RuntimeCompactionCompleted {
+                generation,
+                ..
+            } = event
+            {
+                event_generations.push(generation);
+            }
+        }
+
+        executor
+            .session_mut()
+            .memory
+            .add_message(crate::agent::memory::AgentMessage::user(turn));
+    }
+
+    assert_eq!(outcome_generations, vec![1, 2, 3]);
+    assert_eq!(event_generations, vec![1, 2, 3]);
+    let messages = executor.session().memory.get_messages();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message
+                .content
+                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX))
+            .count(),
+        1
+    );
+    assert!(messages
+        .iter()
+        .any(|message| message.content.contains("generation: 3")));
+}
+
+#[tokio::test]
 async fn executor_flushes_explicit_remember_to_wiki_after_completed_run() {
     let backend = Arc::new(InMemoryWikiBackend::default());
     let store_backend: Arc<dyn crate::agent::wiki_memory::WikiObjectBackend> = backend.clone();

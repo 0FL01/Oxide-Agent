@@ -268,11 +268,21 @@ fn replacement_tokens(messages: &[AgentMessage]) -> usize {
 }
 
 fn next_generation(previous_summary: Option<&super::PreviousCompactedSummary>) -> u32 {
-    if previous_summary.is_some() {
-        2
-    } else {
-        1
-    }
+    previous_summary
+        .map(|summary| previous_generation(summary).saturating_add(1))
+        .unwrap_or(1)
+}
+
+fn previous_generation(summary: &super::PreviousCompactedSummary) -> u32 {
+    summary
+        .content
+        .lines()
+        .find_map(|line| {
+            line.trim_start()
+                .strip_prefix("generation:")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        })
+        .unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -387,15 +397,24 @@ mod tests {
         memory.add_message(AgentMessage::user_task("Ship compaction"));
         memory.add_message(AgentMessage::user("Continue"));
 
-        controller
+        let first = controller
             .manual_compact(&mut memory, context())
             .await
             .expect("first compact succeeds");
         memory.add_message(AgentMessage::user("Continue after first compact"));
-        controller
+        let second = controller
             .manual_compact(&mut memory, context())
             .await
             .expect("second compact succeeds");
+        memory.add_message(AgentMessage::user("Continue after second compact"));
+        let third = controller
+            .manual_compact(&mut memory, context())
+            .await
+            .expect("third compact succeeds");
+
+        assert_eq!(first.metadata.generation, 1);
+        assert_eq!(second.metadata.generation, 2);
+        assert_eq!(third.metadata.generation, 3);
 
         assert_eq!(
             memory
@@ -408,7 +427,11 @@ mod tests {
         assert!(memory
             .get_messages()
             .iter()
-            .any(|message| message.content == "Continue after first compact"));
+            .any(|message| message.content == "Continue after second compact"));
+        assert!(memory
+            .get_messages()
+            .iter()
+            .any(|message| message.content.contains("generation: 3")));
     }
 
     #[tokio::test]
