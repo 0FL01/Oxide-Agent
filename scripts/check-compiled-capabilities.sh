@@ -6,9 +6,10 @@ usage() {
 Usage:
   scripts/check-compiled-capabilities.sh <embedded-opencode-local|lite|search-only|no-sandbox|media-enabled|host-bwrap|full>
 
-Runs the Telegram app capability CLI for a profile and verifies the compiled
-capability manifest stays deterministic and aligned with the selected profile
-contract.
+Runs the Telegram app capability CLI for a profile and verifies that the
+compiled manifest, profile defaults, config schema, and config example stay
+aligned. The source of truth is the Rust compiled manifest plus profiles/*.toml;
+this script intentionally avoids profile-specific hardcoded module lists.
 USAGE
 }
 
@@ -54,34 +55,52 @@ import tomllib
 profile = sys.argv[1]
 manifest_path = sys.argv[2]
 
-with open(manifest_path, "r", encoding="utf-8") as fh:
-    manifest = json.load(fh)
-
-modules = manifest.get("modules", [])
-capabilities = manifest.get("capabilities", [])
-module_ids = [module["id"] for module in modules]
-capability_ids = [capability["id"] for capability in capabilities]
-
 
 def fail(message: str) -> None:
     print(f"compiled capability check failed for {profile}: {message}", file=sys.stderr)
     sys.exit(1)
 
 
+with open(manifest_path, "r", encoding="utf-8") as fh:
+    manifest = json.load(fh)
+
+modules = manifest.get("modules", [])
+capabilities = manifest.get("capabilities", [])
+module_ids = [module.get("id") for module in modules]
+capability_ids = [capability.get("id") for capability in capabilities]
+
+if not modules:
+    fail("manifest has no modules")
+if any(not isinstance(module_id, str) or not module_id for module_id in module_ids):
+    fail(f"invalid module ids: {module_ids!r}")
+if any(not isinstance(capability_id, str) or not capability_id for capability_id in capability_ids):
+    fail(f"invalid capability ids: {capability_ids!r}")
 if module_ids != sorted(module_ids):
     fail("module ids are not sorted deterministically")
-
 if capability_ids != sorted(capability_ids):
     fail("capability ids are not sorted deterministically")
-
 if len(module_ids) != len(set(module_ids)):
     fail("duplicate module id detected")
-
 if len(capability_ids) != len(set(capability_ids)):
     fail("duplicate capability id detected")
 
 module_set = set(module_ids)
 capability_set = set(capability_ids)
+
+for module in modules:
+    module_id = module["id"]
+    cargo_feature = module.get("cargo_feature")
+    provides = module.get("provides", [])
+    if not isinstance(cargo_feature, str) or not cargo_feature:
+        fail(f"{module_id} missing cargo_feature metadata")
+    if not isinstance(provides, list):
+        fail(f"{module_id} has non-list provides metadata")
+    missing_provides = sorted(set(provides) - capability_set)
+    if missing_provides:
+        fail(f"{module_id} provides capabilities absent from manifest: {missing_provides}")
+    for prop in module.get("config_properties", []):
+        if not isinstance(prop.get("name"), str) or not prop["name"]:
+            fail(f"{module_id} has config property without a name: {prop!r}")
 
 profile_path = pathlib.Path("profiles") / f"{profile}.toml"
 if not profile_path.exists():
@@ -92,7 +111,7 @@ if profile_doc.get("profile") != profile:
     fail(f"profile defaults file has wrong profile name: {profile_doc.get('profile')!r}")
 if profile_doc.get("cargo_features") != [f"profile-{profile}"]:
     fail(f"profile defaults file has wrong cargo_features: {profile_doc.get('cargo_features')!r}")
-profile_module_ids = set(profile_doc.get("modules", {}).keys())
+profile_module_ids = set((profile_doc.get("modules") or {}).keys())
 if profile_module_ids != module_set:
     missing = sorted(module_set - profile_module_ids)
     unexpected = sorted(profile_module_ids - module_set)
@@ -101,343 +120,19 @@ if profile_module_ids != module_set:
         f"missing={missing}; unexpected={unexpected}"
     )
 
-common_forbidden_ids = {
+removed_direct_gemini_ids = {
     "llm-provider/gemini",
     "llm-provider/google-gemini",
     "llm-provider/google-gemini-direct",
 }
+present_removed = sorted((module_set | capability_set) & removed_direct_gemini_ids)
+if present_removed:
+    fail(f"removed direct Gemini provider ids are present: {present_removed}")
 
-profile_requirements = {
-    "embedded-opencode-local": {
-        "exact_modules": {
-            "llm-provider/opencode-go",
-            "sandbox-backend/bwrap",
-            "sandbox-backend/docker-direct",
-            "storage/r2",
-            "tool/agents-md",
-            "tool/compression",
-            "tool/delegation",
-            "tool/file-delivery",
-            "tool/media-audio",
-            "tool/media-image",
-            "tool/media-video",
-            "tool/reminder",
-            "tool/sandbox-exec",
-            "tool/sandbox-fileops",
-            "tool/sandbox-recreate",
-            "tool/tavily",
-            "tool/todos",
-            "tool/webfetch-md",
-            "tool/wiki-memory",
-            "transport/telegram",
-        },
-        "required_capabilities": {
-            "llm-provider/opencode-go",
-            "sandbox-backend/bwrap",
-            "sandbox-backend/bwrap/exec",
-            "sandbox-backend/bwrap/fileops",
-            "sandbox-backend/bwrap/lifecycle",
-            "sandbox-backend/docker-direct",
-            "sandbox-backend/docker-direct/exec",
-            "sandbox-backend/docker-direct/fileops",
-            "sandbox-backend/docker-direct/lifecycle",
-            "storage/r2",
-            "tool/agents-md",
-            "tool/compression",
-            "tool/delegation",
-            "tool/file-delivery",
-            "tool/media-audio-transcription",
-            "tool/media-image-description",
-            "tool/media-video-description",
-            "tool/reminder",
-            "tool/sandbox-exec",
-            "tool/sandbox-fileops",
-            "tool/sandbox-list-files",
-            "tool/sandbox-recreate",
-            "tool/tavily-extract",
-            "tool/tavily-search",
-            "tool/todos",
-            "tool/webfetch-md",
-            "tool/wiki-memory",
-            "transport/telegram",
-        },
-        "forbidden_modules": common_forbidden_ids,
-        "forbidden_prefixes": (
-            "integration/",
-            "sandbox-daemon/",
-            "tool/browser-use",
-            "tool/searxng",
-            "tool/stack-logs",
-            "tool/tts-",
-            "tool/ytdlp",
-        ),
-    },
-    "lite": {
-        "exact_modules": {
-            "llm-provider/opencode-go",
-            "storage/r2",
-            "tool/reminder",
-            "tool/todos",
-            "tool/webfetch-md",
-            "transport/telegram",
-        },
-        "required_capabilities": {
-            "llm-provider/opencode-go",
-            "storage/r2",
-            "tool/reminder",
-            "tool/todos",
-            "tool/webfetch-md",
-            "transport/telegram",
-        },
-        "forbidden_modules": common_forbidden_ids,
-        "forbidden_prefixes": (
-            "integration/",
-            "sandbox-backend/",
-            "sandbox-daemon/",
-            "tool/agents-md",
-            "tool/browser-use",
-            "tool/file-delivery",
-            "tool/media-",
-            "tool/sandbox-",
-            "tool/searxng",
-            "tool/stack-logs",
-            "tool/tavily",
-            "tool/tts-",
-            "tool/wiki-memory",
-            "tool/ytdlp",
-        ),
-    },
-    "search-only": {
-        "required_modules": {
-            "llm-provider/opencode-go",
-            "storage/r2",
-            "tool/tavily",
-            "tool/webfetch-md",
-            "transport/telegram",
-        },
-        "required_capabilities": {
-            "tool/tavily-extract",
-            "tool/tavily-search",
-            "tool/webfetch-md",
-        },
-        "forbidden_modules": common_forbidden_ids,
-        "forbidden_prefixes": (
-            "integration/",
-            "sandbox-backend/",
-            "sandbox-daemon/",
-            "tool/browser-use",
-            "tool/media-",
-            "tool/sandbox-",
-            "tool/searxng",
-            "tool/stack-logs",
-            "tool/tts-",
-            "tool/ytdlp",
-        ),
-    },
-    "no-sandbox": {
-        "exact_modules": {
-            "llm-provider/opencode-go",
-            "storage/r2",
-            "tool/reminder",
-            "tool/todos",
-            "tool/webfetch-md",
-            "tool/wiki-memory",
-            "transport/telegram",
-        },
-        "required_capabilities": {
-            "llm-provider/opencode-go",
-            "storage/r2",
-            "tool/reminder",
-            "tool/todos",
-            "tool/webfetch-md",
-            "tool/wiki-memory",
-            "transport/telegram",
-        },
-        "forbidden_modules": common_forbidden_ids,
-        "forbidden_prefixes": (
-            "integration/",
-            "sandbox-backend/",
-            "sandbox-daemon/",
-            "tool/agents-md",
-            "tool/browser-use",
-            "tool/file-delivery",
-            "tool/media-",
-            "tool/sandbox-",
-            "tool/searxng",
-            "tool/stack-logs",
-            "tool/tavily",
-            "tool/tts-",
-            "tool/ytdlp",
-        ),
-    },
-    "media-enabled": {
-        "required_modules": {
-            "llm-provider/opencode-go",
-            "storage/r2",
-            "tool/file-delivery",
-            "tool/media-audio",
-            "tool/media-image",
-            "tool/media-video",
-            "transport/telegram",
-        },
-        "required_capabilities": {
-            "tool/file-delivery",
-            "tool/media-audio-transcription",
-            "tool/media-image-description",
-            "tool/media-video-description",
-        },
-        "forbidden_modules": common_forbidden_ids,
-        "forbidden_prefixes": (
-            "integration/",
-            "sandbox-backend/",
-            "sandbox-daemon/",
-            "tool/browser-use",
-            "tool/sandbox-",
-            "tool/searxng",
-            "tool/stack-logs",
-            "tool/tavily",
-            "tool/tts-",
-            "tool/webfetch-md",
-            "tool/ytdlp",
-        ),
-    },
-    "host-bwrap": {
-        "exact_modules": {
-            "llm-provider/opencode-go",
-            "llm-provider/openrouter",
-            "sandbox-backend/bwrap",
-            "storage/r2",
-            "tool/agents-md",
-            "tool/compression",
-            "tool/delegation",
-            "tool/file-delivery",
-            "tool/media-audio",
-            "tool/media-image",
-            "tool/media-video",
-            "tool/reminder",
-            "tool/sandbox-exec",
-            "tool/sandbox-fileops",
-            "tool/sandbox-recreate",
-            "tool/tavily",
-            "tool/todos",
-            "tool/webfetch-md",
-            "tool/wiki-memory",
-            "transport/telegram",
-        },
-        "required_capabilities": {
-            "llm-provider/opencode-go",
-            "llm-provider/openrouter",
-            "sandbox-backend/bwrap",
-            "sandbox-backend/bwrap/exec",
-            "sandbox-backend/bwrap/fileops",
-            "sandbox-backend/bwrap/lifecycle",
-            "storage/r2",
-            "tool/agents-md",
-            "tool/compression",
-            "tool/delegation",
-            "tool/file-delivery",
-            "tool/media-audio-transcription",
-            "tool/media-image-description",
-            "tool/media-video-description",
-            "tool/reminder",
-            "tool/sandbox-exec",
-            "tool/sandbox-fileops",
-            "tool/sandbox-list-files",
-            "tool/sandbox-recreate",
-            "tool/tavily-extract",
-            "tool/tavily-search",
-            "tool/todos",
-            "tool/webfetch-md",
-            "tool/wiki-memory",
-            "transport/telegram",
-        },
-        "forbidden_modules": common_forbidden_ids | {
-            "sandbox-backend/docker-direct",
-            "sandbox-backend/sandboxd-client",
-            "sandbox-daemon/sandboxd",
-        },
-        "forbidden_prefixes": (
-            "integration/",
-            "tool/browser-use",
-            "tool/searxng",
-            "tool/stack-logs",
-            "tool/tts-",
-            "tool/ytdlp",
-        ),
-    },
-    "full": {
-        "required_modules": {
-            "integration/mcp-jira",
-            "integration/mcp-mattermost",
-            "integration/ssh-mcp",
-            "llm-provider/minimax",
-            "llm-provider/mistral",
-            "llm-provider/nvidia",
-            "llm-provider/openai-chatgpt",
-            "llm-provider/opencode-go",
-            "llm-provider/openrouter",
-            "llm-provider/zai",
-            "manager/control-plane",
-            "sandbox-backend/docker-direct",
-            "sandbox-backend/sandboxd-client",
-            "sandbox-daemon/sandboxd",
-            "storage/r2",
-            "tool/browser-use",
-            "tool/searxng",
-            "tool/stack-logs",
-            "tool/ytdlp",
-            "transport/telegram",
-            "transport/web",
-        },
-        "required_capabilities": {
-            "manager/control-plane",
-            "sandbox-backend/docker-direct/exec",
-            "sandbox-backend/sandboxd-client/exec",
-            "tool/browser-use",
-            "tool/searxng-search",
-            "tool/stack-logs",
-            "tool/ytdlp-download",
-        },
-        "forbidden_modules": common_forbidden_ids,
-        "forbidden_prefixes": (),
-    },
-}
-
-rules = profile_requirements[profile]
-
-exact_modules = rules.get("exact_modules")
-if exact_modules is not None and module_set != exact_modules:
-    missing = sorted(exact_modules - module_set)
-    unexpected = sorted(module_set - exact_modules)
-    fail(f"module set mismatch; missing={missing}; unexpected={unexpected}")
-
-missing_modules = sorted(rules.get("required_modules", set()) - module_set)
-if missing_modules:
-    fail(f"missing required modules: {missing_modules}")
-
-missing_capabilities = sorted(rules.get("required_capabilities", set()) - capability_set)
-if missing_capabilities:
-    fail(f"missing required capabilities: {missing_capabilities}")
-
-forbidden_modules = sorted(rules.get("forbidden_modules", set()) & module_set)
-if forbidden_modules:
-    fail(f"forbidden modules present: {forbidden_modules}")
-
-forbidden_capabilities = sorted(rules.get("forbidden_modules", set()) & capability_set)
-if forbidden_capabilities:
-    fail(f"forbidden capabilities present: {forbidden_capabilities}")
-
-for prefix in rules.get("forbidden_prefixes", ()):
-    forbidden_by_prefix = sorted(module_id for module_id in module_set if module_id.startswith(prefix))
-    if forbidden_by_prefix:
-        fail(f"forbidden module prefix {prefix!r} present: {forbidden_by_prefix}")
-    forbidden_capabilities_by_prefix = sorted(
-        capability_id for capability_id in capability_set if capability_id.startswith(prefix)
-    )
-    if forbidden_capabilities_by_prefix:
-        fail(f"forbidden capability prefix {prefix!r} present: {forbidden_capabilities_by_prefix}")
-
-print(f"compiled capability check passed for {profile}: {len(module_ids)} modules, {len(capability_ids)} capabilities")
+print(
+    f"compiled capability check passed for {profile}: "
+    f"{len(module_ids)} modules, {len(capability_ids)} capabilities"
+)
 PY
 
 cargo run -q \
@@ -455,27 +150,23 @@ profile = sys.argv[1]
 manifest_path = sys.argv[2]
 schema_path = sys.argv[3]
 
-with open(manifest_path, "r", encoding="utf-8") as fh:
-    manifest = json.load(fh)
-with open(schema_path, "r", encoding="utf-8") as fh:
-    schema = json.load(fh)
-
-module_ids = [module["id"] for module in manifest.get("modules", [])]
-module_schema = (
-    schema.get("properties", {})
-    .get("modules", {})
-)
-schema_modules = module_schema.get("properties", {})
-
 
 def fail(message: str) -> None:
     print(f"config schema check failed for {profile}: {message}", file=sys.stderr)
     sys.exit(1)
 
 
+with open(manifest_path, "r", encoding="utf-8") as fh:
+    manifest = json.load(fh)
+with open(schema_path, "r", encoding="utf-8") as fh:
+    schema = json.load(fh)
+
+module_ids = [module["id"] for module in manifest.get("modules", [])]
+module_schema = schema.get("properties", {}).get("modules", {})
+schema_modules = module_schema.get("properties", {})
+
 if module_schema.get("additionalProperties") is not False:
     fail("modules schema must reject non-compiled module IDs")
-
 if list(schema_modules.keys()) != module_ids:
     fail(
         "schema module IDs do not match compiled manifest; "
@@ -484,17 +175,22 @@ if list(schema_modules.keys()) != module_ids:
 
 for module in manifest.get("modules", []):
     module_id = module["id"]
-    entry = schema_modules[module_id]
+    entry = schema_modules.get(module_id)
+    if entry is None:
+        fail(f"missing schema entry for {module_id}")
+
     enabled_schema = entry.get("properties", {}).get("enabled", {})
     if enabled_schema.get("type") != "boolean":
         fail(f"{module_id} missing boolean enabled flag schema")
-    if entry.get("x-oxide-cargo-feature") != module["cargo_feature"]:
+    if entry.get("x-oxide-cargo-feature") != module.get("cargo_feature"):
         fail(f"{module_id} cargo feature metadata mismatch")
-    if entry.get("x-oxide-provides") != module["provides"]:
+    if entry.get("x-oxide-provides") != module.get("provides"):
         fail(f"{module_id} provided capability metadata mismatch")
+
     declared_properties = module.get("config_properties", [])
     if entry.get("x-oxide-config-properties") != declared_properties:
         fail(f"{module_id} config property metadata mismatch")
+
     schema_properties = entry.get("properties", {})
     for prop in declared_properties:
         name = prop["name"]
@@ -509,12 +205,6 @@ for module in manifest.get("modules", []):
             fail(f"{module_id}.{name} secret metadata mismatch")
         if prop.get("default_value") is not None and prop_schema.get("default") != prop["default_value"]:
             fail(f"{module_id}.{name} default metadata mismatch")
-    if module_id.startswith("llm-provider/") and module_id != "llm-provider/openai-chatgpt":
-        if not any(prop["name"] == "api_key" for prop in declared_properties):
-            fail(f"{module_id} provider schema must declare module-owned api_key")
-    if module_id == "llm-provider/openai-chatgpt":
-        if not any(prop["name"] == "auth_path" for prop in declared_properties):
-            fail("llm-provider/openai-chatgpt schema must declare module-owned auth_path")
 
 print(f"config schema check passed for {profile}: {len(schema_modules)} module schemas")
 PY
@@ -534,6 +224,12 @@ profile = sys.argv[1]
 manifest_path = sys.argv[2]
 example_path = sys.argv[3]
 
+
+def fail(message: str) -> None:
+    print(f"config example check failed for {profile}: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
 with open(manifest_path, "r", encoding="utf-8") as fh:
     manifest = json.load(fh)
 with open(example_path, "r", encoding="utf-8") as fh:
@@ -541,12 +237,6 @@ with open(example_path, "r", encoding="utf-8") as fh:
 
 module_ids = [module["id"] for module in manifest.get("modules", [])]
 example_modules = example.get("modules", {})
-
-
-def fail(message: str) -> None:
-    print(f"config example check failed for {profile}: {message}", file=sys.stderr)
-    sys.exit(1)
-
 
 if example.get("profile") != profile:
     fail(f"example profile mismatch: {example.get('profile')!r}")
@@ -558,7 +248,9 @@ if list(example_modules.keys()) != module_ids:
 
 for module in manifest.get("modules", []):
     module_id = module["id"]
-    config = example_modules[module_id]
+    config = example_modules.get(module_id)
+    if config is None:
+        fail(f"missing config example entry for {module_id}")
     if config.get("enabled") is not True:
         fail(f"{module_id} example must enable compiled module by default")
     for prop in module.get("config_properties", []):

@@ -25,7 +25,14 @@ legacy_surface_paths=(
   README-ru.md
 )
 
-if grep -RInE -- 'Dockerfile[.]sandbox' "${legacy_surface_paths[@]}"; then
+existing_legacy_surface_paths=()
+for path in "${legacy_surface_paths[@]}"; do
+  if [[ -e "${path}" ]]; then
+    existing_legacy_surface_paths+=("${path}")
+  fi
+done
+
+if grep -RInE -- 'Dockerfile[.]sandbox' "${existing_legacy_surface_paths[@]}"; then
   echo "legacy fat sandbox Dockerfile must not be referenced by active deploy or runtime surfaces" >&2
   exit 1
 fi
