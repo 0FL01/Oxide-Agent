@@ -7,10 +7,9 @@ use tracing::debug;
 use uuid::Uuid;
 
 use super::process::{await_capped_output, cleanup_bwrap_child, read_capped_counted};
+use super::types::{BwrapNetworkMode, BwrapResolvConf, BwrapRootMode};
 use super::workspace::ensure_no_symlink_escape;
-use super::{
-    BwrapNetworkMode, BwrapResolvConf, BwrapRootMode, BwrapSandboxManager, WORKSPACE_PREFIX,
-};
+use super::{BwrapSandboxManager, WORKSPACE_PREFIX};
 use crate::sandbox::ExecResult;
 
 impl BwrapSandboxManager {

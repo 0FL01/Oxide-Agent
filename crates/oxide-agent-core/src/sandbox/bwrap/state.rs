@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{BwrapNetworkMode, BwrapRootMode, BwrapSandboxConfig};
+use super::config::BwrapSandboxConfig;
+use super::types::{BwrapNetworkMode, BwrapRootMode};
 use crate::sandbox::{SandboxContainerRecord, SandboxScope};
 
 #[derive(Debug, Clone)]

@@ -10,11 +10,12 @@ use std::str::FromStr;
 use tracing::info;
 use uuid::Uuid;
 
-use super::image::{default_manifest_env, host_arch};
-use super::{
-    absolute_path, absolute_path_env, ensure_configured_dir, env_parse, env_string,
-    optional_path_env, optional_string_env, ScopeLock, BWRAP_DEFAULT_IMAGE, WORKSPACE_PREFIX,
+use super::env::{
+    absolute_path, absolute_path_env, env_parse, env_string, optional_path_env, optional_string_env,
 };
+use super::host_fs::ensure_configured_dir;
+use super::image::{default_manifest_env, host_arch};
+use super::{ScopeLock, BWRAP_DEFAULT_IMAGE, WORKSPACE_PREFIX};
 
 const BWRAP_IMAGE_BOOTSTRAP_OFF: &str = "off";
 const BWRAP_IMAGE_BOOTSTRAP_DOWNLOAD: &str = "download";
