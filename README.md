@@ -128,6 +128,139 @@ The bot supports **6 main providers** for Agent Mode with tool calling:
 **Note:** The default Docker Compose configuration uses `SANDBOX_BACKEND=broker` which requires the `oxide-agent-sandboxd` container. To use direct Docker access, set `SANDBOX_BACKEND=docker`. For bare-host Bubblewrap mode, build `profile-host-bwrap` and follow `docs/bwrap-sandbox.md`.
 </details>
 
+<details>
+<summary>Alpine 3.23 deployment from the release binary (embedded profile)</summary>
+
+This path is for the prebuilt `x86_64` release artifact built with the embedded profile. Download the Alpine release archive from GitHub Releases, unpack it under `/opt/oxide-agent`, and run the binary directly or through OpenRC.
+
+1. Install host packages:
+
+   ```bash
+   apk add --no-cache bubblewrap ca-certificates tar xz curl
+   ```
+
+2. Create a dedicated service user and prepare directories:
+
+   ```bash
+   addgroup -S oxide
+   adduser -S -D -H -h /var/lib/oxide-agent -s /sbin/nologin -G oxide oxide
+   mkdir -p /opt/oxide-agent/bin
+   mkdir -p /opt/oxide-agent/bwrap-images
+   mkdir -p /var/lib/oxide-agent/sandbox/scopes
+   mkdir -p /var/lib/oxide-agent/sandbox/locks
+   mkdir -p /var/lib/oxide-agent/sandbox/root-upper
+   mkdir -p /var/log/oxide-agent
+   chown -R oxide:oxide /opt/oxide-agent /var/lib/oxide-agent /var/log/oxide-agent
+   ```
+
+3. Download the Alpine release archive from GitHub Releases, unpack it, and move the binary to `/opt/oxide-agent/bin/oxide-agent-telegram-bot`.
+
+4. Create `/opt/oxide-agent/.env`. The release binary reads `.env` from its working directory. Minimal example:
+
+   ```dotenv
+   TELEGRAM_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+   TELEGRAM_ALLOWED_USERS=123456789
+   TELEGRAM_MANAGER_ALLOWED_USERS=123456789
+
+   OXIDE_R2_ACCESS_KEY_ID=YOUR_R2_KEY
+   OXIDE_R2_SECRET_ACCESS_KEY=YOUR_R2_SECRET
+   OXIDE_R2_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com
+   OXIDE_R2_BUCKET_NAME=your_bucket
+   OXIDE_R2_REGION=auto
+
+   OPENCODE_GO_API_KEY=YOUR_OPENCODE_GO_API_KEY
+   OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
+
+   AGENT_MODEL_ID=deepseek-v4-flash
+   AGENT_MODEL_PROVIDER=opencode-go
+   SUB_AGENT_MODEL_ID=deepseek-v4-flash
+   SUB_AGENT_MODEL_PROVIDER=opencode-go
+
+   SANDBOX_BACKEND=bwrap
+   BWRAP_BIN=/usr/bin/bwrap
+   BWRAP_IMAGE=alpine-3.23-dev
+   BWRAP_IMAGE_STORE=/opt/oxide-agent/bwrap-images
+   BWRAP_STATE_DIR=/var/lib/oxide-agent/sandbox/scopes
+   BWRAP_LOCK_DIR=/var/lib/oxide-agent/sandbox/locks
+   BWRAP_ROOT_MODE=overlay-rw
+   BWRAP_ROOT_UPPER_DIR=/var/lib/oxide-agent/sandbox/root-upper
+   BWRAP_NET=host
+   BWRAP_ALLOW_OVERLAY=true
+   BWRAP_RESOLV_CONF=auto
+   BWRAP_DISABLE_NESTED_USERNS=true
+
+   RUST_LOG=oxide_agent_core=info,oxide_agent_transport_telegram=info,oxide_agent_runtime=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
+   DEBUG_MODE=false
+   ```
+
+5. Import an Alpine 3.23 minirootfs for `bwrap`. Copy `scripts/import-bwrap-rootfs-tar.sh` from this repository to `/opt/oxide-agent/scripts/import-bwrap-rootfs-tar.sh`, then run:
+
+   ```bash
+   /opt/oxide-agent/scripts/import-bwrap-rootfs-tar.sh \
+     --tarball /opt/oxide-agent/bwrap-images/alpine-minirootfs-3.23.4-x86_64.tar.gz \
+     --sha256 "$(awk '{print $1}' /opt/oxide-agent/bwrap-images/alpine-minirootfs-3.23.4-x86_64.tar.gz.sha256)" \
+     --image-id alpine-3.23-dev \
+     --output /opt/oxide-agent/bwrap-images/alpine-3.23-dev \
+     --distro alpine \
+     --suite v3.23 \
+     --version 3.23.4 \
+     --package-manager apk
+   ```
+
+6. Optional OpenRC wrapper:
+
+   ```bash
+   cat >/opt/oxide-agent/bin/run-oxide-agent.sh <<'EOF'
+   #!/bin/sh
+   set -a
+   . /opt/oxide-agent/.env
+   set +a
+   cd /opt/oxide-agent
+   exec /opt/oxide-agent/bin/oxide-agent-telegram-bot
+   EOF
+   chmod +x /opt/oxide-agent/bin/run-oxide-agent.sh
+   chown oxide:oxide /opt/oxide-agent/bin/run-oxide-agent.sh
+   ```
+
+7. Optional OpenRC service:
+
+   ```bash
+   cat >/etc/init.d/oxide-agent <<'EOF'
+   #!/sbin/openrc-run
+
+   name="oxide-agent"
+   description="Oxide Agent Telegram bot"
+   command="/opt/oxide-agent/bin/run-oxide-agent.sh"
+   directory="/opt/oxide-agent"
+   command_user="oxide:oxide"
+   command_background="true"
+   pidfile="/run/${RC_SVCNAME}.pid"
+   output_log="/var/log/oxide-agent/current.log"
+   error_log="/var/log/oxide-agent/current.log"
+
+   depend() {
+       need net
+       use dns logger
+   }
+   EOF
+   chmod +x /etc/init.d/oxide-agent
+   rc-update add oxide-agent default
+   rc-service oxide-agent start
+   ```
+
+   The bot writes structured logs to `stderr`, so the OpenRC example sends both `stdout` and `stderr` to the same `current.log` file.
+
+8. Manual verification:
+
+   ```bash
+   cd /opt/oxide-agent
+   ./bin/oxide-agent-telegram-bot capabilities --compiled --json
+   tail -f /var/log/oxide-agent/current.log
+   ```
+
+For a more detailed bare-host Bubblewrap reference, see `docs/bwrap-sandbox.md`.
+</details>
+
 ## Configuration (.env)
 
 <details>
