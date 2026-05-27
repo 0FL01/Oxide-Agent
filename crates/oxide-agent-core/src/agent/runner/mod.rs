@@ -10,6 +10,8 @@ mod model_routes;
 mod response_dispatch;
 mod responses;
 mod runtime_compaction;
+#[cfg(test)]
+mod test_support;
 mod token_snapshots;
 mod tools;
 mod types;

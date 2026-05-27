@@ -120,7 +120,7 @@ impl AgentRunner {
         .await
     }
 
-    pub(super) fn runtime_compaction_threshold_reached(
+    fn runtime_compaction_threshold_reached(
         ctx: &AgentRunnerContext<'_>,
         route: &ModelInfo,
     ) -> bool {
@@ -430,5 +430,390 @@ impl AgentRunner {
                 .send(AgentEvent::RepeatedCompactionWarning { kind, count })
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::compaction::{
+        CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
+        CompactedSummaryMetadata, CompactionController, OXIDE_COMPACTED_SUMMARY_PREFIX,
+    };
+    use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::memory::AgentMessage;
+    use crate::agent::progress::AgentEvent;
+    use crate::agent::runner::test_support::{
+        collect_progress_events, context_overflow_then_summary_then_final_provider,
+        final_structured_response, pre_sampling_summary_then_final_provider, stub_non_chat_methods,
+    };
+    use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
+    use crate::config::{AgentSettings, ModelInfo};
+    use crate::llm::{LlmClient, LlmError, MockLlmProvider};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    struct StaticRuntimeSummaryBackend;
+
+    fn existing_compacted_summary() -> AgentMessage {
+        AgentMessage::compacted_summary(
+            "Old current-format state.",
+            &CompactedSummaryMetadata {
+                generation: 1,
+                reason: CompactionReason::Manual,
+                phase: CompactionPhase::Manual,
+                token_before: 100,
+                token_after: 10,
+                history_items_before: 3,
+                history_items_after: 1,
+                provider: "opencode-go".to_string(),
+                route: "deepseek-v4-flash".to_string(),
+                backend: CompactionBackend::LocalLlmSummary,
+                created_at: "2026-05-21T20:10:00+03:00".to_string(),
+                previous_summary_detected: false,
+                repair_applied: false,
+                wiki_memory_lookup_available: false,
+            },
+        )
+    }
+
+    #[async_trait]
+    impl CompactSummaryBackend for StaticRuntimeSummaryBackend {
+        async fn summarize(
+            &self,
+            request: CompactSummaryRequest<'_>,
+        ) -> std::result::Result<CompactSummaryResult, CompactSummaryError> {
+            Ok(CompactSummaryResult {
+                summary_text: "Condensed history for smaller fallback route.".to_string(),
+                provider: request.route.provider.clone(),
+                route: request.route.id.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn run_retries_after_context_overflow_with_runtime_context_limit_compaction() {
+        let llm_client = crate::agent::runner::test_support::build_llm_client(
+            context_overflow_then_summary_then_final_provider(),
+        );
+        let compaction_controller = CompactionController::local_llm(Arc::clone(&llm_client), 1);
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Retry after overflow"));
+        session
+            .memory_mut()
+            .add_message(existing_compacted_summary());
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Recent request."));
+
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let mut ctx = AgentRunnerContext {
+            task: "Retry after overflow",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-overflow-runtime-compaction",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: Some(&compaction_controller),
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 2, 1, 30, 256),
+        };
+
+        let result = runner
+            .run(&mut ctx)
+            .await
+            .expect("runner succeeds after retry");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        assert!(ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .any(|message| message
+                .content
+                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)));
+        assert!(ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .all(|message| !message.content.contains("[COMPACTION_SUMMARY]")));
+        drop(ctx);
+        drop(progress_tx);
+
+        let events = collect_progress_events(&mut progress_rx).await;
+        let started = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::RuntimeCompactionStarted {
+                        reason: CompactionReason::ContextLimit,
+                        phase: CompactionPhase::MidTurn,
+                        ..
+                    }
+                )
+            })
+            .expect("runtime context-limit compaction started");
+        let completed = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::RuntimeCompactionCompleted {
+                        reason: CompactionReason::ContextLimit,
+                        phase: CompactionPhase::MidTurn,
+                        ..
+                    }
+                )
+            })
+            .expect("runtime context-limit compaction completed");
+        assert!(started < completed);
+    }
+
+    #[tokio::test]
+    async fn run_pre_sampling_uses_runtime_compaction_when_threshold_reached() {
+        let llm_client = crate::agent::runner::test_support::build_llm_client(
+            pre_sampling_summary_then_final_provider(),
+        );
+        let compaction_controller = CompactionController::local_llm(Arc::clone(&llm_client), 1);
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(1_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Pre-sampling compact"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("older ".repeat(4_000)));
+
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let mut ctx = AgentRunnerContext {
+            task: "Pre-sampling compact",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-pre-sampling-runtime-compaction",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: Some(&compaction_controller),
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        assert!(ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .any(|message| message
+                .content
+                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)));
+        drop(ctx);
+        drop(progress_tx);
+
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::RuntimeCompactionCompleted {
+                    reason: CompactionReason::PreTurn,
+                    phase: CompactionPhase::PreSampling,
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn runtime_compaction_threshold_uses_full_request_budget() {
+        let tools = Vec::new();
+        let mut session = EphemeralSession::new(20_000);
+        session.memory_mut().add_message(AgentMessage::user_task(
+            "Compact because output reserve consumes the route window",
+        ));
+
+        assert!(
+            session.memory().token_count().saturating_mul(100)
+                < session.memory().max_tokens().saturating_mul(85),
+            "test fixture must stay below the old hot-memory-only threshold"
+        );
+
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let ctx = AgentRunnerContext {
+            task: "Compact because output reserve consumes the route window",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-full-budget-threshold",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 16_000),
+        };
+        let route = ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 16_000,
+            context_window_tokens: 20_000,
+            weight: 1,
+        };
+
+        assert!(AgentRunner::runtime_compaction_threshold_reached(
+            &ctx, &route
+        ));
+        drop(ctx);
+    }
+
+    #[tokio::test]
+    async fn run_compacts_before_downshifting_to_smaller_model_route() {
+        let mut primary = MockLlmProvider::new();
+        primary
+            .expect_chat_with_tools()
+            .times(LlmClient::MAX_RETRIES)
+            .returning(|_| {
+                Err(LlmError::RateLimit {
+                    wait_secs: Some(0),
+                    message: "primary rate limit".to_string(),
+                })
+            });
+        stub_non_chat_methods(&mut primary);
+
+        let mut backup = MockLlmProvider::new();
+        backup
+            .expect_chat_with_tools()
+            .times(1)
+            .withf(|request| {
+                request
+                    .system_prompt
+                    .contains(OXIDE_COMPACTED_SUMMARY_PREFIX)
+                    && !request.messages.iter().any(|message| {
+                        message
+                            .content
+                            .trim_start()
+                            .starts_with(OXIDE_COMPACTED_SUMMARY_PREFIX)
+                    })
+            })
+            .return_once(|_| Ok(final_structured_response()));
+        stub_non_chat_methods(&mut backup);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-pro".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("llm-provider/opencode-go".to_string(), Arc::new(primary));
+        llm_client.register_provider("opencode-go".to_string(), Arc::new(backup));
+        let llm_client = Arc::new(llm_client);
+
+        let compaction_controller =
+            CompactionController::new(Arc::new(StaticRuntimeSummaryBackend));
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(50_000);
+        session.memory_mut().add_message(AgentMessage::user_task(
+            "Fail over to a smaller model route",
+        ));
+        for index in 0..24 {
+            session
+                .memory_mut()
+                .add_message(AgentMessage::user_turn(format!(
+                    "background-{index}: {}",
+                    "route downshift history ".repeat(160)
+                )));
+        }
+
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
+        let mut ctx = AgentRunnerContext {
+            task: "Fail over to a smaller model route",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-model-downshift",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: Some(&compaction_controller),
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
+                .with_model_provider("llm-provider/opencode-go")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "deepseek-v4-pro".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "llm-provider/opencode-go".to_string(),
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "deepseek-v4-flash".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 15_000,
+                        provider: "opencode-go".to_string(),
+                        weight: 1,
+                    },
+                ]),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+
+        assert!(ctx.agent.memory().get_messages().iter().any(|message| {
+            message
+                .content
+                .trim_start()
+                .starts_with(OXIDE_COMPACTED_SUMMARY_PREFIX)
+        }));
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::RuntimeCompactionCompleted {
+                    reason: CompactionReason::ModelDownshift,
+                    phase: CompactionPhase::ModelSwitch,
+                    provider,
+                    route,
+                    ..
+                } if provider == "opencode-go" && route == "deepseek-v4-flash"
+            )
+        }));
     }
 }

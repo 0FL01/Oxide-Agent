@@ -727,10 +727,7 @@ impl AgentRunner {
         .any(|needle| message.contains(needle))
     }
 
-    pub(super) fn opencode_go_unbounded_retry_allowed(
-        provider_name: &str,
-        error: &LlmError,
-    ) -> bool {
+    fn opencode_go_unbounded_retry_allowed(provider_name: &str, error: &LlmError) -> bool {
         Self::is_opencode_go_provider_name(provider_name) && LlmClient::is_retryable_error(error)
     }
 
@@ -739,5 +736,394 @@ impl AgentRunner {
             provider_name.trim().to_ascii_lowercase().as_str(),
             "opencode-go" | "opencode_go"
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::memory::AgentMessage;
+    use crate::agent::progress::AgentEvent;
+    use crate::agent::runner::test_support::{
+        build_llm_client, collect_progress_events, final_structured_response,
+        single_final_response_provider, stub_non_chat_methods,
+    };
+    use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
+    use crate::config::{AgentSettings, ModelInfo};
+    use crate::llm::{LlmError, MockLlmProvider, ToolCall, ToolCallFunction};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[test]
+    fn unbounded_retry_is_limited_to_opencode_go_retryable_errors() {
+        let rate_limit = LlmError::RateLimit {
+            wait_secs: None,
+            message: "too many requests".to_string(),
+        };
+        let invalid_request = LlmError::ApiError("invalid API key".to_string());
+
+        assert!(AgentRunner::opencode_go_unbounded_retry_allowed(
+            "opencode-go",
+            &rate_limit
+        ));
+        assert!(AgentRunner::opencode_go_unbounded_retry_allowed(
+            "opencode_go",
+            &LlmError::NetworkError("connection reset".to_string())
+        ));
+        assert!(!AgentRunner::opencode_go_unbounded_retry_allowed(
+            "openrouter",
+            &rate_limit
+        ));
+        assert!(!AgentRunner::opencode_go_unbounded_retry_allowed(
+            "opencode-go",
+            &invalid_request
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_repairs_invalid_tool_history_before_llm_call() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Repair invalid tool history"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant_with_tools(
+                "Calling tools",
+                vec![
+                    ToolCall::new(
+                        "call-1".to_string(),
+                        ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        false,
+                    ),
+                    ToolCall::new(
+                        "call-2".to_string(),
+                        ToolCallFunction {
+                            name: "read_file".to_string(),
+                            arguments: "{}".to_string(),
+                        },
+                        false,
+                    ),
+                ],
+            ));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::tool("call-1", "search", "result-1"));
+
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Repair invalid tool history",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-history-repair",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 2, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+        let repaired_call = ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .find(|message| message.tool_calls.is_some())
+            .expect("assistant tool call must remain after repair");
+        let repaired_tool_calls = repaired_call
+            .tool_calls
+            .as_ref()
+            .expect("tool call batch must still exist");
+        assert_eq!(repaired_tool_calls.len(), 1);
+        assert_eq!(repaired_tool_calls[0].id, "call-1");
+        assert!(!ctx.agent.memory().get_messages().iter().any(|message| {
+            message.tool_calls.as_ref().is_some_and(|tool_calls| {
+                tool_calls.iter().any(|tool_call| tool_call.id == "call-2")
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn run_fails_over_to_weighted_backup_after_persistent_rate_limits() {
+        let mut primary = MockLlmProvider::new();
+        primary
+            .expect_chat_with_tools()
+            .times(LlmClient::MAX_RETRIES)
+            .returning(|_| {
+                Err(LlmError::RateLimit {
+                    wait_secs: Some(0),
+                    message: "primary rate limit".to_string(),
+                })
+            });
+        stub_non_chat_methods(&mut primary);
+
+        let mut backup = MockLlmProvider::new();
+        backup
+            .expect_chat_with_tools()
+            .times(1)
+            .return_once(|_| Ok(final_structured_response()));
+        stub_non_chat_methods(&mut backup);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-pro".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("llm-provider/opencode-go".to_string(), Arc::new(primary));
+        llm_client.register_provider("opencode-go".to_string(), Arc::new(backup));
+        let llm_client = Arc::new(llm_client);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Fail over after persistent 429"));
+
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = AgentRunnerContext {
+            task: "Fail over after persistent 429",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-provider-failover",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
+                .with_model_provider("llm-provider/opencode-go")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "deepseek-v4-pro".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "llm-provider/opencode-go".to_string(),
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "deepseek-v4-flash".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "opencode-go".to_string(),
+                        weight: 3,
+                    },
+                ]),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::ProviderFailoverActivated {
+                    from_provider,
+                    from_model,
+                    to_provider,
+                    to_model,
+                } if from_provider == "llm-provider/opencode-go"
+                    && from_model == "deepseek-v4-pro"
+                    && to_provider == "opencode-go"
+                    && to_model == "deepseek-v4-flash"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn run_keeps_primary_provider_when_rate_limit_recovers() {
+        let mut primary = MockLlmProvider::new();
+        let mut sequence = mockall::Sequence::new();
+        primary
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| {
+                Err(LlmError::RateLimit {
+                    wait_secs: Some(0),
+                    message: "primary temporary rate limit".to_string(),
+                })
+            });
+        primary
+            .expect_chat_with_tools()
+            .times(1)
+            .in_sequence(&mut sequence)
+            .return_once(|_| Ok(final_structured_response()));
+        stub_non_chat_methods(&mut primary);
+
+        let mut backup = MockLlmProvider::new();
+        backup.expect_chat_with_tools().times(0);
+        stub_non_chat_methods(&mut backup);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-pro".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("llm-provider/opencode-go".to_string(), Arc::new(primary));
+        llm_client.register_provider("opencode-go".to_string(), Arc::new(backup));
+        let llm_client = Arc::new(llm_client);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Stay on primary when it wakes up"));
+
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = AgentRunnerContext {
+            task: "Stay on primary when it wakes up",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-primary-recovery",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
+                .with_model_provider("llm-provider/opencode-go")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "deepseek-v4-pro".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "llm-provider/opencode-go".to_string(),
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "deepseek-v4-flash".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "opencode-go".to_string(),
+                        weight: 2,
+                    },
+                ]),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(!events
+            .iter()
+            .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) }));
+    }
+
+    #[tokio::test]
+    async fn run_skips_unsupported_nvidia_route_and_uses_backup() {
+        let mut unsupported_nvidia = MockLlmProvider::new();
+        unsupported_nvidia.expect_chat_with_tools().times(0);
+        stub_non_chat_methods(&mut unsupported_nvidia);
+
+        let mut backup = MockLlmProvider::new();
+        backup
+            .expect_chat_with_tools()
+            .times(1)
+            .return_once(|_| Ok(final_structured_response()));
+        stub_non_chat_methods(&mut backup);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-ai/deepseek-r1".to_string()),
+            agent_model_provider: Some("nvidia".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm_client = LlmClient::new(&settings);
+        llm_client.register_provider("nvidia".to_string(), Arc::new(unsupported_nvidia));
+        llm_client.register_provider("opencode-go".to_string(), Arc::new(backup));
+        let llm_client = Arc::new(llm_client);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Skip unsupported NVIDIA route"));
+
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+        let mut ctx = AgentRunnerContext {
+            task: "Skip unsupported NVIDIA route",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "runner-nvidia-capability-skip",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-ai/deepseek-r1".to_string(), 1, 1, 30, 256)
+                .with_model_provider("nvidia")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "deepseek-ai/deepseek-r1".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "nvidia".to_string(),
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "deepseek-v4-flash".to_string(),
+                        max_output_tokens: 256,
+                        context_window_tokens: 128_000,
+                        provider: "opencode-go".to_string(),
+                        weight: 1,
+                    },
+                ]),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+        assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
+
+        drop(ctx);
+        drop(progress_tx);
+        let events = collect_progress_events(&mut progress_rx).await;
+        assert!(!events
+            .iter()
+            .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) }));
     }
 }

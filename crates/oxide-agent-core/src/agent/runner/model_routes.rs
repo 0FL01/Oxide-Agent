@@ -169,3 +169,221 @@ impl AgentRunner {
         LlmClient::supports_structured_output_for_model(model_info)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::context::{AgentContext, EphemeralSession};
+    #[cfg(feature = "llm-chatgpt")]
+    use crate::agent::runner::test_support::build_llm_client_for_provider;
+    use crate::agent::runner::test_support::{
+        build_llm_client, single_final_response_provider, stub_non_chat_methods,
+    };
+    use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
+    use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
+    use crate::config::AgentSettings;
+    use crate::llm::{LlmClient, MockLlmProvider};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[test]
+    fn json_mode_forbids_chatgpt_routes_only() {
+        let chatgpt_routes = [
+            ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            },
+            ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "openai-chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            },
+            ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "llm-provider/openai-chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            },
+        ];
+        let zai_route = ModelInfo {
+            id: "glm-4.7".to_string(),
+            provider: "zai".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        };
+
+        for route in chatgpt_routes {
+            assert!(AgentRunner::json_mode_forbids_route(true, &route));
+            assert!(!AgentRunner::json_mode_forbids_route(false, &route));
+        }
+        assert!(!AgentRunner::json_mode_forbids_route(true, &zai_route));
+    }
+
+    #[test]
+    fn structured_output_requirement_uses_active_provider_without_registry_lookup() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 8, 4, 60, 4096)
+            .with_model_provider("llm-provider/opencode-go")
+            .with_model_routes(vec![ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(runner.structured_output_required_for_config(&config));
+    }
+
+    #[test]
+    fn structured_output_requirement_disables_chatgpt_primary_route() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("gpt-5.4-mini".to_string(), 8, 4, 60, 4096)
+            .with_model_provider("chatgpt")
+            .with_model_routes(vec![ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                provider: "chatgpt".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(!runner.structured_output_required_for_config(&config));
+    }
+
+    #[cfg(feature = "llm-chatgpt")]
+    #[test]
+    fn select_model_route_index_keeps_chatgpt_route_when_structured_output_is_disabled() {
+        let llm_client = build_llm_client_for_provider(
+            single_final_response_provider(),
+            "chatgpt",
+            "gpt-5.4-mini",
+        );
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let ctx = AgentRunnerContext {
+            task: "Route selection regression",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-chatgpt-route-selection",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("gpt-5.4-mini".to_string(), 8, 4, 60, 4096)
+                .with_model_provider("chatgpt")
+                .with_model_routes(vec![ModelInfo {
+                    id: "gpt-5.4-mini".to_string(),
+                    provider: "chatgpt".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                }]),
+        };
+
+        assert_eq!(
+            runner.select_model_route_index(&ctx, &std::collections::HashSet::new()),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn select_model_route_index_does_not_fail_over_typed_runtime_to_non_v1_route() {
+        let mut opencode = MockLlmProvider::new();
+        stub_non_chat_methods(&mut opencode);
+        let mut openrouter = MockLlmProvider::new();
+        stub_non_chat_methods(&mut openrouter);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-go".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(opencode));
+        llm.register_provider("openrouter".to_string(), Arc::new(openrouter));
+        let llm_client = Arc::new(llm);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        let tools: Vec<crate::llm::ToolDefinition> = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let ctx = AgentRunnerContext {
+            task: "Typed runtime route selection",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: Some(Arc::new(RuntimeToolRegistry::new())),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-typed-route-selection",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 8, 4, 60, 4096)
+                .with_model_provider("llm-provider/opencode-go")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "deepseek-v4-flash".to_string(),
+                        provider: "opencode-go".to_string(),
+                        max_output_tokens: 4096,
+                        context_window_tokens: 200_000,
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "deepseek-v4-flash".to_string(),
+                        provider: "openrouter".to_string(),
+                        max_output_tokens: 4096,
+                        context_window_tokens: 200_000,
+                        weight: 10,
+                    },
+                ]),
+        };
+
+        assert_eq!(
+            runner.select_model_route_index(&ctx, &std::collections::HashSet::new()),
+            Some(0)
+        );
+
+        let mut exhausted = std::collections::HashSet::new();
+        exhausted.insert(AgentRunner::route_key(&ctx.config.model_routes[0]));
+        assert_eq!(runner.select_model_route_index(&ctx, &exhausted), None);
+    }
+
+    #[test]
+    fn structured_output_requirement_uses_primary_route_before_selection() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let runner = AgentRunner::new(llm_client);
+        let config = AgentRunnerConfig::new("missing-model-name".to_string(), 8, 4, 60, 4096)
+            .with_model_routes(vec![ModelInfo {
+                id: "deepseek-v4-flash".to_string(),
+                provider: "opencode-go".to_string(),
+                max_output_tokens: 32_000,
+                context_window_tokens: 200_000,
+                weight: 1,
+            }]);
+
+        assert!(runner.structured_output_required_for_config(&config));
+    }
+}

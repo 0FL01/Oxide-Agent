@@ -256,7 +256,7 @@ impl AgentRunner {
         self.handle_final_response(ctx, state, input).await
     }
 
-    pub(super) async fn preprocess_llm_response(
+    async fn preprocess_llm_response(
         &mut self,
         response: &mut ChatResponse,
         ctx: &mut AgentRunnerContext<'_>,
@@ -289,5 +289,180 @@ impl AgentRunner {
                 "Model returned empty content"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::memory::AgentMessage;
+    use crate::agent::runner::test_support::{
+        accidental_structured_final_answer_provider, build_llm_client,
+        build_llm_client_for_provider, single_final_response_provider,
+    };
+    use crate::agent::runner::types::RunState;
+    use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
+    use crate::llm::{ChatResponse, TokenUsage, ToolCall, ToolCallFunction};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn run_unstructured_mode_parses_accidental_structured_final_answer() {
+        let llm_client = build_llm_client_for_provider(
+            accidental_structured_final_answer_provider(),
+            "opencode-go",
+            "unstructured-model",
+        );
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Какие инструменты тебе доступны?"));
+
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Какие инструменты тебе доступны?",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-unstructured-structured-fallback",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("unstructured-model".to_string(), 1, 1, 30, 256),
+        };
+
+        let result = runner.run(&mut ctx).await.expect("runner succeeds");
+
+        assert!(
+            matches!(result, AgentRunResult::Final(answer) if answer == "Tools: `read_file`, `write_file`")
+        );
+        let last_message = ctx
+            .agent
+            .memory()
+            .get_messages()
+            .last()
+            .expect("assistant response should be saved");
+        assert_eq!(last_message.content, "Tools: `read_file`, `write_file`");
+        assert!(!last_message.content.contains("\"final_answer\""));
+    }
+
+    #[tokio::test]
+    async fn tool_calls_without_typed_runtime_fail_without_history_mutation() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(2048);
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "tool runtime missing",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "tool-runtime-missing",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("llm-provider/opencode-go"),
+        };
+        let mut state = RunState::new();
+        let response = ChatResponse {
+            content: Some("assistant raw".to_string()),
+            tool_calls: vec![ToolCall::new(
+                "invoke-runtime-missing",
+                ToolCallFunction {
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+                },
+                false,
+            )],
+            finish_reason: "tool_calls".to_string(),
+            reasoning_content: None,
+            usage: None,
+        };
+
+        let error = match runner
+            .handle_llm_response(response, &mut ctx, &mut state)
+            .await
+        {
+            Ok(_) => panic!("tool calls without typed runtime must fail"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("tool runtime registry is required for active tool calls"));
+        assert!(
+            ctx.agent.memory().get_messages().is_empty(),
+            "missing tool runtime must not write partial assistant/tool history"
+        );
+        assert!(ctx.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preprocess_llm_response_keeps_memory_tokens_separate_from_api_usage() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(20_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Inspect token metrics"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::assistant("Recent response"));
+
+        let estimated_tokens = session.memory().token_count();
+        let tools = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let mut ctx = AgentRunnerContext {
+            task: "Inspect token metrics",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-token-metrics",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
+        };
+        let mut response = ChatResponse {
+            content: Some("done".to_string()),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: None,
+            usage: Some(TokenUsage {
+                prompt_tokens: 9_000,
+                completion_tokens: 512,
+                total_tokens: 9_512,
+            }),
+        };
+
+        runner
+            .preprocess_llm_response(&mut response, &mut ctx)
+            .await;
+
+        assert_eq!(ctx.agent.memory().token_count(), estimated_tokens);
+        assert_eq!(ctx.agent.memory().api_token_count(), Some(9_512));
     }
 }

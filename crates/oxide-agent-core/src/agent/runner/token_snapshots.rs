@@ -89,3 +89,48 @@ impl AgentRunner {
         *ctx.messages = Self::convert_memory_to_messages(ctx.agent.memory().get_messages());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::memory::AgentMessage;
+    use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[test]
+    fn refresh_messages_from_memory_drops_transient_messages() {
+        let tools = Vec::new();
+        let mut session = EphemeralSession::new(1024);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("refresh transient context"));
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        messages.push(crate::llm::Message::system("temporary warning"));
+        let mut ctx = AgentRunnerContext {
+            task: "refresh transient context",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "refresh-transient-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
+        };
+
+        AgentRunner::refresh_messages_from_memory(&mut ctx);
+
+        assert!(!ctx
+            .messages
+            .iter()
+            .any(|message| message.role == "system" && message.content == "temporary warning"));
+    }
+}
