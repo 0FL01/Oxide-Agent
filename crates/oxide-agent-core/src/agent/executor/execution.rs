@@ -19,7 +19,7 @@ use crate::agent::wiki_memory::{
     WikiStore,
 };
 use crate::config::{get_agent_max_iterations, ModelInfo};
-use crate::llm::LlmClient;
+use crate::llm::{InternalTextPurpose, LlmClient};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::future::Future;
@@ -265,9 +265,17 @@ impl AgentExecutor {
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
         if append_user_message {
             self.session.remember_task(task);
-            self.session
+            let user_message = AgentMessage::user_task(task);
+            if let Some(context) = self
+                .session
                 .memory
-                .add_message(AgentMessage::user_task(task));
+                .soft_temporal_boundary_before_user_task(&user_message)
+            {
+                self.session
+                    .memory
+                    .add_message(AgentMessage::system_context(context));
+            }
+            self.session.memory.add_message(user_message);
         }
         task_id
     }
@@ -604,8 +612,12 @@ impl AgentExecutor {
 
         let system_prompt = wiki_memory_writer_system_prompt();
         let user_prompt = build_wiki_memory_writer_user_prompt(job);
-        let request =
-            llm_client.chat_completion_for_model_info(system_prompt, &[], &user_prompt, model);
+        let request = llm_client.complete_internal_text(
+            InternalTextPurpose::WikiMemoryWriter,
+            system_prompt,
+            &user_prompt,
+            model,
+        );
 
         let response = match tokio::time::timeout(
             std::time::Duration::from_secs(job.writer_timeout_secs),

@@ -24,6 +24,8 @@ struct TopicSandboxGetArgs {
     topic_id: Option<String>,
     #[serde(default)]
     container_name: Option<String>,
+    #[serde(default)]
+    instance_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +52,8 @@ struct TopicSandboxDeleteArgs {
     #[serde(default)]
     container_name: Option<String>,
     #[serde(default)]
+    instance_name: Option<String>,
+    #[serde(default)]
     dry_run: bool,
 }
 
@@ -64,6 +68,17 @@ struct TopicSandboxPruneArgs {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct TopicSandboxInventoryRecord {
+    backend: String,
+    instance_id: String,
+    instance_name: String,
+    scope_id: Option<String>,
+    image_id: Option<String>,
+    rootfs_path: Option<String>,
+    state_dir: Option<String>,
+    workspace_dir: Option<String>,
+    root_mode: Option<String>,
+    network_mode: Option<String>,
+    last_used_at: Option<i64>,
     container_id: String,
     container_name: String,
     image: Option<String>,
@@ -84,7 +99,7 @@ struct TopicSandboxInventoryRecord {
 #[derive(Debug)]
 enum TopicSandboxTarget {
     TopicId(String),
-    ContainerName(String),
+    InstanceName(String),
 }
 
 impl ManagerControlPlaneProvider {
@@ -92,49 +107,50 @@ impl ManagerControlPlaneProvider {
         vec![
             ToolDefinition {
                 name: TOOL_TOPIC_SANDBOX_LIST.to_string(),
-                description: "List user-owned topic sandbox containers and orphan status"
+                description: "List user-owned topic sandbox instances and orphan status"
                     .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "orphaned_only": { "type": "boolean", "description": "Return only containers that look orphaned or disabled" }
+                        "orphaned_only": { "type": "boolean", "description": "Return only instances that look orphaned or disabled" }
                     }
                 }),
             },
             ToolDefinition {
                 name: TOOL_TOPIC_SANDBOX_GET.to_string(),
-                description: "Inspect a topic sandbox by topic_id or Docker container name"
+                description: "Inspect a topic sandbox by topic_id or stable sandbox instance name"
                     .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "topic_id": { "type": "string", "description": "Canonical topic identifier or unique forum topic alias" },
-                        "container_name": { "type": "string", "description": "Exact Docker container name" }
+                        "instance_name": { "type": "string", "description": "Exact stable sandbox instance name" },
+                        "container_name": { "type": "string", "description": "Compatibility alias for instance_name" }
                     }
                 }),
             },
             ToolDefinition {
                 name: TOOL_TOPIC_SANDBOX_CREATE.to_string(),
-                description: "Ensure a sandbox container exists for a tracked forum topic"
+                description: "Ensure a sandbox instance exists for a tracked forum topic"
                     .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "topic_id": { "type": "string", "description": "Canonical topic identifier or unique forum topic alias" },
-                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Docker" }
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating sandbox state" }
                     },
                     "required": ["topic_id"]
                 }),
             },
             ToolDefinition {
                 name: TOOL_TOPIC_SANDBOX_RECREATE.to_string(),
-                description: "Recreate a topic sandbox container, wiping previous workspace state"
+                description: "Recreate a topic sandbox instance, wiping previous workspace state"
                     .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "topic_id": { "type": "string", "description": "Canonical topic identifier or unique forum topic alias" },
-                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Docker" }
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating sandbox state" }
                     },
                     "required": ["topic_id"]
                 }),
@@ -142,27 +158,28 @@ impl ManagerControlPlaneProvider {
             ToolDefinition {
                 name: TOOL_TOPIC_SANDBOX_DELETE.to_string(),
                 description:
-                    "Delete a topic sandbox container by topic_id or Docker container name"
+                    "Delete a topic sandbox instance by topic_id or stable sandbox instance name"
                         .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "topic_id": { "type": "string", "description": "Canonical topic identifier or unique forum topic alias" },
-                        "container_name": { "type": "string", "description": "Exact Docker container name" },
-                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Docker" }
+                        "instance_name": { "type": "string", "description": "Exact stable sandbox instance name" },
+                        "container_name": { "type": "string", "description": "Compatibility alias for instance_name" },
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating sandbox state" }
                     }
                 }),
             },
             ToolDefinition {
                 name: TOOL_TOPIC_SANDBOX_PRUNE.to_string(),
                 description:
-                    "Delete orphaned or disabled topic sandbox containers for the current user"
+                    "Delete orphaned or disabled topic sandbox instances for the current user"
                         .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "reason": { "type": "string", "enum": ["topic_missing", "binding_missing", "sandbox_disabled", "all"], "description": "Which orphan class to delete; defaults to all" },
-                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Docker" }
+                        "dry_run": { "type": "boolean", "description": "Validate and preview without mutating sandbox state" }
                     }
                 }),
             },
@@ -228,7 +245,8 @@ impl ManagerControlPlaneProvider {
 
         let mut records = Vec::with_capacity(containers.len());
         for container in containers {
-            let topic_id = container.scope.clone();
+            let instance = SandboxInstanceRecord::from(container);
+            let topic_id = instance.scope_id.clone();
             let canonical_topic_id = topic_id
                 .as_deref()
                 .filter(|topic_id| Self::is_canonical_forum_topic_id(topic_id))
@@ -281,17 +299,28 @@ impl ManagerControlPlaneProvider {
             };
 
             records.push(TopicSandboxInventoryRecord {
-                container_id: container.container_id,
-                container_name: container.container_name,
-                image: container.image,
-                created_at: container.created_at,
-                state: container.state,
-                status: container.status,
-                running: container.running,
+                backend: instance.backend,
+                instance_id: instance.instance_id.clone(),
+                instance_name: instance.instance_name.clone(),
+                scope_id: instance.scope_id,
+                image_id: instance.image_id.clone(),
+                rootfs_path: instance.rootfs_path,
+                state_dir: instance.state_dir,
+                workspace_dir: instance.workspace_dir,
+                root_mode: instance.root_mode,
+                network_mode: instance.network_mode,
+                last_used_at: instance.last_used_at,
+                container_id: instance.container_id,
+                container_name: instance.container_name,
+                image: instance.image_id,
+                created_at: instance.created_at,
+                state: instance.state,
+                status: instance.status,
+                running: instance.running,
                 topic_id,
-                chat_id: container.chat_id,
-                thread_id: container.thread_id,
-                labels: container.labels,
+                chat_id: instance.chat_id,
+                thread_id: instance.thread_id,
+                labels: instance.labels,
                 bound_topic_exists,
                 binding_found,
                 sandbox_tools_enabled,
@@ -299,17 +328,17 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        records.sort_by(|left, right| left.container_name.cmp(&right.container_name));
+        records.sort_by(|left, right| left.instance_name.cmp(&right.instance_name));
         Ok(records)
     }
 
     async fn get_topic_sandbox_inventory_by_name(
         &self,
-        container_name: &str,
+        instance_name: &str,
     ) -> Result<Option<TopicSandboxInventoryRecord>> {
         let Some(container) = self
             .sandbox_control
-            .get_topic_sandbox(self.user_id, container_name)
+            .get_topic_sandbox(self.user_id, instance_name)
             .await?
         else {
             return Ok(None);
@@ -327,7 +356,7 @@ impl ManagerControlPlaneProvider {
         topic_id: &str,
     ) -> Result<Option<TopicSandboxInventoryRecord>> {
         let scope = self.topic_sandbox_scope(topic_id)?;
-        self.get_topic_sandbox_inventory_by_name(&scope.container_name())
+        self.get_topic_sandbox_inventory_by_name(&scope.stable_name())
             .await
     }
 
@@ -335,9 +364,11 @@ impl ManagerControlPlaneProvider {
         &self,
         topic_id: Option<String>,
         container_name: Option<String>,
+        instance_name: Option<String>,
         mutation: bool,
     ) -> Result<TopicSandboxTarget> {
-        match (topic_id, container_name) {
+        let instance_name = Self::resolve_instance_name_alias(container_name, instance_name)?;
+        match (topic_id, instance_name) {
             (Some(topic_id), None) => {
                 let topic_id = if mutation {
                     self.resolve_mutation_topic_id(topic_id).await?
@@ -346,13 +377,33 @@ impl ManagerControlPlaneProvider {
                 };
                 Ok(TopicSandboxTarget::TopicId(topic_id))
             }
-            (None, Some(container_name)) => Ok(TopicSandboxTarget::ContainerName(
-                Self::validate_non_empty(container_name, "container_name")?,
+            (None, Some(instance_name)) => Ok(TopicSandboxTarget::InstanceName(
+                Self::validate_non_empty(instance_name, "instance_name")?,
             )),
             (Some(_), Some(_)) => {
-                bail!("provide either topic_id or container_name, not both")
+                bail!("provide either topic_id or instance_name/container_name, not both")
             }
-            (None, None) => bail!("either topic_id or container_name is required"),
+            (None, None) => bail!("either topic_id or instance_name/container_name is required"),
+        }
+    }
+
+    fn resolve_instance_name_alias(
+        container_name: Option<String>,
+        instance_name: Option<String>,
+    ) -> Result<Option<String>> {
+        match (container_name, instance_name) {
+            (None, None) => Ok(None),
+            (None, Some(instance_name)) => Ok(Some(instance_name)),
+            (Some(container_name), None) => Ok(Some(container_name)),
+            (Some(container_name), Some(instance_name)) => {
+                let container_name = Self::validate_non_empty(container_name, "container_name")?;
+                let instance_name = Self::validate_non_empty(instance_name, "instance_name")?;
+                if container_name == instance_name {
+                    Ok(Some(instance_name))
+                } else {
+                    bail!("container_name and instance_name must match when both are provided")
+                }
+            }
         }
     }
 
@@ -374,11 +425,13 @@ impl ManagerControlPlaneProvider {
         {
             Ok(()) => json!({
                 "skipped": false,
+                "deleted_instance": true,
                 "deleted_container": true,
                 "topic_id": topic_id,
             }),
             Err(err) => json!({
                 "skipped": false,
+                "deleted_instance": false,
                 "deleted_container": false,
                 "topic_id": topic_id,
                 "error": err.to_string(),
@@ -415,14 +468,19 @@ impl ManagerControlPlaneProvider {
     pub(super) async fn execute_topic_sandbox_get(&self, arguments: &str) -> Result<String> {
         let args: TopicSandboxGetArgs = Self::parse_args(arguments, TOOL_TOPIC_SANDBOX_GET)?;
         let target = self
-            .resolve_topic_sandbox_target(args.topic_id, args.container_name, false)
+            .resolve_topic_sandbox_target(
+                args.topic_id,
+                args.container_name,
+                args.instance_name,
+                false,
+            )
             .await?;
         let sandbox = match &target {
             TopicSandboxTarget::TopicId(topic_id) => {
                 self.get_topic_sandbox_inventory_by_topic(topic_id).await?
             }
-            TopicSandboxTarget::ContainerName(container_name) => {
-                self.get_topic_sandbox_inventory_by_name(container_name)
+            TopicSandboxTarget::InstanceName(instance_name) => {
+                self.get_topic_sandbox_inventory_by_name(instance_name)
                     .await?
             }
         };
@@ -434,10 +492,11 @@ impl ManagerControlPlaneProvider {
                 "topic_id": topic_id,
                 "sandbox": sandbox,
             }),
-            TopicSandboxTarget::ContainerName(container_name) => json!({
+            TopicSandboxTarget::InstanceName(instance_name) => json!({
                 "ok": true,
                 "found": sandbox.is_some(),
-                "container_name": container_name,
+                "instance_name": instance_name,
+                "container_name": instance_name,
                 "sandbox": sandbox,
             }),
         };
@@ -451,7 +510,7 @@ impl ManagerControlPlaneProvider {
         self.ensure_tracked_forum_topic(&topic_id).await?;
         let scope = self.topic_sandbox_scope(&topic_id)?;
         let previous = self.get_topic_sandbox_inventory_by_topic(&topic_id).await?;
-        let container_name = scope.container_name();
+        let instance_name = scope.stable_name();
 
         if args.dry_run {
             let audit_status = self
@@ -462,7 +521,8 @@ impl ManagerControlPlaneProvider {
                     action: TOOL_TOPIC_SANDBOX_CREATE.to_string(),
                     payload: json!({
                         "topic_id": topic_id,
-                        "container_name": container_name,
+                        "instance_name": instance_name,
+                        "container_name": instance_name,
                         "previous": previous.clone(),
                         "outcome": Self::dry_run_outcome(true)
                     }),
@@ -476,7 +536,8 @@ impl ManagerControlPlaneProvider {
                     "preview": {
                         "operation": "create",
                         "topic_id": topic_id,
-                        "container_name": container_name,
+                        "instance_name": instance_name,
+                        "container_name": instance_name,
                     },
                     "previous": previous,
                 }),
@@ -499,7 +560,8 @@ impl ManagerControlPlaneProvider {
                 agent_id: None,
                 action: TOOL_TOPIC_SANDBOX_CREATE.to_string(),
                 payload: json!({
-                    "topic_id": topic_id,
+                        "topic_id": topic_id,
+                    "instance_name": sandbox.instance_name.clone(),
                     "container_name": sandbox.container_name.clone(),
                     "previous": previous,
                     "sandbox": sandbox.clone(),
@@ -523,7 +585,7 @@ impl ManagerControlPlaneProvider {
         let topic_id = self.resolve_mutation_topic_id(args.topic_id).await?;
         let scope = self.topic_sandbox_scope(&topic_id)?;
         let previous = self.get_topic_sandbox_inventory_by_topic(&topic_id).await?;
-        let container_name = scope.container_name();
+        let instance_name = scope.stable_name();
 
         if args.dry_run {
             let audit_status = self
@@ -534,7 +596,8 @@ impl ManagerControlPlaneProvider {
                     action: TOOL_TOPIC_SANDBOX_RECREATE.to_string(),
                     payload: json!({
                         "topic_id": topic_id,
-                        "container_name": container_name,
+                        "instance_name": instance_name,
+                        "container_name": instance_name,
                         "previous": previous.clone(),
                         "outcome": Self::dry_run_outcome(true)
                     }),
@@ -548,7 +611,8 @@ impl ManagerControlPlaneProvider {
                     "preview": {
                         "operation": "recreate",
                         "topic_id": topic_id,
-                        "container_name": container_name,
+                        "instance_name": instance_name,
+                        "container_name": instance_name,
                     },
                     "previous": previous,
                 }),
@@ -571,7 +635,8 @@ impl ManagerControlPlaneProvider {
                 agent_id: None,
                 action: TOOL_TOPIC_SANDBOX_RECREATE.to_string(),
                 payload: json!({
-                    "topic_id": topic_id,
+                        "topic_id": topic_id,
+                    "instance_name": sandbox.instance_name.clone(),
                     "container_name": sandbox.container_name.clone(),
                     "previous": previous,
                     "sandbox": sandbox.clone(),
@@ -594,21 +659,24 @@ impl ManagerControlPlaneProvider {
         target: &TopicSandboxTarget,
         previous: Option<TopicSandboxInventoryRecord>,
     ) -> Result<String> {
-        let (topic_id, container_name, preview_target) = match target {
+        let (topic_id, instance_name, preview_target) = match target {
             TopicSandboxTarget::TopicId(topic_id) => {
                 let scope = self.topic_sandbox_scope(topic_id)?;
                 (
                     Some(topic_id.clone()),
-                    scope.container_name(),
+                    scope.stable_name(),
                     json!({ "topic_id": topic_id }),
                 )
             }
-            TopicSandboxTarget::ContainerName(container_name) => (
+            TopicSandboxTarget::InstanceName(instance_name) => (
                 previous
                     .as_ref()
                     .and_then(|sandbox| sandbox.topic_id.clone()),
-                container_name.clone(),
-                json!({ "container_name": container_name }),
+                instance_name.clone(),
+                json!({
+                    "instance_name": instance_name,
+                    "container_name": instance_name,
+                }),
             ),
         };
         let audit_status = self
@@ -618,8 +686,9 @@ impl ManagerControlPlaneProvider {
                 agent_id: None,
                 action: TOOL_TOPIC_SANDBOX_DELETE.to_string(),
                 payload: json!({
-                    "topic_id": topic_id,
-                    "container_name": container_name,
+                        "topic_id": topic_id,
+                    "instance_name": instance_name,
+                    "container_name": instance_name,
                     "previous": previous.clone(),
                     "outcome": Self::dry_run_outcome(true)
                 }),
@@ -648,23 +717,24 @@ impl ManagerControlPlaneProvider {
         let (deleted, topic_id, container_name) = match target {
             TopicSandboxTarget::TopicId(topic_id) => {
                 let scope = self.topic_sandbox_scope(&topic_id)?;
+                let instance_name = scope.stable_name();
                 let deleted = self
                     .sandbox_control
                     .delete_topic_sandbox_by_scope(scope.clone())
                     .await?;
-                (deleted, Some(topic_id), scope.container_name())
+                (deleted, Some(topic_id), instance_name)
             }
-            TopicSandboxTarget::ContainerName(container_name) => {
+            TopicSandboxTarget::InstanceName(instance_name) => {
                 let deleted = self
                     .sandbox_control
-                    .delete_topic_sandbox_by_name(self.user_id, &container_name)
+                    .delete_topic_sandbox_by_name(self.user_id, &instance_name)
                     .await?;
                 (
                     deleted,
                     previous
                         .as_ref()
                         .and_then(|sandbox| sandbox.topic_id.clone()),
-                    container_name,
+                    instance_name,
                 )
             }
         };
@@ -676,7 +746,8 @@ impl ManagerControlPlaneProvider {
                 agent_id: None,
                 action: TOOL_TOPIC_SANDBOX_DELETE.to_string(),
                 payload: json!({
-                    "topic_id": topic_id,
+                        "topic_id": topic_id,
+                    "instance_name": container_name,
                     "container_name": container_name,
                     "previous": previous.clone(),
                     "deleted": deleted,
@@ -689,6 +760,8 @@ impl ManagerControlPlaneProvider {
             json!({
                 "ok": true,
                 "deleted": deleted,
+                "deleted_instance": deleted,
+                "instance_name": container_name,
                 "container_name": container_name,
                 "sandbox": previous,
             }),
@@ -699,14 +772,19 @@ impl ManagerControlPlaneProvider {
     pub(super) async fn execute_topic_sandbox_delete(&self, arguments: &str) -> Result<String> {
         let args: TopicSandboxDeleteArgs = Self::parse_args(arguments, TOOL_TOPIC_SANDBOX_DELETE)?;
         let target = self
-            .resolve_topic_sandbox_target(args.topic_id, args.container_name, true)
+            .resolve_topic_sandbox_target(
+                args.topic_id,
+                args.container_name,
+                args.instance_name,
+                true,
+            )
             .await?;
         let previous = match &target {
             TopicSandboxTarget::TopicId(topic_id) => {
                 self.get_topic_sandbox_inventory_by_topic(topic_id).await?
             }
-            TopicSandboxTarget::ContainerName(container_name) => {
-                self.get_topic_sandbox_inventory_by_name(container_name)
+            TopicSandboxTarget::InstanceName(instance_name) => {
+                self.get_topic_sandbox_inventory_by_name(instance_name)
                     .await?
             }
         };
@@ -764,14 +842,14 @@ impl ManagerControlPlaneProvider {
         for candidate in &candidates {
             match self
                 .sandbox_control
-                .delete_topic_sandbox_by_name(self.user_id, &candidate.container_name)
+                .delete_topic_sandbox_by_name(self.user_id, &candidate.instance_name)
                 .await
             {
-                Ok(true) => deleted.push(candidate.container_name.clone()),
+                Ok(true) => deleted.push(candidate.instance_name.clone()),
                 Ok(false) => {}
                 Err(err) => errors.push(format!(
                     "failed to delete {}: {err}",
-                    candidate.container_name
+                    candidate.instance_name
                 )),
             }
         }

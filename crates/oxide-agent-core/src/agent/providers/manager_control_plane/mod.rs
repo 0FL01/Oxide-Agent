@@ -12,7 +12,9 @@ use crate::agent::tool_runtime::{
     ToolRuntimeError,
 };
 use crate::llm::ToolDefinition;
-use crate::sandbox::{SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxScope};
+use crate::sandbox::{
+    SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxInstanceRecord, SandboxScope,
+};
 use crate::storage::{
     validate_topic_agents_md_content, validate_topic_context_content, AgentProfileRecord,
     AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider, TopicAgentsMdRecord,
@@ -181,6 +183,7 @@ const TOPIC_AGENT_SANDBOX_TOOLS: &[&str] = &[
     "execute_command",
     "write_file",
     "read_file",
+    "apply_file_edit",
     "send_file_to_user",
     "list_files",
     "recreate_sandbox",
@@ -391,10 +394,10 @@ pub trait ManagerTopicSandboxCleanup: Send + Sync {
 /// Abstraction over sandbox inventory and lifecycle controls exposed via manager tools.
 #[async_trait]
 pub trait ManagerTopicSandboxControl: Send + Sync {
-    /// List all user-owned sandbox containers.
+    /// List all user-owned sandbox instances.
     async fn list_topic_sandboxes(&self, user_id: i64) -> Result<Vec<SandboxContainerRecord>>;
 
-    /// Get a user-owned sandbox container by Docker name.
+    /// Get a user-owned sandbox instance by stable backend name.
     async fn get_topic_sandbox(
         &self,
         user_id: i64,
@@ -410,7 +413,7 @@ pub trait ManagerTopicSandboxControl: Send + Sync {
     /// Delete a topic sandbox by its logical scope.
     async fn delete_topic_sandbox_by_scope(&self, scope: SandboxScope) -> Result<bool>;
 
-    /// Delete a topic sandbox by Docker container name.
+    /// Delete a topic sandbox by stable backend name.
     async fn delete_topic_sandbox_by_name(
         &self,
         user_id: i64,

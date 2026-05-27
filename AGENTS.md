@@ -2,7 +2,7 @@
 
 Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It can work with text, voice, images, documents, topic-scoped memory, sandbox tasks, and a manager control plane.
 
-Stack: Rust 1.94, `teloxide`, AWS SDK for Cloudflare R2, native integrations with Groq, Mistral AI, OpenRouter, MiniMax AI (claude SDK), and ZAI/Zhipu AI. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
+Stack: Rust 1.94, `teloxide`, AWS SDK for Cloudflare R2, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
 
 ## Branch
 
@@ -28,7 +28,7 @@ Default branch: `dev`.
 - `crates/oxide-agent-runtime` - session runtime orchestration and transport-agnostic progress runtime.
 - `crates/oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
 - `crates/oxide-agent-transport-web` - E2E test web transport: HTTP API (axum), in-memory storage, scripted LLM provider, SSE streaming, latency milestone tracking.
-- `crates/oxide-agent-sandboxd` - broker daemon for the sandbox backend; keeps access to Docker and listens on a Unix socket.
+- `crates/oxide-agent-sandboxd` - broker daemon for the Docker sandbox backend in the default Compose deployment; keeps access to Docker and listens on a Unix socket.
 - `crates/oxide-agent-telegram-bot` - Telegram bot binary.
 
 ### Where code usually lives
@@ -46,13 +46,13 @@ Default branch: `dev`.
 - `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; transport crates depend on core/runtime.
 - `teloxide` is used only in `oxide-agent-transport-telegram` and binaries that include it.
 - Build and runtime composition are capability-module based. Canonical module and capability manifests live in `crates/oxide-agent-core/src/capabilities/`; typed tool registration lives in `crates/oxide-agent-core/src/agent/tool_runtime/`.
-- Cargo `default` features are intentionally empty. Use profile features such as `profile-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, and `profile-full`.
+- Cargo `default` features are intentionally empty. Use profile features such as `profile-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, and `profile-full`.
 - Keep explicit `mod.rs` files and predictable public exports.
 - Use `thiserror` for library crates, `anyhow` for app/binary crates.
 - Agent Mode and manager/topic functions are designed to be topic-aware and thread-aware.
 - Context-scoped storage is mandatory for transport contexts; legacy fallback is allowed only for DM compatibility.
 - `Topic AGENTS.md` is stored separately in storage, pinned into flow memory during bootstrap, live-synced after `agents_md_update`, and inherited by sub-agents during delegation; `skills/AGENT.md` is no longer the default source of the system prompt.
-- Sandbox runs either directly through the Docker backend or through the broker backend; with `SANDBOX_BACKEND=broker`, access to `docker.sock` stays only with `oxide-agent-sandboxd`.
+- Sandbox backends are explicit: direct Docker (`SANDBOX_BACKEND=docker`), Docker broker (`SANDBOX_BACKEND=broker`), or bare-host Bubblewrap (`SANDBOX_BACKEND=bwrap`). Default Docker Compose stays on broker; bwrap is a host profile/backend and must not require Docker daemon, Docker socket, `sandboxd`, or `bollard`.
 - Manager CRUD goes through the `manager_control_plane` provider with an audit trail and RBAC at the Telegram transport level (`manager_allowed_users`).
 - Wiki memory lives entirely in `crates/oxide-agent-core/src/agent/wiki_memory/`; no separate memory crate exists.
 - `storage-s3-r2` / `storage/r2` is the only production durable storage module. Local filesystem use is transient workspace/cache/staging only.
@@ -95,8 +95,8 @@ Default branch: `dev`.
 - SSH approval flow is currently disabled; native upstream SSH file tools are used directly.
 
 ### Sandbox and SSH
-- Sandbox facade: `crates/oxide-agent-core/src/sandbox/manager.rs`; backends are direct Docker or broker via `sandbox/broker.rs`.
-- `SandboxScope` provides stable container identity for persistent sandbox reuse.
+- Sandbox facade: `crates/oxide-agent-core/src/sandbox/manager.rs`; backends are direct Docker, Docker broker via `sandbox/broker.rs`, and Bubblewrap via `sandbox/bwrap.rs`.
+- `SandboxScope` provides stable sandbox identity for persistent sandbox reuse.
 - SSH tools: `exec`, `sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`, `check_process`.
 - Secret refs support `env:KEY` and `storage:PATH`; secrets must not reach prompts or memory.
 
@@ -129,7 +129,7 @@ Default branch: `dev`.
 - Layered config: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
 - Config files are optional (`required(false)`).
 - Provider secrets/config are module-owned under `modules.<module-id>` with env fallbacks, for example `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `CHATGPT_AUTH_PATH`, `ZAI_API_KEY`, `MINIMAX_API_KEY`.
-- Key runtime items: SearXNG (`SEARXNG_URL`), model routes (`AGENT_MODEL_ROUTES__N__*`, `SUB_AGENT_MODEL_ROUTES__N__*`), `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, `SANDBOX_BACKEND`, Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`), wiki memory writer (`WIKI_MEMORY_WRITER_ENABLED`, model config).
+- Key runtime items: SearXNG (`SEARXNG_URL`), model routes (`AGENT_MODEL_ROUTES__N__*`, `SUB_AGENT_MODEL_ROUTES__N__*`), `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, sandbox backend (`SANDBOX_BACKEND`, plus `BWRAP_*` for Bubblewrap), Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`), wiki memory writer (`WIKI_MEMORY_WRITER_ENABLED`, model config).
 - Telegram transport config: `ATTACH_DETACH_ENABLED` (default true).
 
 ## Development practice
@@ -144,6 +144,7 @@ Default branch: `dev`.
 - Use `cargo check` for quick verification; use `cargo build` only when you need the final binary.
 - Minimal embedded profile: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
 - Full profile: `cargo build --release --no-default-features --features profile-full`.
+- Bare-host Bubblewrap profile: `cargo check --workspace --no-default-features --features profile-host-bwrap`.
 - Other profile checks: `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`.
 - Capability output:
   - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- capabilities --compiled --json`

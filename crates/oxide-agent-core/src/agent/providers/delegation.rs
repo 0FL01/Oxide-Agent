@@ -2080,7 +2080,7 @@ mod tests {
         #[cfg(feature = "tool-sandbox-exec")]
         assert!(tools.contains("execute_command"));
         #[cfg(feature = "tool-sandbox-fileops")]
-        for tool in ["write_file", "read_file", "list_files"] {
+        for tool in ["write_file", "read_file", "apply_file_edit", "list_files"] {
             assert!(tools.contains(tool), "missing sandbox fileops tool: {tool}");
         }
     }

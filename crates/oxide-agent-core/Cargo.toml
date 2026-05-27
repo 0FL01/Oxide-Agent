@@ -65,6 +65,7 @@ chrono-tz = "0.10.4"
 fastrand = "2.3.0"
 htmd = { version = "0.5.4", optional = true }
 url = "2.5.7"
+fs2 = { version = "0.4.3", optional = true }
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]
@@ -80,7 +81,6 @@ profile-full = [
     "transport-web",
     "storage-s3-r2",
     "llm-chatgpt",
-    "llm-groq",
     "llm-mistral",
     "llm-minimax",
     "llm-zai",
@@ -170,6 +170,28 @@ profile-media-enabled = [
     "tool-media-video",
     "tool-file-delivery",
 ]
+profile-host-bwrap = [
+    "transport-telegram",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "llm-openrouter",
+    "tool-todos",
+    "tool-compression",
+    "tool-delegation",
+    "tool-agents-md",
+    "tool-reminder",
+    "tool-wiki-memory",
+    "tool-webfetch-md",
+    "tool-file-delivery",
+    "tool-media-audio",
+    "tool-media-image",
+    "tool-media-video",
+    "tool-tavily",
+    "tool-sandbox-fileops",
+    "tool-sandbox-exec",
+    "tool-sandbox-recreate",
+    "sandbox-backend-bwrap",
+]
 
 # Transports
 transport-telegram = []
@@ -188,7 +210,6 @@ storage-local-fs = []
 
 # LLM providers
 llm-chatgpt = ["dep:reqwest"]
-llm-groq = ["dep:async-openai"]
 llm-mistral = ["dep:async-openai", "dep:reqwest"]
 llm-minimax = ["dep:claudius"]
 llm-zai = ["dep:zai-rs", "dep:reqwest"]
@@ -228,6 +249,7 @@ sandbox-backend-docker-direct = [
     "sandbox-broker-protocol",
 ]
 sandbox-backend-sandboxd-client = ["sandbox-broker-protocol"]
+sandbox-backend-bwrap = ["dep:fs2"]
 sandbox-broker-protocol = ["dep:bincode", "dep:serde_bytes"]
 sandbox-daemon = ["sandbox-backend-docker-direct"]
 integration-mcp-jira = ["dep:rmcp"]

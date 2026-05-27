@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::super::capabilities::{MediaCapabilities, ProviderCapabilities};
-use crate::config::AgentSettings;
-use crate::config::ModelInfo;
+use crate::config::{AgentSettings, ModelInfo};
 use crate::llm::LlmProvider;
 
 #[cfg(any(
@@ -75,6 +74,11 @@ pub(crate) trait LlmProviderModule: Send + Sync {
         MediaCapabilities::new(false, false, false)
     }
 
+    /// Media modality support for a concrete model route.
+    fn media_capabilities_for_model(&self, _model_info: &ModelInfo) -> MediaCapabilities {
+        self.media_capabilities()
+    }
+
     /// Request capabilities for a concrete model route.
     fn capabilities_for_model(&self, _model_info: &ModelInfo) -> ProviderCapabilities {
         self.capabilities()
@@ -132,8 +136,18 @@ pub(crate) fn provider_missing_route_config_message(
 
 /// Returns media capabilities for a compiled provider module.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn provider_media_capabilities(provider_name: &str) -> Option<MediaCapabilities> {
     find_provider_module(provider_name).map(|module| module.media_capabilities())
+}
+
+/// Returns media capabilities for a concrete route handled by a compiled provider module.
+#[must_use]
+pub(crate) fn provider_media_capabilities_for_model(
+    model_info: &ModelInfo,
+) -> Option<MediaCapabilities> {
+    find_provider_module(&model_info.provider)
+        .map(|module| module.media_capabilities_for_model(model_info))
 }
 
 /// Returns request capabilities for a concrete route handled by a compiled provider module.
@@ -185,8 +199,6 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 
     #[cfg(feature = "llm-chatgpt")]
     modules.push(Box::new(super::chatgpt::ChatGptProviderModule));
-    #[cfg(feature = "llm-groq")]
-    modules.push(Box::new(super::groq::GroqProviderModule));
     #[cfg(feature = "llm-mistral")]
     modules.push(Box::new(super::mistral::MistralProviderModule));
     #[cfg(feature = "llm-minimax")]
@@ -393,36 +405,30 @@ mod tests {
 
     #[cfg(feature = "llm-openrouter")]
     #[test]
-    fn openrouter_module_owns_media_capabilities() {
-        let capabilities = super::provider_media_capabilities("llm-provider/openrouter")
-            .expect("provider should resolve");
+    fn openrouter_module_owns_model_specific_media_capabilities() {
+        for model_id in [
+            "google/gemini-2.0-flash",
+            "google/gemini-2.5-flash-lite",
+            "google/gemini-3-flash-preview",
+            "google/gemini-3-pro-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.1-flash-lite-preview",
+        ] {
+            let route = crate::config::ModelInfo {
+                id: model_id.to_string(),
+                provider: "llm-provider/openrouter".to_string(),
+                max_output_tokens: 4096,
+                context_window_tokens: 128_000,
+                weight: 1,
+            };
 
-        assert!(capabilities.supports_audio_transcription);
-        assert!(capabilities.supports_image_understanding);
-        assert!(capabilities.supports_video_understanding);
-    }
+            let capabilities = super::provider_media_capabilities_for_model(&route)
+                .expect("provider should resolve");
 
-    #[cfg(feature = "llm-groq")]
-    #[test]
-    fn groq_module_registers_provider_id_and_aliases() {
-        let settings = settings_with_provider_key("llm-provider/groq", "test-groq-key");
-
-        let providers = build_configured_providers(&settings);
-
-        assert!(providers.contains_key("llm-provider/groq"));
-        assert!(providers.contains_key("groq"));
-        assert_eq!(provider_module_id("groq"), Some("llm-provider/groq"));
-    }
-
-    #[cfg(feature = "llm-groq")]
-    #[test]
-    fn groq_module_owns_base_capabilities() {
-        let capabilities =
-            provider_capabilities("llm-provider/groq").expect("provider should resolve");
-
-        assert_eq!(capabilities.tool_history_label(), "best_effort");
-        assert!(!capabilities.supports_tool_calling);
-        assert!(capabilities.supports_structured_output);
+            assert!(capabilities.supports_audio_transcription, "{model_id}");
+            assert!(capabilities.supports_image_understanding, "{model_id}");
+            assert!(capabilities.supports_video_understanding, "{model_id}");
+        }
     }
 
     #[cfg(feature = "llm-minimax")]

@@ -6,6 +6,17 @@ use serde::{Deserialize, Serialize};
 /// Stable marker for the new runtime/session-level compacted summary format.
 pub const OXIDE_COMPACTED_SUMMARY_PREFIX: &str = "[OXIDE_COMPACTED_SUMMARY_V1]";
 
+const WIKI_MEMORY_LOOKUP_TOOLS: &[&str] =
+    &["wiki_memory_list", "wiki_memory_read", "wiki_memory_search"];
+
+/// Return whether scoped durable wiki lookup tools are actually exposed to this run.
+#[must_use]
+pub fn wiki_memory_lookup_available(tools: &[ToolDefinition]) -> bool {
+    WIKI_MEMORY_LOOKUP_TOOLS
+        .iter()
+        .all(|required| tools.iter().any(|tool| tool.name == *required))
+}
+
 /// Stable semantic kind for an entry stored in hot agent memory.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentMessageKind {
@@ -171,6 +182,9 @@ pub struct CompactedSummaryMetadata {
     pub previous_summary_detected: bool,
     /// Whether history repair changed replacement output.
     pub repair_applied: bool,
+    /// Whether scoped durable wiki lookup tools were exposed for the next model request.
+    #[serde(default)]
+    pub wiki_memory_lookup_available: bool,
 }
 
 /// Static policy knobs for the compaction subsystem.
@@ -332,8 +346,18 @@ pub struct BudgetEstimate {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_retention, AgentMessageKind, BudgetState, CompactionPolicy, CompactionRetention,
+        resolve_retention, wiki_memory_lookup_available, AgentMessageKind, BudgetState,
+        CompactionPolicy, CompactionRetention,
     };
+    use crate::llm::ToolDefinition;
+
+    fn tool(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: "test tool".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
 
     #[test]
     fn topic_agents_md_is_pinned() {
@@ -361,6 +385,23 @@ mod tests {
             resolve_retention(AgentMessageKind::ToolResult, Some("ssh_exec")),
             CompactionRetention::PrunableArtifact
         );
+    }
+
+    #[test]
+    fn wiki_memory_lookup_requires_actual_lookup_tool_definitions() {
+        let tools = vec![
+            tool("wiki_memory_list"),
+            tool("wiki_memory_read"),
+            tool("wiki_memory_search"),
+            tool("wiki_memory_delete"),
+        ];
+        assert!(wiki_memory_lookup_available(&tools));
+
+        let missing_search = vec![tool("wiki_memory_list"), tool("wiki_memory_read")];
+        assert!(!wiki_memory_lookup_available(&missing_search));
+
+        let no_wiki = vec![tool("read_file")];
+        assert!(!wiki_memory_lookup_available(&no_wiki));
     }
 
     #[test]

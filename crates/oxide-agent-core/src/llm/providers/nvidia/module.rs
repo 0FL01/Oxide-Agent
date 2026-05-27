@@ -46,7 +46,7 @@ impl LlmProviderModule for NvidiaProviderModule {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true)
+        ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, false)
     }
 
     fn capabilities_for_model(&self, model_info: &ModelInfo) -> ProviderCapabilities {

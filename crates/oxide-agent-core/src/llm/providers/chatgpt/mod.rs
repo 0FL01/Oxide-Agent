@@ -180,7 +180,7 @@ enum ChatRequestOutcome {
 
 #[async_trait]
 impl LlmProvider for ChatGptProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         system_prompt: &str,
         history: &[Message],

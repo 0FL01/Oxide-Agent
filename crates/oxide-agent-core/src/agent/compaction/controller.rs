@@ -30,6 +30,8 @@ pub struct CompactRequestContext {
     pub target_token_budget: usize,
     /// Caller-provided timestamp for deterministic tests and event metadata.
     pub created_at: String,
+    /// Whether scoped durable wiki lookup tools are exposed to the next model request.
+    pub wiki_memory_lookup_available: bool,
 }
 
 /// Result of a successful controller compact run.
@@ -145,6 +147,7 @@ impl CompactionController {
             created_at: context.created_at,
             previous_summary_detected: previous_summary.is_some(),
             repair_applied: false,
+            wiki_memory_lookup_available: context.wiki_memory_lookup_available,
         };
 
         let replacement = build_replacement(
@@ -265,11 +268,21 @@ fn replacement_tokens(messages: &[AgentMessage]) -> usize {
 }
 
 fn next_generation(previous_summary: Option<&super::PreviousCompactedSummary>) -> u32 {
-    if previous_summary.is_some() {
-        2
-    } else {
-        1
-    }
+    previous_summary
+        .map(|summary| previous_generation(summary).saturating_add(1))
+        .unwrap_or(1)
+}
+
+fn previous_generation(summary: &super::PreviousCompactedSummary) -> u32 {
+    summary
+        .content
+        .lines()
+        .find_map(|line| {
+            line.trim_start()
+                .strip_prefix("generation:")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        })
+        .unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -320,6 +333,7 @@ mod tests {
             phase: CompactionPhase::Manual,
             target_token_budget: 10_000,
             created_at: "2026-05-21T20:15:00+03:00".to_string(),
+            wiki_memory_lookup_available: false,
         }
     }
 
@@ -340,6 +354,7 @@ mod tests {
                 created_at: "2026-05-21T20:10:00+03:00".to_string(),
                 previous_summary_detected: false,
                 repair_applied: false,
+                wiki_memory_lookup_available: false,
             },
         )
     }
@@ -382,15 +397,24 @@ mod tests {
         memory.add_message(AgentMessage::user_task("Ship compaction"));
         memory.add_message(AgentMessage::user("Continue"));
 
-        controller
+        let first = controller
             .manual_compact(&mut memory, context())
             .await
             .expect("first compact succeeds");
         memory.add_message(AgentMessage::user("Continue after first compact"));
-        controller
+        let second = controller
             .manual_compact(&mut memory, context())
             .await
             .expect("second compact succeeds");
+        memory.add_message(AgentMessage::user("Continue after second compact"));
+        let third = controller
+            .manual_compact(&mut memory, context())
+            .await
+            .expect("third compact succeeds");
+
+        assert_eq!(first.metadata.generation, 1);
+        assert_eq!(second.metadata.generation, 2);
+        assert_eq!(third.metadata.generation, 3);
 
         assert_eq!(
             memory
@@ -403,7 +427,11 @@ mod tests {
         assert!(memory
             .get_messages()
             .iter()
-            .any(|message| message.content == "Continue after first compact"));
+            .any(|message| message.content == "Continue after second compact"));
+        assert!(memory
+            .get_messages()
+            .iter()
+            .any(|message| message.content.contains("generation: 3")));
     }
 
     #[tokio::test]

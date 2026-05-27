@@ -133,14 +133,16 @@ pub fn provider_capabilities(provider_name: &str) -> ProviderCapabilities {
 
 #[must_use]
 /// Returns media modality support for a provider.
-pub fn provider_media_capabilities(provider_name: &str) -> MediaCapabilities {
+#[allow(dead_code)]
+fn provider_media_capabilities(provider_name: &str) -> MediaCapabilities {
     providers::provider_media_capabilities(provider_name).unwrap_or_else(default_media_capabilities)
 }
 
 #[must_use]
 /// Returns media modality support for a specific configured model route.
 pub fn provider_media_capabilities_for_model(model_info: &ModelInfo) -> MediaCapabilities {
-    provider_media_capabilities(&model_info.provider)
+    providers::provider_media_capabilities_for_model(model_info)
+        .unwrap_or_else(default_media_capabilities)
 }
 
 #[must_use]
@@ -151,7 +153,7 @@ pub fn provider_capabilities_for_model(model_info: &ModelInfo) -> ProviderCapabi
 }
 
 fn default_provider_capabilities() -> ProviderCapabilities {
-    ProviderCapabilities::new(ToolHistoryMode::BestEffort, true, true)
+    ProviderCapabilities::new(ToolHistoryMode::BestEffort, false, false)
 }
 
 const fn default_media_capabilities() -> MediaCapabilities {
@@ -170,7 +172,7 @@ mod tests {
     #[test]
     fn provider_capabilities_for_nvidia_model_apply_model_specific_overrides() {
         let supported = crate::config::ModelInfo {
-            id: "meta/llama-3.1-70b-instruct".to_string(),
+            id: "deepseek-ai/deepseek-v4-flash".to_string(),
             max_output_tokens: 4096,
             context_window_tokens: 128_000,
             provider: "nvidia".to_string(),
@@ -215,12 +217,59 @@ mod tests {
 
     #[cfg(feature = "llm-openrouter")]
     #[test]
-    fn openrouter_capabilities_disable_structured_output() {
+    fn openrouter_provider_capabilities_are_default_deny_without_model_policy() {
         let capabilities = super::provider_capabilities("openrouter");
 
-        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_tool_calling);
         assert!(!capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "best_effort");
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn openrouter_model_policy_allows_only_explicit_agent_routes() {
+        for model_id in ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] {
+            let route = crate::config::ModelInfo {
+                id: model_id.to_string(),
+                max_output_tokens: 4096,
+                context_window_tokens: 128_000,
+                provider: "openrouter".to_string(),
+                weight: 1,
+            };
+            let capabilities = super::provider_capabilities_for_model(&route);
+            assert!(capabilities.supports_tool_calling, "{model_id}");
+            assert!(capabilities.supports_structured_output, "{model_id}");
+        }
+
+        for model_id in [
+            "google/gemini-2.0-flash",
+            "google/gemini-2.5-pro-preview",
+            "google/gemini-3-flash-preview",
+            "google/gemini-3-pro-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.1-flash-lite-preview",
+        ] {
+            let route = crate::config::ModelInfo {
+                id: model_id.to_string(),
+                max_output_tokens: 4096,
+                context_window_tokens: 128_000,
+                provider: "openrouter".to_string(),
+                weight: 1,
+            };
+            let capabilities = super::provider_capabilities_for_model(&route);
+            assert!(!capabilities.supports_tool_calling, "{model_id}");
+            assert!(capabilities.supports_structured_output, "{model_id}");
+        }
+
+        let unknown = crate::config::ModelInfo {
+            id: "unknown/model".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            provider: "openrouter".to_string(),
+            weight: 1,
+        };
+
+        assert!(!super::provider_capabilities_for_model(&unknown).supports_tool_calling);
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -329,30 +378,58 @@ mod tests {
     #[cfg(all(
         feature = "llm-openrouter",
         feature = "llm-mistral",
-        feature = "llm-groq",
         feature = "llm-opencode-go"
     ))]
     #[test]
     fn media_capabilities_are_modality_specific() {
-        let openrouter = super::provider_media_capabilities("openrouter");
         let mistral = super::provider_media_capabilities("mistral");
-        let groq = super::provider_media_capabilities("groq");
         let opencode_go = super::provider_media_capabilities("opencode-go");
 
-        assert!(openrouter.supports(super::MediaModality::AudioTranscription));
-        assert!(openrouter.supports(super::MediaModality::ImageUnderstanding));
-        assert!(openrouter.supports(super::MediaModality::VideoUnderstanding));
+        for model_id in [
+            "google/gemini-2.0-flash",
+            "google/gemini-2.5-flash-lite",
+            "google/gemini-3-flash-preview",
+            "google/gemini-3-pro-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.1-flash-lite-preview",
+        ] {
+            let openrouter_media = crate::config::ModelInfo {
+                id: model_id.to_string(),
+                max_output_tokens: 4096,
+                context_window_tokens: 128_000,
+                provider: "openrouter".to_string(),
+                weight: 1,
+            };
+            let openrouter = super::provider_media_capabilities_for_model(&openrouter_media);
+            assert!(
+                openrouter.supports(super::MediaModality::AudioTranscription),
+                "{model_id}"
+            );
+            assert!(
+                openrouter.supports(super::MediaModality::ImageUnderstanding),
+                "{model_id}"
+            );
+            assert!(
+                openrouter.supports(super::MediaModality::VideoUnderstanding),
+                "{model_id}"
+            );
+        }
 
         assert!(mistral.supports(super::MediaModality::AudioTranscription));
         assert!(!mistral.supports(super::MediaModality::ImageUnderstanding));
         assert!(!mistral.supports(super::MediaModality::VideoUnderstanding));
 
-        assert!(!groq.supports(super::MediaModality::AudioTranscription));
-        assert!(!groq.supports(super::MediaModality::ImageUnderstanding));
-        assert!(!groq.supports(super::MediaModality::VideoUnderstanding));
-
         assert!(!opencode_go.supports(super::MediaModality::AudioTranscription));
         assert!(!opencode_go.supports(super::MediaModality::ImageUnderstanding));
         assert!(!opencode_go.supports(super::MediaModality::VideoUnderstanding));
+    }
+
+    #[test]
+    fn unknown_provider_capabilities_are_default_deny() {
+        let capabilities = super::provider_capabilities("removed-provider");
+
+        assert!(!capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
+        assert_eq!(capabilities.tool_history_label(), "best_effort");
     }
 }

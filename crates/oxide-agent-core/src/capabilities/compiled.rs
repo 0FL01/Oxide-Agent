@@ -63,16 +63,19 @@ macro_rules! push_module_with_config {
 const SANDBOX_FILEOPS_BACKEND_CAPABILITIES: &[CapabilityId] = &[
     CapabilityId::new("sandbox-backend/docker-direct/fileops"),
     CapabilityId::new("sandbox-backend/sandboxd-client/fileops"),
+    CapabilityId::new("sandbox-backend/bwrap/fileops"),
 ];
 #[allow(dead_code)]
 const SANDBOX_EXEC_BACKEND_CAPABILITIES: &[CapabilityId] = &[
     CapabilityId::new("sandbox-backend/docker-direct/exec"),
     CapabilityId::new("sandbox-backend/sandboxd-client/exec"),
+    CapabilityId::new("sandbox-backend/bwrap/exec"),
 ];
 #[allow(dead_code)]
 const SANDBOX_LIFECYCLE_BACKEND_CAPABILITIES: &[CapabilityId] = &[
     CapabilityId::new("sandbox-backend/docker-direct/lifecycle"),
     CapabilityId::new("sandbox-backend/sandboxd-client/lifecycle"),
+    CapabilityId::new("sandbox-backend/bwrap/lifecycle"),
 ];
 #[allow(dead_code)]
 const SANDBOX_DIAGNOSTICS_BACKEND_CAPABILITIES: &[CapabilityId] = &[
@@ -116,11 +119,6 @@ const CHATGPT_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
         ModuleConfigProperty::string("auth_path", "Path to the ChatGPT/Codex OAuth auth record.")
             .with_env("CHATGPT_AUTH_PATH"),
     ];
-#[allow(dead_code)]
-const GROQ_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
-    &[ModuleConfigProperty::string("api_key", "Groq API key.")
-        .with_env("GROQ_API_KEY")
-        .secret()];
 #[allow(dead_code)]
 const MISTRAL_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
     &[ModuleConfigProperty::string("api_key", "Mistral API key.")
@@ -188,6 +186,7 @@ pub fn compiled_profile_name() -> Option<&'static str> {
         + cfg!(feature = "profile-search-only") as usize
         + cfg!(feature = "profile-no-sandbox") as usize
         + cfg!(feature = "profile-media-enabled") as usize
+        + cfg!(feature = "profile-host-bwrap") as usize
         + cfg!(feature = "profile-full") as usize;
 
     if active_profile_count != 1 {
@@ -204,6 +203,8 @@ pub fn compiled_profile_name() -> Option<&'static str> {
         Some("no-sandbox")
     } else if cfg!(feature = "profile-media-enabled") {
         Some("media-enabled")
+    } else if cfg!(feature = "profile-host-bwrap") {
+        Some("host-bwrap")
     } else {
         Some("full")
     }
@@ -265,14 +266,6 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         LlmProvider,
         ["llm-provider/openai-chatgpt"],
         CHATGPT_CONFIG_PROPERTIES
-    );
-    push_module_with_config!(
-        modules,
-        "llm-groq",
-        "llm-provider/groq",
-        LlmProvider,
-        ["llm-provider/groq"],
-        GROQ_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,
@@ -504,6 +497,18 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
             "sandbox-backend/sandboxd-client/exec",
             "sandbox-backend/sandboxd-client/lifecycle",
             "sandbox-backend/sandboxd-client/diagnostics"
+        ]
+    );
+    push_module!(
+        modules,
+        "sandbox-backend-bwrap",
+        "sandbox-backend/bwrap",
+        SandboxBackend,
+        [
+            "sandbox-backend/bwrap",
+            "sandbox-backend/bwrap/fileops",
+            "sandbox-backend/bwrap/exec",
+            "sandbox-backend/bwrap/lifecycle"
         ]
     );
     push_module_with_requires!(

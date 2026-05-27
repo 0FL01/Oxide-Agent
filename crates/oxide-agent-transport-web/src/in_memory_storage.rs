@@ -2,7 +2,6 @@
 //!
 //! Implements the subset of storage operations needed by Agent Mode:
 //! - user configs
-//! - chat history
 //! - agent memory (user-scoped + context-scoped + flow-scoped)
 //! - topic agents md (minimal)
 //! - reminder jobs used by reminder E2E tests
@@ -15,7 +14,7 @@ use chrono::Utc;
 use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    CreateReminderJobOptions, Message, ReminderJobRecord, ReminderJobStatus, StorageError,
+    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, StorageError,
     TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UserConfig,
 };
@@ -29,10 +28,6 @@ use tokio::sync::RwLock;
 /// Thread-safe via `RwLock`.
 pub struct InMemoryStorage {
     user_configs: RwLock<HashMap<i64, UserConfig>>,
-    user_prompts: RwLock<HashMap<i64, String>>,
-    user_models: RwLock<HashMap<i64, String>>,
-    chat_histories: RwLock<HashMap<i64, Vec<Message>>>,
-    chat_histories_by_chat: RwLock<HashMap<(i64, String), Vec<Message>>>,
     agent_memories: RwLock<HashMap<i64, AgentMemory>>,
     agent_memories_context: RwLock<HashMap<(i64, String), AgentMemory>>,
     agent_memories_flow: RwLock<HashMap<(i64, String, String), AgentMemory>>,
@@ -48,10 +43,6 @@ impl InMemoryStorage {
     pub fn new() -> Self {
         Self {
             user_configs: RwLock::new(HashMap::new()),
-            user_prompts: RwLock::new(HashMap::new()),
-            user_models: RwLock::new(HashMap::new()),
-            chat_histories: RwLock::new(HashMap::new()),
-            chat_histories_by_chat: RwLock::new(HashMap::new()),
             agent_memories: RwLock::new(HashMap::new()),
             agent_memories_context: RwLock::new(HashMap::new()),
             agent_memories_flow: RwLock::new(HashMap::new()),
@@ -94,36 +85,6 @@ impl crate::api::StorageProvider for InMemoryStorage {
         Ok(())
     }
 
-    async fn update_user_prompt(
-        &self,
-        user_id: i64,
-        system_prompt: String,
-    ) -> Result<(), StorageError> {
-        let mut prompts = self.user_prompts.write().await;
-        prompts.insert(user_id, system_prompt);
-        Ok(())
-    }
-
-    async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError> {
-        let prompts = self.user_prompts.read().await;
-        Ok(prompts.get(&user_id).cloned())
-    }
-
-    async fn update_user_model(
-        &self,
-        user_id: i64,
-        model_name: String,
-    ) -> Result<(), StorageError> {
-        let mut models = self.user_models.write().await;
-        models.insert(user_id, model_name);
-        Ok(())
-    }
-
-    async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError> {
-        let models = self.user_models.read().await;
-        Ok(models.get(&user_id).cloned())
-    }
-
     // User state is intentionally noop — not needed for E2E.
 
     async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
@@ -132,73 +93,6 @@ impl crate::api::StorageProvider for InMemoryStorage {
 
     async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
         Ok(None)
-    }
-
-    // --- Chat history ---
-
-    async fn save_message(
-        &self,
-        user_id: i64,
-        role: String,
-        content: String,
-    ) -> Result<(), StorageError> {
-        let mut histories = self.chat_histories.write().await;
-        let messages = histories.entry(user_id).or_insert_with(Vec::new);
-        messages.push(Message { role, content });
-        Ok(())
-    }
-
-    async fn get_chat_history(
-        &self,
-        user_id: i64,
-        _limit: usize,
-    ) -> Result<Vec<Message>, StorageError> {
-        let histories = self.chat_histories.read().await;
-        Ok(histories.get(&user_id).cloned().unwrap_or_default())
-    }
-
-    async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError> {
-        let mut histories = self.chat_histories.write().await;
-        histories.remove(&user_id);
-        Ok(())
-    }
-
-    async fn save_message_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-        role: String,
-        content: String,
-    ) -> Result<(), StorageError> {
-        let mut histories = self.chat_histories_by_chat.write().await;
-        let messages = histories
-            .entry((user_id, chat_uuid))
-            .or_insert_with(Vec::new);
-        messages.push(Message { role, content });
-        Ok(())
-    }
-
-    async fn get_chat_history_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-        _limit: usize,
-    ) -> Result<Vec<Message>, StorageError> {
-        let histories = self.chat_histories_by_chat.read().await;
-        Ok(histories
-            .get(&(user_id, chat_uuid))
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    async fn clear_chat_history_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-    ) -> Result<(), StorageError> {
-        let mut histories = self.chat_histories_by_chat.write().await;
-        histories.remove(&(user_id, chat_uuid));
-        Ok(())
     }
 
     // --- Agent memory: user-scoped ---
@@ -408,8 +302,6 @@ impl crate::api::StorageProvider for InMemoryStorage {
     // --- System ---
 
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
-        let mut histories = self.chat_histories.write().await;
-        histories.remove(&user_id);
         let mut memories = self.agent_memories.write().await;
         memories.remove(&user_id);
         Ok(())

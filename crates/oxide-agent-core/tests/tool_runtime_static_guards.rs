@@ -285,7 +285,6 @@ fn deprecated_config_compatibility_surfaces_are_removed() {
     let forbidden_config_patterns = [
         "#[serde(alias",
         "browser_use_model_max_tokens",
-        "chat_model_max_tokens",
         "agent_model_max_tokens",
         "sub_agent_max_tokens",
         "wiki_memory_writer_model_max_tokens",

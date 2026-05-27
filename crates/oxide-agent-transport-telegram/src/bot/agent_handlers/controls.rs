@@ -660,17 +660,17 @@ pub(crate) async fn exit_agent_mode(
         user_id,
         msg.chat.id,
         thread_spec,
-        Some("chat_mode"),
+        Some("agent_mode"),
     )
     .await;
-    dialogue.update(crate::bot::state::State::Start).await?;
+    dialogue.update(crate::bot::state::State::AgentMode).await?;
 
-    let mut req = bot.send_message(msg.chat.id, "👋 Exited agent mode. Select a working mode:");
+    let mut req = bot.send_message(msg.chat.id, "Agent task cancelled. Send a new task.");
     if let Some(thread_id) = outbound_thread.message_thread_id {
         req = req.message_thread_id(thread_id);
     }
 
-    req.reply_markup(crate::bot::handlers::main_menu_markup(thread_spec))
+    req.reply_markup(crate::bot::views::agent_control_markup(false))
         .await?;
     Ok(())
 }

@@ -292,7 +292,7 @@ impl Drop for OpenCodeGoPermit {
 
 #[async_trait]
 impl LlmProvider for OpenCodeGoProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         system_prompt: &str,
         history: &[Message],

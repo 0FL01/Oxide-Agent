@@ -128,10 +128,40 @@ async fn new_task_clears_stale_todos_before_completion_check() {
 }
 
 #[tokio::test]
+async fn new_task_inserts_soft_temporal_boundary_after_long_pause() {
+    let mut executor = build_executor_with_mock_response(
+        r#"{"thought":"answer ready","tool_call":null,"final_answer":"new topic answer","awaiting_user_input":null}"#,
+    );
+    executor.session_mut().memory.add_message(
+        crate::agent::memory::AgentMessage::user_task("old topic").with_created_at_unix(Some(1)),
+    );
+
+    let result = executor.execute("new topic", None).await;
+
+    assert!(matches!(
+        result,
+        Ok(crate::agent::executor::AgentExecutionOutcome::Completed(ref answer)) if answer == "new topic answer"
+    ));
+    let messages = executor.session().memory.get_messages();
+    let boundary_index = messages
+        .iter()
+        .position(|message| message.content.starts_with("[TEMPORAL_CONTEXT]"))
+        .expect("temporal boundary should be inserted");
+    let new_task_index = messages
+        .iter()
+        .position(|message| message.content == "new topic")
+        .expect("new task should be inserted");
+
+    assert!(boundary_index < new_task_index);
+    assert!(messages[boundary_index].content.contains("long pause"));
+    assert!(!messages[boundary_index].content.contains("1779802440"));
+}
+
+#[tokio::test]
 async fn executor_injects_configured_wiki_memory_context() {
     let settings = Arc::new(crate::config::AgentSettings {
-        agent_model_id: Some("mock-model".to_string()),
-        agent_model_provider: Some("mock".to_string()),
+        agent_model_id: Some("deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         ..crate::config::AgentSettings::default()
     });
     let context_id = crate::agent::wiki_memory::wiki_context_id(9, "session:9");
@@ -167,7 +197,7 @@ async fn executor_injects_configured_wiki_memory_context() {
         })
     });
     provider
-        .expect_chat_completion()
+        .expect_complete_internal_text()
         .returning(|_, _, _, _, _| {
             Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
         });
@@ -179,7 +209,7 @@ async fn executor_injects_configured_wiki_memory_context() {
         .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
-    llm.register_provider("mock".to_string(), Arc::new(provider));
+    llm.register_provider("opencode-go".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
     let wiki_store = crate::agent::wiki_memory::WikiStore::new(backend, "prod");
     let mut executor =
@@ -196,19 +226,18 @@ async fn executor_injects_configured_wiki_memory_context() {
 #[tokio::test]
 async fn manual_compaction_uses_current_compaction_controller() {
     let settings = Arc::new(crate::config::AgentSettings {
-        agent_model_id: Some("mock-model".to_string()),
-        agent_model_provider: Some("mock".to_string()),
+        agent_model_id: Some("deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         ..crate::config::AgentSettings::default()
     });
     let mut provider = crate::llm::MockLlmProvider::new();
-    provider
-        .expect_chat_completion()
-        .times(1)
-        .returning(|_, _, user_message, model_id, _| {
-            assert_eq!(model_id, "mock-model");
+    provider.expect_complete_internal_text().times(1).returning(
+        |_, _, user_message, model_id, _| {
+            assert_eq!(model_id, "deepseek-v4-flash");
             assert!(user_message.contains("## Source History"));
             Ok("Current compact handoff summary.".to_string())
-        });
+        },
+    );
     provider
         .expect_transcribe_audio()
         .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
@@ -217,7 +246,7 @@ async fn manual_compaction_uses_current_compaction_controller() {
         .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
-    llm.register_provider("mock".to_string(), Arc::new(provider));
+    llm.register_provider("opencode-go".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
     let mut executor = AgentExecutor::new(Arc::new(llm), session, settings);
     executor.session_mut().last_task = Some("Ship compaction".to_string());
@@ -257,8 +286,8 @@ async fn manual_compaction_uses_current_compaction_controller() {
     }
 
     assert_eq!(outcome.metadata.generation, 1);
-    assert_eq!(outcome.metadata.provider, "mock");
-    assert_eq!(outcome.metadata.route, "mock-model");
+    assert_eq!(outcome.metadata.provider, "opencode-go");
+    assert_eq!(outcome.metadata.route, "deepseek-v4-flash");
     assert!(outcome.replacement.history_items_after <= outcome.replacement.history_items_before);
     let messages = executor.session().memory.get_messages();
     assert_eq!(
@@ -274,6 +303,91 @@ async fn manual_compaction_uses_current_compaction_controller() {
         .iter()
         .all(|message| !message.content.contains("[COMPACTION_SUMMARY]")));
     assert_eq!(event_names, vec!["runtime_started", "runtime_completed"]);
+}
+
+#[tokio::test]
+async fn manual_compaction_runtime_generations_increment_across_repeated_compactions() {
+    let settings = Arc::new(crate::config::AgentSettings {
+        agent_model_id: Some("deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
+        ..crate::config::AgentSettings::default()
+    });
+    let mut provider = crate::llm::MockLlmProvider::new();
+    provider.expect_complete_internal_text().times(3).returning(
+        |_, _, user_message, model_id, _| {
+            assert_eq!(model_id, "deepseek-v4-flash");
+            assert!(user_message.contains("## Source History"));
+            Ok("Current compact handoff summary.".to_string())
+        },
+    );
+    provider
+        .expect_transcribe_audio()
+        .returning(|_, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+    provider
+        .expect_analyze_image()
+        .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
+
+    let mut llm = LlmClient::new(settings.as_ref());
+    llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+    let session = AgentSession::new(9_i64.into());
+    let mut executor = AgentExecutor::new(Arc::new(llm), session, settings);
+    executor.session_mut().last_task = Some("Ship compaction".to_string());
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user_task(
+            "Ship compaction",
+        ));
+    executor
+        .session_mut()
+        .memory
+        .add_message(crate::agent::memory::AgentMessage::user("Continue"));
+
+    let mut outcome_generations = Vec::new();
+    let mut event_generations = Vec::new();
+    for turn in [
+        "after first compact",
+        "after second compact",
+        "after third compact",
+    ] {
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(8);
+        let outcome = executor
+            .compact_current_context(Some(progress_tx))
+            .await
+            .expect("manual compaction succeeds");
+        outcome_generations.push(outcome.metadata.generation);
+
+        while let Some(event) = progress_rx.recv().await {
+            if let crate::agent::progress::AgentEvent::RuntimeCompactionCompleted {
+                generation,
+                ..
+            } = event
+            {
+                event_generations.push(generation);
+            }
+        }
+
+        executor
+            .session_mut()
+            .memory
+            .add_message(crate::agent::memory::AgentMessage::user(turn));
+    }
+
+    assert_eq!(outcome_generations, vec![1, 2, 3]);
+    assert_eq!(event_generations, vec![1, 2, 3]);
+    let messages = executor.session().memory.get_messages();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message
+                .content
+                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX))
+            .count(),
+        1
+    );
+    assert!(messages
+        .iter()
+        .any(|message| message.content.contains("generation: 3")));
 }
 
 #[tokio::test]
@@ -413,10 +527,10 @@ async fn background_writer_extracts_previous_message_for_empty_remember_payload(
     let wiki_store = crate::agent::wiki_memory::WikiStore::new(store_backend, "prod");
     let settings = Arc::new(crate::config::AgentSettings {
         agent_model_id: Some("mock-agent".to_string()),
-        agent_model_provider: Some("mock".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         wiki_memory_writer_enabled: Some(true),
         wiki_memory_writer_model_id: Some("mock-writer".to_string()),
-        wiki_memory_writer_model_provider: Some("mock".to_string()),
+        wiki_memory_writer_model_provider: Some("opencode-go".to_string()),
         wiki_memory_writer_max_output_tokens: Some(4096),
         wiki_memory_writer_timeout_secs: Some(5),
         ..crate::config::AgentSettings::default()
@@ -436,7 +550,7 @@ async fn background_writer_extracts_previous_message_for_empty_remember_payload(
         })
     });
     provider
-        .expect_chat_completion()
+        .expect_complete_internal_text()
         .return_once(|system_prompt, history, user_message, model_id, max_tokens| {
             assert!(system_prompt.contains("background memory curator"));
             assert!(history.is_empty());
@@ -454,7 +568,7 @@ async fn background_writer_extracts_previous_message_for_empty_remember_payload(
         .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
 
     let mut llm = LlmClient::new(settings.as_ref());
-    llm.register_provider("mock".to_string(), Arc::new(provider));
+    llm.register_provider("opencode-go".to_string(), Arc::new(provider));
     let mut session = AgentSession::new(9_i64.into());
     session
         .memory

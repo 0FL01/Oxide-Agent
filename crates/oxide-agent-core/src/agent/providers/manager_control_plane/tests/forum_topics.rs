@@ -186,10 +186,6 @@ async fn forum_topic_delete_cleans_topic_storage_and_sandbox() {
         .with(eq(77_i64), eq("-100999:42".to_string()))
         .times(1)
         .returning(|_, _| Ok(()));
-    mock.expect_clear_chat_history_for_context()
-        .with(eq(77_i64), eq("-100999:42".to_string()))
-        .times(1)
-        .returning(|_, _| Ok(()));
     mock.expect_delete_topic_context()
         .with(eq(77_i64), eq("-100999:42".to_string()))
         .times(1)
@@ -273,6 +269,7 @@ async fn forum_topic_delete_cleans_topic_storage_and_sandbox() {
     assert_eq!(sandbox_cleanup.calls(), vec![(77, -100999, 42)]);
 }
 
+#[cfg(feature = "integration-ssh-mcp")]
 #[tokio::test]
 async fn forum_topic_provision_ssh_agent_creates_canonical_binding_and_infra() {
     let lifecycle = Arc::new(FakeTopicLifecycle::new());

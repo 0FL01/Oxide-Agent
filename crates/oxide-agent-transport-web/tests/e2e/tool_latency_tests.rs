@@ -17,6 +17,10 @@ use crate::setup::execute_task;
 /// The scripted provider is registered on the v1 opencode-go route so the
 /// active path uses the typed tool runtime.
 #[tokio::test]
+#[cfg_attr(
+    not(feature = "profile-lite"),
+    ignore = "requires profile-lite OpenCode route capabilities"
+)]
 async fn e2e_parallel_tool_execution_latency() {
     let test_start = std::time::Instant::now();
 
@@ -27,21 +31,21 @@ async fn e2e_parallel_tool_execution_latency() {
                     id: "call_1".to_string(),
                     name: "write_todos".to_string(),
                     arguments:
-                        r#"{"todos":[{"id":"1","description":"Task 1","status":"pending"}]}"#
+                        r#"{"todos":[{"id":"1","description":"Task 1","status":"completed"}]}"#
                             .to_string(),
                 },
                 ScriptedToolCall {
                     id: "call_2".to_string(),
                     name: "write_todos".to_string(),
                     arguments:
-                        r#"{"todos":[{"id":"2","description":"Task 2","status":"pending"}]}"#
+                        r#"{"todos":[{"id":"2","description":"Task 2","status":"completed"}]}"#
                             .to_string(),
                 },
                 ScriptedToolCall {
                     id: "call_3".to_string(),
                     name: "write_todos".to_string(),
                     arguments:
-                        r#"{"todos":[{"id":"3","description":"Task 3","status":"pending"}]}"#
+                        r#"{"todos":[{"id":"3","description":"Task 3","status":"completed"}]}"#
                             .to_string(),
                 },
             ],

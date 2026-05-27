@@ -462,6 +462,7 @@ async fn topic_agent_tools_disable_accepts_browser_provider_alias() {
     std::env::remove_var("BROWSER_USE_URL");
 }
 
+#[cfg(feature = "integration-ssh-mcp")]
 #[tokio::test]
 async fn topic_agent_tools_enable_accepts_ssh_send_file_to_user_when_topic_has_infra() {
     let mut mock = crate::storage::MockStorageProvider::new();

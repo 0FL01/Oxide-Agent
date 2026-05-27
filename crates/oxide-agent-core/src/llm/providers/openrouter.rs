@@ -162,7 +162,7 @@ pub fn parse_openrouter_rate_limit(body: &str) -> Option<u64> {
 
 #[async_trait]
 impl LlmProvider for OpenRouterProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         system_prompt: &str,
         history: &[Message],
@@ -388,6 +388,9 @@ impl LlmProvider for OpenRouterProvider {
 
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);
+            body["provider"] = json!({
+                "require_parameters": true
+            });
         }
 
         // Hardcoded app attribution headers for OpenRouter identification

@@ -348,10 +348,6 @@ impl ManagerControlPlaneProvider {
         let deleted_agent_memory = self
             .clear_forum_topic_agent_memory(&context_key, &mut errors)
             .await;
-        let deleted_chat_history_for_context = self
-            .clear_forum_topic_chat_history(&context_key, &mut errors)
-            .await;
-        let deleted_chat_history = deleted_chat_history_for_context;
         let deleted_topic_context = self
             .delete_forum_topic_context_record(&context_key, &mut errors)
             .await;
@@ -372,8 +368,6 @@ impl ManagerControlPlaneProvider {
 
         let cleanup = json!({
             "context_key": context_key,
-            "deleted_chat_history": deleted_chat_history,
-            "deleted_chat_history_for_context": deleted_chat_history_for_context,
             "deleted_agent_memory": deleted_agent_memory,
             "deleted_topic_context": deleted_topic_context,
             "deleted_topic_agents_md": deleted_topic_agents_md,
@@ -413,26 +407,6 @@ impl ManagerControlPlaneProvider {
             Err(err) => {
                 errors.push(format!(
                     "failed to clear agent memory for {context_key}: {err}"
-                ));
-                false
-            }
-        }
-    }
-
-    async fn clear_forum_topic_chat_history(
-        &self,
-        context_key: &str,
-        errors: &mut Vec<String>,
-    ) -> bool {
-        match self
-            .storage
-            .clear_chat_history_for_context(self.user_id, context_key.to_string())
-            .await
-        {
-            Ok(()) => true,
-            Err(err) => {
-                errors.push(format!(
-                    "failed to clear chat history for {context_key}: {err}"
                 ));
                 false
             }

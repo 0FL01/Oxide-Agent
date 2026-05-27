@@ -4,6 +4,7 @@
     feature = "profile-search-only",
     feature = "profile-no-sandbox",
     feature = "profile-media-enabled",
+    feature = "profile-host-bwrap",
     feature = "profile-full",
 ))]
 
@@ -354,6 +355,7 @@ fn assert_tool_availability_contract(
             assert_present_tools(
                 &tool_names,
                 &[
+                    "apply_file_edit",
                     "execute_command",
                     "cancel_sub_agents",
                     "compress",
@@ -427,6 +429,49 @@ fn assert_tool_availability_contract(
                 "media-enabled profile must expose media tools without selecting a sandbox backend"
             );
         }
+        "profile-host-bwrap" => {
+            assert!(
+                enabled_module_ids.contains("sandbox-backend/bwrap"),
+                "host-bwrap profile must enable the Bubblewrap sandbox backend"
+            );
+            assert!(
+                !enabled_module_ids.contains("sandbox-backend/docker-direct"),
+                "host-bwrap profile must not enable the direct Docker sandbox backend"
+            );
+            assert!(
+                !enabled_module_ids.contains("sandbox-backend/sandboxd-client"),
+                "host-bwrap profile must not enable the sandboxd client backend"
+            );
+            assert_present_capabilities(
+                &enabled_capability_ids,
+                &[
+                    "sandbox-backend/bwrap/exec",
+                    "sandbox-backend/bwrap/fileops",
+                    "sandbox-backend/bwrap/lifecycle",
+                    "tool/sandbox-exec",
+                    "tool/sandbox-fileops",
+                    "tool/sandbox-list-files",
+                    "tool/sandbox-recreate",
+                ],
+                profile,
+            );
+            assert_present_tools(
+                &tool_names,
+                &[
+                    "apply_file_edit",
+                    "execute_command",
+                    "list_files",
+                    "read_file",
+                    "recreate_sandbox",
+                    "write_file",
+                ],
+                profile,
+            );
+            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
+            assert_absent_tool_prefix(&tool_names, "jira_", profile);
+            assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
+            assert_absent_tool_prefix(&tool_names, "ssh_", profile);
+        }
         _ => {}
     }
 }
@@ -486,9 +531,6 @@ fn allowed_provider_names_for_enabled_modules(
 
     for module_id in enabled_module_ids {
         match *module_id {
-            "llm-provider/groq" => {
-                allowed.extend(["llm-provider/groq", "groq"]);
-            }
             "llm-provider/minimax" => {
                 allowed.extend(["llm-provider/minimax", "minimax"]);
             }
@@ -577,6 +619,7 @@ fn compiled_profile_label() -> &'static str {
         + cfg!(feature = "profile-search-only") as usize
         + cfg!(feature = "profile-no-sandbox") as usize
         + cfg!(feature = "profile-media-enabled") as usize
+        + cfg!(feature = "profile-host-bwrap") as usize
         + cfg!(feature = "profile-full") as usize;
 
     if active_profile_count != 1 {
@@ -593,6 +636,8 @@ fn compiled_profile_label() -> &'static str {
         "profile-no-sandbox"
     } else if cfg!(feature = "profile-media-enabled") {
         "profile-media-enabled"
+    } else if cfg!(feature = "profile-host-bwrap") {
+        "profile-host-bwrap"
     } else {
         "profile-full"
     }

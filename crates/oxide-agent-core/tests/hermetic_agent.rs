@@ -12,7 +12,7 @@ struct SuccessMock;
 
 #[async_trait::async_trait]
 impl LlmProvider for SuccessMock {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -59,8 +59,8 @@ impl LlmProvider for SuccessMock {
 #[tokio::test]
 async fn test_client_uses_registered_provider() {
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 
@@ -68,10 +68,10 @@ async fn test_client_uses_registered_provider() {
     client.register_provider("mock-provider".to_string(), Arc::new(SuccessMock));
 
     let response = client
-        .chat_completion("sys", &[], "user", "test-model")
+        .chat_with_tools("sys", &[], &[], "test-model", false)
         .await
         .expect("Should succeed");
-    assert_eq!(response, "Mock Response");
+    assert_eq!(response.content.as_deref(), Some("Success"));
 }
 
 struct RetrySuccessMock {
@@ -80,7 +80,7 @@ struct RetrySuccessMock {
 
 #[async_trait::async_trait]
 impl LlmProvider for RetrySuccessMock {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -88,7 +88,9 @@ impl LlmProvider for RetrySuccessMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        unimplemented!()
+        Err(LlmError::Unknown(
+            "unexpected internal text call in retry test".to_string(),
+        ))
     }
 
     async fn transcribe_audio(
@@ -133,8 +135,8 @@ impl LlmProvider for RetrySuccessMock {
 async fn test_retry_logic_eventual_success() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 
@@ -160,7 +162,7 @@ struct AlwaysFailMock {
 
 #[async_trait::async_trait]
 impl LlmProvider for AlwaysFailMock {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -168,7 +170,9 @@ impl LlmProvider for AlwaysFailMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        unimplemented!()
+        Err(LlmError::Unknown(
+            "unexpected internal text call in failure test".to_string(),
+        ))
     }
 
     async fn transcribe_audio(
@@ -203,8 +207,8 @@ impl LlmProvider for AlwaysFailMock {
 async fn test_retry_logic_failure() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 

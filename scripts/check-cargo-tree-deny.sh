@@ -34,6 +34,16 @@ if [[ ${#deny[@]} -eq 0 ]]; then
         sandbox-backend-sandboxd-client)
             deny=(bollard tar http-body-util)
             ;;
+        sandbox-backend-bwrap)
+            deny=(bollard tar http-body-util bincode serde_bytes)
+            ;;
+        profile-host-bwrap)
+            # The host profile intentionally includes reqwest-backed LLM/search/media
+            # modules, and reqwest pulls http-body-util transitively. The backend-only
+            # check above still proves bwrap itself does not enable Docker's direct
+            # http-body-util dependency path.
+            deny=(bollard tar bincode serde_bytes)
+            ;;
         profile-search-only)
             deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius)
             ;;

@@ -154,7 +154,7 @@ fn map_claudius_error(e: &claudius::Error) -> LlmError {
 
 #[async_trait]
 impl LlmProvider for MiniMaxProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         system_prompt: &str,
         history: &[Message],

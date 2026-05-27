@@ -9,7 +9,7 @@ Universal Telegram bot with AI assistant, supporting multiple models, multimodal
 
 This project is a Telegram bot that integrates with various Large Language Model (LLM) APIs to provide users with a multifunctional AI assistant. The bot can process text, voice, video messages, and images, work with documents, manage dialogue history, and perform complex tasks in an isolated sandbox.
 
-The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 main AI providers** for Chat/Agent mode (OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, NVIDIA NIM), along with Groq support.
+The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates with **6 Agent Mode LLM providers**: OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, and NVIDIA NIM.
 
 ### Architecture Highlights
 
@@ -17,7 +17,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 - **Transport-Agnostic Runtime:** Progress rendering and execution model can be adapted for Discord, Slack, etc.
 - **Topic-Scoped Infrastructure:** Per-topic agent profiles, hooks, tools, and memory isolation
 - **Manager Control Plane:** Programmatic topic management with RBAC, audit trail, and rollback support
-- **Sandbox Broker:** Security isolation with Unix socket broker (`oxide-agent-sandboxd`)
+- **Sandbox Backends:** Docker broker isolation by default, plus optional bare-host Bubblewrap mode
 </details>
 
 ## Features
@@ -27,13 +27,13 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     - `oxide-agent-runtime` - Session orchestration, execution cycle, tool providers, sandbox
     - `oxide-agent-transport-telegram` - Telegram transport layer (teloxide integration)
     - `oxide-agent-transport-web` - E2E testing infrastructure with HTTP API
-    - `oxide-agent-sandboxd` - Sandbox broker daemon for Docker access isolation
+    - `oxide-agent-sandboxd` - Sandbox broker daemon for Docker access isolation in the default Compose deployment
     - `oxide-agent-telegram-bot` - Binary entry point and configuration
 
 *   **🤖 Agent Mode:**
         <img width="974" height="747" alt="image_2026-01-11_20-58-21" src="https://github.com/user-attachments/assets/c99e55e4-8933-4ec8-9f50-22f7cbca4c77" />
 
-    *   **Integrated Sandbox:** Safe execution of Python code and Bash commands in isolated Docker containers (`debian:trixie-slim`).
+    *   **Integrated Sandbox:** Safe execution of Python code and shell commands in isolated sandbox instances. Docker/broker is the default deployment path; Bubblewrap is available for bare-host setups.
     *   **Parallel Tool Execution:** Multiple tool calls in one LLM response execute concurrently for faster task completion.
     *   **Fire-and-Forget Checkpoint:** Memory persistence is async, non-blocking for reduced latency.
     *   **History Repair:** Validates tool_call_id before LLM calls; orphaned tool results prevented during compaction.
@@ -57,10 +57,10 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **⏱️ Universal Runtime:** Transport-agnostic progress rendering system that can be adapted for Discord, Slack, and other transports.
     *   **👥 Hierarchical Delegation:** The Main Agent spawns async Sub-Agents for parallel, independent subtasks. Each sub-agent runs in an isolated ephemeral session with a task-specific tool whitelist, inherits the topic AGENTS.md and parent cancellation, and returns results via background job tracking.
     *   **Autonomy:** Agent plans steps and selects tools itself.
-    *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
+    *   **Telegram Authorization:** Access control via `TELEGRAM_ALLOWED_USERS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
-*   **Multi-LLM Support:** 6 main providers for Chat/Agent mode (OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, NVIDIA NIM). Groq is supported in **Chat Mode only**.
+*   **Multi-LLM Support:** 6 Agent Mode providers: OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, and NVIDIA NIM.
 *   **Native Tool Calling:** Efficient use of tools in modern models with ToolCallCorrelation architecture.
 *   **Multimedia Processing:**
     *   Voice and video messages (speech recognition via OpenRouter-hosted Gemini-family models or Voxtral).
@@ -82,24 +82,22 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 | **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when using ZAI routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
 | **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
-### 🤖 Supported LLM Providers for Chat/Agent Mode
-The bot supports **6 main providers** for both standard chat and advanced Agent mode (with tool calling):
+### 🤖 Supported LLM Providers for Agent Mode
+The bot supports **6 main providers** for Agent Mode with tool calling:
 
 *   **OpenCode Go** (`OPENCODE_GO_API_KEY`) — **primary (recommended) provider for Agent Mode**. Uses subscription OpenAI-compatible API at `opencode.ai/zen/go`. Recommended Agent Mode model: `deepseek-v4-flash` with provider `opencode-go`. Supports native tool calls (strict), structured JSON for DeepSeek V4 routes, adaptive throttling, unbounded retry, and reasoning content parsing.
 *   **Zhipu AI / ZAI** (`ZAI_API_KEY`) — alternative provider for Agent Mode (`glm-4.7` or `glm-4.5-air`). Provides native tool-aware chat completions and reasoning.
 *   **MiniMax** (`MINIMAX_API_KEY`) — Claude SDK-compatible provider via MiniMax API (`MiniMax-M2.7`).
-*   **Mistral** (`MISTRAL_API_KEY`) — great for cost-effective agent/chat combos (e.g., `mistral-large-latest`, `pixtral-large-latest`). Supports tool calling via JSON mode or native tools. Includes Voxtral audio transcription (`voxtral-mini-latest`).
-*   **OpenRouter** (`OPENROUTER_API_KEY`) — commonly used for chat/multimodal requests (e.g., `google/gemini-3-flash-preview`). Supports tool calling for Agent mode through compatible models. Ensure `CHAT_MODEL_PROVIDER=openrouter` if you need Gemini voice/image support.
-
-#### Other Providers (Chat only)
-*   **Groq** (`GROQ_API_KEY`) — optional provider for fast specialized chat workloads (e.g. `llama-3.3-70b-versatile`).
+*   **Mistral** (`MISTRAL_API_KEY`) — cost-effective agent routes and Voxtral audio transcription (`voxtral-mini-latest`).
+*   **OpenRouter** (`OPENROUTER_API_KEY`) — multimodal/media routes and approved tool-capable Agent Mode routes, including Gemini-family model IDs through OpenRouter.
 
 > [!NOTE]
-> Voice recognition and image analysis depend on whichever multimodal model you configure via `CHAT_MODEL_*`/`MEDIA_MODEL_*`. The bot exposes only the models you declare in `.env`, so `Change Model` will only list those names.
+> Voice recognition and image analysis require an explicit `MEDIA_MODEL_ID` / `MEDIA_MODEL_PROVIDER` route.
 
 ### 🛠 Infrastructure
-*   **Docker** — run code sandbox (`agent-sandbox:latest`)
-*   **Sandbox Broker** — optional Unix socket broker for security isolation (`SANDBOX_BACKEND=broker`)
+*   **Docker** — run the default code sandbox (`agent-sandbox:latest`)
+*   **Sandbox Broker** — Unix socket broker for Docker access isolation in Docker Compose (`SANDBOX_BACKEND=broker`)
+*   **Bubblewrap** — optional bare-host sandbox backend without Docker daemon/socket access (`SANDBOX_BACKEND=bwrap`, see `docs/bwrap-sandbox.md`)
 *   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
 *   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
 *   **Local Web Markdown** — lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
@@ -127,7 +125,7 @@ The bot supports **6 main providers** for both standard chat and advanced Agent 
     docker-compose up --build -d
     ```
 
-**Note:** The default configuration uses `SANDBOX_BACKEND=broker` which requires the `oxide-agent-sandboxd` container. To use direct Docker access, set `SANDBOX_BACKEND=docker`.
+**Note:** The default Docker Compose configuration uses `SANDBOX_BACKEND=broker` which requires the `oxide-agent-sandboxd` container. To use direct Docker access, set `SANDBOX_BACKEND=docker`. For bare-host Bubblewrap mode, build `profile-host-bwrap` and follow `docs/bwrap-sandbox.md`.
 </details>
 
 ## Configuration (.env)
@@ -138,8 +136,7 @@ The bot supports **6 main providers** for both standard chat and advanced Agent 
 ```dotenv
 # Telegram
 TELEGRAM_TOKEN=YOUR_TOKEN
-ALLOWED_USERS=ID1,ID2 # List of allowed Telegram IDs (basic access)
-AGENT_ACCESS_IDS=ID1 # Access to Agent Mode (consumes many tokens)
+TELEGRAM_ALLOWED_USERS=ID1,ID2 # Telegram users allowed to use Agent Mode
 REMINDER_AGENT_PROGRESS_ENABLED=false # Watch/ward reminders: hide progress spam
 REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: stay silent on no visible change
 
@@ -156,7 +153,6 @@ OXIDE_R2_BUCKET_NAME=...
 OXIDE_R2_REGION=auto           # S3-compatible storage region
 
 # API Keys
-GROQ_API_KEY=...
 MISTRAL_API_KEY=...
 OPENROUTER_API_KEY=...
 NVIDIA_API_KEY=...              # NVIDIA NIM / hosted integrate.api.nvidia.com
@@ -183,15 +179,7 @@ For Browser Use task execution, Oxide sends the configured dedicated or inherite
 
 ## Model Configuration
 
-Set available chat/agent models through `.env`. Only declared model names appear in the bot's menus and multimodal handlers.
-
-### Chat model (multimodal)
-```dotenv
-CHAT_MODEL_ID="google/gemini-3-flash-preview"
-CHAT_MODEL_PROVIDER="openrouter"
-CHAT_MODEL_NAME="✨ Gemini 3.0 Flash"
-```
-Swap `CHAT_MODEL_PROVIDER`/`CHAT_MODEL_ID` and adjust the name when you need a different multimodal provider (e.g., `mistral-large-latest`).
+Set explicit agent and media routes through `.env`.
 
 *   **Agent & Sub-agent (Recommended Models)**
   For the best performance in Agent Mode, it is highly recommended to use **deepseek-v4-flash** for both the Main Agent and Sub-Agent (via **OpenCode Go** provider). This route offers strict tool calling, structured output support, reasoning content, adaptive throttling, and unlimited retry for reliable agent execution.
@@ -244,7 +232,7 @@ AGENT_MODEL_ROUTES__2__WEIGHT=2
 <details>
 <summary>⚖️ Weighted failover with NVIDIA NIM</summary>
 
-Use NVIDIA NIM only with models that support tool calling for agent loops. If you are unsure, keep NIM behind a proven primary route first:
+Use NVIDIA NIM only with the explicit Agent Mode allowlist. If you are unsure, keep NIM behind a proven primary route first:
 
 ```dotenv
 NVIDIA_API_KEY=...
@@ -254,12 +242,12 @@ AGENT_MODEL_ROUTES__0__ID="deepseek-v4-flash"
 AGENT_MODEL_ROUTES__0__PROVIDER="opencode-go"
 AGENT_MODEL_ROUTES__0__WEIGHT=5
 
-AGENT_MODEL_ROUTES__1__ID="meta/llama-3.1-70b-instruct"
+AGENT_MODEL_ROUTES__1__ID="deepseek-ai/deepseek-v4-flash"
 AGENT_MODEL_ROUTES__1__PROVIDER="nvidia"
 AGENT_MODEL_ROUTES__1__WEIGHT=3
 ```
 
-The agent runtime now skips unsupported NVIDIA NIM routes during tool-enabled execution instead of repeatedly retrying them. Structured output is also enabled only for model routes that advertise safe support.
+The agent runtime skips unsupported NVIDIA NIM routes before tool-enabled execution. Structured output is enabled only for explicitly approved model routes.
 
 </details>
 
@@ -285,14 +273,14 @@ Browser Use prefers this dedicated route over the currently active main/sub-agen
 <summary>🔄 Alternate provider example</summary>
 
 ```
-CHAT_MODEL_ID="mistral-large-latest"
-CHAT_MODEL_PROVIDER="mistral"
-
 AGENT_MODEL_ID="devstral-2512"
 AGENT_MODEL_PROVIDER="mistral"
+
+MEDIA_MODEL_ID="voxtral-mini-latest"
+MEDIA_MODEL_PROVIDER="mistral"
 ```
 
-Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-family IDs, or other providers you want to expose. Only set names will be available in the chat mode keyboard.
+Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUTES__N__*` for sub-agent failover.
 
 </details>
 
@@ -306,9 +294,8 @@ Repeat the `_MODEL_ID/_MODEL_PROVIDER` pattern for Groq, OpenRouter Gemini-famil
 | **Mistral** | Generous free tier, includes Voxtral audio transcription |
 | **OpenRouter** | Aggregator for various models, including Gemini-family model IDs |
 | **NVIDIA NIM** | Tool calling support, hosted inference |
-| **Groq** | Fast inference (Chat Mode only) |
 
-> **Note:** Only models declared in your `.env` file will be available in the bot's "Change Model" menu.
+> **Note:** Gemini-family models are configured through OpenRouter routes, not a direct Google Gemini provider.
 
 <details>
 <summary>🔧 Tool Providers</summary>
@@ -390,7 +377,7 @@ Programmatic topic management with RBAC, audit trail, and rollback support.
 
 ### RBAC Configuration
 ```dotenv
-MANAGER_ALLOWED_USERS=123456789,987654321  # Users with manager control-plane access
+TELEGRAM_MANAGER_ALLOWED_USERS=123456789,987654321  # Users with manager control-plane access
 MANAGER_HOME_CHAT_ID=-1001234567890        # Restrict to specific chat (optional)
 MANAGER_HOME_THREAD_ID=1                   # Thread ID (optional)
 MANAGER_HOME_AGENT_ID=control-plane       # Agent ID for manager home (optional)
@@ -531,6 +518,8 @@ Enhanced reminder scheduling with pause/resume/retry support.
 
 ### Services
 
+The default Docker Compose deployment uses the broker backend. Bare-host Bubblewrap mode is documented separately in `docs/bwrap-sandbox.md` and is not enabled by this Compose file.
+
 1. **sandbox_image**
     - Builds the selected sandbox image variant, with full/dev using `sandbox/Dockerfile.dev`
     - One-shot build service used during `docker compose up --build`
@@ -614,7 +603,7 @@ crates/
 │       │   ├── recovery/       # History repair, tool drift pruning
 │       │   ├── runner/         # Execution loop, parallel tools
 │       ├── llm/                # LLM provider integrations
-│       │   ├── providers/      # Providers (zai, minimax, mistral, openrouter, groq, ...)
+│       │   ├── providers/      # Providers (zai, minimax, mistral, openrouter, ...)
 │       │   └── tool_correlation.rs
 │       ├── storage/            # Storage facade, R2 backend, control-plane records
 │       └── config.rs

@@ -1,9 +1,7 @@
 use crate::bot::{thread_peer_key_from_spec, TelegramThreadKind, TelegramThreadSpec};
 use anyhow::Result;
 use oxide_agent_core::sandbox::SandboxScope;
-use oxide_agent_core::storage::{
-    generate_chat_uuid, StorageProvider, UserConfig, UserContextConfig,
-};
+use oxide_agent_core::storage::{generate_flow_id, StorageProvider, UserConfig, UserContextConfig};
 use std::sync::Arc;
 use teloxide::types::ChatId;
 
@@ -28,11 +26,6 @@ fn context_entry_mut<'a>(
 #[must_use]
 pub(crate) fn storage_context_key(chat_id: ChatId, thread_spec: TelegramThreadSpec) -> String {
     thread_peer_key_from_spec(chat_id, thread_spec)
-}
-
-#[must_use]
-pub(crate) fn scoped_chat_storage_id(context_key: &str, chat_uuid: &str) -> String {
-    format!("{context_key}/{chat_uuid}")
 }
 
 #[must_use]
@@ -100,64 +93,6 @@ pub(crate) async fn set_current_context_state(
     Ok(())
 }
 
-pub(crate) async fn ensure_current_chat_uuid(
-    storage: &Arc<dyn StorageProvider>,
-    user_id: i64,
-    chat_id: ChatId,
-    thread_spec: TelegramThreadSpec,
-) -> Result<String> {
-    let mut config = storage.get_user_config(user_id).await?;
-    let context_key = storage_context_key(chat_id, thread_spec);
-
-    if let Some(chat_uuid) = config
-        .contexts
-        .get(&context_key)
-        .and_then(|context| context.current_chat_uuid.clone())
-    {
-        return Ok(chat_uuid);
-    }
-
-    if should_mirror_dm_global_state(thread_spec) {
-        if let Some(chat_uuid) = config.current_chat_uuid.clone() {
-            let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
-            context.current_chat_uuid = Some(chat_uuid.clone());
-            storage.update_user_config(user_id, config).await?;
-            return Ok(chat_uuid);
-        }
-    }
-
-    let chat_uuid = generate_chat_uuid();
-    let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
-    context.current_chat_uuid = Some(chat_uuid.clone());
-
-    if should_mirror_dm_global_state(thread_spec) {
-        config.current_chat_uuid = Some(chat_uuid.clone());
-    }
-
-    storage.update_user_config(user_id, config).await?;
-    Ok(chat_uuid)
-}
-
-pub(crate) async fn reset_current_chat_uuid(
-    storage: &Arc<dyn StorageProvider>,
-    user_id: i64,
-    chat_id: ChatId,
-    thread_spec: TelegramThreadSpec,
-) -> Result<String> {
-    let mut config = storage.get_user_config(user_id).await?;
-    let context_key = storage_context_key(chat_id, thread_spec);
-    let chat_uuid = generate_chat_uuid();
-    let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
-    context.current_chat_uuid = Some(chat_uuid.clone());
-
-    if should_mirror_dm_global_state(thread_spec) {
-        config.current_chat_uuid = Some(chat_uuid.clone());
-    }
-
-    storage.update_user_config(user_id, config).await?;
-    Ok(chat_uuid)
-}
-
 pub(crate) async fn ensure_current_agent_flow_id(
     storage: &Arc<dyn StorageProvider>,
     user_id: i64,
@@ -175,7 +110,7 @@ pub(crate) async fn ensure_current_agent_flow_id(
         return Ok((flow_id, false));
     }
 
-    let flow_id = generate_chat_uuid();
+    let flow_id = generate_flow_id();
     let context = context_entry_mut(&mut config, &context_key, chat_id, thread_spec);
     context.current_agent_flow_id = Some(flow_id.clone());
     storage.update_user_config(user_id, config).await?;
@@ -209,7 +144,7 @@ pub(crate) async fn reset_current_agent_flow_id(
     chat_id: ChatId,
     thread_spec: TelegramThreadSpec,
 ) -> Result<String> {
-    let flow_id = generate_chat_uuid();
+    let flow_id = generate_flow_id();
     set_current_agent_flow_id(storage, user_id, chat_id, thread_spec, flow_id.clone()).await?;
     Ok(flow_id)
 }
@@ -218,14 +153,13 @@ pub(crate) async fn reset_current_agent_flow_id(
 mod tests {
     use super::{
         current_context_state_from_config, ensure_current_agent_flow_id,
-        reset_current_agent_flow_id, reset_current_chat_uuid, sandbox_scope,
-        scoped_chat_storage_id, storage_context_key,
+        reset_current_agent_flow_id, sandbox_scope, storage_context_key,
     };
     use crate::bot::resolve_thread_spec_from_context;
     use async_trait::async_trait;
     use oxide_agent_core::agent::AgentMemory;
     use oxide_agent_core::storage::{
-        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, Message,
+        AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
         StorageError, StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions,
         UpsertTopicBindingOptions, UserConfig, UserContextConfig,
     };
@@ -260,30 +194,6 @@ mod tests {
             Ok(())
         }
 
-        async fn update_user_prompt(
-            &self,
-            _user_id: i64,
-            _system_prompt: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-            Ok(None)
-        }
-
-        async fn update_user_model(
-            &self,
-            _user_id: i64,
-            _model_name: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-            Ok(None)
-        }
-
         async fn update_user_state(
             &self,
             _user_id: i64,
@@ -294,54 +204,6 @@ mod tests {
 
         async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
             Ok(None)
-        }
-
-        async fn save_message(
-            &self,
-            _user_id: i64,
-            _role: String,
-            _content: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_chat_history(
-            &self,
-            _user_id: i64,
-            _limit: usize,
-        ) -> Result<Vec<Message>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn save_message_for_chat(
-            &self,
-            _user_id: i64,
-            _chat_uuid: String,
-            _role: String,
-            _content: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
-        }
-
-        async fn get_chat_history_for_chat(
-            &self,
-            _user_id: i64,
-            _chat_uuid: String,
-            _limit: usize,
-        ) -> Result<Vec<Message>, StorageError> {
-            Ok(Vec::new())
-        }
-
-        async fn clear_chat_history_for_chat(
-            &self,
-            _user_id: i64,
-            _chat_uuid: String,
-        ) -> Result<(), StorageError> {
-            Ok(())
         }
 
         async fn save_agent_memory(
@@ -488,14 +350,6 @@ mod tests {
     }
 
     #[test]
-    fn scoped_chat_storage_id_nests_uuid_under_context() {
-        assert_eq!(
-            scoped_chat_storage_id("-1001:42", "chat-1"),
-            "-1001:42/chat-1"
-        );
-    }
-
-    #[test]
     fn sandbox_scope_reuses_topic_context_key() {
         let spec = resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
         let scope = sandbox_scope(77, ChatId(-1001), spec);
@@ -512,7 +366,6 @@ mod tests {
             "-1001:42".to_string(),
             UserContextConfig {
                 state: Some("agent_mode".to_string()),
-                current_chat_uuid: None,
                 current_agent_flow_id: None,
                 chat_id: Some(-1001),
                 thread_id: Some(42),
@@ -523,7 +376,7 @@ mod tests {
             },
         );
         let config = UserConfig {
-            state: Some("chat_mode".to_string()),
+            state: Some("dm_state".to_string()),
             contexts,
             ..UserConfig::default()
         };
@@ -536,70 +389,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reset_current_chat_uuid_only_touches_requested_context() {
-        let storage: Arc<dyn StorageProvider> = Arc::new(ConfigStorage {
-            config: Mutex::new(UserConfig {
-                contexts: HashMap::from([
-                    (
-                        "-1001:42".to_string(),
-                        UserContextConfig {
-                            state: Some("chat_mode".to_string()),
-                            current_chat_uuid: Some("chat-a".to_string()),
-                            current_agent_flow_id: None,
-                            chat_id: Some(-1001),
-                            thread_id: Some(42),
-                            forum_topic_name: None,
-                            forum_topic_icon_color: None,
-                            forum_topic_icon_custom_emoji_id: None,
-                            forum_topic_closed: false,
-                        },
-                    ),
-                    (
-                        "-1001:77".to_string(),
-                        UserContextConfig {
-                            state: Some("chat_mode".to_string()),
-                            current_chat_uuid: Some("chat-b".to_string()),
-                            current_agent_flow_id: None,
-                            chat_id: Some(-1001),
-                            thread_id: Some(77),
-                            forum_topic_name: None,
-                            forum_topic_icon_color: None,
-                            forum_topic_icon_custom_emoji_id: None,
-                            forum_topic_closed: false,
-                        },
-                    ),
-                ]),
-                ..UserConfig::default()
-            }),
-        });
-        let thread_spec =
-            resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(42))));
-        let new_uuid = reset_current_chat_uuid(&storage, 7, ChatId(-1001), thread_spec)
-            .await
-            .expect("reset must succeed");
-
-        let saved = storage
-            .get_user_config(7)
-            .await
-            .expect("config load must succeed");
-        assert_ne!(new_uuid, "chat-a");
-        assert_eq!(
-            saved
-                .contexts
-                .get("-1001:42")
-                .and_then(|context| context.current_chat_uuid.as_deref()),
-            Some(new_uuid.as_str())
-        );
-        assert_eq!(
-            saved
-                .contexts
-                .get("-1001:77")
-                .and_then(|context| context.current_chat_uuid.as_deref()),
-            Some("chat-b")
-        );
-    }
-
-    #[tokio::test]
     async fn ensure_current_agent_flow_id_only_touches_requested_context() {
         let storage: Arc<dyn StorageProvider> = Arc::new(ConfigStorage {
             config: Mutex::new(UserConfig {
@@ -607,7 +396,6 @@ mod tests {
                     "-1001:77".to_string(),
                     UserContextConfig {
                         state: Some("agent_mode".to_string()),
-                        current_chat_uuid: None,
                         current_agent_flow_id: Some("flow-b".to_string()),
                         chat_id: Some(-1001),
                         thread_id: Some(77),
@@ -657,7 +445,6 @@ mod tests {
                         "-1001:42".to_string(),
                         UserContextConfig {
                             state: Some("agent_mode".to_string()),
-                            current_chat_uuid: None,
                             current_agent_flow_id: Some("flow-a".to_string()),
                             chat_id: Some(-1001),
                             thread_id: Some(42),
@@ -671,7 +458,6 @@ mod tests {
                         "-1001:77".to_string(),
                         UserContextConfig {
                             state: Some("agent_mode".to_string()),
-                            current_chat_uuid: None,
                             current_agent_flow_id: Some("flow-b".to_string()),
                             chat_id: Some(-1001),
                             thread_id: Some(77),

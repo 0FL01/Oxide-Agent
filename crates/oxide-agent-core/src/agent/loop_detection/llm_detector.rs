@@ -3,7 +3,7 @@
 use super::config::LoopDetectionConfig;
 use super::types::LoopDetectionError;
 use crate::agent::memory::{AgentMemory, AgentMessage, MessageRole};
-use crate::llm::{LlmClient, LlmError, Message};
+use crate::llm::{InternalTextPurpose, LlmClient, LlmError, Message};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -52,10 +52,9 @@ struct LlmLoopResponse {
 
 #[async_trait]
 pub trait LoopScoutClient: Send + Sync {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         system_prompt: &str,
-        history: &[Message],
         user_message: &str,
         model_name: &str,
     ) -> Result<String, LlmError>;
@@ -63,15 +62,19 @@ pub trait LoopScoutClient: Send + Sync {
 
 #[async_trait]
 impl LoopScoutClient for LlmClient {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         system_prompt: &str,
-        history: &[Message],
         user_message: &str,
         model_name: &str,
     ) -> Result<String, LlmError> {
-        self.chat_completion(system_prompt, history, user_message, model_name)
-            .await
+        self.complete_internal_text_for_model_name(
+            InternalTextPurpose::LoopDetection,
+            system_prompt,
+            user_message,
+            model_name,
+        )
+        .await
     }
 }
 
@@ -158,10 +161,12 @@ impl LlmLoopDetector {
             "LLM loop check triggered"
         );
 
+        let user_prompt = Self::build_loop_detection_user_message(&history);
+
         let llm_response = timeout(
             Duration::from_secs(LLM_TIMEOUT_SECS),
             self.client
-                .chat_completion(SYSTEM_PROMPT, &history, USER_PROMPT, &self.scout_model),
+                .complete_internal_text(SYSTEM_PROMPT, &user_prompt, &self.scout_model),
         )
         .await
         .map_err(|e| LoopDetectionError::LlmFailure(format!("LLM timeout: {e}")))?;
@@ -283,6 +288,26 @@ impl LlmLoopDetector {
         }
     }
 
+    fn build_loop_detection_user_message(history: &[Message]) -> String {
+        let mut prompt = String::with_capacity(USER_PROMPT.len() + history.len() * 128);
+        prompt.push_str(USER_PROMPT);
+        prompt.push_str("\n\nRecent messages:\n");
+        for message in history {
+            prompt.push_str("- ");
+            prompt.push_str(&message.role);
+            prompt.push_str(": ");
+            prompt.push_str(message.content.trim());
+            if let Some(reasoning) = message.reasoning_content.as_deref() {
+                if !reasoning.trim().is_empty() {
+                    prompt.push_str("\n  reasoning: ");
+                    prompt.push_str(reasoning.trim());
+                }
+            }
+            prompt.push('\n');
+        }
+        prompt
+    }
+
     fn parse_response(raw: &str) -> Result<LlmLoopResponse, LoopDetectionError> {
         if let Ok(parsed) = serde_json::from_str::<LlmLoopResponse>(raw) {
             return Ok(parsed);
@@ -347,7 +372,6 @@ mod tests {
     use super::{LlmLoopDetector, LoopScoutClient};
     use crate::agent::loop_detection::LoopDetectionConfig;
     use crate::agent::memory::{AgentMemory, AgentMessage};
-    use crate::llm::Message;
     use async_trait::async_trait;
     use std::sync::Arc;
 
@@ -358,10 +382,9 @@ mod tests {
 
     #[async_trait]
     impl LoopScoutClient for MockLoopScout {
-        async fn chat_completion(
+        async fn complete_internal_text(
             &self,
             _system_prompt: &str,
-            _history: &[Message],
             _user_message: &str,
             _model_name: &str,
         ) -> Result<String, crate::llm::LlmError> {

@@ -1,10 +1,6 @@
 #[allow(missing_docs)]
 #[cfg(feature = "llm-chatgpt")]
 pub mod chatgpt;
-#[allow(missing_docs)]
-#[cfg(feature = "llm-groq")]
-pub mod groq;
-#[allow(missing_docs)]
 #[cfg(feature = "llm-minimax")]
 pub mod minimax;
 #[allow(missing_docs)]
@@ -81,8 +77,6 @@ pub mod zai;
 
 #[cfg(feature = "llm-chatgpt")]
 pub use chatgpt::ChatGptProvider;
-#[cfg(feature = "llm-groq")]
-pub use groq::GroqProvider;
 #[cfg(feature = "llm-minimax")]
 pub use minimax::MiniMaxProvider;
 #[cfg(feature = "llm-mistral")]
@@ -98,6 +92,6 @@ pub use zai::{parse_zai_flush_time, ZaiProvider};
 
 pub(crate) use modules::{
     build_configured_providers, provider_capabilities, provider_capabilities_for_model,
-    provider_key, provider_media_capabilities, provider_missing_route_config_message,
-    provider_module_id,
+    provider_key, provider_media_capabilities, provider_media_capabilities_for_model,
+    provider_missing_route_config_message, provider_module_id,
 };

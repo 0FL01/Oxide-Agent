@@ -216,6 +216,7 @@ mod tests {
             created_at: "2026-05-21T20:05:00+03:00".to_string(),
             previous_summary_detected,
             repair_applied: false,
+            wiki_memory_lookup_available: false,
         }
     }
 

@@ -46,7 +46,7 @@ impl JsonDecodeRetryMock {
 
 #[async_trait::async_trait]
 impl LlmProvider for JsonDecodeRetryMock {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -54,7 +54,9 @@ impl LlmProvider for JsonDecodeRetryMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        unimplemented!()
+        Err(LlmError::Unknown(
+            "unexpected internal text call in json decode test".to_string(),
+        ))
     }
 
     async fn transcribe_audio(
@@ -98,8 +100,8 @@ impl LlmProvider for JsonDecodeRetryMock {
 #[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_retried_on_failure() {
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 
@@ -150,8 +152,8 @@ async fn test_json_decoding_error_retried_on_failure() {
 #[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_succeeds_after_retry() {
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 

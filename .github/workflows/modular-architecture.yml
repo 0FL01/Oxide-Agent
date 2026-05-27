@@ -3,12 +3,10 @@ name: Modular Architecture Checks
 on:
   push:
     branches:
-      - testing
-      - modular-arch
+      - dev
   pull_request:
     branches:
-      - testing
-      - modular-arch
+      - dev
   workflow_dispatch:
 
 jobs:

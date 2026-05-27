@@ -144,6 +144,7 @@ pub(super) fn provider_status<'a>(
         .unwrap_or_else(|| panic!("{provider} provider status must be present"))
 }
 
+#[cfg(feature = "integration-ssh-mcp")]
 pub(super) fn expect_forum_topic_provision_profile_calls(
     mock: &mut crate::storage::MockStorageProvider,
 ) {
@@ -181,6 +182,7 @@ pub(super) fn expect_forum_topic_provision_profile_calls(
         });
 }
 
+#[cfg(feature = "integration-ssh-mcp")]
 pub(super) fn expect_forum_topic_provision_binding_calls(
     mock: &mut crate::storage::MockStorageProvider,
 ) {
@@ -212,6 +214,7 @@ pub(super) fn expect_forum_topic_provision_binding_calls(
         });
 }
 
+#[cfg(feature = "integration-ssh-mcp")]
 pub(super) fn expect_forum_topic_provision_infra_calls(
     mock: &mut crate::storage::MockStorageProvider,
 ) {
@@ -247,6 +250,7 @@ pub(super) fn expect_forum_topic_provision_infra_calls(
         });
 }
 
+#[cfg(feature = "integration-ssh-mcp")]
 pub(super) fn mock_storage_for_forum_topic_provision() -> crate::storage::MockStorageProvider {
     let mut mock = crate::storage::MockStorageProvider::new();
     mock.expect_get_user_config()
@@ -299,7 +303,6 @@ pub(super) fn topic_delete_user_config() -> UserConfig {
             "-100999:42".to_string(),
             UserContextConfig {
                 state: Some("agent_mode".to_string()),
-                current_chat_uuid: Some("chat-1".to_string()),
                 current_agent_flow_id: Some("flow-1".to_string()),
                 chat_id: Some(-100999),
                 thread_id: Some(42),

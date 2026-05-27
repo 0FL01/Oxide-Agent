@@ -27,7 +27,8 @@ pub use task::{
     CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
 };
 pub use types::{
-    AgentMessageKind, BudgetEstimate, BudgetState, CompactedSummaryMetadata, CompactionBackend,
-    CompactionPhase, CompactionPolicy, CompactionReason, CompactionRequest, CompactionRetention,
-    CompactionScope, CompactionTrigger, HotMemoryBudget, OXIDE_COMPACTED_SUMMARY_PREFIX,
+    wiki_memory_lookup_available, AgentMessageKind, BudgetEstimate, BudgetState,
+    CompactedSummaryMetadata, CompactionBackend, CompactionPhase, CompactionPolicy,
+    CompactionReason, CompactionRequest, CompactionRetention, CompactionScope, CompactionTrigger,
+    HotMemoryBudget, OXIDE_COMPACTED_SUMMARY_PREFIX,
 };
