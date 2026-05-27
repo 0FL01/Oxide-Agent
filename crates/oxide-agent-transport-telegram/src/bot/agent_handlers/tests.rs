@@ -456,6 +456,10 @@ fn control_commands_are_recognized_for_topic_gate_bypass() {
         Some(AgentControlCommand::CancelTask)
     );
     assert_eq!(
+        parse_agent_control_command(Some("/cancel")),
+        Some(AgentControlCommand::CancelTask)
+    );
+    assert_eq!(
         parse_agent_control_command(Some("🗑 Clear Memory")),
         Some(AgentControlCommand::ClearMemory)
     );

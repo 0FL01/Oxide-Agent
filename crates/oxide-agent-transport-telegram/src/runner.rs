@@ -235,6 +235,10 @@ async fn handle_command(
 ) -> Result<(), teloxide::RequestError> {
     let res = match cmd {
         Command::Start => bot::handlers::start(bot, msg, storage, settings, dialogue).await,
+        Command::Help => bot::handlers::help(bot, msg, storage, settings, dialogue).await,
+        Command::Cancel => {
+            bot::agent_handlers::cancel_agent_task(bot, msg, dialogue, storage, settings).await
+        }
         Command::Clear => bot::handlers::clear(bot, msg, storage).await,
         Command::Healthcheck => bot::handlers::healthcheck(bot, msg).await,
         Command::Stats => bot::handlers::stats(bot, msg, cache).await,
