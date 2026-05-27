@@ -70,6 +70,7 @@ Default branch: `dev`.
 
 ### Agent execution model
 - Runner lives in `crates/oxide-agent-core/src/agent/runner/`; executor slices live under `agent/executor/`.
+- Runner orchestration stays in `runner/execution.rs`; route/failover logic, response dispatch, runtime compaction, token snapshots, hooks, loop detection, tool execution, and tests are split into sibling `runner/` modules.
 - Sessions handle lifecycle, cancellation, hot memory, and transport-independent progress.
 - Tool calls can run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
 - Compaction protects recent tool context, prunes only before the summary boundary, and coalesces identical checkpoints.
