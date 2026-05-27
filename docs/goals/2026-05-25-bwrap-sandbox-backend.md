@@ -1,7 +1,7 @@
 # Goal: Bwrap Sandbox Backend
 
 Date started: 2026-05-25
-Status: active
+Status: ready
 Codex goal: Implement the roadmap described in docs/prd/prd.md for Oxide Agent, with repository-local /goal documentation and commits at each major checkpoint/phase.
 
 ## Objective

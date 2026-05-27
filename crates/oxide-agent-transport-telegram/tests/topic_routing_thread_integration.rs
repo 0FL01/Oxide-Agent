@@ -3,9 +3,8 @@ use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    Message as StoredMessage, OptionalMetadataPatch, StorageError, StorageProvider,
-    TopicBindingKind, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-    UserConfig,
+    OptionalMetadataPatch, StorageError, StorageProvider, TopicBindingKind, TopicBindingRecord,
+    UpsertAgentProfileOptions, UpsertTopicBindingOptions, UserConfig,
 };
 use oxide_agent_transport_telegram::bot::thread::{
     build_outbound_thread_params, resolve_thread_spec_from_context,
@@ -95,84 +94,12 @@ impl StorageProvider for TestStorage {
         Ok(())
     }
 
-    async fn update_user_prompt(
-        &self,
-        _user_id: i64,
-        _system_prompt: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_user_prompt(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-        Ok(None)
-    }
-
-    async fn update_user_model(
-        &self,
-        _user_id: i64,
-        _model_name: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_user_model(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-        Ok(None)
-    }
-
     async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
         Ok(())
     }
 
     async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
         Ok(None)
-    }
-
-    async fn save_message(
-        &self,
-        _user_id: i64,
-        _role: String,
-        _content: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_chat_history(
-        &self,
-        _user_id: i64,
-        _limit: usize,
-    ) -> Result<Vec<StoredMessage>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn clear_chat_history(&self, _user_id: i64) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn save_message_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-        _role: String,
-        _content: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn get_chat_history_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-        _limit: usize,
-    ) -> Result<Vec<StoredMessage>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn clear_chat_history_for_chat(
-        &self,
-        _user_id: i64,
-        _chat_uuid: String,
-    ) -> Result<(), StorageError> {
-        Ok(())
     }
 
     async fn save_agent_memory(
@@ -414,9 +341,8 @@ fn forum_text_message(chat_id: i64, thread_id: i32, text: &str) -> Message {
 fn topic_routing_resolves_topic_settings_and_default_fallback() {
     let settings = TelegramSettings {
         telegram_token: "dummy".to_string(),
-        allowed_users_str: None,
-        agent_allowed_users_str: None,
-        manager_allowed_users_str: None,
+        telegram_allowed_users_str: None,
+        telegram_manager_allowed_users_str: None,
         manager_home_chat_id: None,
         manager_home_thread_id: None,
         attach_detach_enabled: true,
@@ -481,9 +407,8 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
 fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies() {
     let settings = TelegramSettings {
         telegram_token: "dummy".to_string(),
-        allowed_users_str: None,
-        agent_allowed_users_str: None,
-        manager_allowed_users_str: None,
+        telegram_allowed_users_str: None,
+        telegram_manager_allowed_users_str: None,
         manager_home_chat_id: None,
         manager_home_thread_id: None,
         attach_detach_enabled: true,
@@ -565,9 +490,8 @@ async fn resolve_topic_route_prefers_dynamic_binding_over_static_topic_config() 
         AgentSettings::default(),
         TelegramSettings {
             telegram_token: "test-token".to_string(),
-            allowed_users_str: None,
-            agent_allowed_users_str: None,
-            manager_allowed_users_str: None,
+            telegram_allowed_users_str: None,
+            telegram_manager_allowed_users_str: None,
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,

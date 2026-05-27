@@ -7,6 +7,7 @@ use crate::capabilities::{
     ManifestError,
 };
 use crate::llm::providers::{provider_missing_route_config_message, provider_module_id};
+use crate::llm::{provider_capabilities_for_model, provider_media_capabilities_for_model};
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -14,9 +15,7 @@ use std::fmt;
 use std::str::FromStr;
 
 // LLM provider defaults
-/// Default temperature used for Groq chat completions.
-pub const GROQ_CHAT_TEMPERATURE: f32 = 0.7;
-/// Default temperature used for Mistral chat completions.
+/// Default temperature used for Mistral text requests.
 pub const MISTRAL_CHAT_TEMPERATURE: f32 = 0.9;
 /// Temperature used for Mistral reasoning chat requests.
 pub const MISTRAL_REASONING_TEMPERATURE: f32 = 0.7;
@@ -24,11 +23,11 @@ pub const MISTRAL_REASONING_TEMPERATURE: f32 = 0.7;
 pub const MISTRAL_TOOL_TEMPERATURE: f32 = 0.7;
 /// Temperature for Mistral audio transcription requests.
 pub const MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
-/// Default temperature used for OpenRouter chat completions.
+/// Default temperature used for OpenRouter text requests.
 pub const OPENROUTER_CHAT_TEMPERATURE: f32 = 0.7;
-/// Default temperature used for NVIDIA NIM chat completions.
+/// Default temperature used for NVIDIA NIM text requests.
 pub const NVIDIA_CHAT_TEMPERATURE: f32 = 0.7;
-/// Default temperature used for MiniMax chat completions.
+/// Default temperature used for MiniMax text requests.
 pub const MINIMAX_CHAT_TEMPERATURE: f32 = 1.0;
 /// Temperature used when MiniMax runs tool-enabled chat requests.
 pub const MINIMAX_TOOL_TEMPERATURE: f32 = 1.0;
@@ -36,7 +35,7 @@ pub const MINIMAX_TOOL_TEMPERATURE: f32 = 1.0;
 pub const OPENROUTER_AUDIO_TRANSCRIBE_TEMPERATURE: f32 = 0.4;
 /// Temperature for OpenRouter image analysis requests.
 pub const OPENROUTER_IMAGE_TEMPERATURE: f32 = 0.7;
-/// Default temperature used for OpenCode Go chat completions.
+/// Default temperature used for OpenCode Go text requests.
 pub const OPENCODE_GO_CHAT_TEMPERATURE: f32 = 0.7;
 /// Default max concurrent OpenCode Go requests shared by main and sub-agents.
 pub const OPENCODE_GO_DEFAULT_MAX_CONCURRENT: usize = 5;
@@ -82,21 +81,6 @@ pub struct AgentSettings {
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
 
-    /// Default system message
-    pub system_message: Option<String>,
-
-    // Dynamic Model Configuration
-    /// Chat model ID override
-    pub chat_model_id: Option<String>,
-    /// Chat model display name override
-    pub chat_model_name: Option<String>,
-    /// Chat model provider override
-    pub chat_model_provider: Option<String>,
-    /// Chat model max output tokens override
-    pub chat_model_max_output_tokens: Option<u32>,
-    /// Chat model context window tokens override
-    pub chat_model_context_window_tokens: Option<u32>,
-
     /// Agent model ID override
     pub agent_model_id: Option<String>,
     /// Agent model provider override
@@ -140,6 +124,10 @@ pub struct AgentSettings {
     pub media_model_id: Option<String>,
     /// Media model provider override
     pub media_model_provider: Option<String>,
+    /// Media model max output tokens override.
+    pub media_model_max_output_tokens: Option<u32>,
+    /// Media model context window tokens override.
+    pub media_model_context_window_tokens: Option<u32>,
 
     /// Agent timeout in seconds
     pub agent_timeout_secs: Option<u64>,
@@ -361,26 +349,14 @@ impl AgentSettings {
 
         settings.apply_tool_provider_env_fallbacks();
 
-        if settings
-            .chat_model_id
-            .as_ref()
-            .is_none_or(|val| val.trim().is_empty())
-        {
+        if !settings.has_configured_agent_route() {
             return Err(ConfigError::Message(
-                "Critical: CHAT_MODEL_ID is required for operation".to_string(),
-            ));
-        }
-        if settings
-            .chat_model_provider
-            .as_ref()
-            .is_none_or(|val| val.trim().is_empty())
-        {
-            return Err(ConfigError::Message(
-                "Critical: CHAT_MODEL_PROVIDER is required for operation".to_string(),
+                "Critical: AGENT_MODEL_ID and AGENT_MODEL_PROVIDER or AGENT_MODEL_ROUTES are required for operation".to_string(),
             ));
         }
         settings.validate_route_providers()?;
         settings.canonicalize_route_provider_ids()?;
+        settings.validate_route_model_capabilities()?;
         settings.validate_route_credentials()?;
 
         Ok(settings)
@@ -398,10 +374,6 @@ impl AgentSettings {
     }
 
     fn validate_route_providers(&self) -> Result<(), ConfigError> {
-        self.validate_optional_route_provider(
-            "CHAT_MODEL_PROVIDER",
-            self.chat_model_provider.as_deref(),
-        )?;
         self.validate_optional_route_provider(
             "AGENT_MODEL_PROVIDER",
             self.agent_model_provider.as_deref(),
@@ -486,11 +458,75 @@ impl AgentSettings {
         Ok(())
     }
 
+    fn validate_route_model_capabilities(&self) -> Result<(), ConfigError> {
+        for (source, route) in self.agent_route_capability_entries() {
+            let capabilities = provider_capabilities_for_model(&route);
+            if !capabilities.can_run_agent_tools() {
+                return Err(ConfigError::Message(format!(
+                    "Critical: {source} route {}/{} is not approved for Agent Mode tool execution",
+                    route.provider, route.id
+                )));
+            }
+        }
+
+        if let Some((_, route)) = self.media_model_spec() {
+            let capabilities = provider_media_capabilities_for_model(&route);
+            if !capabilities.supports_audio_transcription
+                && !capabilities.supports_image_understanding
+                && !capabilities.supports_video_understanding
+            {
+                return Err(ConfigError::Message(format!(
+                    "Critical: MEDIA_MODEL route {}/{} is not approved for any media operation",
+                    route.provider, route.id
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn agent_route_capability_entries(&self) -> Vec<(String, ModelInfo)> {
+        let mut routes = Vec::new();
+        if let Some(agent_routes) = self.agent_model_routes.as_deref() {
+            for (index, route) in Self::normalize_model_routes(
+                agent_routes,
+                self.agent_model_max_output_tokens
+                    .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS),
+                self.agent_model_context_window_tokens
+                    .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS),
+            )
+            .into_iter()
+            .enumerate()
+            {
+                routes.push((format!("AGENT_MODEL_ROUTES[{index}]"), route));
+            }
+        } else if let Some((_, route)) = self.agent_model_spec() {
+            routes.push(("AGENT_MODEL".to_string(), route));
+        }
+
+        if let Some(sub_agent_routes) = self.sub_agent_model_routes.as_deref() {
+            for (index, route) in Self::normalize_model_routes(
+                sub_agent_routes,
+                self.sub_agent_max_output_tokens
+                    .unwrap_or(DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS),
+                self.sub_agent_context_window_tokens_or_inherited(),
+            )
+            .into_iter()
+            .enumerate()
+            {
+                routes.push((format!("SUB_AGENT_MODEL_ROUTES[{index}]"), route));
+            }
+        } else if self.sub_agent_model_spec().is_some() {
+            routes.push((
+                "SUB_AGENT_MODEL".to_string(),
+                self.resolve_execution_model(true),
+            ));
+        }
+
+        routes
+    }
+
     fn canonicalize_route_provider_ids(&mut self) -> Result<(), ConfigError> {
-        Self::canonicalize_optional_provider_field(
-            "CHAT_MODEL_PROVIDER",
-            &mut self.chat_model_provider,
-        )?;
         Self::canonicalize_optional_provider_field(
             "AGENT_MODEL_PROVIDER",
             &mut self.agent_model_provider,
@@ -578,7 +614,6 @@ impl AgentSettings {
 
     fn configured_route_provider_values(&self) -> impl Iterator<Item = &str> {
         let direct_providers = [
-            self.chat_model_provider.as_deref(),
             self.agent_model_provider.as_deref(),
             self.sub_agent_model_provider.as_deref(),
             self.media_model_provider.as_deref(),
@@ -601,6 +636,24 @@ impl AgentSettings {
             .chain(sub_agent_route_providers)
             .map(str::trim)
             .filter(|provider| !provider.is_empty())
+    }
+
+    fn has_configured_agent_route(&self) -> bool {
+        let has_primary_route = self.agent_model_routes.as_deref().is_some_and(|routes| {
+            routes
+                .iter()
+                .any(|route| !route.id.trim().is_empty() && !route.provider.trim().is_empty())
+        });
+        let has_direct_route = self
+            .agent_model_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+            && self
+                .agent_model_provider
+                .as_deref()
+                .is_some_and(|provider| !provider.trim().is_empty());
+
+        has_primary_route || has_direct_route
     }
 
     fn apply_model_routes_from_env(&mut self) {
@@ -764,23 +817,6 @@ impl AgentSettings {
             .collect()
     }
 
-    fn chat_model_spec(&self) -> Option<(String, ModelInfo)> {
-        let id = self.chat_model_id.as_ref()?;
-        let provider = self.chat_model_provider.as_ref()?;
-        let name = self.chat_model_name.as_deref().unwrap_or(id);
-        let max_output_tokens = self
-            .chat_model_max_output_tokens
-            .unwrap_or(DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS);
-        let context_window_tokens = self
-            .chat_model_context_window_tokens
-            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
-
-        Some((
-            name.to_string(),
-            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
-        ))
-    }
-
     fn agent_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.agent_model_id.as_ref()?;
         let provider = self.agent_model_provider.as_ref()?;
@@ -819,7 +855,7 @@ impl AgentSettings {
             .unwrap_or(WIKI_MEMORY_WRITER_MAX_TOKENS);
         let context_window_tokens = self
             .wiki_memory_writer_context_window_tokens
-            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
+            .unwrap_or(DEFAULT_INTERNAL_TEXT_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
@@ -831,11 +867,11 @@ impl AgentSettings {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
         let max_output_tokens = self
-            .chat_model_max_output_tokens
-            .unwrap_or(DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS);
+            .media_model_max_output_tokens
+            .unwrap_or(DEFAULT_MEDIA_MODEL_MAX_OUTPUT_TOKENS);
         let context_window_tokens = self
-            .chat_model_context_window_tokens
-            .unwrap_or(DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS);
+            .media_model_context_window_tokens
+            .unwrap_or(DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
@@ -859,29 +895,9 @@ impl AgentSettings {
         ))
     }
 
-    /// Returns a list of chat models configured from environment variables
-    pub fn get_chat_models(&self) -> Vec<(String, ModelInfo)> {
-        let mut models = Vec::new();
-
-        if let Some((name, info)) = self.chat_model_spec() {
-            Self::upsert_model(&mut models, name, info);
-        }
-
-        models
-    }
-
     /// Returns a list of available models configured from environment variables
     pub fn get_available_models(&self) -> Vec<(String, ModelInfo)> {
         let mut models = Vec::new();
-
-        if let Some((name, info)) = self.chat_model_spec() {
-            let id = info.id.clone();
-            let name_for_check = name.clone();
-            Self::upsert_model(&mut models, name, info.clone());
-            if name_for_check != id {
-                Self::upsert_model(&mut models, id, info);
-            }
-        }
 
         if let Some((name, info)) = self.agent_model_spec() {
             Self::upsert_model(&mut models, name, info);
@@ -902,14 +918,6 @@ impl AgentSettings {
         models
     }
 
-    /// Returns the default chat model name for chat mode
-    pub fn get_default_chat_model_name(&self) -> String {
-        self.chat_model_name
-            .clone()
-            .or_else(|| self.chat_model_id.clone())
-            .unwrap_or_default()
-    }
-
     fn resolve_execution_model(&self, prefer_sub_agent: bool) -> ModelInfo {
         if prefer_sub_agent {
             if let Some((_, info)) = self.sub_agent_model_spec() {
@@ -917,9 +925,6 @@ impl AgentSettings {
             }
         }
         if let Some((_, info)) = self.agent_model_spec() {
-            return info;
-        }
-        if let Some((_, info)) = self.chat_model_spec() {
             return info;
         }
         ModelInfo::default()
@@ -1080,14 +1085,6 @@ impl AgentSettings {
         (String::new(), String::new())
     }
 
-    /// Returns model info by its display name
-    pub fn get_model_info_by_name(&self, name: &str) -> Option<ModelInfo> {
-        self.get_chat_models()
-            .into_iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, info)| info)
-    }
-
     /// Returns the configured agent timeout in seconds
     pub fn get_agent_timeout_secs(&self) -> u64 {
         self.agent_timeout_secs.unwrap_or(AGENT_TIMEOUT_SECS)
@@ -1149,50 +1146,51 @@ mod tests {
     }
 
     // Tests run sequentially to avoid environment variable race conditions
+    #[cfg(feature = "llm-openrouter")]
     #[test]
     fn test_config_env_loading() -> Result<(), Box<dyn std::error::Error>> {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        env::set_var("ZAI_API_KEY", "dummy_zai_key");
+        env::set_var("OPENROUTER_API_KEY", "dummy_openrouter_key");
 
-        env::set_var("CHAT_MODEL_ID", "test-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
         env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), Some(0.42));
 
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("AGENT_MODEL_ID");
+        env::remove_var("AGENT_MODEL_PROVIDER");
         env::remove_var("AGENT_MODEL_TEMPERATURE");
 
         // 2. Test empty env var ignored by direct fallback parsing.
-        env::set_var("CHAT_MODEL_ID", "test-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
         env::set_var("AGENT_MODEL_TEMPERATURE", "");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), None);
 
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("AGENT_MODEL_ID");
+        env::remove_var("AGENT_MODEL_PROVIDER");
         env::remove_var("AGENT_MODEL_TEMPERATURE");
 
         // 3. Test explicit environment mapping case.
-        env::set_var("CHAT_MODEL_ID", "test-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
+        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
         env::set_var("AGENT_MODEL_TEMPERATURE", "0.13");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), Some(0.13));
 
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("AGENT_MODEL_ID");
+        env::remove_var("AGENT_MODEL_PROVIDER");
         env::remove_var("AGENT_MODEL_TEMPERATURE");
 
-        env::remove_var("ZAI_API_KEY");
+        env::remove_var("OPENROUTER_API_KEY");
         Ok(())
     }
 
@@ -1269,8 +1267,8 @@ mod tests {
     #[test]
     fn route_provider_validation_rejects_non_compiled_provider() {
         let settings = AgentSettings {
-            chat_model_id: Some("chat-model".to_string()),
-            chat_model_provider: Some("removed-provider".to_string()),
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("removed-provider".to_string()),
             ..AgentSettings::default()
         };
 
@@ -1280,7 +1278,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("CHAT_MODEL_PROVIDER references provider 'removed-provider'"));
+            .contains("AGENT_MODEL_PROVIDER references provider 'removed-provider'"));
         assert!(error
             .to_string()
             .contains("no compiled LLM provider module owns that provider alias or ID"));
@@ -1297,8 +1295,8 @@ mod tests {
             "llm-provider/google-gemini-direct",
         ] {
             let settings = AgentSettings {
-                chat_model_id: Some("google/gemini-3-flash-preview".to_string()),
-                chat_model_provider: Some(provider.to_string()),
+                agent_model_id: Some("google/gemini-3-flash-preview".to_string()),
+                agent_model_provider: Some(provider.to_string()),
                 ..AgentSettings::default()
             };
 
@@ -1341,8 +1339,8 @@ mod tests {
     #[test]
     fn route_provider_validation_accepts_compiled_provider_alias_and_id() {
         let settings = AgentSettings {
-            chat_model_id: Some("chat-model".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
             media_model_id: Some("media-model".to_string()),
             media_model_provider: Some("llm-provider/openrouter".to_string()),
             ..AgentSettings::default()
@@ -1357,8 +1355,8 @@ mod tests {
     #[test]
     fn route_provider_validation_rejects_disabled_provider_module() {
         let mut settings = AgentSettings {
-            chat_model_id: Some("chat-model".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
             ..AgentSettings::default()
         };
         settings.modules.insert(
@@ -1371,7 +1369,7 @@ mod tests {
             .expect_err("disabled provider module should fail");
 
         assert!(error.to_string().contains(
-            "CHAT_MODEL_PROVIDER references provider 'openrouter', but module 'llm-provider/openrouter' is disabled"
+            "AGENT_MODEL_PROVIDER references provider 'openrouter', but module 'llm-provider/openrouter' is disabled"
         ));
     }
 
@@ -1379,13 +1377,13 @@ mod tests {
     #[test]
     fn route_provider_canonicalization_rewrites_aliases_to_module_ids() {
         let mut settings = AgentSettings {
-            chat_model_id: Some("chat-model".to_string()),
-            chat_model_provider: Some(" OpenRouter ".to_string()),
-            media_model_id: Some("media-model".to_string()),
+            agent_model_id: Some("deepseek/deepseek-v4-flash".to_string()),
+            agent_model_provider: Some(" OpenRouter ".to_string()),
+            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
             media_model_provider: Some("llm-provider/openrouter".to_string()),
             browser_use_model_provider: Some(" ".to_string()),
             agent_model_routes: Some(vec![ModelInfo {
-                id: "agent-route".to_string(),
+                id: "deepseek/deepseek-v4-flash".to_string(),
                 provider: "openrouter".to_string(),
                 max_output_tokens: 10_000,
                 context_window_tokens: 20_000,
@@ -1409,7 +1407,7 @@ mod tests {
             .expect("aliases should canonicalize");
 
         assert_eq!(
-            settings.chat_model_provider.as_deref(),
+            settings.agent_model_provider.as_deref(),
             Some("llm-provider/openrouter")
         );
         assert_eq!(
@@ -1437,6 +1435,50 @@ mod tests {
             settings.get_available_models()[0].1.provider,
             "llm-provider/openrouter"
         );
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn route_model_validation_rejects_unapproved_openrouter_agent_model() {
+        let mut settings = AgentSettings {
+            agent_model_id: Some("unknown/model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
+            ..AgentSettings::default()
+        };
+
+        settings
+            .canonicalize_route_provider_ids()
+            .expect("provider should canonicalize");
+        let error = settings
+            .validate_route_model_capabilities()
+            .expect_err("unknown OpenRouter agent model should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("AGENT_MODEL route llm-provider/openrouter/unknown/model is not approved"));
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[test]
+    fn route_model_validation_rejects_unapproved_openrouter_media_model() {
+        let mut settings = AgentSettings {
+            agent_model_id: Some("deepseek/deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("unknown/model".to_string()),
+            media_model_provider: Some("openrouter".to_string()),
+            ..AgentSettings::default()
+        };
+
+        settings
+            .canonicalize_route_provider_ids()
+            .expect("provider should canonicalize");
+        let error = settings
+            .validate_route_model_capabilities()
+            .expect_err("unknown OpenRouter media model should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("MEDIA_MODEL route llm-provider/openrouter/unknown/model is not approved"));
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -1560,6 +1602,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "llm-minimax", feature = "llm-zai"))]
     #[test]
     fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
         use std::env;
@@ -1569,9 +1612,6 @@ mod tests {
         clear_model_route_env();
 
         env::set_var("ZAI_API_KEY", "test-key");
-        env::set_var("CHAT_MODEL_ID", "chat-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "openrouter");
-
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "MiniMax-M2.7");
         env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "minimax");
         env::set_var("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
@@ -1605,8 +1645,6 @@ mod tests {
             "AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS",
             "AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS",
             "AGENT_MODEL_ROUTES__1__WEIGHT",
-            "CHAT_MODEL_ID",
-            "CHAT_MODEL_PROVIDER",
             "ZAI_API_KEY",
         ] {
             env::remove_var(key);
@@ -1615,6 +1653,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn settings_resolves_opencode_go_module_env_config() -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
@@ -1623,8 +1662,8 @@ mod tests {
         clear_model_route_env();
         env::remove_var("ZAI_API_KEY");
 
-        env::set_var("CHAT_MODEL_ID", "chat-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "opencode-go");
+        env::set_var("AGENT_MODEL_ID", "chat-model");
+        env::set_var("AGENT_MODEL_PROVIDER", "opencode-go");
         env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
         env::set_var(
             "OPENCODE_GO_API_BASE",
@@ -1653,13 +1692,14 @@ mod tests {
             "https://opencode.example.test/v1/chat/completions"
         );
 
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
+        env::remove_var("AGENT_MODEL_ID");
+        env::remove_var("AGENT_MODEL_PROVIDER");
         env::remove_var("OPENCODE_GO_API_KEY");
         env::remove_var("OPENCODE_GO_API_BASE");
         Ok(())
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn settings_do_not_require_zai_key_when_active_routes_use_opencode_go(
     ) -> Result<(), ConfigError> {
@@ -1670,8 +1710,6 @@ mod tests {
         env::remove_var("ZAI_API_KEY");
         env::remove_var("OPENCODE_GO_API_BASE");
 
-        env::set_var("CHAT_MODEL_ID", "chat-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "opencode_go");
         env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
         env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode-go");
@@ -1694,12 +1732,11 @@ mod tests {
         );
 
         clear_model_route_env();
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
         env::remove_var("OPENCODE_GO_API_KEY");
         Ok(())
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn settings_error_when_active_opencode_go_key_missing() {
         let _guard = test_env_mutex()
@@ -1710,8 +1747,6 @@ mod tests {
         env::remove_var("OPENCODE_GO_API_KEY");
         env::remove_var("OPENCODE_GO_API_BASE");
 
-        env::set_var("CHAT_MODEL_ID", "chat-model");
-        env::set_var("CHAT_MODEL_PROVIDER", "opencode_go");
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
         env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
 
@@ -1721,8 +1756,6 @@ mod tests {
             .contains("OPENCODE_GO_API_KEY is required"));
 
         clear_model_route_env();
-        env::remove_var("CHAT_MODEL_ID");
-        env::remove_var("CHAT_MODEL_PROVIDER");
     }
 
     #[test]
@@ -1886,7 +1919,6 @@ pub fn get_agent_model() -> String {
     std::env::var("AGENT_MODEL_ID")
         .ok()
         .or_else(|| std::env::var("AGENT_MODEL_NAME").ok())
-        .or_else(|| std::env::var("CHAT_MODEL_ID").ok())
         .unwrap_or_default()
 }
 
@@ -1901,10 +1933,14 @@ pub const SUB_AGENT_TIMEOUT_SECS: u64 = 3600;
 /// Maximum timeout for individual tool call (in seconds)
 /// This prevents a single tool from blocking the agent indefinitely
 pub const AGENT_TOOL_TIMEOUT_SECS: u64 = 300; // 5 minutes
-/// Default chat model max output tokens.
-pub const DEFAULT_CHAT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
-/// Default chat model context window tokens.
-pub const DEFAULT_CHAT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
+/// Default media model max output tokens.
+pub const DEFAULT_MEDIA_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
+/// Default media model context window tokens.
+pub const DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
+/// Default internal text route max output tokens.
+pub const DEFAULT_INTERNAL_TEXT_MAX_OUTPUT_TOKENS: u32 = 64_000;
+/// Default internal text route context window tokens.
+pub const DEFAULT_INTERNAL_TEXT_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
 /// Default main-agent model max output tokens.
 pub const DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 128_000;
 /// Default main-agent model context window tokens.

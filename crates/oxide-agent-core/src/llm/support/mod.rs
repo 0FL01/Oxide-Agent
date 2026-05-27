@@ -1,5 +1,5 @@
 pub(crate) mod backoff;
-#[cfg(any(feature = "llm-groq", feature = "llm-mistral"))]
+#[cfg(feature = "llm-mistral")]
 pub(crate) mod common;
 pub(crate) mod history;
 #[cfg(any(
@@ -11,5 +11,5 @@ pub(crate) mod history;
     feature = "llm-openrouter"
 ))]
 pub mod http;
-#[cfg(any(feature = "llm-groq", feature = "llm-mistral"))]
+#[cfg(feature = "llm-mistral")]
 pub(crate) mod openai_compat;

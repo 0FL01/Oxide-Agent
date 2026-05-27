@@ -365,7 +365,6 @@ profile_requirements = {
             "integration/mcp-jira",
             "integration/mcp-mattermost",
             "integration/ssh-mcp",
-            "llm-provider/groq",
             "llm-provider/minimax",
             "llm-provider/mistral",
             "llm-provider/nvidia",

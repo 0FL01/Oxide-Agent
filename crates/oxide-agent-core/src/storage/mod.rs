@@ -1,4 +1,4 @@
-//! Storage layer for user data and chat history
+//! Storage layer for user, agent, topic, and control-plane data.
 //!
 //! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
 
@@ -52,13 +52,12 @@ pub(crate) use control_plane::{
 pub use error::StorageError;
 pub use flows::AgentFlowRecord;
 pub use keys::{
-    agent_profile_key, audit_events_key, generate_chat_uuid, private_secret_key, reminder_job_key,
+    agent_profile_key, audit_events_key, generate_flow_id, private_secret_key, reminder_job_key,
     reminder_jobs_prefix, topic_agents_md_key, topic_binding_key, topic_context_key,
-    topic_infra_config_key, user_agent_memory_key, user_chat_history_key, user_config_key,
-    user_context_agent_flow_key, user_context_agent_flow_memory_key,
-    user_context_agent_flow_prefix, user_context_agent_flows_prefix, user_context_agent_memory_key,
-    user_context_chat_history_prefix, user_history_key, wiki_context_inbox_key, wiki_context_key,
-    wiki_context_page_key, wiki_context_raw_key, wiki_global_key,
+    topic_infra_config_key, user_agent_memory_key, user_config_key, user_context_agent_flow_key,
+    user_context_agent_flow_memory_key, user_context_agent_flow_prefix,
+    user_context_agent_flows_prefix, user_context_agent_memory_key, wiki_context_inbox_key,
+    wiki_context_key, wiki_context_page_key, wiki_context_raw_key, wiki_global_key,
 };
 #[cfg(feature = "storage-s3-r2")]
 pub use modules::{build_primary_storage, BuiltStorageBackend, StorageBackendModule};
@@ -74,7 +73,7 @@ pub use reminder::{
     parse_reminder_timezone, resolve_reminder_local_datetime, CreateReminderJobOptions,
     ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
 };
-pub use user::{Message, UserConfig, UserContextConfig};
+pub use user::{UserConfig, UserContextConfig};
 
 #[cfg(test)]
 mod tests;

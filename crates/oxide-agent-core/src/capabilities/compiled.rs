@@ -120,11 +120,6 @@ const CHATGPT_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
             .with_env("CHATGPT_AUTH_PATH"),
     ];
 #[allow(dead_code)]
-const GROQ_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
-    &[ModuleConfigProperty::string("api_key", "Groq API key.")
-        .with_env("GROQ_API_KEY")
-        .secret()];
-#[allow(dead_code)]
 const MISTRAL_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
     &[ModuleConfigProperty::string("api_key", "Mistral API key.")
         .with_env("MISTRAL_API_KEY")
@@ -271,14 +266,6 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         LlmProvider,
         ["llm-provider/openai-chatgpt"],
         CHATGPT_CONFIG_PROPERTIES
-    );
-    push_module_with_config!(
-        modules,
-        "llm-groq",
-        "llm-provider/groq",
-        LlmProvider,
-        ["llm-provider/groq"],
-        GROQ_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,

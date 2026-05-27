@@ -338,6 +338,7 @@ async fn topic_binding_rollback_restores_previous_snapshot() {
                         "user_id": 77,
                         "topic_id": "topic-a",
                         "agent_id": "agent-old",
+                        "binding_kind": "manual",
                         "created_at": 1,
                         "updated_at": 2
                     },
@@ -422,6 +423,7 @@ async fn topic_binding_rollback_succeeds_when_audit_write_fails() {
                         "user_id": 77,
                         "topic_id": "topic-a",
                         "agent_id": "agent-old",
+                        "binding_kind": "manual",
                         "created_at": 1,
                         "updated_at": 2
                     },
@@ -507,6 +509,7 @@ async fn topic_binding_rollback_scans_multiple_audit_pages() {
                         "user_id": 77,
                         "topic_id": "topic-a",
                         "agent_id": "agent-old",
+                        "binding_kind": "manual",
                         "created_at": 1,
                         "updated_at": 2
                     },

@@ -56,7 +56,7 @@ pub(crate) fn spawn_reminder_scheduler(
 ) {
     tokio::spawn(async move {
         let scheduler = Arc::new(ReminderSchedulerHandle::new(
-            settings.telegram.agent_allowed_users(),
+            settings.telegram.allowed_users(),
         ));
         install_reminder_scheduler(scheduler.clone()).await;
         if let Err(error) = scheduler.bootstrap_from_storage(&storage).await {

@@ -279,11 +279,18 @@ fn spawn_deferred_agent_input(ctx: DeferredAgentInputContext) {
                     .await;
                 }
             }
-            Err(error) if error.to_string() == "MULTIMODAL_DISABLED" => {
-                let _ = send_multimodal_unavailable_message(&ctx.dispatch.bot, chat_id, thread_id)
-                    .await;
-            }
             Err(error) => {
+                if let Some(detail) = media_route_unavailable_detail(&error) {
+                    let _ = send_multimodal_unavailable_message(
+                        &ctx.dispatch.bot,
+                        chat_id,
+                        thread_id,
+                        Some(&detail),
+                    )
+                    .await;
+                    return;
+                }
+
                 warn!(error = %error, "Failed to preprocess deferred agent input");
                 let sanitized_error =
                     oxide_agent_core::utils::sanitize_html_error(&error.to_string());
@@ -336,17 +343,32 @@ pub(crate) async fn send_multimodal_unavailable_message(
     bot: &Bot,
     chat_id: ChatId,
     thread_id: Option<ThreadId>,
+    detail: Option<&str>,
 ) -> Result<()> {
+    let detail =
+        detail.unwrap_or("MEDIA_MODEL is not configured or is not allowed for this media type.");
+    let message = format!(
+        "🚫 Media input is not available.\n{detail}\nFix: set MEDIA_MODEL_ID=google/gemini-3.1-flash-lite-preview and MEDIA_MODEL_PROVIDER=openrouter, then restart the bot."
+    );
+
     crate::bot::resilient::send_message_resilient_with_thread(
-        bot,
-        chat_id,
-        "🚫 Agent cannot process this input right now.\nOpenRouter media route or Mistral audio route required for image, audio, and video capabilities.",
-        None,
-        thread_id,
+        bot, chat_id, &message, None, thread_id,
     )
     .await?;
 
     Ok(())
+}
+
+pub(crate) fn media_route_unavailable_detail(error: &anyhow::Error) -> Option<String> {
+    let message = error.to_string();
+    message
+        .strip_prefix("MEDIA_ROUTE_UNAVAILABLE: ")
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            (message == "MULTIMODAL_DISABLED").then(|| {
+                "MEDIA_MODEL is not configured or is not allowed for this media type.".to_string()
+            })
+        })
 }
 
 pub(crate) async fn dispatch_preprocessed_agent_text(

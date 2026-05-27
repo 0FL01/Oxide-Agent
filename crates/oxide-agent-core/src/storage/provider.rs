@@ -1,6 +1,6 @@
 use super::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    CreateReminderJobOptions, Message, ReminderJobRecord, ReminderJobStatus, StorageError,
+    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, StorageError,
     TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord, TopicInfraConfigRecord,
     UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions,
     UpsertTopicContextOptions, UpsertTopicInfraConfigOptions, UserConfig,
@@ -20,75 +20,10 @@ pub trait StorageProvider: Send + Sync {
         user_id: i64,
         config: UserConfig,
     ) -> Result<(), StorageError>;
-    /// Update user system prompt.
-    async fn update_user_prompt(
-        &self,
-        user_id: i64,
-        system_prompt: String,
-    ) -> Result<(), StorageError>;
-    /// Get user system prompt.
-    async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError>;
-    /// Update user model.
-    async fn update_user_model(&self, user_id: i64, model_name: String)
-        -> Result<(), StorageError>;
-    /// Get user model.
-    async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError>;
     /// Update user state.
     async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError>;
     /// Get user state.
     async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError>;
-    /// Save message to chat history.
-    async fn save_message(
-        &self,
-        user_id: i64,
-        role: String,
-        content: String,
-    ) -> Result<(), StorageError>;
-    /// Get chat history for a user.
-    async fn get_chat_history(
-        &self,
-        user_id: i64,
-        limit: usize,
-    ) -> Result<Vec<Message>, StorageError>;
-    /// Clear chat history for a user.
-    async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError>;
-    /// Save message to chat history scoped by chat UUID.
-    async fn save_message_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-        role: String,
-        content: String,
-    ) -> Result<(), StorageError>;
-    /// Get chat history for a user scoped by chat UUID.
-    async fn get_chat_history_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-        limit: usize,
-    ) -> Result<Vec<Message>, StorageError>;
-    /// Clear chat history for a user scoped by chat UUID.
-    async fn clear_chat_history_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-    ) -> Result<(), StorageError>;
-    /// Clear all chat histories scoped by transport context.
-    async fn clear_chat_history_for_context(
-        &self,
-        user_id: i64,
-        context_key: String,
-    ) -> Result<(), StorageError> {
-        let config = self.get_user_config(user_id).await?;
-        if let Some(chat_uuid) = config
-            .contexts
-            .get(&context_key)
-            .and_then(|context| context.current_chat_uuid.clone())
-        {
-            self.clear_chat_history_for_chat(user_id, chat_uuid).await?;
-        }
-        Ok(())
-    }
     /// Save agent memory to storage.
     async fn save_agent_memory(
         &self,

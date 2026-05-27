@@ -59,8 +59,8 @@ impl LlmProvider for SuccessMock {
 #[tokio::test]
 async fn test_client_uses_registered_provider() {
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 
@@ -68,10 +68,10 @@ async fn test_client_uses_registered_provider() {
     client.register_provider("mock-provider".to_string(), Arc::new(SuccessMock));
 
     let response = client
-        .chat_completion("sys", &[], "user", "test-model")
+        .chat_with_tools("sys", &[], &[], "test-model", false)
         .await
         .expect("Should succeed");
-    assert_eq!(response, "Mock Response");
+    assert_eq!(response.content.as_deref(), Some("Success"));
 }
 
 struct RetrySuccessMock {
@@ -133,8 +133,8 @@ impl LlmProvider for RetrySuccessMock {
 async fn test_retry_logic_eventual_success() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 
@@ -203,8 +203,8 @@ impl LlmProvider for AlwaysFailMock {
 async fn test_retry_logic_failure() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 

@@ -18,6 +18,7 @@ pub(super) use crate::agent::providers::{
 pub(super) use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
 pub(super) use crate::config::AgentSettings;
 pub(super) use crate::llm::LlmClient;
+#[cfg(feature = "manager-control-plane")]
 pub(super) use crate::storage::MockStorageProvider;
 #[cfg(feature = "manager-control-plane")]
 pub(super) use anyhow::bail;
@@ -106,8 +107,8 @@ pub(super) fn build_executor_with_timeout(agent_timeout_secs: u64) -> AgentExecu
 
 pub(super) fn build_executor_with_mock_response(response_text: &'static str) -> AgentExecutor {
     let settings = Arc::new(crate::config::AgentSettings {
-        agent_model_id: Some("mock-model".to_string()),
-        agent_model_provider: Some("mock".to_string()),
+        agent_model_id: Some("deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         ..crate::config::AgentSettings::default()
     });
     let mut provider = crate::llm::MockLlmProvider::new();
@@ -121,7 +122,7 @@ pub(super) fn build_executor_with_mock_response(response_text: &'static str) -> 
         })
     });
     provider
-        .expect_chat_completion()
+        .expect_complete_internal_text()
         .returning(|_, _, _, _, _| {
             Err(crate::llm::LlmError::Unknown("Not implemented".to_string()))
         });
@@ -132,7 +133,7 @@ pub(super) fn build_executor_with_mock_response(response_text: &'static str) -> 
         .expect_analyze_image()
         .returning(|_, _, _, _| Err(crate::llm::LlmError::Unknown("Not implemented".to_string())));
     let mut llm = LlmClient::new(settings.as_ref());
-    llm.register_provider("mock".to_string(), Arc::new(provider));
+    llm.register_provider("opencode-go".to_string(), Arc::new(provider));
     let session = AgentSession::new(9_i64.into());
     AgentExecutor::new(Arc::new(llm), session, settings)
 }

@@ -1,11 +1,15 @@
 use super::*;
+#[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use crate::config::{ModelInfo, ModuleRuntimeConfig};
+#[cfg(feature = "tool-sandbox-exec")]
 use std::collections::HashSet;
 
+#[cfg(feature = "tool-wiki-memory")]
 #[derive(Default)]
 struct RegistryWikiBackend;
 
+#[cfg(feature = "tool-wiki-memory")]
 #[async_trait::async_trait]
 impl crate::agent::wiki_memory::WikiObjectBackend for RegistryWikiBackend {
     async fn get_text(&self, _key: &str) -> Result<Option<String>, crate::storage::StorageError> {
@@ -25,6 +29,7 @@ impl crate::agent::wiki_memory::WikiObjectBackend for RegistryWikiBackend {
     }
 }
 
+#[cfg(feature = "tool-wiki-memory")]
 fn registry_wiki_store() -> crate::agent::wiki_memory::WikiStore {
     crate::agent::wiki_memory::WikiStore::new(Arc::new(RegistryWikiBackend), "prod")
 }
@@ -105,6 +110,12 @@ fn v1_tool_runtime_model_detection_rejects_other_routes() {
     ));
 }
 
+#[cfg(all(
+    feature = "tool-sandbox-fileops",
+    feature = "tool-sandbox-exec",
+    feature = "tool-sandbox-recreate",
+    feature = "tool-file-delivery"
+))]
 #[test]
 fn typed_runtime_registry_exposes_sandbox_tools() {
     let executor = build_executor();
@@ -400,6 +411,7 @@ fn typed_runtime_registry_exposes_browser_use_tools_when_enabled() {
     std::env::remove_var("BROWSER_USE_URL");
 }
 
+#[cfg(feature = "tool-sandbox-exec")]
 #[test]
 fn typed_runtime_registry_applies_execution_profile_tool_policy() {
     let mut executor =
@@ -924,6 +936,11 @@ fn typed_runtime_registry_skips_disabled_ssh_mcp_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
+#[cfg(all(
+    feature = "tool-sandbox-fileops",
+    feature = "tool-sandbox-exec",
+    feature = "tool-sandbox-recreate"
+))]
 #[test]
 fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
     let settings = Arc::new(AgentSettings {
@@ -949,6 +966,12 @@ fn typed_runtime_registry_skips_disabled_sandbox_exec_module() {
     assert!(tool_names.contains("recreate_sandbox"));
 }
 
+#[cfg(all(
+    feature = "tool-sandbox-fileops",
+    feature = "tool-sandbox-exec",
+    feature = "tool-sandbox-recreate",
+    feature = "tool-file-delivery"
+))]
 #[test]
 fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
     let settings = Arc::new(AgentSettings {
@@ -978,6 +1001,7 @@ fn typed_runtime_registry_skips_disabled_sandbox_fileops_module() {
     assert!(tool_names.contains("recreate_sandbox"));
 }
 
+#[cfg(feature = "tool-sandbox-fileops")]
 #[test]
 fn typed_runtime_registry_skips_disabled_file_delivery_module() {
     let settings = Arc::new(AgentSettings {
@@ -1194,6 +1218,11 @@ fn typed_runtime_registry_registers_mcp_modules_once() {
     std::env::remove_var("JIRA_URL");
 }
 
+#[cfg(all(
+    feature = "tool-sandbox-fileops",
+    feature = "tool-sandbox-exec",
+    feature = "tool-file-delivery"
+))]
 #[test]
 fn current_tool_definitions_use_typed_runtime_specs_for_v1_route() {
     let settings = Arc::new(AgentSettings {

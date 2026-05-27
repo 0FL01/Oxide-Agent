@@ -54,11 +54,7 @@ impl Default for LoopDetectionConfig {
             llm_check_interval: 3,
             llm_confidence_threshold: 0.95,
             llm_history_count: 20,
-            scout_model: std::env::var("LOOP_SCOUT_MODEL")
-                .ok()
-                .or_else(|| std::env::var("CHAT_MODEL_NAME").ok())
-                .or_else(|| std::env::var("CHAT_MODEL_ID").ok())
-                .unwrap_or_default(),
+            scout_model: std::env::var("LOOP_SCOUT_MODEL").ok().unwrap_or_default(),
         }
     }
 }

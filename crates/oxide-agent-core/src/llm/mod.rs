@@ -1,6 +1,6 @@
 //! LLM providers and client
 //!
-//! Provides a unified interface to various LLM providers (Groq, Mistral, OpenRouter).
+//! Provides a unified interface to agent-compatible LLM providers.
 
 mod capabilities;
 mod client;
@@ -11,7 +11,11 @@ pub mod providers;
 mod support;
 mod types;
 
+pub(crate) use capabilities::{
+    provider_capabilities_for_model, provider_media_capabilities_for_model,
+};
 pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
+pub(crate) use client::InternalTextPurpose;
 pub use client::LlmClient;
 pub use error::LlmError;
 pub use provider::LlmProvider;

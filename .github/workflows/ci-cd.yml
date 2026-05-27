@@ -13,7 +13,6 @@ jobs:
     env:
       TELEGRAM_TOKEN: dummy_token
       ALLOWED_USERS: 123456789
-      GROQ_API_KEY: dummy
       MISTRAL_API_KEY: dummy
       OPENROUTER_API_KEY: dummy
       OXIDE_R2_ENDPOINT_URL: https://dummy.r2.cloudflarestorage.com
@@ -31,10 +30,6 @@ jobs:
       LOOP_LLM_CONFIDENCE_THRESHOLD: "0.9"
       LOOP_LLM_HISTORY_COUNT: "20"
       LOOP_SCOUT_MODEL: labs-devstral-small-2512
-      CHAT_MODEL_ID: google/gemini-3-flash-preview
-      CHAT_MODEL_NAME: "✨ Gemini 3.0 Flash"
-      CHAT_MODEL_PROVIDER: openrouter
-      CHAT_MODEL_MAX_OUTPUT_TOKENS: "64000"
       AGENT_MODEL_ID: glm-4.7
       AGENT_MODEL_PROVIDER: zai
       AGENT_MODEL_MAX_OUTPUT_TOKENS: "200000"
@@ -103,7 +98,6 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           OXIDE_R2_ACCESS_KEY_ID: ${{ secrets.OXIDE_R2_ACCESS_KEY_ID }}
@@ -111,7 +105,6 @@ jobs:
           OXIDE_R2_ENDPOINT_URL: ${{ secrets.OXIDE_R2_ENDPOINT_URL }}
           OXIDE_R2_BUCKET_NAME: ${{ secrets.OXIDE_R2_BUCKET_NAME }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          SYSTEM_MESSAGE: ${{ secrets.SYSTEM_MESSAGE }}
           LOOP_DETECTION_ENABLED: ${{ secrets.LOOP_DETECTION_ENABLED || 'true' }}
           LOOP_TOOL_CALL_THRESHOLD: ${{ secrets.LOOP_TOOL_CALL_THRESHOLD || '5' }}
           LOOP_CONTENT_CHUNK_SIZE: ${{ secrets.LOOP_CONTENT_CHUNK_SIZE || '50' }}
@@ -122,10 +115,6 @@ jobs:
           LOOP_LLM_CONFIDENCE_THRESHOLD: ${{ secrets.LOOP_LLM_CONFIDENCE_THRESHOLD || '0.9' }}
           LOOP_LLM_HISTORY_COUNT: ${{ secrets.LOOP_LLM_HISTORY_COUNT || '20' }}
           LOOP_SCOUT_MODEL: ${{ secrets.LOOP_SCOUT_MODEL || 'labs-devstral-small-2512' }}
-          CHAT_MODEL_ID: ${{ secrets.CHAT_MODEL_ID || 'google/gemini-3-flash-preview' }}
-          CHAT_MODEL_NAME: ${{ secrets.CHAT_MODEL_NAME || '✨ Gemini 3.0 Flash' }}
-          CHAT_MODEL_PROVIDER: ${{ secrets.CHAT_MODEL_PROVIDER || 'openrouter' }}
-          CHAT_MODEL_MAX_OUTPUT_TOKENS: ${{ secrets.CHAT_MODEL_MAX_OUTPUT_TOKENS || '64000' }}
           AGENT_MODEL_ID: ${{ secrets.AGENT_MODEL_ID || 'glm-4.7' }}
           AGENT_MODEL_PROVIDER: ${{ secrets.AGENT_MODEL_PROVIDER || 'zai' }}
           AGENT_MODEL_MAX_OUTPUT_TOKENS: ${{ secrets.AGENT_MODEL_MAX_OUTPUT_TOKENS || '200000' }}
@@ -170,14 +159,12 @@ jobs:
       - name: Build and Deploy on Server
         uses: appleboy/ssh-action@master
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
           AGENT_ACCESS_IDS: ${{ secrets.AGENT_ACCESS_IDS }}
-          SYSTEM_MESSAGE: ${{ secrets.SYSTEM_MESSAGE }}
           OXIDE_R2_ACCESS_KEY_ID: ${{ secrets.OXIDE_R2_ACCESS_KEY_ID }}
           OXIDE_R2_SECRET_ACCESS_KEY: ${{ secrets.OXIDE_R2_SECRET_ACCESS_KEY }}
           OXIDE_R2_ENDPOINT_URL: ${{ secrets.OXIDE_R2_ENDPOINT_URL }}
@@ -193,10 +180,6 @@ jobs:
           LOOP_LLM_CONFIDENCE_THRESHOLD: ${{ secrets.LOOP_LLM_CONFIDENCE_THRESHOLD }}
           LOOP_LLM_HISTORY_COUNT: ${{ secrets.LOOP_LLM_HISTORY_COUNT }}
           LOOP_SCOUT_MODEL: ${{ secrets.LOOP_SCOUT_MODEL }}
-          CHAT_MODEL_ID: ${{ secrets.CHAT_MODEL_ID }}
-          CHAT_MODEL_NAME: ${{ secrets.CHAT_MODEL_NAME }}
-          CHAT_MODEL_PROVIDER: ${{ secrets.CHAT_MODEL_PROVIDER }}
-          CHAT_MODEL_MAX_OUTPUT_TOKENS: ${{ secrets.CHAT_MODEL_MAX_OUTPUT_TOKENS }}
           AGENT_MODEL_ID: ${{ secrets.AGENT_MODEL_ID }}
           AGENT_MODEL_PROVIDER: ${{ secrets.AGENT_MODEL_PROVIDER }}
           AGENT_MODEL_MAX_OUTPUT_TOKENS: ${{ secrets.AGENT_MODEL_MAX_OUTPUT_TOKENS }}
@@ -212,7 +195,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: GROQ_API_KEY,TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,SYSTEM_MESSAGE,OXIDE_R2_ACCESS_KEY_ID,OXIDE_R2_SECRET_ACCESS_KEY,OXIDE_R2_ENDPOINT_URL,OXIDE_R2_BUCKET_NAME,TAVILY_API_KEY,LOOP_DETECTION_ENABLED,LOOP_TOOL_CALL_THRESHOLD,LOOP_CONTENT_CHUNK_SIZE,LOOP_CONTENT_THRESHOLD,LOOP_MAX_HISTORY_LENGTH,LOOP_LLM_CHECK_AFTER_TURNS,LOOP_LLM_CHECK_INTERVAL,LOOP_LLM_CONFIDENCE_THRESHOLD,LOOP_LLM_HISTORY_COUNT,LOOP_SCOUT_MODEL,CHAT_MODEL_ID,CHAT_MODEL_NAME,CHAT_MODEL_PROVIDER,CHAT_MODEL_MAX_OUTPUT_TOKENS,AGENT_MODEL_ID,AGENT_MODEL_PROVIDER,AGENT_MODEL_MAX_OUTPUT_TOKENS,SUB_AGENT_MODEL_ID,SUB_AGENT_MODEL_PROVIDER,SUB_AGENT_MAX_OUTPUT_TOKENS,MEDIA_MODEL_ID,MEDIA_MODEL_PROVIDER,NARRATOR_MODEL_ID,NARRATOR_MODEL_PROVIDER
+          envs: TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,OXIDE_R2_ACCESS_KEY_ID,OXIDE_R2_SECRET_ACCESS_KEY,OXIDE_R2_ENDPOINT_URL,OXIDE_R2_BUCKET_NAME,TAVILY_API_KEY,LOOP_DETECTION_ENABLED,LOOP_TOOL_CALL_THRESHOLD,LOOP_CONTENT_CHUNK_SIZE,LOOP_CONTENT_THRESHOLD,LOOP_MAX_HISTORY_LENGTH,LOOP_LLM_CHECK_AFTER_TURNS,LOOP_LLM_CHECK_INTERVAL,LOOP_LLM_CONFIDENCE_THRESHOLD,LOOP_LLM_HISTORY_COUNT,LOOP_SCOUT_MODEL,AGENT_MODEL_ID,AGENT_MODEL_PROVIDER,AGENT_MODEL_MAX_OUTPUT_TOKENS,SUB_AGENT_MODEL_ID,SUB_AGENT_MODEL_PROVIDER,SUB_AGENT_MAX_OUTPUT_TOKENS,MEDIA_MODEL_ID,MEDIA_MODEL_PROVIDER,NARRATOR_MODEL_ID,NARRATOR_MODEL_PROVIDER
 
 
           timeout: 60s
@@ -229,14 +212,12 @@ jobs:
             # Create .env file using environment variables
             echo "Creating .env file..."
             printf "RUST_LOG=oxide_agent_core=info,oxide_agent_runtime=info,oxide_agent_transport_telegram=info,zai_rs=debug,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn\n" > .env
-            printf "GROQ_API_KEY=%s\n" "$GROQ_API_KEY" >> .env
             printf "TELEGRAM_TOKEN=%s\n" "$TELEGRAM_TOKEN" >> .env
             printf "OPENROUTER_API_KEY=%s\n" "$OPENROUTER_API_KEY" >> .env
             printf "ZAI_API_KEY=%s\n" "$ZAI_API_KEY" >> .env
             printf "MISTRAL_API_KEY=%s\n" "$MISTRAL_API_KEY" >> .env
             printf "ALLOWED_USERS=%s\n" "$ALLOWED_USERS" >> .env
             printf "AGENT_ACCESS_IDS=%s\n" "$AGENT_ACCESS_IDS" >> .env
-            printf "SYSTEM_MESSAGE=%s\n" "$SYSTEM_MESSAGE" >> .env
             printf "OXIDE_R2_ACCESS_KEY_ID=%s\n" "$OXIDE_R2_ACCESS_KEY_ID" >> .env
             printf "OXIDE_R2_SECRET_ACCESS_KEY=%s\n" "$OXIDE_R2_SECRET_ACCESS_KEY" >> .env
             printf "OXIDE_R2_ENDPOINT_URL=%s\n" "$OXIDE_R2_ENDPOINT_URL" >> .env
@@ -253,10 +234,6 @@ jobs:
             test -n "$LOOP_LLM_CONFIDENCE_THRESHOLD"; or set LOOP_LLM_CONFIDENCE_THRESHOLD 0.9
             test -n "$LOOP_LLM_HISTORY_COUNT"; or set LOOP_LLM_HISTORY_COUNT 20
             test -n "$LOOP_SCOUT_MODEL"; or set LOOP_SCOUT_MODEL labs-devstral-small-2512
-            test -n "$CHAT_MODEL_ID"; or set CHAT_MODEL_ID "google/gemini-3-flash-preview"
-            test -n "$CHAT_MODEL_NAME"; or set CHAT_MODEL_NAME "✨ Gemini 3.0 Flash"
-            test -n "$CHAT_MODEL_PROVIDER"; or set CHAT_MODEL_PROVIDER "openrouter"
-            test -n "$CHAT_MODEL_MAX_OUTPUT_TOKENS"; or set CHAT_MODEL_MAX_OUTPUT_TOKENS 64000
             test -n "$AGENT_MODEL_ID"; or set AGENT_MODEL_ID "glm-4.7"
             test -n "$AGENT_MODEL_PROVIDER"; or set AGENT_MODEL_PROVIDER "zai"
             test -n "$AGENT_MODEL_MAX_OUTPUT_TOKENS"; or set AGENT_MODEL_MAX_OUTPUT_TOKENS 200000
@@ -278,10 +255,6 @@ jobs:
             printf "LOOP_LLM_CONFIDENCE_THRESHOLD=%s\n" "$LOOP_LLM_CONFIDENCE_THRESHOLD" >> .env
             printf "LOOP_LLM_HISTORY_COUNT=%s\n" "$LOOP_LLM_HISTORY_COUNT" >> .env
             printf "LOOP_SCOUT_MODEL=%s\n" "$LOOP_SCOUT_MODEL" >> .env
-            printf "CHAT_MODEL_ID=%s\n" "$CHAT_MODEL_ID" >> .env
-            printf "CHAT_MODEL_NAME=%s\n" "$CHAT_MODEL_NAME" >> .env
-            printf "CHAT_MODEL_PROVIDER=%s\n" "$CHAT_MODEL_PROVIDER" >> .env
-            printf "CHAT_MODEL_MAX_OUTPUT_TOKENS=%s\n" "$CHAT_MODEL_MAX_OUTPUT_TOKENS" >> .env
             printf "AGENT_MODEL_ID=%s\n" "$AGENT_MODEL_ID" >> .env
             printf "AGENT_MODEL_PROVIDER=%s\n" "$AGENT_MODEL_PROVIDER" >> .env
             printf "AGENT_MODEL_MAX_OUTPUT_TOKENS=%s\n" "$AGENT_MODEL_MAX_OUTPUT_TOKENS" >> .env

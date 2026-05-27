@@ -98,8 +98,8 @@ impl LlmProvider for JsonDecodeRetryMock {
 #[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_retried_on_failure() {
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 
@@ -150,8 +150,8 @@ async fn test_json_decoding_error_retried_on_failure() {
 #[tokio::test(start_paused = true)]
 async fn test_json_decoding_error_succeeds_after_retry() {
     let settings = AgentSettings {
-        chat_model_id: Some("test-model".to_string()),
-        chat_model_provider: Some("mock-provider".to_string()),
+        agent_model_id: Some("test-model".to_string()),
+        agent_model_provider: Some("mock-provider".to_string()),
         ..AgentSettings::default()
     };
 

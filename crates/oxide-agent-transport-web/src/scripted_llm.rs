@@ -117,7 +117,7 @@ impl ScriptedLlmProvider {
 
 #[async_trait]
 impl LlmProvider for ScriptedLlmProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],

@@ -40,26 +40,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
-        "id": "llm-provider/groq",
-        "kind": "llm-provider",
-        "cargo_feature": "llm-groq",
-        "provides": [
-          "llm-provider/groq"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": [
-          {
-            "name": "api_key",
-            "value_kind": "string",
-            "description": "Groq API key.",
-            "env": "GROQ_API_KEY",
-            "secret": true,
-            "default_value": null
-          }
-        ]
-      },
-      {
         "id": "llm-provider/minimax",
         "kind": "llm-provider",
         "cargo_feature": "llm-minimax",
@@ -237,6 +217,20 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
+        "id": "sandbox-backend/bwrap",
+        "kind": "sandbox-backend",
+        "cargo_feature": "sandbox-backend-bwrap",
+        "provides": [
+          "sandbox-backend/bwrap",
+          "sandbox-backend/bwrap/exec",
+          "sandbox-backend/bwrap/fileops",
+          "sandbox-backend/bwrap/lifecycle"
+        ],
+        "requires": [],
+        "conflicts": [],
+        "config_properties": []
+      },
+      {
         "id": "sandbox-backend/docker-direct",
         "kind": "sandbox-backend",
         "cargo_feature": "sandbox-backend-docker-direct",
@@ -404,7 +398,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "kind": "any-of",
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec"
+              "sandbox-backend/sandboxd-client/exec",
+              "sandbox-backend/bwrap/exec"
             ]
           }
         ],
@@ -424,7 +419,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "kind": "any-of",
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops"
+              "sandbox-backend/sandboxd-client/fileops",
+              "sandbox-backend/bwrap/fileops"
             ]
           }
         ],
@@ -443,7 +439,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "kind": "any-of",
             "capabilities": [
               "sandbox-backend/docker-direct/lifecycle",
-              "sandbox-backend/sandboxd-client/lifecycle"
+              "sandbox-backend/sandboxd-client/lifecycle",
+              "sandbox-backend/bwrap/lifecycle"
             ]
           }
         ],
@@ -561,14 +558,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
             "kind": "any-of",
             "capabilities": [
               "sandbox-backend/docker-direct/exec",
-              "sandbox-backend/sandboxd-client/exec"
+              "sandbox-backend/sandboxd-client/exec",
+              "sandbox-backend/bwrap/exec"
             ]
           },
           {
             "kind": "any-of",
             "capabilities": [
               "sandbox-backend/docker-direct/fileops",
-              "sandbox-backend/sandboxd-client/fileops"
+              "sandbox-backend/sandboxd-client/fileops",
+              "sandbox-backend/bwrap/fileops"
             ]
           }
         ],
@@ -634,10 +633,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "integration/ssh-mcp"
       },
       {
-        "id": "llm-provider/groq",
-        "module": "llm-provider/groq"
-      },
-      {
         "id": "llm-provider/minimax",
         "module": "llm-provider/minimax"
       },
@@ -676,6 +671,22 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "manager/topic-sandbox-admin",
         "module": "manager/control-plane"
+      },
+      {
+        "id": "sandbox-backend/bwrap",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/exec",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/fileops",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/lifecycle",
+        "module": "sandbox-backend/bwrap"
       },
       {
         "id": "sandbox-backend/docker-direct",
@@ -848,7 +859,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "integration/mcp-jira",
       "integration/mcp-mattermost",
       "integration/ssh-mcp",
-      "llm-provider/groq",
       "llm-provider/minimax",
       "llm-provider/mistral",
       "llm-provider/nvidia",
@@ -857,6 +867,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/openrouter",
       "llm-provider/zai",
       "manager/control-plane",
+      "sandbox-backend/bwrap",
       "sandbox-backend/docker-direct",
       "sandbox-backend/sandboxd-client",
       "sandbox-daemon/sandboxd",
@@ -891,7 +902,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "integration/mcp-jira",
       "integration/mcp-mattermost",
       "integration/ssh-mcp",
-      "llm-provider/groq",
       "llm-provider/minimax",
       "llm-provider/mistral",
       "llm-provider/nvidia",
@@ -902,6 +912,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "manager/agent-profile-admin",
       "manager/control-plane",
       "manager/topic-sandbox-admin",
+      "sandbox-backend/bwrap",
+      "sandbox-backend/bwrap/exec",
+      "sandbox-backend/bwrap/fileops",
+      "sandbox-backend/bwrap/lifecycle",
       "sandbox-backend/docker-direct",
       "sandbox-backend/docker-direct/diagnostics",
       "sandbox-backend/docker-direct/exec",
@@ -946,6 +960,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     ]
   },
   "registered_tool_names_default_config": [
+    "apply_file_edit",
     "cancel_sub_agents",
     "compress",
     "describe_image_file",
@@ -975,7 +990,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "ytdlp_search_videos"
   ],
   "registered_llm_provider_ids_dummy_config": [
-    "llm-provider/groq",
     "llm-provider/minimax",
     "llm-provider/mistral",
     "llm-provider/nvidia",
@@ -986,7 +1000,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   ],
   "registered_llm_provider_aliases_dummy_config": [
     "chatgpt",
-    "groq",
     "minimax",
     "mistral",
     "nvidia",
@@ -1000,6 +1013,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "storage/r2"
   ],
   "sandbox_backend_module_ids": [
+    "sandbox-backend/bwrap",
     "sandbox-backend/docker-direct",
     "sandbox-backend/sandboxd-client"
   ],
@@ -1023,15 +1037,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "kind": "mcp-integration",
       "cargo_feature": "integration-ssh-mcp",
       "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "llm-provider/groq",
-      "kind": "llm-provider",
-      "cargo_feature": "llm-groq",
-      "config_env": [
-        "GROQ_API_KEY"
-      ],
       "requires_capabilities": []
     },
     {
@@ -1098,6 +1103,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "ZAI_API_BASE",
         "ZAI_API_KEY"
       ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "sandbox-backend/bwrap",
+      "kind": "sandbox-backend",
+      "cargo_feature": "sandbox-backend-bwrap",
+      "config_env": [],
       "requires_capabilities": []
     },
     {

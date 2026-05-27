@@ -1,8 +1,8 @@
 use super::telemetry::with_storage_reason;
 use super::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
-    CreateReminderJobOptions, Message, R2Storage, ReminderJobRecord, ReminderJobStatus,
-    StorageError, StorageProvider, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
+    CreateReminderJobOptions, R2Storage, ReminderJobRecord, ReminderJobStatus, StorageError,
+    StorageProvider, TopicAgentsMdRecord, TopicBindingRecord, TopicContextRecord,
     TopicInfraConfigRecord, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
     UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
     UserConfig,
@@ -31,42 +31,6 @@ impl StorageProvider for R2Storage {
         .await
     }
 
-    /// Update user system prompt
-    async fn update_user_prompt(
-        &self,
-        user_id: i64,
-        system_prompt: String,
-    ) -> Result<(), StorageError> {
-        with_storage_reason(
-            "update_user_prompt",
-            self.update_user_prompt_inner(user_id, system_prompt),
-        )
-        .await
-    }
-
-    /// Get user system prompt
-    async fn get_user_prompt(&self, user_id: i64) -> Result<Option<String>, StorageError> {
-        with_storage_reason("get_user_prompt", self.get_user_prompt_inner(user_id)).await
-    }
-
-    /// Update user model
-    async fn update_user_model(
-        &self,
-        user_id: i64,
-        model_name: String,
-    ) -> Result<(), StorageError> {
-        with_storage_reason(
-            "update_user_model",
-            self.update_user_model_inner(user_id, model_name),
-        )
-        .await
-    }
-
-    /// Get user model
-    async fn get_user_model(&self, user_id: i64) -> Result<Option<String>, StorageError> {
-        with_storage_reason("get_user_model", self.get_user_model_inner(user_id)).await
-    }
-
     /// Update user state
     async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
         with_storage_reason(
@@ -79,92 +43,6 @@ impl StorageProvider for R2Storage {
     /// Get user state
     async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
         with_storage_reason("get_user_state", self.get_user_state_inner(user_id)).await
-    }
-
-    /// Save message to chat history
-    async fn save_message(
-        &self,
-        user_id: i64,
-        role: String,
-        content: String,
-    ) -> Result<(), StorageError> {
-        with_storage_reason(
-            "save_message",
-            self.save_message_inner(user_id, role, content),
-        )
-        .await
-    }
-
-    /// Get chat history for a user
-    async fn get_chat_history(
-        &self,
-        user_id: i64,
-        limit: usize,
-    ) -> Result<Vec<Message>, StorageError> {
-        with_storage_reason(
-            "get_chat_history",
-            self.get_chat_history_inner(user_id, limit),
-        )
-        .await
-    }
-
-    /// Clear chat history for a user
-    async fn clear_chat_history(&self, user_id: i64) -> Result<(), StorageError> {
-        with_storage_reason("clear_chat_history", self.clear_chat_history_inner(user_id)).await
-    }
-
-    /// Save message to chat history for a specific chat UUID
-    async fn save_message_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-        role: String,
-        content: String,
-    ) -> Result<(), StorageError> {
-        with_storage_reason(
-            "save_message_for_chat",
-            self.save_message_for_chat_inner(user_id, chat_uuid, role, content),
-        )
-        .await
-    }
-
-    /// Get chat history for a specific chat UUID
-    async fn get_chat_history_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-        limit: usize,
-    ) -> Result<Vec<Message>, StorageError> {
-        with_storage_reason(
-            "get_chat_history_for_chat",
-            self.get_chat_history_for_chat_inner(user_id, chat_uuid, limit),
-        )
-        .await
-    }
-
-    /// Clear chat history for a specific chat UUID
-    async fn clear_chat_history_for_chat(
-        &self,
-        user_id: i64,
-        chat_uuid: String,
-    ) -> Result<(), StorageError> {
-        with_storage_reason(
-            "clear_chat_history_for_chat",
-            self.clear_chat_history_for_chat_inner(user_id, chat_uuid),
-        )
-        .await
-    }
-
-    async fn clear_chat_history_for_context(
-        &self,
-        user_id: i64,
-        context_key: String,
-    ) -> Result<(), StorageError> {
-        with_storage_reason(
-            "clear_chat_history_for_context",
-            self.clear_chat_history_for_context_inner(user_id, context_key),
-        )
-        .await
     }
 
     /// Save agent memory to storage
@@ -316,9 +194,8 @@ impl StorageProvider for R2Storage {
         with_storage_reason("delete_wiki_text", self.delete_object(&storage_key)).await
     }
 
-    /// Clear all context (history and memory) for a user
+    /// Clear all context for a user.
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
-        self.clear_chat_history(user_id).await?;
         self.clear_agent_memory(user_id).await?;
         Ok(())
     }

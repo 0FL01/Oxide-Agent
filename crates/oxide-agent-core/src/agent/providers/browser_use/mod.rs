@@ -442,7 +442,7 @@ impl BrowserUseProvider {
         let configured_provider = route.provider.trim();
         let provider = canonical_browser_route_provider(configured_provider);
         let supports_vision = route_supports_vision(&provider, &route.id);
-        let supports_tools = !matches!(provider.as_str(), "llm-provider/groq" | "groq");
+        let supports_tools = true;
 
         let (bridge_provider, api_base, api_key) = match provider.as_str() {
             "llm-provider/minimax" | "minimax" => (

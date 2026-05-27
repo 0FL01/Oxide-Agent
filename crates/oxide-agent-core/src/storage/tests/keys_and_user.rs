@@ -1,29 +1,6 @@
 use super::*;
 
 #[test]
-fn user_chat_history_key_uses_chat_uuid_namespace() {
-    let key = user_chat_history_key(42, "chat-123");
-    assert_eq!(key, "users/42/chats/chat-123/history.json");
-}
-
-#[test]
-fn user_history_key_uses_user_root_namespace() {
-    let key = user_history_key(42);
-    assert_eq!(key, "users/42/history.json");
-}
-
-#[test]
-fn user_chat_history_key_isolated_by_user_and_chat_uuid() {
-    let key_a = user_chat_history_key(1, "chat-a");
-    let key_b = user_chat_history_key(1, "chat-b");
-    let key_c = user_chat_history_key(2, "chat-a");
-
-    assert_ne!(key_a, key_b);
-    assert_ne!(key_a, key_c);
-    assert_ne!(key_b, key_c);
-}
-
-#[test]
 fn user_context_agent_memory_key_uses_topic_namespace() {
     let key = user_context_agent_memory_key(42, "-1001:77");
     assert_eq!(key, "users/42/topics/-1001:77/agent_memory.json");
@@ -48,22 +25,16 @@ fn user_context_agent_flow_memory_key_uses_flow_namespace() {
 }
 
 #[test]
-fn user_context_chat_history_prefix_uses_topic_namespace() {
-    let prefix = user_context_chat_history_prefix(42, "-1001:77");
-    assert_eq!(prefix, "users/42/chats/-1001:77/");
-}
-
-#[test]
-fn generate_chat_uuid_returns_v4_uuid() {
-    let chat_uuid = generate_chat_uuid();
-    let parsed = Uuid::parse_str(&chat_uuid);
+fn generate_flow_id_returns_v4_uuid() {
+    let flow_id = generate_flow_id();
+    let parsed = Uuid::parse_str(&flow_id);
     assert!(parsed.is_ok());
     let version = parsed.map(|uuid| uuid.get_version_num());
     assert_eq!(version, Ok(4));
 }
 
 #[test]
-fn user_config_deserializes_without_current_chat_uuid() {
+fn user_config_deserializes_without_removed_chat_fields() {
     let json = r#"{
             "system_prompt": "You are helpful",
             "model_name": "gpt",
@@ -74,31 +45,7 @@ fn user_config_deserializes_without_current_chat_uuid() {
     assert!(parsed.is_ok());
     let config = parsed.ok();
     assert!(config.is_some());
-    assert_eq!(config.and_then(|cfg| cfg.current_chat_uuid), None);
-}
-
-#[test]
-fn user_config_roundtrip_preserves_current_chat_uuid() {
-    let config = UserConfig {
-        system_prompt: Some("You are helpful".to_string()),
-        model_name: Some("gpt".to_string()),
-        state: Some("chat_mode".to_string()),
-        current_chat_uuid: Some("123e4567-e89b-12d3-a456-426614174000".to_string()),
-        contexts: HashMap::new(),
-    };
-
-    let json = serde_json::to_string(&config);
-    assert!(json.is_ok());
-
-    let parsed: Result<UserConfig, serde_json::Error> =
-        serde_json::from_str(&json.unwrap_or_default());
-    assert!(parsed.is_ok());
-
-    let parsed = parsed.unwrap_or_default();
-    assert_eq!(
-        parsed.current_chat_uuid,
-        Some("123e4567-e89b-12d3-a456-426614174000".to_string())
-    );
+    assert_eq!(config.and_then(|cfg| cfg.state), Some("idle".to_string()));
 }
 
 #[test]
@@ -108,7 +55,6 @@ fn user_config_roundtrip_preserves_context_scoped_metadata() {
         "-1001:42".to_string(),
         UserContextConfig {
             state: Some("agent_mode".to_string()),
-            current_chat_uuid: Some("chat-42".to_string()),
             current_agent_flow_id: Some("flow-42".to_string()),
             chat_id: Some(-1001),
             thread_id: Some(42),

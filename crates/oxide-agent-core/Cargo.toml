@@ -81,7 +81,6 @@ profile-full = [
     "transport-web",
     "storage-s3-r2",
     "llm-chatgpt",
-    "llm-groq",
     "llm-mistral",
     "llm-minimax",
     "llm-zai",
@@ -211,7 +210,6 @@ storage-local-fs = []
 
 # LLM providers
 llm-chatgpt = ["dep:reqwest"]
-llm-groq = ["dep:async-openai"]
 llm-mistral = ["dep:async-openai", "dep:reqwest"]
 llm-minimax = ["dep:claudius"]
 llm-zai = ["dep:zai-rs", "dep:reqwest"]

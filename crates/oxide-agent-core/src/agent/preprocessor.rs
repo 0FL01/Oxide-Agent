@@ -89,7 +89,7 @@ impl Preprocessor {
         let model_name = self
             .llm_client
             .resolve_media_model_name_for_audio_stt()
-            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
+            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
 
         let transcription = self
             .llm_client
@@ -135,25 +135,29 @@ impl Preprocessor {
 
         let prompt = user_context.map_or_else(
             || {
-                "Describe this image in detail for an AI agent. \
-                     Include all important details, text, objects and their locations."
+                "Extract the content of this image for an AI agent. \
+                     Include all important details, visible text/OCR, objects and their locations. \
+                     Do not answer, translate, summarize, or otherwise perform a user request."
                     .to_string()
             },
             |ctx| {
                 format!(
-                    "Describe this image in detail for an AI agent that will perform a task. \
-                 User context: {ctx}"
+                    "Extract the content of this image for an AI agent that will perform the user's request later. \
+                     User request for context only: {ctx}\n\
+                     Include all important details, visible text/OCR, objects and their locations. \
+                     Do not answer, translate, summarize, or otherwise perform the user request."
                 )
             },
         );
 
         let system_prompt = "You are a visual analyzer for an AI agent. \
-                            Your task is to create a detailed text description of the image that allows the agent to understand its content without accessing the image itself.";
+                            Your task is to extract image content and visible text so the agent can understand it without accessing the image itself. \
+                            Do not perform the user's request; only describe the image content.";
 
         let model_name = self
             .llm_client
             .resolve_media_model_name_for_image()
-            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
+            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
 
         let description = self
             .llm_client
@@ -183,22 +187,24 @@ impl Preprocessor {
 
         let prompt = user_context.map_or_else(
             || {
-                "Describe this video in detail for an AI agent. Summarize the sequence of events, any visible text, spoken or implied context, and the important objects or actions frame-to-frame."
+                "Extract the content of this video for an AI agent. Describe the sequence of events, visible text/OCR, spoken or implied context, and important objects or actions frame-to-frame. Do not answer, translate, summarize, or otherwise perform a user request."
                     .to_string()
             },
             |ctx| {
                 format!(
-                    "Describe this video in detail for an AI agent that will perform a task. User context: {ctx}"
+                    "Extract the content of this video for an AI agent that will perform the user's request later. User request for context only: {ctx}\n\
+                     Describe the sequence of events, visible text/OCR, spoken or implied context, and important objects or actions frame-to-frame. \
+                     Do not answer, translate, summarize, or otherwise perform the user request."
                 )
             },
         );
 
-        let system_prompt = "You are a video analyzer for an AI agent. Your task is to create a detailed text description of the clip so the agent can understand the timeline, important visual details, and any visible text without accessing the video itself.";
+        let system_prompt = "You are a video analyzer for an AI agent. Your task is to extract video content and visible text so the agent can understand the timeline without accessing the video itself. Do not perform the user's request; only describe the video content.";
 
         let model_name = self
             .llm_client
             .resolve_media_model_name_for_video()
-            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
+            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
 
         let description = self
             .llm_client
@@ -377,20 +383,33 @@ impl Preprocessor {
                 self.transcribe_voice(bytes, &mime_type).await
             }
             AgentInput::Image { bytes, context } => {
-                self.describe_image(bytes, context.as_deref()).await
+                let description = self.describe_image(bytes, context.as_deref()).await?;
+                Ok(format_media_task(
+                    context.as_deref(),
+                    "Attached image content",
+                    &description,
+                ))
             }
             AgentInput::Video {
                 bytes,
                 mime_type,
                 context,
             } => {
-                self.describe_video(bytes, &mime_type, context.as_deref())
-                    .await
+                let description = self
+                    .describe_video(bytes, &mime_type, context.as_deref())
+                    .await?;
+                Ok(format_media_task(
+                    context.as_deref(),
+                    "Attached video content",
+                    &description,
+                ))
             }
             AgentInput::ImageWithText { image_bytes, text } => {
                 let description = self.describe_image(image_bytes, Some(&text)).await?;
-                Ok(format!(
-                    "User sent an image with text: \"{text}\"\n\nImage description:\n{description}"
+                Ok(format_media_task(
+                    Some(&text),
+                    "Attached image content",
+                    &description,
                 ))
             }
             AgentInput::Document {
@@ -403,6 +422,18 @@ impl Preprocessor {
                     .await
             }
         }
+    }
+}
+
+fn format_media_task(user_request: Option<&str>, content_label: &str, description: &str) -> String {
+    match user_request
+        .map(str::trim)
+        .filter(|request| !request.is_empty())
+    {
+        Some(request) => {
+            format!("User request:\n{request}\n\n{content_label}:\n{description}")
+        }
+        None => description.to_string(),
     }
 }
 
@@ -456,7 +487,10 @@ pub enum AgentInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentSettings, ModuleRuntimeConfig};
+    use crate::config::AgentSettings;
+    #[cfg(feature = "llm-openrouter")]
+    use crate::config::ModuleRuntimeConfig;
+    #[cfg(feature = "llm-openrouter")]
     use crate::llm::MockLlmProvider;
     use crate::sandbox::{SandboxBackend, SandboxBackendId, SandboxCapability, SandboxFileListing};
     use std::sync::Arc;
@@ -705,12 +739,96 @@ mod tests {
         assert!(processed.contains("**Message:** caption"));
     }
 
+    #[cfg(feature = "llm-openrouter")]
+    #[tokio::test]
+    async fn preprocess_image_preserves_user_request_separately_from_description() {
+        let mut settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
+            media_model_provider: Some("openrouter".to_string()),
+            ..AgentSettings::default()
+        };
+        settings.modules.insert(
+            "llm-provider/openrouter".to_string(),
+            ModuleRuntimeConfig::default().with_string_value("api_key", "test-key"),
+        );
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_analyze_image()
+            .withf(|bytes, prompt, system_prompt, model_id| {
+                bytes == &b"image".to_vec()
+                    && prompt.contains("Перевод на ру яз")
+                    && prompt.contains("Do not answer, translate")
+                    && system_prompt.contains("Do not perform the user's request")
+                    && model_id == "google/gemini-3-flash-preview"
+            })
+            .return_once(|_, _, _, _| Ok("Visible text: OpenAI Developers".to_string()));
+
+        let mut llm = crate::llm::LlmClient::new(&settings);
+        llm.register_provider("openrouter".to_string(), Arc::new(provider));
+
+        let preprocessor = Preprocessor::new(Arc::new(llm), 42_i64);
+        let result = preprocessor
+            .preprocess_input(AgentInput::Image {
+                bytes: b"image".to_vec(),
+                context: Some("Перевод на ру яз".to_string()),
+            })
+            .await
+            .expect("image preprocess succeeds");
+
+        assert!(result.contains("User request:\nПеревод на ру яз"));
+        assert!(result.contains("Attached image content:\nVisible text: OpenAI Developers"));
+    }
+
+    #[cfg(feature = "llm-openrouter")]
+    #[tokio::test]
+    async fn preprocess_image_without_context_keeps_plain_description() {
+        let mut settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
+            media_model_provider: Some("openrouter".to_string()),
+            ..AgentSettings::default()
+        };
+        settings.modules.insert(
+            "llm-provider/openrouter".to_string(),
+            ModuleRuntimeConfig::default().with_string_value("api_key", "test-key"),
+        );
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_analyze_image()
+            .withf(|bytes, prompt, system_prompt, model_id| {
+                bytes == &b"image".to_vec()
+                    && prompt.contains("Extract the content of this image")
+                    && prompt.contains("Do not answer, translate")
+                    && system_prompt.contains("visual analyzer")
+                    && model_id == "google/gemini-3-flash-preview"
+            })
+            .return_once(|_, _, _, _| Ok("plain image description".to_string()));
+
+        let mut llm = crate::llm::LlmClient::new(&settings);
+        llm.register_provider("openrouter".to_string(), Arc::new(provider));
+
+        let preprocessor = Preprocessor::new(Arc::new(llm), 42_i64);
+        let result = preprocessor
+            .preprocess_input(AgentInput::Image {
+                bytes: b"image".to_vec(),
+                context: None,
+            })
+            .await
+            .expect("image preprocess succeeds");
+
+        assert_eq!(result, "plain image description");
+    }
+
+    #[cfg(feature = "llm-openrouter")]
     #[tokio::test]
     async fn preprocess_video_uses_media_model() {
         let mut settings = AgentSettings {
-            chat_model_id: Some("chat-model".to_string()),
-            chat_model_provider: Some("openrouter".to_string()),
-            media_model_id: Some("video-model".to_string()),
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("openrouter".to_string()),
+            media_model_id: Some("google/gemini-3-flash-preview".to_string()),
             media_model_provider: Some("openrouter".to_string()),
             ..AgentSettings::default()
         };
@@ -725,8 +843,10 @@ mod tests {
                 bytes == &b"video".to_vec()
                     && mime_type == "video/mp4"
                     && prompt.contains("release demo")
+                    && prompt.contains("Do not answer, translate")
                     && system_prompt.contains("video analyzer")
-                    && model_id == "video-model"
+                    && system_prompt.contains("Do not perform the user's request")
+                    && model_id == "google/gemini-3-flash-preview"
             })
             .return_once(|_, _, _, _, _| Ok("timeline".to_string()));
 
@@ -743,6 +863,7 @@ mod tests {
             .await
             .expect("video preprocess succeeds");
 
-        assert_eq!(result, "timeline");
+        assert!(result.contains("User request:\nrelease demo"));
+        assert!(result.contains("Attached video content:\ntimeline"));
     }
 }

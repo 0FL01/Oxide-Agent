@@ -1082,7 +1082,7 @@ async fn run_task_rejects_unsupported_inherited_route() {
     let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
     let route = crate::config::ModelInfo {
         id: "llama-3.3".to_string(),
-        provider: "groq".to_string(),
+        provider: "unsupported-provider".to_string(),
         max_output_tokens: 4096,
         context_window_tokens: 128_000,
         weight: 1,
@@ -1095,9 +1095,9 @@ async fn run_task_rejects_unsupported_inherited_route() {
     .await
     .expect_err("unsupported route should fail");
 
-    assert!(error
-        .to_string()
-        .contains("Browser Use route inheritance does not support provider `groq` yet"));
+    assert!(error.to_string().contains(
+        "Browser Use route inheritance does not support provider `unsupported-provider` yet"
+    ));
 }
 
 #[derive(Default)]
