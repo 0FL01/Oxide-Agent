@@ -14,7 +14,7 @@ pub enum ConfirmationType {
 /// Represents the current state of the user dialogue
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub enum State {
-    /// Initial state before agent access/context is resolved
+    /// Initial state before bot access/context is resolved.
     #[default]
     Start,
     /// Agent mode for complex task execution

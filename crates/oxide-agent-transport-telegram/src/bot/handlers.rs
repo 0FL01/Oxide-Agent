@@ -215,9 +215,9 @@ pub async fn start(
 
     if !can_use_agent_mode(settings.as_ref(), user_id) {
         let text = if settings.telegram.allowed_users().is_empty() {
-            "⛔️ Agent Mode is unavailable: TELEGRAM_ALLOWED_USERS is not configured."
+            "⛔️ Bot access is not configured. Set TELEGRAM_ALLOWED_USERS and restart the bot."
         } else {
-            "⛔️ You do not have permission to use Agent Mode."
+            "⛔️ You do not have permission to use this bot."
         };
         let mut req = bot.send_message(msg.chat.id, text);
         if let Some(thread_id) = outbound_thread.message_thread_id {
@@ -623,7 +623,7 @@ async fn check_agent_access(
     if !allowed_users.is_empty() && !can_use_agent_mode(settings.as_ref(), user_id) {
         let mut req = bot.send_message(
             msg.chat.id,
-            "⛔️ You do not have permission to access agent mode.",
+            "⛔️ You do not have permission to use this bot.",
         );
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
@@ -634,7 +634,7 @@ async fn check_agent_access(
     } else if allowed_users.is_empty() {
         let mut req = bot.send_message(
             msg.chat.id,
-            "⛔️ Agent Mode is unavailable: TELEGRAM_ALLOWED_USERS is not configured.",
+            "⛔️ Bot access is not configured. Set TELEGRAM_ALLOWED_USERS and restart the bot.",
         );
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
@@ -846,7 +846,7 @@ pub async fn handle_document(
     } else {
         let mut req = bot.send_message(
             msg.chat.id,
-            "📁 File upload requires Agent Mode access. Add your Telegram ID to TELEGRAM_ALLOWED_USERS.",
+            "📁 File upload requires bot access. Add your Telegram ID to TELEGRAM_ALLOWED_USERS.",
         );
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
