@@ -14,6 +14,14 @@ Default branch: `dev`.
 - Over-engineering is forbidden: do not add enterprise/distributed complexity, sharding, HA, extra queues, multi-layer abstractions, or heavy observability without a proven need.
 - Prefer the simplest maintainable solution for this scale; optimize only after a real bottleneck.
 
+## Implementation bias
+
+- Start with the smallest working change that preserves the current architecture.
+- Prefer boring, explicit, locally understandable code over generic frameworks or speculative extensibility.
+- Do not introduce new crates, services, queues, caches, storage backends, protocols, configuration surfaces, or abstraction layers unless the current problem clearly requires them.
+- Add abstraction only after real duplication or multiple real call sites exist.
+- If a simple implementation has known limitations, document them instead of building a generalized design for hypothetical future needs.
+
 ## External Services
 
 ### browser_use_bridge (disabled)
