@@ -85,7 +85,8 @@ jobs:
                 curl \
                 build-base \
                 pkgconf \
-                openssl-dev
+                openssl-dev \
+                openssl-libs-static
 
     steps:
       - name: Checkout code
