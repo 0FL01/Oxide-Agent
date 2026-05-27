@@ -46,7 +46,7 @@ impl JsonDecodeRetryMock {
 
 #[async_trait::async_trait]
 impl LlmProvider for JsonDecodeRetryMock {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -54,7 +54,9 @@ impl LlmProvider for JsonDecodeRetryMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        unimplemented!()
+        Err(LlmError::Unknown(
+            "unexpected internal text call in json decode test".to_string(),
+        ))
     }
 
     async fn transcribe_audio(

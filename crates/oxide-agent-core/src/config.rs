@@ -1215,15 +1215,21 @@ mod tests {
     #[test]
     fn sandbox_backend_config_parses_supported_values() {
         assert_eq!(
-            "docker".parse::<SandboxBackendConfig>().unwrap(),
+            "docker"
+                .parse::<SandboxBackendConfig>()
+                .expect("supported docker sandbox backend should parse"),
             SandboxBackendConfig::Docker
         );
         assert_eq!(
-            " broker ".parse::<SandboxBackendConfig>().unwrap(),
+            " broker "
+                .parse::<SandboxBackendConfig>()
+                .expect("supported broker sandbox backend should parse"),
             SandboxBackendConfig::Broker
         );
         assert_eq!(
-            "BWRAP".parse::<SandboxBackendConfig>().unwrap(),
+            "BWRAP"
+                .parse::<SandboxBackendConfig>()
+                .expect("supported bwrap sandbox backend should parse"),
             SandboxBackendConfig::Bwrap
         );
         assert_eq!(SandboxBackendConfig::Bwrap.to_string(), "bwrap");
@@ -1231,7 +1237,9 @@ mod tests {
 
     #[test]
     fn sandbox_backend_config_rejects_invalid_values_with_actionable_error() {
-        let error = "podman".parse::<SandboxBackendConfig>().unwrap_err();
+        let error = "podman"
+            .parse::<SandboxBackendConfig>()
+            .expect_err("invalid sandbox backend should be rejected");
 
         assert!(error.contains("Invalid SANDBOX_BACKEND='podman'"));
         assert!(error.contains("docker, broker, bwrap"));
@@ -1246,14 +1254,14 @@ mod tests {
 
         env::set_var("SANDBOX_BACKEND", "bwrap");
         assert_eq!(
-            get_sandbox_backend_config().unwrap(),
+            get_sandbox_backend_config().expect("bwrap sandbox backend env should parse"),
             SandboxBackendConfig::Bwrap
         );
         assert!(!sandbox_uses_broker());
 
         env::set_var("SANDBOX_BACKEND", "broker");
         assert_eq!(
-            get_sandbox_backend_config().unwrap(),
+            get_sandbox_backend_config().expect("broker sandbox backend env should parse"),
             SandboxBackendConfig::Broker
         );
         assert!(sandbox_uses_broker());

@@ -12,7 +12,7 @@ struct SuccessMock;
 
 #[async_trait::async_trait]
 impl LlmProvider for SuccessMock {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -80,7 +80,7 @@ struct RetrySuccessMock {
 
 #[async_trait::async_trait]
 impl LlmProvider for RetrySuccessMock {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -88,7 +88,9 @@ impl LlmProvider for RetrySuccessMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        unimplemented!()
+        Err(LlmError::Unknown(
+            "unexpected internal text call in retry test".to_string(),
+        ))
     }
 
     async fn transcribe_audio(
@@ -160,7 +162,7 @@ struct AlwaysFailMock {
 
 #[async_trait::async_trait]
 impl LlmProvider for AlwaysFailMock {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -168,7 +170,9 @@ impl LlmProvider for AlwaysFailMock {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        unimplemented!()
+        Err(LlmError::Unknown(
+            "unexpected internal text call in failure test".to_string(),
+        ))
     }
 
     async fn transcribe_audio(

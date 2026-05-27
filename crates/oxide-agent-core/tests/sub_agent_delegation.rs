@@ -93,7 +93,7 @@ struct GatedProbeProvider {
 
 #[async_trait::async_trait]
 impl LlmProvider for BudgetProbeProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -101,7 +101,9 @@ impl LlmProvider for BudgetProbeProvider {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        unreachable!("delegation smoke test uses chat_with_tools")
+        Err(LlmError::Unknown(
+            "delegation smoke test uses chat_with_tools".to_string(),
+        ))
     }
 
     async fn transcribe_audio(
@@ -151,7 +153,7 @@ impl LlmProvider for BudgetProbeProvider {
 
 #[async_trait::async_trait]
 impl LlmProvider for GatedProbeProvider {
-    async fn chat_completion(
+    async fn complete_internal_text(
         &self,
         _system_prompt: &str,
         _history: &[Message],
@@ -159,7 +161,9 @@ impl LlmProvider for GatedProbeProvider {
         _model_id: &str,
         _max_tokens: u32,
     ) -> Result<String, LlmError> {
-        unreachable!("delegation async test uses chat_with_tools")
+        Err(LlmError::Unknown(
+            "delegation async test uses chat_with_tools".to_string(),
+        ))
     }
 
     async fn transcribe_audio(
