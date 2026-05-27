@@ -1051,9 +1051,8 @@ mod tests {
             oxide_agent_core::config::AgentSettings::default(),
             TelegramSettings {
                 telegram_token: "test-token".to_string(),
-                allowed_users_str: None,
-                agent_allowed_users_str: None,
-                manager_allowed_users_str: None,
+                telegram_allowed_users_str: None,
+                telegram_manager_allowed_users_str: None,
                 manager_home_chat_id: None,
                 manager_home_thread_id: None,
                 attach_detach_enabled: true,

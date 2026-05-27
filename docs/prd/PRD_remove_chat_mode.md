@@ -862,7 +862,7 @@ Affected Areas:
 
 Edge Cases:
 
-- Private chat user is allowed but not in `AGENT_ACCESS_IDS`.
+- Private chat user is not listed in `TELEGRAM_ALLOWED_USERS`.
 - Supergroup user has agent access.
 - Supergroup user lacks agent access.
 - User calls `/start` during active Agent Mode or confirmation flow.

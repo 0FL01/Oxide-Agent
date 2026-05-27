@@ -341,9 +341,8 @@ fn forum_text_message(chat_id: i64, thread_id: i32, text: &str) -> Message {
 fn topic_routing_resolves_topic_settings_and_default_fallback() {
     let settings = TelegramSettings {
         telegram_token: "dummy".to_string(),
-        allowed_users_str: None,
-        agent_allowed_users_str: None,
-        manager_allowed_users_str: None,
+        telegram_allowed_users_str: None,
+        telegram_manager_allowed_users_str: None,
         manager_home_chat_id: None,
         manager_home_thread_id: None,
         attach_detach_enabled: true,
@@ -408,9 +407,8 @@ fn topic_routing_resolves_topic_settings_and_default_fallback() {
 fn topic_route_and_thread_context_regression_preserves_non_general_topic_replies() {
     let settings = TelegramSettings {
         telegram_token: "dummy".to_string(),
-        allowed_users_str: None,
-        agent_allowed_users_str: None,
-        manager_allowed_users_str: None,
+        telegram_allowed_users_str: None,
+        telegram_manager_allowed_users_str: None,
         manager_home_chat_id: None,
         manager_home_thread_id: None,
         attach_detach_enabled: true,
@@ -492,9 +490,8 @@ async fn resolve_topic_route_prefers_dynamic_binding_over_static_topic_config() 
         AgentSettings::default(),
         TelegramSettings {
             telegram_token: "test-token".to_string(),
-            allowed_users_str: None,
-            agent_allowed_users_str: None,
-            manager_allowed_users_str: None,
+            telegram_allowed_users_str: None,
+            telegram_manager_allowed_users_str: None,
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,

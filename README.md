@@ -57,7 +57,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   **⏱️ Universal Runtime:** Transport-agnostic progress rendering system that can be adapted for Discord, Slack, and other transports.
     *   **👥 Hierarchical Delegation:** The Main Agent spawns async Sub-Agents for parallel, independent subtasks. Each sub-agent runs in an isolated ephemeral session with a task-specific tool whitelist, inherits the topic AGENTS.md and parent cancellation, and returns results via background job tracking.
     *   **Autonomy:** Agent plans steps and selects tools itself.
-    *   **Separate Authorization:** Access control to agent via `AGENT_ACCESS_IDS`.
+    *   **Telegram Authorization:** Access control via `TELEGRAM_ALLOWED_USERS`.
     *   **Long-term Memory and Context:** Up to 200K tokens with automatic compression when limit reached.
     *   **Execution Progress:** Interactive display of current working step in Telegram.
 *   **Multi-LLM Support:** 6 Agent Mode providers: OpenCode Go, Zhipu AI/ZAI, MiniMax, Mistral, OpenRouter, and NVIDIA NIM.
@@ -136,8 +136,7 @@ The bot supports **6 main providers** for Agent Mode with tool calling:
 ```dotenv
 # Telegram
 TELEGRAM_TOKEN=YOUR_TOKEN
-ALLOWED_USERS=ID1,ID2 # List of allowed Telegram IDs (basic access)
-AGENT_ACCESS_IDS=ID1 # Access to Agent Mode (consumes many tokens)
+TELEGRAM_ALLOWED_USERS=ID1,ID2 # Telegram users allowed to use Agent Mode
 REMINDER_AGENT_PROGRESS_ENABLED=false # Watch/ward reminders: hide progress spam
 REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: stay silent on no visible change
 
@@ -378,7 +377,7 @@ Programmatic topic management with RBAC, audit trail, and rollback support.
 
 ### RBAC Configuration
 ```dotenv
-MANAGER_ALLOWED_USERS=123456789,987654321  # Users with manager control-plane access
+TELEGRAM_MANAGER_ALLOWED_USERS=123456789,987654321  # Users with manager control-plane access
 MANAGER_HOME_CHAT_ID=-1001234567890        # Restrict to specific chat (optional)
 MANAGER_HOME_THREAD_ID=1                   # Thread ID (optional)
 MANAGER_HOME_AGENT_ID=control-plane       # Agent ID for manager home (optional)

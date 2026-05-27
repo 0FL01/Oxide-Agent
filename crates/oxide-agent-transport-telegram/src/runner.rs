@@ -379,7 +379,7 @@ async fn handle_callback(
 
     if !settings
         .telegram
-        .agent_allowed_users()
+        .allowed_users()
         .contains(&q.from.id.0.cast_signed())
     {
         return respond(());

@@ -49,8 +49,8 @@ pub fn get_user_id_safe(msg: &Message) -> i64 {
 }
 
 fn can_use_agent_mode(settings: &BotSettings, user_id: i64) -> bool {
-    let agent_allowed = settings.telegram.agent_allowed_users();
-    !agent_allowed.is_empty() && agent_allowed.contains(&user_id)
+    let allowed_users = settings.telegram.allowed_users();
+    !allowed_users.is_empty() && allowed_users.contains(&user_id)
 }
 
 fn should_default_to_agent_mode(
@@ -214,8 +214,8 @@ pub async fn start(
     info!("User {user_id} ({user_name}) initiated /start command.");
 
     if !can_use_agent_mode(settings.as_ref(), user_id) {
-        let text = if settings.telegram.agent_allowed_users().is_empty() {
-            "⛔️ Agent Mode is unavailable: agent access is not configured."
+        let text = if settings.telegram.allowed_users().is_empty() {
+            "⛔️ Agent Mode is unavailable: TELEGRAM_ALLOWED_USERS is not configured."
         } else {
             "⛔️ You do not have permission to use Agent Mode."
         };
@@ -619,8 +619,8 @@ async fn check_agent_access(
     user_id: i64,
 ) -> Result<bool> {
     let outbound_thread = outbound_thread_from_message(msg);
-    let agent_allowed = settings.telegram.agent_allowed_users();
-    if !agent_allowed.is_empty() && !can_use_agent_mode(settings.as_ref(), user_id) {
+    let allowed_users = settings.telegram.allowed_users();
+    if !allowed_users.is_empty() && !can_use_agent_mode(settings.as_ref(), user_id) {
         let mut req = bot.send_message(
             msg.chat.id,
             "⛔️ You do not have permission to access agent mode.",
@@ -631,10 +631,10 @@ async fn check_agent_access(
 
         req.await?;
         return Ok(false);
-    } else if agent_allowed.is_empty() {
+    } else if allowed_users.is_empty() {
         let mut req = bot.send_message(
             msg.chat.id,
-            "⛔️ Agent mode is temporarily unavailable (access not configured).",
+            "⛔️ Agent Mode is unavailable: TELEGRAM_ALLOWED_USERS is not configured.",
         );
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
@@ -846,7 +846,7 @@ pub async fn handle_document(
     } else {
         let mut req = bot.send_message(
             msg.chat.id,
-            "📁 File upload requires Agent Mode access. Ask the owner to enable agent access for your account.",
+            "📁 File upload requires Agent Mode access. Add your Telegram ID to TELEGRAM_ALLOWED_USERS.",
         );
         if let Some(thread_id) = outbound_thread.message_thread_id {
             req = req.message_thread_id(thread_id);
@@ -866,14 +866,13 @@ mod tests {
     use crate::config::{BotSettings, TelegramSettings};
     use oxide_agent_core::config::AgentSettings;
 
-    fn test_settings(agent_allowed_users: Option<&str>) -> BotSettings {
+    fn test_settings(allowed_users: Option<&str>) -> BotSettings {
         BotSettings::new(
             AgentSettings::default(),
             TelegramSettings {
                 telegram_token: "dummy".to_string(),
-                allowed_users_str: None,
-                agent_allowed_users_str: agent_allowed_users.map(str::to_string),
-                manager_allowed_users_str: None,
+                telegram_allowed_users_str: allowed_users.map(str::to_string),
+                telegram_manager_allowed_users_str: None,
                 manager_home_chat_id: None,
                 manager_home_thread_id: None,
                 attach_detach_enabled: true,
@@ -917,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_default_to_agent_mode_without_agent_access() {
+    fn does_not_default_to_agent_mode_without_telegram_access() {
         let settings = test_settings(Some("88"));
         assert!(!should_default_to_agent_mode(true, &settings, 77));
 

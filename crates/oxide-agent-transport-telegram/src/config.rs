@@ -21,6 +21,16 @@ fn default_reminder_agent_progress_enabled() -> bool {
     true
 }
 
+fn parse_user_id_list(raw: Option<&str>) -> HashSet<i64> {
+    raw.map(|s| {
+        s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+            .filter(|token| !token.is_empty())
+            .filter_map(|id| id.parse::<i64>().ok())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// Telegram per-topic configuration.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -49,15 +59,12 @@ pub struct TelegramTopicSettings {
 pub struct TelegramSettings {
     /// Telegram Bot API token.
     pub telegram_token: String,
-    /// Comma-separated list of allowed user IDs for normal chat.
-    #[serde(rename = "allowed_users")]
-    pub allowed_users_str: Option<String>,
-    /// Comma-separated list of allowed user IDs for agent mode.
-    #[serde(rename = "agent_access_ids")]
-    pub agent_allowed_users_str: Option<String>,
+    /// Comma-separated list of Telegram user IDs allowed to use Agent Mode.
+    #[serde(rename = "telegram_allowed_users")]
+    pub telegram_allowed_users_str: Option<String>,
     /// Comma-separated list of allowed user IDs for manager control-plane tools.
-    #[serde(rename = "manager_allowed_users")]
-    pub manager_allowed_users_str: Option<String>,
+    #[serde(rename = "telegram_manager_allowed_users")]
+    pub telegram_manager_allowed_users_str: Option<String>,
     /// Forum chat id where the manager control-plane agent lives.
     #[serde(default)]
     pub manager_home_chat_id: Option<i64>,
@@ -85,9 +92,8 @@ impl Default for TelegramSettings {
     fn default() -> Self {
         Self {
             telegram_token: String::new(),
-            allowed_users_str: None,
-            agent_allowed_users_str: None,
-            manager_allowed_users_str: None,
+            telegram_allowed_users_str: None,
+            telegram_manager_allowed_users_str: None,
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: default_attach_detach_enabled(),
@@ -129,46 +135,16 @@ impl TelegramSettings {
         oxide_agent_core::config::build_config()?.try_deserialize()
     }
 
-    /// Returns a set of allowed user IDs for normal chat.
+    /// Returns a set of Telegram user IDs allowed to use Agent Mode.
     #[must_use]
     pub fn allowed_users(&self) -> HashSet<i64> {
-        self.allowed_users_str
-            .as_ref()
-            .map(|s| {
-                s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
-                    .filter(|token| !token.is_empty())
-                    .filter_map(|id| id.parse::<i64>().ok())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Returns a set of allowed user IDs for agent mode.
-    #[must_use]
-    pub fn agent_allowed_users(&self) -> HashSet<i64> {
-        self.agent_allowed_users_str
-            .as_ref()
-            .map(|s| {
-                s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
-                    .filter(|token| !token.is_empty())
-                    .filter_map(|id| id.parse::<i64>().ok())
-                    .collect()
-            })
-            .unwrap_or_default()
+        parse_user_id_list(self.telegram_allowed_users_str.as_deref())
     }
 
     /// Returns a set of allowed user IDs for manager control-plane actions.
     #[must_use]
     pub fn manager_allowed_users(&self) -> HashSet<i64> {
-        self.manager_allowed_users_str
-            .as_ref()
-            .map(|s| {
-                s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
-                    .filter(|token| !token.is_empty())
-                    .filter_map(|id| id.parse::<i64>().ok())
-                    .collect()
-            })
-            .unwrap_or_default()
+        parse_user_id_list(self.telegram_manager_allowed_users_str.as_deref())
     }
 
     /// Returns the effective manager home thread id when manager home is configured.
@@ -290,9 +266,8 @@ mod tests {
     fn test_list_parsing() {
         let mut settings = TelegramSettings {
             telegram_token: "dummy".to_string(),
-            allowed_users_str: None,
-            agent_allowed_users_str: None,
-            manager_allowed_users_str: None,
+            telegram_allowed_users_str: None,
+            telegram_manager_allowed_users_str: None,
             manager_home_chat_id: None,
             manager_home_thread_id: None,
             attach_detach_enabled: true,
@@ -303,21 +278,21 @@ mod tests {
         };
 
         // Test comma
-        settings.allowed_users_str = Some("123,456".to_string());
+        settings.telegram_allowed_users_str = Some("123,456".to_string());
         let allowed = settings.allowed_users();
         assert!(allowed.contains(&123));
         assert!(allowed.contains(&456));
         assert_eq!(allowed.len(), 2);
 
         // Test space
-        settings.allowed_users_str = Some("111 222".to_string());
+        settings.telegram_allowed_users_str = Some("111 222".to_string());
         let allowed = settings.allowed_users();
         assert!(allowed.contains(&111));
         assert!(allowed.contains(&222));
         assert_eq!(allowed.len(), 2);
 
         // Test semicolon and mixed
-        settings.allowed_users_str = Some("333; 444, 555".to_string());
+        settings.telegram_allowed_users_str = Some("333; 444, 555".to_string());
         let allowed = settings.allowed_users();
         assert!(allowed.contains(&333));
         assert!(allowed.contains(&444));
@@ -325,17 +300,46 @@ mod tests {
         assert_eq!(allowed.len(), 3);
 
         // Test empty/bad parsing
-        settings.allowed_users_str = Some("abc, 777".to_string());
+        settings.telegram_allowed_users_str = Some("abc, 777".to_string());
         let allowed = settings.allowed_users();
         assert!(allowed.contains(&777));
         assert_eq!(allowed.len(), 1);
 
-        settings.manager_allowed_users_str = Some("11; 22, nope 33".to_string());
+        settings.telegram_manager_allowed_users_str = Some("11; 22, nope 33".to_string());
         let manager_allowed = settings.manager_allowed_users();
         assert!(manager_allowed.contains(&11));
         assert!(manager_allowed.contains(&22));
         assert!(manager_allowed.contains(&33));
         assert_eq!(manager_allowed.len(), 3);
+    }
+
+    #[test]
+    fn deserializes_canonical_telegram_auth_keys() {
+        let raw = r#"
+        {
+          "telegram_token": "dummy",
+          "telegram_allowed_users": "123, 456",
+          "telegram_manager_allowed_users": "456"
+        }
+        "#;
+
+        let loaded = Config::builder()
+            .add_source(File::from_str(raw, FileFormat::Json))
+            .build();
+        let cfg = match loaded {
+            Ok(config) => config.try_deserialize::<TelegramSettings>(),
+            Err(err) => panic!("failed to build config: {err}"),
+        };
+        let settings = match cfg {
+            Ok(settings) => settings,
+            Err(err) => panic!("failed to deserialize settings: {err}"),
+        };
+
+        assert_eq!(settings.allowed_users().len(), 2);
+        assert!(settings.allowed_users().contains(&123));
+        assert!(settings.allowed_users().contains(&456));
+        assert_eq!(settings.manager_allowed_users().len(), 1);
+        assert!(settings.manager_allowed_users().contains(&456));
     }
 
     #[test]
@@ -474,9 +478,8 @@ mod tests {
     fn manager_home_defaults_to_general_control_plane_agent() {
         let settings = TelegramSettings {
             telegram_token: "dummy".to_string(),
-            allowed_users_str: None,
-            agent_allowed_users_str: None,
-            manager_allowed_users_str: None,
+            telegram_allowed_users_str: None,
+            telegram_manager_allowed_users_str: None,
             manager_home_chat_id: Some(-10001),
             manager_home_thread_id: None,
             attach_detach_enabled: true,
@@ -501,9 +504,8 @@ mod tests {
     fn manager_home_overrides_static_topic_config_for_same_topic() {
         let settings = TelegramSettings {
             telegram_token: "dummy".to_string(),
-            allowed_users_str: None,
-            agent_allowed_users_str: None,
-            manager_allowed_users_str: None,
+            telegram_allowed_users_str: None,
+            telegram_manager_allowed_users_str: None,
             manager_home_chat_id: Some(-10001),
             manager_home_thread_id: Some(1),
             attach_detach_enabled: true,
