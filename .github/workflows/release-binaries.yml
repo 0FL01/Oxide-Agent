@@ -35,13 +35,16 @@ jobs:
     name: Guard dev branch
     runs-on: ubuntu-latest
     steps:
-      - name: Require dev branch
+      - name: Require dev or main branch
         run: |
-          if [ "${GITHUB_REF}" != "refs/heads/dev" ]; then
-            echo "This release workflow must be run from the dev branch." >&2
-            echo "Current ref: ${GITHUB_REF}" >&2
-            exit 1
-          fi
+          case "${GITHUB_REF}" in
+            refs/heads/dev|refs/heads/main) ;;
+            *)
+              echo "This release workflow must be run from dev or main branch." >&2
+              echo "Current ref: ${GITHUB_REF}" >&2
+              exit 1
+              ;;
+          esac
 
   approve-release:
     name: Await release approval
