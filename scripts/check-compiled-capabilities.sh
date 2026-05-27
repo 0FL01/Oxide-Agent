@@ -111,6 +111,7 @@ profile_requirements = {
     "embedded-opencode-local": {
         "exact_modules": {
             "llm-provider/opencode-go",
+            "sandbox-backend/bwrap",
             "sandbox-backend/docker-direct",
             "storage/r2",
             "tool/agents-md",
@@ -132,6 +133,10 @@ profile_requirements = {
         },
         "required_capabilities": {
             "llm-provider/opencode-go",
+            "sandbox-backend/bwrap",
+            "sandbox-backend/bwrap/exec",
+            "sandbox-backend/bwrap/fileops",
+            "sandbox-backend/bwrap/lifecycle",
             "sandbox-backend/docker-direct",
             "sandbox-backend/docker-direct/exec",
             "sandbox-backend/docker-direct/fileops",
