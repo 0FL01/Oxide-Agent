@@ -243,6 +243,7 @@ mod tests {
 
         for model_id in [
             "google/gemini-3-flash-preview",
+            "google/gemini-3.1-flash-lite",
             "google/gemini-3.1-flash-lite-preview",
             "google/gemini-2.5-flash-lite",
         ] {
@@ -379,20 +380,35 @@ mod tests {
     ))]
     #[test]
     fn media_capabilities_are_modality_specific() {
-        let openrouter_media = crate::config::ModelInfo {
-            id: "google/gemini-3-flash-preview".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            provider: "openrouter".to_string(),
-            weight: 1,
-        };
-        let openrouter = super::provider_media_capabilities_for_model(&openrouter_media);
         let mistral = super::provider_media_capabilities("mistral");
         let opencode_go = super::provider_media_capabilities("opencode-go");
 
-        assert!(openrouter.supports(super::MediaModality::AudioTranscription));
-        assert!(openrouter.supports(super::MediaModality::ImageUnderstanding));
-        assert!(openrouter.supports(super::MediaModality::VideoUnderstanding));
+        for model_id in [
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.1-flash-lite-preview",
+        ] {
+            let openrouter_media = crate::config::ModelInfo {
+                id: model_id.to_string(),
+                max_output_tokens: 4096,
+                context_window_tokens: 128_000,
+                provider: "openrouter".to_string(),
+                weight: 1,
+            };
+            let openrouter = super::provider_media_capabilities_for_model(&openrouter_media);
+            assert!(
+                openrouter.supports(super::MediaModality::AudioTranscription),
+                "{model_id}"
+            );
+            assert!(
+                openrouter.supports(super::MediaModality::ImageUnderstanding),
+                "{model_id}"
+            );
+            assert!(
+                openrouter.supports(super::MediaModality::VideoUnderstanding),
+                "{model_id}"
+            );
+        }
 
         assert!(mistral.supports(super::MediaModality::AudioTranscription));
         assert!(!mistral.supports(super::MediaModality::ImageUnderstanding));

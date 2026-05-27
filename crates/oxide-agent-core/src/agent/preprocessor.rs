@@ -89,7 +89,7 @@ impl Preprocessor {
         let model_name = self
             .llm_client
             .resolve_media_model_name_for_audio_stt()
-            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
+            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
 
         let transcription = self
             .llm_client
@@ -153,7 +153,7 @@ impl Preprocessor {
         let model_name = self
             .llm_client
             .resolve_media_model_name_for_image()
-            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
+            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
 
         let description = self
             .llm_client
@@ -198,7 +198,7 @@ impl Preprocessor {
         let model_name = self
             .llm_client
             .resolve_media_model_name_for_video()
-            .map_err(|_| anyhow::anyhow!("MULTIMODAL_DISABLED"))?;
+            .map_err(|e| anyhow::anyhow!("MEDIA_ROUTE_UNAVAILABLE: {e}"))?;
 
         let description = self
             .llm_client

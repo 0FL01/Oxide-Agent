@@ -4,7 +4,8 @@ use super::{
     SESSION_REGISTRY,
 };
 use crate::bot::agent_handlers::{
-    preprocess_agent_message_input, send_multimodal_unavailable_message,
+    media_route_unavailable_detail, preprocess_agent_message_input,
+    send_multimodal_unavailable_message,
 };
 use crate::bot::agent_transport::{SilentTelegramAgentTransport, TelegramAgentTransport};
 use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
@@ -282,9 +283,14 @@ pub(crate) async fn run_agent_task(ctx: AgentTaskContext) -> Result<()> {
     {
         Ok(text) => text,
         Err(err) => {
-            if err.to_string() == "MULTIMODAL_DISABLED" {
-                send_multimodal_unavailable_message(&ctx.bot, chat_id, ctx.message_thread_id)
-                    .await?;
+            if let Some(detail) = media_route_unavailable_detail(&err) {
+                send_multimodal_unavailable_message(
+                    &ctx.bot,
+                    chat_id,
+                    ctx.message_thread_id,
+                    Some(&detail),
+                )
+                .await?;
                 return Ok(());
             }
             return Err(err);

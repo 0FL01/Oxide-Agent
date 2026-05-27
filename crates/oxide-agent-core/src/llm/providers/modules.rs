@@ -406,20 +406,26 @@ mod tests {
     #[cfg(feature = "llm-openrouter")]
     #[test]
     fn openrouter_module_owns_model_specific_media_capabilities() {
-        let route = crate::config::ModelInfo {
-            id: "google/gemini-3-flash-preview".to_string(),
-            provider: "llm-provider/openrouter".to_string(),
-            max_output_tokens: 4096,
-            context_window_tokens: 128_000,
-            weight: 1,
-        };
+        for model_id in [
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-flash-lite",
+            "google/gemini-3.1-flash-lite-preview",
+        ] {
+            let route = crate::config::ModelInfo {
+                id: model_id.to_string(),
+                provider: "llm-provider/openrouter".to_string(),
+                max_output_tokens: 4096,
+                context_window_tokens: 128_000,
+                weight: 1,
+            };
 
-        let capabilities =
-            super::provider_media_capabilities_for_model(&route).expect("provider should resolve");
+            let capabilities = super::provider_media_capabilities_for_model(&route)
+                .expect("provider should resolve");
 
-        assert!(capabilities.supports_audio_transcription);
-        assert!(capabilities.supports_image_understanding);
-        assert!(capabilities.supports_video_understanding);
+            assert!(capabilities.supports_audio_transcription, "{model_id}");
+            assert!(capabilities.supports_image_understanding, "{model_id}");
+            assert!(capabilities.supports_video_understanding, "{model_id}");
+        }
     }
 
     #[cfg(feature = "llm-minimax")]

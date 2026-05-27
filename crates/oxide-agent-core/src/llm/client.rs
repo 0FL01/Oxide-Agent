@@ -46,7 +46,7 @@ impl LlmClient {
             .filter(|name| !name.is_empty())
         else {
             return Err(LlmError::MissingConfig(format!(
-                "No explicit MEDIA_MODEL route is configured for {}",
+                "MEDIA_MODEL is not configured for {}",
                 modality.label()
             )));
         };
@@ -55,7 +55,7 @@ impl LlmClient {
 
         if !self.is_provider_available(&model_info.provider) {
             return Err(LlmError::MissingConfig(format!(
-                "Configured MEDIA_MODEL provider '{}' is not available",
+                "MEDIA_MODEL provider '{}' is not available; check the API key and compiled profile",
                 model_info.provider
             )));
         }
@@ -65,7 +65,9 @@ impl LlmClient {
         }
 
         Err(LlmError::MissingConfig(format!(
-            "Configured MEDIA_MODEL route does not support {} (expected providers: openrouter, mistral for STT)",
+            "MEDIA_MODEL {}/{} is not allowed for {} by media policy",
+            model_info.provider,
+            model_info.id,
             modality.label()
         )))
     }

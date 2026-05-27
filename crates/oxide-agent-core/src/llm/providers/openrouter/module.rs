@@ -95,17 +95,19 @@ fn openrouter_model_policy(model_id: &str) -> Option<OpenRouterModelPolicy> {
             approved_for_media_image: true,
             approved_for_media_video: true,
         }),
-        "google/gemini-3.1-flash-lite-preview" => Some(OpenRouterModelPolicy {
-            supports_tools_parameter: true,
-            supports_structured_outputs: true,
-            input_audio: true,
-            input_image: true,
-            input_video: true,
-            approved_for_main_agent: false,
-            approved_for_media_audio: false,
-            approved_for_media_image: true,
-            approved_for_media_video: true,
-        }),
+        "google/gemini-3.1-flash-lite" | "google/gemini-3.1-flash-lite-preview" => {
+            Some(OpenRouterModelPolicy {
+                supports_tools_parameter: true,
+                supports_structured_outputs: true,
+                input_audio: true,
+                input_image: true,
+                input_video: true,
+                approved_for_main_agent: false,
+                approved_for_media_audio: true,
+                approved_for_media_image: true,
+                approved_for_media_video: true,
+            })
+        }
         "google/gemini-2.5-flash-lite" => Some(OpenRouterModelPolicy {
             supports_tools_parameter: true,
             supports_structured_outputs: true,
