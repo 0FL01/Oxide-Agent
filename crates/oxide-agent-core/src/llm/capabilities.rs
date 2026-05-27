@@ -242,10 +242,12 @@ mod tests {
         }
 
         for model_id in [
+            "google/gemini-2.0-flash",
+            "google/gemini-2.5-pro-preview",
             "google/gemini-3-flash-preview",
+            "google/gemini-3-pro-preview",
             "google/gemini-3.1-flash-lite",
             "google/gemini-3.1-flash-lite-preview",
-            "google/gemini-2.5-flash-lite",
         ] {
             let route = crate::config::ModelInfo {
                 id: model_id.to_string(),
@@ -384,7 +386,10 @@ mod tests {
         let opencode_go = super::provider_media_capabilities("opencode-go");
 
         for model_id in [
+            "google/gemini-2.0-flash",
+            "google/gemini-2.5-flash-lite",
             "google/gemini-3-flash-preview",
+            "google/gemini-3-pro-preview",
             "google/gemini-3.1-flash-lite",
             "google/gemini-3.1-flash-lite-preview",
         ] {

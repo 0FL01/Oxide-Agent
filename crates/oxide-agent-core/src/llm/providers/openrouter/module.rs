@@ -83,8 +83,8 @@ struct OpenRouterModelPolicy {
 
 fn openrouter_model_policy(model_id: &str) -> Option<OpenRouterModelPolicy> {
     let normalized = model_id.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "google/gemini-3-flash-preview" => Some(OpenRouterModelPolicy {
+    if normalized.starts_with("google/gemini-2") || normalized.starts_with("google/gemini-3") {
+        return Some(OpenRouterModelPolicy {
             supports_tools_parameter: true,
             supports_structured_outputs: true,
             input_audio: true,
@@ -94,31 +94,10 @@ fn openrouter_model_policy(model_id: &str) -> Option<OpenRouterModelPolicy> {
             approved_for_media_audio: true,
             approved_for_media_image: true,
             approved_for_media_video: true,
-        }),
-        "google/gemini-3.1-flash-lite" | "google/gemini-3.1-flash-lite-preview" => {
-            Some(OpenRouterModelPolicy {
-                supports_tools_parameter: true,
-                supports_structured_outputs: true,
-                input_audio: true,
-                input_image: true,
-                input_video: true,
-                approved_for_main_agent: false,
-                approved_for_media_audio: true,
-                approved_for_media_image: true,
-                approved_for_media_video: true,
-            })
-        }
-        "google/gemini-2.5-flash-lite" => Some(OpenRouterModelPolicy {
-            supports_tools_parameter: true,
-            supports_structured_outputs: true,
-            input_audio: true,
-            input_image: true,
-            input_video: true,
-            approved_for_main_agent: false,
-            approved_for_media_audio: false,
-            approved_for_media_image: true,
-            approved_for_media_video: true,
-        }),
+        });
+    }
+
+    match normalized.as_str() {
         "deepseek/deepseek-v4-flash" | "deepseek/deepseek-v4-pro" => Some(OpenRouterModelPolicy {
             supports_tools_parameter: true,
             supports_structured_outputs: true,

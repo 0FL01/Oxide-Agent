@@ -407,7 +407,10 @@ mod tests {
     #[test]
     fn openrouter_module_owns_model_specific_media_capabilities() {
         for model_id in [
+            "google/gemini-2.0-flash",
+            "google/gemini-2.5-flash-lite",
             "google/gemini-3-flash-preview",
+            "google/gemini-3-pro-preview",
             "google/gemini-3.1-flash-lite",
             "google/gemini-3.1-flash-lite-preview",
         ] {
