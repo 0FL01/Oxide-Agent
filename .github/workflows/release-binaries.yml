@@ -1,0 +1,196 @@
+name: Release Linux Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Git tag to create or update, for example v0.1.0
+        required: true
+        type: string
+      release_name:
+        description: Release title. Defaults to tag_name when empty.
+        required: false
+        type: string
+      draft:
+        description: Create the release as a draft
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: Mark the release as a prerelease
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  BINARY_NAME: oxide-agent-telegram-bot
+  CARGO_FEATURES: profile-embedded-opencode-local
+  CARGO_PACKAGE: oxide-agent-telegram-bot
+
+jobs:
+  guard-dev-branch:
+    name: Guard dev branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require dev branch
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/dev" ]; then
+            echo "This release workflow must be run from the dev branch." >&2
+            echo "Current ref: ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+  approve-release:
+    name: Await release approval
+    needs: guard-dev-branch
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    steps:
+      - name: Confirm release approval
+        run: echo "Release environment approved. Starting builds."
+
+  build:
+    name: Build ${{ matrix.variant }} x86_64
+    needs: approve-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: debian13
+            image: debian:13
+            target_dir: target/release-binaries/debian13
+            setup_command: |
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates \
+                curl \
+                build-essential \
+                pkg-config \
+                libssl-dev
+              rm -rf /var/lib/apt/lists/*
+          - variant: alpine3.23
+            image: alpine:3.23
+            target_dir: target/release-binaries/alpine3.23
+            setup_command: |
+              apk add --no-cache \
+                ca-certificates \
+                curl \
+                build-base \
+                pkgconf \
+                openssl-dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: .cargo-cache/registry
+          key: ${{ runner.os }}-release-registry-${{ matrix.variant }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore cargo git cache
+        uses: actions/cache@v4
+        with:
+          path: .cargo-cache/git
+          key: ${{ runner.os }}-release-git-${{ matrix.variant }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build binary in ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            -e CARGO_HOME=/work/.cargo-cache \
+            -e CARGO_TARGET_DIR=/work/${{ matrix.target_dir }} \
+            -e BINARY_NAME="${BINARY_NAME}" \
+            -e CARGO_FEATURES="${CARGO_FEATURES}" \
+            -e CARGO_PACKAGE="${CARGO_PACKAGE}" \
+            -v "${PWD}:/work" \
+            -w /work \
+            "${{ matrix.image }}" \
+            sh -euxc '
+              ${{ matrix.setup_command }}
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+              . /root/.cargo/env
+              rustc --version
+              cargo --version
+              cargo build \
+                -p "${CARGO_PACKAGE}" \
+                --bin "${BINARY_NAME}" \
+                --release \
+                --no-default-features \
+                --features "${CARGO_FEATURES}"
+              strip "${CARGO_TARGET_DIR}/release/${BINARY_NAME}" || true
+            '
+          sudo chown -R "$(id -u):$(id -g)" .cargo-cache target
+
+      - name: Package binary
+        run: |
+          set -euo pipefail
+          artifact_dir="dist/${{ matrix.variant }}"
+          archive="${BINARY_NAME}-${{ matrix.variant }}-linux-x86_64.tar.gz"
+
+          mkdir -p "${artifact_dir}"
+          cp "${{ matrix.target_dir }}/release/${BINARY_NAME}" "${artifact_dir}/${BINARY_NAME}"
+          chmod +x "${artifact_dir}/${BINARY_NAME}"
+          tar -C "${artifact_dir}" -czf "dist/${archive}" "${BINARY_NAME}"
+          sha256sum "dist/${archive}" > "dist/${archive}.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.variant }}-linux-x86_64
+          path: |
+            dist/${{ env.BINARY_NAME }}-${{ matrix.variant }}-linux-x86_64.tar.gz
+            dist/${{ env.BINARY_NAME }}-${{ matrix.variant }}-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.tag_name }}
+          RELEASE_NAME: ${{ inputs.release_name }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${RELEASE_NAME}" ]; then
+            RELEASE_NAME="${TAG_NAME}"
+          fi
+
+          release_flags=()
+          if [ "${DRAFT}" = "true" ]; then
+            release_flags+=(--draft)
+          fi
+          if [ "${PRERELEASE}" = "true" ]; then
+            release_flags+=(--prerelease)
+          fi
+
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            gh release upload "${TAG_NAME}" dist/* --clobber
+          else
+            gh release create "${TAG_NAME}" \
+              dist/* \
+              --target "${GITHUB_SHA}" \
+              --title "${RELEASE_NAME}" \
+              --notes "Linux x86_64 binaries built from dev with profile-embedded-opencode-local." \
+              "${release_flags[@]}"
+          fi
