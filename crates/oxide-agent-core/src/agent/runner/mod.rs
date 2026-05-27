@@ -4,8 +4,13 @@
 
 mod execution;
 mod hooks;
+mod llm_calls;
 mod loop_detection;
+mod model_routes;
+mod response_dispatch;
 mod responses;
+mod runtime_compaction;
+mod token_snapshots;
 mod tools;
 mod types;
 
