@@ -328,12 +328,19 @@ fn assert_tool_availability_contract(
     match profile {
         "profile-embedded-opencode-local" => {
             assert!(
+                enabled_module_ids.contains("sandbox-backend/bwrap"),
+                "embedded-opencode-local profile must enable the bwrap sandbox backend"
+            );
+            assert!(
                 enabled_module_ids.contains("sandbox-backend/docker-direct"),
                 "embedded-opencode-local profile must enable the direct Docker sandbox backend"
             );
             assert_present_capabilities(
                 &enabled_capability_ids,
                 &[
+                    "sandbox-backend/bwrap/exec",
+                    "sandbox-backend/bwrap/fileops",
+                    "sandbox-backend/bwrap/lifecycle",
                     "sandbox-backend/docker-direct/exec",
                     "sandbox-backend/docker-direct/fileops",
                     "sandbox-backend/docker-direct/lifecycle",

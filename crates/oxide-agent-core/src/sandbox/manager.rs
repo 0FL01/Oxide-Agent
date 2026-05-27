@@ -250,7 +250,7 @@ enum SandboxManagerInner {
     #[cfg(feature = "sandbox-backend-sandboxd-client")]
     Broker(BrokerSandboxManager),
     #[cfg(feature = "sandbox-backend-bwrap")]
-    Bwrap(BwrapSandboxManager),
+    Bwrap(Box<BwrapSandboxManager>),
 }
 
 #[cfg(feature = "sandbox-backend-sandboxd-client")]
@@ -518,7 +518,9 @@ impl SandboxManager {
                 #[cfg(feature = "sandbox-backend-bwrap")]
                 {
                     return Ok(Self {
-                        inner: SandboxManagerInner::Bwrap(BwrapSandboxManager::new(scope).await?),
+                        inner: SandboxManagerInner::Bwrap(Box::new(
+                            BwrapSandboxManager::new(scope).await?,
+                        )),
                     });
                 }
 
