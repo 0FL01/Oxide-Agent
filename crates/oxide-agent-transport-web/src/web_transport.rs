@@ -53,6 +53,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
 const WEB_EVENT_SCHEMA_VERSION: u32 = 1;
 const EVENT_SUMMARY_MAX_CHARS: usize = 160;
 const EVENT_PREVIEW_MAX_CHARS: usize = 4_000;
+const REDACTED_EVENT_PAYLOAD: &str = "[redacted sensitive event payload]";
 
 #[derive(Debug, Clone)]
 pub struct BrowserEventScope {
@@ -469,12 +470,13 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
             input,
             command_preview,
         } => {
-            let (input_preview, input_truncated) = truncate_text(input, EVENT_PREVIEW_MAX_CHARS);
-            let (command_preview, command_truncated) = command_preview
+            let (input_preview, input_truncated, input_redacted) =
+                preview_event_text(input, EVENT_PREVIEW_MAX_CHARS);
+            let (command_preview, command_truncated, command_redacted) = command_preview
                 .as_ref()
-                .map(|preview| truncate_text(preview, EVENT_PREVIEW_MAX_CHARS))
-                .map_or((None, false), |(preview, truncated)| {
-                    (Some(preview), truncated)
+                .map(|preview| preview_event_text(preview, EVENT_PREVIEW_MAX_CHARS))
+                .map_or((None, false, false), |(preview, truncated, redacted)| {
+                    (Some(preview), truncated, redacted)
                 });
             (
                 TaskEventKind::ToolCall,
@@ -484,7 +486,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
                     "input_preview": input_preview,
                     "command_preview": command_preview,
                 }),
-                false,
+                input_redacted || command_redacted,
                 input_truncated || command_truncated,
             )
         }
@@ -493,7 +495,8 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
             output,
             success,
         } => {
-            let (output_preview, truncated) = truncate_text(output, EVENT_PREVIEW_MAX_CHARS);
+            let (output_preview, truncated, redacted) =
+                preview_event_text(output, EVENT_PREVIEW_MAX_CHARS);
             (
                 TaskEventKind::ToolResult,
                 truncate_summary(name),
@@ -502,7 +505,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
                     "success": success,
                     "output_preview": output_preview,
                 }),
-                false,
+                redacted,
                 truncated,
             )
         }
@@ -845,6 +848,12 @@ fn truncate_summary(value: &str) -> String {
     truncate_text(value, EVENT_SUMMARY_MAX_CHARS).0
 }
 
+fn preview_event_text(value: &str, max_chars: usize) -> (String, bool, bool) {
+    let (redacted_value, redacted) = redact_sensitive_text(value);
+    let (preview, truncated) = truncate_text(&redacted_value, max_chars);
+    (preview, truncated, redacted)
+}
+
 fn truncate_text(value: &str, max_chars: usize) -> (String, bool) {
     if value.chars().count() <= max_chars {
         return (value.to_string(), false);
@@ -854,6 +863,69 @@ fn truncate_text(value: &str, max_chars: usize) -> (String, bool) {
     truncated.push_str("...");
     (truncated, true)
 }
+
+fn redact_sensitive_text(value: &str) -> (String, bool) {
+    if let Ok(mut json) = serde_json::from_str::<Value>(value) {
+        let redacted = redact_sensitive_json(&mut json);
+        if redacted {
+            return (json.to_string(), true);
+        }
+        return (value.to_string(), false);
+    }
+
+    if contains_sensitive_marker(value) {
+        return (REDACTED_EVENT_PAYLOAD.to_string(), true);
+    }
+    (value.to_string(), false)
+}
+
+fn redact_sensitive_json(value: &mut Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            let mut redacted = false;
+            for (key, value) in map.iter_mut() {
+                if is_sensitive_key(key) {
+                    *value = Value::String("[redacted]".to_string());
+                    redacted = true;
+                } else if redact_sensitive_json(value) {
+                    redacted = true;
+                }
+            }
+            redacted
+        }
+        Value::Array(items) => items.iter_mut().any(redact_sensitive_json),
+        _ => false,
+    }
+}
+
+fn contains_sensitive_marker(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    SENSITIVE_KEY_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
+    SENSITIVE_KEY_MARKERS
+        .iter()
+        .map(|marker| marker.replace(['-', '_'], ""))
+        .any(|marker| normalized.contains(&marker))
+}
+
+const SENSITIVE_KEY_MARKERS: &[&str] = &[
+    "api_key",
+    "apikey",
+    "authorization",
+    "auth_token",
+    "bootstrap_token",
+    "cookie",
+    "csrf",
+    "password",
+    "secret",
+    "session_token",
+    "token",
+];
 
 #[cfg(test)]
 mod tests {
@@ -1014,6 +1086,68 @@ mod tests {
         assert_eq!(tool_result.payload["success"], true);
         assert!(tool_result.truncated);
         assert_eq!(result.persisted_events[1].kind, TaskEventKind::Finished);
+    }
+
+    #[tokio::test]
+    async fn collect_events_redacts_sensitive_tool_payload_previews() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::ToolCall {
+            name: "ssh_exec".to_string(),
+            input: serde_json::json!({
+                "command": "deploy",
+                "password": "correct horse battery staple",
+                "nested": { "api_key": "sk-live-secret" }
+            })
+            .to_string(),
+            command_preview: Some("export OPENAI_API_KEY=sk-live-secret".to_string()),
+        })
+        .await
+        .expect("send tool call");
+        tx.send(AgentEvent::ToolResult {
+            name: "ssh_exec".to_string(),
+            output: "SESSION_TOKEN=raw-session-token".to_string(),
+            success: true,
+        })
+        .await
+        .expect("send tool result");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+        )
+        .await;
+
+        let tool_call = &result.persisted_events[0];
+        assert_eq!(tool_call.kind, TaskEventKind::ToolCall);
+        assert!(tool_call.redacted);
+        let input_preview = tool_call.payload["input_preview"]
+            .as_str()
+            .expect("input preview");
+        assert!(input_preview.contains("[redacted]"));
+        assert!(!input_preview.contains("correct horse battery staple"));
+        assert!(!input_preview.contains("sk-live-secret"));
+        assert_eq!(
+            tool_call.payload["command_preview"],
+            super::REDACTED_EVENT_PAYLOAD
+        );
+
+        let tool_result = &result.persisted_events[1];
+        assert_eq!(tool_result.kind, TaskEventKind::ToolResult);
+        assert!(tool_result.redacted);
+        assert_eq!(
+            tool_result.payload["output_preview"],
+            super::REDACTED_EVENT_PAYLOAD
+        );
     }
 
     #[tokio::test]
