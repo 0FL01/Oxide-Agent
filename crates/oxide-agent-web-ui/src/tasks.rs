@@ -10,57 +10,6 @@ use oxide_agent_web_contracts::{
     ResumeTaskRequest, SseConnectionState, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
 
-// ── Tool view models ─────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ToolRunStatus {
-    Running,
-    Success,
-    Failure,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ToolDisplayKind {
-    ExecCommand,
-    WebSearch,
-    WebFetch,
-    WikiMemory,
-    Generic,
-}
-
-#[derive(Debug, Clone)]
-struct ToolRunVm {
-    tool_call_id: String,
-    name: String,
-    command: Option<String>,
-    input_preview: Option<String>,
-    status: ToolRunStatus,
-    duration_ms: Option<i64>,
-    exit_code: Option<i64>,
-    stdout_text: Option<String>,
-    stderr_text: Option<String>,
-    error_message: Option<String>,
-    query: Option<String>,
-    result_count: Option<usize>,
-    raw_preview: Option<String>,
-    /// True for the most recent tool run (controls compact-mode default).
-    is_latest: bool,
-}
-
-fn tool_card_class(status: &ToolRunStatus) -> &'static str {
-    match status {
-        ToolRunStatus::Running => "tool-card running",
-        ToolRunStatus::Success => "tool-card success",
-        ToolRunStatus::Failure => "tool-card failure",
-        ToolRunStatus::Cancelled => "tool-card cancelled",
-    }
-}
-
-fn payload_i64(event: &PersistedTaskEvent, key: &str) -> Option<i64> {
-    event.payload.get(key).and_then(|v| v.as_i64())
-}
-
 #[component]
 pub fn TaskConsole(
     route: AppRoute,
@@ -588,13 +537,12 @@ fn AgentActivity(
 ) -> impl IntoView {
     view! {
         {move || {
-            let task_events: Vec<PersistedTaskEvent> = events
+            let task_events = events
                 .get()
                 .into_iter()
-                .filter(|e| e.task_id == task_id)
-                .filter(|e| is_chat_visible_event(&e.kind))
-                .filter(|e| is_useful_reasoning(e))
-                .collect();
+                .filter(|event| event.task_id == task_id)
+                .filter(|event| is_chat_visible_event(&event.kind))
+                .collect::<Vec<_>>();
 
             let todos = if activity_owner {
                 progress.get().and_then(|p| p.current_todos)
@@ -602,102 +550,16 @@ fn AgentActivity(
                 None
             };
 
-            // Group tool events by tool_call_id, keep non-tool events separate.
-            let mut tool_runs: Vec<ToolRunVm> = Vec::new();
-            let mut other_events: Vec<PersistedTaskEvent> = Vec::new();
-
-            for event in &task_events {
-                match &event.kind {
-                    TaskEventKind::ToolCall => {
-                        let tc_id = payload_str(event, "tool_call_id").unwrap_or_default();
-                        let name = payload_str(event, "name").unwrap_or_default();
-                        let command = payload_str(event, "command_preview");
-                        let input_preview = payload_str(event, "input_preview");
-                        tool_runs.push(ToolRunVm {
-                            tool_call_id: tc_id,
-                            name,
-                            command,
-                            input_preview,
-                            status: ToolRunStatus::Running,
-                            duration_ms: None,
-                            exit_code: None,
-                            stdout_text: None,
-                            stderr_text: None,
-                            error_message: None,
-                            query: None,
-                            result_count: None,
-                            raw_preview: None,
-                            is_latest: false,
-                        });
-                    }
-                    TaskEventKind::ToolResult => {
-                        let tc_id = payload_str(event, "tool_call_id").unwrap_or_default();
-                        let name = payload_str(event, "name").unwrap_or_default();
-                        let success = event
-                            .payload
-                            .get("success")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        let display_status = payload_str(event, "status");
-                        let run_status = match display_status.as_deref() {
-                            Some("timeout") | Some("hung_timeout") => ToolRunStatus::Failure,
-                            Some("cancelled") => ToolRunStatus::Cancelled,
-                            _ if success => ToolRunStatus::Success,
-                            _ => ToolRunStatus::Failure,
-                        };
-                        let raw = payload_str(event, "output_preview");
-                        let run = ToolRunVm {
-                            tool_call_id: tc_id.clone(),
-                            name,
-                            command: None,
-                            input_preview: None,
-                            status: run_status,
-                            duration_ms: payload_i64(event, "duration_ms"),
-                            exit_code: payload_i64(event, "exit_code"),
-                            stdout_text: payload_str(event, "stdout_text"),
-                            stderr_text: payload_str(event, "stderr_text"),
-                            error_message: payload_str(event, "error_message"),
-                            query: payload_str(event, "query"),
-                            result_count: payload_i64(event, "result_count")
-                                .map(|v| v as usize),
-                            raw_preview: raw,
-                            is_latest: false,
-                        };
-                        // Merge into existing ToolCall entry if found.
-                        if let Some(existing) = tool_runs.iter_mut().find(|r| r.tool_call_id == tc_id) {
-                            existing.status = run.status;
-                            existing.duration_ms = run.duration_ms;
-                            existing.exit_code = run.exit_code;
-                            existing.stdout_text = run.stdout_text;
-                            existing.stderr_text = run.stderr_text;
-                            existing.error_message = run.error_message;
-                            existing.query = run.query;
-                            existing.result_count = run.result_count;
-                            existing.raw_preview = run.raw_preview;
-                        } else {
-                            tool_runs.push(run);
-                        }
-                    }
-                    _ => other_events.push(event.clone()),
-                }
-            }
-
-            // Mark the latest tool run for compact-mode logic.
-            if let Some(last) = tool_runs.last_mut() {
-                last.is_latest = true;
-            }
-
-            if tool_runs.is_empty() && other_events.is_empty() && todos.is_none() {
+            if task_events.is_empty() && todos.is_none() {
                 return ().into_any();
             }
 
             view! {
                 <div class="agent-activity">
-                    {todos.map(|v| view! { <TodosCard todos=v /> })}
-                    {tool_runs.into_iter().map(|run| {
-                        view! { <ToolRunCard run=run /> }
-                    }).collect::<Vec<_>>()}
-                    {other_events.into_iter().map(|event| {
+                    {todos.map(|value| view! {
+                        <TodosCard todos=value />
+                    })}
+                    {task_events.into_iter().map(|event| {
                         view! { <AgentEventCard event=event /> }
                     }).collect::<Vec<_>>()}
                 </div>
@@ -706,251 +568,17 @@ fn AgentActivity(
     }
 }
 
-// ── Tool Run Card (groups call+result, dispatches to specific renderer) ──
-
-#[component]
-fn ToolRunCard(run: ToolRunVm) -> impl IntoView {
-    let display_kind = match run.name.as_str() {
-        "execute_command" => ToolDisplayKind::ExecCommand,
-        "web_search" => ToolDisplayKind::WebSearch,
-        "tavily_search" => ToolDisplayKind::WebSearch,
-        "web_fetch" | "webfetch_md" => ToolDisplayKind::WebFetch,
-        "wiki_memory_list" | "wiki_memory_read" | "wiki_memory_delete" => {
-            ToolDisplayKind::WikiMemory
-        }
-        _ => ToolDisplayKind::Generic,
-    };
-
-    let is_failed = matches!(
-        run.status,
-        ToolRunStatus::Failure | ToolRunStatus::Cancelled
-    );
-    let has_content =
-        run.stdout_text.is_some() || run.stderr_text.is_some() || run.error_message.is_some();
-    // Compact mode: collapse successful old runs that have content
-    let default_open = is_failed || run.is_latest || !has_content;
-
-    let status_class = tool_card_class(&run.status).to_string();
-    let run_header = run.clone();
-    let run_body = run.clone();
-
-    view! {
-        <section class=status_class>
-            {match display_kind {
-                ToolDisplayKind::ExecCommand => view! { <ExecToolHeader run=run_header /> }.into_any(),
-                ToolDisplayKind::WebSearch | ToolDisplayKind::WebFetch => {
-                    view! { <SearchToolHeader run=run_header /> }.into_any()
-                }
-                _ => view! { <GenericToolHeader run=run_header /> }.into_any(),
-            }}
-            <details class="tool-card-body" open=default_open>
-                <summary class="tool-card-expand">"details"</summary>
-                {match display_kind {
-                    ToolDisplayKind::ExecCommand => view! { <ExecToolBody run=run_body /> }.into_any(),
-                    ToolDisplayKind::WebSearch | ToolDisplayKind::WebFetch => {
-                        view! { <SearchToolBody run=run_body /> }.into_any()
-                    }
-                    _ => view! { <GenericToolBody run=run_body /> }.into_any(),
-                }}
-                {run.raw_preview.map(|raw| view! {
-                    <details class="tool-raw">
-                        <summary>"Raw payload"</summary>
-                        <pre class="tool-raw-pre">{raw}</pre>
-                    </details>
-                })}
-            </details>
-        </section>
-    }
-}
-
-// ── Exec Tool (execute_command) ──────────────────────────────────────────
-
-#[component]
-fn ExecToolHeader(run: ToolRunVm) -> impl IntoView {
-    let icon = match run.status {
-        ToolRunStatus::Running => "\u{23f3}",   // hourglass
-        ToolRunStatus::Success => "\u{2713}",   // checkmark
-        ToolRunStatus::Failure => "\u{2717}",   // cross
-        ToolRunStatus::Cancelled => "\u{2298}", // circled minus
-    };
-    let duration = run
-        .duration_ms
-        .map(|ms| {
-            if ms >= 1000 {
-                format!("{:.1}s", ms as f64 / 1000.0)
-            } else {
-                format!("{ms}ms")
-            }
-        })
-        .unwrap_or_default();
-
-    view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">"execute_command"</span>
-            {(!duration.is_empty()).then(|| view! {
-                <span class="tool-meta">{duration}</span>
-            })}
-            {run.exit_code.map(|code| view! {
-                <span class=if code != 0 { "tool-meta danger" } else { "tool-meta" }>
-                    {format!("exit {code}")}
-                </span>
-            })}
-            {run.error_message.clone().map(|msg| view! {
-                <span class="tool-meta danger">{msg}</span>
-            })}
-        </div>
-    }
-}
-
-#[component]
-fn ExecToolBody(run: ToolRunVm) -> impl IntoView {
-    // Prefer command from ToolCall, fall back to input_preview
-    let command_display = run.command.clone().or_else(|| run.input_preview.clone());
-
-    view! {
-        {command_display.map(|cmd| view! {
-            <pre class="tool-command">{format!("$ {cmd}")}</pre>
-        })}
-        <ToolStreamBlock title="stdout" text=run.stdout_text.clone() />
-        <ToolStreamBlock title="stderr" text=run.stderr_text.clone() />
-    }
-}
-
-// ── Search Tool (web_search / tavily_search) ─────────────────────────────
-
-#[component]
-fn SearchToolHeader(run: ToolRunVm) -> impl IntoView {
-    let icon = match run.status {
-        ToolRunStatus::Running => "\u{23f3}",
-        ToolRunStatus::Success => "\u{2713}",
-        ToolRunStatus::Failure => "\u{2717}",
-        ToolRunStatus::Cancelled => "\u{2298}",
-    };
-    let duration = run
-        .duration_ms
-        .map(|ms| {
-            if ms >= 1000 {
-                format!("{:.1}s", ms as f64 / 1000.0)
-            } else {
-                format!("{ms}ms")
-            }
-        })
-        .unwrap_or_default();
-    let result_label = run
-        .result_count
-        .map(|n| format!("{n} results"))
-        .unwrap_or_default();
-
-    view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">{run.name.clone()}</span>
-            {(!duration.is_empty()).then(|| view! {
-                <span class="tool-meta">{duration}</span>
-            })}
-            {(!result_label.is_empty()).then(|| view! {
-                <span class="tool-meta">{result_label}</span>
-            })}
-        </div>
-    }
-}
-
-#[component]
-fn SearchToolBody(run: ToolRunVm) -> impl IntoView {
-    view! {
-        {run.query.clone().map(|q| view! {
-            <div class="tool-query">
-                <span class="tool-label">"Query"</span>
-                <code>{q}</code>
-            </div>
-        })}
-        // Render stdout as markdown (search results are often markdown)
-        {run.stdout_text.clone().map(|text| view! {
-            <div class="tool-stream">
-                <div class="tool-stream-title">"output"</div>
-                <div class="tool-stream-content">
-                    <MarkdownContent markdown=text />
-                </div>
-            </div>
-        })}
-    }
-}
-
-// ── Web Fetch Tool ───────────────────────────────────────────────────────
-
-#[component]
-fn GenericToolHeader(run: ToolRunVm) -> impl IntoView {
-    let icon = match run.status {
-        ToolRunStatus::Running => "\u{23f3}",
-        ToolRunStatus::Success => "\u{2713}",
-        ToolRunStatus::Failure => "\u{2717}",
-        ToolRunStatus::Cancelled => "\u{2298}",
-    };
-    let duration = run
-        .duration_ms
-        .map(|ms| {
-            if ms >= 1000 {
-                format!("{:.1}s", ms as f64 / 1000.0)
-            } else {
-                format!("{ms}ms")
-            }
-        })
-        .unwrap_or_default();
-
-    view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">{run.name.clone()}</span>
-            {(!duration.is_empty()).then(|| view! {
-                <span class="tool-meta">{duration}</span>
-            })}
-            {run.exit_code.map(|code| view! {
-                <span class=if code != 0 { "tool-meta danger" } else { "tool-meta" }>
-                    {format!("exit {code}")}
-                </span>
-            })}
-        </div>
-    }
-}
-
-#[component]
-fn GenericToolBody(run: ToolRunVm) -> impl IntoView {
-    view! {
-        {run.command.clone().map(|cmd| view! {
-            <pre class="tool-command">{format!("$ {cmd}")}</pre>
-        })}
-        <ToolStreamBlock title="output" text=run.stdout_text.clone() />
-        <ToolStreamBlock title="stderr" text=run.stderr_text.clone() />
-    }
-}
-
-// ── Shared sub-components ────────────────────────────────────────────────
-
-#[component]
-fn ToolStreamBlock(title: &'static str, text: Option<String>) -> impl IntoView {
-    match text {
-        Some(t) if !t.trim().is_empty() => view! {
-            <div class="tool-stream">
-                <div class="tool-stream-title">{title}</div>
-                <pre class="tool-stream-pre">{t}</pre>
-            </div>
-        }
-        .into_any(),
-        _ => ().into_any(),
-    }
-}
-
-// ── Agent Event Card (non-tool events: reasoning, errors, retries, etc.) ─
+// ── Agent Event Card ─────────────────────────────────────────────────────
 
 #[component]
 fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
     let kind = event.kind.clone();
     let title = event_title(&event);
     let body = event_body(&event);
+    let default_open = matches!(kind, TaskEventKind::ToolCall | TaskEventKind::ToolResult);
 
     view! {
-        <details class="agent-event-card">
+        <details class="agent-event-card" open=default_open>
             <summary class="agent-event-summary">
                 <span class="agent-event-kind">{event_kind_label(&kind)}</span>
                 <span class="agent-event-title">{title}</span>
@@ -1036,20 +664,6 @@ fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
             | TaskEventKind::ProviderFailoverActivated
             | TaskEventKind::Finished
     )
-}
-
-/// Returns true if a Reasoning event has a non-empty, non-placeholder summary.
-fn is_useful_reasoning(event: &PersistedTaskEvent) -> bool {
-    if event.kind != TaskEventKind::Reasoning {
-        return true;
-    }
-    let summary = event
-        .payload
-        .get("summary")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim();
-    !summary.is_empty() && summary != "Reasoning"
 }
 
 fn event_kind_label(kind: &TaskEventKind) -> &'static str {

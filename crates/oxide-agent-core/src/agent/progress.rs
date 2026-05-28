@@ -64,9 +64,6 @@ pub enum AgentEvent {
     },
     /// Agent is calling a tool
     ToolCall {
-        /// Stable id for grouping call + result in the UI.
-        #[serde(default)]
-        tool_call_id: String,
         /// Tool name
         name: String,
         /// Tool input arguments
@@ -76,9 +73,6 @@ pub enum AgentEvent {
     },
     /// Agent received a tool result
     ToolResult {
-        /// Stable id matching the originating ToolCall.
-        #[serde(default)]
-        tool_call_id: String,
         /// Tool name
         name: String,
         /// Tool execution output
@@ -433,7 +427,6 @@ impl ProgressState {
                 name,
                 input,
                 command_preview,
-                ..
             } => self.handle_tool_call(name, input, command_preview),
             AgentEvent::ToolResult { success, .. } => self.handle_tool_result(success),
             AgentEvent::WaitingForApproval {

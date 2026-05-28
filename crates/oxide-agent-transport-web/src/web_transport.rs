@@ -466,7 +466,6 @@ fn token_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool,
 fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
     match event {
         AgentEvent::ToolCall {
-            tool_call_id,
             name,
             input,
             command_preview,
@@ -483,7 +482,6 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
                 TaskEventKind::ToolCall,
                 truncate_summary(name),
                 json!({
-                    "tool_call_id": tool_call_id,
                     "name": name,
                     "input_preview": input_preview,
                     "command_preview": command_preview,
@@ -493,81 +491,22 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
             )
         }
         AgentEvent::ToolResult {
-            tool_call_id,
             name,
             output,
             success,
         } => {
-            // Apply redaction first, then parse to extract display fields.
-            let (redacted_output, was_redacted) = redact_sensitive_text(output);
-            let (output_preview, was_truncated) =
-                truncate_text(&redacted_output, EVENT_PREVIEW_MAX_CHARS);
-
-            let mut payload = json!({
-                "tool_call_id": tool_call_id,
-                "name": name,
-                "success": success,
-                "output_preview": output_preview,
-            });
-
-            // Best-effort extraction of display-friendly fields from structured JSON.
-            if let Ok(parsed) = serde_json::from_str::<Value>(&redacted_output) {
-                let display_kind = name.as_str();
-                payload["display_kind"] = json!(display_kind);
-
-                if let Some(v) = parsed.get("duration_ms").and_then(Value::as_i64) {
-                    payload["duration_ms"] = json!(v);
-                }
-                if let Some(v) = parsed.get("exit_code").and_then(Value::as_i64) {
-                    payload["exit_code"] = json!(v);
-                }
-                if let Some(v) = parsed.get("error_message").and_then(Value::as_str) {
-                    payload["error_message"] = json!(v);
-                }
-                if let Some(v) = parsed.get("status").and_then(Value::as_str) {
-                    payload["status"] = json!(v);
-                }
-
-                // stdout / stderr text extraction
-                if let Some(stdout) = parsed.get("stdout") {
-                    if let Some(text) = stdout.get("text").and_then(Value::as_str) {
-                        if !text.is_empty() {
-                            payload["stdout_text"] = json!(text);
-                        }
-                    }
-                }
-                if let Some(stderr) = parsed.get("stderr") {
-                    if let Some(text) = stderr.get("text").and_then(Value::as_str) {
-                        if !text.is_empty() {
-                            payload["stderr_text"] = json!(text);
-                        }
-                    }
-                }
-
-                // web_search: extract query and results count
-                if let Some(sp) = parsed.get("structured_payload") {
-                    if let Some(query) = sp.get("query").and_then(Value::as_str) {
-                        payload["query"] = json!(query);
-                    }
-                    if let Some(results) = sp.get("results").and_then(Value::as_array) {
-                        payload["result_count"] = json!(results.len());
-                    }
-                }
-
-                // command from ToolCall input or structured payload
-                if let Some(sp) = parsed.get("structured_payload") {
-                    if let Some(cmd) = sp.get("command").and_then(Value::as_str) {
-                        payload["command"] = json!(cmd);
-                    }
-                }
-            }
-
+            let (output_preview, truncated, redacted) =
+                preview_event_text(output, EVENT_PREVIEW_MAX_CHARS);
             (
                 TaskEventKind::ToolResult,
                 truncate_summary(name),
-                payload,
-                was_redacted,
-                was_truncated,
+                json!({
+                    "name": name,
+                    "success": success,
+                    "output_preview": output_preview,
+                }),
+                redacted,
+                truncated,
             )
         }
         _ => unreachable!("tool_event_parts called with non-tool event"),
@@ -1116,7 +1055,6 @@ mod tests {
         let long_output = "x".repeat(super::EVENT_PREVIEW_MAX_CHARS + 10);
 
         tx.send(AgentEvent::ToolResult {
-            tool_call_id: String::new(),
             name: "execute_command".to_string(),
             output: long_output,
             success: true,
@@ -1156,7 +1094,6 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
 
         tx.send(AgentEvent::ToolCall {
-            tool_call_id: String::new(),
             name: "ssh_exec".to_string(),
             input: serde_json::json!({
                 "command": "deploy",
@@ -1169,7 +1106,6 @@ mod tests {
         .await
         .expect("send tool call");
         tx.send(AgentEvent::ToolResult {
-            tool_call_id: String::new(),
             name: "ssh_exec".to_string(),
             output: "SESSION_TOKEN=raw-session-token".to_string(),
             success: true,

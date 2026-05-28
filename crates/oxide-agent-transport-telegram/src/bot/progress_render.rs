@@ -334,31 +334,26 @@ mod tests {
         let mut state = ProgressState::new(100);
 
         state.update(AgentEvent::ToolCall {
-            tool_call_id: String::new(),
             name: "web_search".to_string(),
             input: "q1".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
-            tool_call_id: String::new(),
             name: "web_search".to_string(),
             output: "result1".to_string(),
             success: true,
         });
         state.update(AgentEvent::ToolCall {
-            tool_call_id: String::new(),
             name: "web_search".to_string(),
             input: "q2".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
-            tool_call_id: String::new(),
             name: "web_search".to_string(),
             output: "result2".to_string(),
             success: true,
         });
         state.update(AgentEvent::ToolCall {
-            tool_call_id: String::new(),
             name: "execute_command".to_string(),
             input: "{}".to_string(),
             command_preview: Some("ls -la".to_string()),
@@ -402,13 +397,11 @@ mod tests {
         let mut state = ProgressState::new(100);
 
         state.update(AgentEvent::ToolCall {
-            tool_call_id: String::new(),
             name: "text_to_speech_en_file".to_string(),
             input: "{}".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
-            tool_call_id: String::new(),
             name: "text_to_speech_en_file".to_string(),
             output: "Tool execution error: boom".to_string(),
             success: false,
@@ -440,7 +433,6 @@ mod tests {
         let mut state = ProgressState::new(10);
 
         state.update(AgentEvent::ToolCall {
-            tool_call_id: String::new(),
             name: "ssh_sudo_exec".to_string(),
             input: "{}".to_string(),
             command_preview: None,
