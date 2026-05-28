@@ -3,10 +3,12 @@ use crate::components::{EmptyState, ErrorBanner, StatusBadge};
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
 use crate::sessions::RenameSessionForm;
+use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{friendly_time, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    CreateTaskRequest, PersistedTaskEvent, ResumeTaskRequest, TaskDetail, TaskStatus, TaskSummary,
+    CreateTaskRequest, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SseConnectionState,
+    TaskDetail, TaskStatus, TaskSummary,
 };
 
 #[component]
@@ -34,6 +36,9 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
+    let (progress, set_progress) = signal(None::<ProgressSnapshot>);
+    let (sse_state, set_sse_state) = signal(SseConnectionState::Disconnected);
+    let (streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
 
     let session_id_for_load = session_id.clone();
@@ -58,7 +63,21 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                     set_tasks.set(response.tasks);
                     if let Some(task_id) = latest_running {
                         if let Ok(response) = client.get_task(&session_id, &task_id).await {
+                            set_progress.set(response.task.last_progress.clone());
                             set_active_task.set(Some(response.task));
+                            start_task_stream(
+                                client,
+                                session_id,
+                                task_id,
+                                StreamUiSignals {
+                                    set_events,
+                                    set_progress,
+                                    set_sse_state,
+                                    set_error,
+                                    streaming_task_id,
+                                    set_streaming_task_id,
+                                },
+                            );
                         }
                     }
                 }
@@ -112,6 +131,20 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
             match result {
                 Ok(task) => {
                     set_input.set(String::new());
+                    set_active_task.set(Some(summary_to_detail(&session_id, &task)));
+                    start_task_stream(
+                        client,
+                        session_id.clone(),
+                        task.task_id.clone(),
+                        StreamUiSignals {
+                            set_events,
+                            set_progress,
+                            set_sse_state,
+                            set_error,
+                            streaming_task_id,
+                            set_streaming_task_id,
+                        },
+                    );
                     set_tasks.update(|items| items.push(task));
                 }
                 Err(error) => set_error.set(Some(error.to_string())),
@@ -220,6 +253,8 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                         <h2>"Events"</h2>
                         <button class="secondary" type="button" on:click=refresh_events>"Refresh"</button>
                     </div>
+                    <SseStatus state=sse_state />
+                    <ProgressPanel progress=progress />
                     {move || {
                         if events.get().is_empty() {
                             view! { <EmptyState title="No events" /> }.into_any()
@@ -238,6 +273,93 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                 </aside>
             </div>
         </section>
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StreamUiSignals {
+    set_events: WriteSignal<Vec<PersistedTaskEvent>>,
+    set_progress: WriteSignal<Option<ProgressSnapshot>>,
+    set_sse_state: WriteSignal<SseConnectionState>,
+    set_error: WriteSignal<Option<String>>,
+    streaming_task_id: ReadSignal<Option<String>>,
+    set_streaming_task_id: WriteSignal<Option<String>>,
+}
+
+fn start_task_stream(
+    client: crate::api::ApiClient,
+    session_id: String,
+    task_id: String,
+    signals: StreamUiSignals,
+) {
+    if signals.streaming_task_id.get_untracked().as_deref() == Some(task_id.as_str()) {
+        return;
+    }
+    signals.set_streaming_task_id.set(Some(task_id.clone()));
+    spawn_task_stream(TaskStreamConfig {
+        client,
+        session_id,
+        task_id,
+        set_events: signals.set_events,
+        set_progress: signals.set_progress,
+        set_state: signals.set_sse_state,
+        set_error: signals.set_error,
+    });
+}
+
+fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
+    TaskDetail {
+        task_id: task.task_id.clone(),
+        session_id: session_id.to_string(),
+        status: task.status,
+        input_markdown: task.input_markdown.clone(),
+        input_edited_at: task.input_edited_at,
+        final_response_markdown: task.final_response_markdown.clone(),
+        error_message: task.error_message.clone(),
+        pending_user_input: task.pending_user_input.clone(),
+        last_progress: None,
+        last_event_seq: task.last_event_seq,
+        created_at: task.created_at,
+        started_at: task.started_at,
+        updated_at: task.updated_at,
+        finished_at: task.finished_at,
+    }
+}
+
+#[component]
+fn SseStatus(state: ReadSignal<SseConnectionState>) -> impl IntoView {
+    view! {
+        <div class="sse-state">
+            {move || match state.get() {
+                SseConnectionState::Connected => "stream connected",
+                SseConnectionState::Disconnected => "stream disconnected",
+                SseConnectionState::Reconnecting => "stream reconnecting",
+                SseConnectionState::TerminalClosed => "stream closed",
+            }}
+        </div>
+    }
+}
+
+#[component]
+fn ProgressPanel(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView {
+    view! {
+        {move || progress.get().map(|progress| view! {
+            <section class="progress-panel">
+                <div>
+                    <strong>"Progress"</strong>
+                    <span>{format!("{} / {}", progress.current_iteration, progress.max_iterations)}</span>
+                </div>
+                {progress.current_thought.map(|thought| view! {
+                    <p>{thought}</p>
+                })}
+                {progress.provider_failover_notice.map(|notice| view! {
+                    <p class="notice">{notice}</p>
+                })}
+                {progress.error.map(|error| view! {
+                    <p class="error-text">{error}</p>
+                })}
+            </section>
+        })}
     }
 }
 

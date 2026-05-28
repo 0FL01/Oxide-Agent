@@ -13,6 +13,8 @@ mod routes;
 #[cfg(target_arch = "wasm32")]
 mod sessions;
 #[cfg(target_arch = "wasm32")]
+mod sse;
+#[cfg(target_arch = "wasm32")]
 mod tasks;
 #[cfg(target_arch = "wasm32")]
 mod utils;

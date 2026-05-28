@@ -16,6 +16,7 @@ too_many_lines = "forbid"
 ammonia = "4.1.2"
 comrak = { version = "0.52.0", default-features = false }
 console_error_panic_hook = "0.1.7"
+futures-util = "0.3.32"
 gloo-net = "0.7.0"
 leptos = { version = "0.8.19", features = ["csr"] }
 leptos_router = "0.8.13"

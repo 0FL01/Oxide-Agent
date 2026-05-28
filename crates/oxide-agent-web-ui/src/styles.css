@@ -315,6 +315,36 @@ pre {
   align-self: start;
 }
 
+.sse-state {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-block;
+  font-size: 0.84rem;
+  margin-top: 10px;
+  padding: 4px 10px;
+}
+
+.progress-panel {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  padding: 10px;
+}
+
+.progress-panel div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.progress-panel p {
+  margin: 0;
+}
+
 .event-list {
   display: grid;
   gap: 8px;
