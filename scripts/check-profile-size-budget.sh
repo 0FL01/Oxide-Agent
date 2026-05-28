@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/check-profile-size-budget.sh <embedded-opencode-local|full> [binary|image|metrics|all]
+  scripts/check-profile-size-budget.sh <embedded-opencode-local|web-embedded-opencode-local|full> [binary|image|metrics|all]
 
 Checks configured release binary, Docker image, and profile metric budgets for
 selected modular architecture profiles. Budgets can be overridden with the env
@@ -35,6 +35,7 @@ declare -a high_risk_dependencies
 entrypoint_binary="oxide-agent-telegram-bot"
 runtime_apt_packages=""
 mcp_binaries=""
+build_web_ui="false"
 
 case "${profile}" in
   embedded-opencode-local)
@@ -42,6 +43,14 @@ case "${profile}" in
     manifest_features="oxide-agent-telegram-bot/profile-embedded-opencode-local"
     packages=(oxide-agent-telegram-bot)
     binaries=(oxide-agent-telegram-bot)
+    ;;
+  web-embedded-opencode-local)
+    cargo_features="oxide-agent-transport-web/profile-web-embedded-opencode-local"
+    manifest_features="oxide-agent-transport-web/profile-web-embedded-opencode-local"
+    packages=(oxide-agent-transport-web)
+    binaries=(oxide-agent-web-console)
+    entrypoint_binary="oxide-agent-web-console"
+    build_web_ui="true"
     ;;
   full)
     cargo_features="oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full"
@@ -115,6 +124,7 @@ binary_env_name() {
 default_binary_budget() {
   case "${profile}:$1" in
     embedded-opencode-local:oxide-agent-telegram-bot) echo 70000000 ;;
+    web-embedded-opencode-local:oxide-agent-web-console) echo 70000000 ;;
     full:oxide-agent-telegram-bot) echo 90000000 ;;
     full:oxide-agent-sandboxd) echo 20000000 ;;
     *) echo 90000000 ;;
@@ -188,6 +198,10 @@ default_metric_budget() {
     embedded-opencode-local:CAPABILITIES) echo 25 ;;
     embedded-opencode-local:DEPENDENCIES) echo 400 ;;
     embedded-opencode-local:HIGH_RISK_DEPENDENCIES) echo 11 ;;
+    web-embedded-opencode-local:MODULES) echo 19 ;;
+    web-embedded-opencode-local:CAPABILITIES) echo 25 ;;
+    web-embedded-opencode-local:DEPENDENCIES) echo 400 ;;
+    web-embedded-opencode-local:HIGH_RISK_DEPENDENCIES) echo 11 ;;
     full:MODULES) echo 39 ;;
     full:CAPABILITIES) echo 53 ;;
     full:DEPENDENCIES) echo 470 ;;
@@ -265,6 +279,8 @@ default_image_budget() {
   case "${profile}:$1" in
     embedded-opencode-local:UNCOMPRESSED) echo 450000000 ;;
     embedded-opencode-local:COMPRESSED) echo 220000000 ;;
+    web-embedded-opencode-local:UNCOMPRESSED) echo 450000000 ;;
+    web-embedded-opencode-local:COMPRESSED) echo 220000000 ;;
     full:UNCOMPRESSED) echo 650000000 ;;
     full:COMPRESSED) echo 320000000 ;;
     *) echo 650000000 ;;
@@ -329,6 +345,7 @@ check_image_budgets() {
     --build-arg MCP_BINARIES="${mcp_binaries}" \
     --build-arg RUNTIME_APT_PACKAGES="${runtime_apt_packages}" \
     --build-arg ENTRYPOINT_BINARY="${entrypoint_binary}" \
+    --build-arg BUILD_WEB_UI="${build_web_ui}" \
     -t "${tag}" \
     .
 

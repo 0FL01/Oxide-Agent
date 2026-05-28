@@ -225,6 +225,26 @@ def assert_app_build_args(service_name: str) -> None:
 
 assert_app_build_args("oxide_agent")
 
+if "oxide_web" in services:
+    args = normalized_args("oxide_web")
+    expected = {
+        "CARGO_FEATURES": "oxide-agent-transport-web/profile-web-embedded-opencode-local",
+        "PACKAGES": "oxide-agent-transport-web",
+        "BINARIES": "oxide-agent-web-console",
+        "ENTRYPOINT_BINARY": "oxide-agent-web-console",
+        "BUILD_WEB_UI": "true",
+    }
+    for key, expected_value in expected.items():
+        if args.get(key) != expected_value:
+            fail(
+                f"oxide_web build arg {key} mismatch: "
+                f"actual={args.get(key)!r}; expected={expected_value!r}"
+            )
+    if args.get("MCP_BINARIES", "") not in {"", None}:
+        fail("oxide_web build arg MCP_BINARIES must be empty")
+    if args.get("RUNTIME_APT_PACKAGES", "") not in {"", None}:
+        fail("oxide_web build arg RUNTIME_APT_PACKAGES must be empty")
+
 if "sandboxd" in services:
     sandboxd = services["sandboxd"]
     build = sandboxd.get("build")
@@ -265,6 +285,9 @@ case "${profile}" in
     require_service sandboxd
     require_service sandbox_image
     require_service searxng
+    if [[ "${profile}" == "root-full" ]]; then
+      require_service oxide_web
+    fi
     require_config_text "sandbox/Dockerfile.dev"
     forbid_config_text "sandbox/Dockerfile.sandbox"
     if ! grep -q "/var/run/docker.sock" <<<"${config}"; then

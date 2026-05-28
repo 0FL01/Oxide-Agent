@@ -138,6 +138,28 @@ profile-embedded-opencode-local = [
     "sandbox-backend-bwrap",
     "sandbox-backend-docker-direct",
 ]
+profile-web-embedded-opencode-local = [
+    "transport-web",
+    "storage-s3-r2",
+    "llm-opencode-go",
+    "tool-todos",
+    "tool-compression",
+    "tool-delegation",
+    "tool-agents-md",
+    "tool-reminder",
+    "tool-wiki-memory",
+    "tool-webfetch-md",
+    "tool-file-delivery",
+    "tool-media-audio",
+    "tool-media-image",
+    "tool-media-video",
+    "tool-tavily",
+    "tool-sandbox-fileops",
+    "tool-sandbox-exec",
+    "tool-sandbox-recreate",
+    "sandbox-backend-bwrap",
+    "sandbox-backend-docker-direct",
+]
 profile-lite = [
     "transport-telegram",
     "storage-s3-r2",

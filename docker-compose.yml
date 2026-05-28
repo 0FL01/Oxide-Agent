@@ -58,7 +58,7 @@ services:
     build:
       <<: *oxide_app_build
       args:
-        CARGO_FEATURES: oxide-agent-transport-web/profile-full
+        CARGO_FEATURES: oxide-agent-transport-web/profile-web-embedded-opencode-local
         PACKAGES: oxide-agent-transport-web
         BINARIES: oxide-agent-web-console
         MCP_BINARIES: ""

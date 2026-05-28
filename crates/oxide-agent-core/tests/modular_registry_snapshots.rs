@@ -1,5 +1,6 @@
 #![cfg(any(
     feature = "profile-embedded-opencode-local",
+    feature = "profile-web-embedded-opencode-local",
     feature = "profile-lite",
     feature = "profile-search-only",
     feature = "profile-no-sandbox",
@@ -326,7 +327,7 @@ fn assert_tool_availability_contract(
     );
 
     match profile {
-        "profile-embedded-opencode-local" => {
+        "profile-embedded-opencode-local" | "profile-web-embedded-opencode-local" => {
             assert!(
                 enabled_module_ids.contains("sandbox-backend/bwrap"),
                 "embedded-opencode-local profile must enable the bwrap sandbox backend"
@@ -335,6 +336,21 @@ fn assert_tool_availability_contract(
                 enabled_module_ids.contains("sandbox-backend/docker-direct"),
                 "embedded-opencode-local profile must enable the direct Docker sandbox backend"
             );
+            if profile == "profile-web-embedded-opencode-local" {
+                assert!(
+                    enabled_module_ids.contains("transport/web"),
+                    "web embedded profile must enable the web transport"
+                );
+                assert!(
+                    !enabled_module_ids.contains("transport/telegram"),
+                    "web embedded profile must not enable the Telegram transport"
+                );
+            } else {
+                assert!(
+                    enabled_module_ids.contains("transport/telegram"),
+                    "embedded-opencode-local profile must enable the Telegram transport"
+                );
+            }
             assert_present_capabilities(
                 &enabled_capability_ids,
                 &[
@@ -622,6 +638,7 @@ fn assert_absent_tool_prefix(tool_names: &BTreeSet<&str>, prefix: &str, context:
 
 fn compiled_profile_label() -> &'static str {
     let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize
+        + cfg!(feature = "profile-web-embedded-opencode-local") as usize
         + cfg!(feature = "profile-lite") as usize
         + cfg!(feature = "profile-search-only") as usize
         + cfg!(feature = "profile-no-sandbox") as usize
@@ -635,6 +652,8 @@ fn compiled_profile_label() -> &'static str {
 
     if cfg!(feature = "profile-embedded-opencode-local") {
         "profile-embedded-opencode-local"
+    } else if cfg!(feature = "profile-web-embedded-opencode-local") {
+        "profile-web-embedded-opencode-local"
     } else if cfg!(feature = "profile-lite") {
         "profile-lite"
     } else if cfg!(feature = "profile-search-only") {

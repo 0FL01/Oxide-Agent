@@ -182,6 +182,7 @@ pub fn compiled_capability_manifest() -> Result<CompiledCapabilityManifest, Mani
 #[must_use]
 pub fn compiled_profile_name() -> Option<&'static str> {
     let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize
+        + cfg!(feature = "profile-web-embedded-opencode-local") as usize
         + cfg!(feature = "profile-lite") as usize
         + cfg!(feature = "profile-search-only") as usize
         + cfg!(feature = "profile-no-sandbox") as usize
@@ -195,6 +196,8 @@ pub fn compiled_profile_name() -> Option<&'static str> {
 
     if cfg!(feature = "profile-embedded-opencode-local") {
         Some("embedded-opencode-local")
+    } else if cfg!(feature = "profile-web-embedded-opencode-local") {
+        Some("web-embedded-opencode-local")
     } else if cfg!(feature = "profile-lite") {
         Some("lite")
     } else if cfg!(feature = "profile-search-only") {

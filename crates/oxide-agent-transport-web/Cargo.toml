@@ -42,6 +42,10 @@ base64 = "0.22.1"
 default = []
 profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2"]
 profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2"]
+profile-web-embedded-opencode-local = [
+    "oxide-agent-core/profile-web-embedded-opencode-local",
+    "storage-s3-r2",
+]
 storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
 socket_e2e = []
 delegation_e2e = ["oxide-agent-core/tool-delegation"]

@@ -9,6 +9,7 @@ Runs deterministic modular registry snapshot tests for a profile.
 
 Profiles:
   embedded-opencode-local
+  web-embedded-opencode-local
   lite
   search-only
   no-sandbox
@@ -27,6 +28,9 @@ fi
 case "${profile}" in
   embedded-opencode-local)
     features="profile-embedded-opencode-local"
+    ;;
+  web-embedded-opencode-local)
+    features="profile-web-embedded-opencode-local"
     ;;
   lite)
     features="profile-lite"

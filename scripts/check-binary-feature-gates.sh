@@ -15,6 +15,8 @@ expected = {
         "storage-s3-r2",
         "transport-telegram",
     ],
+    ("oxide-agent-transport-web", "oxide-agent-web-console"): [],
+    ("oxide-agent-web-ui", "oxide-agent-web-ui"): [],
     ("oxide-agent-telegram-bot", "chatgpt-login"): [
         "llm-chatgpt",
     ],

@@ -9,6 +9,7 @@ Usage:
 Examples:
   scripts/check-cargo-tree-deny.sh profile-no-sandbox
   scripts/check-cargo-tree-deny.sh profile-search-only
+  scripts/check-cargo-tree-deny.sh profile-web-embedded-opencode-local
   scripts/check-cargo-tree-deny.sh llm-opencode-go
 
 The first argument is passed to cargo as --features for oxide-agent-core.
@@ -51,6 +52,9 @@ if [[ ${#deny[@]} -eq 0 ]]; then
             deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius tavily)
             ;;
         profile-embedded-opencode-local)
+            deny=(rmcp zai-rs async-openai claudius)
+            ;;
+        profile-web-embedded-opencode-local)
             deny=(rmcp zai-rs async-openai claudius)
             ;;
         profile-media-enabled)

@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/check-compiled-capabilities.sh <embedded-opencode-local|lite|search-only|no-sandbox|media-enabled|host-bwrap|full>
+  scripts/check-compiled-capabilities.sh <embedded-opencode-local|web-embedded-opencode-local|lite|search-only|no-sandbox|media-enabled|host-bwrap|full>
 
 Runs the Telegram app capability CLI for a profile and verifies that the
 compiled manifest, profile defaults, config schema, and config example stay
@@ -22,6 +22,15 @@ profile="$1"
 case "${profile}" in
   embedded-opencode-local | lite | search-only | no-sandbox | media-enabled | host-bwrap | full)
     cargo_feature="profile-${profile}"
+    cargo_package="oxide-agent-telegram-bot"
+    cargo_bin="oxide-agent-telegram-bot"
+    transport_module_id="transport/telegram"
+    ;;
+  web-embedded-opencode-local)
+    cargo_feature="profile-web-embedded-opencode-local"
+    cargo_package="oxide-agent-transport-web"
+    cargo_bin="oxide-agent-web-console"
+    transport_module_id="transport/web"
     ;;
   *)
     echo "unknown capability profile '${profile}'" >&2
@@ -40,8 +49,8 @@ tmp_invalid_stderr="$(mktemp)"
 trap 'rm -f "${tmp_manifest}" "${tmp_config_schema}" "${tmp_config_example}" "${tmp_enabled_config}" "${tmp_enabled_manifest}" "${tmp_invalid_config}" "${tmp_invalid_stderr}"' EXIT
 
 cargo run -q \
-  -p oxide-agent-telegram-bot \
-  --bin oxide-agent-telegram-bot \
+  -p "${cargo_package}" \
+  --bin "${cargo_bin}" \
   --no-default-features \
   --features "${cargo_feature}" \
   -- capabilities --compiled --json >"${tmp_manifest}"
@@ -136,8 +145,8 @@ print(
 PY
 
 cargo run -q \
-  -p oxide-agent-telegram-bot \
-  --bin oxide-agent-telegram-bot \
+  -p "${cargo_package}" \
+  --bin "${cargo_bin}" \
   --no-default-features \
   --features "${cargo_feature}" \
   -- config schema --compiled --json >"${tmp_config_schema}"
@@ -210,8 +219,8 @@ print(f"config schema check passed for {profile}: {len(schema_modules)} module s
 PY
 
 cargo run -q \
-  -p oxide-agent-telegram-bot \
-  --bin oxide-agent-telegram-bot \
+  -p "${cargo_package}" \
+  --bin "${cargo_bin}" \
   --no-default-features \
   --features "${cargo_feature}" \
   -- config example --profile "${profile}" --json >"${tmp_config_example}"
@@ -264,25 +273,26 @@ for module in manifest.get("modules", []):
 print(f"config example check passed for {profile}: {len(example_modules)} module configs")
 PY
 
-cat >"${tmp_enabled_config}" <<'YAML'
+cat >"${tmp_enabled_config}" <<YAML
 modules:
-  transport/telegram:
+  ${transport_module_id}:
     enabled: false
 YAML
 
 cargo run -q \
-  -p oxide-agent-telegram-bot \
-  --bin oxide-agent-telegram-bot \
+  -p "${cargo_package}" \
+  --bin "${cargo_bin}" \
   --no-default-features \
   --features "${cargo_feature}" \
   -- capabilities --enabled --config "${tmp_enabled_config}" --json >"${tmp_enabled_manifest}"
 
-python3 - "${profile}" "${tmp_enabled_manifest}" <<'PY'
+python3 - "${profile}" "${transport_module_id}" "${tmp_enabled_manifest}" <<'PY'
 import json
 import sys
 
 profile = sys.argv[1]
-manifest_path = sys.argv[2]
+transport_module_id = sys.argv[2]
+manifest_path = sys.argv[3]
 
 with open(manifest_path, "r", encoding="utf-8") as fh:
     manifest = json.load(fh)
@@ -290,14 +300,14 @@ with open(manifest_path, "r", encoding="utf-8") as fh:
 module_ids = set(manifest.get("modules", []))
 capability_ids = set(manifest.get("capabilities", []))
 
-if "transport/telegram" in module_ids or "transport/telegram" in capability_ids:
+if transport_module_id in module_ids or transport_module_id in capability_ids:
     print(
-        f"enabled capability check failed for {profile}: disabled transport/telegram is still present",
+        f"enabled capability check failed for {profile}: disabled {transport_module_id} is still present",
         file=sys.stderr,
     )
     sys.exit(1)
 
-print(f"enabled capability check passed for {profile}: disabled transport/telegram removed")
+print(f"enabled capability check passed for {profile}: disabled {transport_module_id} removed")
 PY
 
 cat >"${tmp_invalid_config}" <<'YAML'
@@ -307,8 +317,8 @@ modules:
 YAML
 
 if cargo run -q \
-  -p oxide-agent-telegram-bot \
-  --bin oxide-agent-telegram-bot \
+  -p "${cargo_package}" \
+  --bin "${cargo_bin}" \
   --no-default-features \
   --features "${cargo_feature}" \
   -- capabilities --enabled --config "${tmp_invalid_config}" --json 2>"${tmp_invalid_stderr}"; then
