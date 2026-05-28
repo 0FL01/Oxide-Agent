@@ -67,7 +67,14 @@ pub fn SessionSidebar(selected: Option<String>) -> impl IntoView {
                                 children=move |session| {
                                     let active =
                                         selected_for_rows.as_ref() == Some(&session.session_id);
-                                    view! { <SessionRow session=session active=active /> }
+                                    view! {
+                                        <SessionRow
+                                            session=session
+                                            active=active
+                                            set_sessions=set_sessions
+                                            set_error=set_error
+                                        />
+                                    }
                                 }
                             />
                         </ul>
@@ -79,15 +86,47 @@ pub fn SessionSidebar(selected: Option<String>) -> impl IntoView {
 }
 
 #[component]
-fn SessionRow(session: SessionSummary, active: bool) -> impl IntoView {
+fn SessionRow(
+    session: SessionSummary,
+    active: bool,
+    set_sessions: WriteSignal<Vec<SessionSummary>>,
+    set_error: WriteSignal<Option<String>>,
+) -> impl IntoView {
+    let auth = use_auth();
     let class_name = if active {
         "session-row active"
     } else {
         "session-row"
     };
+    let session_id = session.session_id.clone();
+    let session_title = session.title.clone();
+    let (deleting, set_deleting) = signal(false);
+
+    let delete_session = move |_| {
+        if !confirm_delete_session(&session_title) {
+            return;
+        }
+        set_deleting.set(true);
+        set_error.set(None);
+        let session_id = session_id.clone();
+        spawn_ui(async move {
+            match auth.client().delete_session(&session_id).await {
+                Ok(_) => {
+                    set_sessions.update(|items| {
+                        items.retain(|item| item.session_id != session_id);
+                    });
+                    if active {
+                        navigate("/app");
+                    }
+                }
+                Err(error) => set_error.set(Some(error.to_string())),
+            }
+            set_deleting.set(false);
+        });
+    };
 
     view! {
-        <li>
+        <li class="session-list-item">
             <a class=class_name href=format!("/app/session/{}", session.session_id)>
                 <span class="session-title">{session.title}</span>
                 {session.last_task_status.map(|status| view! { <StatusBadge status=status /> })}
@@ -96,7 +135,35 @@ fn SessionRow(session: SessionSummary, active: bool) -> impl IntoView {
                 </span>
                 <span class="session-time">{friendly_time(session.updated_at)}</span>
             </a>
+            <button
+                class="session-delete-button"
+                type="button"
+                title="Delete session"
+                disabled=deleting
+                on:click=delete_session
+            >
+                "Delete"
+            </button>
         </li>
+    }
+}
+
+fn confirm_delete_session(title: &str) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()
+            .and_then(|window| {
+                window
+                    .confirm_with_message(&format!("Delete session \"{title}\"?"))
+                    .ok()
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = title;
+        true
     }
 }
 

@@ -191,6 +191,12 @@ label {
   padding: 0;
 }
 
+.session-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
 .session-row {
   display: grid;
   gap: 5px;
@@ -210,6 +216,16 @@ label {
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-delete-button {
+  align-self: start;
+  min-height: 32px;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--danger);
+  font-size: 0.82rem;
+  padding: 0 10px;
 }
 
 .session-preview,
