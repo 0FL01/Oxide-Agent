@@ -158,7 +158,6 @@ profile-web-embedded-opencode-local = [
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
     "sandbox-backend-bwrap",
-    "sandbox-backend-docker-direct",
 ]
 profile-lite = [
     "transport-telegram",

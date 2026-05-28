@@ -261,7 +261,7 @@ async fn build_app_state(
     llm: Arc<LlmClient>,
     agent_settings: Arc<AgentSettings>,
 ) -> Result<AppState, Box<dyn std::error::Error>> {
-    if use_r2_web_store() {
+    if use_r2_web_store(agent_settings.as_ref()) {
         return build_r2_app_state(registry, llm, agent_settings).await;
     }
 
@@ -289,9 +289,10 @@ async fn build_r2_app_state(
     Err("OXIDE_WEB_STORE=r2 requires the storage-s3-r2 feature".into())
 }
 
-fn use_r2_web_store() -> bool {
+fn use_r2_web_store(agent_settings: &AgentSettings) -> bool {
     env::var("OXIDE_WEB_STORE").is_ok_and(|value| value.trim().eq_ignore_ascii_case("r2"))
         || web_bool_env("OXIDE_WEB_REQUIRE_DURABLE_STORAGE")
+        || agent_settings.is_module_enabled("storage/r2")
 }
 
 fn web_bool_env(key: &str) -> bool {
