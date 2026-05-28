@@ -257,6 +257,19 @@ fn SessionWorkspace(
                     prop:value=input
                     disabled=is_running
                     on:input=move |ev| set_input.set(event_target_value(&ev))
+                    on:keydown=move |ev| {
+                        if ev.ctrl_key() && ev.key() == "Enter" {
+                            ev.prevent_default();
+                            if let Some(target) = ev.target() {
+                                use wasm_bindgen::JsCast;
+                                let el: web_sys::HtmlElement = target.unchecked_into();
+                                if let Ok(Some(form_el)) = el.closest("form") {
+                                    let form: web_sys::HtmlFormElement = form_el.unchecked_into();
+                                    let _ = form.submit();
+                                }
+                            }
+                        }
+                    }
                 />
                 <div class="composer-actions">
                     <div class="composer-stats">
