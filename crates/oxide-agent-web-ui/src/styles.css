@@ -674,29 +674,21 @@ label {
   font-family: var(--font-mono);
 }
 
-/* === ACTIVITY / TRANSCRIPT PANEL === */
-.transcript-panel {
+/* === RESULTS PANEL (agent output) === */
+.results-panel {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
   min-height: 0;
-  background: var(--bg);
 }
 
-.console-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  overflow: hidden;
-}
-
+/* === SESSION WORKSPACE === */
 .session-workspace {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
   overflow: hidden;
+  min-height: 0;
 }
 
 .task-list {
@@ -790,13 +782,20 @@ label {
   font-size: 12px;
 }
 
-/* === EVENTS PANEL (now metrics sidebar) === */
+/* === EVENTS PANEL (right column metrics) === */
 .events-panel {
   background: var(--surface);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
+}
+
+.metrics-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .panel-header {
@@ -817,12 +816,6 @@ label {
   letter-spacing: 0.06em;
   color: var(--fg-dim);
   font-family: var(--font-mono);
-}
-
-.panel-header button {
-  min-height: 26px;
-  padding: 0 var(--space-3);
-  font-size: 11px;
 }
 
 .panel,

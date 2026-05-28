@@ -12,11 +12,22 @@ use oxide_agent_web_contracts::{
 };
 
 #[component]
-pub fn TaskConsole(route: AppRoute) -> impl IntoView {
+pub fn TaskConsole(
+    route: AppRoute,
+    set_events: WriteSignal<Vec<PersistedTaskEvent>>,
+    set_sse_state: WriteSignal<SseConnectionState>,
+    set_progress: WriteSignal<Option<ProgressSnapshot>>,
+) -> impl IntoView {
     match route {
-        AppRoute::Session(session_id) => {
-            view! { <SessionWorkspace session_id=session_id /> }.into_any()
+        AppRoute::Session(session_id) => view! {
+            <SessionWorkspace
+                session_id=session_id
+                set_events=set_events
+                set_sse_state=set_sse_state
+                set_progress=set_progress
+            />
         }
+        .into_any(),
         _ => view! {
             <section class="console-empty">
                 <EmptyState title="Select or create a session" />
@@ -27,17 +38,19 @@ pub fn TaskConsole(route: AppRoute) -> impl IntoView {
 }
 
 #[component]
-fn SessionWorkspace(session_id: String) -> impl IntoView {
+fn SessionWorkspace(
+    session_id: String,
+    set_events: WriteSignal<Vec<PersistedTaskEvent>>,
+    set_sse_state: WriteSignal<SseConnectionState>,
+    set_progress: WriteSignal<Option<ProgressSnapshot>>,
+) -> impl IntoView {
     let auth = use_auth();
     let (session_title, set_session_title) = signal("Session".to_string());
     let (tasks, set_tasks) = signal(Vec::<TaskSummary>::new());
-    let (events, set_events) = signal(Vec::<PersistedTaskEvent>::new());
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
-    let (progress, set_progress) = signal(None::<ProgressSnapshot>);
-    let (sse_state, set_sse_state) = signal(SseConnectionState::Disconnected);
     let (_streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
 
@@ -201,27 +214,8 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
         });
     };
 
-    let session_id_for_events = session_id.clone();
-    let refresh_events = move |_| {
-        let Some(task) = latest_task(tasks.get()) else {
-            return;
-        };
-        set_error.set(None);
-        let session_id = session_id_for_events.clone();
-        spawn_ui(async move {
-            match auth
-                .client()
-                .task_events(&session_id, &task.task_id, 0)
-                .await
-            {
-                Ok(response) => set_events.set(response.events),
-                Err(error) => set_error.set(Some(error.to_string())),
-            }
-        });
-    };
     let session_id_for_cards = session_id.clone();
 
-    // Compute task status for the top bar badge
     let active_status = move || {
         active_task
             .get()
@@ -229,14 +223,12 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
             .unwrap_or(TaskStatus::Completed)
     };
 
-    // Determine if composer should show "waiting for input" state
     let is_waiting = move || {
         active_task
             .get()
             .is_some_and(|task| task.status == TaskStatus::WaitingForUserInput)
     };
 
-    // Determine if composer is blocked (task running)
     let is_running = move || {
         active_task
             .get()
@@ -255,141 +247,86 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
         </header>
         <ErrorBanner message=error />
         <section class="session-workspace">
-            <div class="session-header">
-                <div>
-                    <h1>{move || session_title.get()}</h1>
-                    <p>{session_id.clone()}</p>
+            // Prompt input
+            <form class="composer" on:submit=submit_task>
+                <ComposerNotice active_task=active_task />
+                <div class="composer-label">"Agent Prompt"</div>
+                <textarea
+                    placeholder="Enter your prompt here...\n\nThe agent will process your request and show its reasoning, tool calls, and outputs in the panel below."
+                    prop:value=input
+                    disabled=is_running
+                    on:input=move |ev| set_input.set(event_target_value(&ev))
+                />
+                <div class="composer-actions">
+                    <div class="composer-stats">
+                        {move || {
+                            let len = input.get().len();
+                            let lines = input.get().lines().count().max(1);
+                            format!("{} chars \u{00b7} {} lines", len, lines)
+                        }}
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button
+                            type="submit"
+                            disabled=move || loading.get() || is_running()
+                            class=move || if is_waiting() { "btn-primary" } else { "" }
+                        >
+                            {move || {
+                                if is_waiting() { "Resume" } else { "Run Agent" }
+                            }}
+                        </button>
+                        <button
+                            class="secondary"
+                            type="button"
+                            disabled=move || active_task.get().is_none() || !is_running()
+                            on:click=cancel_active
+                        >
+                            "Stop"
+                        </button>
+                    </div>
                 </div>
-            </div>
-            <div class="console-grid">
-                <section class="transcript-panel">
-                    <form class="composer" on:submit=submit_task>
-                        <ComposerNotice active_task=active_task />
-                        <div class="composer-label">"Agent Prompt"</div>
-                        <textarea
-                            placeholder="Enter your prompt here...\n\nThe agent will process your request and show its reasoning, tool calls, and outputs in the panel below."
-                            prop:value=input
-                            disabled=is_running
-                            on:input=move |ev| set_input.set(event_target_value(&ev))
-                        />
-                        <div class="composer-actions">
-                            <div class="composer-stats">
-                                {move || {
-                                    let len = input.get().len();
-                                    let lines = input.get().lines().count().max(1);
-                                    format!("{} chars \u{00b7} {} lines", len, lines)
-                                }}
+            </form>
+
+            // Agent results — task cards with output
+            <div class="results-panel">
+                {move || {
+                    if loading.get() && tasks.get().is_empty() {
+                        view! { <div class="empty-state">"Loading..."</div> }.into_any()
+                    } else if tasks.get().is_empty() {
+                        view! {
+                            <div class="empty-state">
+                                <div class="empty-state-title">"No active session"</div>
+                                <div class="empty-state-text">
+                                    "Enter a prompt above and click \"Run Agent\" to start a new session. The agent's reasoning, tool calls, and outputs will appear here in real time."
+                                </div>
                             </div>
-                            <div style="display:flex;gap:8px;">
-                                <button
-                                    type="submit"
-                                    disabled=move || loading.get() || is_running()                                    class=move || if is_waiting() { "btn-primary" } else { "" }
-                                >
-                                    {move || {
-                                        if is_waiting() { "Resume" } else { "Run Agent" }
-                                    }}
-                                </button>
-                                <button
-                                    class="secondary"
-                                    type="button"
-                                    disabled=move || active_task.get().is_none() || !is_running()
-                                    on:click=cancel_active
-                                >
-                                    "Stop"
-                                </button>
-                            </div>
-                        </div>
-                    </form>
-                    <div class="task-list">
-                        {move || {
-                            if loading.get() && tasks.get().is_empty() {
-                                view! { <div class="empty-state">"Loading..."</div> }.into_any()
-                            } else if tasks.get().is_empty() {
-                                view! {
-                                    <div class="empty-state">
-                                        <div class="empty-state-title">"No active session"</div>
-                                        <div class="empty-state-text">
-                                            "Enter a prompt above and click \"Run Agent\" to start a new session. The agent's reasoning, tool calls, and outputs will appear here in real time."
-                                        </div>
-                                    </div>
+                        }
+                        .into_any()
+                    } else {
+                        let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
+                        let session_id_for_cards = session_id_for_cards.clone();
+                        view! {
+                            <For
+                                each=move || tasks.get()
+                                key=|task| task.task_id.clone()
+                                children=move |task| {
+                                    let editable =
+                                        latest_editable_task_id.as_ref() == Some(&task.task_id);
+                                    view! {
+                                        <TaskCard
+                                            session_id=session_id_for_cards.clone()
+                                            task=task
+                                            editable=editable
+                                            set_tasks=set_tasks
+                                            set_error=set_error
+                                        />
+                                    }
                                 }
-                                .into_any()
-                            } else {
-                                let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
-                                let session_id_for_cards = session_id_for_cards.clone();
-                                view! {
-                                    <For
-                                        each=move || tasks.get()
-                                        key=|task| task.task_id.clone()
-                                        children=move |task| {
-                                            let editable =
-                                                latest_editable_task_id.as_ref() == Some(&task.task_id);
-                                            view! {
-                                                <TaskCard
-                                                    session_id=session_id_for_cards.clone()
-                                                    task=task
-                                                    editable=editable
-                                                    set_tasks=set_tasks
-                                                    set_error=set_error
-                                                />
-                                            }
-                                        }
-                                    />
-                                }
-                                .into_any()
-                            }
-                        }}
-                    </div>
-                </section>
-                <aside class="events-panel">
-                    <div class="panel-header">
-                        <h2>"Metrics & Status"</h2>
-                        <button class="secondary" type="button" on:click=refresh_events>"Refresh"</button>
-                    </div>
-                    <SseStatus state=sse_state />
-                    <ProgressPanel progress=progress />
-                    <div style="flex:1;overflow-y:auto;padding:0;">
-                        <div class="metrics-group">
-                            <div class="metrics-group-title">"Event Stream"</div>
-                            <div class="metrics-row">
-                                <span class="metrics-label">"Events"</span>
-                                <span class="metrics-value">
-                                    {move || format!("{}", events.get().len())}
-                                </span>
-                            </div>
-                            <div class="metrics-row">
-                                <span class="metrics-label">"Stream"</span>
-                                <span class="metrics-value">
-                                    {move || match sse_state.get() {
-                                        SseConnectionState::Connected => view! { <span class="metrics-value success">"Connected"</span> }.into_any(),
-                                        SseConnectionState::Disconnected => view! { <span class="metrics-value warning">"Disconnected"</span> }.into_any(),
-                                        SseConnectionState::Reconnecting => view! { <span class="metrics-value warning">"Reconnecting"</span> }.into_any(),
-                                        SseConnectionState::TerminalClosed => view! { <span class="metrics-value">"Closed"</span> }.into_any(),
-                                    }}
-                                </span>
-                            </div>
-                        </div>
-                        {move || {
-                            if !events.get().is_empty() {
-                                let evts = events.get();
-                                let items: Vec<_> = evts.into_iter().rev().take(20).collect();
-                                view! {
-                                    <div class="metrics-group">
-                                        <div class="metrics-group-title">"Recent Events"</div>
-                                        <ol class="event-list">
-                                            {items.into_iter().map(|event| {
-                                                view! { <EventRow event=event /> }
-                                            }).collect::<Vec<_>>()}
-                                        </ol>
-                                    </div>
-                                }
-                                .into_any()
-                            } else {
-                                ().into_any()
-                            }
-                        }}
-                    </div>
-                </aside>
+                            />
+                        }
+                        .into_any()
+                    }
+                }}
             </div>
         </section>
     }
@@ -464,47 +401,6 @@ fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
 }
 
 #[component]
-fn SseStatus(state: ReadSignal<SseConnectionState>) -> impl IntoView {
-    view! {
-        <div class="sse-state">
-            <span class=move || match state.get() {
-                SseConnectionState::Connected => "sse-dot",
-                _ => "sse-dot disconnected",
-            }></span>
-            {move || match state.get() {
-                SseConnectionState::Connected => "Stream connected",
-                SseConnectionState::Disconnected => "Stream disconnected",
-                SseConnectionState::Reconnecting => "Stream reconnecting",
-                SseConnectionState::TerminalClosed => "Stream closed",
-            }}
-        </div>
-    }
-}
-
-#[component]
-fn ProgressPanel(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView {
-    view! {
-        {move || progress.get().map(|progress| view! {
-            <section class="progress-panel">
-                <div>
-                    <strong>"Progress"</strong>
-                    <span>{format!("{} / {}", progress.current_iteration, progress.max_iterations)}</span>
-                </div>
-                {progress.current_thought.map(|thought| view! {
-                    <p>{thought}</p>
-                })}
-                {progress.provider_failover_notice.map(|notice| view! {
-                    <p class="notice">{notice}</p>
-                })}
-                {progress.error.map(|error| view! {
-                    <p class="error-text">{error}</p>
-                })}
-            </section>
-        })}
-    }
-}
-
-#[component]
 fn TaskCard(
     session_id: String,
     task: TaskSummary,
@@ -518,7 +414,6 @@ fn TaskCard(
     let (saving, set_saving) = signal(false);
     let original_input = task.input_markdown.clone();
 
-    // Determine card status class for the timeline dot
     let card_status_class = match task.status {
         TaskStatus::Running | TaskStatus::Queued => "running",
         TaskStatus::Completed => "success",
@@ -563,7 +458,7 @@ fn TaskCard(
                     class="secondary edit-input-button"
                     type="button"
                     on:click=move |_| set_editing.set(true)
-                    style="margin-top: 8px;"
+                    style="margin-top:8px;"
                 >
                     "Edit input"
                 </button>
@@ -648,17 +543,6 @@ fn TaskInputEditForm(
                 <button class="secondary" type="button" on:click=cancel_edit>"Cancel"</button>
             </div>
         </form>
-    }
-}
-
-#[component]
-fn EventRow(event: PersistedTaskEvent) -> impl IntoView {
-    view! {
-        <li class="event-row">
-            <span class="event-seq">{event.seq}</span>
-            <span class="event-kind">{format!("{:?}", event.kind)}</span>
-            <span class="event-summary">{event.summary}</span>
-        </li>
     }
 }
 
