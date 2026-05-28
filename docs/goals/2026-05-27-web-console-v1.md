@@ -5,7 +5,7 @@ Status: active
 Codex goal: Study `docs/prd/PRD_web.md`, create repo-local goal documentation from it, and iteratively implement the web PRD in Oxide-Agent with validation checkpoints.
 Source spec: `docs/prd/PRD_web.md`
 Goal doc owner: Codex
-Last updated: 2026-05-28 10:46 +03
+Last updated: 2026-05-28 10:51 +03
 
 ## Objective
 
@@ -66,8 +66,8 @@ Out of scope:
   - Requirement: Browser API lives under `/api/v1/...`; old unversioned e2e endpoints and tests are removed after migration.
   - Acceptance: Frontend and e2e tests use only `/api/v1`; `build_router` no longer exposes legacy `/sessions`, `/debug/event_logs`, or unversioned task paths.
   - Evidence required: route review, e2e tests, `rg -n '"/sessions|/debug/event_logs' crates/oxide-agent-transport-web`.
-  - Status: in_progress
-  - Evidence collected: Added initial `GET /api/v1/public-config` route backed by shared `PublicConfigResponse`; `bootstrap_required` now reads `WebUiStore::users_count()` plus bootstrap-token config. Auth/session/task/event/progress/SSE browser handlers now live under `/api/v1`. Removed the legacy unversioned route registrations and handler bodies for `/sessions`, `/sessions/...`, and `/debug/event_logs`; focused router test proves `/api/v1/public-config` works and the old paths return 404. `rg -n 'route\("/sessions|"/sessions|/debug/event_logs' crates/oxide-agent-transport-web/src` returns no matches after this slice. Socket e2e helpers now create test auth sessions through `WebUiStore`, send cookie/CSRF headers, and call authenticated `/api/v1` session/task/events/progress/SSE endpoints. Full `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite,socket_e2e --test e2e -- --nocapture` passed with 22 passed / 0 failed / 6 ignored after compaction regression migration; feature-specific delegation and compression socket checks also pass with explicit `delegation_e2e` / `compression_e2e` gates. Frontend API usage remains pending, so this item is not yet verified.
+  - Status: verified
+  - Evidence collected: Added initial `GET /api/v1/public-config` route backed by shared `PublicConfigResponse`; `bootstrap_required` now reads `WebUiStore::users_count()` plus bootstrap-token config. Auth/session/task/event/progress/SSE browser handlers now live under `/api/v1`. Removed the legacy unversioned route registrations and handler bodies for `/sessions`, `/sessions/...`, and `/debug/event_logs`; focused router test proves `/api/v1/public-config` works and the old paths return 404. `rg -n 'route\("/sessions|"/sessions|/debug/event_logs' crates/oxide-agent-transport-web/src` returns no matches after this slice. Socket e2e helpers now create test auth sessions through `WebUiStore`, send cookie/CSRF headers, and call authenticated `/api/v1` session/task/events/progress/SSE endpoints. Full `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite,socket_e2e --test e2e -- --nocapture` passed with 22 passed / 0 failed / 6 ignored after compaction regression migration; feature-specific delegation and compression socket checks also pass with explicit `delegation_e2e` / `compression_e2e` gates. Frontend API client and SSE code use `/api/v1` paths only (`crates/oxide-agent-web-ui/src/api.rs`, `sse.rs`); `rg -n '"/sessions|/debug/event_logs|route\("/sessions' crates/oxide-agent-web-ui/src crates/oxide-agent-transport-web/src` returns no legacy route/API matches.
 
 - G4: Auth, registration, bootstrap, and password management
   - Source: PRD sections 9, 14.2-14.8, 16.
@@ -193,15 +193,15 @@ Out of scope:
   - Source: `AGENTS.md` scale principles and PRD section 20 single-instance decision.
   - Acceptance: No Redis, DB migrations, distributed locks, queues, sharding, or heavy observability added.
   - Evidence required: dependency/config review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Dependency/config review found no new SQL/Redis/memcached/queue/distributed-lock stack. `rg -n "redis|postgres|postgresql|sqlx|diesel|sea-orm|sqlite|mysql|deadpool|bb8|mobc|rabbitmq|kafka|nats|memcache|memcached" Cargo.toml crates profiles config docs -g '*.toml' -g '*.rs' -g '*.md' -g '*.yaml'` only reports PRD/docs/static-guard references or unrelated existing text, not new web manifests/config. Auth rate limiting is the in-process fixed-window limiter stored in `AppState`; durable web state uses `WebUiStore` JSON records and the R2-backed store.
 
 - Q2: Preserve architecture invariants
   - Source: `AGENTS.md` architectural invariants.
   - Acceptance: `oxide-agent-core` and `oxide-agent-runtime` remain transport/frontend-independent; teloxide stays outside core/runtime/web UI.
   - Evidence required: `cargo tree`/manifest review and compile checks.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Manifest review shows `oxide-agent-runtime` depends only on `oxide-agent-core` plus runtime utility crates, `oxide-agent-transport-web` depends on core/runtime/contracts, and `oxide-agent-web-ui` depends on `oxide-agent-web-contracts` plus frontend Rust/WASM crates. `rg -n "oxide-agent-transport-web|oxide_agent_transport_web|oxide-agent-web-ui|oxide_agent_web_ui|teloxide" crates/oxide-agent-core crates/oxide-agent-runtime Cargo.toml` finds only workspace membership and core static-guard test file-path strings for web transport files; no core/runtime source dependency on web UI, web transport, or teloxide was introduced. Existing compile/clippy evidence for transport and UI crates remains green.
 
 - Q3: Security baseline
   - Source: PRD sections 15-16.
@@ -256,29 +256,29 @@ Out of scope:
   - Source: PRD sections 3-4, 6.5.
   - Must preserve: No React/Vue/Svelte/Solid/Next/Nuxt/Vite+TS application stack.
   - Evidence required: file/dependency review.
-  - Status: in_progress
-  - Evidence collected: Current frontend slice added only Rust crate/code plus `index.html`, `Trunk.toml`, and CSS. `rg --files -g '*.ts' -g '*.tsx' -g '*.js' -g '*.jsx'` returns no files after adding `oxide-agent-web-ui`; no TypeScript SPA stack or package manifest was introduced.
+  - Status: verified
+  - Evidence collected: Current frontend slice added only Rust crate/code plus `index.html`, `Trunk.toml`, and CSS. `rg --files -g '*.ts' -g '*.tsx' -g '*.js' -g '*.jsx' -g 'package.json' -g 'vite.config.*' -g 'next.config.*'` returns no files after adding `oxide-agent-web-ui`; no TypeScript SPA stack or package manifest was introduced. `cargo tree -p oxide-agent-web-ui --target wasm32-unknown-unknown` shows a Rust/WASM dependency tree rooted in Leptos, gloo-net, comrak, ammonia, web-sys, wasm-bindgen, serde, and `oxide-agent-web-contracts`.
 
 - N2: No approve/reject UI
   - Source: PRD sections 4, 8.9, 20.
   - Must preserve: Web V1 uses YOLO/full-permission mode; no browser approval workflow is added.
   - Evidence required: code/API/UI review.
-  - Status: in_progress
-  - Evidence collected: No browser approval routes or UI were added. Backend maps unexpected `AgentExecutionOutcome::WaitingForApproval` to a failed task with the documented YOLO diagnostic.
+  - Status: verified
+  - Evidence collected: No browser approval routes or UI were added. `rg -n "approve|approval|WaitingForApproval|waiting_for_approval" crates/oxide-agent-web-ui/src crates/oxide-agent-transport-web/src` finds only the backend YOLO diagnostic/outcome mapping and persisted event naming; the frontend has no approve/reject UI. Backend maps unexpected `AgentExecutionOutcome::WaitingForApproval` to a failed task with the documented YOLO diagnostic.
 
 - N3: No SQL or migration framework
   - Source: PRD sections 4, 13.
   - Must preserve: Durable state is versioned JSON over R2/storage APIs.
   - Evidence required: dependency/config review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Manifest/config review found no SQL database or migration framework dependency. `rg -n "diesel|sqlx|sea_orm|sea-orm|redis|deadpool|bb8|mobc|memcache|memcached|postgres|postgresql|sqlite|mysql|kafka|rabbitmq|nats" Cargo.toml crates/*/Cargo.toml` returns no web dependency additions. Web persistence remains versioned JSON records over `WebUiStore`, with an R2-backed implementation for production storage and in-memory store limited by startup guardrails.
 
 - N4: No new transport replacement
   - Source: PRD sections 3, 6, 8.1.
   - Must preserve: Existing `oxide-agent-transport-web` is evolved instead of replaced by a new transport.
   - Evidence required: manifest/module review.
-  - Status: in_progress
-  - Evidence collected: Existing `oxide-agent-transport-web` was extended with `/api/v1/public-config`; no replacement transport was introduced.
+  - Status: verified
+  - Evidence collected: Existing `oxide-agent-transport-web` was extended with the production `/api/v1` browser API, auth, task/session/event/progress/SSE handlers, persistence wiring, and static serving. Workspace membership includes `oxide-agent-transport-web`, `oxide-agent-web-contracts`, and `oxide-agent-web-ui`; no separate replacement web transport crate was introduced.
 
 ## Implementation Plan
 
@@ -389,6 +389,7 @@ Out of scope:
 - 2026-05-28 10:40 +03: Added Origin/Referer CSRF hardening. CSRF-protected mutating endpoints now reject supplied cross-origin `Origin` / `Referer` values against the effective request origin derived from `Host` / `X-Forwarded-Host` and `X-Forwarded-Proto`, while preserving dev/test calls that omit those browser headers. Focused tests cover same-origin `Origin`, same-origin `Referer`, cross-origin helper rejection, and cross-origin `POST /api/v1/sessions` rejection despite a valid CSRF token. Verified `cargo fmt`, `cargo fmt --check`, `cargo test -p oxide-agent-transport-web --no-default-features server::tests::csrf_origin_check_accepts_same_origin_and_rejects_cross_origin`, `cargo test -p oxide-agent-transport-web --no-default-features server::tests::mutating_session_api_rejects_cross_origin_csrf_request`, `cargo test -p oxide-agent-transport-web --no-default-features server::tests`, `cargo test -p oxide-agent-transport-web --no-default-features auth`, `cargo check -p oxide-agent-transport-web --no-default-features`, `cargo clippy -p oxide-agent-web-contracts -p oxide-agent-transport-web --no-default-features`, and `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-lite`. Next checkpoint: browser/manual QA or final Markdown image policy decision.
 - 2026-05-28 10:42 +03: Finalized the Markdown image policy for V1: block all Markdown images and remove image source URLs from rendered HTML. This keeps the frontend security boundary simple and avoids image proxy/same-origin fetch semantics in V1. Verified `cargo test -p oxide-agent-web-ui markdown`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo fmt --check`, and `env -u NO_COLOR trunk build`. Next checkpoint: browser/manual QA or event security audit.
 - 2026-05-28 10:46 +03: Completed the event security audit slice. Tool event previews now pass through a redaction layer before truncation: JSON payloads redact sensitive keys recursively and non-JSON payloads containing sensitive markers are replaced by a redacted placeholder. Added focused test coverage proving password/api_key/tool command/token output values do not appear in persisted browser events while redacted flags are set. Verified `cargo fmt`, `cargo fmt --check`, `cargo test -p oxide-agent-transport-web --no-default-features web_transport`, `cargo test -p oxide-agent-transport-web --no-default-features server::tests`, `cargo check -p oxide-agent-transport-web --no-default-features`, `cargo clippy -p oxide-agent-web-contracts -p oxide-agent-transport-web --no-default-features`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-lite`, and the legacy route/CORS grep guard. Next checkpoint: browser/manual QA or final audit of pending Q/N items.
+- 2026-05-28 10:51 +03: Completed the quality/non-goal audit checkpoint. Verified the `/api/v1` namespace end-to-end through backend route review, frontend API/SSE usage, and the legacy-route grep guard; verified no TypeScript app stack/package tooling; verified no SQL/Redis/migration/distributed infrastructure was added; verified core/runtime remain independent from web transport/UI crates; verified there is no browser approve/reject UI; and verified the existing web transport was evolved instead of replaced. Evidence came from manifest review, `rg` dependency/route/UI scans, and `cargo tree -p oxide-agent-web-ui --target wasm32-unknown-unknown`. Next checkpoint: browser/manual QA, or Q4 durable JSON compatibility/corrupt-record hardening if staying in hermetic tests.
 
 ## Risks and Blockers
 
@@ -396,7 +397,7 @@ Out of scope:
 - Frontend dependency downloads and Trunk builds require network and registry writes outside the sandbox. Mitigation: Leptos dependencies and Trunk 0.21.14 were added/fetched with explicit escalation; future frontend crates should still be added with `cargo add` and validated on `wasm32-unknown-unknown`.
 - Local Trunk build requires `env -u NO_COLOR trunk build` because this shell exports `NO_COLOR=1`, which Trunk 0.21.14 rejects for its boolean `--no-color` env binding.
 - R2-backed integration tests may need fakes or careful abstraction to stay hermetic. Mitigation: define `WebUiStore` and keep R2 tests focused on key/serialization behavior unless real credentials are explicitly configured.
-- Backend/socket coverage is now green for the current checkpoint, including the full `profile-lite,socket_e2e` suite and explicit delegation/compression feature checks. The largest remaining PRD gap is browser/manual QA, plus final audit of pending quality/non-goal items.
+- Backend/socket coverage is now green for the current checkpoint, including the full `profile-lite,socket_e2e` suite and explicit delegation/compression feature checks. The largest remaining PRD gaps are browser/manual QA and Q4 durable JSON compatibility/corrupt-record hardening.
 
 ## Final Verification
 
