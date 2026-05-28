@@ -2,7 +2,6 @@ use crate::auth::use_auth;
 use crate::components::{EmptyState, ErrorBanner, StatusBadge};
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
-use crate::sessions::RenameSessionForm;
 use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{friendly_time, spawn_ui};
 use leptos::prelude::*;
@@ -235,17 +234,6 @@ fn SessionWorkspace(
     };
 
     view! {
-        <header class="topbar">
-            <div class="topbar-left">
-                <div class="session-title">{move || session_title.get()}</div>
-                {move || active_status().map(|status| view! {
-                    <StatusBadge status=status />
-                })}
-            </div>
-            <div class="topnav">
-                <RenameSessionForm session_id=session_id.clone() current_title=session_title.get_untracked() />
-            </div>
-        </header>
         <ErrorBanner message=error />
         <section class="session-workspace">
             // Agent results — task cards with output
