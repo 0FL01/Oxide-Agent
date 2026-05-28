@@ -221,28 +221,103 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
     };
     let session_id_for_cards = session_id.clone();
 
+    // Compute task status for the top bar badge
+    let active_status = move || {
+        active_task
+            .get()
+            .map(|task| task.status)
+            .unwrap_or(TaskStatus::Completed)
+    };
+
+    // Determine if composer should show "waiting for input" state
+    let is_waiting = move || {
+        active_task
+            .get()
+            .is_some_and(|task| task.status == TaskStatus::WaitingForUserInput)
+    };
+
+    // Determine if composer is blocked (task running)
+    let is_running = move || {
+        active_task
+            .get()
+            .is_some_and(|task| matches!(task.status, TaskStatus::Queued | TaskStatus::Running))
+    };
+
     view! {
+        <header class="topbar">
+            <div class="topbar-left">
+                <div class="session-title">{move || session_title.get()}</div>
+                <StatusBadge status=active_status() />
+            </div>
+            <div class="topnav">
+                <RenameSessionForm session_id=session_id.clone() current_title=session_title.get_untracked() />
+            </div>
+        </header>
+        <ErrorBanner message=error />
         <section class="session-workspace">
-            <header class="session-header">
+            <div class="session-header">
                 <div>
                     <h1>{move || session_title.get()}</h1>
                     <p>{session_id.clone()}</p>
                 </div>
-                <RenameSessionForm session_id=session_id.clone() current_title=session_title.get_untracked() />
-            </header>
-            <ErrorBanner message=error />
+            </div>
             <div class="console-grid">
                 <section class="transcript-panel">
-                    {move || {
-                        if loading.get() && tasks.get().is_empty() {
-                            view! { <div class="loading">"Loading"</div> }.into_any()
-                        } else if tasks.get().is_empty() {
-                            view! { <EmptyState title="No task yet" /> }.into_any()
-                        } else {
-                            let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
-                            let session_id_for_cards = session_id_for_cards.clone();
-                            view! {
-                                <div class="task-list">
+                    <form class="composer" on:submit=submit_task>
+                        <ComposerNotice active_task=active_task />
+                        <div class="composer-label">"Agent Prompt"</div>
+                        <textarea
+                            placeholder="Enter your prompt here...\n\nThe agent will process your request and show its reasoning, tool calls, and outputs in the panel below."
+                            prop:value=input
+                            disabled=is_running
+                            on:input=move |ev| set_input.set(event_target_value(&ev))
+                        />
+                        <div class="composer-actions">
+                            <div class="composer-stats">
+                                {move || {
+                                    let len = input.get().len();
+                                    let lines = input.get().lines().count().max(1);
+                                    format!("{} chars \u{00b7} {} lines", len, lines)
+                                }}
+                            </div>
+                            <div style="display:flex;gap:8px;">
+                                <button
+                                    type="submit"
+                                    disabled=move || loading.get() || is_running()                                    class=move || if is_waiting() { "btn-primary" } else { "" }
+                                >
+                                    {move || {
+                                        if is_waiting() { "Resume" } else { "Run Agent" }
+                                    }}
+                                </button>
+                                <button
+                                    class="secondary"
+                                    type="button"
+                                    disabled=move || active_task.get().is_none() || !is_running()
+                                    on:click=cancel_active
+                                >
+                                    "Stop"
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                    <div class="task-list">
+                        {move || {
+                            if loading.get() && tasks.get().is_empty() {
+                                view! { <div class="empty-state">"Loading..."</div> }.into_any()
+                            } else if tasks.get().is_empty() {
+                                view! {
+                                    <div class="empty-state">
+                                        <div class="empty-state-title">"No active session"</div>
+                                        <div class="empty-state-text">
+                                            "Enter a prompt above and click \"Run Agent\" to start a new session. The agent's reasoning, tool calls, and outputs will appear here in real time."
+                                        </div>
+                                    </div>
+                                }
+                                .into_any()
+                            } else {
+                                let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
+                                let session_id_for_cards = session_id_for_cards.clone();
+                                view! {
                                     <For
                                         each=move || tasks.get()
                                         key=|task| task.task_id.clone()
@@ -260,62 +335,60 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                                             }
                                         }
                                     />
-                                </div>
-                            }.into_any()
-                        }
-                    }}
-                    <form class="composer" on:submit=submit_task>
-                        <ComposerNotice active_task=active_task />
-                        <textarea
-                            placeholder="Markdown input"
-                            prop:value=input
-                            disabled=move || composer_is_blocked(active_task.get().as_ref())
-                            on:input=move |ev| set_input.set(event_target_value(&ev))
-                        />
-                        <div class="composer-actions">
-                            <button
-                                type="submit"
-                                disabled=move || loading.get() || composer_is_blocked(active_task.get().as_ref())
-                            >
-                                {move || if active_task.get().is_some_and(|task| task.status == TaskStatus::WaitingForUserInput) {
-                                    "Resume"
-                                } else {
-                                    "Send"
-                                }}
-                            </button>
-                            <button
-                                class="secondary"
-                                type="button"
-                                disabled=move || active_task.get().is_none()
-                                on:click=cancel_active
-                            >
-                                "Stop"
-                            </button>
-                        </div>
-                    </form>
+                                }
+                                .into_any()
+                            }
+                        }}
+                    </div>
                 </section>
                 <aside class="events-panel">
                     <div class="panel-header">
-                        <h2>"Events"</h2>
+                        <h2>"Metrics & Status"</h2>
                         <button class="secondary" type="button" on:click=refresh_events>"Refresh"</button>
                     </div>
                     <SseStatus state=sse_state />
                     <ProgressPanel progress=progress />
-                    {move || {
-                        if events.get().is_empty() {
-                            view! { <EmptyState title="No events" /> }.into_any()
-                        } else {
-                            view! {
-                                <ol class="event-list">
-                                    <For
-                                        each=move || events.get()
-                                        key=|event| event.seq
-                                        children=move |event| view! { <EventRow event=event /> }
-                                    />
-                                </ol>
-                            }.into_any()
-                        }
-                    }}
+                    <div style="flex:1;overflow-y:auto;padding:0;">
+                        <div class="metrics-group">
+                            <div class="metrics-group-title">"Event Stream"</div>
+                            <div class="metrics-row">
+                                <span class="metrics-label">"Events"</span>
+                                <span class="metrics-value">
+                                    {move || format!("{}", events.get().len())}
+                                </span>
+                            </div>
+                            <div class="metrics-row">
+                                <span class="metrics-label">"Stream"</span>
+                                <span class="metrics-value">
+                                    {move || match sse_state.get() {
+                                        SseConnectionState::Connected => view! { <span class="metrics-value success">"Connected"</span> }.into_any(),
+                                        SseConnectionState::Disconnected => view! { <span class="metrics-value warning">"Disconnected"</span> }.into_any(),
+                                        SseConnectionState::Reconnecting => view! { <span class="metrics-value warning">"Reconnecting"</span> }.into_any(),
+                                        SseConnectionState::TerminalClosed => view! { <span class="metrics-value">"Closed"</span> }.into_any(),
+                                    }}
+                                </span>
+                            </div>
+                        </div>
+                        {move || {
+                            if !events.get().is_empty() {
+                                let evts = events.get();
+                                let items: Vec<_> = evts.into_iter().rev().take(20).collect();
+                                view! {
+                                    <div class="metrics-group">
+                                        <div class="metrics-group-title">"Recent Events"</div>
+                                        <ol class="event-list">
+                                            {items.into_iter().map(|event| {
+                                                view! { <EventRow event=event /> }
+                                            }).collect::<Vec<_>>()}
+                                        </ol>
+                                    </div>
+                                }
+                                .into_any()
+                            } else {
+                                ().into_any()
+                            }
+                        }}
+                    </div>
                 </aside>
             </div>
         </section>
@@ -334,22 +407,6 @@ fn ComposerNotice(active_task: ReadSignal<Option<TaskDetail>>) -> impl IntoView 
             }.into_any(),
             _ => ().into_any(),
         }}
-    }
-}
-
-fn composer_is_blocked(task: Option<&TaskDetail>) -> bool {
-    task.is_some_and(|task| matches!(task.status, TaskStatus::Queued | TaskStatus::Running))
-}
-
-fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {
-    match error.error_code() {
-        Some(ErrorCode::SessionBusy) => {
-            "This session already has an active task. Stop it or wait for it to finish.".to_string()
-        }
-        Some(ErrorCode::TaskWaitingForUserInput) => {
-            "The active task is waiting for input. Reply in the composer to resume it.".to_string()
-        }
-        _ => error.to_string(),
     }
 }
 
@@ -410,11 +467,15 @@ fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
 fn SseStatus(state: ReadSignal<SseConnectionState>) -> impl IntoView {
     view! {
         <div class="sse-state">
+            <span class=move || match state.get() {
+                SseConnectionState::Connected => "sse-dot",
+                _ => "sse-dot disconnected",
+            }></span>
             {move || match state.get() {
-                SseConnectionState::Connected => "stream connected",
-                SseConnectionState::Disconnected => "stream disconnected",
-                SseConnectionState::Reconnecting => "stream reconnecting",
-                SseConnectionState::TerminalClosed => "stream closed",
+                SseConnectionState::Connected => "Stream connected",
+                SseConnectionState::Disconnected => "Stream disconnected",
+                SseConnectionState::Reconnecting => "Stream reconnecting",
+                SseConnectionState::TerminalClosed => "Stream closed",
             }}
         </div>
     }
@@ -457,8 +518,17 @@ fn TaskCard(
     let (saving, set_saving) = signal(false);
     let original_input = task.input_markdown.clone();
 
+    // Determine card status class for the timeline dot
+    let card_status_class = match task.status {
+        TaskStatus::Running | TaskStatus::Queued => "running",
+        TaskStatus::Completed => "success",
+        TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => "error",
+        _ => "",
+    };
+    let card_class = format!("task-card {card_status_class}");
+
     view! {
-        <article class="task-card">
+        <article class=card_class>
             <div class="task-card-header">
                 <StatusBadge status=task.status />
                 <time>{friendly_time(task.updated_at)}</time>
@@ -493,6 +563,7 @@ fn TaskCard(
                     class="secondary edit-input-button"
                     type="button"
                     on:click=move |_| set_editing.set(true)
+                    style="margin-top: 8px;"
                 >
                     "Edit input"
                 </button>
@@ -608,5 +679,17 @@ fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummary) {
         *existing = task;
     } else {
         items.push(task);
+    }
+}
+
+fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {
+    match error.error_code() {
+        Some(ErrorCode::SessionBusy) => {
+            "This session already has an active task. Stop it or wait for it to finish.".to_string()
+        }
+        Some(ErrorCode::TaskWaitingForUserInput) => {
+            "The active task is waiting for input. Reply in the composer to resume it.".to_string()
+        }
+        _ => error.to_string(),
     }
 }

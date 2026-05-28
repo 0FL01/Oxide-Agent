@@ -11,13 +11,11 @@ pub fn AppLayout(route: AppRoute) -> impl IntoView {
 
     view! {
         <div class="app-layout">
-            <Header auth=auth />
-            <div class="workspace">
-                <SessionSidebar selected=selected_session_id(&route) />
-                <main class="workspace-main">
-                    <TaskConsole route=route />
-                </main>
-            </div>
+            <SessionSidebar selected=selected_session_id(&route) />
+            <main class="workspace-main">
+                <Header auth=auth />
+                <TaskConsole route=route />
+            </main>
         </div>
     }
 }
@@ -26,7 +24,9 @@ pub fn AppLayout(route: AppRoute) -> impl IntoView {
 fn Header(auth: AuthContext) -> impl IntoView {
     view! {
         <header class="topbar">
-            <a class="brand" href="/app">"Oxide Agent"</a>
+            <div class="topbar-left">
+                <a class="brand" href="/app">"Oxide Agent"</a>
+            </div>
             <nav class="topnav">
                 <a href="/settings">"Settings"</a>
                 {move || {
@@ -41,22 +41,30 @@ fn Header(auth: AuthContext) -> impl IntoView {
 
 #[component]
 pub fn StatusBadge(status: TaskStatus) -> impl IntoView {
-    let label = match status {
-        TaskStatus::Queued => "queued",
-        TaskStatus::Running => "running",
-        TaskStatus::WaitingForUserInput => "waiting",
-        TaskStatus::Completed => "completed",
-        TaskStatus::Failed => "failed",
-        TaskStatus::Cancelled => "cancelled",
-        TaskStatus::Interrupted => "interrupted",
+    let (label, css_class) = match status {
+        TaskStatus::Queued => ("queued", "status-badge idle"),
+        TaskStatus::Running => ("running", "status-badge running"),
+        TaskStatus::WaitingForUserInput => ("waiting", "status-badge disconnected"),
+        TaskStatus::Completed => ("completed", "status-badge completed"),
+        TaskStatus::Failed => ("failed", "status-badge failed"),
+        TaskStatus::Cancelled => ("cancelled", "status-badge failed"),
+        TaskStatus::Interrupted => ("interrupted", "status-badge failed"),
     };
-    let class_name = format!("status-badge status-{label}");
-    view! { <span class=class_name>{label}</span> }
+    view! {
+        <span class=css_class>
+            <span class="dot"></span>
+            {label}
+        </span>
+    }
 }
 
 #[component]
 pub fn EmptyState(title: &'static str) -> impl IntoView {
-    view! { <div class="empty-state">{title}</div> }
+    view! {
+        <div class="empty-state">
+            <div class="empty-state-title">{title}</div>
+        </div>
+    }
 }
 
 #[component]
