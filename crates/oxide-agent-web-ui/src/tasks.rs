@@ -7,8 +7,8 @@ use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{friendly_time, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    CreateTaskRequest, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SseConnectionState,
-    TaskDetail, TaskStatus, TaskSummary,
+    CreateTaskRequest, EditTaskInputRequest, PersistedTaskEvent, ProgressSnapshot,
+    ResumeTaskRequest, SseConnectionState, TaskDetail, TaskStatus, TaskSummary,
 };
 
 #[component]
@@ -198,6 +198,7 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
             }
         });
     };
+    let session_id_for_cards = session_id.clone();
 
     view! {
         <section class="session-workspace">
@@ -217,12 +218,26 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                         } else if tasks.get().is_empty() {
                             view! { <EmptyState title="No task yet" /> }.into_any()
                         } else {
+                            let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
+                            let session_id_for_cards = session_id_for_cards.clone();
                             view! {
                                 <div class="task-list">
                                     <For
                                         each=move || tasks.get()
                                         key=|task| task.task_id.clone()
-                                        children=move |task| view! { <TaskCard task=task /> }
+                                        children=move |task| {
+                                            let editable =
+                                                latest_editable_task_id.as_ref() == Some(&task.task_id);
+                                            view! {
+                                                <TaskCard
+                                                    session_id=session_id_for_cards.clone()
+                                                    task=task
+                                                    editable=editable
+                                                    set_tasks=set_tasks
+                                                    set_error=set_error
+                                                />
+                                            }
+                                        }
                                     />
                                 </div>
                             }.into_any()
@@ -364,7 +379,19 @@ fn ProgressPanel(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoVie
 }
 
 #[component]
-fn TaskCard(task: TaskSummary) -> impl IntoView {
+fn TaskCard(
+    session_id: String,
+    task: TaskSummary,
+    editable: bool,
+    set_tasks: WriteSignal<Vec<TaskSummary>>,
+    set_error: WriteSignal<Option<String>>,
+) -> impl IntoView {
+    let task_id = task.task_id.clone();
+    let (editing, set_editing) = signal(false);
+    let (draft, set_draft) = signal(task.input_markdown.clone());
+    let (saving, set_saving) = signal(false);
+    let original_input = task.input_markdown.clone();
+
     view! {
         <article class="task-card">
             <div class="task-card-header">
@@ -372,8 +399,39 @@ fn TaskCard(task: TaskSummary) -> impl IntoView {
                 <time>{friendly_time(task.updated_at)}</time>
             </div>
             <div class="message user-message">
-                <MarkdownContent markdown=task.input_markdown />
+                {move || if editing.get() {
+                    let session_id = session_id.clone();
+                    let task_id = task_id.clone();
+                    let original_input = original_input.clone();
+                    view! {
+                        <TaskInputEditForm
+                            session_id=session_id
+                            task_id=task_id
+                            original_input=original_input
+                            draft=draft
+                            set_draft=set_draft
+                            saving=saving
+                            set_saving=set_saving
+                            set_editing=set_editing
+                            set_tasks=set_tasks
+                            set_error=set_error
+                        />
+                    }.into_any()
+                } else {
+                    view! {
+                        <MarkdownContent markdown=task.input_markdown.clone() />
+                    }.into_any()
+                }}
             </div>
+            {editable.then(|| view! {
+                <button
+                    class="secondary edit-input-button"
+                    type="button"
+                    on:click=move |_| set_editing.set(true)
+                >
+                    "Edit input"
+                </button>
+            })}
             {task.final_response_markdown.map(|answer| view! {
                 <div class="message assistant-message">
                     <MarkdownContent markdown=answer />
@@ -386,6 +444,74 @@ fn TaskCard(task: TaskSummary) -> impl IntoView {
                 <div class="message pending-message">{pending.prompt}</div>
             })}
         </article>
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[component]
+fn TaskInputEditForm(
+    session_id: String,
+    task_id: String,
+    original_input: String,
+    draft: ReadSignal<String>,
+    set_draft: WriteSignal<String>,
+    saving: ReadSignal<bool>,
+    set_saving: WriteSignal<bool>,
+    set_editing: WriteSignal<bool>,
+    set_tasks: WriteSignal<Vec<TaskSummary>>,
+    set_error: WriteSignal<Option<String>>,
+) -> impl IntoView {
+    let auth = use_auth();
+    let submit_edit = {
+        let session_id = session_id.clone();
+        let task_id = task_id.clone();
+        move |ev: leptos::ev::SubmitEvent| {
+            ev.prevent_default();
+            set_saving.set(true);
+            set_error.set(None);
+            let request = EditTaskInputRequest {
+                input_markdown: draft.get(),
+            };
+            let session_id = session_id.clone();
+            let task_id = task_id.clone();
+            spawn_ui(async move {
+                match auth
+                    .client()
+                    .edit_task_input(&session_id, &task_id, &request)
+                    .await
+                {
+                    Ok(response) => {
+                        set_tasks.update(|items| {
+                            if let Some(item) =
+                                items.iter_mut().find(|item| item.task_id == task_id)
+                            {
+                                *item = response.task;
+                            }
+                        });
+                        set_editing.set(false);
+                    }
+                    Err(error) => set_error.set(Some(error.to_string())),
+                }
+                set_saving.set(false);
+            });
+        }
+    };
+    let cancel_edit = move |_| {
+        set_draft.set(original_input.clone());
+        set_editing.set(false);
+    };
+
+    view! {
+        <form class="inline-edit" on:submit=submit_edit>
+            <textarea
+                prop:value=draft
+                on:input=move |ev| set_draft.set(event_target_value(&ev))
+            />
+            <div class="composer-actions">
+                <button type="submit" disabled=saving>"Save"</button>
+                <button class="secondary" type="button" on:click=cancel_edit>"Cancel"</button>
+            </div>
+        </form>
     }
 }
 
@@ -402,4 +528,12 @@ fn EventRow(event: PersistedTaskEvent) -> impl IntoView {
 
 fn latest_task(tasks: Vec<TaskSummary>) -> Option<TaskSummary> {
     tasks.into_iter().max_by_key(|task| task.updated_at)
+}
+
+fn latest_terminal_task_id(tasks: &[TaskSummary]) -> Option<String> {
+    tasks
+        .iter()
+        .filter(|task| task.status.is_terminal())
+        .max_by_key(|task| task.updated_at)
+        .map(|task| task.task_id.clone())
 }
