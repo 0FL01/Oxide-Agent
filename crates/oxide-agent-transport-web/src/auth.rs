@@ -158,11 +158,25 @@ pub async fn login_user(
         return Err(AuthError::InvalidCredentials);
     }
 
+    let (auth_session, raw_session_token) =
+        create_auth_session_for_user(store, user.user_id, now).await?;
+    Ok((
+        current_user_from_record(&user),
+        auth_session,
+        raw_session_token,
+    ))
+}
+
+pub async fn create_auth_session_for_user(
+    store: &dyn WebUiStore,
+    user_id: i64,
+    now: DateTime<Utc>,
+) -> Result<(WebAuthSessionRecord, String), AuthError> {
     let raw_session_token = generate_opaque_token();
     let auth_session = WebAuthSessionRecord {
         schema_version: WEB_AUTH_SCHEMA_VERSION,
         session_token_hash: hash_session_token(&raw_session_token),
-        user_id: user.user_id,
+        user_id,
         csrf_token: generate_opaque_token(),
         created_at: now,
         last_seen_at: now,
@@ -173,11 +187,7 @@ pub async fn login_user(
         .save_auth_session(auth_session.clone())
         .await
         .map_err(map_store_error)?;
-    Ok((
-        current_user_from_record(&user),
-        auth_session,
-        raw_session_token,
-    ))
+    Ok((auth_session, raw_session_token))
 }
 
 pub async fn current_user_for_token(

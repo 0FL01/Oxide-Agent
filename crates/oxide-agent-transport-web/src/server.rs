@@ -17,8 +17,8 @@
 //! - `DELETE /api/v1/sessions/:session_id` — delete current user's web session
 
 use crate::auth::{
-    bootstrap_user, change_password, current_user_for_token, login_user, logout_session,
-    register_user, AuthError, AUTH_SESSION_TTL_SECS,
+    bootstrap_user, change_password, create_auth_session_for_user, current_user_for_token,
+    login_user, logout_session, register_user, AuthError, AUTH_SESSION_TTL_SECS,
 };
 #[cfg(feature = "storage-s3-r2")]
 use crate::persistence::R2WebUiStore;
@@ -479,7 +479,7 @@ async fn api_register(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<RegisterRequest>,
-) -> Result<Json<AuthUserResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+) -> Result<(HeaderMap, Json<AuthUserResponse>), (StatusCode, Json<ErrorEnvelope>)> {
     let rate_limit_key = auth_rate_limit_key(&headers, &request.login);
     reject_auth_rate_limited(&state, &rate_limit_key).await?;
     let result = register_user(
@@ -499,17 +499,14 @@ async fn api_register(
             return Err(auth_error_response(error));
         }
     };
-    Ok(Json(AuthUserResponse {
-        user,
-        csrf_token: None,
-    }))
+    auth_session_response(state.web_store.as_ref(), user, chrono::Utc::now()).await
 }
 
 async fn api_bootstrap(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<BootstrapRequest>,
-) -> Result<Json<AuthUserResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+) -> Result<(HeaderMap, Json<AuthUserResponse>), (StatusCode, Json<ErrorEnvelope>)> {
     let rate_limit_key = auth_rate_limit_key(&headers, &request.login);
     reject_auth_rate_limited(&state, &rate_limit_key).await?;
     let bootstrap_token = web_env_value("OXIDE_WEB_BOOTSTRAP_TOKEN");
@@ -530,10 +527,7 @@ async fn api_bootstrap(
             return Err(auth_error_response(error));
         }
     };
-    Ok(Json(AuthUserResponse {
-        user,
-        csrf_token: None,
-    }))
+    auth_session_response(state.web_store.as_ref(), user, chrono::Utc::now()).await
 }
 
 async fn api_login(
@@ -554,6 +548,28 @@ async fn api_login(
             return Err(auth_error_response(error));
         }
     };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        SET_COOKIE,
+        auth_cookie_header(&raw_session_token, AUTH_SESSION_TTL_SECS)?,
+    );
+    Ok((
+        headers,
+        Json(AuthUserResponse {
+            user,
+            csrf_token: Some(auth_session.csrf_token),
+        }),
+    ))
+}
+
+async fn auth_session_response(
+    store: &dyn WebUiStore,
+    user: CurrentUser,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(HeaderMap, Json<AuthUserResponse>), (StatusCode, Json<ErrorEnvelope>)> {
+    let (auth_session, raw_session_token) = create_auth_session_for_user(store, user.user_id, now)
+        .await
+        .map_err(auth_error_response)?;
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,
@@ -3011,6 +3027,46 @@ mod tests {
         .expect_err("disabled registration should become rate limited");
         assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.error.code, ErrorCode::RateLimited);
+    }
+
+    #[tokio::test]
+    async fn api_register_starts_browser_auth_session() {
+        let _lock = web_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = EnvGuard::capture(&["OXIDE_WEB_REGISTRATION_ENABLED"]);
+        std::env::set_var("OXIDE_WEB_REGISTRATION_ENABLED", "true");
+
+        let state = test_app_state();
+        let (response_headers, axum::Json(response)) = super::api_register(
+            axum::extract::State(state.clone()),
+            HeaderMap::new(),
+            axum::Json(RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            }),
+        )
+        .await
+        .expect("register should create auth session");
+        assert_eq!(response.user.login, "alice");
+        let csrf_token = response.csrf_token.expect("register returns csrf token");
+        let raw_cookie = response_headers
+            .get(axum::http::header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("set-cookie header");
+        assert!(raw_cookie.contains("HttpOnly"));
+        let raw_token = raw_cookie
+            .strip_prefix(&format!("{AUTH_COOKIE_NAME}="))
+            .and_then(|value| value.split(';').next())
+            .expect("session cookie value")
+            .to_string();
+
+        let axum::Json(me) =
+            super::api_me(axum::extract::State(state), auth_headers(&raw_token, None))
+                .await
+                .expect("registered auth session can load current user");
+        assert_eq!(me.user.login, "alice");
+        assert_eq!(me.csrf_token, csrf_token);
     }
 
     #[tokio::test]
