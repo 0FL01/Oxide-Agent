@@ -1839,6 +1839,7 @@ mod tests {
         ));
         assert!(should_forward_sub_agent_progress_event(
             &AgentEvent::ToolCall {
+                tool_call_id: String::new(),
                 name: "execute_command".to_string(),
                 input: "{\"command\":\"pwd\"}".to_string(),
                 command_preview: Some("pwd".to_string()),
@@ -1860,6 +1861,7 @@ mod tests {
             .expect("thinking send");
         sub_tx
             .send(AgentEvent::ToolCall {
+                tool_call_id: String::new(),
                 name: "execute_command".to_string(),
                 input: "{\"command\":\"pwd\"}".to_string(),
                 command_preview: Some("pwd".to_string()),
