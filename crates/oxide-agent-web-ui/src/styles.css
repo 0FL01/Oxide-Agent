@@ -1217,6 +1217,34 @@ pre {
   border-bottom: none;
 }
 
+/* Context budget */
+.context-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.context-line {
+  color: var(--fg-muted);
+}
+
+.context-budget-ok {
+  color: var(--status-success);
+  font-weight: 500;
+}
+
+.context-budget-warn {
+  color: var(--status-warning);
+  font-weight: 500;
+}
+
+.context-budget-over {
+  color: var(--status-error);
+  font-weight: 500;
+}
+
 .metrics-label {
   color: var(--fg-muted);
   font-family: var(--font-mono);

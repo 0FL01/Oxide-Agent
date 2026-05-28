@@ -6,6 +6,7 @@ use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     PersistedTaskEvent, ProgressSnapshot, SseConnectionState, TaskStatus,
 };
+use serde::Deserialize;
 
 #[component]
 pub fn AppLayout(route: AppRoute) -> impl IntoView {
@@ -102,6 +103,35 @@ fn selected_session_id(route: &AppRoute) -> Option<String> {
     }
 }
 
+// ── Token snapshot for context budget display ──────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+struct TokenSnapshotUi {
+    hot_memory_tokens: usize,
+    system_prompt_tokens: usize,
+    tool_schema_tokens: usize,
+    reserved_output_tokens: usize,
+    hard_reserve_tokens: usize,
+    projected_total_tokens: usize,
+    context_window_tokens: usize,
+    headroom_tokens: usize,
+    budget_state: String,
+}
+
+/// Format token count: 9000 → "9k", 172000 → "172k", 8192 → "8.2k"
+fn fmt_tokens(n: usize) -> String {
+    if n >= 1000 {
+        let k = n as f64 / 1000.0;
+        if k.fract() < 0.05 {
+            format!("{:.0}k", k)
+        } else {
+            format!("{:.1}k", k)
+        }
+    } else {
+        format!("{}", n)
+    }
+}
+
 // ── Metrics Panel (right column) ────────────────────────────────────────────
 
 #[component]
@@ -141,6 +171,48 @@ fn MetricsPanel(
                     {p.error.map(|e| view! { <p class="error-text">{e}</p> })}
                 </div>
             })}
+
+            // Context budget (live from SSE progress)
+            {move || {
+                progress.get().and_then(|p| {
+                    p.latest_token_snapshot.as_ref().and_then(|v| {
+                        serde_json::from_value::<TokenSnapshotUi>(v.clone()).ok()
+                    })
+                }).map(|snap| {
+                    let budget_class = match snap.budget_state.as_str() {
+                        "Healthy" => "context-budget-ok",
+                        "Warning" => "context-budget-warn",
+                        _ => "context-budget-over",
+                    };
+                    view! {
+                        <div class="metrics-group">
+                            <div class="metrics-group-title">"Context"</div>
+                            <div class="context-lines">
+                                <span class="context-line">
+                                    {format!(
+                                        "flow {} | prompt {} | tools {}",
+                                        fmt_tokens(snap.hot_memory_tokens),
+                                        fmt_tokens(snap.system_prompt_tokens),
+                                        fmt_tokens(snap.tool_schema_tokens),
+                                    )}
+                                </span>
+                                <span class="context-line">
+                                    {format!(
+                                        "{} + {} = {} | {} free",
+                                        fmt_tokens(snap.reserved_output_tokens),
+                                        fmt_tokens(snap.hard_reserve_tokens),
+                                        fmt_tokens(snap.projected_total_tokens),
+                                        fmt_tokens(snap.headroom_tokens),
+                                    )}
+                                </span>
+                                <span class=budget_class>
+                                    {format!("Budget: {}", snap.budget_state)}
+                                </span>
+                            </div>
+                        </div>
+                    }
+                })
+            }}
 
             // Event stream summary
             <div class="metrics-group">
