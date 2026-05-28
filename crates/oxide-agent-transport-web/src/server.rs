@@ -89,6 +89,8 @@ const TASK_PREVIEW_CHARS: usize = 96;
 const DEFAULT_TASK_EVENTS_LIMIT: usize = 200;
 const MAX_TASK_EVENTS_LIMIT: usize = 500;
 const YOLO_APPROVAL_DIAGNOSTIC: &str = "The agent requested approval, but web console runs in YOLO (full permission) mode. Reconfigure the agent or retry without an approval-requiring setup.";
+const AUTH_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebStoreKind {
@@ -129,6 +131,7 @@ pub struct AppState {
     pub web_store: Arc<dyn WebUiStore>,
     pub web_store_kind: WebStoreKind,
     pub web_assets: WebAssetsConfig,
+    auth_rate_limiter: Arc<AsyncMutex<AuthRateLimiter>>,
     pub task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     pub task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     /// Tracks the JoinHandle for each running task so it can be aborted on completion.
@@ -165,6 +168,7 @@ impl AppState {
             web_store,
             web_store_kind,
             web_assets: WebAssetsConfig::from_env(),
+            auth_rate_limiter: Arc::new(AsyncMutex::new(AuthRateLimiter::new())),
             task_progress: Arc::new(RwLock::new(StdHashMap::new())),
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
@@ -218,6 +222,55 @@ impl AppState {
     #[must_use]
     pub fn web_store(&self) -> Arc<dyn WebUiStore> {
         self.web_store.clone()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AuthRateLimitEntry {
+    failures: u32,
+    window_started: Instant,
+}
+
+#[derive(Debug, Default)]
+struct AuthRateLimiter {
+    entries: StdHashMap<String, AuthRateLimitEntry>,
+}
+
+impl AuthRateLimiter {
+    fn new() -> Self {
+        Self {
+            entries: StdHashMap::new(),
+        }
+    }
+
+    fn is_limited(&mut self, key: &str, now: Instant) -> bool {
+        let Some(entry) = self.entries.get(key) else {
+            return false;
+        };
+        if now.duration_since(entry.window_started) >= AUTH_RATE_LIMIT_WINDOW {
+            self.entries.remove(key);
+            return false;
+        }
+        entry.failures >= AUTH_RATE_LIMIT_MAX_FAILURES
+    }
+
+    fn record_failure(&mut self, key: String, now: Instant) {
+        let entry = self
+            .entries
+            .entry(key)
+            .or_insert_with(|| AuthRateLimitEntry {
+                failures: 0,
+                window_started: now,
+            });
+        if now.duration_since(entry.window_started) >= AUTH_RATE_LIMIT_WINDOW {
+            entry.failures = 0;
+            entry.window_started = now;
+        }
+        entry.failures = entry.failures.saturating_add(1);
+    }
+
+    fn clear(&mut self, key: &str) {
+        self.entries.remove(key);
     }
 }
 
@@ -421,16 +474,28 @@ async fn api_public_config(State(state): State<AppState>) -> Json<PublicConfigRe
 
 async fn api_register(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<RegisterRequest>,
 ) -> Result<Json<AuthUserResponse>, (StatusCode, Json<ErrorEnvelope>)> {
-    let user = register_user(
+    let rate_limit_key = auth_rate_limit_key(&headers, &request.login);
+    reject_auth_rate_limited(&state, &rate_limit_key).await?;
+    let result = register_user(
         state.web_store.as_ref(),
         request,
         web_bool_env("OXIDE_WEB_REGISTRATION_ENABLED"),
         chrono::Utc::now(),
     )
-    .await
-    .map_err(auth_error_response)?;
+    .await;
+    let user = match result {
+        Ok(user) => {
+            clear_auth_rate_limit(&state, &rate_limit_key).await;
+            user
+        }
+        Err(error) => {
+            record_auth_failure(&state, rate_limit_key).await;
+            return Err(auth_error_response(error));
+        }
+    };
     Ok(Json(AuthUserResponse {
         user,
         csrf_token: None,
@@ -439,17 +504,29 @@ async fn api_register(
 
 async fn api_bootstrap(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<BootstrapRequest>,
 ) -> Result<Json<AuthUserResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let rate_limit_key = auth_rate_limit_key(&headers, &request.login);
+    reject_auth_rate_limited(&state, &rate_limit_key).await?;
     let bootstrap_token = web_env_value("OXIDE_WEB_BOOTSTRAP_TOKEN");
-    let user = bootstrap_user(
+    let result = bootstrap_user(
         state.web_store.as_ref(),
         request,
         bootstrap_token.as_deref(),
         chrono::Utc::now(),
     )
-    .await
-    .map_err(auth_error_response)?;
+    .await;
+    let user = match result {
+        Ok(user) => {
+            clear_auth_rate_limit(&state, &rate_limit_key).await;
+            user
+        }
+        Err(error) => {
+            record_auth_failure(&state, rate_limit_key).await;
+            return Err(auth_error_response(error));
+        }
+    };
     Ok(Json(AuthUserResponse {
         user,
         csrf_token: None,
@@ -458,12 +535,22 @@ async fn api_bootstrap(
 
 async fn api_login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<(HeaderMap, Json<AuthUserResponse>), (StatusCode, Json<ErrorEnvelope>)> {
-    let (user, auth_session, raw_session_token) =
-        login_user(state.web_store.as_ref(), request, chrono::Utc::now())
-            .await
-            .map_err(auth_error_response)?;
+    let rate_limit_key = auth_rate_limit_key(&headers, &request.login);
+    reject_auth_rate_limited(&state, &rate_limit_key).await?;
+    let result = login_user(state.web_store.as_ref(), request, chrono::Utc::now()).await;
+    let (user, auth_session, raw_session_token) = match result {
+        Ok(result) => {
+            clear_auth_rate_limit(&state, &rate_limit_key).await;
+            result
+        }
+        Err(error) => {
+            record_auth_failure(&state, rate_limit_key).await;
+            return Err(auth_error_response(error));
+        }
+    };
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,
@@ -1308,6 +1395,62 @@ fn auth_error_response(error: AuthError) -> (StatusCode, Json<ErrorEnvelope>) {
             true,
         ),
     }
+}
+
+fn auth_rate_limit_key(headers: &HeaderMap, login: &str) -> String {
+    let client_key = auth_client_key(headers);
+    let login_key = login.trim().to_ascii_lowercase();
+    format!("{client_key}:{login_key}")
+}
+
+fn auth_client_key(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+async fn reject_auth_rate_limited(
+    state: &AppState,
+    key: &str,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    if state
+        .auth_rate_limiter
+        .lock()
+        .await
+        .is_limited(key, Instant::now())
+    {
+        return Err(api_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::RateLimited,
+            "Too many authentication attempts. Try again later.",
+            true,
+        ));
+    }
+    Ok(())
+}
+
+async fn record_auth_failure(state: &AppState, key: String) {
+    state
+        .auth_rate_limiter
+        .lock()
+        .await
+        .record_failure(key, Instant::now());
+}
+
+async fn clear_auth_rate_limit(state: &AppState, key: &str) {
+    state.auth_rate_limiter.lock().await.clear(key);
 }
 
 async fn authenticated_user(
@@ -2564,6 +2707,7 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) {
 mod tests {
     use axum::http::HeaderMap;
     use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::Instant;
 
     use oxide_agent_core::agent::progress::{LlmRetryState, ProgressState};
     use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
@@ -2632,6 +2776,121 @@ mod tests {
             "token-123"
         );
         assert_eq!(csrf_header_value(&headers).expect("csrf"), "csrf-123");
+    }
+
+    #[test]
+    fn auth_rate_limiter_uses_fixed_window() {
+        let mut limiter = super::AuthRateLimiter::new();
+        let now = Instant::now();
+        let key = "127.0.0.1:alice";
+
+        for _ in 0..super::AUTH_RATE_LIMIT_MAX_FAILURES {
+            assert!(!limiter.is_limited(key, now));
+            limiter.record_failure(key.to_string(), now);
+        }
+        assert!(limiter.is_limited(key, now));
+        assert!(!limiter.is_limited(key, now + super::AUTH_RATE_LIMIT_WINDOW));
+    }
+
+    #[tokio::test]
+    async fn api_login_rate_limits_by_ip_and_login_key() {
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.10".parse().expect("ip"));
+        for _ in 0..super::AUTH_RATE_LIMIT_MAX_FAILURES {
+            let (status, axum::Json(error)) = super::api_login(
+                axum::extract::State(state.clone()),
+                headers.clone(),
+                axum::Json(LoginRequest {
+                    login: "alice".to_string(),
+                    password: "wrong password".to_string(),
+                }),
+            )
+            .await
+            .expect_err("wrong password should fail");
+            assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+            assert_eq!(error.error.code, ErrorCode::InvalidCredentials);
+        }
+
+        let (status, axum::Json(error)) = super::api_login(
+            axum::extract::State(state.clone()),
+            headers,
+            axum::Json(LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            }),
+        )
+        .await
+        .expect_err("same key should be rate limited before password verification");
+        assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.error.code, ErrorCode::RateLimited);
+
+        let mut other_ip_headers = HeaderMap::new();
+        other_ip_headers.insert("x-forwarded-for", "198.51.100.20".parse().expect("ip"));
+        let (_headers, axum::Json(response)) = super::api_login(
+            axum::extract::State(state),
+            other_ip_headers,
+            axum::Json(LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            }),
+        )
+        .await
+        .expect("different IP/login key should not be rate limited");
+        assert_eq!(response.user.login, "alice");
+    }
+
+    #[tokio::test]
+    async fn api_register_failures_are_rate_limited() {
+        let _lock = web_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = EnvGuard::capture(&["OXIDE_WEB_REGISTRATION_ENABLED"]);
+        std::env::set_var("OXIDE_WEB_REGISTRATION_ENABLED", "false");
+
+        let state = test_app_state();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.10".parse().expect("ip"));
+        for _ in 0..super::AUTH_RATE_LIMIT_MAX_FAILURES {
+            let (status, axum::Json(error)) = super::api_register(
+                axum::extract::State(state.clone()),
+                headers.clone(),
+                axum::Json(RegisterRequest {
+                    login: "alice".to_string(),
+                    password: "correct horse battery staple".to_string(),
+                }),
+            )
+            .await
+            .expect_err("disabled registration should fail");
+            assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+            assert_eq!(error.error.code, ErrorCode::RegistrationDisabled);
+        }
+
+        let (status, axum::Json(error)) = super::api_register(
+            axum::extract::State(state),
+            headers,
+            axum::Json(RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            }),
+        )
+        .await
+        .expect_err("disabled registration should become rate limited");
+        assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(error.error.code, ErrorCode::RateLimited);
     }
 
     #[test]
