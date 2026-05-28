@@ -248,12 +248,54 @@ fn SessionWorkspace(
         </header>
         <ErrorBanner message=error />
         <section class="session-workspace">
+            // Agent results — task cards with output
+            <div class="results-panel">
+                {move || {
+                    if loading.get() && tasks.get().is_empty() {
+                        view! { <div class="empty-state">"Loading..."</div> }.into_any()
+                    } else if tasks.get().is_empty() {
+                        view! {
+                            <div class="empty-state">
+                                <div class="empty-state-title">"No active session"</div>
+                                <div class="empty-state-text">
+                                    "Enter a prompt below and click \"Run Agent\" to start a new session. The agent's reasoning, tool calls, and outputs will appear here in real time."
+                                </div>
+                            </div>
+                        }
+                        .into_any()
+                    } else {
+                        let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
+                        let session_id_for_cards = session_id_for_cards.clone();
+                        view! {
+                            <For
+                                each=move || tasks.get()
+                                key=|task| task.task_id.clone()
+                                children=move |task| {
+                                    let editable =
+                                        latest_editable_task_id.as_ref() == Some(&task.task_id);
+                                    view! {
+                                        <TaskCard
+                                            session_id=session_id_for_cards.clone()
+                                            task=task
+                                            editable=editable
+                                            set_tasks=set_tasks
+                                            set_error=set_error
+                                        />
+                                    }
+                                }
+                            />
+                        }
+                        .into_any()
+                    }
+                }}
+            </div>
+
             // Prompt input
             <form class="composer" on:submit=submit_task>
                 <ComposerNotice active_task=active_task />
                 <div class="composer-label">"Agent Prompt"</div>
                 <textarea
-                    placeholder="Enter your prompt here...\n\nThe agent will process your request and show its reasoning, tool calls, and outputs in the panel below."
+                    placeholder="Enter your prompt here...\n\nThe agent will process your request and show its reasoning, tool calls, and outputs in the panel above."
                     prop:value=input
                     disabled=is_running
                     on:input=move |ev| set_input.set(event_target_value(&ev))
@@ -303,48 +345,6 @@ fn SessionWorkspace(
                     </div>
                 </div>
             </form>
-
-            // Agent results — task cards with output
-            <div class="results-panel">
-                {move || {
-                    if loading.get() && tasks.get().is_empty() {
-                        view! { <div class="empty-state">"Loading..."</div> }.into_any()
-                    } else if tasks.get().is_empty() {
-                        view! {
-                            <div class="empty-state">
-                                <div class="empty-state-title">"No active session"</div>
-                                <div class="empty-state-text">
-                                    "Enter a prompt above and click \"Run Agent\" to start a new session. The agent's reasoning, tool calls, and outputs will appear here in real time."
-                                </div>
-                            </div>
-                        }
-                        .into_any()
-                    } else {
-                        let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
-                        let session_id_for_cards = session_id_for_cards.clone();
-                        view! {
-                            <For
-                                each=move || tasks.get()
-                                key=|task| task.task_id.clone()
-                                children=move |task| {
-                                    let editable =
-                                        latest_editable_task_id.as_ref() == Some(&task.task_id);
-                                    view! {
-                                        <TaskCard
-                                            session_id=session_id_for_cards.clone()
-                                            task=task
-                                            editable=editable
-                                            set_tasks=set_tasks
-                                            set_error=set_error
-                                        />
-                                    }
-                                }
-                            />
-                        }
-                        .into_any()
-                    }
-                }}
-            </div>
         </section>
     }
 }
