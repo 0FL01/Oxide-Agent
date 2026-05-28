@@ -1,0 +1,26 @@
+[package]
+name = "oxide-agent-web-ui"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+authors = ["@0FL01"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "forbid"
+too_many_lines = "forbid"
+
+[dependencies]
+ammonia = "4.1.2"
+comrak = { version = "0.52.0", default-features = false }
+console_error_panic_hook = "0.1.7"
+gloo-net = "0.7.0"
+leptos = { version = "0.8.19", features = ["csr"] }
+leptos_router = "0.8.13"
+oxide-agent-web-contracts = { version = "0.1.0", path = "../oxide-agent-web-contracts" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+wasm-bindgen-futures = "0.4.72"
+web-sys = "0.3.99"

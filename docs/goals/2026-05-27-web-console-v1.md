@@ -5,7 +5,7 @@ Status: active
 Codex goal: Study `docs/prd/PRD_web.md`, create repo-local goal documentation from it, and iteratively implement the web PRD in Oxide-Agent with validation checkpoints.
 Source spec: `docs/prd/PRD_web.md`
 Goal doc owner: Codex
-Last updated: 2026-05-28 09:30 +03
+Last updated: 2026-05-28 09:50 +03
 
 ## Objective
 
@@ -51,7 +51,7 @@ Out of scope:
   - Acceptance: Workspace contains Rust contracts/backend/frontend crates; no TypeScript SPA stack is introduced; core/runtime do not depend on transport/frontend crates.
   - Evidence required: `Cargo.toml` workspace membership, crate manifests, `rg --files -g '*.ts' -g '*.tsx' -g '*.js' -g '*.jsx'` review, `cargo check` for affected crates.
   - Status: in_progress
-  - Evidence collected: `crates/oxide-agent-web-contracts` added as a Rust workspace crate; no frontend crate exists yet.
+  - Evidence collected: `crates/oxide-agent-web-contracts` added as a Rust workspace crate. Added `crates/oxide-agent-web-ui` as a Rust workspace crate with Leptos CSR, Trunk entrypoint/config, Rust API client modules, auth/session/task UI modules, and no handwritten TypeScript/JS files. `cargo check -p oxide-agent-web-ui` and `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` pass.
 
 - G2: Shared browser API contracts
   - Source: PRD sections 6.6, 7.2, 14, 19 milestone 0.
@@ -162,32 +162,32 @@ Out of scope:
   - Requirement: Add Leptos CSR frontend with login/register/bootstrap, protected app shell, sidebar, settings/change-password page, routing, loading/error states, and narrow viewport behavior.
   - Acceptance: Authenticated user can navigate sessions/tasks and logout/change password from UI; frontend code is Rust.
   - Evidence required: frontend build, component/state tests where practical, manual QA checklist.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Added `crates/oxide-agent-web-ui` with Leptos CSR app entrypoint, route parsing for `/login`, `/register`, `/bootstrap`, `/app`, `/app/session/:session_id`, `/settings`, cookie/CSRF-aware Rust API client over `/api/v1`, login/register/bootstrap forms, settings/change-password/logout page, topbar, session sidebar, responsive workspace layout, loading/empty/error states, and narrow viewport CSS. `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` and `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown` pass. Browser manual QA and Trunk build remain pending.
 
 - G16: Task console UI
   - Source: PRD sections 11.8-11.13, 12.3, 20.
   - Requirement: UI shows transcript from persisted task records, live events/progress panel, send/cancel/resume/edit flows, final answer, and distinct task states.
   - Acceptance: Running composer is blocked for new top-level task; paused task resumes same task; terminal task allows new task and last-input edit.
   - Evidence required: frontend/runtime QA and backend integration tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Added first task console UI slice in `crates/oxide-agent-web-ui/src/tasks.rs`: persisted task history list, raw Markdown textarea composer, send/resume decision based on `waiting_for_user_input`, stop/cancel action for active task, final answer/error/pending-user-input display, status badges, and an events side panel that can refresh persisted task events. User input and final answers now render through the shared `MarkdownContent` boundary. Live SSE client, progress auto-refresh, edit-last-input UI, and browser QA remain pending.
 
 - G17: Safe Markdown rendering
   - Source: PRD sections 10, 11.10, 12.4, 16.6, 17.6.
   - Requirement: Provide one `MarkdownContent` boundary using Rust markdown parsing and HTML sanitization, safe links/images, code block copy buttons, long-line handling, and invalid/streaming fallback.
   - Acceptance: Unsafe HTML/attrs/protocols are removed; external images become links or are blocked; code blocks are readable/copyable.
   - Evidence required: sanitization tests and manual rendering checks for headings/lists/code/tables/task lists/links.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: First frontend slice includes explicit auth/session/task loading, empty, and error states plus responsive CSS for narrow viewports. Session-busy and SSE reconnect UI states remain pending with the SSE client work; no browser screenshot/manual QA evidence has been collected yet.
 
 - G18: Static assets, CORS, and security headers
   - Source: PRD sections 7.11, 8.19-8.20, 16.8, 18.
   - Requirement: Prod backend serves built frontend assets same-origin, rejects missing prod assets, avoids permissive CORS in prod, and sets sane security headers compatible with WASM.
   - Acceptance: Dev flow supports backend + Trunk proxy; prod flow serves index/assets/browser routes from Rust backend.
   - Evidence required: route/static serving tests, config tests, manual prod smoke.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Added `crates/oxide-agent-web-ui/src/markdown.rs` with one `MarkdownContent` component and pure `render_markdown`/`sanitize_html` functions using `comrak` with no default features plus `ammonia`. The sanitizer strips script content/event attributes, removes unsafe link protocols, removes image tags, and keeps tables/code blocks. `cargo test -p oxide-agent-web-ui markdown` passes with 4 tests. Task transcript user/final-answer content now uses `MarkdownContent`; copy buttons, full task-list rendering, same-origin image policy, and manual rendering QA remain pending.
 
 - Q1: Keep implementation simple for personal scale
   - Source: `AGENTS.md` scale principles and PRD section 20 single-instance decision.
@@ -229,7 +229,7 @@ Out of scope:
   - Requirement: Run `cargo fmt` and relevant `cargo clippy` before claiming completion.
   - Evidence required: command outputs.
   - Status: in_progress
-  - Evidence collected: `cargo fmt`, `cargo fmt --check`, `cargo clippy -p oxide-agent-web-contracts -p oxide-agent-transport-web --no-default-features`, and `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-lite` passed after contracts, `/api/v1/public-config`, persistence interface, registration/bootstrap, browser-session auth, authenticated sessions, task create/list/detail/edit/resume/cancel APIs, persisted event replay API, live event persistence, `/api/v1` SSE, R2-backed web store, startup guard, R2 app-state builder, durable runtime storage wiring, live progress persistence, legacy route removal, authenticated socket e2e helper migration, and socket compaction regression migration slices. Broader workspace clippy remains pending for later checkpoints.
+  - Evidence collected: `cargo fmt`, `cargo fmt --check`, `cargo clippy -p oxide-agent-web-contracts -p oxide-agent-transport-web --no-default-features`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-lite`, `cargo clippy -p oxide-agent-web-ui`, and `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown` passed after contracts, `/api/v1/public-config`, persistence interface, registration/bootstrap, browser-session auth, authenticated sessions, task create/list/detail/edit/resume/cancel APIs, persisted event replay API, live event persistence, `/api/v1` SSE, R2-backed web store, startup guard, R2 app-state builder, durable runtime storage wiring, live progress persistence, legacy route removal, authenticated socket e2e helper migration, socket compaction regression migration, and the first Leptos frontend shell slice. Broader workspace clippy remains pending for later checkpoints.
 
 - V2: Backend compile/test validation
   - Source: `AGENTS.md`, PRD section 17.
@@ -242,8 +242,8 @@ Out of scope:
   - Source: PRD sections 7, 17, 19.
   - Requirement: Build Rust/WASM frontend and run available component/contract/markdown tests.
   - Evidence required: Trunk/frontend build command and test outputs.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: `cargo check -p oxide-agent-web-ui`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, and `cargo test -p oxide-agent-web-ui markdown` pass for the first Leptos CSR shell and Markdown boundary. `command -v trunk` found no installed Trunk binary in the current environment, so an actual `trunk build` is still pending.
 
 - V4: Runtime/manual QA validation
   - Source: PRD sections 17.9, 18.
@@ -257,7 +257,7 @@ Out of scope:
   - Must preserve: No React/Vue/Svelte/Solid/Next/Nuxt/Vite+TS application stack.
   - Evidence required: file/dependency review.
   - Status: in_progress
-  - Evidence collected: Current slice added only Rust crate/code. Full repository grep guard remains pending until frontend/static asset work defines generated-artifact exceptions.
+  - Evidence collected: Current frontend slice added only Rust crate/code plus `index.html`, `Trunk.toml`, and CSS. `rg --files -g '*.ts' -g '*.tsx' -g '*.js' -g '*.jsx'` returns no files after adding `oxide-agent-web-ui`; no TypeScript SPA stack or package manifest was introduced.
 
 - N2: No approve/reject UI
   - Source: PRD sections 4, 8.9, 20.
@@ -348,6 +348,9 @@ Out of scope:
 - 2026-05-28: Keep delegation socket e2e behind explicit `delegation_e2e` because `profile-lite` intentionally excludes `tool-delegation`; running the delegation check requires `--features profile-lite,socket_e2e,delegation_e2e`.
 - 2026-05-28: Keep compression socket e2e behind explicit `compression_e2e` because `profile-lite` intentionally excludes `tool-compression`; running compression checks requires `--features profile-lite,socket_e2e,compression_e2e`.
 - 2026-05-28: Normalize seeded compaction socket history for strict OpenCode Go tool-history rules, and assert durable/event/progress invariants instead of assuming old inline tool-result messages always survive hot-memory compaction.
+- 2026-05-28: Start frontend as a separate `oxide-agent-web-ui` Leptos CSR crate with Trunk metadata. Keep it browser/API-client based and dependency-free from core/runtime/transport crates except for shared `oxide-agent-web-contracts`.
+- 2026-05-28: For the first frontend checkpoint, validate with `cargo check`/`cargo clippy` on both host and `wasm32-unknown-unknown`. A real `trunk build` remains pending because `trunk` is not installed in the current environment.
+- 2026-05-28: Use `comrak` with default features disabled plus `ammonia` for the frontend Markdown security boundary. This keeps Markdown rendering in Rust while avoiding comrak's heavier CLI/syntax-highlighting dependency surface in the frontend crate.
 
 ## Progress Log
 
@@ -371,13 +374,16 @@ Out of scope:
 - 2026-05-28 09:02 +03: Migrated the socket e2e helper path to authenticated browser API calls. Test server setup now registers the `AppState` for helpers, seeds/logs in test users through `WebUiStore`, stores per-session auth material, sends cookie/CSRF headers, and uses `/api/v1` for session creation, task creation, progress, event replay, deletion, and SSE streaming. Helper compatibility layers map persisted browser events/progress/timeline data back to the existing assertions while tests are incrementally migrated. Also updated socket test setup to register the scripted provider under the compiled `opencode_go` route for `profile-lite,socket_e2e`. Verified `cargo fmt`, `cargo fmt --check`, `cargo test -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-transport-web --no-default-features --test e2e`, `cargo test -p oxide-agent-transport-web --no-default-features server::tests`, `cargo check -p oxide-agent-transport-web --no-default-features`, `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`, `cargo clippy -p oxide-agent-web-contracts -p oxide-agent-transport-web --no-default-features`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-lite`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite,socket_e2e --test e2e sse_tests::e2e_sse_stream -- --nocapture`, `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite,socket_e2e --test e2e session_tests::e2e_web_followup_while_running_returns_session_busy -- --nocapture`, and `git diff --check`. Next checkpoint: finish semantic migration/revalidation of the remaining socket e2e cases, then start the Rust frontend shell.
 - 2026-05-28 09:14 +03: Stabilized more socket e2e after the `/api/v1` migration. Aligned custom socket test providers and compaction setup with the compiled `opencode-go/deepseek-v4-flash` route required by typed tool runtime, converted scripted final answers to structured-output JSON where that route is active, made reminder assertions use the authenticated web user id and `web-session-{session_id}` context, and added explicit `delegation_e2e` feature gating for sub-agent tests. Verified `cargo test -p oxide-agent-transport-web --no-default-features --test e2e`, focused socket reminder/runtime-context/session-busy/SSE checks, focused delegation with `profile-lite,socket_e2e,delegation_e2e`, `cargo check -p oxide-agent-transport-web --no-default-features`, `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`, `cargo fmt --check`, `cargo clippy -p oxide-agent-web-contracts -p oxide-agent-transport-web --no-default-features`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-lite`, and `git diff --check`. Full `profile-lite,socket_e2e` now reaches 13 passed / 11 compaction assertion failures / 4 ignored; next checkpoint is migrating the remaining compaction regression assertions to the new authenticated web-session scope and current compaction event/progress model.
 - 2026-05-28 09:30 +03: Completed the socket e2e compaction migration. Compaction seeded histories now include assistant tool-call messages for strict OpenCode Go tool-history validity, route setup uses the compiled `opencode-go/deepseek-v4-flash` profile route, compression/delegation scenarios are behind explicit feature gates, and assertions now allow old tool-result messages to be compacted away while still checking event/progress/hot-memory marker invariants. Verified `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite,socket_e2e --test e2e -- --nocapture` with 22 passed / 0 failed / 6 ignored, `cargo test -p oxide-agent-transport-web --no-default-features --test e2e` with 6 passed / 0 failed / 22 ignored, focused delegation with `profile-lite,socket_e2e,delegation_e2e`, focused compression checks with `profile-lite,socket_e2e,compression_e2e`, `cargo test -p oxide-agent-web-contracts`, `cargo check -p oxide-agent-transport-web --no-default-features`, `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`, `cargo fmt --check`, both relevant clippy commands, and `git diff --check`. Next checkpoint: start the Rust frontend shell and auth UI.
+- 2026-05-28 09:45 +03: Committed the completed backend/e2e checkpoint as `fa0f8732 feat(web): harden browser task backend`, then started Milestone 4 frontend implementation. Added `crates/oxide-agent-web-ui` to the workspace with Leptos CSR dependencies, Trunk metadata, `index.html`, responsive CSS, route parsing, cookie/CSRF-aware Rust API client over `/api/v1`, auth/register/bootstrap/settings pages, session sidebar, and first task console/events panel. Verified `cargo check -p oxide-agent-web-ui`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo fmt --check`, and the no-TypeScript grep guard. `trunk build` remains pending because `command -v trunk` found no installed binary. Next checkpoint: add frontend SSE/progress behavior, safe Markdown rendering, and backend static asset serving.
+- 2026-05-28 09:50 +03: Added the first safe Markdown rendering slice. `MarkdownContent` is now the only raw-HTML insertion boundary in the frontend, backed by `comrak` Markdown parsing and `ammonia` sanitization; task user input and final answers render through it. Tests cover script/event-attribute removal, unsafe protocol removal, table/code preservation, and image stripping. Verified `cargo test -p oxide-agent-web-ui markdown`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo fmt --check`, `cargo tree -p oxide-agent-web-ui -e features | rg "comrak|syntect|onig|clap|ammonia"`, and `git diff --check`. Next checkpoint: frontend SSE/progress reconnect behavior or backend static asset serving.
 
 ## Risks and Blockers
 
 - This is a broad PRD spanning backend, storage, auth, frontend, and security. Mitigation: implement checkpoint by checkpoint and update this doc only with evidence-backed progress.
-- New frontend dependencies may require network access to fetch crates when the Leptos checkpoint starts. Mitigation: delay frontend dependency work until backend contracts/auth/persistence are stable and request escalation only if cargo download fails under sandbox.
+- Frontend dependency downloads require network and registry writes outside the sandbox. Mitigation: Leptos dependencies were added/fetched with explicit escalation; future frontend crates should still be added with `cargo add` and validated on `wasm32-unknown-unknown`.
+- `trunk` is not installed in the current environment, so the Trunk build evidence is still missing. Mitigation: keep `cargo check`/wasm clippy green now and run or install Trunk during the packaging/static-serving checkpoint.
 - R2-backed integration tests may need fakes or careful abstraction to stay hermetic. Mitigation: define `WebUiStore` and keep R2 tests focused on key/serialization behavior unless real credentials are explicitly configured.
-- Backend/socket coverage is now green for the current checkpoint, including the full `profile-lite,socket_e2e` suite and explicit delegation/compression feature checks. The largest remaining PRD gap is frontend implementation: Leptos shell, browser task console, Markdown boundary, static serving, and manual QA are still pending.
+- Backend/socket coverage is now green for the current checkpoint, including the full `profile-lite,socket_e2e` suite and explicit delegation/compression feature checks. The largest remaining PRD gaps are frontend SSE/progress behavior, backend static serving/security headers, Trunk build evidence, complete Markdown UX details, and manual QA.
 
 ## Final Verification
 
