@@ -54,30 +54,37 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
             }
             match client.list_tasks(&session_id).await {
                 Ok(response) => {
-                    let latest_running = response
-                        .tasks
-                        .iter()
-                        .rev()
-                        .find(|task| task.status.is_active())
-                        .map(|task| task.task_id.clone());
+                    let latest = latest_task(response.tasks.clone());
                     set_tasks.set(response.tasks);
-                    if let Some(task_id) = latest_running {
+                    if let Some(task) = latest {
+                        let task_id = task.task_id.clone();
                         if let Ok(response) = client.get_task(&session_id, &task_id).await {
                             set_progress.set(response.task.last_progress.clone());
-                            set_active_task.set(Some(response.task));
-                            start_task_stream(
-                                client,
-                                session_id,
-                                task_id,
-                                StreamUiSignals {
-                                    set_events,
-                                    set_progress,
-                                    set_sse_state,
-                                    set_error,
-                                    streaming_task_id,
-                                    set_streaming_task_id,
-                                },
-                            );
+                            if response.task.status.is_active() {
+                                set_active_task.set(Some(response.task));
+                                start_task_stream(
+                                    client.clone(),
+                                    session_id.clone(),
+                                    task_id.clone(),
+                                    StreamUiSignals {
+                                        set_events,
+                                        set_session_title,
+                                        set_progress,
+                                        set_active_task,
+                                        set_tasks,
+                                        set_sse_state,
+                                        set_error,
+                                        streaming_task_id,
+                                        set_streaming_task_id,
+                                    },
+                                );
+                            } else {
+                                set_active_task.set(None);
+                            }
+                        }
+                        match client.task_events(&session_id, &task_id, 0).await {
+                            Ok(response) => set_events.set(response.events),
+                            Err(error) => set_error.set(Some(error.to_string())),
                         }
                     }
                 }
@@ -138,7 +145,10 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                         task.task_id.clone(),
                         StreamUiSignals {
                             set_events,
+                            set_session_title,
                             set_progress,
+                            set_active_task,
+                            set_tasks,
                             set_sse_state,
                             set_error,
                             streaming_task_id,
@@ -335,7 +345,10 @@ fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {
 #[derive(Clone, Copy)]
 struct StreamUiSignals {
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
+    set_session_title: WriteSignal<String>,
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
+    set_active_task: WriteSignal<Option<TaskDetail>>,
+    set_tasks: WriteSignal<Vec<TaskSummary>>,
     set_sse_state: WriteSignal<SseConnectionState>,
     set_error: WriteSignal<Option<String>>,
     streaming_task_id: ReadSignal<Option<String>>,
@@ -356,8 +369,11 @@ fn start_task_stream(
         client,
         session_id,
         task_id,
+        set_session_title: signals.set_session_title,
         set_events: signals.set_events,
         set_progress: signals.set_progress,
+        set_active_task: signals.set_active_task,
+        set_tasks: signals.set_tasks,
         set_state: signals.set_sse_state,
         set_error: signals.set_error,
     });

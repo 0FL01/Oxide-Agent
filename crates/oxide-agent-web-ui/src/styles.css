@@ -165,6 +165,24 @@ label {
   margin: 0;
 }
 
+.session-header > div {
+  min-width: 0;
+}
+
+.session-header h1 {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+.session-header p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
 .session-list {
   display: grid;
   gap: 8px;
@@ -445,7 +463,12 @@ pre {
 .rename-form {
   display: flex;
   gap: 8px;
-  min-width: min(420px, 100%);
+  flex: 0 1 420px;
+  min-width: 0;
+}
+
+.rename-form input {
+  min-width: 0;
 }
 
 @media (max-width: 900px) {
@@ -458,6 +481,21 @@ pre {
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .session-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .session-header h1 {
+    font-size: 1.35rem;
+    line-height: 1.2;
+  }
+
+  .rename-form {
+    flex-basis: auto;
+    width: 100%;
   }
 
   .event-row {

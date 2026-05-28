@@ -1819,7 +1819,17 @@ fn task_detail_from_record(record: WebTaskRecord) -> TaskDetail {
 }
 
 fn markdown_preview(markdown: &str) -> String {
-    let normalized = markdown.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut in_fenced_code = false;
+    let normalized = markdown
+        .lines()
+        .filter_map(|line| markdown_preview_line(line, &mut in_fenced_code))
+        .flat_map(|line| {
+            line.split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut preview = normalized
         .chars()
         .take(TASK_PREVIEW_CHARS)
@@ -1831,6 +1841,64 @@ fn markdown_preview(markdown: &str) -> String {
         WEB_SESSION_DEFAULT_TITLE.to_string()
     } else {
         preview
+    }
+}
+
+fn markdown_preview_line(line: &str, in_fenced_code: &mut bool) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        *in_fenced_code = !*in_fenced_code;
+        return None;
+    }
+    if *in_fenced_code {
+        return None;
+    }
+
+    let stripped = strip_markdown_prefix(trimmed).trim();
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(
+            stripped
+                .trim_matches(|ch| matches!(ch, '*' | '_' | '`'))
+                .to_string(),
+        )
+    }
+}
+
+fn strip_markdown_prefix(mut value: &str) -> &str {
+    loop {
+        let trimmed = value.trim_start();
+        if let Some(stripped) = trimmed.strip_prefix('#') {
+            value = stripped;
+            continue;
+        }
+        if let Some(stripped) = trimmed.strip_prefix('>') {
+            value = stripped;
+            continue;
+        }
+        if let Some(stripped) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "))
+        {
+            value = stripped;
+            continue;
+        }
+        if let Some(stripped) = strip_ordered_list_prefix(trimmed) {
+            value = stripped;
+            continue;
+        }
+        return trimmed;
+    }
+}
+
+fn strip_ordered_list_prefix(value: &str) -> Option<&str> {
+    let (number, rest) = value.split_once(". ")?;
+    if number.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(rest)
+    } else {
+        None
     }
 }
 
@@ -2703,7 +2771,7 @@ async fn add_security_headers(request: Request<Body>, next: Next) -> Response {
     headers.insert(
         CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
         ),
     );
     response
@@ -2861,6 +2929,15 @@ mod tests {
         assert!(!super::web_bootstrap_required(true, 0, true));
         assert!(!super::web_bootstrap_required(false, 1, true));
         assert!(!super::web_bootstrap_required(false, 0, false));
+    }
+
+    #[test]
+    fn markdown_preview_strips_common_markdown_title_markup() {
+        let preview = super::markdown_preview(
+            "# Browser smoke\n\n- item one\n- item two\n\n```rust\nfn main() {}\n```",
+        );
+
+        assert_eq!(preview, "Browser smoke item one item two");
     }
 
     #[test]
@@ -3189,7 +3266,14 @@ mod tests {
             response.headers()["x-frame-options"],
             axum::http::HeaderValue::from_static("DENY")
         );
-        assert!(response.headers().contains_key("content-security-policy"));
+        let csp = response
+            .headers()
+            .get("content-security-policy")
+            .expect("content security policy");
+        assert!(csp
+            .to_str()
+            .expect("valid csp")
+            .contains("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"));
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("browser route body");
