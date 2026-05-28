@@ -220,7 +220,6 @@ fn SessionWorkspace(
         active_task
             .get()
             .map(|task| task.status)
-            .unwrap_or(TaskStatus::Completed)
     };
 
     let is_waiting = move || {
@@ -239,7 +238,9 @@ fn SessionWorkspace(
         <header class="topbar">
             <div class="topbar-left">
                 <div class="session-title">{move || session_title.get()}</div>
-                <StatusBadge status=active_status() />
+                {move || active_status().map(|status| view! {
+                    <StatusBadge status=status />
+                })}
             </div>
             <div class="topnav">
                 <RenameSessionForm session_id=session_id.clone() current_title=session_title.get_untracked() />
