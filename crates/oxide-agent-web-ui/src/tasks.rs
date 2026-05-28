@@ -264,8 +264,11 @@ fn SessionWorkspace(
                                 use wasm_bindgen::JsCast;
                                 let el: web_sys::HtmlElement = target.unchecked_into();
                                 if let Ok(Some(form_el)) = el.closest("form") {
-                                    let form: web_sys::HtmlFormElement = form_el.unchecked_into();
-                                    let _ = form.submit();
+                                    // Click the submit button to trigger Leptos on:submit handler
+                                    if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
+                                        let btn: web_sys::HtmlElement = btn.unchecked_into();
+                                        btn.click();
+                                    }
                                 }
                             }
                         }
