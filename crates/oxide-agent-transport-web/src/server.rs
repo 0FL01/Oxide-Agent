@@ -30,7 +30,10 @@ use axum::{
     body::Body,
     extract::{Path, Query, State},
     http::{
-        header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, SET_COOKIE},
+        header::{
+            CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, HOST, ORIGIN, REFERER,
+            SET_COOKIE,
+        },
         HeaderMap, HeaderValue, Request, StatusCode, Uri,
     },
     middleware::{self, Next},
@@ -587,6 +590,7 @@ async fn api_logout(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<(HeaderMap, Json<OkResponse>), (StatusCode, Json<ErrorEnvelope>)> {
+    validate_csrf_request_origin(&headers)?;
     let raw_session_token = auth_cookie_value(&headers).map_err(auth_error_response)?;
     let csrf_token = csrf_header_value(&headers).map_err(auth_error_response)?;
     logout_session(
@@ -608,6 +612,7 @@ async fn api_change_password(
     headers: HeaderMap,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<Json<OkResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    validate_csrf_request_origin(&headers)?;
     let raw_session_token = auth_cookie_value(&headers).map_err(auth_error_response)?;
     let csrf_token = csrf_header_value(&headers).map_err(auth_error_response)?;
     change_password(
@@ -1453,6 +1458,87 @@ async fn clear_auth_rate_limit(state: &AppState, key: &str) {
     state.auth_rate_limiter.lock().await.clear(key);
 }
 
+fn validate_csrf_request_origin(
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(supplied_origin) = csrf_supplied_origin(headers) else {
+        return Ok(());
+    };
+    let Some(expected_origin) = csrf_expected_origin(headers) else {
+        return Err(csrf_origin_error());
+    };
+    if supplied_origin.eq_ignore_ascii_case(&expected_origin) {
+        return Ok(());
+    }
+    Err(csrf_origin_error())
+}
+
+fn csrf_supplied_origin(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(trim_trailing_slash)
+        .or_else(|| {
+            headers
+                .get(REFERER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(origin_from_url)
+        })
+}
+
+fn csrf_expected_origin(headers: &HeaderMap) -> Option<String> {
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(HOST))?
+        .to_str()
+        .ok()?
+        .split(',')
+        .next()?
+        .trim();
+    if host.is_empty() {
+        return None;
+    }
+    let proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if is_production_run_mode() {
+                "https"
+            } else {
+                "http"
+            }
+        });
+    Some(format!("{proto}://{host}"))
+}
+
+fn origin_from_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    let scheme_end = value.find("://")?;
+    let after_scheme = scheme_end + 3;
+    let host_end = value[after_scheme..]
+        .find('/')
+        .map_or(value.len(), |index| after_scheme + index);
+    (host_end > after_scheme).then(|| trim_trailing_slash(&value[..host_end]))
+}
+
+fn trim_trailing_slash(value: &str) -> String {
+    value.trim_end_matches('/').to_string()
+}
+
+fn csrf_origin_error() -> (StatusCode, Json<ErrorEnvelope>) {
+    api_error(
+        StatusCode::FORBIDDEN,
+        ErrorCode::CsrfInvalid,
+        "Invalid request origin.",
+        false,
+    )
+}
+
 async fn authenticated_user(
     state: &AppState,
     headers: &HeaderMap,
@@ -1472,6 +1558,7 @@ async fn authenticated_user_with_csrf(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<CurrentUser, (StatusCode, Json<ErrorEnvelope>)> {
+    validate_csrf_request_origin(headers)?;
     let raw_session_token = auth_cookie_value(headers).map_err(auth_error_response)?;
     let csrf_token = csrf_header_value(headers).map_err(auth_error_response)?;
     let (user, auth_session) = current_user_for_token(
@@ -2779,6 +2866,39 @@ mod tests {
     }
 
     #[test]
+    fn csrf_origin_check_accepts_same_origin_and_rejects_cross_origin() {
+        let mut same_origin = HeaderMap::new();
+        same_origin.insert("x-forwarded-proto", "https".parse().expect("proto"));
+        same_origin.insert("x-forwarded-host", "app.example".parse().expect("host"));
+        same_origin.insert(
+            axum::http::header::ORIGIN,
+            "https://app.example".parse().expect("origin"),
+        );
+        assert!(super::validate_csrf_request_origin(&same_origin).is_ok());
+
+        let mut same_referer = HeaderMap::new();
+        same_referer.insert("x-forwarded-proto", "https".parse().expect("proto"));
+        same_referer.insert("x-forwarded-host", "app.example".parse().expect("host"));
+        same_referer.insert(
+            axum::http::header::REFERER,
+            "https://app.example/app/session/1"
+                .parse()
+                .expect("referer"),
+        );
+        assert!(super::validate_csrf_request_origin(&same_referer).is_ok());
+
+        let mut cross_origin = same_origin;
+        cross_origin.insert(
+            axum::http::header::ORIGIN,
+            "https://evil.example".parse().expect("origin"),
+        );
+        let (status, axum::Json(error)) =
+            super::validate_csrf_request_origin(&cross_origin).expect_err("cross origin");
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(error.error.code, ErrorCode::CsrfInvalid);
+    }
+
+    #[test]
     fn auth_rate_limiter_uses_fixed_window() {
         let mut limiter = super::AuthRateLimiter::new();
         let now = Instant::now();
@@ -2891,6 +3011,46 @@ mod tests {
         .expect_err("disabled registration should become rate limited");
         assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.error.code, ErrorCode::RateLimited);
+    }
+
+    #[tokio::test]
+    async fn mutating_session_api_rejects_cross_origin_csrf_request() {
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+        let mut headers = auth_headers(&token, Some(&auth_session.csrf_token));
+        headers.insert("x-forwarded-proto", "https".parse().expect("proto"));
+        headers.insert("x-forwarded-host", "app.example".parse().expect("host"));
+        headers.insert(
+            axum::http::header::ORIGIN,
+            "https://evil.example".parse().expect("origin"),
+        );
+
+        let (status, axum::Json(error)) = api_create_session(axum::extract::State(state), headers)
+            .await
+            .expect_err("cross-origin mutating request should fail");
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(error.error.code, ErrorCode::CsrfInvalid);
     }
 
     #[test]
