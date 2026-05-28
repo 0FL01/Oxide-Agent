@@ -17,6 +17,8 @@ pub fn render_markdown(markdown: &str) -> String {
 pub fn sanitize_html(html: &str) -> String {
     let allowed_url_schemes = HashSet::from(["http", "https", "mailto"]);
     Builder::default()
+        .add_tags(["input"])
+        .add_tag_attributes("input", ["checked", "disabled", "type"])
         .url_schemes(allowed_url_schemes)
         .url_relative(UrlRelative::PassThrough)
         .rm_tags(&["img"])
@@ -31,7 +33,7 @@ fn markdown_options() -> Options<'static> {
     options.extension.tasklist = true;
     options.extension.autolink = true;
     options.extension.footnotes = false;
-    options.render.r#unsafe = true;
+    options.render.r#unsafe = false;
     options
 }
 
@@ -100,9 +102,19 @@ mod tests {
         );
 
         assert!(html.contains("<table>"));
+        assert!(html.contains("type=\"checkbox\""));
+        assert!(html.contains("checked=\"\""));
         assert!(html.contains("<code>"));
         assert!(html.contains("fn main"));
         assert!(html.contains("data-copy-code=\"true\""));
+    }
+
+    #[test]
+    fn blocks_raw_html_from_markdown() {
+        let html = render_markdown("<input type=\"text\" autofocus><script>alert(1)</script>");
+
+        assert!(!html.contains("<input"));
+        assert!(!html.contains("<script"));
     }
 
     #[test]
