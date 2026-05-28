@@ -54,6 +54,49 @@ services:
         max-size: "1m"
         max-file: "3"
 
+  oxide_web:
+    build:
+      <<: *oxide_app_build
+      args:
+        CARGO_FEATURES: oxide-agent-transport-web/profile-full
+        PACKAGES: oxide-agent-transport-web
+        BINARIES: oxide-agent-web-console
+        MCP_BINARIES: ""
+        ENTRYPOINT_BINARY: oxide-agent-web-console
+        RUNTIME_APT_PACKAGES: ""
+        BUILD_WEB_UI: "true"
+    image: oxide-agent-web:latest
+    container_name: oxide_agent_web
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - OXIDE_WEB_ADDR=${OXIDE_WEB_ADDR:-127.0.0.1:3010}
+      - OXIDE_WEB_STATIC_DIR=/app/web
+      - OXIDE_WEB_REQUIRE_STATIC_ASSETS=true
+      - OXIDE_WEB_ENABLED=true
+      - OXIDE_WEB_ALLOW_IN_MEMORY_STORE=${OXIDE_WEB_ALLOW_IN_MEMORY_STORE:-true}
+      - OXIDE_WEB_REGISTRATION_ENABLED=${OXIDE_WEB_REGISTRATION_ENABLED:-true}
+      - OXIDE_WEB_BOOTSTRAP_TOKEN=${OXIDE_WEB_BOOTSTRAP_TOKEN:-}
+      - OXIDE_WEB_COOKIE_SECURE=${OXIDE_WEB_COOKIE_SECURE:-false}
+      - SEARXNG_ENABLED=true
+      - SEARXNG_URL=http://127.0.0.1:8081
+      - TZ=Europe/Moscow
+      - RUST_LOG=oxide_agent_core=info,oxide_agent_transport_web=info,oxide_agent_runtime=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+      - DEBUG_MODE=false
+    volumes:
+      - ./config:/app/config
+    network_mode: host
+    depends_on:
+      searxng:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
   sandboxd:
     build: *oxide_app_build
     image: oxide-agent:latest

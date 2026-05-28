@@ -20,6 +20,7 @@ WORKDIR /app
 ARG CARGO_FEATURES="oxide-agent-telegram-bot/profile-embedded-opencode-local"
 ARG PACKAGES="oxide-agent-telegram-bot"
 ARG BINARIES="oxide-agent-telegram-bot"
+ARG BUILD_WEB_UI="false"
 
 COPY --from=planner /app/recipe.json recipe.json
 RUN if [ -n "${CARGO_FEATURES}" ]; then \
@@ -37,11 +38,18 @@ RUN set -eux; \
     else \
       cargo build --release --no-default-features ${package_args}; \
     fi; \
-    mkdir -p /runtime/bin; \
+    mkdir -p /runtime/bin /runtime/web; \
     for binary in ${BINARIES}; do \
       test -x "/app/target/release/${binary}"; \
       cp "/app/target/release/${binary}" "/runtime/bin/${binary}"; \
-    done
+    done; \
+    if [ "${BUILD_WEB_UI}" = "true" ]; then \
+      rustup target add wasm32-unknown-unknown; \
+      cargo install trunk --version 0.21.14 --locked; \
+      cd /app/crates/oxide-agent-web-ui; \
+      env -u NO_COLOR trunk build --release; \
+      cp -R /app/crates/oxide-agent-web-ui/dist/. /runtime/web/; \
+    fi
 
 FROM debian:trixie-slim AS external-runtime-binaries
 
@@ -103,6 +111,7 @@ RUN groupadd --system --gid 10001 oxide \
 
 WORKDIR /app
 COPY --from=builder /runtime/bin/ /app/
+COPY --from=builder /runtime/web/ /app/web/
 COPY --from=external-runtime-binaries /runtime/bin/ /app/
 RUN chown -R oxide:oxide /app /home/oxide
 
