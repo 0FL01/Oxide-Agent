@@ -27,12 +27,17 @@ use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
 use crate::web_transport::{collect_events, BrowserEventScope};
 use async_stream::stream as async_stream;
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
     http::{
-        header::{COOKIE, SET_COOKIE},
-        HeaderMap, HeaderValue, StatusCode,
+        header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, SET_COOKIE},
+        HeaderMap, HeaderValue, Request, StatusCode, Uri,
     },
-    response::sse::{Event, Sse},
+    middleware::{self, Next},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Response,
+    },
     routing::{delete, get, patch, post},
     Json, Router,
 };
@@ -64,10 +69,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap as StdHashMap;
 use std::convert::Infallible;
 use std::fmt;
+use std::path::{Component, Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex as AsyncMutex, RwLock};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
@@ -95,6 +101,7 @@ pub enum WebStoreKind {
 pub enum WebStartupError {
     InMemoryStoreNotAllowed,
     StoreUnavailable(String),
+    StaticAssetsUnavailable(String),
 }
 
 impl fmt::Display for WebStartupError {
@@ -107,6 +114,9 @@ impl fmt::Display for WebStartupError {
             Self::StoreUnavailable(message) => {
                 write!(f, "web UI store is unavailable during startup: {message}")
             }
+            Self::StaticAssetsUnavailable(message) => {
+                write!(f, "web UI static assets are unavailable during startup: {message}")
+            }
         }
     }
 }
@@ -118,6 +128,7 @@ pub struct AppState {
     pub session_manager: Arc<WebSessionManager>,
     pub web_store: Arc<dyn WebUiStore>,
     pub web_store_kind: WebStoreKind,
+    pub web_assets: WebAssetsConfig,
     pub task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     pub task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     /// Tracks the JoinHandle for each running task so it can be aborted on completion.
@@ -153,6 +164,7 @@ impl AppState {
             session_manager,
             web_store,
             web_store_kind,
+            web_assets: WebAssetsConfig::from_env(),
             task_progress: Arc::new(RwLock::new(StdHashMap::new())),
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
@@ -177,12 +189,13 @@ impl AppState {
     }
 
     pub fn validate_web_store_for_startup(&self) -> Result<(), WebStartupError> {
-        if self.web_store_kind != WebStoreKind::InMemory || web_in_memory_store_allowed() {
-            return Ok(());
-        }
-        if durable_web_store_required() {
+        if self.web_store_kind == WebStoreKind::InMemory
+            && !web_in_memory_store_allowed()
+            && durable_web_store_required()
+        {
             return Err(WebStartupError::InMemoryStoreNotAllowed);
         }
+        self.web_assets.validate_for_startup()?;
         Ok(())
     }
 
@@ -205,6 +218,65 @@ impl AppState {
     #[must_use]
     pub fn web_store(&self) -> Arc<dyn WebUiStore> {
         self.web_store.clone()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebAssetsConfig {
+    pub dir: Option<PathBuf>,
+    pub required: bool,
+}
+
+impl WebAssetsConfig {
+    #[must_use]
+    pub fn from_env() -> Self {
+        let explicit_dir = std::env::var("OXIDE_WEB_STATIC_DIR")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let default_dir = PathBuf::from("crates/oxide-agent-web-ui/dist");
+        let dir = explicit_dir.or_else(|| default_dir.exists().then_some(default_dir));
+        Self {
+            dir,
+            required: web_static_assets_required(),
+        }
+    }
+
+    #[must_use]
+    pub fn disabled_for_tests() -> Self {
+        Self {
+            dir: None,
+            required: false,
+        }
+    }
+
+    #[must_use]
+    pub fn required_dir_for_tests(dir: PathBuf) -> Self {
+        Self {
+            dir: Some(dir),
+            required: true,
+        }
+    }
+
+    fn validate_for_startup(&self) -> Result<(), WebStartupError> {
+        if !self.required && self.dir.is_none() {
+            return Ok(());
+        }
+        let Some(dir) = self.dir.as_deref() else {
+            return Err(WebStartupError::StaticAssetsUnavailable(
+                "OXIDE_WEB_STATIC_DIR is not configured and no default dist directory exists"
+                    .to_string(),
+            ));
+        };
+        let index = dir.join("index.html");
+        if !index.is_file() {
+            return Err(WebStartupError::StaticAssetsUnavailable(format!(
+                "missing frontend index file at {}",
+                index.display()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -1567,6 +1639,10 @@ fn durable_web_store_required() -> bool {
         || web_bool_env("OXIDE_WEB_REQUIRE_DURABLE_STORAGE")
 }
 
+fn web_static_assets_required() -> bool {
+    is_production_run_mode() || web_bool_env("OXIDE_WEB_REQUIRE_STATIC_ASSETS")
+}
+
 fn web_in_memory_store_allowed() -> bool {
     web_bool_env("OXIDE_WEB_ALLOW_IN_MEMORY_STORE")
 }
@@ -2302,7 +2378,7 @@ async fn derive_session_id(
 // ---------------------------------------------------------------------------
 
 pub fn build_router(state: AppState) -> Router {
-    let cors = CorsLayer::permissive();
+    let cors = web_cors_layer();
 
     Router::new()
         .route("/health", get(health))
@@ -2348,9 +2424,124 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/sessions/:session_id/tasks/:task_id/cancel",
             post(api_cancel_task),
         )
+        .fallback(static_assets_handler)
+        .layer(middleware::from_fn(add_security_headers))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
+}
+
+fn web_cors_layer() -> CorsLayer {
+    if is_production_run_mode() {
+        CorsLayer::new()
+    } else {
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    }
+}
+
+async fn add_security_headers(request: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        "referrer-policy",
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+        ),
+    );
+    response
+}
+
+async fn static_assets_handler(State(state): State<AppState>, uri: Uri) -> Response {
+    let path = uri.path();
+    if path.starts_with("/api/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let Some(assets_dir) = state.web_assets.dir.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    match static_asset_path(assets_dir, path) {
+        Some(asset_path) if asset_path.is_file() => serve_static_file(asset_path).await,
+        Some(_) if static_path_is_browser_route(path) => {
+            serve_static_file(assets_dir.join("index.html")).await
+        }
+        Some(_) => StatusCode::NOT_FOUND.into_response(),
+        None => StatusCode::BAD_REQUEST.into_response(),
+    }
+}
+
+async fn serve_static_file(path: PathBuf) -> Response {
+    let Ok(bytes) = tokio::fs::read(&path).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = static_content_type(&path);
+    let cache_control = if path.file_name().and_then(|name| name.to_str()) == Some("index.html") {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    };
+
+    (
+        [
+            (CONTENT_TYPE, HeaderValue::from_static(content_type)),
+            (CACHE_CONTROL, HeaderValue::from_static(cache_control)),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+fn static_asset_path(assets_dir: &FsPath, uri_path: &str) -> Option<PathBuf> {
+    let relative_path = uri_path.trim_start_matches('/');
+    if relative_path.is_empty() {
+        return Some(assets_dir.join("index.html"));
+    }
+    let mut path = PathBuf::new();
+    for component in FsPath::new(relative_path).components() {
+        match component {
+            Component::Normal(part) => path.push(part),
+            _ => return None,
+        }
+    }
+    Some(assets_dir.join(path))
+}
+
+fn static_path_is_browser_route(path: &str) -> bool {
+    path == "/"
+        || path == "/app"
+        || path.starts_with("/app/")
+        || path == "/login"
+        || path == "/register"
+        || path == "/bootstrap"
+        || path == "/settings"
+}
+
+fn static_content_type(path: &FsPath) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("json") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("ico") => "image/x-icon",
+        _ => "application/octet-stream",
+    }
 }
 
 pub async fn serve(state: AppState, addr: std::net::SocketAddr) {
@@ -2394,8 +2585,8 @@ mod tests {
     use super::{
         api_cancel_task, api_create_session, api_edit_task_input, api_get_session,
         api_get_task_events, api_get_task_progress, api_list_sessions, auth_cookie_value,
-        csrf_header_value, parse_web_bool, AppState, TaskEventsQuery, WebStartupError,
-        AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
+        csrf_header_value, parse_web_bool, AppState, TaskEventsQuery, WebAssetsConfig,
+        WebStartupError, AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
     };
     #[cfg(feature = "profile-lite")]
     use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
@@ -2467,6 +2658,99 @@ mod tests {
 
         std::env::set_var("OXIDE_WEB_ALLOW_IN_MEMORY_STORE", "true");
         assert!(state.validate_web_store_for_startup().is_ok());
+    }
+
+    #[test]
+    fn static_assets_startup_requires_index_when_configured() {
+        let asset_dir = unique_test_asset_dir("missing-index");
+        std::fs::create_dir_all(&asset_dir).expect("create asset dir");
+        let mut state = test_app_state();
+        state.web_assets = WebAssetsConfig::required_dir_for_tests(asset_dir.clone());
+
+        let error = state
+            .validate_web_store_for_startup()
+            .expect_err("missing index should fail startup");
+        assert!(matches!(error, WebStartupError::StaticAssetsUnavailable(_)));
+
+        std::fs::write(asset_dir.join("index.html"), "<html>ok</html>").expect("write index");
+        assert!(state.validate_web_store_for_startup().is_ok());
+        let _ = std::fs::remove_dir_all(asset_dir);
+    }
+
+    #[tokio::test]
+    async fn router_serves_frontend_assets_and_security_headers() {
+        use tower::Service as _;
+
+        let asset_dir = unique_test_asset_dir("static-serving");
+        std::fs::create_dir_all(&asset_dir).expect("create asset dir");
+        std::fs::write(asset_dir.join("index.html"), "<main id=\"app\"></main>")
+            .expect("write index");
+        std::fs::write(asset_dir.join("oxide.js"), "console.log('oxide')").expect("write js");
+        std::fs::write(asset_dir.join("oxide.wasm"), [0_u8, 97, 115, 109]).expect("write wasm");
+
+        let mut state = test_app_state();
+        state.web_assets = WebAssetsConfig {
+            dir: Some(asset_dir.clone()),
+            required: false,
+        };
+
+        let mut app = super::build_router(state.clone());
+        let response = app
+            .call(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::GET)
+                    .uri("/app/session/session-1")
+                    .body(axum::body::Body::empty())
+                    .expect("browser route request"),
+            )
+            .await
+            .expect("browser route response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers()["x-content-type-options"],
+            axum::http::HeaderValue::from_static("nosniff")
+        );
+        assert_eq!(
+            response.headers()["x-frame-options"],
+            axum::http::HeaderValue::from_static("DENY")
+        );
+        assert!(response.headers().contains_key("content-security-policy"));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("browser route body");
+        assert!(String::from_utf8_lossy(&body).contains("app"));
+
+        let mut app = super::build_router(state);
+        let response = app
+            .call(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::GET)
+                    .uri("/oxide.wasm")
+                    .body(axum::body::Body::empty())
+                    .expect("wasm request"),
+            )
+            .await
+            .expect("wasm response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            axum::http::HeaderValue::from_static("application/wasm")
+        );
+
+        let mut app = super::build_router(test_app_state());
+        let response = app
+            .call(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::GET)
+                    .uri("/api/v1/does-not-exist")
+                    .body(axum::body::Body::empty())
+                    .expect("missing api request"),
+            )
+            .await
+            .expect("missing api response");
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_dir_all(asset_dir);
     }
 
     #[cfg(feature = "storage-s3-r2")]
@@ -3628,6 +3912,10 @@ mod tests {
         let session_manager =
             WebSessionManager::new(SessionRegistry::new(), Arc::new(llm), settings);
         AppState::new(Arc::new(session_manager))
+    }
+
+    fn unique_test_asset_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("oxide-web-assets-{label}-{}", uuid::Uuid::new_v4()))
     }
 
     fn auth_headers(raw_token: &str, csrf_token: Option<&str>) -> HeaderMap {
