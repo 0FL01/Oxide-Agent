@@ -1,7 +1,7 @@
 use crate::auth::{AuthContext, AuthState, BootstrapPage, LoginPage, RegisterPage, SettingsPage};
 use crate::components::AppLayout;
 use crate::routes::AppRoute;
-use crate::utils::spawn_ui;
+use crate::utils::{navigate, spawn_ui};
 use leptos::prelude::*;
 
 #[component]
@@ -37,15 +37,39 @@ pub fn App() -> impl IntoView {
         });
     });
 
+    Effect::new(move |_| {
+        let current_route = route.get();
+        let state = auth.get();
+        if route_requires_auth(&current_route) && !state.loading && state.user.is_none() {
+            navigate("/login");
+        }
+    });
+
     view! {
         <div class="root">
             {move || match route.get() {
                 AppRoute::Login => view! { <LoginPage /> }.into_any(),
                 AppRoute::Register => view! { <RegisterPage /> }.into_any(),
                 AppRoute::Bootstrap => view! { <BootstrapPage /> }.into_any(),
-                AppRoute::Settings => view! { <SettingsPage /> }.into_any(),
+                AppRoute::Settings => {
+                    let state = auth.get();
+                    if state.loading {
+                        loading_view()
+                    } else if state.user.is_none() {
+                        redirecting_view()
+                    } else {
+                        view! { <SettingsPage /> }.into_any()
+                    }
+                }
                 AppRoute::App | AppRoute::Session(_) => {
-                    view! { <AppLayout route=route.get() /> }.into_any()
+                    let state = auth.get();
+                    if state.loading {
+                        loading_view()
+                    } else if state.user.is_none() {
+                        redirecting_view()
+                    } else {
+                        view! { <AppLayout route=route.get() /> }.into_any()
+                    }
                 }
                 AppRoute::NotFound => view! {
                     <section class="not-found">
@@ -56,4 +80,29 @@ pub fn App() -> impl IntoView {
             }}
         </div>
     }
+}
+
+fn route_requires_auth(route: &AppRoute) -> bool {
+    matches!(
+        route,
+        AppRoute::App | AppRoute::Session(_) | AppRoute::Settings
+    )
+}
+
+fn loading_view() -> AnyView {
+    view! {
+        <section class="auth-page">
+            <div class="loading">"Loading"</div>
+        </section>
+    }
+    .into_any()
+}
+
+fn redirecting_view() -> AnyView {
+    view! {
+        <section class="auth-page">
+            <div class="loading">"Redirecting"</div>
+        </section>
+    }
+    .into_any()
 }

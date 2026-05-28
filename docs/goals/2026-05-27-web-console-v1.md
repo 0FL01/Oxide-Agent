@@ -5,7 +5,7 @@ Status: active
 Codex goal: Study `docs/prd/PRD_web.md`, create repo-local goal documentation from it, and iteratively implement the web PRD in Oxide-Agent with validation checkpoints.
 Source spec: `docs/prd/PRD_web.md`
 Goal doc owner: Codex
-Last updated: 2026-05-28 10:51 +03
+Last updated: 2026-05-28 10:55 +03
 
 ## Objective
 
@@ -163,7 +163,7 @@ Out of scope:
   - Acceptance: Authenticated user can navigate sessions/tasks and logout/change password from UI; frontend code is Rust.
   - Evidence required: frontend build, component/state tests where practical, manual QA checklist.
   - Status: in_progress
-  - Evidence collected: Added `crates/oxide-agent-web-ui` with Leptos CSR app entrypoint, route parsing for `/login`, `/register`, `/bootstrap`, `/app`, `/app/session/:session_id`, `/settings`, cookie/CSRF-aware Rust API client over `/api/v1`, login/register/bootstrap forms, settings/change-password/logout page, topbar, session sidebar, responsive workspace layout, loading/empty/error states, and narrow viewport CSS. `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, and `env -u NO_COLOR trunk build` pass. Browser manual QA remains pending.
+  - Evidence collected: Added `crates/oxide-agent-web-ui` with Leptos CSR app entrypoint, route parsing for `/login`, `/register`, `/bootstrap`, `/app`, `/app/session/:session_id`, `/settings`, cookie/CSRF-aware Rust API client over `/api/v1`, login/register/bootstrap forms, settings/change-password/logout page, topbar, session sidebar, responsive workspace layout, loading/empty/error states, and narrow viewport CSS. Protected app/settings routes now wait for the `/api/v1/me` auth check before rendering the shell and redirect unauthenticated users to `/login`, avoiding unauthenticated session/task API calls from the UI. `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, and `env -u NO_COLOR trunk build` pass. Browser manual QA remains pending.
 
 - G16: Task console UI
   - Source: PRD sections 11.8-11.13, 12.3, 20.
@@ -222,7 +222,7 @@ Out of scope:
   - Acceptance: UI has explicit loading/empty/error/session-busy/SSE-reconnect states and remains usable on narrow viewport.
   - Evidence required: manual QA checklist and screenshots if Playwright/browser tooling is used.
   - Status: in_progress
-  - Evidence collected: First frontend slice includes explicit auth/session/task loading, empty, and error states plus responsive CSS for narrow viewports. SSE connected/disconnected/reconnecting/terminal-closed state is now visible in the task side panel, with progress snapshot display. Composer states now distinguish session-busy queued/running tasks from resumable `waiting_for_user_input` tasks. Browser screenshot/manual QA evidence remains pending.
+  - Evidence collected: First frontend slice includes explicit auth/session/task loading, empty, and error states plus responsive CSS for narrow viewports. Protected routes now show loading/redirect states around the initial auth check instead of flashing the app shell to unauthenticated users. SSE connected/disconnected/reconnecting/terminal-closed state is now visible in the task side panel, with progress snapshot display. Composer states now distinguish session-busy queued/running tasks from resumable `waiting_for_user_input` tasks. Browser screenshot/manual QA evidence remains pending.
 
 - V1: Formatting and lint validation
   - Source: `AGENTS.md` development practice.
@@ -243,7 +243,7 @@ Out of scope:
   - Requirement: Build Rust/WASM frontend and run available component/contract/markdown tests.
   - Evidence required: Trunk/frontend build command and test outputs.
   - Status: verified
-  - Evidence collected: `cargo check -p oxide-agent-web-ui`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui markdown`, and `env -u NO_COLOR trunk build` pass for the Leptos CSR shell, Markdown boundary, frontend SSE/progress reconnect wiring, edit-last-input UI, session-busy composer polish, Markdown code-copy/task-list handling, and generated WASM bundle. Trunk 0.21.14 was installed with `cargo install trunk`; the build required unsetting `NO_COLOR` because the local environment provides `NO_COLOR=1`, which Trunk 0.21.14 rejects as a boolean value.
+  - Evidence collected: `cargo check -p oxide-agent-web-ui`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui markdown`, and `env -u NO_COLOR trunk build` pass for the Leptos CSR shell, protected-route auth guard, Markdown boundary, frontend SSE/progress reconnect wiring, edit-last-input UI, session-busy composer polish, Markdown code-copy/task-list handling, and generated WASM bundle. Trunk 0.21.14 was installed with `cargo install trunk`; the build required unsetting `NO_COLOR` because the local environment provides `NO_COLOR=1`, which Trunk 0.21.14 rejects as a boolean value.
 
 - V4: Runtime/manual QA validation
   - Source: PRD sections 17.9, 18.
@@ -390,6 +390,7 @@ Out of scope:
 - 2026-05-28 10:42 +03: Finalized the Markdown image policy for V1: block all Markdown images and remove image source URLs from rendered HTML. This keeps the frontend security boundary simple and avoids image proxy/same-origin fetch semantics in V1. Verified `cargo test -p oxide-agent-web-ui markdown`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo fmt --check`, and `env -u NO_COLOR trunk build`. Next checkpoint: browser/manual QA or event security audit.
 - 2026-05-28 10:46 +03: Completed the event security audit slice. Tool event previews now pass through a redaction layer before truncation: JSON payloads redact sensitive keys recursively and non-JSON payloads containing sensitive markers are replaced by a redacted placeholder. Added focused test coverage proving password/api_key/tool command/token output values do not appear in persisted browser events while redacted flags are set. Verified `cargo fmt`, `cargo fmt --check`, `cargo test -p oxide-agent-transport-web --no-default-features web_transport`, `cargo test -p oxide-agent-transport-web --no-default-features server::tests`, `cargo check -p oxide-agent-transport-web --no-default-features`, `cargo clippy -p oxide-agent-web-contracts -p oxide-agent-transport-web --no-default-features`, `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-lite`, and the legacy route/CORS grep guard. Next checkpoint: browser/manual QA or final audit of pending Q/N items.
 - 2026-05-28 10:51 +03: Completed the quality/non-goal audit checkpoint. Verified the `/api/v1` namespace end-to-end through backend route review, frontend API/SSE usage, and the legacy-route grep guard; verified no TypeScript app stack/package tooling; verified no SQL/Redis/migration/distributed infrastructure was added; verified core/runtime remain independent from web transport/UI crates; verified there is no browser approve/reject UI; and verified the existing web transport was evolved instead of replaced. Evidence came from manifest review, `rg` dependency/route/UI scans, and `cargo tree -p oxide-agent-web-ui --target wasm32-unknown-unknown`. Next checkpoint: browser/manual QA, or Q4 durable JSON compatibility/corrupt-record hardening if staying in hermetic tests.
+- 2026-05-28 10:55 +03: Continued frontend implementation after the docs checkpoint commit. Added a protected-route auth guard in the Leptos app so `/app`, `/app/session/:session_id`, and `/settings` wait for `/api/v1/me`, show loading/redirect state, and redirect unauthenticated users to `/login` instead of rendering the app shell and firing protected API calls. Verified `cargo fmt --check`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui markdown`, and `env -u NO_COLOR trunk build`. Next checkpoint: browser/manual QA or Q4 durable JSON compatibility/corrupt-record hardening.
 
 ## Risks and Blockers
 
