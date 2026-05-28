@@ -87,6 +87,7 @@ impl ApiClient {
         .await
     }
 
+    #[allow(dead_code)]
     pub async fn update_session(
         &self,
         session_id: &str,

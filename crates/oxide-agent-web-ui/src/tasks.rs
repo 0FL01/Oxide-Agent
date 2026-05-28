@@ -7,12 +7,14 @@ use crate::utils::{friendly_time, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     CreateTaskRequest, EditTaskInputRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
-    ResumeTaskRequest, SseConnectionState, TaskDetail, TaskStatus, TaskSummary,
+    ResumeTaskRequest, SseConnectionState, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
 
 #[component]
 pub fn TaskConsole(
     route: AppRoute,
+    events: ReadSignal<Vec<PersistedTaskEvent>>,
+    progress: ReadSignal<Option<ProgressSnapshot>>,
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     set_sse_state: WriteSignal<SseConnectionState>,
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
@@ -21,6 +23,8 @@ pub fn TaskConsole(
         AppRoute::Session(session_id) => view! {
             <SessionWorkspace
                 session_id=session_id
+                events=events
+                progress=progress
                 set_events=set_events
                 set_sse_state=set_sse_state
                 set_progress=set_progress
@@ -39,12 +43,14 @@ pub fn TaskConsole(
 #[component]
 fn SessionWorkspace(
     session_id: String,
+    events: ReadSignal<Vec<PersistedTaskEvent>>,
+    progress: ReadSignal<Option<ProgressSnapshot>>,
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     set_sse_state: WriteSignal<SseConnectionState>,
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
 ) -> impl IntoView {
     let auth = use_auth();
-    let (session_title, set_session_title) = signal("Session".to_string());
+    let (_session_title, set_session_title) = signal("Session".to_string());
     let (tasks, set_tasks) = signal(Vec::<TaskSummary>::new());
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
@@ -53,10 +59,25 @@ fn SessionWorkspace(
     let (_streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
 
+    // Determine which task owns the live activity display (active or most recent)
+    let latest_activity_task_id = move || {
+        active_task.get().map(|task| task.task_id).or_else(|| {
+            tasks
+                .get()
+                .into_iter()
+                .max_by_key(|task| task.updated_at)
+                .map(|task| task.task_id)
+        })
+    };
+
     let session_id_for_load = session_id.clone();
     let load_all = move || {
         set_loading.set(true);
         set_error.set(None);
+        // Clear stale state before loading
+        set_events.set(Vec::new());
+        set_progress.set(None);
+        set_active_task.set(None);
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
@@ -102,6 +123,11 @@ fn SessionWorkspace(
                             Ok(response) => set_events.set(response.events),
                             Err(error) => set_error.set(Some(error.to_string())),
                         }
+                    } else {
+                        // Empty session — clear signals
+                        set_events.set(Vec::new());
+                        set_progress.set(None);
+                        set_active_task.set(None);
                     }
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
@@ -126,6 +152,9 @@ fn SessionWorkspace(
         }
         set_loading.set(true);
         set_error.set(None);
+        // Clear stale activity for the new task
+        set_events.set(Vec::new());
+        set_progress.set(None);
         let session_id = session_id_for_submit.clone();
         spawn_ui(async move {
             let client = auth.client();
@@ -215,12 +244,6 @@ fn SessionWorkspace(
 
     let session_id_for_cards = session_id.clone();
 
-    let active_status = move || {
-        active_task
-            .get()
-            .map(|task| task.status)
-    };
-
     let is_waiting = move || {
         active_task
             .get()
@@ -261,11 +284,16 @@ fn SessionWorkspace(
                                 children=move |task| {
                                     let editable =
                                         latest_editable_task_id.as_ref() == Some(&task.task_id);
+                                    let activity_owner = latest_activity_task_id()
+                                        .as_ref() == Some(&task.task_id);
                                     view! {
                                         <TaskCard
                                             session_id=session_id_for_cards.clone()
                                             task=task
                                             editable=editable
+                                            events=events
+                                            progress=progress
+                                            activity_owner=activity_owner
                                             set_tasks=set_tasks
                                             set_error=set_error
                                         />
@@ -294,7 +322,6 @@ fn SessionWorkspace(
                                 use wasm_bindgen::JsCast;
                                 let el: web_sys::HtmlElement = target.unchecked_into();
                                 if let Ok(Some(form_el)) = el.closest("form") {
-                                    // Click the submit button to trigger Leptos on:submit handler
                                     if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
                                         let btn: web_sys::HtmlElement = btn.unchecked_into();
                                         btn.click();
@@ -405,15 +432,22 @@ fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
     }
 }
 
+// ── Task Card ────────────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
 #[component]
 fn TaskCard(
     session_id: String,
     task: TaskSummary,
     editable: bool,
+    events: ReadSignal<Vec<PersistedTaskEvent>>,
+    progress: ReadSignal<Option<ProgressSnapshot>>,
+    activity_owner: bool,
     set_tasks: WriteSignal<Vec<TaskSummary>>,
     set_error: WriteSignal<Option<String>>,
 ) -> impl IntoView {
     let task_id = task.task_id.clone();
+    let activity_task_id = task_id.clone();
     let (editing, set_editing) = signal(false);
     let (draft, set_draft) = signal(task.input_markdown.clone());
     let (saving, set_saving) = signal(false);
@@ -468,6 +502,15 @@ fn TaskCard(
                     "Edit input"
                 </button>
             })}
+
+            // Inline agent activity: tool calls, results, todos — between user message and final answer
+            <AgentActivity
+                task_id=activity_task_id
+                events=events
+                progress=progress
+                activity_owner=activity_owner
+            />
+
             {task.final_response_markdown.map(|answer| view! {
                 <div class="message assistant-message">
                     <MarkdownContent markdown=answer />
@@ -482,6 +525,217 @@ fn TaskCard(
         </article>
     }
 }
+
+// ── Agent Activity (inline between user message and final answer) ────────
+
+#[component]
+fn AgentActivity(
+    task_id: String,
+    events: ReadSignal<Vec<PersistedTaskEvent>>,
+    progress: ReadSignal<Option<ProgressSnapshot>>,
+    activity_owner: bool,
+) -> impl IntoView {
+    view! {
+        {move || {
+            let task_events = events
+                .get()
+                .into_iter()
+                .filter(|event| event.task_id == task_id)
+                .filter(|event| is_chat_visible_event(&event.kind))
+                .collect::<Vec<_>>();
+
+            let todos = if activity_owner {
+                progress.get().and_then(|p| p.current_todos)
+            } else {
+                None
+            };
+
+            if task_events.is_empty() && todos.is_none() {
+                return ().into_any();
+            }
+
+            view! {
+                <div class="agent-activity">
+                    {todos.map(|value| view! {
+                        <TodosCard todos=value />
+                    })}
+                    {task_events.into_iter().map(|event| {
+                        view! { <AgentEventCard event=event /> }
+                    }).collect::<Vec<_>>()}
+                </div>
+            }.into_any()
+        }}
+    }
+}
+
+// ── Agent Event Card ─────────────────────────────────────────────────────
+
+#[component]
+fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
+    let kind = event.kind.clone();
+    let title = event_title(&event);
+    let body = event_body(&event);
+    let default_open = matches!(kind, TaskEventKind::ToolCall | TaskEventKind::ToolResult);
+
+    view! {
+        <details class="agent-event-card" open=default_open>
+            <summary class="agent-event-summary">
+                <span class="agent-event-kind">{event_kind_label(&kind)}</span>
+                <span class="agent-event-title">{title}</span>
+                {event.truncated.then(|| view! { <span class="agent-event-flag">"truncated"</span> })}
+                {event.redacted.then(|| view! { <span class="agent-event-flag danger">"redacted"</span> })}
+            </summary>
+            {body.map(|text| view! {
+                <div class="agent-event-body">
+                    <pre class="agent-event-pre">{text}</pre>
+                </div>
+            })}
+        </details>
+    }
+}
+
+// ── Todos Card ───────────────────────────────────────────────────────────
+
+#[component]
+fn TodosCard(todos: serde_json::Value) -> impl IntoView {
+    let items = todos
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if items.is_empty() {
+        return ().into_any();
+    }
+
+    view! {
+        <section class="todos-card">
+            <div class="todos-card-title">"Todos"</div>
+            <ol class="todo-list">
+                {items.into_iter().map(|item| {
+                    let description = item
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let status = item
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("pending")
+                        .to_string();
+
+                    view! {
+                        <li class=format!("todo-item {}", status)>
+                            <span class="todo-status">{todo_status_label(&status)}</span>
+                            <span class="todo-description">{description}</span>
+                        </li>
+                    }
+                }).collect::<Vec<_>>()}
+            </ol>
+        </section>
+    }
+    .into_any()
+}
+
+// ── Event helpers ────────────────────────────────────────────────────────
+
+fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
+    matches!(
+        kind,
+        TaskEventKind::Reasoning
+            | TaskEventKind::ToolCall
+            | TaskEventKind::ToolResult
+            | TaskEventKind::TodosUpdated
+            | TaskEventKind::FileToSend
+            | TaskEventKind::Continuation
+            | TaskEventKind::Cancelling
+            | TaskEventKind::Cancelled
+            | TaskEventKind::Error
+            | TaskEventKind::LoopDetected
+            | TaskEventKind::RuntimeCompactionStarted
+            | TaskEventKind::RuntimeCompactionCompleted
+            | TaskEventKind::RuntimeCompactionFailed
+            | TaskEventKind::RuntimeCompactionSkipped
+            | TaskEventKind::RepeatedCompactionWarning
+            | TaskEventKind::HistoryRepairApplied
+            | TaskEventKind::RateLimitRetrying
+            | TaskEventKind::LlmRetrying
+            | TaskEventKind::ProviderFailoverActivated
+            | TaskEventKind::Finished
+    )
+}
+
+fn event_kind_label(kind: &TaskEventKind) -> &'static str {
+    match kind {
+        TaskEventKind::ToolCall => "tool call",
+        TaskEventKind::ToolResult => "tool result",
+        TaskEventKind::TodosUpdated => "todos",
+        TaskEventKind::Reasoning => "reasoning",
+        TaskEventKind::Error => "error",
+        TaskEventKind::Finished => "done",
+        TaskEventKind::Cancelling => "cancelling",
+        TaskEventKind::Cancelled => "cancelled",
+        TaskEventKind::LoopDetected => "loop detected",
+        TaskEventKind::RuntimeCompactionStarted => "compacting",
+        TaskEventKind::RuntimeCompactionCompleted => "compacted",
+        TaskEventKind::RuntimeCompactionFailed => "compaction failed",
+        TaskEventKind::RuntimeCompactionSkipped => "compaction skipped",
+        TaskEventKind::RepeatedCompactionWarning => "repeated compaction",
+        TaskEventKind::HistoryRepairApplied => "history repair",
+        TaskEventKind::RateLimitRetrying => "rate limit retry",
+        TaskEventKind::LlmRetrying => "llm retry",
+        TaskEventKind::ProviderFailoverActivated => "provider failover",
+        TaskEventKind::FileToSend => "file",
+        TaskEventKind::Continuation => "continuation",
+        _ => "event",
+    }
+}
+
+fn event_title(event: &PersistedTaskEvent) -> String {
+    match event.kind {
+        TaskEventKind::ToolCall | TaskEventKind::ToolResult => {
+            payload_str(event, "name").unwrap_or_else(|| event.summary.clone())
+        }
+        _ => event.summary.clone(),
+    }
+}
+
+fn event_body(event: &PersistedTaskEvent) -> Option<String> {
+    if event.redacted {
+        return Some("Payload redacted".to_string());
+    }
+
+    match event.kind {
+        TaskEventKind::ToolCall => {
+            payload_str(event, "command_preview").or_else(|| payload_str(event, "input_preview"))
+        }
+        TaskEventKind::ToolResult => payload_str(event, "output_preview"),
+        TaskEventKind::TodosUpdated => None,
+        TaskEventKind::Reasoning => payload_str(event, "summary"),
+        _ => serde_json::to_string_pretty(&event.payload).ok(),
+    }
+}
+
+fn payload_str(event: &PersistedTaskEvent, key: &str) -> Option<String> {
+    event
+        .payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+}
+
+fn todo_status_label(status: &str) -> &'static str {
+    match status {
+        "completed" => "done",
+        "in_progress" => "doing",
+        "blocked_on_user" => "blocked",
+        "cancelled" => "cancelled",
+        _ => "todo",
+    }
+}
+
+// ── Task input edit form ─────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
 #[component]
@@ -550,6 +804,8 @@ fn TaskInputEditForm(
         </form>
     }
 }
+
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 fn latest_task(tasks: Vec<TaskSummary>) -> Option<TaskSummary> {
     tasks.into_iter().max_by_key(|task| task.updated_at)

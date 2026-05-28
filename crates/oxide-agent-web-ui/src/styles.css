@@ -232,10 +232,10 @@ label {
   font-size: 0.9rem;
 }
 
-/* === APP SHELL (3-column grid) === */
+/* === APP SHELL (2-column grid) === */
 .app-layout {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr var(--metrics-width);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   grid-template-rows: 1fr;
   height: 100vh;
   overflow: hidden;
@@ -828,6 +828,133 @@ label {
   font-size: 12px;
 }
 
+/* === AGENT ACTIVITY (inline in task card) === */
+.agent-activity {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.agent-event-card,
+.todos-card {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+
+.agent-event-card[open] {
+  background: var(--bg-panel-soft);
+}
+
+.agent-event-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  list-style: none;
+}
+
+.agent-event-summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-event-kind {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  min-width: 82px;
+}
+
+.agent-event-title {
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.agent-event-flag {
+  margin-left: auto;
+  color: var(--accent-yellow);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.agent-event-flag.danger {
+  color: var(--accent-red);
+}
+
+.agent-event-body {
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-3);
+}
+
+.agent-event-pre {
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* Todos card */
+.todos-card {
+  padding: var(--space-3);
+}
+
+.todos-card-title {
+  margin-bottom: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.todo-list {
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.todo-item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.todo-status {
+  min-width: 68px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.todo-item.in_progress .todo-status {
+  color: var(--accent-blue);
+}
+
+.todo-item.completed {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.todo-item.blocked_on_user .todo-status {
+  color: var(--accent-yellow);
+}
+
+.todo-item.cancelled .todo-status {
+  color: var(--accent-red);
+}
+
 /* === EDIT INPUT === */
 .inline-edit {
   display: grid;
@@ -1352,7 +1479,7 @@ pre {
 /* === RESPONSIVE === */
 @media (max-width: 1200px) {
   .app-layout {
-    grid-template-columns: 220px 1fr 260px;
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 }
 

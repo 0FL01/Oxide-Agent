@@ -106,8 +106,12 @@ async fn run_task_stream(config: TaskStreamConfig) {
     }
 }
 
+// ── SSE stream subscriptions ─────────────────────────────────────────────
+
 struct TaskEventStreams {
+    snapshot_events: EventSourceSubscription,
     task_events: EventSourceSubscription,
+    progress_events: EventSourceSubscription,
     status_events: EventSourceSubscription,
     keepalive_events: EventSourceSubscription,
 }
@@ -117,11 +121,15 @@ fn subscribe_task_streams(
     config: &TaskStreamConfig,
     attempts: &mut u8,
 ) -> Option<TaskEventStreams> {
+    let snapshot_events = subscribe_one(source, "snapshot", config, attempts)?;
     let task_events = subscribe_one(source, "task_event", config, attempts)?;
+    let progress_events = subscribe_one(source, "progress", config, attempts)?;
     let status_events = subscribe_one(source, "task_status", config, attempts)?;
     let keepalive_events = subscribe_one(source, "keepalive", config, attempts)?;
     Some(TaskEventStreams {
+        snapshot_events,
         task_events,
+        progress_events,
         status_events,
         keepalive_events,
     })
@@ -143,13 +151,33 @@ fn subscribe_one(
     }
 }
 
+// ── Message processing ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct TaskSseSnapshotMessage {
+    last_seq: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskSseProgressMessage {
+    task_id: String,
+    progress: ProgressSnapshot,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskStatusMessage {
+    status: TaskStatus,
+}
+
 async fn process_stream_messages(
     config: &TaskStreamConfig,
     streams: TaskEventStreams,
     last_seq: &mut u64,
 ) -> bool {
     let TaskEventStreams {
+        mut snapshot_events,
         mut task_events,
+        mut progress_events,
         mut status_events,
         mut keepalive_events,
     } = streams;
@@ -164,6 +192,20 @@ async fn process_stream_messages(
                 if handle_task_event_message(config, message, last_seq).await {
                     return true;
                 }
+            }
+            message = progress_events.next().fuse() => {
+                let Some(message) = message else {
+                    config.set_state.set(SseConnectionState::Disconnected);
+                    return false;
+                };
+                handle_progress_message(config, message);
+            }
+            message = snapshot_events.next().fuse() => {
+                let Some(message) = message else {
+                    config.set_state.set(SseConnectionState::Disconnected);
+                    return false;
+                };
+                handle_snapshot_message(config, message, last_seq);
             }
             message = status_events.next().fuse() => {
                 let Some(message) = message else {
@@ -206,8 +248,9 @@ async fn handle_task_event_message(
                 *last_seq = event.seq;
                 append_unique_event(config.set_events, event.clone());
             }
-            let terminal = refresh_progress(config).await;
-            event.kind == TaskEventKind::Finished || terminal
+            // No HTTP refresh here — progress comes via SSE progress channel.
+            // Terminal events still need a detail refresh to pick up final_response_markdown.
+            event.kind == TaskEventKind::Finished
         }
         Err(error) => {
             config.set_error.set(Some(error.to_string()));
@@ -216,9 +259,50 @@ async fn handle_task_event_message(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct TaskStatusMessage {
-    status: TaskStatus,
+fn handle_progress_message(
+    config: &TaskStreamConfig,
+    message: Result<(String, web_sys::MessageEvent), gloo_net::eventsource::EventSourceError>,
+) {
+    let Ok((_event_type, event)) = message else {
+        return;
+    };
+    let Some(payload) = event.data().as_string() else {
+        return;
+    };
+    match serde_json::from_str::<TaskSseProgressMessage>(&payload) {
+        Ok(message) => {
+            if message.task_id == config.task_id {
+                config.set_progress.set(Some(message.progress));
+            }
+        }
+        Err(error) => {
+            config.set_error.set(Some(error.to_string()));
+        }
+    }
+}
+
+fn handle_snapshot_message(
+    config: &TaskStreamConfig,
+    message: Result<(String, web_sys::MessageEvent), gloo_net::eventsource::EventSourceError>,
+    last_seq: &mut u64,
+) {
+    let Ok((_event_type, event)) = message else {
+        return;
+    };
+    let Some(payload) = event.data().as_string() else {
+        return;
+    };
+    match serde_json::from_str::<TaskSseSnapshotMessage>(&payload) {
+        Ok(message) => {
+            // Snapshot gives us the authoritative last_seq for the replay cursor
+            if message.last_seq > *last_seq {
+                *last_seq = message.last_seq;
+            }
+        }
+        Err(error) => {
+            config.set_error.set(Some(error.to_string()));
+        }
+    }
 }
 
 async fn handle_status_message(
@@ -251,6 +335,7 @@ async fn handle_keepalive_message(
         config.set_state.set(SseConnectionState::Disconnected);
         return false;
     }
+    // Periodic refresh on keepalive to pick up any missed state
     matches!(
         refresh_task_detail(config).await,
         Some(TaskStatus::WaitingForUserInput)
@@ -260,6 +345,8 @@ async fn handle_keepalive_message(
             | Some(TaskStatus::Interrupted)
     )
 }
+
+// ── Backfill and refresh ─────────────────────────────────────────────────
 
 async fn backfill_missed_events(config: &TaskStreamConfig, last_seq: &mut u64) -> bool {
     match config
@@ -282,7 +369,9 @@ async fn backfill_missed_events(config: &TaskStreamConfig, last_seq: &mut u64) -
         Err(error) => config.set_error.set(Some(error.to_string())),
     }
 
-    refresh_progress(config).await
+    // Backfill also refreshes progress as a safety net
+    let _ = refresh_progress(config).await;
+    false
 }
 
 async fn refresh_progress(config: &TaskStreamConfig) -> bool {

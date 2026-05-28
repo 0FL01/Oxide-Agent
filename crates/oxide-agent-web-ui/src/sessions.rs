@@ -2,7 +2,7 @@ use crate::auth::use_auth;
 use crate::components::ErrorBanner;
 use crate::utils::{friendly_time, navigate, spawn_ui};
 use leptos::prelude::*;
-use oxide_agent_web_contracts::{SessionSummary, UpdateSessionRequest};
+use oxide_agent_web_contracts::SessionSummary;
 
 #[component]
 pub fn SessionSidebar(selected: Option<String>) -> impl IntoView {
@@ -221,36 +221,5 @@ fn confirm_delete_session(title: &str) -> bool {
     {
         let _ = title;
         true
-    }
-}
-
-#[component]
-pub fn RenameSessionForm(session_id: String, current_title: String) -> impl IntoView {
-    let auth = use_auth();
-    let (title, set_title) = signal(current_title);
-    let (error, set_error) = signal(None::<String>);
-    let (saving, set_saving) = signal(false);
-
-    let submit = move |ev: leptos::ev::SubmitEvent| {
-        ev.prevent_default();
-        set_saving.set(true);
-        set_error.set(None);
-        let request = UpdateSessionRequest { title: title.get() };
-        let session_id = session_id.clone();
-        spawn_ui(async move {
-            match auth.client().update_session(&session_id, &request).await {
-                Ok(_) => navigate(&format!("/app/session/{session_id}")),
-                Err(error) => set_error.set(Some(error.to_string())),
-            }
-            set_saving.set(false);
-        });
-    };
-
-    view! {
-        <form class="rename-form" on:submit=submit>
-            <input value=title on:input=move |ev| set_title.set(event_target_value(&ev)) />
-            <button type="submit" disabled=saving title="Save title">"Save"</button>
-            <ErrorBanner message=error />
-        </form>
     }
 }
