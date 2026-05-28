@@ -6,11 +6,11 @@ use oxide_agent_web_contracts::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::{
-    LoginIndexRecord, WebAuthSessionRecord, WebTaskEventChunkRecord, WebUiStore, WebUiStoreError,
-    WebUiStoreResult, WebUserRecord, WEB_AUTH_SCHEMA_VERSION,
+    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebTaskEventChunkRecord, WebUiStore,
+    WebUiStoreError, WebUiStoreResult, WebUserRecord, WEB_AUTH_SCHEMA_VERSION,
+    WEB_EVENT_CHUNK_SCHEMA_VERSION,
 };
 
-const WEB_EVENT_CHUNK_SCHEMA_VERSION: u32 = 1;
 const TASK_EVENT_CHUNK_SIZE: u64 = 100;
 const WEB_USERS_PREFIX: &str = "web/auth/v1/users/";
 const WEB_LOGIN_INDEX_PREFIX: &str = "web/auth/v1/login_index/";
@@ -272,6 +272,7 @@ where
     }
 
     async fn save_user(&self, record: WebUserRecord) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
         ensure_login_available(&self.object_store, &record.normalized_login, record.user_id)
             .await?;
         if let Some(existing) = self.load_user(record.user_id).await? {
@@ -299,21 +300,19 @@ where
     }
 
     async fn load_user(&self, user_id: i64) -> WebUiStoreResult<Option<WebUserRecord>> {
-        self.object_store.load_json(&web_user_key(user_id)).await
+        self.load_record(&web_user_key(user_id)).await
     }
 
     async fn load_login_index(
         &self,
         normalized_login: &str,
     ) -> WebUiStoreResult<Option<LoginIndexRecord>> {
-        self.object_store
-            .load_json(&web_login_index_key(normalized_login))
+        self.load_record(&web_login_index_key(normalized_login))
             .await
     }
 
     async fn save_auth_session(&self, record: WebAuthSessionRecord) -> WebUiStoreResult<()> {
-        self.object_store
-            .save_json(&web_auth_session_key(&record.session_token_hash), &record)
+        self.save_record(&web_auth_session_key(&record.session_token_hash), &record)
             .await
     }
 
@@ -321,8 +320,7 @@ where
         &self,
         session_token_hash: &str,
     ) -> WebUiStoreResult<Option<WebAuthSessionRecord>> {
-        self.object_store
-            .load_json(&web_auth_session_key(session_token_hash))
+        self.load_record(&web_auth_session_key(session_token_hash))
             .await
     }
 
@@ -364,12 +362,11 @@ where
     }
 
     async fn save_session(&self, record: WebSessionRecord) -> WebUiStoreResult<()> {
-        self.object_store
-            .save_json(
-                &web_session_key(record.user_id, &record.session_id),
-                &record,
-            )
-            .await
+        self.save_record(
+            &web_session_key(record.user_id, &record.session_id),
+            &record,
+        )
+        .await
     }
 
     async fn load_session(
@@ -377,15 +374,13 @@ where
         user_id: i64,
         session_id: &str,
     ) -> WebUiStoreResult<Option<WebSessionRecord>> {
-        self.object_store
-            .load_json(&web_session_key(user_id, session_id))
+        self.load_record(&web_session_key(user_id, session_id))
             .await
     }
 
     async fn list_sessions(&self, user_id: i64) -> WebUiStoreResult<Vec<WebSessionRecord>> {
         let mut sessions = self
-            .object_store
-            .list_json_under_prefix::<WebSessionRecord>(&web_sessions_prefix(user_id))
+            .list_records::<WebSessionRecord>(&web_sessions_prefix(user_id))
             .await?;
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(sessions)
@@ -393,12 +388,7 @@ where
 
     async fn delete_session(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
         let key = web_session_key(user_id, session_id);
-        if self
-            .object_store
-            .load_json::<WebSessionRecord>(&key)
-            .await?
-            .is_none()
-        {
+        if self.load_record::<WebSessionRecord>(&key).await?.is_none() {
             return Ok(false);
         }
         self.object_store.delete_object(&key).await?;
@@ -412,12 +402,11 @@ where
     }
 
     async fn save_task(&self, record: WebTaskRecord) -> WebUiStoreResult<()> {
-        self.object_store
-            .save_json(
-                &web_task_key(record.user_id, &record.session_id, &record.task_id),
-                &record,
-            )
-            .await
+        self.save_record(
+            &web_task_key(record.user_id, &record.session_id, &record.task_id),
+            &record,
+        )
+        .await
     }
 
     async fn load_task(
@@ -426,8 +415,7 @@ where
         session_id: &str,
         task_id: &str,
     ) -> WebUiStoreResult<Option<WebTaskRecord>> {
-        self.object_store
-            .load_json(&web_task_key(user_id, session_id, task_id))
+        self.load_record(&web_task_key(user_id, session_id, task_id))
             .await
     }
 
@@ -437,8 +425,7 @@ where
         session_id: &str,
     ) -> WebUiStoreResult<Vec<WebTaskRecord>> {
         let mut tasks = self
-            .object_store
-            .list_json_under_prefix::<WebTaskRecord>(&web_tasks_prefix(user_id, session_id))
+            .list_records::<WebTaskRecord>(&web_tasks_prefix(user_id, session_id))
             .await?;
         tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         Ok(tasks)
@@ -475,8 +462,7 @@ where
         limit: usize,
     ) -> WebUiStoreResult<TaskEventsResponse> {
         let mut events = self
-            .object_store
-            .list_json_under_prefix::<WebTaskEventChunkRecord>(&web_task_event_chunks_prefix(
+            .list_records::<WebTaskEventChunkRecord>(&web_task_event_chunks_prefix(
                 user_id, session_id, task_id,
             ))
             .await?
@@ -511,7 +497,7 @@ where
 
         let mut interrupted = Vec::new();
         for key in task_keys {
-            let Some(mut task) = self.object_store.load_json::<WebTaskRecord>(&key).await? else {
+            let Some(mut task) = self.load_record::<WebTaskRecord>(&key).await? else {
                 continue;
             };
             if !matches!(task.status, TaskStatus::Queued | TaskStatus::Running) {
@@ -540,25 +526,56 @@ where
         task_id: &str,
         chunk_no: u64,
     ) -> WebUiStoreResult<Option<WebTaskEventChunkRecord>> {
-        self.object_store
-            .load_json(&web_task_event_chunk_key(
-                user_id, session_id, task_id, chunk_no,
-            ))
-            .await
+        self.load_record(&web_task_event_chunk_key(
+            user_id, session_id, task_id, chunk_no,
+        ))
+        .await
     }
 
     async fn save_event_chunk(&self, chunk: &WebTaskEventChunkRecord) -> WebUiStoreResult<()> {
-        self.object_store
-            .save_json(
-                &web_task_event_chunk_key(
-                    chunk.user_id,
-                    &chunk.session_id,
-                    &chunk.task_id,
-                    chunk.chunk_no,
-                ),
-                chunk,
-            )
-            .await
+        self.save_record(
+            &web_task_event_chunk_key(
+                chunk.user_id,
+                &chunk.session_id,
+                &chunk.task_id,
+                chunk.chunk_no,
+            ),
+            chunk,
+        )
+        .await
+    }
+
+    async fn save_record<T>(&self, key: &str, record: &T) -> WebUiStoreResult<()>
+    where
+        T: Serialize + Sync + Send + ValidateWebRecord,
+    {
+        record.validate_web_record()?;
+        self.object_store.save_json(key, record).await
+    }
+
+    async fn load_record<T>(&self, key: &str) -> WebUiStoreResult<Option<T>>
+    where
+        T: DeserializeOwned + Send + ValidateWebRecord,
+    {
+        let Some(record) = self.object_store.load_json::<T>(key).await? else {
+            return Ok(None);
+        };
+        record.validate_web_record()?;
+        Ok(Some(record))
+    }
+
+    async fn list_records<T>(&self, prefix: &str) -> WebUiStoreResult<Vec<T>>
+    where
+        T: DeserializeOwned + Send + ValidateWebRecord,
+    {
+        let records = self
+            .object_store
+            .list_json_under_prefix::<T>(prefix)
+            .await?;
+        for record in &records {
+            record.validate_web_record()?;
+        }
+        Ok(records)
     }
 
     async fn clear_interrupted_session_task(
@@ -591,6 +608,7 @@ where
         .load_json::<LoginIndexRecord>(&web_login_index_key(normalized_login))
         .await?
     {
+        existing.validate_web_record()?;
         if existing.user_id != user_id {
             return Err(WebUiStoreError::Conflict(format!(
                 "login {normalized_login} already belongs to another user"
@@ -938,6 +956,76 @@ mod tests {
                 .map(|task| task.status),
             Some(TaskStatus::Completed)
         );
+    }
+
+    #[tokio::test]
+    async fn object_store_rejects_unknown_schema_versions() {
+        let store = ObjectStoreWebUiStore::new(InMemoryObjectStore::default());
+        let now = Utc::now();
+
+        let mut user = serde_json::to_value(user_record(7, "alice", now)).expect("user json");
+        user["schema_version"] = serde_json::json!(99);
+        store
+            .object_store
+            .objects
+            .write()
+            .await
+            .insert(web_user_key(7), user);
+        let error = store
+            .load_user(7)
+            .await
+            .expect_err("unknown user schema version should fail safely");
+        assert!(error.to_string().contains("schema_version 99"));
+
+        let mut session =
+            serde_json::to_value(session_record(7, "session-1", now)).expect("session json");
+        session["schema_version"] = serde_json::json!(99);
+        store
+            .object_store
+            .objects
+            .write()
+            .await
+            .insert(web_session_key(7, "session-1"), session);
+        let error = store
+            .list_sessions(7)
+            .await
+            .expect_err("unknown session schema version should fail safely");
+        assert!(error.to_string().contains("schema_version 99"));
+
+        let mut event_chunk = new_event_chunk(7, "session-1", "task-1", 0);
+        let mut event = event(7, "session-1", "task-1", 1);
+        event.schema_version = 99;
+        event_chunk.events.push(event);
+        store
+            .object_store
+            .save_json(
+                &web_task_event_chunk_key(7, "session-1", "task-1", 0),
+                &event_chunk,
+            )
+            .await
+            .expect("save raw chunk");
+        let error = store
+            .list_task_events(7, "session-1", "task-1", 0, 10)
+            .await
+            .expect_err("unknown event schema version should fail safely");
+        assert!(error.to_string().contains("schema_version 99"));
+    }
+
+    #[tokio::test]
+    async fn object_store_corrupt_records_return_errors_instead_of_panicking() {
+        let store = ObjectStoreWebUiStore::new(InMemoryObjectStore::default());
+        store
+            .object_store
+            .objects
+            .write()
+            .await
+            .insert(web_user_key(7), serde_json::json!({ "schema_version": 1 }));
+
+        let error = store
+            .load_user(7)
+            .await
+            .expect_err("corrupt user record should fail safely");
+        assert!(error.to_string().contains("missing field"));
     }
 
     fn user_record(user_id: i64, login: &str, now: DateTime<Utc>) -> WebUserRecord {

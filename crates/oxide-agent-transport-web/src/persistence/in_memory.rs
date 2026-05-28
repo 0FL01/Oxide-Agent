@@ -8,8 +8,8 @@ use oxide_agent_web_contracts::{
 use tokio::sync::RwLock;
 
 use super::{
-    LoginIndexRecord, WebAuthSessionRecord, WebUiStore, WebUiStoreError, WebUiStoreResult,
-    WebUserRecord,
+    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebUiStore, WebUiStoreError,
+    WebUiStoreResult, WebUserRecord,
 };
 
 type SessionKey = (i64, String);
@@ -47,6 +47,7 @@ impl WebUiStore for InMemoryWebUiStore {
     }
 
     async fn save_user(&self, record: WebUserRecord) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
         let normalized_login = record.normalized_login.clone();
         let user_id = record.user_id;
 
@@ -85,6 +86,7 @@ impl WebUiStore for InMemoryWebUiStore {
     }
 
     async fn save_auth_session(&self, record: WebAuthSessionRecord) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
         self.auth_sessions
             .write()
             .await
@@ -137,6 +139,7 @@ impl WebUiStore for InMemoryWebUiStore {
     }
 
     async fn save_session(&self, record: WebSessionRecord) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
         self.sessions.write().await.insert(
             Self::session_key(record.user_id, &record.session_id),
             record,
@@ -197,6 +200,7 @@ impl WebUiStore for InMemoryWebUiStore {
     }
 
     async fn save_task(&self, record: WebTaskRecord) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
         self.tasks.write().await.insert(
             Self::task_key(record.user_id, &record.session_id, &record.task_id),
             record,
@@ -242,6 +246,9 @@ impl WebUiStore for InMemoryWebUiStore {
         task_id: &str,
         mut events: Vec<PersistedTaskEvent>,
     ) -> WebUiStoreResult<()> {
+        for event in &events {
+            event.validate_web_record()?;
+        }
         let key = Self::task_key(user_id, session_id, task_id);
         events.sort_by_key(|event| event.seq);
         self.events
@@ -544,6 +551,45 @@ mod tests {
             .expect("list foreign events")
             .events
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_schema_versions_before_storing_records() {
+        let store = InMemoryWebUiStore::new();
+        let now = Utc::now();
+
+        let mut user = user_record(42, "Alice");
+        user.schema_version = 99;
+        let error = store
+            .save_user(user)
+            .await
+            .expect_err("unknown user schema version should fail");
+        assert!(error.to_string().contains("schema_version 99"));
+        assert_eq!(store.users_count().await.expect("count users"), 0);
+
+        let mut session = session_record(42, "session-1", now);
+        session.schema_version = 99;
+        let error = store
+            .save_session(session)
+            .await
+            .expect_err("unknown session schema version should fail");
+        assert!(error.to_string().contains("schema_version 99"));
+
+        let mut task = task_record(42, "session-1", "task-1", TaskStatus::Running, now);
+        task.schema_version = 99;
+        let error = store
+            .save_task(task)
+            .await
+            .expect_err("unknown task schema version should fail");
+        assert!(error.to_string().contains("schema_version 99"));
+
+        let mut event = event(42, "session-1", "task-1", 1);
+        event.schema_version = 99;
+        let error = store
+            .append_task_events(42, "session-1", "task-1", vec![event])
+            .await
+            .expect_err("unknown event schema version should fail");
+        assert!(error.to_string().contains("schema_version 99"));
     }
 
     #[tokio::test]
