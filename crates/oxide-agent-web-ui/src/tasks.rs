@@ -38,7 +38,7 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
     let (progress, set_progress) = signal(None::<ProgressSnapshot>);
     let (sse_state, set_sse_state) = signal(SseConnectionState::Disconnected);
-    let (streaming_task_id, set_streaming_task_id) = signal(None::<String>);
+    let (_streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
 
     let session_id_for_load = session_id.clone();
@@ -60,7 +60,10 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                         let task_id = task.task_id.clone();
                         if let Ok(response) = client.get_task(&session_id, &task_id).await {
                             set_progress.set(response.task.last_progress.clone());
-                            if response.task.status.is_active() {
+                            if matches!(
+                                response.task.status,
+                                TaskStatus::Queued | TaskStatus::Running
+                            ) {
                                 set_active_task.set(Some(response.task));
                                 start_task_stream(
                                     client.clone(),
@@ -74,10 +77,11 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                                         set_tasks,
                                         set_sse_state,
                                         set_error,
-                                        streaming_task_id,
                                         set_streaming_task_id,
                                     },
                                 );
+                            } else if response.task.status == TaskStatus::WaitingForUserInput {
+                                set_active_task.set(Some(response.task));
                             } else {
                                 set_active_task.set(None);
                             }
@@ -113,11 +117,15 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
         let session_id = session_id_for_submit.clone();
         spawn_ui(async move {
             let client = auth.client();
-            let result = match active_task.get() {
-                Some(task) if task.status == TaskStatus::WaitingForUserInput => client
+            let resume_task_id = active_task
+                .get()
+                .filter(|task| task.status == TaskStatus::WaitingForUserInput)
+                .map(|task| task.task_id);
+            let result = match resume_task_id.as_deref() {
+                Some(task_id) => client
                     .resume_task(
                         &session_id,
-                        &task.task_id,
+                        task_id,
                         &ResumeTaskRequest {
                             input_markdown: text,
                         },
@@ -151,11 +159,14 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                             set_tasks,
                             set_sse_state,
                             set_error,
-                            streaming_task_id,
                             set_streaming_task_id,
                         },
                     );
-                    set_tasks.update(|items| items.push(task));
+                    if resume_task_id.is_some() {
+                        set_tasks.update(|items| upsert_task_summary(items, task));
+                    } else {
+                        set_tasks.update(|items| items.push(task));
+                    }
                 }
                 Err(error) => set_error.set(Some(error.to_string())),
             }
@@ -351,7 +362,6 @@ struct StreamUiSignals {
     set_tasks: WriteSignal<Vec<TaskSummary>>,
     set_sse_state: WriteSignal<SseConnectionState>,
     set_error: WriteSignal<Option<String>>,
-    streaming_task_id: ReadSignal<Option<String>>,
     set_streaming_task_id: WriteSignal<Option<String>>,
 }
 
@@ -361,9 +371,6 @@ fn start_task_stream(
     task_id: String,
     signals: StreamUiSignals,
 ) {
-    if signals.streaming_task_id.get_untracked().as_deref() == Some(task_id.as_str()) {
-        return;
-    }
     signals.set_streaming_task_id.set(Some(task_id.clone()));
     spawn_task_stream(TaskStreamConfig {
         client,
@@ -376,6 +383,7 @@ fn start_task_stream(
         set_tasks: signals.set_tasks,
         set_state: signals.set_sse_state,
         set_error: signals.set_error,
+        set_streaming_task_id: signals.set_streaming_task_id,
     });
 }
 
@@ -593,4 +601,12 @@ fn latest_terminal_task_id(tasks: &[TaskSummary]) -> Option<String> {
         .filter(|task| task.status.is_terminal())
         .max_by_key(|task| task.updated_at)
         .map(|task| task.task_id.clone())
+}
+
+fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummary) {
+    if let Some(existing) = items.iter_mut().find(|item| item.task_id == task.task_id) {
+        *existing = task;
+    } else {
+        items.push(task);
+    }
 }

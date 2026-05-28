@@ -1,7 +1,7 @@
 use oxide_agent_core::config::{AgentSettings, ModelInfo};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_runtime::SessionRegistry;
-use oxide_agent_transport_web::scripted_llm::ScriptedLlmProvider;
+use oxide_agent_transport_web::scripted_llm::{ScriptedLlmProvider, ScriptedResponse};
 use oxide_agent_transport_web::session::WebSessionManager;
 use oxide_agent_transport_web::{serve, AppState};
 use std::env;
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut llm = LlmClient::new(&agent_settings);
     llm.register_provider(
         "opencode_go".to_string(),
-        Arc::new(ScriptedLlmProvider::new(Vec::new())),
+        Arc::new(ScriptedLlmProvider::new(scripted_responses())),
     );
 
     let session_manager =
@@ -50,5 +50,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn default_dev_env(key: &str, value: &str) {
     if env::var_os(key).is_none() {
         env::set_var(key, value);
+    }
+}
+
+fn scripted_responses() -> Vec<ScriptedResponse> {
+    match env::var("OXIDE_WEB_DEV_SCRIPT").as_deref() {
+        Ok("waiting") => vec![
+            raw_structured_response(serde_json::json!({
+                "thought": "Need a browser QA reply",
+                "tool_call": null,
+                "final_answer": null,
+                "awaiting_user_input": {
+                    "kind": "text",
+                    "prompt": "Reply with any text to continue."
+                }
+            })),
+            raw_structured_response(serde_json::json!({
+                "thought": "Received browser QA reply",
+                "tool_call": null,
+                "final_answer": "Resumed after browser input."
+            })),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn raw_structured_response(value: serde_json::Value) -> ScriptedResponse {
+    ScriptedResponse::ToolCalls {
+        tool_calls: Vec::new(),
+        final_text: Some(value.to_string()),
     }
 }
