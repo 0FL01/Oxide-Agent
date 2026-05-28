@@ -810,6 +810,11 @@ fn ShellToolCard(
     let has_streams = stdout.is_some() || stderr.is_some();
     let default_open = is_running || !success || !has_streams;
 
+    // Compact preview: command or first line of stdout
+    let preview_text = command.clone().or_else(|| {
+        stdout.as_ref().map(|t| first_line(t))
+    });
+
     view! {
         <div class="tool-card-header">
             <span class="tool-status-icon">{icon}</span>
@@ -823,6 +828,9 @@ fn ShellToolCard(
             })}
             {error_msg.map(|msg| view! { <span class="tool-meta danger">{msg}</span> })}
         </div>
+        {preview_text.map(|text| view! {
+            <div class="tool-preview">{format!("$ {text}")}</div>
+        })}
         <details class="tool-card-body" open=default_open>
             <summary class="tool-card-expand">"details"</summary>
             {command.map(|cmd| view! {
@@ -926,6 +934,11 @@ fn SearchToolCard(
 
     let default_open = is_running || !success;
 
+    // Compact preview: first result snippet or query
+    let preview_snippet = search_results.first()
+        .filter(|sr| !sr.snippet.is_empty())
+        .map(|sr| sr.snippet.clone());
+
     view! {
         <div class="tool-card-header">
             <span class="tool-status-icon">{icon}</span>
@@ -935,6 +948,9 @@ fn SearchToolCard(
                 <span class="tool-meta">{format!("{n} results")}</span>
             })}
         </div>
+        {preview_snippet.map(|text| view! {
+            <div class="tool-preview">{text}</div>
+        })}
         <details class="tool-card-body" open=default_open>
             <summary class="tool-card-expand">"details"</summary>
             {query.map(|q| view! {
@@ -1019,6 +1035,13 @@ fn GenericToolCard(
     let has_streams = stdout.is_some() || stderr.is_some();
     let default_open = is_running || !success || !has_streams;
 
+    // Compact preview: command_preview or first line of stdout
+    let command_preview = call.as_ref()
+        .and_then(|e| payload_str_event(e, "command_preview"));
+    let preview_text = command_preview.or_else(|| {
+        stdout.as_ref().map(|t| first_line(t))
+    });
+
     view! {
         <div class="tool-card-header">
             <span class="tool-status-icon">{icon}</span>
@@ -1030,6 +1053,9 @@ fn GenericToolCard(
                 </span>
             })}
         </div>
+        {preview_text.map(|text| view! {
+            <div class="tool-preview">{text}</div>
+        })}
         <details class="tool-card-body" open=default_open>
             <summary class="tool-card-expand">"details"</summary>
             {call.as_ref().and_then(|e| payload_str_event(e, "command_preview")).map(|cmd| view! {
@@ -1227,6 +1253,16 @@ fn payload_str_event(event: &PersistedTaskEvent, key: &str) -> Option<String> {
         .get(key)
         .and_then(|v| v.as_str())
         .map(ToString::to_string)
+}
+
+/// Extract first line from text, truncated to max chars.
+fn first_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("");
+    if line.len() > 120 {
+        format!("{}...", &line[..120])
+    } else {
+        line.to_string()
+    }
 }
 
 /// Parse the nested JSON inside `output_preview` for ToolResult events.

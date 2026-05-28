@@ -1043,6 +1043,17 @@ label {
   font-size: 12px;
 }
 
+.tool-preview {
+  padding: 0 var(--space-3) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
 .tool-status-icon {
   font-size: 14px;
   line-height: 1;
