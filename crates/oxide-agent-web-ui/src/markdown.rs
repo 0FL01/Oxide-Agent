@@ -122,5 +122,6 @@ mod tests {
         let html = render_markdown("![x](https://example.com/image.png)");
 
         assert!(!html.contains("<img"));
+        assert!(!html.contains("https://example.com/image.png"));
     }
 }
