@@ -23,6 +23,7 @@ pub struct TaskStreamConfig {
     pub set_state: WriteSignal<SseConnectionState>,
     pub set_error: WriteSignal<Option<String>>,
     pub set_streaming_task_id: WriteSignal<Option<String>>,
+    pub set_last_terminal_status: WriteSignal<Option<TaskStatus>>,
 }
 
 pub fn spawn_task_stream(config: TaskStreamConfig) {
@@ -404,6 +405,7 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<TaskStatus> {
             let status = summary.status;
             config.set_progress.set(detail.last_progress.clone());
             if detail.status.is_terminal() {
+                config.set_last_terminal_status.set(Some(status));
                 config.set_active_task.set(None);
             } else {
                 config.set_active_task.set(Some(detail));

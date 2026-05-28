@@ -787,6 +787,60 @@ label {
   color: var(--accent-green);
 }
 
+.context-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent-blue);
+  font-weight: 500;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.context-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.context-completed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #e6fef0;
+  background: rgba(72, 199, 116, 0.2);
+  border: 1px solid rgba(72, 199, 116, 0.3);
+}
+
+.context-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #fee6e6;
+  background: rgba(224, 82, 82, 0.2);
+  border: 1px solid rgba(224, 82, 82, 0.3);
+}
+
+.context-status-icon {
+  font-size: 11px;
+  line-height: 1;
+}
+
 /* === RESULTS PANEL (agent output) === */
 .results-panel {
   flex: 1;

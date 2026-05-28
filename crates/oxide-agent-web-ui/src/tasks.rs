@@ -1,5 +1,5 @@
 use crate::auth::use_auth;
-use crate::components::{EmptyState, ErrorBanner, StatusBadge};
+use crate::components::{EmptyState, ErrorBanner};
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
 use crate::sse::{spawn_task_stream, TaskStreamConfig};
@@ -59,6 +59,7 @@ fn SessionWorkspace(
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
     let (_streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
+    let (last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
 
     // Determine which task owns the live activity display (active or most recent)
     let latest_activity_task_id = move || {
@@ -112,6 +113,7 @@ fn SessionWorkspace(
                                         set_sse_state,
                                         set_error,
                                         set_streaming_task_id,
+                                        set_last_terminal_status,
                                     },
                                 );
                             } else if response.task.status == TaskStatus::WaitingForUserInput {
@@ -189,6 +191,7 @@ fn SessionWorkspace(
                 Ok(task) => {
                     set_input.set(String::new());
                     set_active_task.set(Some(summary_to_detail(&session_id, &task)));
+                    set_last_terminal_status.set(None);
                     start_task_stream(
                         client,
                         session_id.clone(),
@@ -202,6 +205,7 @@ fn SessionWorkspace(
                             set_sse_state,
                             set_error,
                             set_streaming_task_id,
+                            set_last_terminal_status,
                         },
                     );
                     if resume_task_id.is_some() {
@@ -343,9 +347,6 @@ fn SessionWorkspace(
                                 let flow = snap.get("hot_memory_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                                 let prompt = snap.get("system_prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                                 let tools = snap.get("tool_schema_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let total = snap.get("projected_total_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let output = snap.get("reserved_output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let hard = snap.get("hard_reserve_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                                 let free = snap.get("headroom_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                                 let budget = snap.get("budget_state")
                                     .and_then(|v| v.as_str())
@@ -370,6 +371,32 @@ fn SessionWorkspace(
 
                                 view! {
                                     <span class="context-inline">
+                                        {if is_running() {
+                                            view! {
+                                                <span class="context-running">
+                                                    <span class="context-running-dot"></span>
+                                                    "Running"
+                                                </span>
+                                            }.into_any()
+                                        } else if let Some(status) = last_terminal_status.get() {
+                                            match status {
+                                                TaskStatus::Completed => view! {
+                                                    <span class="context-completed">
+                                                        <span class="context-status-icon">"\u{2713}"</span>
+                                                        "Completed"
+                                                    </span>
+                                                }.into_any(),
+                                                TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => view! {
+                                                    <span class="context-failed">
+                                                        <span class="context-status-icon">"\u{2717}"</span>
+                                                        "Failed"
+                                                    </span>
+                                                }.into_any(),
+                                                _ => ().into_any(),
+                                            }
+                                        } else {
+                                            ().into_any()
+                                        }}
                                         <span class={format!("context-budget-pill{budget_cls}")}>
                                             {format!("{}", budget)}
                                         </span>
@@ -391,15 +418,6 @@ fn SessionWorkspace(
                                         <span class="context-metric">
                                             <span class="context-metric-label">"tools "</span>
                                             <span class="context-metric-value">{k(tools)}</span>
-                                        </span>
-                                        <span class="context-sep">"\u{00b7}"</span>
-                                        <span class="context-metric">
-                                            <span class="context-metric-value">{k(total)}</span>
-                                            <span class="context-metric-label">" / "</span>
-                                            <span class="context-metric-value">{k(output)}</span>
-                                            <span class="context-metric-label">"+"</span>
-                                            <span class="context-metric-value">{k(hard)}</span>
-                                            <span class="context-metric-label">" reserved"</span>
                                         </span>
                                         <span class="context-sep">"\u{00b7}"</span>
                                         <span>{format!("{lines_count} lines \u{00b7} {len} chars")}</span>
@@ -462,6 +480,7 @@ struct StreamUiSignals {
     set_sse_state: WriteSignal<SseConnectionState>,
     set_error: WriteSignal<Option<String>>,
     set_streaming_task_id: WriteSignal<Option<String>>,
+    set_last_terminal_status: WriteSignal<Option<TaskStatus>>,
 }
 
 fn start_task_stream(
@@ -483,6 +502,7 @@ fn start_task_stream(
         set_state: signals.set_sse_state,
         set_error: signals.set_error,
         set_streaming_task_id: signals.set_streaming_task_id,
+        set_last_terminal_status: signals.set_last_terminal_status,
     });
 }
 
@@ -537,7 +557,6 @@ fn TaskCard(
     view! {
         <article class=card_class>
             <div class="task-card-header">
-                <StatusBadge status=task.status />
                 <time>{friendly_time(task.updated_at)}</time>
             </div>
             <div class="message user-message">
