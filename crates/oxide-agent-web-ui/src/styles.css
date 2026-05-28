@@ -273,6 +273,21 @@ pre {
   overflow-wrap: anywhere;
 }
 
+.code-block {
+  display: grid;
+  gap: 6px;
+}
+
+.code-copy-button {
+  justify-self: end;
+  min-height: 28px;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  padding: 0 10px;
+}
+
 .markdown-content > :first-child {
   margin-top: 0;
 }
@@ -309,6 +324,21 @@ pre {
 .composer {
   display: grid;
   gap: 10px;
+}
+
+.composer-notice {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.composer-notice.busy {
+  color: var(--warning);
+}
+
+.composer-notice.waiting {
+  color: var(--accent-strong);
 }
 
 .events-panel {

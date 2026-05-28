@@ -7,7 +7,7 @@ use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{friendly_time, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    CreateTaskRequest, EditTaskInputRequest, PersistedTaskEvent, ProgressSnapshot,
+    CreateTaskRequest, EditTaskInputRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
     ResumeTaskRequest, SseConnectionState, TaskDetail, TaskStatus, TaskSummary,
 };
 
@@ -81,7 +81,7 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                         }
                     }
                 }
-                Err(error) => set_error.set(Some(error.to_string())),
+                Err(error) => set_error.set(Some(task_submit_error_message(&error))),
             }
             set_loading.set(false);
         });
@@ -244,14 +244,24 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                         }
                     }}
                     <form class="composer" on:submit=submit_task>
+                        <ComposerNotice active_task=active_task />
                         <textarea
                             placeholder="Markdown input"
                             prop:value=input
-                            disabled=move || active_task.get().is_some_and(|task| task.status == TaskStatus::Running)
+                            disabled=move || composer_is_blocked(active_task.get().as_ref())
                             on:input=move |ev| set_input.set(event_target_value(&ev))
                         />
                         <div class="composer-actions">
-                            <button type="submit" disabled=loading>"Send"</button>
+                            <button
+                                type="submit"
+                                disabled=move || loading.get() || composer_is_blocked(active_task.get().as_ref())
+                            >
+                                {move || if active_task.get().is_some_and(|task| task.status == TaskStatus::WaitingForUserInput) {
+                                    "Resume"
+                                } else {
+                                    "Send"
+                                }}
+                            </button>
                             <button
                                 class="secondary"
                                 type="button"
@@ -288,6 +298,37 @@ fn SessionWorkspace(session_id: String) -> impl IntoView {
                 </aside>
             </div>
         </section>
+    }
+}
+
+#[component]
+fn ComposerNotice(active_task: ReadSignal<Option<TaskDetail>>) -> impl IntoView {
+    view! {
+        {move || match active_task.get().map(|task| task.status) {
+            Some(TaskStatus::WaitingForUserInput) => view! {
+                <p class="composer-notice waiting">"The task is waiting for your reply. Sending will resume the same task."</p>
+            }.into_any(),
+            Some(TaskStatus::Queued | TaskStatus::Running) => view! {
+                <p class="composer-notice busy">"This session is busy. Stop the active task before starting another one."</p>
+            }.into_any(),
+            _ => ().into_any(),
+        }}
+    }
+}
+
+fn composer_is_blocked(task: Option<&TaskDetail>) -> bool {
+    task.is_some_and(|task| matches!(task.status, TaskStatus::Queued | TaskStatus::Running))
+}
+
+fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {
+    match error.error_code() {
+        Some(ErrorCode::SessionBusy) => {
+            "This session already has an active task. Stop it or wait for it to finish.".to_string()
+        }
+        Some(ErrorCode::TaskWaitingForUserInput) => {
+            "The active task is waiting for input. Reply in the composer to resume it.".to_string()
+        }
+        _ => error.to_string(),
     }
 }
 

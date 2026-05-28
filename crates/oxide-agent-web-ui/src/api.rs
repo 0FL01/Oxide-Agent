@@ -2,7 +2,7 @@ use gloo_net::http::{Request, Response};
 use oxide_agent_web_contracts::{
     AuthUserResponse, BootstrapRequest, CancelTaskResponse, ChangePasswordRequest,
     CreateSessionRequest, CreateSessionResponse, CreateTaskRequest, CreateTaskResponse,
-    CurrentUserResponse, EditTaskInputRequest, EditTaskInputResponse, ErrorEnvelope,
+    CurrentUserResponse, EditTaskInputRequest, EditTaskInputResponse, ErrorCode, ErrorEnvelope,
     GetSessionResponse, GetTaskProgressResponse, GetTaskResponse, ListSessionsResponse,
     ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse, RegisterRequest,
     ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse, UpdateSessionRequest,
@@ -291,6 +291,19 @@ impl fmt::Display for ApiClientError {
                 envelope: None,
             } => write!(formatter, "request failed with status {status}"),
             Self::MissingCsrfToken => write!(formatter, "CSRF token is missing"),
+        }
+    }
+}
+
+impl ApiClientError {
+    #[must_use]
+    pub fn error_code(&self) -> Option<&ErrorCode> {
+        match self {
+            Self::Api {
+                envelope: Some(envelope),
+                ..
+            } => Some(&envelope.error.code),
+            _ => None,
         }
     }
 }

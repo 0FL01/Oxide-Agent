@@ -4,11 +4,13 @@ use std::collections::HashSet;
 
 #[cfg(target_arch = "wasm32")]
 use leptos::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 
 #[must_use]
 pub fn render_markdown(markdown: &str) -> String {
     let html = markdown_to_html(markdown, &markdown_options());
-    sanitize_html(&html)
+    add_code_copy_buttons(&sanitize_html(&html))
 }
 
 #[must_use]
@@ -33,11 +35,40 @@ fn markdown_options() -> Options<'static> {
     options
 }
 
+fn add_code_copy_buttons(html: &str) -> String {
+    html.replace(
+        "<pre><code",
+        "<div class=\"code-block\"><button class=\"code-copy-button\" type=\"button\" data-copy-code=\"true\">Copy</button><pre><code",
+    )
+    .replace("</code></pre>", "</code></pre></div>")
+}
+
 #[cfg(target_arch = "wasm32")]
 #[component]
 pub fn MarkdownContent(markdown: String) -> impl IntoView {
     let html = render_markdown(&markdown);
-    view! { <div class="markdown-content" inner_html=html></div> }
+    let copy_code = move |event: leptos::ev::MouseEvent| {
+        let Some(target) = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        if target.get_attribute("data-copy-code").as_deref() != Some("true") {
+            return;
+        }
+        let Some(pre) = target.next_element_sibling() else {
+            return;
+        };
+        let Some(text) = pre.text_content() else {
+            return;
+        };
+        if let Some(window) = web_sys::window() {
+            let _ = window.navigator().clipboard().write_text(&text);
+        }
+    };
+
+    view! { <div class="markdown-content" on:click=copy_code inner_html=html></div> }
 }
 
 #[cfg(test)]
@@ -71,6 +102,7 @@ mod tests {
         assert!(html.contains("<table>"));
         assert!(html.contains("<code>"));
         assert!(html.contains("fn main"));
+        assert!(html.contains("data-copy-code=\"true\""));
     }
 
     #[test]

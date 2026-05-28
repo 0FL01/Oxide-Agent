@@ -4055,6 +4055,7 @@ dependencies = [
  "oxide-agent-web-contracts",
  "serde",
  "serde_json",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
 ]
