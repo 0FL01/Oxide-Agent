@@ -336,8 +336,80 @@ fn SessionWorkspace(
                     <div class="composer-stats">
                         {move || {
                             let len = input.get().len();
-                            let lines = input.get().lines().count().max(1);
-                            format!("{} chars \u{00b7} {} lines", len, lines)
+                            let lines_count = input.get().lines().count().max(1);
+
+                            let snapshot = progress.get().and_then(|p| p.latest_token_snapshot);
+                            if let Some(snap) = snapshot {
+                                let flow = snap.get("hot_memory_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let prompt = snap.get("system_prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let tools = snap.get("tool_schema_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let total = snap.get("projected_total_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let output = snap.get("reserved_output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let hard = snap.get("hard_reserve_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let free = snap.get("headroom_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let budget = snap.get("budget_state")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+
+                                let budget_cls = match budget {
+                                    "healthy" | "ok" => " context-budget-ok",
+                                    "warning" | "warn" => " context-budget-warn",
+                                    "critical" | "over" => " context-budget-over",
+                                    _ => "",
+                                };
+
+                                let k = |n: u64| -> String {
+                                    if n < 1000 {
+                                        format!("{n}k")
+                                    } else {
+                                        let v = n as f64 / 1000.0;
+                                        let s = format!("{:.1}k", v);
+                                        s.trim_end_matches('0').trim_end_matches('.').to_string()
+                                    }
+                                };
+
+                                view! {
+                                    <span class="context-inline">
+                                        <span class={format!("context-budget-pill{budget_cls}")}>
+                                            {format!("{}", budget)}
+                                        </span>
+                                        <span class="context-metric context-metric-highlight">
+                                            <span class="context-metric-value">{k(free)}</span>
+                                            <span class="context-metric-label">" free"</span>
+                                        </span>
+                                        <span class="context-sep">"\u{00b7}"</span>
+                                        <span class="context-metric">
+                                            <span class="context-metric-label">"flow "</span>
+                                            <span class="context-metric-value">{k(flow)}</span>
+                                        </span>
+                                        <span class="context-sep">"\u{00b7}"</span>
+                                        <span class="context-metric">
+                                            <span class="context-metric-label">"prompt "</span>
+                                            <span class="context-metric-value">{k(prompt)}</span>
+                                        </span>
+                                        <span class="context-sep">"\u{00b7}"</span>
+                                        <span class="context-metric">
+                                            <span class="context-metric-label">"tools "</span>
+                                            <span class="context-metric-value">{k(tools)}</span>
+                                        </span>
+                                        <span class="context-sep">"\u{00b7}"</span>
+                                        <span class="context-metric">
+                                            <span class="context-metric-value">{k(total)}</span>
+                                            <span class="context-metric-label">" / "</span>
+                                            <span class="context-metric-value">{k(output)}</span>
+                                            <span class="context-metric-label">"+"</span>
+                                            <span class="context-metric-value">{k(hard)}</span>
+                                            <span class="context-metric-label">" reserved"</span>
+                                        </span>
+                                        <span class="context-sep">"\u{00b7}"</span>
+                                        <span>{format!("{lines_count} lines \u{00b7} {len} chars")}</span>
+                                    </span>
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <span>{format!("{len} chars \u{00b7} {lines_count} lines")}</span>
+                                }.into_any()
+                            }
                         }}
                     </div>
                     <div style="display:flex;gap:8px;">

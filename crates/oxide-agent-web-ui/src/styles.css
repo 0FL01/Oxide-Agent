@@ -725,6 +725,66 @@ label {
   font-size: 11px;
   color: var(--text-faint);
   font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.context-sep {
+  color: var(--text-faint);
+  opacity: 0.3;
+  font-size: 10px;
+}
+
+.context-budget-pill {
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.context-budget-pill.context-budget-ok {
+  color: #e6fef0;
+  background: rgba(72, 199, 116, 0.2);
+  border: 1px solid rgba(72, 199, 116, 0.3);
+}
+
+.context-budget-pill.context-budget-warn {
+  color: #fef6e0;
+  background: rgba(216, 162, 30, 0.2);
+  border: 1px solid rgba(216, 162, 30, 0.3);
+}
+
+.context-budget-pill.context-budget-over {
+  color: #fee6e6;
+  background: rgba(224, 82, 82, 0.2);
+  border: 1px solid rgba(224, 82, 82, 0.3);
+}
+
+.context-metric {
+  display: inline;
+}
+
+.context-metric-label {
+  color: var(--text-muted);
+}
+
+.context-metric-value {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.context-metric-highlight .context-metric-value {
+  color: var(--accent-green);
 }
 
 /* === RESULTS PANEL (agent output) === */
@@ -1607,34 +1667,6 @@ pre {
 
 .metrics-row:last-child {
   border-bottom: none;
-}
-
-/* Context budget */
-.context-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
-.context-line {
-  color: var(--text-muted);
-}
-
-.context-budget-ok {
-  color: var(--accent-green);
-  font-weight: 500;
-}
-
-.context-budget-warn {
-  color: var(--accent-yellow);
-  font-weight: 500;
-}
-
-.context-budget-over {
-  color: var(--accent-red);
-  font-weight: 500;
 }
 
 .metrics-label {
