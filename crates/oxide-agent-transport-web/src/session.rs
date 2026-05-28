@@ -167,9 +167,28 @@ impl WebSessionManager {
         llm: Arc<LlmClient>,
         agent_settings: Arc<AgentSettings>,
     ) -> Self {
+        Self::new_with_storage(
+            registry,
+            llm,
+            agent_settings,
+            Arc::new(InMemoryStorage::new()),
+        )
+    }
+
+    /// Create a new session manager using an explicit storage provider.
+    ///
+    /// Production web console setup passes the durable R2 provider here so
+    /// runtime memory, wiki memory, topic AGENTS.md and reminder context share
+    /// the same storage backend as the rest of the application.
+    pub fn new_with_storage(
+        registry: SessionRegistry,
+        llm: Arc<LlmClient>,
+        agent_settings: Arc<AgentSettings>,
+        storage: Arc<dyn StorageProvider>,
+    ) -> Self {
         Self {
             registry,
-            storage: Arc::new(InMemoryStorage::new()),
+            storage,
             llm,
             agent_settings,
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -245,9 +264,10 @@ impl WebSessionManager {
         )
         .await;
 
-        // Attach in-memory checkpoint so memory survives across tasks.
-        session.set_memory_checkpoint(Arc::new(InMemoryFlowCheckpoint {
-            storage: Arc::new(InMemoryStorage::new()),
+        // Attach a checkpoint backed by the manager storage so memory survives
+        // across tasks and follows the configured durable backend in web mode.
+        session.set_memory_checkpoint(Arc::new(StorageFlowCheckpoint {
+            storage: self.storage(),
             user_id,
             context_key: context_key.clone(),
             agent_flow_id: agent_flow_id.clone(),
@@ -475,8 +495,8 @@ fn derive_web_session_id(user_id: i64, session_id: &str) -> SessionId {
     SessionId::from(h.finish() as i64)
 }
 
-/// In-memory checkpoint that delegates to `InMemoryStorage`.
-struct InMemoryFlowCheckpoint {
+/// Agent memory checkpoint that delegates to the configured storage provider.
+struct StorageFlowCheckpoint {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     context_key: String,
@@ -511,7 +531,7 @@ async fn inject_topic_agents_md_for_session(
 }
 
 #[async_trait::async_trait]
-impl oxide_agent_core::agent::AgentMemoryCheckpoint for InMemoryFlowCheckpoint {
+impl oxide_agent_core::agent::AgentMemoryCheckpoint for StorageFlowCheckpoint {
     async fn persist(&self, memory: &AgentMemory) -> Result<(), anyhow::Error> {
         self.storage
             .save_agent_memory_for_flow(

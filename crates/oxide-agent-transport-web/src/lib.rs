@@ -3,8 +3,7 @@
 //! ## Overview
 //!
 //! This crate provides a transport-agnostic HTTP layer that exposes Agent Mode
-//! capabilities via a REST API. It is designed to be used in E2E tests and
-//! benchmarks to measure application-level latency without depending on Telegram.
+//! capabilities through the browser-facing `/api/v1` REST/SSE API.
 //!
 //! ## Architecture
 //!
@@ -25,25 +24,6 @@
 //!     +-- [ScriptedLlmProvider] -- deterministic LLM for tests
 //! ```
 //!
-//! ## API Contract
-//!
-//! ### Sessions
-//!
-//! - `POST /sessions` — create a new session, returns `{ "session_id": "uuid" }`
-//! - `GET /sessions/{id}` — get session metadata (status, created_at)
-//! - `DELETE /sessions/{id}` — destroy session
-//!
-//! ### Tasks
-//!
-//! - `POST /sessions/{id}/tasks` — submit task text, returns `{ "task_id": "uuid" }`
-//!   The request body is plain text. Response is 202 Accepted with task_id.
-//!
-//! - `GET /sessions/{id}/tasks/{task_id}/progress` — current ProgressState
-//!
-//! - `GET /sessions/{id}/tasks/{task_id}/events` — SSE stream of AgentEvent
-//!
-//! - `POST /sessions/{id}/tasks/{task_id}/cancel` — cancel running task
-//!
 //! ## Latency Measurement
 //!
 //! Each task records a `TaskTimeline` with the following milestones:
@@ -55,8 +35,9 @@
 //! - `final_response` — moment AgentExecutionOutcome::Completed was produced
 //! - `memory_persisted` — memory checkpoint saved to InMemoryStorage
 //!
-//! The timeline is stored per (session_id, task_id) and accessible via
-//! `GET /sessions/{id}/tasks/{task_id}/timeline`.
+//! The timeline is stored per `(session_id, task_id)` for internal/test
+//! inspection while the browser-facing API reads task records, persisted events,
+//! and progress snapshots.
 
 pub mod api;
 pub mod auth;

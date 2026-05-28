@@ -2,15 +2,6 @@
 //!
 //! ## Endpoints
 //!
-//! - `POST /sessions` — create session
-//! - `GET /sessions/:id` — session metadata
-//! - `DELETE /sessions/:id` — destroy session
-//! - `POST /sessions/:session_id/tasks` — submit task (plain text body), returns `{task_id}`
-//! - `GET /sessions/:session_id/tasks/:task_id/progress` — `SerializableProgress`
-//! - `GET /sessions/:session_id/tasks/:task_id/events` — event log as JSON
-//! - `GET /sessions/:session_id/tasks/:task_id/stream` — SSE event stream
-//! - `GET /sessions/:session_id/tasks/:task_id/timeline` — `TaskTimeline`
-//! - `POST /sessions/:session_id/tasks/:task_id/cancel` — cancel task
 //! - `GET /health`
 //! - `GET /api/v1/public-config` — browser-safe web console config
 //! - `POST /api/v1/auth/register` — register user when enabled
@@ -29,8 +20,10 @@ use crate::auth::{
     bootstrap_user, change_password, current_user_for_token, login_user, logout_session,
     register_user, AuthError, AUTH_SESSION_TTL_SECS,
 };
+#[cfg(feature = "storage-s3-r2")]
+use crate::persistence::R2WebUiStore;
 use crate::persistence::{InMemoryWebUiStore, WebUiStore};
-use crate::session::{RunningTask, SessionMeta, ToolCallTiming, WebSessionManager};
+use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
 use crate::web_transport::{collect_events, BrowserEventScope};
 use async_stream::stream as async_stream;
 use axum::{
@@ -45,22 +38,32 @@ use axum::{
 };
 use futures_util::stream::Stream;
 use oxide_agent_core::agent::{AgentExecutionOutcome, PendingUserInput};
+#[cfg(feature = "storage-s3-r2")]
+use oxide_agent_core::{
+    config::AgentSettings,
+    llm::LlmClient,
+    storage::{R2Storage, R2StorageConfig, StorageProvider},
+};
+#[cfg(feature = "storage-s3-r2")]
+use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::{
     AuthUserResponse, BootstrapRequest, CancelTaskResponse as ApiCancelTaskResponse,
     ChangePasswordRequest, CreateSessionResponse as ApiCreateSessionResponse,
     CreateTaskRequest as ApiCreateTaskRequest, CreateTaskResponse as ApiCreateTaskResponse,
     CurrentUser, CurrentUserResponse, EditTaskInputRequest as ApiEditTaskInputRequest,
     EditTaskInputResponse as ApiEditTaskInputResponse, ErrorCode, ErrorEnvelope,
-    GetSessionResponse, GetTaskResponse, ListSessionsResponse, ListTasksResponse, LoginRequest,
-    OkResponse, PendingUserInputView, PersistedTaskEvent, ProgressSnapshot, PublicConfigResponse,
-    RegisterRequest, ResumeTaskRequest as ApiResumeTaskRequest,
-    ResumeTaskResponse as ApiResumeTaskResponse, SessionDetail, SessionSummary, TaskDetail,
-    TaskEventsResponse, TaskStatus as ApiTaskStatus, TaskSummary, UpdateSessionRequest,
-    UpdateSessionResponse, UserInputKind as ApiUserInputKind, WebSessionRecord, WebTaskRecord,
+    GetSessionResponse, GetTaskProgressResponse, GetTaskResponse, ListSessionsResponse,
+    ListTasksResponse, LoginRequest, OkResponse, PendingUserInputView, PersistedTaskEvent,
+    ProgressSnapshot, PublicConfigResponse, RegisterRequest,
+    ResumeTaskRequest as ApiResumeTaskRequest, ResumeTaskResponse as ApiResumeTaskResponse,
+    SessionDetail, SessionSummary, TaskDetail, TaskEventsResponse, TaskStatus as ApiTaskStatus,
+    TaskSummary, UpdateSessionRequest, UpdateSessionResponse, UserInputKind as ApiUserInputKind,
+    WebSessionRecord, WebTaskRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap as StdHashMap;
 use std::convert::Infallible;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex as AsyncMutex, RwLock};
@@ -81,10 +84,40 @@ const DEFAULT_TASK_EVENTS_LIMIT: usize = 200;
 const MAX_TASK_EVENTS_LIMIT: usize = 500;
 const YOLO_APPROVAL_DIAGNOSTIC: &str = "The agent requested approval, but web console runs in YOLO (full permission) mode. Reconfigure the agent or retry without an approval-requiring setup.";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebStoreKind {
+    InMemory,
+    R2,
+    Custom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebStartupError {
+    InMemoryStoreNotAllowed,
+    StoreUnavailable(String),
+}
+
+impl fmt::Display for WebStartupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InMemoryStoreNotAllowed => write!(
+                f,
+                "in-memory web UI store is not allowed for this startup mode; configure R2 storage or set OXIDE_WEB_ALLOW_IN_MEMORY_STORE=true for explicit dev/test use"
+            ),
+            Self::StoreUnavailable(message) => {
+                write!(f, "web UI store is unavailable during startup: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WebStartupError {}
+
 #[derive(Clone)]
 pub struct AppState {
     pub session_manager: Arc<WebSessionManager>,
     pub web_store: Arc<dyn WebUiStore>,
+    pub web_store_kind: WebStoreKind,
     pub task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     pub task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     /// Tracks the JoinHandle for each running task so it can be aborted on completion.
@@ -93,20 +126,73 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(session_manager: Arc<WebSessionManager>) -> Self {
-        Self::new_with_web_store(session_manager, Arc::new(InMemoryWebUiStore::new()))
+        Self::new_in_memory_for_dev_test(session_manager)
+    }
+
+    pub fn new_in_memory_for_dev_test(session_manager: Arc<WebSessionManager>) -> Self {
+        Self::new_with_web_store_kind(
+            session_manager,
+            Arc::new(InMemoryWebUiStore::new()),
+            WebStoreKind::InMemory,
+        )
     }
 
     pub fn new_with_web_store(
         session_manager: Arc<WebSessionManager>,
         web_store: Arc<dyn WebUiStore>,
     ) -> Self {
+        Self::new_with_web_store_kind(session_manager, web_store, WebStoreKind::Custom)
+    }
+
+    fn new_with_web_store_kind(
+        session_manager: Arc<WebSessionManager>,
+        web_store: Arc<dyn WebUiStore>,
+        web_store_kind: WebStoreKind,
+    ) -> Self {
         Self {
             session_manager,
             web_store,
+            web_store_kind,
             task_progress: Arc::new(RwLock::new(StdHashMap::new())),
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
         }
+    }
+
+    #[cfg(feature = "storage-s3-r2")]
+    pub fn new_with_r2_web_store(
+        session_manager: Arc<WebSessionManager>,
+        r2_storage: Arc<R2Storage>,
+    ) -> Self {
+        Self::new_with_web_store_kind(
+            session_manager,
+            Arc::new(R2WebUiStore::new(r2_storage)),
+            WebStoreKind::R2,
+        )
+    }
+
+    #[must_use]
+    pub const fn web_store_kind(&self) -> WebStoreKind {
+        self.web_store_kind
+    }
+
+    pub fn validate_web_store_for_startup(&self) -> Result<(), WebStartupError> {
+        if self.web_store_kind != WebStoreKind::InMemory || web_in_memory_store_allowed() {
+            return Ok(());
+        }
+        if durable_web_store_required() {
+            return Err(WebStartupError::InMemoryStoreNotAllowed);
+        }
+        Ok(())
+    }
+
+    pub async fn reconcile_unfinished_tasks_on_startup(
+        &self,
+    ) -> Result<Vec<WebTaskRecord>, WebStartupError> {
+        self.web_store
+            .mark_unfinished_tasks_interrupted("web backend restarted", chrono::Utc::now())
+            .await
+            .map_err(|error| WebStartupError::StoreUnavailable(error.to_string()))
     }
 
     /// Access the underlying session manager (for test use).
@@ -122,6 +208,29 @@ impl AppState {
     }
 }
 
+#[cfg(feature = "storage-s3-r2")]
+pub async fn build_r2_backed_app_state(
+    registry: SessionRegistry,
+    llm: Arc<LlmClient>,
+    agent_settings: Arc<AgentSettings>,
+) -> Result<AppState, WebStartupError> {
+    let r2_config = R2StorageConfig::from_agent_settings(agent_settings.as_ref())
+        .map_err(|error| WebStartupError::StoreUnavailable(error.to_string()))?;
+    let r2_storage = Arc::new(
+        R2Storage::new(&r2_config)
+            .await
+            .map_err(|error| WebStartupError::StoreUnavailable(error.to_string()))?,
+    );
+    let provider_storage = Arc::clone(&r2_storage);
+    let storage_provider: Arc<dyn StorageProvider> = provider_storage;
+    let session_manager =
+        WebSessionManager::new_with_storage(registry, llm, agent_settings, storage_provider);
+    let state = AppState::new_with_r2_web_store(Arc::new(session_manager), r2_storage);
+    state.validate_web_store_for_startup()?;
+    state.reconcile_unfinished_tasks_on_startup().await?;
+    Ok(state)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SerializableProgress {
@@ -130,10 +239,13 @@ pub struct SerializableProgress {
     pub is_finished: bool,
     pub error: Option<String>,
     pub current_thought: Option<String>,
+    pub current_todos: Option<serde_json::Value>,
     pub last_compaction_status: Option<String>,
     pub repeated_compaction_warning: Option<String>,
     pub last_history_repair_status: Option<String>,
     pub latest_token_snapshot: Option<oxide_agent_core::agent::progress::TokenSnapshot>,
+    pub llm_retry: Option<serde_json::Value>,
+    pub provider_failover_notice: Option<String>,
 }
 
 impl SerializableProgress {
@@ -144,10 +256,19 @@ impl SerializableProgress {
             is_finished: state.is_finished,
             error: state.error.clone(),
             current_thought: state.current_thought.clone(),
+            current_todos: state
+                .current_todos
+                .as_ref()
+                .and_then(|todos| serde_json::to_value(todos).ok()),
             last_compaction_status: state.last_compaction_status.clone(),
             repeated_compaction_warning: state.repeated_compaction_warning.clone(),
             last_history_repair_status: state.last_history_repair_status.clone(),
             latest_token_snapshot: state.latest_token_snapshot.clone(),
+            llm_retry: state
+                .llm_retry
+                .as_ref()
+                .and_then(|retry| serde_json::to_value(retry).ok()),
+            provider_failover_notice: state.provider_failover_notice.clone(),
         }
     }
 }
@@ -184,36 +305,6 @@ pub struct Milestones {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TaskTimelineRecord {
-    pub milestones: Milestones,
-    pub tool_calls: Vec<ToolCallTiming>,
-}
-
-/// Re-exported from web_transport to avoid duplication.
-pub use crate::web_transport::TaskEventEntry;
-
-#[derive(Debug, Deserialize)]
-pub struct CreateSessionBody {
-    pub user_id: i64,
-    #[serde(default)]
-    pub context_key: Option<String>,
-    #[serde(default)]
-    pub agent_flow_id: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateSessionResponse {
-    pub session_id: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateTaskResponse {
-    pub task_id: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TaskTimelineResponse {
-    pub task_id: String,
-    pub session_id: String,
     pub milestones: Milestones,
     pub tool_calls: Vec<ToolCallTiming>,
 }
@@ -592,6 +683,22 @@ async fn api_get_task(
     let task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
     Ok(Json(GetTaskResponse {
         task: task_detail_from_record(task),
+    }))
+}
+
+async fn api_get_task_progress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((session_id, task_id)): Path<(String, String)>,
+) -> Result<Json<GetTaskProgressResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user(&state, &headers).await?;
+    let task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
+    Ok(Json(GetTaskProgressResponse {
+        task_id: task.task_id,
+        status: task.status,
+        progress: task.last_progress,
+        last_event_seq: task.last_event_seq,
+        updated_at: task.updated_at,
     }))
 }
 
@@ -1429,13 +1536,15 @@ fn progress_snapshot_from_serializable(progress: SerializableProgress) -> Progre
         is_finished: progress.is_finished,
         error: progress.error,
         current_thought: progress.current_thought,
-        current_todos: None,
+        current_todos: progress.current_todos,
         last_compaction_status: progress.last_compaction_status,
         repeated_compaction_warning: progress.repeated_compaction_warning,
         last_history_repair_status: progress.last_history_repair_status,
         latest_token_snapshot: progress
             .latest_token_snapshot
             .and_then(|snapshot| serde_json::to_value(snapshot).ok()),
+        llm_retry: progress.llm_retry,
+        provider_failover_notice: progress.provider_failover_notice,
     }
 }
 
@@ -1450,6 +1559,16 @@ fn parse_web_bool(value: &str) -> bool {
 
 fn web_non_empty_env(key: &str) -> bool {
     web_env_value(key).is_some_and(|value| !value.trim().is_empty())
+}
+
+fn durable_web_store_required() -> bool {
+    is_production_run_mode()
+        || web_bool_env("OXIDE_WEB_ENABLED")
+        || web_bool_env("OXIDE_WEB_REQUIRE_DURABLE_STORAGE")
+}
+
+fn web_in_memory_store_allowed() -> bool {
+    web_bool_env("OXIDE_WEB_ALLOW_IN_MEMORY_STORE")
 }
 
 fn web_env_value(key: &str) -> Option<String> {
@@ -1527,222 +1646,6 @@ fn is_production_run_mode() -> bool {
         let value = value.trim().to_ascii_lowercase();
         value == "prod" || value == "production"
     })
-}
-
-/// Debug endpoint: list all task IDs currently in EVENT_LOGS.
-async fn debug_event_logs() -> Json<Vec<String>> {
-    let logs = EVENT_LOGS.lock().await;
-    Json(logs.keys().cloned().collect())
-}
-
-async fn create_session(
-    State(state): State<AppState>,
-    Json(body): Json<CreateSessionBody>,
-) -> Result<Json<CreateSessionResponse>, StatusCode> {
-    let session_id = state
-        .session_manager
-        .create_session(body.user_id, body.context_key, body.agent_flow_id)
-        .await;
-    Ok(Json(CreateSessionResponse { session_id }))
-}
-
-async fn get_session(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-) -> Result<Json<SessionMeta>, StatusCode> {
-    let meta = state
-        .session_manager
-        .get_session(&session_id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(meta))
-}
-
-async fn delete_session(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-) -> StatusCode {
-    if state.session_manager.delete_session(&session_id).await {
-        StatusCode::NO_CONTENT
-    } else {
-        StatusCode::NOT_FOUND
-    }
-}
-
-async fn create_task(
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-    body: String,
-) -> Result<Json<CreateTaskResponse>, StatusCode> {
-    let Some(running_task) = state
-        .session_manager
-        .register_task(&session_id, body.clone())
-        .await
-    else {
-        return Err(StatusCode::NOT_FOUND);
-    };
-
-    let task_id = running_task.task_id.clone();
-    spawn_registered_task(
-        state,
-        session_id,
-        running_task,
-        TaskRunRequest::Execute(body),
-        None,
-    )
-    .await;
-
-    Ok(Json(CreateTaskResponse { task_id }))
-}
-
-async fn get_task_progress(
-    State(state): State<AppState>,
-    Path((_session_id, task_id)): Path<(String, String)>,
-) -> Result<Json<SerializableProgress>, StatusCode> {
-    let progress_map = state.task_progress.read().await;
-    progress_map
-        .get(&task_id)
-        .cloned()
-        .map(Json)
-        .ok_or(StatusCode::NOT_FOUND)
-}
-
-async fn get_task_events(
-    Path((_session_id, task_id)): Path<(String, String)>,
-) -> Result<Json<Vec<TaskEventEntry>>, StatusCode> {
-    let logs = EVENT_LOGS.lock().await;
-    match logs.get(&task_id) {
-        Some(log) => {
-            let events = log.events.read().await;
-            Ok(Json(events.clone()))
-        }
-        None => Err(StatusCode::NOT_FOUND),
-    }
-}
-
-async fn get_task_timeline(
-    State(state): State<AppState>,
-    Path((session_id, task_id)): Path<(String, String)>,
-) -> Result<Json<TaskTimelineResponse>, StatusCode> {
-    let timelines = state.task_timeline.read().await;
-    let milestones = timelines
-        .get(&task_id)
-        .cloned()
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(TaskTimelineResponse {
-        task_id,
-        session_id,
-        milestones: milestones.milestones,
-        tool_calls: milestones.tool_calls,
-    }))
-}
-
-async fn cancel_task(
-    State(state): State<AppState>,
-    Path((session_id, task_id)): Path<(String, String)>,
-) -> StatusCode {
-    if state
-        .session_manager
-        .cancel_task(&task_id, &session_id)
-        .await
-    {
-        // Also abort the spawned task's JoinHandle if tracked.
-        let handle = {
-            let handles = state.task_handles.read().await;
-            handles.get(&task_id).cloned()
-        };
-        if let Some(h) = handle {
-            h.abort();
-        }
-        StatusCode::ACCEPTED
-    } else {
-        StatusCode::NOT_FOUND
-    }
-}
-
-/// SSE stream of task events.
-///
-/// Streams a snapshot of already-received events immediately, then listens for
-/// new events via the broadcast channel. The stream closes after `max_duration` or
-/// when the task completes (whichever comes first).
-async fn sse_task_stream(
-    Path((_session_id, task_id)): Path<(String, String)>,
-) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, StatusCode> {
-    let task_id_str = task_id.clone();
-
-    // Poll EVENT_LOGS briefly — the background task may not have registered yet.
-    let event_log = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let logs = EVENT_LOGS.lock().await;
-            if let Some(log) = logs.get(&task_id_str) {
-                break log.clone();
-            }
-            drop(logs);
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .map_err(|_| StatusCode::NOT_FOUND)?;
-
-    // Take a snapshot of events already received.
-    let initial_events = event_log.snapshot().await;
-
-    // Subscribe to new events AFTER snapshot (gets events pushed after this point).
-    let mut rx = event_log.subscribe();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-
-    // Combine snapshot + live broadcast into a single SSE stream using `stream!`.
-    let stream = async_stream! {
-        // First, emit the snapshot events.
-        for entry in initial_events {
-            yield Ok::<_, std::convert::Infallible>(
-                Event::default()
-                    .event("task_event")
-                    .data(serde_json::to_string(&entry).unwrap_or_default()),
-            );
-        }
-
-        // Then listen for new events from the broadcast channel.
-        // Keep listening until the sender is dropped (channel closed) OR the
-        // event_log is closed (task done), which sends a "stream_closed" sentinel.
-        loop {
-            tokio::select! {
-                biased; // Prefer recv over deadline
-
-                // Receive a broadcast event.
-                result = rx.recv() => {
-                    match result {
-                        Ok(entry) => {
-                            if entry.event_name == "stream_closed" {
-                                break;
-                            }
-                            let event = Event::default()
-                                .event("task_event")
-                                .data(serde_json::to_string(&entry).unwrap_or_default());
-                            yield Ok(event);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            // Channel closed — task is done.
-                            break;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            let event = Event::default()
-                                .event("task_event")
-                                .data(r#"{"event_name":"lagged"}"#);
-                            yield Ok(event);
-                        }
-                    }
-                }
-
-                // Fallback: close stream after max duration.
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-                    break;
-                }
-            }
-        }
-    };
-
-    Ok(Sse::new(stream))
 }
 
 // ---------------------------------------------------------------------------
@@ -1945,7 +1848,19 @@ fn spawn_event_collector(
                 let (tx, rx) = mpsc::unbounded_channel();
                 (Some(tx), Some(spawn_live_event_persister(web_task, rx)))
             });
-        let collected = collect_events(event_log, rx, browser_event_scope, live_event_tx).await;
+        let (live_progress_tx, live_progress_persister_handle) =
+            web_task.clone().map_or((None, None), |web_task| {
+                let (tx, rx) = mpsc::unbounded_channel();
+                (Some(tx), Some(spawn_live_progress_persister(web_task, rx)))
+            });
+        let collected = collect_events(
+            event_log,
+            rx,
+            browser_event_scope,
+            live_event_tx,
+            live_progress_tx,
+        )
+        .await;
         let progress = SerializableProgress::from_state(&collected.state);
 
         {
@@ -1970,6 +1885,15 @@ fn spawn_event_collector(
             } else {
                 persist_task_events(&web_task, collected.persisted_events).await;
             }
+            if let Some(handle) = live_progress_persister_handle {
+                if let Err(error) = handle.await {
+                    warn!(
+                        task_id = %web_task.task_id,
+                        error = %error,
+                        "Live web progress persistence task failed"
+                    );
+                }
+            }
             persist_task_progress(&web_task, progress).await;
         }
     })
@@ -1982,6 +1906,17 @@ fn spawn_live_event_persister(
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             persist_task_events(&web_task, vec![event]).await;
+        }
+    })
+}
+
+fn spawn_live_progress_persister(
+    web_task: WebTaskPersistence,
+    mut rx: mpsc::UnboundedReceiver<oxide_agent_core::agent::progress::ProgressState>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(state) = rx.recv().await {
+            persist_task_progress(&web_task, SerializableProgress::from_state(&state)).await;
         }
     })
 }
@@ -2390,6 +2325,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api_get_task),
         )
         .route(
+            "/api/v1/sessions/:session_id/tasks/:task_id/progress",
+            get(api_get_task_progress),
+        )
+        .route(
             "/api/v1/sessions/:session_id/tasks/:task_id/events",
             get(api_get_task_events),
         )
@@ -2409,37 +2348,19 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/sessions/:session_id/tasks/:task_id/cancel",
             post(api_cancel_task),
         )
-        .route("/debug/event_logs", get(debug_event_logs))
-        .route("/sessions", post(create_session))
-        .route("/sessions/:id", get(get_session))
-        .route("/sessions/:id", delete(delete_session))
-        .route("/sessions/:session_id/tasks", post(create_task))
-        .route(
-            "/sessions/:session_id/tasks/:task_id/progress",
-            get(get_task_progress),
-        )
-        .route(
-            "/sessions/:session_id/tasks/:task_id/events",
-            get(get_task_events),
-        )
-        .route(
-            "/sessions/:session_id/tasks/:task_id/stream",
-            get(sse_task_stream),
-        )
-        .route(
-            "/sessions/:session_id/tasks/:task_id/timeline",
-            get(get_task_timeline),
-        )
-        .route(
-            "/sessions/:session_id/tasks/:task_id/cancel",
-            post(cancel_task),
-        )
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
 }
 
 pub async fn serve(state: AppState, addr: std::net::SocketAddr) {
+    state
+        .validate_web_store_for_startup()
+        .expect("web transport startup validation failed");
+    state
+        .reconcile_unfinished_tasks_on_startup()
+        .await
+        .expect("web task startup reconciliation failed");
     let router = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -2451,8 +2372,10 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) {
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, OnceLock};
 
+    use oxide_agent_core::agent::progress::{LlmRetryState, ProgressState};
+    use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
     use oxide_agent_core::config::{AgentSettings, ModelInfo};
     use oxide_agent_core::llm::LlmClient;
     use oxide_agent_runtime::SessionRegistry;
@@ -2463,14 +2386,16 @@ mod tests {
     };
     use oxide_agent_web_contracts::{
         EditTaskInputRequest as ApiEditTaskInputRequest, ErrorCode, LoginRequest,
-        PersistedTaskEvent, RegisterRequest, TaskEventKind, TaskStatus as ApiTaskStatus,
-        WebTaskRecord,
+        PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskEventKind,
+        TaskStatus as ApiTaskStatus, WebTaskRecord,
     };
+    use tokio::sync::mpsc;
 
     use super::{
         api_cancel_task, api_create_session, api_edit_task_input, api_get_session,
-        api_get_task_events, api_list_sessions, auth_cookie_value, csrf_header_value,
-        parse_web_bool, AppState, TaskEventsQuery, AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
+        api_get_task_events, api_get_task_progress, api_list_sessions, auth_cookie_value,
+        csrf_header_value, parse_web_bool, AppState, TaskEventsQuery, WebStartupError,
+        AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
     };
     #[cfg(feature = "profile-lite")]
     use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
@@ -2516,6 +2441,141 @@ mod tests {
             "token-123"
         );
         assert_eq!(csrf_header_value(&headers).expect("csrf"), "csrf-123");
+    }
+
+    #[test]
+    fn startup_guard_requires_explicit_in_memory_for_web_enabled_mode() {
+        let _lock = web_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = EnvGuard::capture(&[
+            "RUN_MODE",
+            "OXIDE_WEB_ENABLED",
+            "OXIDE_WEB_REQUIRE_DURABLE_STORAGE",
+            "OXIDE_WEB_ALLOW_IN_MEMORY_STORE",
+        ]);
+        std::env::remove_var("RUN_MODE");
+        std::env::set_var("OXIDE_WEB_ENABLED", "true");
+        std::env::remove_var("OXIDE_WEB_REQUIRE_DURABLE_STORAGE");
+        std::env::remove_var("OXIDE_WEB_ALLOW_IN_MEMORY_STORE");
+
+        let state = test_app_state();
+        assert_eq!(
+            state.validate_web_store_for_startup(),
+            Err(WebStartupError::InMemoryStoreNotAllowed)
+        );
+
+        std::env::set_var("OXIDE_WEB_ALLOW_IN_MEMORY_STORE", "true");
+        assert!(state.validate_web_store_for_startup().is_ok());
+    }
+
+    #[cfg(feature = "storage-s3-r2")]
+    #[tokio::test]
+    async fn r2_backed_app_state_builder_requires_r2_config() {
+        let _lock = web_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = EnvGuard::capture(&[
+            "OXIDE_R2_ENDPOINT_URL",
+            "OXIDE_R2_ENDPOINT",
+            "OXIDE_R2_BUCKET_NAME",
+            "OXIDE_R2_BUCKET",
+            "OXIDE_R2_ACCESS_KEY_ID",
+            "OXIDE_R2_SECRET_ACCESS_KEY",
+        ]);
+        for key in [
+            "OXIDE_R2_ENDPOINT_URL",
+            "OXIDE_R2_ENDPOINT",
+            "OXIDE_R2_BUCKET_NAME",
+            "OXIDE_R2_BUCKET",
+            "OXIDE_R2_ACCESS_KEY_ID",
+            "OXIDE_R2_SECRET_ACCESS_KEY",
+        ] {
+            std::env::remove_var(key);
+        }
+
+        let settings = Arc::new(AgentSettings::default());
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let Err(error) =
+            super::build_r2_backed_app_state(SessionRegistry::new(), llm, settings).await
+        else {
+            panic!("missing R2 config should fail before startup");
+        };
+        assert!(
+            error.to_string().contains("OXIDE_R2_ENDPOINT"),
+            "unexpected startup error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn router_exposes_api_v1_without_legacy_unversioned_routes() {
+        use tower::Service as _;
+
+        let state = test_app_state();
+        let mut app = super::build_router(state.clone());
+        let public_config = app
+            .call(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::GET)
+                    .uri("/api/v1/public-config")
+                    .body(axum::body::Body::empty())
+                    .expect("public-config request"),
+            )
+            .await
+            .expect("public-config response");
+        assert_eq!(public_config.status(), axum::http::StatusCode::OK);
+
+        let legacy_root = format!("{}{}", "/session", "s");
+        let debug_logs_path = format!("{}{}", "/debug", "/event_logs");
+        for (method, path) in [
+            (axum::http::Method::POST, legacy_root.clone()),
+            (axum::http::Method::GET, format!("{legacy_root}/session-1")),
+            (
+                axum::http::Method::DELETE,
+                format!("{legacy_root}/session-1"),
+            ),
+            (
+                axum::http::Method::POST,
+                format!("{legacy_root}/session-1/tasks"),
+            ),
+            (
+                axum::http::Method::GET,
+                format!("{legacy_root}/session-1/tasks/task-1/progress"),
+            ),
+            (
+                axum::http::Method::GET,
+                format!("{legacy_root}/session-1/tasks/task-1/events"),
+            ),
+            (
+                axum::http::Method::GET,
+                format!("{legacy_root}/session-1/tasks/task-1/stream"),
+            ),
+            (
+                axum::http::Method::GET,
+                format!("{legacy_root}/session-1/tasks/task-1/timeline"),
+            ),
+            (
+                axum::http::Method::POST,
+                format!("{legacy_root}/session-1/tasks/task-1/cancel"),
+            ),
+            (axum::http::Method::GET, debug_logs_path),
+        ] {
+            let response = super::build_router(state.clone())
+                .call(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(path.as_str())
+                        .body(axum::body::Body::empty())
+                        .expect("legacy route request"),
+                )
+                .await
+                .expect("legacy route response");
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::NOT_FOUND,
+                "legacy route {path} should not be exposed"
+            );
+        }
     }
 
     #[test]
@@ -2949,6 +3009,188 @@ mod tests {
             foreign.expect_err("foreign events should be hidden").0,
             axum::http::StatusCode::NOT_FOUND
         );
+    }
+
+    #[tokio::test]
+    async fn api_task_progress_is_auth_scoped_and_reads_persisted_snapshot() {
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        let user_one = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register first user");
+        register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "bob".to_string(),
+                password: "another correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register second user");
+        let (_, session_one, token_one) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login first user");
+        let (_, _, token_two) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "bob".to_string(),
+                password: "another correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login second user");
+
+        let axum::Json(created_session) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token_one, Some(&session_one.csrf_token)),
+        )
+        .await
+        .expect("create session");
+        let session_id = created_session.session.session_id;
+        let mut task = task_record(
+            user_one.user_id,
+            &session_id,
+            "task-progress",
+            ApiTaskStatus::Running,
+            "Prompt",
+            now,
+        );
+        task.last_event_seq = 7;
+        task.last_progress = Some(ProgressSnapshot {
+            current_iteration: 3,
+            max_iterations: 100,
+            is_finished: false,
+            error: None,
+            current_thought: Some("Collecting evidence".to_string()),
+            current_todos: Some(serde_json::json!({ "items": [] })),
+            last_compaction_status: Some("Compaction: compacted history".to_string()),
+            repeated_compaction_warning: None,
+            last_history_repair_status: Some("History repaired".to_string()),
+            latest_token_snapshot: None,
+            llm_retry: Some(serde_json::json!({ "attempt": 2 })),
+            provider_failover_notice: Some("Failover: primary -> backup".to_string()),
+        });
+        state.web_store.save_task(task).await.expect("save task");
+
+        let axum::Json(response) = api_get_task_progress(
+            axum::extract::State(state.clone()),
+            auth_headers(&token_one, None),
+            axum::extract::Path((session_id.clone(), "task-progress".to_string())),
+        )
+        .await
+        .expect("get persisted task progress");
+        let progress = response.progress.expect("progress snapshot");
+        assert_eq!(response.status, ApiTaskStatus::Running);
+        assert_eq!(response.last_event_seq, 7);
+        assert_eq!(progress.current_iteration, 3);
+        assert_eq!(
+            progress.current_todos.expect("todos snapshot")["items"],
+            serde_json::json!([])
+        );
+        assert_eq!(progress.llm_retry.expect("retry snapshot")["attempt"], 2);
+        assert_eq!(
+            progress.provider_failover_notice.as_deref(),
+            Some("Failover: primary -> backup")
+        );
+
+        let foreign = api_get_task_progress(
+            axum::extract::State(state),
+            auth_headers(&token_two, None),
+            axum::extract::Path((session_id, "task-progress".to_string())),
+        )
+        .await;
+        assert_eq!(
+            foreign.expect_err("foreign progress should be hidden").0,
+            axum::http::StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn live_progress_persister_updates_running_task_record() {
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        let user_id = 77;
+        let session_id = "session-live-progress";
+        let task_id = "task-live-progress";
+        state
+            .web_store
+            .save_task(task_record(
+                user_id,
+                session_id,
+                task_id,
+                ApiTaskStatus::Running,
+                "Prompt",
+                now,
+            ))
+            .await
+            .expect("save running task");
+
+        let web_task = super::WebTaskPersistence {
+            web_store: state.web_store.clone(),
+            user_id,
+            session_id: session_id.to_string(),
+            task_id: task_id.to_string(),
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = super::spawn_live_progress_persister(web_task, rx);
+
+        let mut progress = ProgressState::new(100);
+        progress.current_iteration = 4;
+        progress.current_thought = Some("Persisting progress".to_string());
+        progress.current_todos = Some(TodoList {
+            items: vec![TodoItem {
+                description: "Persist progress".to_string(),
+                status: TodoStatus::InProgress,
+            }],
+            updated_at: Some(now),
+        });
+        progress.llm_retry = Some(LlmRetryState {
+            attempt: 2,
+            max_attempts: 5,
+            unbounded: false,
+            wait_secs: Some(3),
+            provider: "mock".to_string(),
+            error_class: Some("rate_limit".to_string()),
+        });
+        progress.provider_failover_notice = Some("Failover: mock:a -> mock:b".to_string());
+        tx.send(progress).expect("send live progress");
+
+        let snapshot = wait_for_persisted_progress(&state, user_id, session_id, task_id).await;
+        assert_eq!(snapshot.current_iteration, 4);
+        assert_eq!(
+            snapshot.current_thought.as_deref(),
+            Some("Persisting progress")
+        );
+        assert_eq!(
+            snapshot.current_todos.expect("todos persisted")["items"][0]["description"],
+            "Persist progress"
+        );
+        assert_eq!(snapshot.llm_retry.expect("retry persisted")["attempt"], 2);
+        assert_eq!(
+            snapshot.provider_failover_notice.as_deref(),
+            Some("Failover: mock:a -> mock:b")
+        );
+
+        drop(tx);
+        handle.await.expect("live progress persister joins");
     }
 
     #[tokio::test]
@@ -3423,6 +3665,38 @@ mod tests {
             .expect("sse request")
     }
 
+    fn web_env_mutex() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvGuard {
+        values: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn capture(keys: &[&'static str]) -> Self {
+            Self {
+                values: keys
+                    .iter()
+                    .map(|key| (*key, std::env::var(key).ok()))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.values {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
     fn task_record(
         user_id: i64,
         session_id: &str,
@@ -3498,6 +3772,27 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         panic!("task {task_id} did not reach {status:?}; last state: {last_task:?}");
+    }
+
+    async fn wait_for_persisted_progress(
+        state: &AppState,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+    ) -> ProgressSnapshot {
+        for _ in 0..40 {
+            let task = state
+                .web_store
+                .load_task(user_id, session_id, task_id)
+                .await
+                .expect("load task")
+                .expect("task exists");
+            if let Some(progress) = task.last_progress {
+                return progress;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("task {task_id} did not receive persisted progress");
     }
 
     #[cfg(feature = "profile-lite")]

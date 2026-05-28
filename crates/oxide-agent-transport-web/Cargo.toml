@@ -41,6 +41,8 @@ default = []
 profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2"]
 storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
 socket_e2e = []
+delegation_e2e = ["oxide-agent-core/tool-delegation"]
+compression_e2e = ["oxide-agent-core/tool-compression"]
 
 [dev-dependencies]
 tokio-test = "0.4"

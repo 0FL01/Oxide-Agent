@@ -47,6 +47,10 @@ pub struct ProgressSnapshot {
     pub last_history_repair_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_token_snapshot: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_retry: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_failover_notice: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +174,16 @@ pub struct GetTaskResponse {
     pub task: TaskDetail,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct GetTaskProgressResponse {
+    pub task_id: String,
+    pub status: TaskStatus,
+    pub progress: Option<ProgressSnapshot>,
+    pub last_event_seq: u64,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CancelTaskResponse {
@@ -179,7 +193,7 @@ pub struct CancelTaskResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::TaskStatus;
+    use super::{ProgressSnapshot, TaskStatus};
 
     #[test]
     fn task_status_serialization_matches_api_contract() {
@@ -189,5 +203,28 @@ mod tests {
         );
         assert!(TaskStatus::Running.is_active());
         assert!(TaskStatus::Completed.is_terminal());
+    }
+
+    #[test]
+    fn progress_snapshot_serializes_optional_live_fields() {
+        let snapshot = ProgressSnapshot {
+            current_iteration: 2,
+            max_iterations: 100,
+            is_finished: false,
+            error: None,
+            current_thought: Some("Collecting evidence".to_string()),
+            current_todos: Some(serde_json::json!({ "items": [] })),
+            last_compaction_status: None,
+            repeated_compaction_warning: None,
+            last_history_repair_status: None,
+            latest_token_snapshot: None,
+            llm_retry: Some(serde_json::json!({ "attempt": 1, "max_attempts": 3 })),
+            provider_failover_notice: Some("Failover: a -> b".to_string()),
+        };
+
+        let value = serde_json::to_value(snapshot).expect("progress snapshot serializes");
+        assert_eq!(value["current_todos"]["items"], serde_json::json!([]));
+        assert_eq!(value["llm_retry"]["attempt"], 1);
+        assert_eq!(value["provider_failover_notice"], "Failover: a -> b");
     }
 }

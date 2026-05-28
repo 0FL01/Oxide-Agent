@@ -262,6 +262,7 @@ pub async fn collect_events(
     mut rx: mpsc::Receiver<AgentEvent>,
     browser_event_scope: Option<BrowserEventScope>,
     live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
+    live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
 ) -> EventCollectionResult {
     use oxide_agent_core::agent::progress::ProgressState;
 
@@ -344,6 +345,9 @@ pub async fn collect_events(
         }
 
         state.update(event);
+        if let Some(live_progress_tx) = live_progress_tx.as_ref() {
+            let _ = live_progress_tx.send(state.clone());
+        }
 
         // Track finished_at.
         if is_terminal {
@@ -948,7 +952,7 @@ mod tests {
             .expect("send finished event");
         drop(tx);
 
-        let result = collect_events(event_log.clone(), rx, None, None).await;
+        let result = collect_events(event_log.clone(), rx, None, None, None).await;
         let event_names: Vec<String> = event_log
             .drain()
             .await
@@ -997,6 +1001,7 @@ mod tests {
                 "task-1".to_string(),
             )),
             None,
+            None,
         )
         .await;
 
@@ -1009,5 +1014,38 @@ mod tests {
         assert_eq!(tool_result.payload["success"], true);
         assert!(tool_result.truncated);
         assert_eq!(result.persisted_events[1].kind, TaskEventKind::Finished);
+    }
+
+    #[tokio::test]
+    async fn collect_events_streams_live_progress_snapshots() {
+        let event_log = TaskEventLog::new();
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+
+        event_tx
+            .send(AgentEvent::Reasoning {
+                summary: "Collecting detailed evidence".to_string(),
+            })
+            .await
+            .expect("send reasoning event");
+        event_tx
+            .send(AgentEvent::Finished)
+            .await
+            .expect("send finished event");
+        drop(event_tx);
+
+        let result = collect_events(event_log, event_rx, None, None, Some(progress_tx)).await;
+        let mut snapshots = Vec::new();
+        while let Some(snapshot) = progress_rx.recv().await {
+            snapshots.push(snapshot);
+        }
+
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.current_thought.as_deref() == Some("Collecting detailed evidence")
+        }));
+        assert!(snapshots
+            .last()
+            .is_some_and(|snapshot| snapshot.is_finished));
+        assert!(result.state.is_finished);
     }
 }

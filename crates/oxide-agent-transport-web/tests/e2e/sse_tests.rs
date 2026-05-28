@@ -1,8 +1,11 @@
 //! SSE streaming and milestone tracking E2E tests.
 
 use futures_util::StreamExt;
-use oxide_agent_transport_web::build_router;
 
+use crate::helpers::{
+    create_session_http, create_task_http_with_body, fetch_task_progress, fetch_task_timeline,
+    spawn_test_server, with_session_auth,
+};
 use crate::setup::setup_test;
 
 /// Test: SSE endpoint streams events as a task executes and milestones are recorded.
@@ -12,17 +15,7 @@ async fn e2e_sse_stream() {
     let test_start = std::time::Instant::now();
 
     let app_state = setup_test().await;
-    let router = build_router(app_state.clone());
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("failed to bind");
-    let addr = listener.local_addr().expect("failed to get local addr");
-    let base_url = format!("http://{}", addr);
-
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("server error");
-    });
+    let (server, base_url) = spawn_test_server(app_state.clone()).await;
 
     let client = reqwest::Client::new();
     eprintln!(
@@ -30,81 +23,31 @@ async fn e2e_sse_stream() {
         test_start.elapsed().as_millis()
     );
 
-    let debug_before: Vec<String> = client
-        .get(format!("{}/debug/event_logs", base_url))
-        .send()
-        .await
-        .expect("failed to get event logs")
-        .json()
-        .await
-        .expect("failed to parse event logs");
-    eprintln!("EVENT_LOGS before task: {:?}", debug_before);
-
     let t0 = std::time::Instant::now();
-    let session_resp: serde_json::Value = client
-        .post(format!("{}/sessions", base_url))
-        .json(&serde_json::json!({ "user_id": 1 }))
-        .send()
-        .await
-        .expect("failed to create session")
-        .json()
-        .await
-        .expect("failed to parse session response");
-    let session_id = session_resp["session_id"].as_str().expect("no session_id");
+    let session_id = create_session_http(&client, &base_url).await;
     eprintln!("[TIMING] Session created: {}ms", t0.elapsed().as_millis());
 
     let t1 = std::time::Instant::now();
-    let task_resp: serde_json::Value = client
-        .post(format!("{}/sessions/{}/tasks", base_url, session_id))
-        .body("Hello")
-        .send()
-        .await
-        .expect("failed to submit task")
-        .json()
-        .await
-        .expect("failed to parse task response");
+    let task_id = create_task_http_with_body(&client, &base_url, &session_id, "Hello").await;
     eprintln!(
         "[TIMING] Task submitted: {}ms (since create: {}ms)",
         t1.elapsed().as_millis(),
         t0.elapsed().as_millis()
     );
-    eprintln!("Task response: {}", task_resp);
-    let task_id = task_resp["task_id"].as_str().expect("no task_id");
+    eprintln!("Task submitted: {task_id}");
 
-    let debug_after_submit: Vec<String> = client
-        .get(format!("{}/debug/event_logs", base_url))
-        .send()
-        .await
-        .expect("failed to get event logs")
-        .json()
-        .await
-        .expect("failed to parse event logs");
-    eprintln!(
-        "EVENT_LOGS after task submit (task_id={}): {:?}",
-        task_id, debug_after_submit
-    );
-
-    let progress_url = format!(
-        "{}/sessions/{}/tasks/{}/progress",
-        base_url, session_id, task_id
-    );
-    let progress_response = client
-        .get(&progress_url)
-        .send()
-        .await
-        .expect("failed to get progress");
+    let progress_response = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     let progress_status = progress_response.status();
     eprintln!("Progress endpoint status: {}", progress_status);
 
     let t2 = std::time::Instant::now();
     let sse_url = format!(
-        "{}/sessions/{}/tasks/{}/stream",
+        "{}/api/v1/sessions/{}/tasks/{}/stream",
         base_url, session_id, task_id
     );
     eprintln!("SSE URL: {}", sse_url);
 
-    let response = client
-        .get(&sse_url)
+    let response = with_session_auth(client.get(&sse_url), &base_url, &session_id, false)
         .send()
         .await
         .expect("failed to connect to SSE");
@@ -176,18 +119,7 @@ async fn e2e_sse_stream() {
 
     eprintln!("SSE received {} events", event_count);
 
-    let timeline_url = format!(
-        "{}/sessions/{}/tasks/{}/timeline",
-        base_url, session_id, task_id
-    );
-    let timeline: serde_json::Value = client
-        .get(&timeline_url)
-        .send()
-        .await
-        .expect("failed to get timeline")
-        .json()
-        .await
-        .expect("failed to parse timeline response");
+    let timeline = fetch_task_timeline(&client, &base_url, &session_id, &task_id).await;
     eprintln!(
         "Timeline: {}",
         serde_json::to_string_pretty(&timeline).expect("timeline should serialize to JSON")

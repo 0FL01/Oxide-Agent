@@ -3,9 +3,40 @@
 use oxide_agent_core::llm::{
     ChatResponse, TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction,
 };
+use oxide_agent_transport_web::auth::{login_user, register_user};
 use oxide_agent_transport_web::session::WebSessionManager;
 use oxide_agent_transport_web::AppState;
+use oxide_agent_web_contracts::{LoginRequest, RegisterRequest};
+use serde::de::DeserializeOwned;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+const TEST_AUTH_COOKIE_NAME: &str = "oxide_web_session";
+const TEST_USER_PASSWORD: &str = "correct horse battery staple e2e";
+
+#[derive(Clone)]
+struct TestAuthSession {
+    user_id: i64,
+    raw_token: String,
+    csrf_token: String,
+}
+
+pub struct JsonHttpResponse {
+    status: reqwest::StatusCode,
+    body: serde_json::Value,
+}
+
+impl JsonHttpResponse {
+    #[must_use]
+    pub const fn status(&self) -> reqwest::StatusCode {
+        self.status
+    }
+
+    pub async fn json<T: DeserializeOwned>(self) -> serde_json::Result<T> {
+        serde_json::from_value(self.body)
+    }
+}
 
 /// Build a tool-call ChatResponse.
 pub fn tool_call_response(name: &str, arguments: serde_json::Value) -> ChatResponse {
@@ -132,10 +163,12 @@ pub async fn wait_for_task_status(
             _ => {}
         }
 
-        assert!(
-            Instant::now() < deadline,
-            "task {task_id} did not reach expected status in time"
-        );
+        if Instant::now() >= deadline {
+            panic!(
+                "task {task_id} did not reach expected status {expected:?} in time; last_status={:?}",
+                task.status
+            );
+        }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
@@ -147,16 +180,26 @@ pub async fn fetch_task_events(
     session_id: &str,
     task_id: &str,
 ) -> Vec<serde_json::Value> {
-    client
-        .get(format!(
-            "{base_url}/sessions/{session_id}/tasks/{task_id}/events"
-        ))
-        .send()
-        .await
-        .expect("failed to fetch task events")
-        .json()
-        .await
-        .expect("failed to decode task events")
+    let response: serde_json::Value = with_session_auth(
+        client.get(format!(
+            "{base_url}/api/v1/sessions/{session_id}/tasks/{task_id}/events"
+        )),
+        base_url,
+        session_id,
+        false,
+    )
+    .send()
+    .await
+    .expect("failed to fetch task events")
+    .json()
+    .await
+    .expect("failed to decode task events");
+    response["events"]
+        .as_array()
+        .expect("task events response should contain events")
+        .iter()
+        .map(normalize_persisted_event_for_legacy_assertions)
+        .collect()
 }
 
 /// Fetch task progress via HTTP.
@@ -165,33 +208,48 @@ pub async fn fetch_task_progress(
     base_url: &str,
     session_id: &str,
     task_id: &str,
-) -> reqwest::Response {
-    client
-        .get(format!(
-            "{base_url}/sessions/{session_id}/tasks/{task_id}/progress"
-        ))
-        .send()
+) -> JsonHttpResponse {
+    let response = with_session_auth(
+        client.get(format!(
+            "{base_url}/api/v1/sessions/{session_id}/tasks/{task_id}/progress"
+        )),
+        base_url,
+        session_id,
+        false,
+    )
+    .send()
+    .await
+    .expect("failed to fetch task progress");
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
         .await
-        .expect("failed to fetch task progress")
+        .expect("failed to decode task progress");
+    JsonHttpResponse {
+        status,
+        body: body.get("progress").cloned().unwrap_or(body),
+    }
 }
 
 /// Fetch task timeline via HTTP.
 pub async fn fetch_task_timeline(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     base_url: &str,
     session_id: &str,
     task_id: &str,
 ) -> serde_json::Value {
-    client
-        .get(format!(
-            "{base_url}/sessions/{session_id}/tasks/{task_id}/timeline"
-        ))
-        .send()
-        .await
-        .expect("failed to fetch task timeline")
-        .json()
-        .await
-        .expect("failed to decode task timeline")
+    let state = test_server_state(base_url);
+    let timelines = state.task_timeline.read().await;
+    let timeline = timelines
+        .get(task_id)
+        .cloned()
+        .expect("task timeline should exist");
+    serde_json::json!({
+        "task_id": task_id,
+        "session_id": session_id,
+        "milestones": timeline.milestones,
+        "tool_calls": timeline.tool_calls,
+    })
 }
 
 /// Create a session via HTTP.
@@ -203,35 +261,28 @@ pub async fn create_session_http(client: &reqwest::Client, base_url: &str) -> St
 pub async fn create_session_http_with_user(
     client: &reqwest::Client,
     base_url: &str,
-    user_id: i64,
+    legacy_user_id: i64,
 ) -> String {
-    create_session_http_with_user_and_context(client, base_url, user_id, None).await
-}
+    let auth = ensure_test_auth_session(base_url, legacy_user_id).await;
+    let response: serde_json::Value = with_auth(
+        client.post(format!("{base_url}/api/v1/sessions")),
+        &auth,
+        true,
+    )
+    .json(&serde_json::json!({}))
+    .send()
+    .await
+    .expect("failed to create session")
+    .json()
+    .await
+    .expect("failed to decode session response");
 
-/// Create a session via HTTP for a specific user and context.
-pub async fn create_session_http_with_user_and_context(
-    client: &reqwest::Client,
-    base_url: &str,
-    user_id: i64,
-    context_key: Option<&str>,
-) -> String {
-    let response: serde_json::Value = client
-        .post(format!("{base_url}/sessions"))
-        .json(&serde_json::json!({
-            "user_id": user_id,
-            "context_key": context_key,
-        }))
-        .send()
-        .await
-        .expect("failed to create session")
-        .json()
-        .await
-        .expect("failed to decode session response");
-
-    response["session_id"]
+    let session_id = response["session"]["session_id"]
         .as_str()
         .expect("session_id missing")
-        .to_string()
+        .to_string();
+    remember_session_auth(base_url, &session_id, auth);
+    session_id
 }
 
 /// Create a task via HTTP.
@@ -250,25 +301,86 @@ pub async fn create_task_http_with_body(
     session_id: &str,
     body: &str,
 ) -> String {
-    let response: serde_json::Value = client
-        .post(format!("{base_url}/sessions/{session_id}/tasks"))
-        .body(body.to_string())
-        .send()
-        .await
-        .expect("failed to create task")
-        .json()
-        .await
-        .expect("failed to decode task response");
+    let response: serde_json::Value = with_session_auth(
+        client.post(format!("{base_url}/api/v1/sessions/{session_id}/tasks")),
+        base_url,
+        session_id,
+        true,
+    )
+    .json(&serde_json::json!({ "input_markdown": body }))
+    .send()
+    .await
+    .expect("failed to create task")
+    .json()
+    .await
+    .expect("failed to decode task response");
 
-    response["task_id"]
+    response["task"]["task_id"]
         .as_str()
         .expect("task_id missing")
         .to_string()
 }
 
+pub async fn create_task_http_expect_conflict(
+    client: &reqwest::Client,
+    base_url: &str,
+    session_id: &str,
+    body: &str,
+) -> serde_json::Value {
+    let response = with_session_auth(
+        client.post(format!("{base_url}/api/v1/sessions/{session_id}/tasks")),
+        base_url,
+        session_id,
+        true,
+    )
+    .json(&serde_json::json!({ "input_markdown": body }))
+    .send()
+    .await
+    .expect("failed to submit conflicting task");
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    response
+        .json()
+        .await
+        .expect("failed to decode conflict response")
+}
+
+pub async fn delete_session_http(client: &reqwest::Client, base_url: &str, session_id: &str) {
+    let status = with_session_auth(
+        client.delete(format!("{base_url}/api/v1/sessions/{session_id}")),
+        base_url,
+        session_id,
+        true,
+    )
+    .send()
+    .await
+    .expect("failed to delete session")
+    .status();
+    assert!(
+        status.is_success(),
+        "delete session should succeed, got {status}"
+    );
+}
+
+pub fn session_user_id(base_url: &str, session_id: &str) -> i64 {
+    auth_for_session(base_url, session_id).user_id
+}
+
+pub fn with_session_auth(
+    request: reqwest::RequestBuilder,
+    base_url: &str,
+    session_id: &str,
+    include_csrf: bool,
+) -> reqwest::RequestBuilder {
+    with_auth(
+        request,
+        &auth_for_session(base_url, session_id),
+        include_csrf,
+    )
+}
+
 /// Spawn an HTTP test server and return the server handle and base URL.
 pub async fn spawn_test_server(app_state: AppState) -> (tokio::task::JoinHandle<()>, String) {
-    let router = oxide_agent_transport_web::build_router(app_state);
+    let router = oxide_agent_transport_web::build_router(app_state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("failed to bind test server");
@@ -276,6 +388,7 @@ pub async fn spawn_test_server(app_state: AppState) -> (tokio::task::JoinHandle<
         .local_addr()
         .expect("failed to get test server addr");
     let base_url = format!("http://{addr}");
+    remember_test_server_state(&base_url, app_state.clone());
 
     let server = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -284,6 +397,127 @@ pub async fn spawn_test_server(app_state: AppState) -> (tokio::task::JoinHandle<
     });
 
     (server, base_url)
+}
+
+fn with_auth(
+    request: reqwest::RequestBuilder,
+    auth: &TestAuthSession,
+    include_csrf: bool,
+) -> reqwest::RequestBuilder {
+    let request = request.header(
+        reqwest::header::COOKIE,
+        format!("{TEST_AUTH_COOKIE_NAME}={}", auth.raw_token),
+    );
+    if include_csrf {
+        request.header("x-csrf-token", auth.csrf_token.clone())
+    } else {
+        request
+    }
+}
+
+async fn ensure_test_auth_session(base_url: &str, legacy_user_id: i64) -> TestAuthSession {
+    let state = test_server_state(base_url);
+    let login = format!("e2e-{legacy_user_id}");
+    let now = chrono::Utc::now();
+    let login_request = || LoginRequest {
+        login: login.clone(),
+        password: TEST_USER_PASSWORD.to_string(),
+    };
+    let register_request = || RegisterRequest {
+        login: login.clone(),
+        password: TEST_USER_PASSWORD.to_string(),
+    };
+
+    let login_result = login_user(state.web_store.as_ref(), login_request(), now).await;
+    let (user, auth_session, raw_token) = match login_result {
+        Ok(login) => login,
+        Err(_) => {
+            register_user(state.web_store.as_ref(), register_request(), true, now)
+                .await
+                .expect("register e2e web user");
+            login_user(state.web_store.as_ref(), login_request(), now)
+                .await
+                .expect("login e2e web user")
+        }
+    };
+
+    TestAuthSession {
+        user_id: user.user_id,
+        raw_token,
+        csrf_token: auth_session.csrf_token,
+    }
+}
+
+fn remember_test_server_state(base_url: &str, app_state: AppState) {
+    test_server_states()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(base_url.to_string(), app_state);
+}
+
+fn test_server_state(base_url: &str) -> AppState {
+    test_server_states()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(base_url)
+        .cloned()
+        .expect("test server state should be registered")
+}
+
+fn remember_session_auth(base_url: &str, session_id: &str, auth: TestAuthSession) {
+    session_auths()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(session_auth_key(base_url, session_id), auth);
+}
+
+fn auth_for_session(base_url: &str, session_id: &str) -> TestAuthSession {
+    session_auths()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&session_auth_key(base_url, session_id))
+        .cloned()
+        .expect("session auth should be registered")
+}
+
+fn session_auth_key(base_url: &str, session_id: &str) -> String {
+    format!("{base_url}|{session_id}")
+}
+
+fn test_server_states() -> &'static Mutex<HashMap<String, AppState>> {
+    static STATES: OnceLock<Mutex<HashMap<String, AppState>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn session_auths() -> &'static Mutex<HashMap<String, TestAuthSession>> {
+    static AUTHS: OnceLock<Mutex<HashMap<String, TestAuthSession>>> = OnceLock::new();
+    AUTHS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn normalize_persisted_event_for_legacy_assertions(event: &serde_json::Value) -> serde_json::Value {
+    let mut event = event.clone();
+    let event_name = legacy_event_name(&event);
+    if let Some(object) = event.as_object_mut() {
+        object
+            .entry("event_name")
+            .or_insert_with(|| serde_json::Value::String(event_name));
+    }
+    event
+}
+
+fn legacy_event_name(event: &serde_json::Value) -> String {
+    let kind = event["kind"].as_str().unwrap_or("unknown");
+    let summary = event["summary"].as_str().unwrap_or_default();
+    match kind {
+        "tool_call" => format!("tool_call:{summary}"),
+        "tool_result" => format!("tool_result:{summary}"),
+        "runtime_compaction_started" => "compaction_started".to_string(),
+        "runtime_compaction_completed" => "compaction_completed".to_string(),
+        "runtime_compaction_failed" => "compaction_failed".to_string(),
+        "runtime_compaction_skipped" => "compaction_skipped".to_string(),
+        "repeated_compaction_warning" => "repeated_compaction_warning".to_string(),
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]

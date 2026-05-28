@@ -5,8 +5,9 @@ use chrono::{Datelike, Duration as ChronoDuration, Local};
 use oxide_agent_core::storage::{compute_cron_next_run_at, resolve_reminder_local_datetime};
 
 use super::helpers::{
-    create_session_http, create_task_http_with_body, fetch_task_events, spawn_test_server,
-    tool_call_response, unstructured_text_response, wait_for_task_status, wait_for_zai_calls,
+    create_session_http, create_task_http_with_body, fetch_task_events, session_user_id,
+    spawn_test_server, structured_final_answer_response, tool_call_response, wait_for_task_status,
+    wait_for_zai_calls,
 };
 use super::providers::SequencedZaiProvider;
 use super::setup::setup_web_test_with_custom_providers;
@@ -32,7 +33,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
                 "time": "09:00"
             }),
         ),
-        unstructured_text_response("Готово, напоминание поставлено."),
+        structured_final_answer_response("Готово, напоминание поставлено."),
     ]));
     let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
     let session_manager = app_state.session_manager();
@@ -41,6 +42,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
     let client = reqwest::Client::new();
 
     let session_id = create_session_http(&client, &base_url).await;
+    let user_id = session_user_id(&base_url, &session_id);
     let task_id = create_task_http_with_body(
         &client,
         &base_url,
@@ -59,7 +61,7 @@ async fn e2e_reminder_schedule_supports_tomorrow_local_time_without_unix_math() 
     wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
 
     let reminders = storage
-        .list_reminder_jobs(1, Some("default".to_string()), None, 10)
+        .list_reminder_jobs(user_id, Some(format!("web-session-{session_id}")), None, 10)
         .await
         .expect("reminders should list");
     assert_eq!(reminders.len(), 1);
@@ -107,7 +109,7 @@ async fn e2e_reminder_schedule_supports_weekday_wall_clock_recurring_jobs() {
                 "timezone": timezone
             }),
         ),
-        unstructured_text_response("Готово, поставил напоминание по будням."),
+        structured_final_answer_response("Готово, поставил напоминание по будням."),
     ]));
     let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
     let session_manager = app_state.session_manager();
@@ -116,6 +118,7 @@ async fn e2e_reminder_schedule_supports_weekday_wall_clock_recurring_jobs() {
     let client = reqwest::Client::new();
 
     let session_id = create_session_http(&client, &base_url).await;
+    let user_id = session_user_id(&base_url, &session_id);
     let task_id = create_task_http_with_body(
         &client,
         &base_url,
@@ -134,7 +137,7 @@ async fn e2e_reminder_schedule_supports_weekday_wall_clock_recurring_jobs() {
     wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
 
     let reminders = storage
-        .list_reminder_jobs(1, Some("default".to_string()), None, 10)
+        .list_reminder_jobs(user_id, Some(format!("web-session-{session_id}")), None, 10)
         .await
         .expect("reminders should list");
     assert_eq!(reminders.len(), 1);

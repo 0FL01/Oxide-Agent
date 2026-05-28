@@ -14,7 +14,10 @@ use super::setup::{async_sub_agent_spawn_responses, setup_web_test_with_custom_p
 
 /// Test: async sub-agent spawn returns control to the main task without deadlock.
 #[tokio::test]
-#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+#[cfg_attr(
+    not(all(feature = "socket_e2e", feature = "delegation_e2e")),
+    ignore = "requires local TCP listener and delegation_e2e"
+)]
 async fn e2e_spawned_sub_agent_does_not_block_task_completion() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(async_sub_agent_spawn_responses()));
     let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
@@ -52,8 +55,13 @@ async fn e2e_spawned_sub_agent_does_not_block_task_completion() {
     assert!(progress.is_object());
     assert!(timeline["milestones"]["final_response_ms"].is_number());
     let model_log = zai_provider.model_log().await;
-    assert_eq!(model_log.first().map(String::as_str), Some("main-model"));
-    assert!(model_log.iter().any(|model| model == "main-model"));
+    assert_eq!(
+        model_log.first().map(String::as_str),
+        Some("opencode-go/deepseek-v4-flash")
+    );
+    assert!(model_log
+        .iter()
+        .any(|model| model == "opencode-go/deepseek-v4-flash"));
 
     server.abort();
 }
