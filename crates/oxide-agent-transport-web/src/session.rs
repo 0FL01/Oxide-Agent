@@ -4,6 +4,25 @@
 //! - creates / retrieves / removes sessions via `SessionRegistry`
 //! - tracks `TaskTimeline` for latency measurements
 //! - owns `InMemoryStorage` and `WebAgentTransport` instances
+//!
+//! ## Durable memory persistence
+//!
+//! On each task completion the `StorageFlowCheckpoint` persists `AgentMemory`
+//! to durable storage at key:
+//!
+//! ```text
+//! users/{user_id}/topics/{context_key}/flows/{flow_id}/memory.json
+//! ```
+//!
+//! When a web session is re-created after a backend restart, the
+//! [`WebSessionManager::create_session_with_id`] method hydrates the
+//! previously persisted `AgentMemory` from storage **before** injecting
+//! topic `AGENTS.md` or installing the checkpoint. This ensures the agent
+//! retains full conversation history across restarts.
+//!
+//! Identifiers (`context_key`, `agent_flow_id`) are stable across restarts
+//! because they are persisted in the `WebSessionRecord` and reused by
+//! `ensure_runtime_session` when the runtime session is re-created.
 
 use crate::in_memory_storage::InMemoryStorage;
 use crate::web_transport::TaskEventLog;
@@ -232,6 +251,17 @@ impl WebSessionManager {
     /// Used by the production `/api/v1` web console API so the persisted web
     /// session record and runtime memory scope can share the same id-derived
     /// context key.
+    ///
+    /// ## Initialization order
+    ///
+    /// 1. Create an empty `AgentSession` with stable scopes.
+    /// 2. Hydrate `AgentMemory` from durable storage (if available).
+    /// 3. Restore volatile execution metadata derived from persisted memory.
+    /// 4. Inject topic `AGENTS.md` only if the restored memory does not already
+    ///    contain a pinned copy.
+    /// 5. Install the storage checkpoint so subsequent task execution persists
+    ///    memory snapshots to the same durable key.
+    /// 6. Create the `AgentExecutor` and register it.
     pub async fn create_session_with_id(
         &self,
         user_id: i64,
@@ -256,6 +286,20 @@ impl WebSessionManager {
             sandbox_scope,
             AgentMemoryScope::new(user_id, context_key.clone(), agent_flow_id.clone()),
         );
+
+        // 1. Hydrate persisted AgentMemory from durable storage.
+        //    This restores conversation history across backend restarts.
+        self.hydrate_agent_memory(
+            &mut session,
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+        )
+        .await;
+
+        // 2. Inject topic AGENTS.md only if the restored memory does not
+        //    already contain a pinned copy (e.g. after hydration from R2).
         inject_topic_agents_md_for_session(
             self.storage(),
             user_id,
@@ -264,8 +308,10 @@ impl WebSessionManager {
         )
         .await;
 
-        // Attach a checkpoint backed by the manager storage so memory survives
-        // across tasks and follows the configured durable backend in web mode.
+        // 3. Attach a checkpoint backed by the manager storage so memory
+        //    survives across tasks and follows the configured durable backend.
+        //    Must be installed AFTER hydration so the first checkpoint write
+        //    reflects the full hydrated state, not an empty snapshot.
         session.set_memory_checkpoint(Arc::new(StorageFlowCheckpoint {
             storage: self.storage(),
             user_id,
@@ -273,6 +319,7 @@ impl WebSessionManager {
             agent_flow_id: agent_flow_id.clone(),
         }));
 
+        // 4. Create executor only after the session is fully hydrated.
         let mut executor =
             AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone())
                 .with_wiki_memory_store(oxide_agent_core::agent::WikiStore::from_storage_provider(
@@ -467,6 +514,79 @@ impl WebSessionManager {
         self.tasks.read().await.get(task_id).cloned()
     }
 
+    /// Hydrate `AgentMemory` from durable storage for an existing web session.
+    ///
+    /// When a web session is re-created (e.g. after a backend restart), the
+    /// runtime `AgentSession` starts with an empty memory. This method loads
+    /// the previously persisted memory snapshot from durable storage and
+    /// restores volatile execution metadata (such as `last_task`) that is
+    /// derivable from the loaded messages.
+    ///
+    /// Storage key: `users/{user_id}/topics/{context_key}/flows/{flow_id}/memory.json`
+    ///
+    /// If the load fails, the session continues with empty memory and a
+    /// warning is logged. A production setup with `OXIDE_WEB_REQUIRE_DURABLE_STORAGE=true`
+    /// should fail at startup (in `build_r2_backed_app_state`) before reaching
+    /// this point if the storage backend is unavailable.
+    async fn hydrate_agent_memory(
+        &self,
+        session: &mut AgentSession,
+        user_id: i64,
+        web_session_id: &str,
+        context_key: &str,
+        agent_flow_id: &str,
+    ) {
+        tracing::debug!(
+            user_id,
+            web_session_id,
+            context_key,
+            agent_flow_id,
+            "hydrating web agent session from durable storage"
+        );
+
+        match self
+            .storage
+            .load_agent_memory_for_flow(user_id, context_key.to_string(), agent_flow_id.to_string())
+            .await
+        {
+            Ok(Some(memory)) => {
+                let message_count = memory.get_messages().len();
+                tracing::info!(
+                    user_id,
+                    web_session_id,
+                    context_key,
+                    agent_flow_id,
+                    message_count,
+                    "web agent memory hydrated from durable storage"
+                );
+
+                session.memory = memory;
+                session.restore_last_task_from_memory();
+            }
+
+            Ok(None) => {
+                tracing::debug!(
+                    user_id,
+                    web_session_id,
+                    context_key,
+                    agent_flow_id,
+                    "no persisted web agent memory found; starting with empty memory"
+                );
+            }
+
+            Err(error) => {
+                tracing::warn!(
+                    user_id,
+                    web_session_id,
+                    context_key,
+                    agent_flow_id,
+                    ?error,
+                    "failed to load persisted web agent memory; continuing with empty memory"
+                );
+            }
+        }
+    }
+
     /// Resolve session_id string to `SessionId`.
     async fn resolve_session_id(&self, session_id: &str) -> Option<SessionId> {
         let sessions = self.sessions.read().await;
@@ -548,7 +668,40 @@ impl oxide_agent_core::agent::AgentMemoryCheckpoint for StorageFlowCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::in_memory_storage::InMemoryStorage;
+    use oxide_agent_core::agent::compaction::AgentMessageKind;
     use oxide_agent_core::storage::UpsertTopicAgentsMdOptions;
+
+    /// Helper: build a `WebSessionManager` backed by an explicit storage provider.
+    fn make_manager_with_storage(storage: Arc<dyn StorageProvider>) -> WebSessionManager {
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings::default());
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        WebSessionManager::new_with_storage(registry, llm, settings, storage)
+    }
+
+    /// Helper: resolve a session_id string to its `AgentExecutor` read handle.
+    ///
+    /// Returns the `Arc<RwLock<AgentExecutor>>` from the registry so the
+    /// caller can `.read().await` on it without lifetime issues.
+    async fn resolve_executor_arc(
+        manager: &WebSessionManager,
+        session_id: &str,
+    ) -> Arc<tokio::sync::RwLock<oxide_agent_core::agent::AgentExecutor>> {
+        let sid = manager
+            .resolve_session_id(session_id)
+            .await
+            .expect("session id must resolve");
+        manager
+            .session_registry()
+            .get(&sid)
+            .await
+            .expect("executor must exist")
+    }
+
+    // -----------------------------------------------------------------------
+    // Existing test
+    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn create_session_bootstraps_topic_agents_md_into_memory() {
@@ -587,5 +740,163 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content.contains("Bootstrap instructions")));
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: memory hydration after manager restart
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn web_session_hydrates_agent_memory_after_manager_restart() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+
+        let user_id = 42i64;
+        let context_key = "web-session-abc123".to_string();
+        let agent_flow_id = "main".to_string();
+        let session_id = "abc123".to_string();
+
+        // --- Phase 1: simulate first session run ---------------------------
+        {
+            let manager_1 = make_manager_with_storage(storage.clone());
+            manager_1
+                .create_session_with_id(
+                    user_id,
+                    session_id.clone(),
+                    context_key.clone(),
+                    agent_flow_id.clone(),
+                )
+                .await;
+
+            // Persist a memory snapshot that contains a user task.
+            let mut memory = AgentMemory::new(usize::MAX);
+            memory.add_message(AgentMessage::user_task("Проверь работу песочницы"));
+            storage
+                .save_agent_memory_for_flow(
+                    user_id,
+                    context_key.clone(),
+                    agent_flow_id.clone(),
+                    &memory,
+                )
+                .await
+                .expect("memory should be saved");
+        }
+        // manager_1 dropped — simulates backend restart.
+
+        // --- Phase 2: re-create session from the same storage ---------------
+        {
+            let manager_2 = make_manager_with_storage(storage.clone());
+            manager_2
+                .create_session_with_id(
+                    user_id,
+                    session_id.clone(),
+                    context_key.clone(),
+                    agent_flow_id.clone(),
+                )
+                .await;
+
+            let executor_arc = resolve_executor_arc(&manager_2, &session_id).await;
+            let executor = executor_arc.read().await;
+            let messages = executor.session().memory.get_messages();
+
+            let has_user_task = messages.iter().any(|msg| {
+                msg.kind == AgentMessageKind::UserTask
+                    && msg.content.contains("Проверь работу песочницы")
+            });
+            assert!(
+                has_user_task,
+                "web session should hydrate AgentMemory from durable storage after restart"
+            );
+
+            // Verify restore_last_task_from_memory was effective.
+            assert_eq!(
+                executor.session().last_task.as_deref(),
+                Some("Проверь работу песочницы"),
+                "restore_last_task_from_memory should recover the last user task"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: no duplicate AGENTS.md after hydration
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn web_session_hydration_does_not_duplicate_topic_agents_md() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+
+        let user_id = 55i64;
+        let context_key = "web-session-dup-test".to_string();
+        let agent_flow_id = "main".to_string();
+        let session_id = "dup-test".to_string();
+
+        // Persist memory that already contains a pinned AGENTS.md message.
+        {
+            let mut memory = AgentMemory::new(usize::MAX);
+            memory.add_message(AgentMessage::topic_agents_md("# Topic Instructions"));
+            storage
+                .save_agent_memory_for_flow(
+                    user_id,
+                    context_key.clone(),
+                    agent_flow_id.clone(),
+                    &memory,
+                )
+                .await
+                .expect("memory should be saved");
+        }
+
+        let manager = make_manager_with_storage(storage.clone());
+        manager
+            .create_session_with_id(
+                user_id,
+                session_id.clone(),
+                context_key.clone(),
+                agent_flow_id.clone(),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, &session_id).await;
+        let executor = executor_arc.read().await;
+        let topic_md_count = executor
+            .session()
+            .memory
+            .get_messages()
+            .iter()
+            .filter(|msg| msg.kind == AgentMessageKind::TopicAgentsMd)
+            .count();
+
+        assert_eq!(
+            topic_md_count, 1,
+            "AGENTS.md should not be duplicated after hydration; found {topic_md_count}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // No memory in storage -> empty session with no panic
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn web_session_starts_empty_when_no_persisted_memory() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+
+        let manager = make_manager_with_storage(storage);
+        manager
+            .create_session_with_id(
+                10,
+                "fresh-session".to_string(),
+                "fresh-ctx".to_string(),
+                "main".to_string(),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "fresh-session").await;
+        let executor = executor_arc.read().await;
+        assert!(
+            executor.session().memory.get_messages().is_empty(),
+            "session should start with empty memory when nothing is persisted"
+        );
+        assert!(
+            executor.session().last_task.is_none(),
+            "last_task should be None when memory is empty"
+        );
     }
 }
