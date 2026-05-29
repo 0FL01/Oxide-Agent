@@ -7,7 +7,8 @@ use crate::utils::{friendly_time, navigate, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     CreateTaskRequest, EditTaskInputRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
-    ResumeTaskRequest, SseConnectionState, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
+    ResumeTaskRequest, SessionDetail, SessionSummary, SseConnectionState, TaskDetail,
+    TaskEventKind, TaskStatus, TaskSummary,
 };
 use serde_json::Value;
 
@@ -19,6 +20,7 @@ pub fn TaskConsole(
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     set_sse_state: WriteSignal<SseConnectionState>,
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
+    set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
     match route {
         AppRoute::Session(session_id) => view! {
@@ -29,18 +31,19 @@ pub fn TaskConsole(
                 set_events=set_events
                 set_sse_state=set_sse_state
                 set_progress=set_progress
+                set_sessions=set_sessions
             />
         }
         .into_any(),
         _ => view! {
-            <WelcomeView />
+            <WelcomeView set_sessions=set_sessions />
         }
         .into_any(),
     }
 }
 
 #[component]
-fn WelcomeView() -> impl IntoView {
+fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView {
     let auth = use_auth();
     let (input, set_input) = signal(String::new());
     let (loading, set_loading) = signal(false);
@@ -58,7 +61,11 @@ fn WelcomeView() -> impl IntoView {
             let client = auth.client();
             // 1. Create session
             let session_id = match client.create_session().await {
-                Ok(resp) => resp.session.session_id,
+                Ok(resp) => {
+                    let session_id = resp.session.session_id.clone();
+                    upsert_session_summary(set_sessions, resp.session);
+                    session_id
+                }
                 Err(e) => {
                     set_error.set(Some(e.to_string()));
                     set_loading.set(false);
@@ -161,6 +168,7 @@ fn SessionWorkspace(
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     set_sse_state: WriteSignal<SseConnectionState>,
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
+    set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
     let auth = use_auth();
     let (session_title, set_session_title) = signal("Session".to_string());
@@ -187,7 +195,13 @@ fn SessionWorkspace(
         spawn_ui(async move {
             let client = auth.client();
             match client.get_session(&session_id).await {
-                Ok(response) => set_session_title.set(response.session.title),
+                Ok(response) => {
+                    set_session_title.set(response.session.title.clone());
+                    upsert_session_summary(
+                        set_sessions,
+                        session_detail_to_summary(response.session),
+                    );
+                }
                 Err(error) => set_error.set(Some(error.to_string())),
             }
             match client.list_tasks(&session_id).await {
@@ -218,6 +232,7 @@ fn SessionWorkspace(
                                         set_error,
                                         set_streaming_task_id,
                                         set_last_terminal_status,
+                                        set_sessions,
                                     },
                                 );
                             } else if response.task.status == TaskStatus::WaitingForUserInput {
@@ -311,6 +326,7 @@ fn SessionWorkspace(
                             set_error,
                             set_streaming_task_id,
                             set_last_terminal_status,
+                            set_sessions,
                         },
                     );
                     if resume_task_id.is_some() {
@@ -334,7 +350,8 @@ fn SessionWorkspace(
         set_error.set(None);
         let session_id = session_id_for_cancel.clone();
         spawn_ui(async move {
-            match auth.client().cancel_task(&session_id, &task.task_id).await {
+            let client = auth.client();
+            match client.cancel_task(&session_id, &task.task_id).await {
                 Ok(_) => {
                     let task_id = task.task_id.clone();
                     set_active_task.set(None);
@@ -345,6 +362,12 @@ fn SessionWorkspace(
                             }
                         }
                     });
+                    if let Ok(response) = client.get_session(&session_id).await {
+                        upsert_session_summary(
+                            set_sessions,
+                            session_detail_to_summary(response.session),
+                        );
+                    }
                 }
                 Err(error) => set_error.set(Some(error.to_string())),
             }
@@ -726,6 +749,7 @@ struct StreamUiSignals {
     set_error: WriteSignal<Option<String>>,
     set_streaming_task_id: WriteSignal<Option<String>>,
     set_last_terminal_status: WriteSignal<Option<TaskStatus>>,
+    set_sessions: WriteSignal<Vec<SessionSummary>>,
 }
 
 fn start_task_stream(
@@ -740,6 +764,7 @@ fn start_task_stream(
         session_id,
         task_id,
         set_session_title: signals.set_session_title,
+        set_sessions: signals.set_sessions,
         set_events: signals.set_events,
         set_progress: signals.set_progress,
         set_active_task: signals.set_active_task,
@@ -767,6 +792,32 @@ fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
         started_at: task.started_at,
         updated_at: task.updated_at,
         finished_at: task.finished_at,
+    }
+}
+
+fn upsert_session_summary(set_sessions: WriteSignal<Vec<SessionSummary>>, summary: SessionSummary) {
+    set_sessions.update(|items| {
+        if let Some(existing) = items
+            .iter_mut()
+            .find(|item| item.session_id == summary.session_id)
+        {
+            *existing = summary;
+        } else {
+            items.push(summary);
+        }
+        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    });
+}
+
+fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
+    SessionSummary {
+        session_id: session.session_id,
+        title: session.title,
+        last_preview: session.last_preview,
+        active_task_id: session.active_task_id,
+        last_task_status: session.last_task_status,
+        created_at: session.created_at,
+        updated_at: session.updated_at,
     }
 }
 
@@ -1333,11 +1384,7 @@ fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
 
 #[component]
 fn ContextCard(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView {
-    let snapshot_memo = Memo::new(move |_| {
-        progress
-            .get()
-            .and_then(|p| p.latest_token_snapshot)
-    });
+    let snapshot_memo = Memo::new(move |_| progress.get().and_then(|p| p.latest_token_snapshot));
 
     view! {
         {move || {

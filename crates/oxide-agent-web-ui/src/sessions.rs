@@ -1,13 +1,16 @@
 use crate::auth::use_auth;
 use crate::components::ErrorBanner;
-use crate::utils::{friendly_time, navigate, spawn_ui};
+use crate::utils::{navigate, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::SessionSummary;
 
 #[component]
-pub fn SessionSidebar(selected: Option<String>) -> impl IntoView {
+pub fn SessionSidebar(
+    selected: Option<String>,
+    sessions: ReadSignal<Vec<SessionSummary>>,
+    set_sessions: WriteSignal<Vec<SessionSummary>>,
+) -> impl IntoView {
     let auth = use_auth();
-    let (sessions, set_sessions) = signal(Vec::<SessionSummary>::new());
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
     let (loaded, set_loaded) = signal(false);
@@ -19,20 +22,7 @@ pub fn SessionSidebar(selected: Option<String>) -> impl IntoView {
         spawn_ui(async move {
             match auth.client().list_sessions().await {
                 Ok(response) => {
-                    let mut sessions = response.sessions;
-                    for session in &mut sessions {
-                        if !looks_like_timestamp_title(&session.title) {
-                            continue;
-                        }
-                        if let Ok(tasks) = auth.client().list_tasks(&session.session_id).await {
-                            if let Some(task) =
-                                tasks.tasks.into_iter().max_by_key(|task| task.updated_at)
-                            {
-                                session.title = concise_title(&task.input_markdown);
-                            }
-                        }
-                    }
-                    set_sessions.set(sessions);
+                    set_sessions.set(response.sessions);
                 }
                 Err(error) => set_error.set(Some(error.to_string())),
             }
@@ -198,7 +188,6 @@ fn SessionItem(
                         {display_session_preview(&session)}
                     </span>
                 </span>
-                <span class="session-time">{friendly_time(session.updated_at)}</span>
             </a>
             <button
                 class="session-delete-button"
@@ -214,7 +203,8 @@ fn SessionItem(
 }
 
 fn display_session_title(session: &SessionSummary) -> String {
-    if looks_like_timestamp_title(&session.title) {
+    let trimmed = session.title.trim();
+    if trimmed.is_empty() || trimmed == "New session" || looks_like_timestamp_title(trimmed) {
         return session
             .last_preview
             .as_deref()
@@ -261,11 +251,40 @@ fn meaningful_preview(value: &str) -> bool {
 }
 
 fn looks_like_timestamp_title(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.len() >= 19
-        && trimmed.as_bytes().get(4) == Some(&b'-')
-        && trimmed.as_bytes().get(7) == Some(&b'-')
-        && trimmed.as_bytes().get(10) == Some(&b' ')
+    let value = value.trim();
+    let bytes = value.as_bytes();
+    bytes.len() >= 16
+        && bytes
+            .get(0..4)
+            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+        && bytes.get(4) == Some(&b'-')
+        && bytes
+            .get(5..7)
+            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+        && bytes.get(7) == Some(&b'-')
+        && bytes
+            .get(8..10)
+            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+        && matches!(bytes.get(10), Some(b' ' | b'T'))
+        && bytes
+            .get(11..13)
+            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+        && bytes.get(13) == Some(&b':')
+        && bytes
+            .get(14..16)
+            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_timestamp_title;
+
+    #[test]
+    fn detects_chrono_timestamp_titles() {
+        assert!(looks_like_timestamp_title("2026-05-29 20:53:47.208618014"));
+        assert!(looks_like_timestamp_title("2026-05-29T20:53:47Z"));
+        assert!(!looks_like_timestamp_title("Cloudflare R2 limits"));
+    }
 }
 
 fn confirm_delete_session(title: &str) -> bool {

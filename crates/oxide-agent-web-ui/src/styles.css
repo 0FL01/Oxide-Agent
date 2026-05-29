@@ -402,11 +402,6 @@ label {
   color: var(--text-faint);
 }
 
-.session-time {
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
-
 .session-delete-button {
   position: absolute;
   right: var(--space-3);
@@ -1983,7 +1978,6 @@ textarea {
   font-size: 12px;
 }
 
-.session-time,
 .session-meta {
   color: var(--faint);
   font: 11px/1.5 var(--font-mono);

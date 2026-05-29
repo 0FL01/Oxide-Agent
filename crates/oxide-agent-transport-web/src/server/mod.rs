@@ -17,6 +17,7 @@
 //! - `DELETE /api/v1/sessions/:session_id` — delete current user's web session
 
 mod auth_helpers;
+mod auto_title;
 mod converters;
 mod sse;
 mod static_assets;
@@ -403,6 +404,17 @@ async fn api_create_task(
 
     let now = chrono::Utc::now();
     let task_id = running_task.task_id.clone();
+
+    // Check whether this is the first task BEFORE saving the new one,
+    // otherwise list_tasks would already include it and is_empty()
+    // would always return false.
+    let is_first_task = state
+        .web_store
+        .list_tasks(user.user_id, &session_id)
+        .await
+        .map_err(store_error_response)?
+        .is_empty();
+
     let task_record = WebTaskRecord {
         schema_version: WEB_TASK_SCHEMA_VERSION,
         task_id: task_id.clone(),
@@ -428,11 +440,13 @@ async fn api_create_task(
         .map_err(store_error_response)?;
 
     let preview = markdown_preview(&input_markdown);
+    let should_auto_title = is_first_task && !session.manually_renamed;
+
     session.active_task_id = Some(task_id.clone());
     session.last_task_status = Some(ApiTaskStatus::Running);
     session.last_preview = Some(preview.clone());
-    if !session.manually_renamed && session.title == WEB_SESSION_DEFAULT_TITLE {
-        session.title = preview;
+    if should_auto_title && session.title == WEB_SESSION_DEFAULT_TITLE {
+        session.title = preview.clone();
     }
     session.updated_at = now;
     state
@@ -440,6 +454,18 @@ async fn api_create_task(
         .save_session(session)
         .await
         .map_err(store_error_response)?;
+
+    if should_auto_title && state.auto_title_enabled {
+        auto_title::spawn_auto_title(
+            state.clone(),
+            auto_title::AutoTitleRequest {
+                user_id: user.user_id,
+                session_id: session_id.clone(),
+                first_user_message: input_markdown.clone(),
+                fallback_preview: preview,
+            },
+        );
+    }
 
     let persistence = task_executor::WebTaskPersistence {
         web_store: state.web_store.clone(),
@@ -563,8 +589,16 @@ async fn api_edit_task_input(
 
     let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
     let preview = markdown_preview(&input_markdown);
+    let old_preview = session.last_preview.clone();
     session.last_preview = Some(preview.clone());
-    if tasks.len() == 1 && !session.manually_renamed {
+    // Only update title from preview when it is still the default or the
+    // previous fallback preview.  An LLM-generated auto-title must not be
+    // overwritten by an edit.
+    let title_is_still_fallback = tasks.len() == 1
+        && !session.manually_renamed
+        && (session.title == WEB_SESSION_DEFAULT_TITLE
+            || session.title == old_preview.as_deref().unwrap_or(""));
+    if title_is_still_fallback {
         session.title = preview;
     }
     session.updated_at = now;
@@ -2499,7 +2533,9 @@ mod tests {
         llm.register_provider("opencode_go".to_string(), scripted);
         let session_manager =
             WebSessionManager::new(SessionRegistry::new(), Arc::new(llm), settings);
-        AppState::new(Arc::new(session_manager))
+        let mut state = AppState::new(Arc::new(session_manager));
+        state.auto_title_enabled = false;
+        state
     }
 
     fn unique_test_asset_dir(label: &str) -> std::path::PathBuf {

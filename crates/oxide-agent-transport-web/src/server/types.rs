@@ -93,6 +93,8 @@ pub struct AppState {
     pub task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     /// Tracks the JoinHandle for each running task so it can be aborted on completion.
     pub task_handles: Arc<RwLock<StdHashMap<String, Arc<tokio::task::JoinHandle<()>>>>>,
+    /// When `false`, the async auto-title worker is skipped (for tests with scripted LLM).
+    pub auto_title_enabled: bool,
 }
 
 impl AppState {
@@ -129,6 +131,7 @@ impl AppState {
             task_progress: Arc::new(RwLock::new(StdHashMap::new())),
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
+            auto_title_enabled: true,
         }
     }
 

@@ -5,8 +5,8 @@ use gloo_net::eventsource::futures::{EventSource, EventSourceBuilder, EventSourc
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, ProgressSnapshot, SseConnectionState, TaskDetail, TaskEventKind,
-    TaskStatus, TaskSummary,
+    PersistedTaskEvent, ProgressSnapshot, SessionDetail, SessionSummary, SseConnectionState,
+    TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
 use serde::Deserialize;
 
@@ -16,6 +16,7 @@ pub struct TaskStreamConfig {
     pub session_id: String,
     pub task_id: String,
     pub set_session_title: WriteSignal<String>,
+    pub set_sessions: WriteSignal<Vec<SessionSummary>>,
     pub set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     pub set_progress: WriteSignal<Option<ProgressSnapshot>>,
     pub set_active_task: WriteSignal<Option<TaskDetail>>,
@@ -49,6 +50,7 @@ async fn poll_task_detail_until_paused_or_terminal(config: TaskStreamConfig) {
         ) {
             config.set_state.set(SseConnectionState::TerminalClosed);
             config.set_streaming_task_id.set(None);
+            poll_session_summary_after_terminal(&config).await;
             return;
         }
     }
@@ -95,6 +97,7 @@ async fn run_task_stream(config: TaskStreamConfig) {
         if process_stream_messages(&config, streams, &mut last_seq).await {
             config.set_state.set(SseConnectionState::TerminalClosed);
             config.set_streaming_task_id.set(None);
+            poll_session_summary_after_terminal(&config).await;
             return;
         }
 
@@ -421,16 +424,57 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<TaskStatus> {
                 }
                 items.sort_by_key(|item| item.updated_at);
             });
-            match config.client.get_session(&config.session_id).await {
-                Ok(response) => config.set_session_title.set(response.session.title),
-                Err(error) => config.set_error.set(Some(error.to_string())),
-            }
+            refresh_session_summary(config).await;
             Some(status)
         }
         Err(error) => {
             config.set_error.set(Some(error.to_string()));
             None
         }
+    }
+}
+
+async fn refresh_session_summary(config: &TaskStreamConfig) {
+    match config.client.get_session(&config.session_id).await {
+        Ok(response) => {
+            let summary = session_detail_to_summary(response.session);
+            config.set_session_title.set(summary.title.clone());
+            upsert_session_summary(config.set_sessions, summary);
+        }
+        Err(error) => config.set_error.set(Some(error.to_string())),
+    }
+}
+
+async fn poll_session_summary_after_terminal(config: &TaskStreamConfig) {
+    for _ in 0..20 {
+        TimeoutFuture::new(1_500).await;
+        refresh_session_summary(config).await;
+    }
+}
+
+fn upsert_session_summary(set_sessions: WriteSignal<Vec<SessionSummary>>, summary: SessionSummary) {
+    set_sessions.update(|items| {
+        if let Some(existing) = items
+            .iter_mut()
+            .find(|item| item.session_id == summary.session_id)
+        {
+            *existing = summary;
+        } else {
+            items.push(summary);
+        }
+        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    });
+}
+
+fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
+    SessionSummary {
+        session_id: session.session_id,
+        title: session.title,
+        last_preview: session.last_preview,
+        active_task_id: session.active_task_id,
+        last_task_status: session.last_task_status,
+        created_at: session.created_at,
+        updated_at: session.updated_at,
     }
 }
 

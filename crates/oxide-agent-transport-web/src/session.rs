@@ -228,6 +228,18 @@ impl WebSessionManager {
         &self.registry
     }
 
+    /// Shared LLM client for agent execution and auto-title generation.
+    #[must_use]
+    pub fn llm_client(&self) -> Arc<LlmClient> {
+        self.llm.clone()
+    }
+
+    /// Agent settings including configured model routes.
+    #[must_use]
+    pub fn agent_settings(&self) -> Arc<AgentSettings> {
+        self.agent_settings.clone()
+    }
+
     // --- Session CRUD ---
 
     /// Create a new session and register it in the `SessionRegistry`.
@@ -594,12 +606,6 @@ impl WebSessionManager {
         // Re-derive the SessionId using the same hash as create_session.
         let sid = derive_web_session_id(meta.user_id, session_id);
         Some(sid)
-    }
-
-    /// Access the underlying session registry (for execute_agent_task).
-    #[must_use]
-    pub fn registry(&self) -> &SessionRegistry {
-        &self.registry
     }
 }
 
