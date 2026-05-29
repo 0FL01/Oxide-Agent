@@ -316,7 +316,18 @@ fn SessionWorkspace(
                             placeholder=move || if is_running() { "Agent is working…" } else if is_waiting() { "Reply to resume the task…" } else { "Message Oxide Agent…" }
                             prop:value=input
                             disabled=is_running
-                            on:input=move |ev| set_input.set(event_target_value(&ev))
+                            on:input=move |ev| {
+                                set_input.set(event_target_value(&ev));
+                                // auto-resize
+                                use wasm_bindgen::JsCast;
+                                let target = ev.target().unwrap();
+                                let el: web_sys::HtmlElement = target.unchecked_into();
+                                el.style().set_property("height", "auto").ok();
+                                let scroll = el.scroll_height();
+                                let max = 208.0_f64;
+                                let h = (scroll as f64).min(max);
+                                el.style().set_property("height", &format!("{h}px")).ok();
+                            }
                             on:keydown=move |ev| {
                                 if ev.ctrl_key() && ev.key() == "Enter" {
                                     ev.prevent_default();

@@ -2290,7 +2290,7 @@ textarea {
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
@@ -2299,15 +2299,23 @@ textarea {
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
-.composer textarea {
-  background: transparent;
-  border: none;
+.composer textarea,
+.composer-inner textarea {
+  width: 100%;
+  background: transparent !important;
+  border: none !important;
   outline: none;
+  box-shadow: none !important;
   min-height: 24px;
-  max-height: 160px;
+  max-height: 208px;
   padding: 0;
+  margin: 0;
   font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg);
   resize: none;
+  overflow-y: auto;
 }
 
 .composer textarea:disabled {
