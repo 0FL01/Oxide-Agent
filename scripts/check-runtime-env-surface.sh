@@ -7,7 +7,8 @@ paths=(
   config
   crates
   docker
-  docker-compose.yml
+  docker-compose.telegram.yml
+  docker-compose.web.yml
   README.md
   README-ru.md
   services/browser_use_bridge

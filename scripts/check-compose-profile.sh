@@ -14,7 +14,8 @@ if [[ -f sandbox/Dockerfile.sandbox ]]; then
 fi
 
 case "${profile}" in
-  root-full) compose_file="docker-compose.yml" ;;
+  telegram) compose_file="docker-compose.telegram.yml" ;;
+  web) compose_file="docker-compose.web.yml" ;;
   *) compose_file="docker/compose.${profile}.yml" ;;
 esac
 
@@ -81,7 +82,8 @@ profile_to_defaults = {
     "media": "media-enabled",
     "dev": "full",
     "full": "full",
-    "root-full": "full",
+    "telegram": "embedded-opencode-local",
+    "web": "web-embedded-opencode-local",
 }
 defaults_profile = profile_to_defaults[profile]
 profile_path = pathlib.Path("profiles") / f"{defaults_profile}.toml"
@@ -94,15 +96,19 @@ uses_searxng = "tool/searxng" in module_ids
 uses_browser_use = False  # Browser Use bridge is intentionally dormant until a cost-effective vision model is selected.
 uses_ssh_mcp = "integration/ssh-mcp" in module_ids
 
+is_web_profile = defaults_profile == "web-embedded-opencode-local"
+app_package = "oxide-agent-transport-web" if is_web_profile else "oxide-agent-telegram-bot"
+app_binary = "oxide-agent-web-console" if is_web_profile else "oxide-agent-telegram-bot"
+
 expected_cargo_features = [
-    f"oxide-agent-telegram-bot/profile-{defaults_profile}",
+    f"{app_package}/profile-{defaults_profile}",
 ]
 if uses_sandboxd:
     expected_cargo_features.append("oxide-agent-sandboxd/profile-full")
 expected_cargo_features_text = ",".join(expected_cargo_features)
 
-expected_packages = ["oxide-agent-telegram-bot"]
-expected_binaries = ["oxide-agent-telegram-bot"]
+expected_packages = [app_package]
+expected_binaries = [app_binary]
 if uses_sandboxd:
     expected_packages.append("oxide-agent-sandboxd")
     expected_binaries.append("oxide-agent-sandboxd")
@@ -179,9 +185,10 @@ if ("searxng" in services) != uses_searxng:
 if "browser_use" in services and not uses_browser_use:
     fail("browser_use service must stay absent while the bridge is intentionally dormant")
 
-oxide_agent = services.get("oxide_agent")
-if not oxide_agent:
-    fail("oxide_agent service is required")
+app_service_name = "oxide_web" if is_web_profile else "oxide_agent"
+app_service = services.get(app_service_name)
+if not app_service:
+    fail(f"{app_service_name} service is required")
 
 def normalized_args(service_name: str) -> dict[str, str]:
     service = services[service_name]
@@ -196,11 +203,12 @@ def normalized_args(service_name: str) -> dict[str, str]:
 
 def assert_app_build_args(service_name: str) -> None:
     args = normalized_args(service_name)
+    expected_entrypoint = app_binary
     expected = {
         "CARGO_FEATURES": expected_cargo_features_text,
         "PACKAGES": expected_packages_text,
         "BINARIES": expected_binaries_text,
-        "ENTRYPOINT_BINARY": "oxide-agent-telegram-bot",
+        "ENTRYPOINT_BINARY": expected_entrypoint,
     }
     if expected_mcp_binaries_text:
         expected["MCP_BINARIES"] = expected_mcp_binaries_text
@@ -223,35 +231,15 @@ def assert_app_build_args(service_name: str) -> None:
             fail(f"{service_name} build arg {key} must be absent or empty for this profile")
 
 
-assert_app_build_args("oxide_agent")
-
-if "oxide_web" in services:
-    args = normalized_args("oxide_web")
-    expected = {
-        "CARGO_FEATURES": "oxide-agent-transport-web/profile-web-embedded-opencode-local",
-        "PACKAGES": "oxide-agent-transport-web",
-        "BINARIES": "oxide-agent-web-console",
-        "ENTRYPOINT_BINARY": "oxide-agent-web-console",
-        "BUILD_WEB_UI": "true",
-    }
-    for key, expected_value in expected.items():
-        if args.get(key) != expected_value:
-            fail(
-                f"oxide_web build arg {key} mismatch: "
-                f"actual={args.get(key)!r}; expected={expected_value!r}"
-            )
-    if args.get("MCP_BINARIES", "") not in {"", None}:
-        fail("oxide_web build arg MCP_BINARIES must be empty")
-    if args.get("RUNTIME_APT_PACKAGES", "") not in {"", None}:
-        fail("oxide_web build arg RUNTIME_APT_PACKAGES must be empty")
+assert_app_build_args(app_service_name)
 
 if "sandboxd" in services:
     sandboxd = services["sandboxd"]
     build = sandboxd.get("build")
     if build:
         assert_app_build_args("sandboxd")
-    elif sandboxd.get("image") != oxide_agent.get("image"):
-        fail("sandboxd without its own build must reuse the oxide_agent image")
+    elif sandboxd.get("image") != app_service.get("image"):
+        fail(f"sandboxd without its own build must reuse the {app_service_name} image")
     command = sandboxd.get("command") or []
     if "./oxide-agent-sandboxd" not in command:
         fail("sandboxd service must run the oxide-agent-sandboxd binary")
@@ -280,14 +268,45 @@ case "${profile}" in
     forbid_config_text "sandboxd-run"
     forbid_config_text "browser-use-data"
     ;;
-  dev | full | root-full)
+  telegram)
     require_service oxide_agent
     require_service sandboxd
     require_service sandbox_image
     require_service searxng
-    if [[ "${profile}" == "root-full" ]]; then
-      require_service oxide_web
+    forbid_service oxide_web
+    require_config_text "sandbox/Dockerfile.dev"
+    forbid_config_text "sandbox/Dockerfile.sandbox"
+    if ! grep -q "/var/run/docker.sock" <<<"${config}"; then
+      echo "telegram compose must mount Docker socket into sandboxd" >&2
+      exit 1
     fi
+    forbid_config_text "MCP_BINARIES"
+    forbid_config_text "ssh-mcp"
+    forbid_config_text "jira-mcp"
+    forbid_config_text "mattermost-mcp"
+    ;;
+  web)
+    require_service oxide_web
+    require_service sandboxd
+    require_service sandbox_image
+    require_service searxng
+    forbid_service oxide_agent
+    require_config_text "sandbox/Dockerfile.dev"
+    forbid_config_text "sandbox/Dockerfile.sandbox"
+    if ! grep -q "/var/run/docker.sock" <<<"${config}"; then
+      echo "web compose must mount Docker socket into sandboxd" >&2
+      exit 1
+    fi
+    forbid_config_text "MCP_BINARIES"
+    forbid_config_text "ssh-mcp"
+    forbid_config_text "jira-mcp"
+    forbid_config_text "mattermost-mcp"
+    ;;
+  dev | full)
+    require_service oxide_agent
+    require_service sandboxd
+    require_service sandbox_image
+    require_service searxng
     require_config_text "sandbox/Dockerfile.dev"
     forbid_config_text "sandbox/Dockerfile.sandbox"
     if ! grep -q "/var/run/docker.sock" <<<"${config}"; then

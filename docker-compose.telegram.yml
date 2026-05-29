@@ -1,15 +1,13 @@
-name: ${COMPOSE_PROJECT_NAME:-oxide-agent}
+name: ${COMPOSE_PROJECT_NAME:-oxide-agent}-telegram
 
 x-oxide-app-build: &oxide_app_build
   context: .
   dockerfile: docker/Dockerfile.app
   args:
-    CARGO_FEATURES: oxide-agent-telegram-bot/profile-full,oxide-agent-sandboxd/profile-full
+    CARGO_FEATURES: oxide-agent-telegram-bot/profile-embedded-opencode-local,oxide-agent-sandboxd/profile-full
     PACKAGES: oxide-agent-telegram-bot oxide-agent-sandboxd
     BINARIES: oxide-agent-telegram-bot oxide-agent-sandboxd
-    MCP_BINARIES: ssh-mcp jira-mcp mattermost-mcp
     ENTRYPOINT_BINARY: oxide-agent-telegram-bot
-    RUNTIME_APT_PACKAGES: openssh-client
 
 services:
   sandbox_image:
@@ -66,7 +64,7 @@ services:
       - DEBUG_MODE=false
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
-      - STACK_LOGS_PROJECT=${COMPOSE_PROJECT_NAME:-oxide-agent}
+      - STACK_LOGS_PROJECT=${COMPOSE_PROJECT_NAME:-oxide-agent}-telegram
     depends_on:
       sandbox_image:
         condition: service_completed_successfully
