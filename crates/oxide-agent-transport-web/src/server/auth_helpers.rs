@@ -1,8 +1,8 @@
 //! Authentication, CSRF protection, rate limiting, and cookie helpers.
 
 use super::{api_error, AppState, AUTH_COOKIE_NAME, CSRF_HEADER_NAME};
-use crate::auth::{current_user_for_token, AuthError};
 pub(crate) use crate::auth::AUTH_SESSION_TTL_SECS;
+use crate::auth::{current_user_for_token, AuthError};
 use axum::{
     http::{
         header::{COOKIE, HOST, ORIGIN, REFERER},
@@ -316,7 +316,8 @@ pub(crate) fn auth_cookie_header(
     ))
 }
 
-pub(crate) fn expired_auth_cookie_header() -> Result<HeaderValue, (StatusCode, Json<ErrorEnvelope>)> {
+pub(crate) fn expired_auth_cookie_header() -> Result<HeaderValue, (StatusCode, Json<ErrorEnvelope>)>
+{
     cookie_header(format!(
         "{AUTH_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT{}",
         secure_cookie_suffix()

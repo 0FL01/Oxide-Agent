@@ -3,16 +3,16 @@
 use super::AppState;
 use axum::{
     extract::State,
-    http::{header::{CACHE_CONTROL, CONTENT_TYPE}, HeaderValue, StatusCode, Uri},
+    http::{
+        header::{CACHE_CONTROL, CONTENT_TYPE},
+        HeaderValue, StatusCode, Uri,
+    },
     response::{IntoResponse, Response},
 };
 use std::path::{Component, Path as FsPath, PathBuf};
 
 /// Axum fallback handler: serves static assets or SPA index.html for browser routes.
-pub(crate) async fn static_assets_handler(
-    State(state): State<AppState>,
-    uri: Uri,
-) -> Response {
+pub(crate) async fn static_assets_handler(State(state): State<AppState>, uri: Uri) -> Response {
     let path = uri.path();
     if path.starts_with("/api/") {
         return StatusCode::NOT_FOUND.into_response();

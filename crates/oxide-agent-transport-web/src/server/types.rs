@@ -347,9 +347,7 @@ pub struct SerializableProgress {
 }
 
 impl SerializableProgress {
-    pub(crate) fn from_state(
-        state: &oxide_agent_core::agent::progress::ProgressState,
-    ) -> Self {
+    pub(crate) fn from_state(state: &oxide_agent_core::agent::progress::ProgressState) -> Self {
         Self {
             current_iteration: state.current_iteration,
             max_iterations: state.max_iterations,

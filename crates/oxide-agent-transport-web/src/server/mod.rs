@@ -16,15 +16,15 @@
 //! - `PATCH /api/v1/sessions/:session_id` — rename current user's web session
 //! - `DELETE /api/v1/sessions/:session_id` — delete current user's web session
 
-mod types;
-mod static_assets;
-mod sse;
-mod task_executor;
 mod auth_helpers;
 mod converters;
-pub use types::*;
+mod sse;
+mod static_assets;
+mod task_executor;
+mod types;
 use auth_helpers::*;
 use converters::*;
+pub use types::*;
 
 use crate::auth::{
     bootstrap_user, change_password, create_auth_session_for_user, current_user_for_token,
@@ -35,9 +35,7 @@ use axum::{
     body::Body,
     extract::{Path, Query, State},
     http::{
-        header::{
-            CONTENT_SECURITY_POLICY, SET_COOKIE,
-        },
+        header::{CONTENT_SECURITY_POLICY, SET_COOKIE},
         HeaderMap, HeaderValue, Request, StatusCode,
     },
     middleware::{self, Next},
@@ -52,11 +50,9 @@ use oxide_agent_web_contracts::{
     CurrentUser, CurrentUserResponse, EditTaskInputRequest as ApiEditTaskInputRequest,
     EditTaskInputResponse as ApiEditTaskInputResponse, ErrorCode, ErrorEnvelope,
     GetSessionResponse, GetTaskProgressResponse, GetTaskResponse, ListSessionsResponse,
-    ListTasksResponse, LoginRequest, OkResponse,
-    PublicConfigResponse, RegisterRequest,
+    ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse, RegisterRequest,
     ResumeTaskRequest as ApiResumeTaskRequest, ResumeTaskResponse as ApiResumeTaskResponse,
-    TaskEventsResponse, TaskStatus as ApiTaskStatus,
-    UpdateSessionRequest, UpdateSessionResponse,
+    TaskEventsResponse, TaskStatus as ApiTaskStatus, UpdateSessionRequest, UpdateSessionResponse,
     WebSessionRecord, WebTaskRecord,
 };
 use tower_http::cors::{Any, CorsLayer};

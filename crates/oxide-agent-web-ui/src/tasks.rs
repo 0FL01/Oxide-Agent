@@ -830,9 +830,9 @@ fn ShellToolCard(
     let default_open = is_running || !success || !has_streams;
 
     // Compact preview: command or first line of stdout
-    let preview_text = command.clone().or_else(|| {
-        stdout.as_ref().map(|t| first_line(t))
-    });
+    let preview_text = command
+        .clone()
+        .or_else(|| stdout.as_ref().map(|t| first_line(t)));
 
     view! {
         <div class="tool-card-header">
@@ -954,7 +954,8 @@ fn SearchToolCard(
     let default_open = is_running || !success;
 
     // Compact preview: first result snippet or query
-    let preview_snippet = search_results.first()
+    let preview_snippet = search_results
+        .first()
         .filter(|sr| !sr.snippet.is_empty())
         .map(|sr| sr.snippet.clone());
 
@@ -1055,11 +1056,10 @@ fn GenericToolCard(
     let default_open = is_running || !success || !has_streams;
 
     // Compact preview: command_preview or first line of stdout
-    let command_preview = call.as_ref()
+    let command_preview = call
+        .as_ref()
         .and_then(|e| payload_str_event(e, "command_preview"));
-    let preview_text = command_preview.or_else(|| {
-        stdout.as_ref().map(|t| first_line(t))
-    });
+    let preview_text = command_preview.or_else(|| stdout.as_ref().map(|t| first_line(t)));
 
     view! {
         <div class="tool-card-header">

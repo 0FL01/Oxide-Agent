@@ -1,7 +1,7 @@
 //! SSE (Server-Sent Events) streaming for task event replay and live updates.
 
-use super::{AppState, TaskEventsQuery};
 use super::{authenticated_user, load_owned_task, task_detail_from_record};
+use super::{AppState, TaskEventsQuery};
 use axum::{
     extract::{Path, Query, State},
     http::{header::HeaderMap, StatusCode},

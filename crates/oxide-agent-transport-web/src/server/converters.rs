@@ -1,19 +1,24 @@
 //! Record mappers, validators, and markdown preview helpers.
 
-use super::{api_error, SerializableProgress, MAX_SESSION_TITLE_CHARS, MAX_TASK_INPUT_CHARS, TASK_PREVIEW_CHARS, WEB_SESSION_DEFAULT_TITLE};
+use super::{
+    api_error, SerializableProgress, MAX_SESSION_TITLE_CHARS, MAX_TASK_INPUT_CHARS,
+    TASK_PREVIEW_CHARS, WEB_SESSION_DEFAULT_TITLE,
+};
+use axum::{http::StatusCode, Json};
 use oxide_agent_core::agent::PendingUserInput;
 use oxide_agent_web_contracts::{
     ErrorCode, ErrorEnvelope, PendingUserInputView, ProgressSnapshot, SessionDetail,
-    SessionSummary, TaskDetail, TaskSummary, UserInputKind as ApiUserInputKind,
-    WebSessionRecord, WebTaskRecord,
+    SessionSummary, TaskDetail, TaskSummary, UserInputKind as ApiUserInputKind, WebSessionRecord,
+    WebTaskRecord,
 };
-use axum::{http::StatusCode, Json};
 
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------
 
-pub(crate) fn validate_session_title(title: &str) -> Result<String, (StatusCode, Json<ErrorEnvelope>)> {
+pub(crate) fn validate_session_title(
+    title: &str,
+) -> Result<String, (StatusCode, Json<ErrorEnvelope>)> {
     let title = title.trim();
     if title.is_empty() {
         return Err(api_error(
@@ -34,7 +39,9 @@ pub(crate) fn validate_session_title(title: &str) -> Result<String, (StatusCode,
     Ok(title.to_string())
 }
 
-pub(crate) fn validate_task_input(input: &str) -> Result<String, (StatusCode, Json<ErrorEnvelope>)> {
+pub(crate) fn validate_task_input(
+    input: &str,
+) -> Result<String, (StatusCode, Json<ErrorEnvelope>)> {
     let input = input.trim();
     if input.is_empty() {
         return Err(api_error(
@@ -223,7 +230,9 @@ pub(crate) fn pending_user_input_view(pending: PendingUserInput) -> PendingUserI
     }
 }
 
-pub(crate) fn progress_snapshot_from_serializable(progress: SerializableProgress) -> ProgressSnapshot {
+pub(crate) fn progress_snapshot_from_serializable(
+    progress: SerializableProgress,
+) -> ProgressSnapshot {
     ProgressSnapshot {
         current_iteration: progress.current_iteration,
         max_iterations: progress.max_iterations,
