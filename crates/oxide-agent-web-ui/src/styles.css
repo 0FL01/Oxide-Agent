@@ -14,8 +14,8 @@
 
   /* Text hierarchy — neutral cool gray */
   --text-main: #ececec;
-  --text-muted: #8e8e93;
-  --text-faint: #6e6e73;
+  --text-muted: #a1a1aa;
+  --text-faint: #8b8b94;
 
   /* Accents — green primary, warm secondary */
   --accent-blue: #10a37f;
@@ -1440,7 +1440,7 @@ label {
 }
 
 .event-row:nth-child(even) {
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .event-seq {
@@ -1488,13 +1488,17 @@ label {
 
 .markdown-content th,
 .markdown-content td {
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-strong);
   padding: 10px 12px;
   font-size: 12px;
 }
 
 .markdown-content tr:nth-child(even) td {
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.markdown-content tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .markdown-content th {
@@ -1502,9 +1506,23 @@ label {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-faint);
-  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 2px solid var(--border-strong);
 }
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  color: var(--fg);
+  font-weight: 600;
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+}
+
+.markdown-content h1 { font-size: 1.3em; }
+.markdown-content h2 { font-size: 1.15em; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.3em; }
+.markdown-content h3 { font-size: 1.05em; }
 
 .markdown-content code {
   background: var(--bg-panel-soft);
@@ -1828,8 +1846,8 @@ pre {
   --bg: #171717;
   --surface: #212121;
   --fg: #ececec;
-  --muted: #8e8e93;
-  --faint: #6e6e73;
+  --muted: #a1a1aa;
+  --faint: #8b8b94;
   --border: #2a2a2a;
   --border-strong: #3a3a3a;
   --surface-hover: #2f2f2f;
@@ -1901,7 +1919,13 @@ button.secondary,
 button.btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #08110e;
+  color: #fff;
+}
+
+.btn-primary:hover,
+button.btn-primary:hover {
+  background: #0e8c6d;
+  border-color: #0e8c6d;
 }
 
 .btn-danger,
@@ -2020,7 +2044,8 @@ textarea {
   gap: 10px;
   padding: 10px;
   border: 0;
-  border-radius: 10px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   background: transparent;
 }
 
@@ -2038,6 +2063,7 @@ textarea {
 .session-item.active {
   background: rgba(16, 163, 127, 0.08);
   border-color: transparent;
+  border-left: 2px solid var(--accent);
 }
 
 .session-id,
@@ -2060,8 +2086,8 @@ textarea {
 
 .session-status-dot,
 .session-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--faint);
   flex: 0 0 auto;
@@ -2086,23 +2112,27 @@ textarea {
 .session-status-dot.running,
 .session-dot.running {
   background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
   animation: pulse-dot 1.6s ease-in-out infinite;
 }
 
 .session-status-dot.success,
 .session-dot.completed {
   background: var(--accent);
+  opacity: 0.75;
 }
 
 .session-status-dot.warning,
 .session-dot.waiting {
   background: var(--warning);
+  box-shadow: 0 0 6px rgba(216, 162, 30, 0.4);
 }
 
 .session-status-dot.error,
 .session-dot.error,
 .session-dot.cancelled {
   background: var(--error);
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
 }
 
 @keyframes pulse-dot {
