@@ -61,7 +61,7 @@ fn SessionWorkspace(
     let (loaded, set_loaded) = signal(false);
     let (last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
 
-    let (drawer_open, set_drawer_open) = signal(true);
+    let (drawer_open, set_drawer_open) = signal(false);
 
     let session_id_for_load = session_id.clone();
     let load_all = move || {
@@ -80,6 +80,7 @@ fn SessionWorkspace(
             }
             match client.list_tasks(&session_id).await {
                 Ok(response) => {
+                    set_drawer_open.set(false);
                     let latest = latest_task(response.tasks.clone());
                     set_tasks.set(response.tasks);
                     if let Some(task) = latest {
@@ -180,6 +181,7 @@ fn SessionWorkspace(
 
             match result {
                 Ok(task) => {
+                    set_drawer_open.set(false);
                     set_input.set(String::new());
                     set_active_task.set(Some(summary_to_detail(&session_id, &task)));
                     set_last_terminal_status.set(None);
@@ -256,9 +258,7 @@ fn SessionWorkspace(
         <ErrorBanner message=error />
         <section class="session-workspace">
             <div class="chat-wrapper">
-                <header class="chat-topbar">
-                    <div class="chat-title">{move || session_title.get()}</div>
-                </header>
+                <header class="chat-topbar" aria-label=move || session_title.get()></header>
                 // Agent results — task cards with output
                 <div class="results-panel">
                     {move || {
@@ -289,6 +289,8 @@ fn SessionWorkspace(
                                                 session_id=session_id_for_cards.clone()
                                                 task=task
                                                 editable=editable
+                                                drawer_open=drawer_open
+                                                set_drawer_open=set_drawer_open
                                                 set_tasks=set_tasks
                                                 set_error=set_error
                                             />
@@ -302,6 +304,7 @@ fn SessionWorkspace(
                     <ActivityStatusChip
                         tasks=tasks
                         active_task=active_task
+                        open=drawer_open
                         set_open=set_drawer_open
                     />
                 </div>
@@ -388,6 +391,7 @@ fn ComposerNotice(active_task: ReadSignal<Option<TaskDetail>>) -> impl IntoView 
 fn ActivityStatusChip(
     tasks: ReadSignal<Vec<TaskSummary>>,
     active_task: ReadSignal<Option<TaskDetail>>,
+    open: ReadSignal<bool>,
     set_open: WriteSignal<bool>,
 ) -> impl IntoView {
     view! {
@@ -406,8 +410,7 @@ fn ActivityStatusChip(
                 TaskStatus::Completed => "status-chip",
             };
             let label = match status {
-                TaskStatus::Queued => "Queued",
-                TaskStatus::Running => "Agent is working",
+                TaskStatus::Queued | TaskStatus::Running => "Thinking",
                 TaskStatus::WaitingForUserInput => "Waiting for your input",
                 TaskStatus::Failed => "Task failed",
                 TaskStatus::Cancelled => "Cancelled",
@@ -416,7 +419,7 @@ fn ActivityStatusChip(
             };
             view! {
                 <div class="status-wrap">
-                    <button class=class type="button" on:click=move |_| set_open.set(true)>
+                    <button class=move || if open.get() { format!("{class} open") } else { class.to_string() } type="button" on:click=move |_| toggle_drawer(open, set_open)>
                         <span class="dot"></span>
                         <span>{label}</span>
                         <span class="chevron">"›"</span>
@@ -425,6 +428,25 @@ fn ActivityStatusChip(
             }.into_any()
         }}
     }
+}
+
+#[component]
+fn ThinkingButton(
+    label: String,
+    open: ReadSignal<bool>,
+    set_open: WriteSignal<bool>,
+) -> impl IntoView {
+    view! {
+        <button class=move || if open.get() { "thinking-button open" } else { "thinking-button" } type="button" on:click=move |_| toggle_drawer(open, set_open)>
+            <span class="dot"></span>
+            <span>{label}</span>
+            <span class="chevron">"›"</span>
+        </button>
+    }
+}
+
+fn toggle_drawer(open: ReadSignal<bool>, set_open: WriteSignal<bool>) {
+    set_open.set(!open.get());
 }
 
 #[component]
@@ -583,6 +605,34 @@ const fn status_label(status: TaskStatus) -> &'static str {
     }
 }
 
+fn thought_label(task: &TaskSummary) -> String {
+    format!(
+        "Thought for {}",
+        format_duration(task_duration_seconds(task))
+    )
+}
+
+fn task_duration_seconds(task: &TaskSummary) -> i64 {
+    let start = task.started_at.as_ref().unwrap_or(&task.created_at);
+    let end = task.finished_at.as_ref().unwrap_or(&task.updated_at);
+    let seconds = end.signed_duration_since(start.to_owned()).num_seconds();
+    seconds.max(0)
+}
+
+fn format_duration(total_seconds: i64) -> String {
+    let seconds = total_seconds.max(0);
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        return format!("{hours}h {minutes}m {seconds}s");
+    }
+    if minutes > 0 {
+        return format!("{minutes}m {seconds}s");
+    }
+    format!("{seconds}s")
+}
+
 #[derive(Clone, Copy)]
 struct StreamUiSignals {
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
@@ -646,6 +696,8 @@ fn TaskCard(
     session_id: String,
     task: TaskSummary,
     editable: bool,
+    drawer_open: ReadSignal<bool>,
+    set_drawer_open: WriteSignal<bool>,
     set_tasks: WriteSignal<Vec<TaskSummary>>,
     set_error: WriteSignal<Option<String>>,
 ) -> impl IntoView {
@@ -654,6 +706,8 @@ fn TaskCard(
     let (draft, set_draft) = signal(task.input_markdown.clone());
     let (saving, set_saving) = signal(false);
     let original_input = task.input_markdown.clone();
+    let input_markdown = task.input_markdown.clone();
+    let thought_label = thought_label(&task);
 
     let card_status_class = match task.status {
         TaskStatus::Running | TaskStatus::Queued => "running",
@@ -668,7 +722,8 @@ fn TaskCard(
             <div class="task-card-header">
                 <time>{friendly_time(task.updated_at)}</time>
             </div>
-            <div class="message user-message">
+            <div class="message user-message-wrap">
+                <div class="user-message">
                 {move || if editing.get() {
                     let session_id = session_id.clone();
                     let task_id = task_id.clone();
@@ -689,19 +744,26 @@ fn TaskCard(
                     }.into_any()
                 } else {
                     view! {
-                        <MarkdownContent markdown=task.input_markdown.clone() />
+                        <MarkdownContent markdown=input_markdown.clone() />
                     }.into_any()
                 }}
+                </div>
+                {editable.then(|| view! {
+                    <button
+                        class="edit-input-icon"
+                        type="button"
+                        title="Edit input"
+                        aria-label="Edit input"
+                        on:click=move |_| set_editing.set(true)
+                    >
+                        "✎"
+                    </button>
+                })}
             </div>
             {editable.then(|| view! {
-                <button
-                    class="secondary edit-input-button"
-                    type="button"
-                    on:click=move |_| set_editing.set(true)
-                    style="margin-top:8px;"
-                >
-                    "Edit input"
-                </button>
+                <div class="task-action-row">
+                    <ThinkingButton label=thought_label open=drawer_open set_open=set_drawer_open />
+                </div>
             })}
 
             {task.final_response_markdown.map(|answer| view! {

@@ -2183,6 +2183,7 @@ textarea {
 }
 
 .chat-title {
+  display: none;
   max-width: 760px;
   padding: 0 20px;
   overflow: hidden;
@@ -2251,12 +2252,74 @@ textarea {
   margin-bottom: 24px;
 }
 
+.user-message-wrap {
+  position: relative;
+}
+
 .user-message {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 14px 16px;
   color: var(--fg);
+}
+
+.edit-input-icon {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--faint);
+  opacity: 0;
+}
+
+.user-message-wrap:hover .edit-input-icon,
+.edit-input-icon:focus-visible {
+  opacity: 1;
+}
+
+.edit-input-icon:hover {
+  color: var(--fg);
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+
+.task-action-row {
+  max-width: 800px;
+  margin: -8px auto 24px;
+}
+
+.thinking-button {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.thinking-button .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.thinking-button .chevron {
+  color: var(--faint);
+  font-size: 16px;
+  line-height: 1;
 }
 
 .assistant-message {

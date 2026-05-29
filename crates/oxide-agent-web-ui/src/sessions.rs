@@ -18,7 +18,22 @@ pub fn SessionSidebar(selected: Option<String>) -> impl IntoView {
         set_error.set(None);
         spawn_ui(async move {
             match auth.client().list_sessions().await {
-                Ok(response) => set_sessions.set(response.sessions),
+                Ok(response) => {
+                    let mut sessions = response.sessions;
+                    for session in &mut sessions {
+                        if !looks_like_timestamp_title(&session.title) {
+                            continue;
+                        }
+                        if let Ok(tasks) = auth.client().list_tasks(&session.session_id).await {
+                            if let Some(task) =
+                                tasks.tasks.into_iter().max_by_key(|task| task.updated_at)
+                            {
+                                session.title = concise_title(&task.input_markdown);
+                            }
+                        }
+                    }
+                    set_sessions.set(sessions);
+                }
                 Err(error) => set_error.set(Some(error.to_string())),
             }
             set_loading.set(false);
@@ -186,9 +201,9 @@ fn SessionItem(
             <a class=item_class href=format!("/app/session/{}", session.session_id)>
                 <span class=format!("session-status-dot {}", status_class)></span>
                 <span class="session-copy">
-                    <span class="session-id">{session.title}</span>
+                    <span class="session-id">{display_session_title(&session)}</span>
                     <span class="session-preview">
-                        {session.last_preview.unwrap_or_else(|| "No task yet".to_string())}
+                        {display_session_preview(&session)}
                     </span>
                 </span>
                 <span class="session-time">{friendly_time(session.updated_at)}</span>
@@ -204,6 +219,61 @@ fn SessionItem(
             </button>
         </li>
     }
+}
+
+fn display_session_title(session: &SessionSummary) -> String {
+    if looks_like_timestamp_title(&session.title) {
+        return session
+            .last_preview
+            .as_deref()
+            .filter(|preview| meaningful_preview(preview))
+            .map(concise_title)
+            .unwrap_or_else(|| "New chat".to_string());
+    }
+    concise_title(&session.title)
+}
+
+fn display_session_preview(session: &SessionSummary) -> String {
+    session
+        .last_preview
+        .as_deref()
+        .filter(|preview| meaningful_preview(preview))
+        .map(concise_preview)
+        .unwrap_or_else(|| "No messages yet".to_string())
+}
+
+fn concise_title(value: &str) -> String {
+    concise_text(value, 32)
+}
+
+fn concise_preview(value: &str) -> String {
+    concise_text(value, 44)
+}
+
+fn concise_text(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    let mut out = normalized
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    out.push('…');
+    out
+}
+
+fn meaningful_preview(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.chars().count() > 4 && !matches!(trimmed, "U C" | "UC")
+}
+
+fn looks_like_timestamp_title(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.len() >= 19
+        && trimmed.as_bytes().get(4) == Some(&b'-')
+        && trimmed.as_bytes().get(7) == Some(&b'-')
+        && trimmed.as_bytes().get(10) == Some(&b' ')
 }
 
 fn confirm_delete_session(title: &str) -> bool {
