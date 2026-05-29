@@ -258,7 +258,6 @@ fn SessionWorkspace(
         <ErrorBanner message=error />
         <section class="session-workspace">
             <div class="chat-wrapper">
-                <header class="chat-topbar" aria-label=move || session_title.get()></header>
                 // Agent results — task cards with output
                 <div class="results-panel">
                     {move || {

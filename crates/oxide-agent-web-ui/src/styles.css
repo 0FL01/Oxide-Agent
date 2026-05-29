@@ -2201,17 +2201,6 @@ textarea {
   position: relative;
 }
 
-.chat-topbar {
-  height: var(--topbar-height);
-  min-height: var(--topbar-height);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
-}
-
 .chat-title {
   display: none;
   max-width: 760px;
