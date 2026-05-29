@@ -48,15 +48,7 @@ pub fn SessionSidebar(selected: Option<String>) -> impl IntoView {
     });
 
     let create_session = move |_| {
-        set_loading.set(true);
-        set_error.set(None);
-        spawn_ui(async move {
-            match auth.client().create_session().await {
-                Ok(response) => navigate(&format!("/app/session/{}", response.session.session_id)),
-                Err(error) => set_error.set(Some(error.to_string())),
-            }
-            set_loading.set(false);
-        });
+        navigate("/app");
     };
 
     let filtered_sessions = move || {

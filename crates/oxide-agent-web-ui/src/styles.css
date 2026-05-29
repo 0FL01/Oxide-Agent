@@ -2707,6 +2707,47 @@ textarea {
   color: var(--muted);
 }
 
+/* Welcome view — shown when no session is selected */
+.welcome-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
+.welcome-view-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: min(800px, calc(100% - 40px));
+  max-width: 800px;
+}
+
+.welcome-view-icon {
+  color: var(--faint);
+  margin-bottom: 12px;
+}
+
+.welcome-view-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+}
+
+.welcome-view-text {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+
+.welcome-view-composer {
+  width: 100%;
+}
+
 @media (max-width: 1023px) {
   .app-layout {
     display: block;

@@ -1,9 +1,9 @@
 use crate::auth::use_auth;
-use crate::components::{EmptyState, ErrorBanner};
+use crate::components::ErrorBanner;
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
 use crate::sse::{spawn_task_stream, TaskStreamConfig};
-use crate::utils::{friendly_time, spawn_ui};
+use crate::utils::{friendly_time, navigate, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     CreateTaskRequest, EditTaskInputRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
@@ -33,11 +33,123 @@ pub fn TaskConsole(
         }
         .into_any(),
         _ => view! {
-            <section class="console-empty">
-                <EmptyState title="Select or create a session" />
-            </section>
+            <WelcomeView />
         }
         .into_any(),
+    }
+}
+
+#[component]
+fn WelcomeView() -> impl IntoView {
+    let auth = use_auth();
+    let (input, set_input) = signal(String::new());
+    let (loading, set_loading) = signal(false);
+    let (error, set_error) = signal(None::<String>);
+
+    let submit = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        let text = input.get();
+        if text.trim().is_empty() {
+            return;
+        }
+        set_loading.set(true);
+        set_error.set(None);
+        spawn_ui(async move {
+            let client = auth.client();
+            // 1. Create session
+            let session_id = match client.create_session().await {
+                Ok(resp) => resp.session.session_id,
+                Err(e) => {
+                    set_error.set(Some(e.to_string()));
+                    set_loading.set(false);
+                    return;
+                }
+            };
+            // 2. Create task with the user's message
+            match client
+                .create_task(
+                    &session_id,
+                    &CreateTaskRequest {
+                        input_markdown: text,
+                    },
+                )
+                .await
+            {
+                Ok(_) => navigate(&format!("/app/session/{session_id}")),
+                Err(e) => {
+                    set_error.set(Some(e.to_string()));
+                    set_loading.set(false);
+                }
+            }
+        });
+    };
+
+    view! {
+        <ErrorBanner message=error />
+        <section class="welcome-view">
+            <div class="welcome-view-content">
+                <svg
+                    width="40"
+                    height="40"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    class="welcome-view-icon"
+                >
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <h2 class="welcome-view-title">"What can I help you with?"</h2>
+                <p class="welcome-view-text">"Send a message to start a new agent session."</p>
+                <form class="welcome-view-composer" on:submit=submit>
+                    <div class="composer-inner">
+                        <textarea
+                            placeholder="Message Oxide Agent…"
+                            prop:value=input
+                            disabled=loading
+                            on:input=move |ev| {
+                                set_input.set(event_target_value(&ev));
+                                use wasm_bindgen::JsCast;
+                                let target = ev.target().unwrap();
+                                let el: web_sys::HtmlElement = target.unchecked_into();
+                                el.style().set_property("height", "auto").ok();
+                                let scroll = el.scroll_height();
+                                let max = 208.0_f64;
+                                let h = (scroll as f64).min(max);
+                                el.style().set_property("height", &format!("{h}px")).ok();
+                            }
+                            on:keydown=move |ev| {
+                                if ev.ctrl_key() && ev.key() == "Enter" {
+                                    ev.prevent_default();
+                                    if let Some(target) = ev.target() {
+                                        use wasm_bindgen::JsCast;
+                                        let el: web_sys::HtmlElement = target.unchecked_into();
+                                        if let Ok(Some(form_el)) = el.closest("form") {
+                                            if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
+                                                let btn: web_sys::HtmlElement = btn.unchecked_into();
+                                                btn.click();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        />
+                        <div class="composer-footer">
+                            <span class="composer-hint">"Ctrl+Enter to send"</span>
+                            <div class="composer-actions">
+                                <button
+                                    type="submit"
+                                    disabled=loading
+                                    class="btn-primary"
+                                >
+                                    "Send"
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </section>
     }
 }
 
