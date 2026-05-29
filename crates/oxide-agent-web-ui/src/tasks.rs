@@ -257,7 +257,9 @@ fn SessionWorkspace(
     view! {
         <ErrorBanner message=error />
         <section class="session-workspace">
-            <div class="chat-wrapper">
+            <div class="chat-wrapper"
+                class=("welcome-mode", move || tasks.get().is_empty() && !loading.get())
+            >
                 // Agent results — task cards with output
                 <div class="results-panel">
                     {move || {
