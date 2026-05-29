@@ -42,8 +42,8 @@ pub mod ytdlp;
 #[cfg(feature = "tool-tavily")]
 pub mod tavily;
 
-#[cfg(feature = "tool-searxng")]
-pub mod searxng;
+#[cfg(feature = "tool-duckduckgo")]
+pub mod duckduckgo;
 
 #[cfg(feature = "tool-browser-use")]
 pub mod browser_use;
@@ -108,8 +108,8 @@ pub use ytdlp::YtdlpProvider;
 #[cfg(feature = "tool-tavily")]
 pub use tavily::TavilyProvider;
 
-#[cfg(feature = "tool-searxng")]
-pub use searxng::SearxngProvider;
+#[cfg(feature = "tool-duckduckgo")]
+pub use duckduckgo::DuckDuckGoProvider;
 
 #[cfg(feature = "tool-browser-use")]
 pub use browser_use::BrowserUseProvider;

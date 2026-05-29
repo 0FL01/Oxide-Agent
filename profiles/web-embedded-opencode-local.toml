@@ -23,4 +23,4 @@ cargo_features = ["profile-web-embedded-opencode-local"]
 "tool/tavily" = { enabled = true }
 "tool/wiki-memory" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
-"tool/searxng" = { enabled = true }
+"tool/duckduckgo" = { enabled = true }

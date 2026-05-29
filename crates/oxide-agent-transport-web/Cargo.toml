@@ -53,7 +53,7 @@ compression_e2e = ["oxide-agent-core/tool-compression"]
 
 [dev-dependencies]
 tokio-test = "0.4"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13.4", features = ["json", "stream"] }
 bytes = "1"
 
 [[test]]

@@ -1,6 +1,6 @@
 //! Tavily Provider - web search and content extraction
 //!
-//! Provides `web_search` and `web_extract` tools using native Tavily Rust SDK.
+//! Provides `web_search` and `web_extract` tools using Tavily's HTTP API.
 
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
@@ -9,19 +9,19 @@ use crate::agent::tool_runtime::{
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use tavily::Tavily;
 use tracing::debug;
 
 const TOOL_WEB_SEARCH: &str = "web_search";
 const TOOL_WEB_EXTRACT: &str = "web_extract";
+const TAVILY_API_BASE: &str = "https://api.tavily.com";
 
 /// Provider for Tavily web search tools
 pub struct TavilyProvider {
-    client: Tavily,
+    client: reqwest::Client,
     api_key: String,
 }
 
@@ -30,13 +30,12 @@ impl TavilyProvider {
     ///
     /// # Errors
     ///
-    /// Returns an error if the Tavily client cannot be created.
+    /// Returns an error if the Tavily HTTP client cannot be created.
     pub fn new(api_key: &str) -> Result<Self> {
-        let client = Tavily::builder(api_key)
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
-            .max_retries(2)
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create Tavily client: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create Tavily HTTP client: {e}"))?;
 
         Ok(Self {
             client,
@@ -108,11 +107,7 @@ impl TavilyProvider {
 
                 debug!(query = %args.query, max_results = max_results, "Tavily web search");
 
-                let request = tavily::SearchRequest::new(&self.api_key, &args.query)
-                    .max_results(i32::from(max_results))
-                    .search_depth("basic");
-
-                match self.client.call(&request).await {
+                match self.search(&args.query, max_results).await {
                     Ok(response) => {
                         let mut output = format!("## Search results for: {}\n\n", args.query);
 
@@ -144,7 +139,7 @@ impl TavilyProvider {
 
                 debug!(urls = ?urls, "Tavily extract");
 
-                match self.client.extract(urls).await {
+                match self.extract(&urls).await {
                     Ok(response) => {
                         let mut output = String::new();
 
@@ -169,6 +164,43 @@ impl TavilyProvider {
             _ => anyhow::bail!("Unknown Tavily tool: {tool_name}"),
         }
     }
+
+    async fn search(&self, query: &str, max_results: u8) -> Result<TavilySearchResponse> {
+        let request = TavilySearchRequest {
+            api_key: &self.api_key,
+            query,
+            search_depth: "basic",
+            max_results,
+        };
+        self.post_json("search", &request).await
+    }
+
+    async fn extract(&self, urls: &[&str]) -> Result<TavilyExtractResponse> {
+        let request = TavilyExtractRequest {
+            api_key: &self.api_key,
+            urls,
+        };
+        self.post_json("extract", &request).await
+    }
+
+    async fn post_json<T, R>(&self, path: &str, body: &T) -> Result<R>
+    where
+        T: Serialize + ?Sized,
+        R: for<'de> Deserialize<'de>,
+    {
+        let url = format!("{TAVILY_API_BASE}/{path}");
+        let response = self.client.post(url).json(body).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<failed to read response body>".to_string());
+            anyhow::bail!("Tavily HTTP {status}: {}", truncate_for_error(body));
+        }
+
+        Ok(response.json::<R>().await?)
+    }
 }
 
 /// Arguments for `web_search` tool
@@ -187,6 +219,57 @@ const fn default_max_results() -> u8 {
 #[derive(Debug, Deserialize)]
 struct WebExtractArgs {
     urls: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TavilySearchRequest<'a> {
+    api_key: &'a str,
+    query: &'a str,
+    search_depth: &'a str,
+    max_results: u8,
+}
+
+#[derive(Debug, Deserialize)]
+struct TavilySearchResponse {
+    #[serde(default)]
+    results: Vec<TavilySearchResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TavilySearchResult {
+    #[serde(default)]
+    title: String,
+    url: String,
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TavilyExtractRequest<'a> {
+    api_key: &'a str,
+    urls: &'a [&'a str],
+}
+
+#[derive(Debug, Deserialize)]
+struct TavilyExtractResponse {
+    #[serde(default)]
+    results: Vec<TavilyExtractResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TavilyExtractResult {
+    url: String,
+    #[serde(default)]
+    raw_content: String,
+}
+
+fn truncate_for_error(body: String) -> String {
+    const LIMIT: usize = 500;
+    if body.chars().count() <= LIMIT {
+        body
+    } else {
+        body.chars().take(LIMIT).collect::<String>()
+    }
 }
 
 struct TavilyToolExecutor {

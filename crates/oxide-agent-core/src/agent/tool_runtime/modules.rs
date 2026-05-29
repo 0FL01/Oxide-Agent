@@ -32,6 +32,8 @@ use crate::agent::providers::BrowserUseProvider;
 use crate::agent::providers::CompressionProvider;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::providers::DelegationProvider;
+#[cfg(feature = "tool-duckduckgo")]
+use crate::agent::providers::DuckDuckGoProvider;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::providers::FileHosterProvider;
 #[cfg(any(
@@ -40,8 +42,6 @@ use crate::agent::providers::FileHosterProvider;
     feature = "tool-media-video"
 ))]
 use crate::agent::providers::MediaFileProvider;
-#[cfg(feature = "tool-searxng")]
-use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "tool-stack-logs")]
 use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-tavily")]
@@ -858,43 +858,31 @@ impl ToolModule for TavilyToolModule {
     }
 }
 
-/// Capability module for SearXNG web search.
-#[cfg(feature = "tool-searxng")]
-pub struct SearxngToolModule;
+/// Capability module for DuckDuckGo web and news search.
+#[cfg(feature = "tool-duckduckgo")]
+pub struct DuckDuckGoToolModule;
 
-#[cfg(feature = "tool-searxng")]
-impl SearxngToolModule {
-    fn provider(&self) -> Option<SearxngProvider> {
-        if !crate::config::is_searxng_enabled() {
+#[cfg(feature = "tool-duckduckgo")]
+impl DuckDuckGoToolModule {
+    fn provider(&self) -> Option<DuckDuckGoProvider> {
+        if !crate::config::is_duckduckgo_enabled() {
             return None;
         }
 
-        match crate::config::get_searxng_url() {
-            Some(url) if !url.trim().is_empty() => match SearxngProvider::new(&url) {
-                Ok(provider) => Some(provider),
-                Err(error) => {
-                    tracing::warn!(error = %error, "SearXNG provider initialization failed");
-                    None
-                }
-            },
-            Some(_) => {
-                tracing::warn!("SearXNG enabled but SEARXNG_URL is empty; provider not registered");
-                None
-            }
-            None => {
-                tracing::warn!(
-                    "SearXNG enabled but SEARXNG_URL is not set; provider not registered"
-                );
+        match DuckDuckGoProvider::new() {
+            Ok(provider) => Some(provider),
+            Err(error) => {
+                tracing::warn!(error = %error, "DuckDuckGo provider initialization failed");
                 None
             }
         }
     }
 }
 
-#[cfg(feature = "tool-searxng")]
-impl ToolModule for SearxngToolModule {
+#[cfg(feature = "tool-duckduckgo")]
+impl ToolModule for DuckDuckGoToolModule {
     fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/searxng")
+        ModuleId::new("tool/duckduckgo")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

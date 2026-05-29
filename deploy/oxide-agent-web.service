@@ -1,0 +1,17 @@
+[Unit]
+Description=Oxide Agent Web Console
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/stfu/ai/Oxide-Agent
+Environment=OXIDE_WEB_STATIC_DIR=crates/oxide-agent-web-ui/dist
+Environment=OXIDE_WEB_REQUIRE_STATIC_ASSETS=true
+Environment=OXIDE_WEB_ALLOW_IN_MEMORY_STORE=true
+Environment=OXIDE_WEB_ADDR=127.0.0.1:3010
+ExecStart=/home/stfu/ai/Oxide-Agent/target/release/oxide-agent-web-console
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

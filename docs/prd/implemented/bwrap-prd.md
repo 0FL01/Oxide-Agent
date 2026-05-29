@@ -520,7 +520,6 @@ The default root `docker-compose.yml` includes:
 - `sandbox_image`
 - `oxide_agent`
 - `sandboxd`
-- `searxng`
 
 Current default behavior:
 

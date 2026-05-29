@@ -374,10 +374,10 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
-        "tool-searxng",
-        "tool/searxng",
+        "tool-duckduckgo",
+        "tool/duckduckgo",
         Search,
-        ["tool/searxng-search"]
+        ["tool/duckduckgo-search", "tool/duckduckgo-news"]
     );
     push_module!(
         modules,

@@ -42,12 +42,12 @@ use uuid::Uuid;
 
 #[cfg(feature = "tool-browser-use")]
 use crate::agent::tool_runtime::BrowserUseToolModule;
+#[cfg(feature = "tool-duckduckgo")]
+use crate::agent::tool_runtime::DuckDuckGoToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
-#[cfg(feature = "tool-searxng")]
-use crate::agent::tool_runtime::SearxngToolModule;
 #[cfg(feature = "tool-tavily")]
 use crate::agent::tool_runtime::TavilyToolModule;
 #[cfg(feature = "tool-todos")]
@@ -56,7 +56,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-browser-use",
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
-    feature = "tool-searxng",
+    feature = "tool-duckduckgo",
     feature = "tool-tavily",
     feature = "tool-todos",
     feature = "tool-webfetch-md",
@@ -683,7 +683,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             feature = "tool-browser-use",
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
-            feature = "tool-searxng",
+            feature = "tool-duckduckgo",
             feature = "tool-tavily",
             feature = "tool-todos",
             feature = "tool-webfetch-md",
@@ -709,8 +709,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(feature = "tool-tavily")]
         self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-searxng")]
-        self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
+        #[cfg(feature = "tool-duckduckgo")]
+        self.push_sub_agent_tool_module(&mut executors, &DuckDuckGoToolModule, &module_ctx);
 
         #[cfg(feature = "tool-browser-use")]
         self.push_sub_agent_tool_module(&mut executors, &BrowserUseToolModule, &module_ctx);
@@ -760,7 +760,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         feature = "tool-browser-use",
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
-        feature = "tool-searxng",
+        feature = "tool-duckduckgo",
         feature = "tool-tavily",
         feature = "tool-todos",
         feature = "tool-webfetch-md",
@@ -788,9 +788,17 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             warn!("Tavily enabled but feature not compiled in");
         }
 
-        #[cfg(not(feature = "tool-searxng"))]
-        if crate::config::is_searxng_enabled() {
-            warn!("SearXNG enabled but feature not compiled in");
+        #[cfg(not(feature = "tool-duckduckgo"))]
+        if std::env::var("DUCKDUCKGO_ENABLED")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+        {
+            warn!("DuckDuckGo enabled but feature not compiled in");
         }
 
         #[cfg(not(feature = "tool-browser-use"))]

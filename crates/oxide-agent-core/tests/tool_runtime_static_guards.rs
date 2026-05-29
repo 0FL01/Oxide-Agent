@@ -258,7 +258,7 @@ fn delegation_sub_agent_tools_use_tool_modules_not_provider_constructors() {
         "YtdlpProvider::",
         "WebFetchMdProvider::new",
         "TavilyProvider::new",
-        "SearxngProvider::new",
+        "DuckDuckGoProvider::new",
         "BrowserUseProvider::",
     ];
     let offenders = forbidden_provider_paths

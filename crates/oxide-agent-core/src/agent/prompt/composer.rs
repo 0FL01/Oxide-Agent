@@ -14,7 +14,10 @@ fn build_date_context(tools: &[ToolDefinition]) -> String {
     let current_day = now.format("%A").to_string();
     let current_offset = now.format("UTC%:z").to_string();
     let tool_names = tool_name_set(tools);
-    let search_tools = available_tool_names(&tool_names, &["web_search", "searxng_search"]);
+    let search_tools = available_tool_names(
+        &tool_names,
+        &["web_search", "duckduckgo_search", "duckduckgo_news"],
+    );
 
     let mut context = format!(
         "### CURRENT DATE AND TIME\nToday: {current_date}, {current_day}\nCurrent local timezone: {current_offset}"
@@ -168,7 +171,8 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         &[
             "web_search",
             "web_extract",
-            "searxng_search",
+            "duckduckgo_search",
+            "duckduckgo_news",
             "web_markdown",
         ],
     ) {
@@ -176,9 +180,14 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         if has_tool(&tool_names, "web_search") {
             lines.push("Use `web_search` for current web search, news, facts, documentation, or real-time data you cannot know locally.".to_string());
         }
-        if has_tool(&tool_names, "searxng_search") {
+        if has_tool(&tool_names, "duckduckgo_search") {
             lines.push(
-                "Use `searxng_search` for self-hosted web search when available.".to_string(),
+                "Use `duckduckgo_search` to discover relevant web pages and URLs.".to_string(),
+            );
+        }
+        if has_tool(&tool_names, "duckduckgo_news") {
+            lines.push(
+                "Use `duckduckgo_news` for current news queries and recent articles.".to_string(),
             );
         }
         if has_tool(&tool_names, "web_extract") {
@@ -188,7 +197,13 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         }
         if has_tool(&tool_names, "web_markdown") {
             lines.push(
-                "Use `web_markdown` when you already have a specific URL to fetch as Markdown."
+                "Use `web_markdown` after search when you need to read a specific result URL as Markdown."
+                    .to_string(),
+            );
+        }
+        if has_tool(&tool_names, "duckduckgo_search") || has_tool(&tool_names, "duckduckgo_news") {
+            lines.push(
+                "Do not fetch every search result automatically; fetch only selected URLs."
                     .to_string(),
             );
         }
@@ -691,7 +706,8 @@ mod tests {
         assert!(prompt.contains("Use `web_markdown`"));
         assert!(!prompt.contains("web_search"));
         assert!(!prompt.contains("web_extract"));
-        assert!(!prompt.contains("searxng_search"));
+        assert!(!prompt.contains("duckduckgo_search"));
+        assert!(!prompt.contains("duckduckgo_news"));
     }
 
     #[tokio::test]

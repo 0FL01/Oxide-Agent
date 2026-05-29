@@ -25,7 +25,7 @@ impl SearchBudgetHook {
     fn is_search_tool(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "web_search" | "web_extract" | "searxng_search" | "web_markdown"
+            "web_search" | "web_extract" | "duckduckgo_search" | "duckduckgo_news" | "web_markdown"
         )
     }
 }
@@ -61,7 +61,7 @@ mod tests {
     use crate::agent::providers::TodoList;
 
     #[test]
-    fn counts_searxng_search_against_budget() {
+    fn counts_duckduckgo_search_against_budget() {
         let hook = SearchBudgetHook::new(1);
         let todos = TodoList::new();
         let memory = AgentMemory::new(1024);
@@ -69,14 +69,14 @@ mod tests {
 
         let first = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "searxng_search".to_string(),
+                tool_name: "duckduckgo_search".to_string(),
                 arguments: "{}".to_string(),
             },
             &context,
         );
         let second = hook.handle(
             &HookEvent::BeforeTool {
-                tool_name: "searxng_search".to_string(),
+                tool_name: "duckduckgo_search".to_string(),
                 arguments: "{}".to_string(),
             },
             &context,
@@ -84,5 +84,23 @@ mod tests {
 
         assert!(matches!(first, HookResult::Continue));
         assert!(matches!(second, HookResult::Block { .. }));
+    }
+
+    #[test]
+    fn counts_duckduckgo_news_against_budget() {
+        let hook = SearchBudgetHook::new(0);
+        let todos = TodoList::new();
+        let memory = AgentMemory::new(1024);
+        let context = HookContext::new(&todos, &memory, 0, 0, 1);
+
+        let result = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "duckduckgo_news".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+
+        assert!(matches!(result, HookResult::Block { .. }));
     }
 }

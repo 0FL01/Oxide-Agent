@@ -235,7 +235,7 @@ impl ManagerControlPlaneProvider {
     fn push_configured_search_tool_groups(groups: &mut Vec<TopicAgentToolGroup>) {
         #[cfg(not(any(
             feature = "tool-tavily",
-            feature = "tool-searxng",
+            feature = "tool-duckduckgo",
             feature = "tool-webfetch-md"
         )))]
         let _ = groups;
@@ -249,12 +249,12 @@ impl ManagerControlPlaneProvider {
             });
         }
 
-        #[cfg(feature = "tool-searxng")]
-        if crate::config::is_searxng_enabled() {
+        #[cfg(feature = "tool-duckduckgo")]
+        if crate::config::is_duckduckgo_enabled() {
             groups.push(TopicAgentToolGroup {
-                provider: "searxng",
-                aliases: &["search", "searxng"],
-                tools: TOPIC_AGENT_SEARXNG_TOOLS,
+                provider: "duckduckgo",
+                aliases: &["search", "duckduckgo", "ddg", "news"],
+                tools: TOPIC_AGENT_DUCKDUCKGO_TOOLS,
             });
         }
 
@@ -1594,9 +1594,9 @@ mod tests {
                     tools: &["web_search", "web_extract"],
                 },
                 TopicAgentToolGroup {
-                    provider: "searxng",
-                    aliases: &["search", "searxng"],
-                    tools: &["searxng_search"],
+                    provider: "duckduckgo",
+                    aliases: &["search", "duckduckgo", "ddg", "news"],
+                    tools: &["duckduckgo_search", "duckduckgo_news"],
                 },
                 TopicAgentToolGroup {
                     provider: "webfetch_md",
@@ -1607,7 +1607,8 @@ mod tests {
             tool_names: [
                 "web_search",
                 "web_extract",
-                "searxng_search",
+                "duckduckgo_search",
+                "duckduckgo_news",
                 "web_markdown",
             ]
             .into_iter()
@@ -1624,7 +1625,8 @@ mod tests {
         assert_eq!(
             expanded,
             vec![
-                "searxng_search".to_string(),
+                "duckduckgo_news".to_string(),
+                "duckduckgo_search".to_string(),
                 "web_extract".to_string(),
                 "web_markdown".to_string(),
                 "web_search".to_string(),

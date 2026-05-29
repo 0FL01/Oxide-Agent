@@ -872,7 +872,7 @@ fn ToolCard(call: Option<PersistedTaskEvent>, result: Option<PersistedTaskEvent>
         "execute_command" => {
             view! { <ShellToolCard call=call result=result output=output_json /> }.into_any()
         }
-        "web_search" | "tavily_search" => {
+        "web_search" | "tavily_search" | "duckduckgo_search" | "duckduckgo_news" => {
             view! { <SearchToolCard call=call result=result output=output_json /> }.into_any()
         }
         _ => {

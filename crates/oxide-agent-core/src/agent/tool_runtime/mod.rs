@@ -36,6 +36,8 @@ pub use modules::BrowserUseToolModule;
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-delegation")]
 pub use modules::DelegationToolModule;
+#[cfg(feature = "tool-duckduckgo")]
+pub use modules::DuckDuckGoToolModule;
 #[cfg(feature = "tool-file-delivery")]
 pub use modules::FileDeliveryToolModule;
 #[cfg(feature = "integration-mcp-jira")]
@@ -62,8 +64,6 @@ pub use modules::SandboxExecToolModule;
 pub use modules::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
 pub use modules::SandboxRecreateToolModule;
-#[cfg(feature = "tool-searxng")]
-pub use modules::SearxngToolModule;
 #[cfg(feature = "tool-tts-silero")]
 pub use modules::SileroTtsToolModule;
 #[cfg(feature = "integration-ssh-mcp")]

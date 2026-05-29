@@ -799,18 +799,17 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
     std::env::remove_var("TAVILY_API_KEY");
 }
 
-#[cfg(feature = "tool-searxng")]
+#[cfg(feature = "tool-duckduckgo")]
 #[test]
-fn typed_runtime_registry_skips_disabled_searxng_module() {
+fn typed_runtime_registry_skips_disabled_duckduckgo_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("SEARXNG_URL", "http://searxng:8080");
-    std::env::set_var("SEARXNG_ENABLED", "true");
+    std::env::set_var("DUCKDUCKGO_ENABLED", "true");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
-            "tool/searxng".to_string(),
+            "tool/duckduckgo".to_string(),
             ModuleRuntimeConfig::disabled(),
         )]),
         ..AgentSettings::default()
@@ -826,14 +825,15 @@ fn typed_runtime_registry_skips_disabled_searxng_module() {
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
 
-    assert!(!tool_names.contains("searxng_search"));
+    assert!(!tool_names.contains("duckduckgo_search"));
+    assert!(!tool_names.contains("duckduckgo_news"));
+    #[cfg(feature = "tool-todos")]
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("SEARXNG_ENABLED");
-    std::env::remove_var("SEARXNG_URL");
+    std::env::remove_var("DUCKDUCKGO_ENABLED");
 }
 
-#[cfg(all(feature = "tool-tavily", feature = "tool-searxng"))]
+#[cfg(all(feature = "tool-tavily", feature = "tool-duckduckgo"))]
 #[test]
 fn typed_runtime_registry_registers_search_modules_once() {
     let _guard = crate::config::test_env_mutex()
@@ -841,8 +841,7 @@ fn typed_runtime_registry_registers_search_modules_once() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::set_var("TAVILY_API_KEY", "dummy-key");
     std::env::set_var("TAVILY_ENABLED", "true");
-    std::env::set_var("SEARXNG_URL", "http://searxng:8080");
-    std::env::set_var("SEARXNG_ENABLED", "true");
+    std::env::set_var("DUCKDUCKGO_ENABLED", "true");
 
     let executor = build_executor();
     let registry =
@@ -866,13 +865,19 @@ fn typed_runtime_registry_registers_search_modules_once() {
     assert_eq!(
         tool_names
             .iter()
-            .filter(|name| *name == "searxng_search")
+            .filter(|name| *name == "duckduckgo_search")
+            .count(),
+        1
+    );
+    assert_eq!(
+        tool_names
+            .iter()
+            .filter(|name| *name == "duckduckgo_news")
             .count(),
         1
     );
 
-    std::env::remove_var("SEARXNG_ENABLED");
-    std::env::remove_var("SEARXNG_URL");
+    std::env::remove_var("DUCKDUCKGO_ENABLED");
     std::env::remove_var("TAVILY_ENABLED");
     std::env::remove_var("TAVILY_API_KEY");
 }
