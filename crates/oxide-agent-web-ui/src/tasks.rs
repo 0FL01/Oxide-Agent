@@ -335,7 +335,7 @@ fn SessionWorkspace(
                     />
                     <div class="composer-actions">
                         <div class="composer-stats">
-                            {move || composer_stats(input.get(), progress.get(), is_running(), last_terminal_status.get())}
+                            {move || composer_stats(input.get(), is_running(), last_terminal_status.get())}
                         </div>
                         <div class="composer-buttons">
                             <button
@@ -493,6 +493,7 @@ fn ActivityDrawer(
                     view! {
                         {todos.map(|value| view! { <TodosCard todos=value /> })}
                         {items.into_iter().map(|item| view! { <ActivityItemCard item=item /> }).collect::<Vec<_>>()}
+                        <ContextCard progress=progress />
                     }.into_any()
                 }}
             </div>
@@ -502,57 +503,21 @@ fn ActivityDrawer(
 
 fn composer_stats(
     input: String,
-    progress: Option<ProgressSnapshot>,
     is_running: bool,
     last_terminal_status: Option<TaskStatus>,
 ) -> String {
     let len = input.len();
     let lines_count = input.lines().count().max(1);
-    let status = if is_running {
-        Some("Running")
+    let prefix = if is_running {
+        "Running"
     } else {
         match last_terminal_status {
-            Some(TaskStatus::Completed) => Some("Completed"),
-            Some(TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) => {
-                Some("Failed")
-            }
-            _ => None,
+            Some(TaskStatus::Completed) => "Completed",
+            Some(TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) => "Failed",
+            _ => "Ctrl+Enter to send",
         }
     };
-    let Some(snapshot) = progress.and_then(|p| p.latest_token_snapshot) else {
-        return match status {
-            Some(status) => format!("{status} · {lines_count} lines · {len} chars"),
-            None => format!("Ctrl+Enter to send · {lines_count} lines · {len} chars"),
-        };
-    };
-    let flow = snapshot
-        .get("hot_memory_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let prompt = snapshot
-        .get("system_prompt_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let tools = snapshot
-        .get("tool_schema_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let free = snapshot
-        .get("headroom_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let budget = snapshot
-        .get("budget_state")
-        .and_then(|v| v.as_str())
-        .unwrap_or("context");
-    let prefix = status.unwrap_or(budget);
-    format!(
-        "{prefix} · {} free · flow {} · prompt {} · tools {} · {lines_count} lines · {len} chars",
-        compact_tokens(free),
-        compact_tokens(flow),
-        compact_tokens(prompt),
-        compact_tokens(tools)
-    )
+    format!("{prefix} · {lines_count} lines · {len} chars")
 }
 
 fn compact_tokens(tokens: u64) -> String {
@@ -1243,6 +1208,63 @@ fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
                 </div>
             })}
         </details>
+    }
+}
+
+// ── Context Card ─────────────────────────────────────────────────────────
+
+#[component]
+fn ContextCard(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView {
+    let snapshot_memo = Memo::new(move |_| {
+        progress
+            .get()
+            .and_then(|p| p.latest_token_snapshot)
+    });
+
+    view! {
+        {move || {
+            let Some(snapshot) = snapshot_memo.get() else {
+                return ().into_any();
+            };
+            let free = snapshot.get("headroom_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let flow = snapshot.get("hot_memory_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let prompt = snapshot.get("system_prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let tools = snapshot.get("tool_schema_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let budget = snapshot.get("budget_state").and_then(|v| v.as_str()).unwrap_or("context");
+            let health_class = match budget {
+                "Healthy" => "context-health-ok",
+                "Warning" | "Approaching" => "context-health-warn",
+                "Critical" | "Over" => "context-health-over",
+                _ => "context-health-ok",
+            };
+            view! {
+                <section class="context-card">
+                    <div class="context-card-title">"Context"</div>
+                    <div class="context-card-grid">
+                        <div class="context-card-cell">
+                            <div class="context-card-cell-label">"Free"</div>
+                            <div class="context-card-cell-value">{compact_tokens(free)}</div>
+                        </div>
+                        <div class="context-card-cell">
+                            <div class="context-card-cell-label">"Flow"</div>
+                            <div class="context-card-cell-value">{compact_tokens(flow)}</div>
+                        </div>
+                        <div class="context-card-cell">
+                            <div class="context-card-cell-label">"Prompt"</div>
+                            <div class="context-card-cell-value">{compact_tokens(prompt)}</div>
+                        </div>
+                        <div class="context-card-cell">
+                            <div class="context-card-cell-label">"Tools"</div>
+                            <div class="context-card-cell-value">{compact_tokens(tools)}</div>
+                        </div>
+                    </div>
+                    <div class="context-card-health">
+                        <span class={format!("context-health-dot {health_class}")}></span>
+                        <span class="context-health-label">{budget.to_lowercase()}</span>
+                    </div>
+                </section>
+            }.into_any()
+        }}
     }
 }
 

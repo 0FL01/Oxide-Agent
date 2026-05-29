@@ -739,114 +739,72 @@ label {
   gap: 6px;
 }
 
-.context-inline {
-  display: inline-flex;
-  align-items: center;
+/* ── Context Card (Activity drawer) ─────────────────────────────────── */
+
+.context-card-title {
+  color: var(--fg-muted);
+  font: 600 11px/1.5 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 10px;
+}
+
+.context-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
 
-.context-sep {
-  color: var(--text-faint);
-  opacity: 0.3;
-  font-size: 10px;
+.context-card-cell {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-root);
+  padding: 10px 12px;
 }
 
-.context-budget-pill {
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 500;
+.context-card-cell-label {
+  color: var(--fg-muted);
+  font: 600 10px/1 var(--font-mono);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
 }
 
-.context-budget-pill.context-budget-ok {
-  color: #d1fae5;
-  background: rgba(16, 163, 127, 0.2);
-  border: 1px solid rgba(16, 163, 127, 0.3);
+.context-card-cell-value {
+  color: var(--fg);
+  font: 600 16px/1.2 var(--font-mono);
 }
 
-.context-budget-pill.context-budget-warn {
-  color: #fef6e0;
-  background: rgba(216, 162, 30, 0.2);
-  border: 1px solid rgba(216, 162, 30, 0.3);
-}
-
-.context-budget-pill.context-budget-over {
-  color: #fecaca;
-  background: rgba(239, 68, 68, 0.2);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-}
-
-.context-metric {
-  display: inline;
-}
-
-.context-metric-label {
-  color: var(--text-muted);
-}
-
-.context-metric-value {
-  color: var(--text-main);
-  font-weight: 500;
-}
-
-.context-metric-highlight .context-metric-value {
-  color: var(--accent-green);
-}
-
-.context-running {
-  display: inline-flex;
+.context-card-health {
+  display: flex;
   align-items: center;
-  gap: 5px;
-  color: var(--accent-blue);
-  font-weight: 500;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  gap: 6px;
+  margin-top: 8px;
 }
 
-.context-running-dot {
-  width: 6px;
-  height: 6px;
+.context-health-dot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--accent-blue);
-  animation: pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
 }
 
-.context-completed {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #d1fae5;
-  background: rgba(16, 163, 127, 0.2);
-  border: 1px solid rgba(16, 163, 127, 0.3);
+.context-health-dot.context-health-ok {
+  background: var(--accent-green);
 }
 
-.context-failed {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #fecaca;
-  background: rgba(239, 68, 68, 0.2);
-  border: 1px solid rgba(239, 68, 68, 0.3);
+.context-health-dot.context-health-warn {
+  background: var(--accent-yellow);
 }
 
-.context-status-icon {
-  font-size: 11px;
-  line-height: 1;
+.context-health-dot.context-health-over {
+  background: var(--accent-red);
+}
+
+.context-health-label {
+  color: var(--fg-muted);
+  font: 500 11px/1 var(--font-mono);
+  text-transform: lowercase;
 }
 
 /* === RESULTS PANEL (agent output) === */
@@ -2573,6 +2531,7 @@ textarea {
 .tool-card,
 .agent-event-card,
 .todos-card,
+.context-card,
 .event-card {
   margin: 0 0 8px;
   border: 1px solid var(--border);
