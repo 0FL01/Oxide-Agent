@@ -6,6 +6,7 @@ cargo_features = ["profile-web-embedded-opencode-local"]
 "storage/r2" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "sandbox-backend/bwrap" = { enabled = true }
+"sandbox-backend/sandboxd-client" = { enabled = true }
 "tool/compression" = { enabled = true }
 "tool/delegation" = { enabled = true }
 "tool/file-delivery" = { enabled = true }
