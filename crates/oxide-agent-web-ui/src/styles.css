@@ -670,40 +670,6 @@ label {
   background: var(--bg-panel-soft);
 }
 
-.composer-label {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-faint);
-  padding: var(--space-4) var(--space-5) var(--space-2);
-  font-family: var(--font-mono);
-}
-
-.composer textarea {
-  width: 100%;
-  min-height: var(--input-min-height);
-  max-height: 360px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border-subtle);
-  border-bottom: none;
-  padding: var(--space-3) var(--space-5);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.65;
-  color: var(--fg);
-  resize: vertical;
-  border-radius: 0;
-}
-
-.composer textarea:focus {
-  box-shadow: none;
-}
-
-.composer textarea::placeholder {
-  color: var(--text-faint);
-}
-
 .composer-notice {
   margin: 0;
   border: none;
@@ -718,25 +684,6 @@ label {
 
 .composer-notice.waiting {
   color: var(--accent-blue);
-}
-
-.composer-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-2) var(--space-5);
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-panel-soft);
-}
-
-.composer-stats {
-  font-size: 11px;
-  color: var(--text-faint);
-  font-family: var(--font-mono);
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 /* ── Context Card (Activity drawer) ─────────────────────────────────── */
@@ -2336,39 +2283,55 @@ textarea {
   border: 0;
 }
 
-.composer-label {
-  display: none;
+.composer-inner {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.composer-inner:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 .composer textarea {
-  min-height: 52px;
+  background: transparent;
+  border: none;
+  outline: none;
+  min-height: 24px;
   max-height: 160px;
-  border-radius: 12px 12px 0 0;
-  border-bottom: 0;
-  padding: 12px 14px;
+  padding: 0;
   font-family: var(--font-sans);
   resize: none;
 }
 
-.composer-actions {
-  margin: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-top: 0;
-  border-radius: 0 0 12px 12px;
-  background: var(--surface);
+.composer textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.composer textarea::placeholder {
+  color: var(--faint);
+}
+
+.composer-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
 }
 
-.composer-stats {
+.composer-hint {
+  font-size: 11px;
   color: var(--faint);
-  font: 11px/1.5 var(--font-mono);
+  font-family: var(--font-mono);
 }
 
-.composer-buttons {
+.composer-actions {
   display: flex;
   gap: 8px;
 }

@@ -59,7 +59,7 @@ fn SessionWorkspace(
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
     let (_streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
-    let (last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
+    let (_last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
 
     let (drawer_open, set_drawer_open) = signal(false);
 
@@ -311,50 +311,52 @@ fn SessionWorkspace(
                 // Prompt input
                 <form class="composer" on:submit=submit_task>
                     <ComposerNotice active_task=active_task />
-                    <div class="composer-label">"Agent Prompt"</div>
-                    <textarea
-                        placeholder=move || if is_running() { "Agent is working…" } else if is_waiting() { "Reply to resume the task…" } else { "Message Oxide Agent…" }
-                        prop:value=input
-                        disabled=is_running
-                        on:input=move |ev| set_input.set(event_target_value(&ev))
-                        on:keydown=move |ev| {
-                            if ev.ctrl_key() && ev.key() == "Enter" {
-                                ev.prevent_default();
-                                if let Some(target) = ev.target() {
-                                    use wasm_bindgen::JsCast;
-                                    let el: web_sys::HtmlElement = target.unchecked_into();
-                                    if let Ok(Some(form_el)) = el.closest("form") {
-                                        if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
-                                            let btn: web_sys::HtmlElement = btn.unchecked_into();
-                                            btn.click();
+                    <div class="composer-inner">
+                        <textarea
+                            placeholder=move || if is_running() { "Agent is working…" } else if is_waiting() { "Reply to resume the task…" } else { "Message Oxide Agent…" }
+                            prop:value=input
+                            disabled=is_running
+                            on:input=move |ev| set_input.set(event_target_value(&ev))
+                            on:keydown=move |ev| {
+                                if ev.ctrl_key() && ev.key() == "Enter" {
+                                    ev.prevent_default();
+                                    if let Some(target) = ev.target() {
+                                        use wasm_bindgen::JsCast;
+                                        let el: web_sys::HtmlElement = target.unchecked_into();
+                                        if let Ok(Some(form_el)) = el.closest("form") {
+                                            if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
+                                                let btn: web_sys::HtmlElement = btn.unchecked_into();
+                                                btn.click();
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-                    />
-                    <div class="composer-actions">
-                        <div class="composer-stats">
-                            {move || composer_stats(input.get(), is_running(), last_terminal_status.get())}
-                        </div>
-                        <div class="composer-buttons">
-                            <button
-                                type="submit"
-                                disabled=move || loading.get() || is_running()
-                                class="btn-primary"
-                            >
-                                {move || {
-                                    if is_waiting() { "Resume" } else { "Send" }
-                                }}
-                            </button>
-                            <button
-                                class="btn-danger"
-                                type="button"
-                                disabled=move || active_task.get().is_none() || !is_running()
-                                on:click=cancel_active
-                            >
-                                "Stop"
-                            </button>
+                        />
+                        <div class="composer-footer">
+                            <span class="composer-hint">
+                                {move || composer_hint(is_running(), is_waiting())}
+                            </span>
+                            <div class="composer-actions">
+                                <button
+                                    type="submit"
+                                    disabled=move || loading.get() || is_running()
+                                    class="btn-primary"
+                                    style=move || if is_running() { "display:none" } else { "" }
+                                >
+                                    {move || {
+                                        if is_waiting() { "Resume" } else { "Send" }
+                                    }}
+                                </button>
+                                <button
+                                    class="btn-danger"
+                                    type="button"
+                                    style=move || if is_running() { "" } else { "display:none" }
+                                    on:click=cancel_active
+                                >
+                                    "Stop"
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </form>
@@ -501,23 +503,14 @@ fn ActivityDrawer(
     }
 }
 
-fn composer_stats(
-    input: String,
-    is_running: bool,
-    last_terminal_status: Option<TaskStatus>,
-) -> String {
-    let len = input.len();
-    let lines_count = input.lines().count().max(1);
-    let prefix = if is_running {
-        "Running"
+fn composer_hint(is_running: bool, is_waiting: bool) -> &'static str {
+    if is_running {
+        "Ctrl+Enter to stop"
+    } else if is_waiting {
+        "Ctrl+Enter to resume"
     } else {
-        match last_terminal_status {
-            Some(TaskStatus::Completed) => "Completed",
-            Some(TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) => "Failed",
-            _ => "Ctrl+Enter to send",
-        }
-    };
-    format!("{prefix} · {lines_count} lines · {len} chars")
+        "Ctrl+Enter to send"
+    }
 }
 
 fn compact_tokens(tokens: u64) -> String {
