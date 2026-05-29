@@ -122,6 +122,9 @@ pub fn SessionSidebar(selected: Option<String>) -> impl IntoView {
                     }
                 }}
             </div>
+            <div class="sidebar-footer">
+                <a href="/settings">"Settings"</a>
+            </div>
         </aside>
     }
 }
@@ -181,16 +184,14 @@ fn SessionItem(
     view! {
         <li class="session-list-item">
             <a class=item_class href=format!("/app/session/{}", session.session_id)>
-                <div class="session-item-header">
+                <span class=format!("session-status-dot {}", status_class)></span>
+                <span class="session-copy">
                     <span class="session-id">{session.title}</span>
-                    <span class=format!("session-status-dot {}", status_class)></span>
-                </div>
-                <div class="session-preview">
-                    {session.last_preview.unwrap_or_else(|| "No task yet".to_string())}
-                </div>
-                <div class="session-meta">
-                    <span class="session-time">{friendly_time(session.updated_at)}</span>
-                </div>
+                    <span class="session-preview">
+                        {session.last_preview.unwrap_or_else(|| "No task yet".to_string())}
+                    </span>
+                </span>
+                <span class="session-time">{friendly_time(session.updated_at)}</span>
             </a>
             <button
                 class="session-delete-button"

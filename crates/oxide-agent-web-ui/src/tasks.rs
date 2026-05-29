@@ -51,7 +51,7 @@ fn SessionWorkspace(
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
 ) -> impl IntoView {
     let auth = use_auth();
-    let (_session_title, set_session_title) = signal("Session".to_string());
+    let (session_title, set_session_title) = signal("Session".to_string());
     let (tasks, set_tasks) = signal(Vec::<TaskSummary>::new());
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
@@ -61,16 +61,7 @@ fn SessionWorkspace(
     let (loaded, set_loaded) = signal(false);
     let (last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
 
-    // Determine which task owns the live activity display (active or most recent)
-    let latest_activity_task_id = move || {
-        active_task.get().map(|task| task.task_id).or_else(|| {
-            tasks
-                .get()
-                .into_iter()
-                .max_by_key(|task| task.updated_at)
-                .map(|task| task.task_id)
-        })
-    };
+    let (drawer_open, set_drawer_open) = signal(true);
 
     let session_id_for_load = session_id.clone();
     let load_all = move || {
@@ -264,193 +255,116 @@ fn SessionWorkspace(
     view! {
         <ErrorBanner message=error />
         <section class="session-workspace">
-            // Agent results — task cards with output
-            <div class="results-panel">
-                {move || {
-                    if loading.get() && tasks.get().is_empty() {
-                        view! { <div class="empty-state">"Loading..."</div> }.into_any()
-                    } else if tasks.get().is_empty() {
-                        view! {
-                            <div class="empty-state">
-                                <div class="empty-state-title">"No active session"</div>
-                                <div class="empty-state-text">
-                                    "Enter a prompt below and click \"Run Agent\" to start a new session. The agent's reasoning, tool calls, and outputs will appear here in real time."
+            <div class="chat-wrapper">
+                <header class="chat-topbar">
+                    <div class="chat-title">{move || session_title.get()}</div>
+                </header>
+                // Agent results — task cards with output
+                <div class="results-panel">
+                    {move || {
+                        if loading.get() && tasks.get().is_empty() {
+                            view! { <div class="empty-state">"Loading..."</div> }.into_any()
+                        } else if tasks.get().is_empty() {
+                            view! {
+                                <div class="empty-state">
+                                    <div class="empty-state-title">"What can I help you with?"</div>
+                                    <div class="empty-state-text">
+                                        "Send a message to start a new agent session."
+                                    </div>
                                 </div>
-                            </div>
-                        }
-                        .into_any()
-                    } else {
-                        let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
-                        let session_id_for_cards = session_id_for_cards.clone();
-                        view! {
-                            <For
-                                each=move || tasks.get()
-                                key=|task| task.task_id.clone()
-                                children=move |task| {
-                                    let editable =
-                                        latest_editable_task_id.as_ref() == Some(&task.task_id);
-                                    let activity_owner = latest_activity_task_id()
-                                        .as_ref() == Some(&task.task_id);
-                                    view! {
-                                        <TaskCard
-                                            session_id=session_id_for_cards.clone()
-                                            task=task
-                                            editable=editable
-                                            events=events
-                                            progress=progress
-                                            activity_owner=activity_owner
-                                            set_tasks=set_tasks
-                                            set_error=set_error
-                                        />
-                                    }
-                                }
-                            />
-                        }
-                        .into_any()
-                    }
-                }}
-            </div>
-
-            // Prompt input
-            <form class="composer" on:submit=submit_task>
-                <ComposerNotice active_task=active_task />
-                <div class="composer-label">"Agent Prompt"</div>
-                <textarea
-                    placeholder="Enter your prompt here...\n\nThe agent will process your request and show its reasoning, tool calls, and outputs in the panel above."
-                    prop:value=input
-                    disabled=is_running
-                    on:input=move |ev| set_input.set(event_target_value(&ev))
-                    on:keydown=move |ev| {
-                        if ev.ctrl_key() && ev.key() == "Enter" {
-                            ev.prevent_default();
-                            if let Some(target) = ev.target() {
-                                use wasm_bindgen::JsCast;
-                                let el: web_sys::HtmlElement = target.unchecked_into();
-                                if let Ok(Some(form_el)) = el.closest("form") {
-                                    if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
-                                        let btn: web_sys::HtmlElement = btn.unchecked_into();
-                                        btn.click();
-                                    }
-                                }
                             }
-                        }
-                    }
-                />
-                <div class="composer-actions">
-                    <div class="composer-stats">
-                        {move || {
-                            let len = input.get().len();
-                            let lines_count = input.get().lines().count().max(1);
-
-                            let snapshot = progress.get().and_then(|p| p.latest_token_snapshot);
-                            if let Some(snap) = snapshot {
-                                let flow = snap.get("hot_memory_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let prompt = snap.get("system_prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let tools = snap.get("tool_schema_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let free = snap.get("headroom_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let budget = snap.get("budget_state")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-
-                                let budget_cls = match budget {
-                                    "healthy" | "ok" => " context-budget-ok",
-                                    "warning" | "warn" => " context-budget-warn",
-                                    "critical" | "over" => " context-budget-over",
-                                    _ => "",
-                                };
-
-                                let k = |n: u64| -> String {
-                                    if n < 1000 {
-                                        format!("{n}k")
-                                    } else {
-                                        let v = n as f64 / 1000.0;
-                                        let s = format!("{:.1}k", v);
-                                        s.trim_end_matches('0').trim_end_matches('.').to_string()
+                            .into_any()
+                        } else {
+                            let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
+                            let session_id_for_cards = session_id_for_cards.clone();
+                            view! {
+                                <For
+                                    each=move || tasks.get()
+                                    key=|task| task.task_id.clone()
+                                    children=move |task| {
+                                        let editable =
+                                            latest_editable_task_id.as_ref() == Some(&task.task_id);
+                                        view! {
+                                            <TaskCard
+                                                session_id=session_id_for_cards.clone()
+                                                task=task
+                                                editable=editable
+                                                set_tasks=set_tasks
+                                                set_error=set_error
+                                            />
+                                        }
                                     }
-                                };
-
-                                view! {
-                                    <span class="context-inline">
-                                        {if is_running() {
-                                            view! {
-                                                <span class="context-running">
-                                                    <span class="context-running-dot"></span>
-                                                    "Running"
-                                                </span>
-                                            }.into_any()
-                                        } else if let Some(status) = last_terminal_status.get() {
-                                            match status {
-                                                TaskStatus::Completed => view! {
-                                                    <span class="context-completed">
-                                                        <span class="context-status-icon">"\u{2713}"</span>
-                                                        "Completed"
-                                                    </span>
-                                                }.into_any(),
-                                                TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => view! {
-                                                    <span class="context-failed">
-                                                        <span class="context-status-icon">"\u{2717}"</span>
-                                                        "Failed"
-                                                    </span>
-                                                }.into_any(),
-                                                _ => ().into_any(),
-                                            }
-                                        } else {
-                                            ().into_any()
-                                        }}
-                                        <span class={format!("context-budget-pill{budget_cls}")}>
-                                            {format!("{}", budget)}
-                                        </span>
-                                        <span class="context-metric context-metric-highlight">
-                                            <span class="context-metric-value">{k(free)}</span>
-                                            <span class="context-metric-label">" free"</span>
-                                        </span>
-                                        <span class="context-sep">"\u{00b7}"</span>
-                                        <span class="context-metric">
-                                            <span class="context-metric-label">"flow "</span>
-                                            <span class="context-metric-value">{k(flow)}</span>
-                                        </span>
-                                        <span class="context-sep">"\u{00b7}"</span>
-                                        <span class="context-metric">
-                                            <span class="context-metric-label">"prompt "</span>
-                                            <span class="context-metric-value">{k(prompt)}</span>
-                                        </span>
-                                        <span class="context-sep">"\u{00b7}"</span>
-                                        <span class="context-metric">
-                                            <span class="context-metric-label">"tools "</span>
-                                            <span class="context-metric-value">{k(tools)}</span>
-                                        </span>
-                                        <span class="context-sep">"\u{00b7}"</span>
-                                        <span>{format!("{lines_count} lines \u{00b7} {len} chars")}</span>
-                                    </span>
-                                }.into_any()
-                            } else {
-                                view! {
-                                    <span>{format!("{len} chars \u{00b7} {lines_count} lines")}</span>
-                                }.into_any()
+                                />
                             }
-                        }}
-                    </div>
-                    <div style="display:flex;gap:8px;">
-                        <button
-                            type="submit"
-                            disabled=move || loading.get() || is_running()
-                            class=move || if is_waiting() { "btn-primary" } else { "" }
-                        >
-                            {move || {
-                                if is_waiting() { "Resume" } else { "Run Agent" }
-                            }}
-                        </button>
-                        <button
-                            class="secondary"
-                            type="button"
-                            disabled=move || active_task.get().is_none() || !is_running()
-                            on:click=cancel_active
-                        >
-                            "Stop"
-                        </button>
-                    </div>
+                            .into_any()
+                        }
+                    }}
+                    <ActivityStatusChip
+                        tasks=tasks
+                        active_task=active_task
+                        set_open=set_drawer_open
+                    />
                 </div>
-            </form>
+
+                // Prompt input
+                <form class="composer" on:submit=submit_task>
+                    <ComposerNotice active_task=active_task />
+                    <div class="composer-label">"Agent Prompt"</div>
+                    <textarea
+                        placeholder=move || if is_running() { "Agent is working…" } else if is_waiting() { "Reply to resume the task…" } else { "Message Oxide Agent…" }
+                        prop:value=input
+                        disabled=is_running
+                        on:input=move |ev| set_input.set(event_target_value(&ev))
+                        on:keydown=move |ev| {
+                            if ev.ctrl_key() && ev.key() == "Enter" {
+                                ev.prevent_default();
+                                if let Some(target) = ev.target() {
+                                    use wasm_bindgen::JsCast;
+                                    let el: web_sys::HtmlElement = target.unchecked_into();
+                                    if let Ok(Some(form_el)) = el.closest("form") {
+                                        if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
+                                            let btn: web_sys::HtmlElement = btn.unchecked_into();
+                                            btn.click();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    />
+                    <div class="composer-actions">
+                        <div class="composer-stats">
+                            {move || composer_stats(input.get(), progress.get(), is_running(), last_terminal_status.get())}
+                        </div>
+                        <div class="composer-buttons">
+                            <button
+                                type="submit"
+                                disabled=move || loading.get() || is_running()
+                                class="btn-primary"
+                            >
+                                {move || {
+                                    if is_waiting() { "Resume" } else { "Send" }
+                                }}
+                            </button>
+                            <button
+                                class="btn-danger"
+                                type="button"
+                                disabled=move || active_task.get().is_none() || !is_running()
+                                on:click=cancel_active
+                            >
+                                "Stop"
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <ActivityDrawer
+                open=drawer_open
+                set_open=set_drawer_open
+                tasks=tasks
+                active_task=active_task
+                events=events
+                progress=progress
+            />
         </section>
     }
 }
@@ -467,6 +381,205 @@ fn ComposerNotice(active_task: ReadSignal<Option<TaskDetail>>) -> impl IntoView 
             }.into_any(),
             _ => ().into_any(),
         }}
+    }
+}
+
+#[component]
+fn ActivityStatusChip(
+    tasks: ReadSignal<Vec<TaskSummary>>,
+    active_task: ReadSignal<Option<TaskDetail>>,
+    set_open: WriteSignal<bool>,
+) -> impl IntoView {
+    view! {
+        {move || {
+            let Some(status) = latest_activity_status(active_task, tasks) else {
+                return ().into_any();
+            };
+            if status == TaskStatus::Completed {
+                return ().into_any();
+            }
+            let class = match status {
+                TaskStatus::Queued | TaskStatus::Running => "status-chip active",
+                TaskStatus::WaitingForUserInput => "status-chip active waiting",
+                TaskStatus::Failed | TaskStatus::Interrupted => "status-chip warning",
+                TaskStatus::Cancelled => "status-chip error",
+                TaskStatus::Completed => "status-chip",
+            };
+            let label = match status {
+                TaskStatus::Queued => "Queued",
+                TaskStatus::Running => "Agent is working",
+                TaskStatus::WaitingForUserInput => "Waiting for your input",
+                TaskStatus::Failed => "Task failed",
+                TaskStatus::Cancelled => "Cancelled",
+                TaskStatus::Interrupted => "Interrupted",
+                TaskStatus::Completed => "Completed",
+            };
+            view! {
+                <div class="status-wrap">
+                    <button class=class type="button" on:click=move |_| set_open.set(true)>
+                        <span class="dot"></span>
+                        <span>{label}</span>
+                        <span class="chevron">"›"</span>
+                    </button>
+                </div>
+            }.into_any()
+        }}
+    }
+}
+
+#[component]
+fn ActivityDrawer(
+    open: ReadSignal<bool>,
+    set_open: WriteSignal<bool>,
+    tasks: ReadSignal<Vec<TaskSummary>>,
+    active_task: ReadSignal<Option<TaskDetail>>,
+    events: ReadSignal<Vec<PersistedTaskEvent>>,
+    progress: ReadSignal<Option<ProgressSnapshot>>,
+) -> impl IntoView {
+    view! {
+        <aside class=move || if open.get() && latest_activity_task_id(active_task, tasks).is_some() { "activity-drawer open" } else { "activity-drawer" }>
+            <header class="activity-header">
+                <div>
+                    <div class="activity-title">"Activity"</div>
+                    <div class="activity-subtitle">{move || latest_activity_status(active_task, tasks).map(status_label).unwrap_or("idle")}</div>
+                </div>
+                <button class="activity-close" type="button" on:click=move |_| set_open.set(false)>"×"</button>
+            </header>
+            <div class="activity-timeline">
+                {move || {
+                    let Some(task_id) = latest_activity_task_id(active_task, tasks) else {
+                        return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
+                    };
+                    let task_events: Vec<PersistedTaskEvent> = events
+                        .get()
+                        .into_iter()
+                        .filter(|event| event.task_id == task_id)
+                        .filter(|event| is_chat_visible_event(&event.kind))
+                        .filter(is_useful_event)
+                        .collect();
+                    let live_owner = active_task
+                        .get()
+                        .is_some_and(|task| task.task_id == task_id);
+                    let todos = if live_owner {
+                        progress.get().and_then(|snapshot| snapshot.current_todos)
+                    } else {
+                        None
+                    };
+                    let items = group_activity_events(task_events);
+                    if items.is_empty() && todos.is_none() {
+                        return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
+                    }
+                    view! {
+                        {todos.map(|value| view! { <TodosCard todos=value /> })}
+                        {items.into_iter().map(|item| view! { <ActivityItemCard item=item /> }).collect::<Vec<_>>()}
+                    }.into_any()
+                }}
+            </div>
+        </aside>
+    }
+}
+
+fn composer_stats(
+    input: String,
+    progress: Option<ProgressSnapshot>,
+    is_running: bool,
+    last_terminal_status: Option<TaskStatus>,
+) -> String {
+    let len = input.len();
+    let lines_count = input.lines().count().max(1);
+    let status = if is_running {
+        Some("Running")
+    } else {
+        match last_terminal_status {
+            Some(TaskStatus::Completed) => Some("Completed"),
+            Some(TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted) => {
+                Some("Failed")
+            }
+            _ => None,
+        }
+    };
+    let Some(snapshot) = progress.and_then(|p| p.latest_token_snapshot) else {
+        return match status {
+            Some(status) => format!("{status} · {lines_count} lines · {len} chars"),
+            None => format!("Ctrl+Enter to send · {lines_count} lines · {len} chars"),
+        };
+    };
+    let flow = snapshot
+        .get("hot_memory_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let prompt = snapshot
+        .get("system_prompt_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let tools = snapshot
+        .get("tool_schema_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let free = snapshot
+        .get("headroom_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let budget = snapshot
+        .get("budget_state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("context");
+    let prefix = status.unwrap_or(budget);
+    format!(
+        "{prefix} · {} free · flow {} · prompt {} · tools {} · {lines_count} lines · {len} chars",
+        compact_tokens(free),
+        compact_tokens(flow),
+        compact_tokens(prompt),
+        compact_tokens(tools)
+    )
+}
+
+fn compact_tokens(tokens: u64) -> String {
+    if tokens < 1000 {
+        return tokens.to_string();
+    }
+    let value = tokens as f64 / 1000.0;
+    format!("{value:.1}k")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+}
+
+fn latest_activity_task_id(
+    active_task: ReadSignal<Option<TaskDetail>>,
+    tasks: ReadSignal<Vec<TaskSummary>>,
+) -> Option<String> {
+    active_task.get().map(|task| task.task_id).or_else(|| {
+        tasks
+            .get()
+            .into_iter()
+            .max_by_key(|task| task.updated_at)
+            .map(|task| task.task_id)
+    })
+}
+
+fn latest_activity_status(
+    active_task: ReadSignal<Option<TaskDetail>>,
+    tasks: ReadSignal<Vec<TaskSummary>>,
+) -> Option<TaskStatus> {
+    active_task.get().map(|task| task.status).or_else(|| {
+        tasks
+            .get()
+            .into_iter()
+            .max_by_key(|task| task.updated_at)
+            .map(|task| task.status)
+    })
+}
+
+const fn status_label(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "queued",
+        TaskStatus::Running => "running",
+        TaskStatus::WaitingForUserInput => "waiting",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Interrupted => "interrupted",
     }
 }
 
@@ -533,14 +646,10 @@ fn TaskCard(
     session_id: String,
     task: TaskSummary,
     editable: bool,
-    events: ReadSignal<Vec<PersistedTaskEvent>>,
-    progress: ReadSignal<Option<ProgressSnapshot>>,
-    activity_owner: bool,
     set_tasks: WriteSignal<Vec<TaskSummary>>,
     set_error: WriteSignal<Option<String>>,
 ) -> impl IntoView {
     let task_id = task.task_id.clone();
-    let activity_task_id = task_id.clone();
     let (editing, set_editing) = signal(false);
     let (draft, set_draft) = signal(task.input_markdown.clone());
     let (saving, set_saving) = signal(false);
@@ -595,14 +704,6 @@ fn TaskCard(
                 </button>
             })}
 
-            // Inline agent activity: tool calls, results, todos — between user message and final answer
-            <AgentActivity
-                task_id=activity_task_id
-                events=events
-                progress=progress
-                activity_owner=activity_owner
-            />
-
             {task.final_response_markdown.map(|answer| view! {
                 <div class="message assistant-message">
                     <MarkdownContent markdown=answer />
@@ -615,49 +716,6 @@ fn TaskCard(
                 <div class="message pending-message">{pending.prompt}</div>
             })}
         </article>
-    }
-}
-
-// ── Agent Activity (inline between user message and final answer) ────────
-
-#[component]
-fn AgentActivity(
-    task_id: String,
-    events: ReadSignal<Vec<PersistedTaskEvent>>,
-    progress: ReadSignal<Option<ProgressSnapshot>>,
-    activity_owner: bool,
-) -> impl IntoView {
-    view! {
-        {move || {
-            let task_events: Vec<PersistedTaskEvent> = events
-                .get()
-                .into_iter()
-                .filter(|e| e.task_id == task_id)
-                .filter(|e| is_chat_visible_event(&e.kind))
-                .filter(|e| is_useful_event(e))
-                .collect();
-
-            let todos = if activity_owner {
-                progress.get().and_then(|p| p.current_todos)
-            } else {
-                None
-            };
-
-            let items = group_activity_events(task_events);
-
-            if items.is_empty() && todos.is_none() {
-                return ().into_any();
-            }
-
-            view! {
-                <div class="agent-activity">
-                    {todos.map(|v| view! { <TodosCard todos=v /> })}
-                    {items.into_iter().map(|item| {
-                        view! { <ActivityItemCard item=item /> }
-                    }).collect::<Vec<_>>()}
-                </div>
-            }.into_any()
-        }}
     }
 }
 
@@ -746,7 +804,7 @@ fn ToolCard(call: Option<PersistedTaskEvent>, result: Option<PersistedTaskEvent>
         .unwrap_or(false);
 
     // Parse the nested output JSON from output_preview.
-    let output_json = result.as_ref().and_then(|e| parse_output_json(e));
+    let output_json = result.as_ref().and_then(parse_output_json);
 
     let display = match tool_name.as_str() {
         "execute_command" => {
@@ -867,7 +925,7 @@ fn ShellToolCard(
                     <pre class="tool-stream-pre">{text}</pre>
                 </div>
             })}
-            {(!stdout.is_some() && !stderr.is_some() && !is_running).then(|| view! {
+            {(stdout.is_none() && stderr.is_none() && !is_running).then(|| view! {
                 <div class="tool-stream">
                     <pre class="tool-stream-pre">"No output"</pre>
                 </div>
