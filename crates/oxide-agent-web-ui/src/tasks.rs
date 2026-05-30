@@ -1054,7 +1054,9 @@ fn TaskCard(
             let input_markdown = task.input_markdown.clone();
             let attachments = task.attachments.clone();
             let final_response_markdown = task.final_response_markdown.clone();
-            let resume_messages = resume_user_messages_for_task(&events.get(), &task.task_id);
+            let task_events = events.get();
+            let resume_messages = resume_user_messages_for_task(&task_events, &task.task_id);
+            let delivered_files = delivered_files_for_task(&task_events, &task.task_id);
             let can_select_previous = selected_index > 0;
             let can_select_next = selected_index + 1 < version_count;
             let version_counter = format!("{}/{}", selected_index + 1, version_count);
@@ -1217,6 +1219,9 @@ fn TaskCard(
                             </div>
                         }
                     })}
+                    {(!delivered_files.is_empty()).then(|| view! {
+                        <DeliveredFilesMessage files=delivered_files.clone() />
+                    })}
                     {task.error_message.map(|error| view! {
                         <div class="message error-message">{error}</div>
                     })}
@@ -1322,6 +1327,17 @@ fn resume_user_messages_for_task(
             input_markdown: payload.input_markdown,
             attachments: payload.attachments,
         })
+        .collect()
+}
+
+fn delivered_files_for_task(
+    events: &[PersistedTaskEvent],
+    task_id: &str,
+) -> Vec<DeliveredFileLink> {
+    events
+        .iter()
+        .filter(|event| event.task_id == task_id)
+        .filter_map(delivered_file_link)
         .collect()
 }
 
@@ -1884,6 +1900,7 @@ fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
     let kind = event.kind.clone();
     let title = event_title(&event);
     let body = event_body(&event);
+    let delivered_file = delivered_file_link(&event);
 
     view! {
         <details class="agent-event-card">
@@ -1893,12 +1910,67 @@ fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
                 {event.truncated.then(|| view! { <span class="agent-event-flag">"truncated"</span> })}
                 {event.redacted.then(|| view! { <span class="agent-event-flag danger">"redacted"</span> })}
             </summary>
+            {delivered_file.map(|file| {
+                let meta = format_attachment_meta(file.size_bytes, file.content_type.clone());
+                let preview = delivered_file_preview(&file);
+                view! {
+                    <div class="agent-event-body">
+                        <div class="message-attachment-copy">
+                            <a class="message-attachment-name" href=file.download_url download>
+                                {file.file_name}
+                            </a>
+                            <span class="message-attachment-meta">{meta}</span>
+                        </div>
+                        {preview}
+                    </div>
+                }
+            })}
             {body.map(|text| view! {
                 <div class="agent-event-body">
                     <pre class="agent-event-pre">{text}</pre>
                 </div>
             })}
         </details>
+    }
+}
+
+#[component]
+fn DeliveredFilesMessage(files: Vec<DeliveredFileLink>) -> impl IntoView {
+    view! {
+        <div class="message assistant-message-wrap">
+            <div class="assistant-message">
+                <div class="user-message-body">
+                    <strong>"Delivered files"</strong>
+                    <DeliveredFilesList files=files />
+                </div>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn DeliveredFilesList(files: Vec<DeliveredFileLink>) -> impl IntoView {
+    view! {
+        <ul class="message-attachments" aria-label="Delivered files">
+            {files
+                .into_iter()
+                .map(|file| {
+                    let meta = format_attachment_meta(file.size_bytes, file.content_type.clone());
+                    let preview = delivered_file_preview(&file);
+                    view! {
+                        <li class="message-attachment-item">
+                            <div class="message-attachment-copy">
+                                <a class="message-attachment-name" href=file.download_url.clone() download>
+                                    {file.file_name.clone()}
+                                </a>
+                                <span class="message-attachment-meta">{meta}</span>
+                            </div>
+                            {preview}
+                        </li>
+                    }
+                })
+                .collect_view()}
+        </ul>
     }
 }
 
@@ -2080,6 +2152,12 @@ fn event_title(event: &PersistedTaskEvent) -> String {
 }
 
 fn event_body(event: &PersistedTaskEvent) -> Option<String> {
+    if event.kind == TaskEventKind::FileToSend
+        && payload_str_event(event, "download_url").is_some()
+        && payload_str_event(event, "delivery_error").is_none()
+    {
+        return None;
+    }
     if event.redacted {
         return Some("Payload redacted".to_string());
     }
@@ -2103,6 +2181,106 @@ fn payload_str_event(event: &PersistedTaskEvent, key: &str) -> Option<String> {
         .get(key)
         .and_then(|v| v.as_str())
         .map(ToString::to_string)
+}
+
+#[derive(Clone)]
+struct DeliveredFileLink {
+    file_name: String,
+    download_url: String,
+    content_type: String,
+    size_bytes: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeliveredFilePreviewKind {
+    Image,
+    Audio,
+    Pdf,
+}
+
+fn delivered_file_link(event: &PersistedTaskEvent) -> Option<DeliveredFileLink> {
+    if event.kind != TaskEventKind::FileToSend {
+        return None;
+    }
+    Some(DeliveredFileLink {
+        file_name: payload_str_event(event, "file_name")?,
+        download_url: payload_str_event(event, "download_url")?,
+        content_type: payload_str_event(event, "content_type").unwrap_or_default(),
+        size_bytes: event
+            .payload
+            .get("size_bytes")
+            .and_then(|value| value.as_u64())
+            .or_else(|| {
+                event
+                    .payload
+                    .get("byte_len")
+                    .and_then(|value| value.as_u64())
+            })
+            .unwrap_or(0),
+    })
+}
+
+fn delivered_file_preview(file: &DeliveredFileLink) -> AnyView {
+    let Some(kind) = delivered_file_preview_kind(file) else {
+        return ().into_any();
+    };
+    let inline_url = inline_file_url(&file.download_url);
+    match kind {
+        DeliveredFilePreviewKind::Image => view! {
+            <a href=file.download_url.clone() download>
+                <img
+                    class="agent-event-inline-preview"
+                    src=inline_url
+                    alt=file.file_name.clone()
+                    loading="lazy"
+                />
+            </a>
+        }
+        .into_any(),
+        DeliveredFilePreviewKind::Audio => view! {
+            <audio class="agent-event-inline-preview" controls preload="none" src=inline_url>
+                "Your browser does not support audio playback."
+            </audio>
+        }
+        .into_any(),
+        DeliveredFilePreviewKind::Pdf => view! {
+            <object
+                class="agent-event-inline-preview"
+                data=inline_url
+                type="application/pdf"
+                aria-label=format!("PDF preview for {}", file.file_name)
+            >
+                <a href=file.download_url.clone() download>
+                    "Open PDF"
+                </a>
+            </object>
+        }
+        .into_any(),
+    }
+}
+
+fn delivered_file_preview_kind(file: &DeliveredFileLink) -> Option<DeliveredFilePreviewKind> {
+    let mime = file
+        .content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if mime.starts_with("image/") {
+        Some(DeliveredFilePreviewKind::Image)
+    } else if mime.starts_with("audio/") {
+        Some(DeliveredFilePreviewKind::Audio)
+    } else if mime == "application/pdf" {
+        Some(DeliveredFilePreviewKind::Pdf)
+    } else {
+        None
+    }
+}
+
+fn inline_file_url(download_url: &str) -> String {
+    let separator = if download_url.contains('?') { '&' } else { '?' };
+    format!("{download_url}{separator}disposition=inline")
 }
 
 /// Extract first line from text, truncated to max chars.

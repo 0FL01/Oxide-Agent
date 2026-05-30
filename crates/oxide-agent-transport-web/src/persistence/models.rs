@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use oxide_agent_core::agent::progress::FileDeliveryKind;
 use oxide_agent_web_contracts::{PersistedTaskEvent, UserRole, WebSessionRecord, WebTaskRecord};
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +10,7 @@ pub const WEB_SESSION_SCHEMA_VERSION: u32 = 1;
 pub const WEB_TASK_SCHEMA_VERSION: u32 = 1;
 pub const WEB_EVENT_SCHEMA_VERSION: u32 = 1;
 pub const WEB_EVENT_CHUNK_SCHEMA_VERSION: u32 = 1;
+pub const WEB_TASK_FILE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +64,27 @@ pub struct WebTaskEventChunkRecord {
     pub task_id: String,
     pub chunk_no: u64,
     pub events: Vec<PersistedTaskEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct WebTaskFileRecord {
+    pub schema_version: u32,
+    pub user_id: i64,
+    pub session_id: String,
+    pub task_id: String,
+    pub file_id: String,
+    pub file_name: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+    pub delivery_kind: FileDeliveryKind,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebTaskFileBlob {
+    pub record: WebTaskFileRecord,
+    pub content: Vec<u8>,
 }
 
 pub(crate) trait ValidateWebRecord {
@@ -131,6 +154,16 @@ impl ValidateWebRecord for WebTaskEventChunkRecord {
             event.validate_web_record()?;
         }
         Ok(())
+    }
+}
+
+impl ValidateWebRecord for WebTaskFileRecord {
+    fn validate_web_record(&self) -> WebUiStoreResult<()> {
+        validate_schema_version(
+            "web task file",
+            self.schema_version,
+            WEB_TASK_FILE_SCHEMA_VERSION,
+        )
     }
 }
 

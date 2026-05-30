@@ -48,6 +48,18 @@ pub enum FileDeliveryKind {
     Document,
 }
 
+/// Optional transport receipt for a delivered file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct FileDeliveryReceipt {
+    /// Transport-scoped identifier for the delivered file, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
+    /// Auth-protected download URL that the user can open, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+}
+
 /// Events that can occur during agent execution
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -130,7 +142,7 @@ pub enum AgentEvent {
         /// Source path for diagnostics and cleanup logging
         source_path: String,
         /// Channel to receive delivery confirmation
-        confirmation_tx: tokio::sync::oneshot::Sender<Result<(), String>>,
+        confirmation_tx: tokio::sync::oneshot::Sender<Result<FileDeliveryReceipt, String>>,
     },
     /// Agent has finished the task
     Finished,

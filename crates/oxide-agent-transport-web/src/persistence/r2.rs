@@ -6,9 +6,9 @@ use oxide_agent_web_contracts::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::{
-    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebTaskEventChunkRecord, WebUiStore,
-    WebUiStoreError, WebUiStoreResult, WebUserRecord, WEB_AUTH_SCHEMA_VERSION,
-    WEB_EVENT_CHUNK_SCHEMA_VERSION,
+    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebTaskEventChunkRecord,
+    WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError, WebUiStoreResult,
+    WebUserRecord, WEB_AUTH_SCHEMA_VERSION, WEB_EVENT_CHUNK_SCHEMA_VERSION,
 };
 
 const TASK_EVENT_CHUNK_SIZE: u64 = 100;
@@ -176,6 +176,26 @@ impl WebUiStore for R2WebUiStore {
             .await
     }
 
+    async fn save_task_file(
+        &self,
+        record: WebTaskFileRecord,
+        content: Vec<u8>,
+    ) -> WebUiStoreResult<()> {
+        self.inner.save_task_file(record, content).await
+    }
+
+    async fn load_task_file(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        file_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskFileBlob>> {
+        self.inner
+            .load_task_file(user_id, session_id, task_id, file_id)
+            .await
+    }
+
     async fn mark_unfinished_tasks_interrupted(
         &self,
         message: &str,
@@ -196,6 +216,15 @@ trait WebObjectStore: Send + Sync {
     async fn load_json<T>(&self, key: &str) -> WebUiStoreResult<Option<T>>
     where
         T: DeserializeOwned + Send;
+
+    async fn save_bytes(
+        &self,
+        key: &str,
+        content: &[u8],
+        content_type: &str,
+    ) -> WebUiStoreResult<()>;
+
+    async fn load_bytes(&self, key: &str) -> WebUiStoreResult<Option<Vec<u8>>>;
 
     async fn delete_object(&self, key: &str) -> WebUiStoreResult<()>;
 
@@ -223,6 +252,22 @@ impl WebObjectStore for R2WebObjectStore {
         T: DeserializeOwned + Send,
     {
         self.storage.load_json(key).await.map_err(r2_error)
+    }
+
+    async fn save_bytes(
+        &self,
+        key: &str,
+        content: &[u8],
+        content_type: &str,
+    ) -> WebUiStoreResult<()> {
+        self.storage
+            .save_bytes(key, content, content_type)
+            .await
+            .map_err(r2_error)
+    }
+
+    async fn load_bytes(&self, key: &str) -> WebUiStoreResult<Option<Vec<u8>>> {
+        self.storage.load_bytes(key).await.map_err(r2_error)
     }
 
     async fn delete_object(&self, key: &str) -> WebUiStoreResult<()> {
@@ -398,6 +443,9 @@ where
         self.object_store
             .delete_prefix(&web_task_events_prefix(user_id, session_id))
             .await?;
+        self.object_store
+            .delete_prefix(&web_task_files_prefix(user_id, session_id))
+            .await?;
         let context_key = format!("web-session-{session_id}");
         let context_id =
             oxide_agent_core::agent::wiki_memory::scope::wiki_context_id(user_id, &context_key);
@@ -485,6 +533,73 @@ where
             last_seq,
             has_more,
         })
+    }
+
+    async fn save_task_file(
+        &self,
+        record: WebTaskFileRecord,
+        content: Vec<u8>,
+    ) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
+        if record.size_bytes != content.len() as u64 {
+            return Err(WebUiStoreError::Unavailable(format!(
+                "task file size mismatch for {}: metadata={}, content={}",
+                record.file_id,
+                record.size_bytes,
+                content.len()
+            )));
+        }
+        self.save_record(
+            &web_task_file_key(
+                record.user_id,
+                &record.session_id,
+                &record.task_id,
+                &record.file_id,
+            ),
+            &record,
+        )
+        .await?;
+        self.object_store
+            .save_bytes(
+                &web_task_file_blob_key(
+                    record.user_id,
+                    &record.session_id,
+                    &record.task_id,
+                    &record.file_id,
+                ),
+                &content,
+                &record.content_type,
+            )
+            .await
+    }
+
+    async fn load_task_file(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        file_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskFileBlob>> {
+        let Some(record) = self
+            .load_record::<WebTaskFileRecord>(&web_task_file_key(
+                user_id, session_id, task_id, file_id,
+            ))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(content) = self
+            .object_store
+            .load_bytes(&web_task_file_blob_key(
+                user_id, session_id, task_id, file_id,
+            ))
+            .await?
+        else {
+            return Err(WebUiStoreError::Unavailable(format!(
+                "task file blob missing for {file_id}"
+            )));
+        };
+        Ok(Some(WebTaskFileBlob { record, content }))
     }
 
     async fn mark_unfinished_tasks_interrupted(
@@ -693,8 +808,16 @@ fn web_task_events_prefix(user_id: i64, session_id: &str) -> String {
     format!("users/{user_id}/web/v1/task_events/{session_id}/")
 }
 
+fn web_task_files_prefix(user_id: i64, session_id: &str) -> String {
+    format!("users/{user_id}/web/v1/task_files/{session_id}/")
+}
+
 fn web_task_event_chunks_prefix(user_id: i64, session_id: &str, task_id: &str) -> String {
     format!("{}{task_id}/", web_task_events_prefix(user_id, session_id))
+}
+
+fn web_task_file_prefix(user_id: i64, session_id: &str, task_id: &str) -> String {
+    format!("{}{task_id}/", web_task_files_prefix(user_id, session_id))
 }
 
 fn web_task_event_chunk_key(
@@ -709,6 +832,22 @@ fn web_task_event_chunk_key(
     )
 }
 
+fn web_task_file_key(user_id: i64, session_id: &str, task_id: &str, file_id: &str) -> String {
+    format!(
+        "{}{}.json",
+        web_task_file_prefix(user_id, session_id, task_id),
+        file_id
+    )
+}
+
+fn web_task_file_blob_key(user_id: i64, session_id: &str, task_id: &str, file_id: &str) -> String {
+    format!(
+        "{}{}.bin",
+        web_task_file_prefix(user_id, session_id, task_id),
+        file_id
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,6 +859,7 @@ mod tests {
     #[derive(Default)]
     struct InMemoryObjectStore {
         objects: RwLock<BTreeMap<String, serde_json::Value>>,
+        blobs: RwLock<BTreeMap<String, Vec<u8>>>,
     }
 
     #[async_trait]
@@ -747,13 +887,35 @@ mod tests {
                 .map_err(test_store_error)
         }
 
+        async fn save_bytes(
+            &self,
+            key: &str,
+            content: &[u8],
+            _content_type: &str,
+        ) -> WebUiStoreResult<()> {
+            self.blobs
+                .write()
+                .await
+                .insert(key.to_string(), content.to_vec());
+            Ok(())
+        }
+
+        async fn load_bytes(&self, key: &str) -> WebUiStoreResult<Option<Vec<u8>>> {
+            Ok(self.blobs.read().await.get(key).cloned())
+        }
+
         async fn delete_object(&self, key: &str) -> WebUiStoreResult<()> {
             self.objects.write().await.remove(key);
+            self.blobs.write().await.remove(key);
             Ok(())
         }
 
         async fn delete_prefix(&self, prefix: &str) -> WebUiStoreResult<()> {
             self.objects
+                .write()
+                .await
+                .retain(|key, _| !key.starts_with(prefix));
+            self.blobs
                 .write()
                 .await
                 .retain(|key, _| !key.starts_with(prefix));
@@ -812,6 +974,14 @@ mod tests {
         assert_eq!(
             web_task_event_chunk_key(7, "session-1", "task-1", 3),
             "users/7/web/v1/task_events/session-1/task-1/chunk-000000000003.json"
+        );
+        assert_eq!(
+            web_task_file_key(7, "session-1", "task-1", "file-1"),
+            "users/7/web/v1/task_files/session-1/task-1/file-1.json"
+        );
+        assert_eq!(
+            web_task_file_blob_key(7, "session-1", "task-1", "file-1"),
+            "users/7/web/v1/task_files/session-1/task-1/file-1.bin"
         );
     }
 
@@ -879,6 +1049,24 @@ mod tests {
             )
             .await
             .unwrap();
+        store
+            .save_task_file(
+                WebTaskFileRecord {
+                    schema_version: super::super::WEB_TASK_FILE_SCHEMA_VERSION,
+                    user_id: 7,
+                    session_id: "session-1".to_string(),
+                    task_id: "task-1".to_string(),
+                    file_id: "file-1".to_string(),
+                    file_name: "report.txt".to_string(),
+                    content_type: "text/plain".to_string(),
+                    size_bytes: 5,
+                    delivery_kind: oxide_agent_core::agent::progress::FileDeliveryKind::Document,
+                    created_at: now,
+                },
+                b"hello".to_vec(),
+            )
+            .await
+            .unwrap();
 
         let response = store
             .list_task_events(7, "session-1", "task-1", 1, 1)
@@ -888,6 +1076,13 @@ mod tests {
         assert_eq!(response.events[0].seq, 2);
         assert_eq!(response.last_seq, 2);
         assert!(response.has_more);
+        let stored_file = store
+            .load_task_file(7, "session-1", "task-1", "file-1")
+            .await
+            .unwrap()
+            .expect("task file should exist");
+        assert_eq!(stored_file.record.file_name, "report.txt");
+        assert_eq!(stored_file.content, b"hello");
 
         assert!(store.delete_session(7, "session-1").await.unwrap());
         assert!(store.list_tasks(7, "session-1").await.unwrap().is_empty());
@@ -897,6 +1092,11 @@ mod tests {
             .unwrap()
             .events
             .is_empty());
+        assert!(store
+            .load_task_file(7, "session-1", "task-1", "file-1")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

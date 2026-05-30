@@ -4,16 +4,19 @@
 //! via the HTTP API. Unlike Telegram transport, this does not send messages
 //! to any chat — it only records the event timeline for later inspection.
 
+use crate::persistence::{WebTaskFileRecord, WebUiStore, WEB_TASK_FILE_SCHEMA_VERSION};
 use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use oxide_agent_web_contracts::{PersistedTaskEvent, TaskEventKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 /// Returns the snake_case variant name of an AgentEvent.
 fn event_variant_name(event: &AgentEvent) -> String {
@@ -69,6 +72,23 @@ impl BrowserEventScope {
             user_id,
             session_id,
             task_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BrowserStoredFile {
+    file_id: String,
+    download_url: String,
+    content_type: String,
+    size_bytes: usize,
+}
+
+impl BrowserStoredFile {
+    fn receipt(&self) -> oxide_agent_core::agent::progress::FileDeliveryReceipt {
+        oxide_agent_core::agent::progress::FileDeliveryReceipt {
+            file_id: Some(self.file_id.clone()),
+            download_url: Some(self.download_url.clone()),
         }
     }
 }
@@ -167,6 +187,78 @@ impl Default for TaskEventLog {
     }
 }
 
+fn delivered_file_download_url(scope: &BrowserEventScope, file_id: &str) -> String {
+    format!(
+        "/api/v1/sessions/{}/tasks/{}/files/{file_id}",
+        scope.session_id, scope.task_id
+    )
+}
+
+fn infer_content_type(file_name: &str) -> &'static str {
+    match Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("txt") | Some("log") | Some("md") => "text/plain; charset=utf-8",
+        Some("json") => "application/json",
+        Some("csv") => "text/csv; charset=utf-8",
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("ogg") => "audio/ogg",
+        Some("m4a") => "audio/mp4",
+        Some("flac") => "audio/flac",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        Some("zip") => "application/zip",
+        Some("gz") => "application/gzip",
+        Some("tar") => "application/x-tar",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn persist_browser_file(
+    web_store: &dyn WebUiStore,
+    scope: &BrowserEventScope,
+    kind: FileDeliveryKind,
+    file_name: &str,
+    content: &[u8],
+) -> Result<BrowserStoredFile, String> {
+    let file_id = Uuid::new_v4().to_string();
+    let content_type = infer_content_type(file_name).to_string();
+    let record = WebTaskFileRecord {
+        schema_version: WEB_TASK_FILE_SCHEMA_VERSION,
+        user_id: scope.user_id,
+        session_id: scope.session_id.clone(),
+        task_id: scope.task_id.clone(),
+        file_id: file_id.clone(),
+        file_name: file_name.to_string(),
+        content_type: content_type.clone(),
+        size_bytes: content.len() as u64,
+        delivery_kind: kind,
+        created_at: chrono::Utc::now(),
+    };
+    web_store
+        .save_task_file(record, content.to_vec())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(BrowserStoredFile {
+        file_id: file_id.clone(),
+        download_url: delivered_file_download_url(scope, &file_id),
+        content_type,
+        size_bytes: content.len(),
+    })
+}
+
 /// Transport that records events in memory.
 ///
 /// Implements `AgentTransport` from the runtime crate. Does not send
@@ -198,7 +290,7 @@ impl AgentTransport for WebAgentTransport {
         kind: FileDeliveryKind,
         file_name: &str,
         content: &[u8],
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<oxide_agent_core::agent::progress::FileDeliveryReceipt, anyhow::Error> {
         // Record file delivery as a synthetic event so tests can observe it.
         let event = AgentEvent::FileToSend {
             kind,
@@ -206,7 +298,7 @@ impl AgentTransport for WebAgentTransport {
             content: content.to_vec(),
         };
         self.event_log.push(&event).await;
-        Ok(())
+        Ok(Default::default())
     }
 
     async fn notify_loop_detected(
@@ -263,6 +355,7 @@ pub async fn collect_events(
     event_log: TaskEventLog,
     mut rx: mpsc::Receiver<AgentEvent>,
     browser_event_scope: Option<BrowserEventScope>,
+    browser_file_store: Option<Arc<dyn WebUiStore>>,
     live_event_tx: Option<mpsc::UnboundedSender<PersistedTaskEvent>>,
     live_progress_tx: Option<mpsc::UnboundedSender<ProgressState>>,
 ) -> EventCollectionResult {
@@ -280,12 +373,54 @@ pub async fn collect_events(
         // Classify event type once to avoid borrow-after-move.
         let is_thinking = matches!(&event, AgentEvent::Thinking { .. });
         let is_reasoning = matches!(&event, AgentEvent::Reasoning { .. });
-        let is_file_to_send = matches!(&event, AgentEvent::FileToSend { .. });
+        let is_file_to_send = matches!(
+            &event,
+            AgentEvent::FileToSend { .. } | AgentEvent::FileToSendWithConfirmation { .. }
+        );
         let is_terminal = matches!(
             &event,
             AgentEvent::Finished | AgentEvent::Cancelled | AgentEvent::Error(_)
         );
         let is_milestone = matches!(&event, AgentEvent::Milestone { .. });
+        let mut file_storage_error = None::<String>;
+        let stored_file = match (&browser_event_scope, browser_file_store.as_ref(), &event) {
+            (
+                Some(scope),
+                Some(web_store),
+                AgentEvent::FileToSend {
+                    kind,
+                    file_name,
+                    content,
+                },
+            ) => match persist_browser_file(web_store.as_ref(), scope, *kind, file_name, content)
+                .await
+            {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    file_storage_error = Some(error);
+                    None
+                }
+            },
+            (
+                Some(scope),
+                Some(web_store),
+                AgentEvent::FileToSendWithConfirmation {
+                    kind,
+                    file_name,
+                    content,
+                    ..
+                },
+            ) => match persist_browser_file(web_store.as_ref(), scope, *kind, file_name, content)
+                .await
+            {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    file_storage_error = Some(error);
+                    None
+                }
+            },
+            _ => None,
+        };
 
         // Track first Thinking/Reasoning to derive llm_call_started_ms on collector-side.
         if timestamps.first_thinking_at.is_none() && is_thinking {
@@ -333,8 +468,14 @@ pub async fn collect_events(
 
         if let Some(scope) = browser_event_scope.as_ref() {
             if should_persist_browser_event(&event) {
-                let persisted_event =
-                    persisted_event_from_agent_event(scope, next_seq, event_received_at, &event);
+                let persisted_event = persisted_event_from_agent_event(
+                    scope,
+                    next_seq,
+                    event_received_at,
+                    &event,
+                    stored_file.as_ref(),
+                    file_storage_error.as_deref(),
+                );
                 if let Some(live_event_tx) = live_event_tx.as_ref() {
                     let _ = live_event_tx.send(persisted_event.clone());
                 }
@@ -343,7 +484,28 @@ pub async fn collect_events(
             }
         }
 
-        state.update(event);
+        match event {
+            AgentEvent::FileToSendWithConfirmation {
+                kind,
+                file_name,
+                content,
+                confirmation_tx,
+                ..
+            } => {
+                let confirmation = file_storage_error.map(Err).unwrap_or_else(|| {
+                    Ok(stored_file
+                        .as_ref()
+                        .map_or_else(Default::default, BrowserStoredFile::receipt))
+                });
+                let _ = confirmation_tx.send(confirmation);
+                state.update(AgentEvent::FileToSend {
+                    kind,
+                    file_name,
+                    content,
+                });
+            }
+            other => state.update(other),
+        }
         if let Some(live_progress_tx) = live_progress_tx.as_ref() {
             let _ = live_progress_tx.send(state.clone());
         }
@@ -378,8 +540,11 @@ fn persisted_event_from_agent_event(
     seq: u64,
     created_at: chrono::DateTime<chrono::Utc>,
     event: &AgentEvent,
+    stored_file: Option<&BrowserStoredFile>,
+    file_storage_error: Option<&str>,
 ) -> PersistedTaskEvent {
-    let (kind, summary, payload, redacted, truncated) = browser_event_parts(event);
+    let (kind, summary, payload, redacted, truncated) =
+        browser_event_parts(event, stored_file, file_storage_error);
     PersistedTaskEvent {
         schema_version: WEB_EVENT_SCHEMA_VERSION,
         task_id: scope.task_id.clone(),
@@ -404,7 +569,11 @@ fn should_persist_browser_event(event: &AgentEvent) -> bool {
     )
 }
 
-fn browser_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+fn browser_event_parts(
+    event: &AgentEvent,
+    stored_file: Option<&BrowserStoredFile>,
+    file_storage_error: Option<&str>,
+) -> (TaskEventKind, String, Value, bool, bool) {
     match event {
         AgentEvent::Thinking { .. } | AgentEvent::TokenSnapshotUpdated { .. } => {
             token_event_parts(event)
@@ -444,7 +613,7 @@ fn browser_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, boo
             false,
         ),
         AgentEvent::FileToSend { .. } | AgentEvent::FileToSendWithConfirmation { .. } => {
-            file_event_parts(event)
+            file_event_parts(event, stored_file, file_storage_error)
         }
         AgentEvent::RuntimeCompactionStarted { .. }
         | AgentEvent::RuntimeCompactionCompleted { .. }
@@ -534,7 +703,11 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
     }
 }
 
-fn file_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
+fn file_event_parts(
+    event: &AgentEvent,
+    stored_file: Option<&BrowserStoredFile>,
+    file_storage_error: Option<&str>,
+) -> (TaskEventKind, String, Value, bool, bool) {
     match event {
         AgentEvent::FileToSend {
             kind,
@@ -543,34 +716,63 @@ fn file_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
         } => (
             TaskEventKind::FileToSend,
             truncate_summary(file_name),
-            json!({
-                "delivery_kind": kind,
-                "file_name": file_name,
-                "byte_len": content.len(),
-            }),
-            true,
+            file_event_payload(
+                *kind,
+                file_name,
+                content.len(),
+                stored_file,
+                file_storage_error,
+            ),
+            false,
             false,
         ),
         AgentEvent::FileToSendWithConfirmation {
             kind,
             file_name,
             content,
-            source_path,
+            source_path: _,
             confirmation_tx: _,
         } => (
             TaskEventKind::FileToSend,
             truncate_summary(file_name),
-            json!({
-                "delivery_kind": kind,
-                "file_name": file_name,
-                "byte_len": content.len(),
-                "source_path": source_path,
-            }),
-            true,
+            file_event_payload(
+                *kind,
+                file_name,
+                content.len(),
+                stored_file,
+                file_storage_error,
+            ),
+            false,
             false,
         ),
         _ => unreachable!("file_event_parts called with non-file event"),
     }
+}
+
+fn file_event_payload(
+    kind: FileDeliveryKind,
+    file_name: &str,
+    byte_len: usize,
+    stored_file: Option<&BrowserStoredFile>,
+    file_storage_error: Option<&str>,
+) -> Value {
+    let mut payload = json!({
+        "delivery_kind": kind,
+        "file_name": file_name,
+        "byte_len": byte_len,
+    });
+    if let Some(object) = payload.as_object_mut() {
+        if let Some(stored_file) = stored_file {
+            object.insert("file_id".to_string(), json!(stored_file.file_id));
+            object.insert("download_url".to_string(), json!(stored_file.download_url));
+            object.insert("content_type".to_string(), json!(stored_file.content_type));
+            object.insert("size_bytes".to_string(), json!(stored_file.size_bytes));
+        }
+        if let Some(error) = file_storage_error {
+            object.insert("delivery_error".to_string(), json!(error));
+        }
+    }
+    payload
 }
 
 fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
@@ -996,11 +1198,13 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::{collect_events, event_variant_name, BrowserEventScope, TaskEventLog};
+    use crate::persistence::{InMemoryWebUiStore, WebUiStore};
     use oxide_agent_core::agent::compaction::{
         CompactionBackend, CompactionPhase, CompactionReason,
     };
-    use oxide_agent_core::agent::progress::AgentEvent;
+    use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind};
     use oxide_agent_web_contracts::TaskEventKind;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
 
     #[test]
@@ -1090,7 +1294,7 @@ mod tests {
             .expect("send finished event");
         drop(tx);
 
-        let result = collect_events(event_log.clone(), rx, None, None, None).await;
+        let result = collect_events(event_log.clone(), rx, None, None, None, None).await;
         let event_names: Vec<String> = event_log
             .drain()
             .await
@@ -1141,6 +1345,7 @@ mod tests {
             )),
             None,
             None,
+            None,
         )
         .await;
 
@@ -1153,6 +1358,65 @@ mod tests {
         assert_eq!(tool_result.payload["success"], true);
         assert!(tool_result.truncated);
         assert_eq!(result.persisted_events[1].kind, TaskEventKind::Finished);
+    }
+
+    #[tokio::test]
+    async fn collect_events_persists_confirmed_file_delivery_and_returns_download_url_receipt() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        let (confirmation_tx, confirmation_rx) = tokio::sync::oneshot::channel();
+        let web_store: Arc<dyn WebUiStore> = Arc::new(InMemoryWebUiStore::new());
+        let scope = BrowserEventScope::new(7, "session-1".to_string(), "task-1".to_string());
+
+        tx.send(AgentEvent::FileToSendWithConfirmation {
+            kind: FileDeliveryKind::Document,
+            file_name: "report.pdf".to_string(),
+            content: b"pdf-ish".to_vec(),
+            source_path: "/workspace/report.pdf".to_string(),
+            confirmation_tx,
+        })
+        .await
+        .expect("send file delivery event");
+        tx.send(AgentEvent::Finished).await.expect("send finished");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(scope.clone()),
+            Some(Arc::clone(&web_store)),
+            None,
+            None,
+        )
+        .await;
+
+        let receipt = confirmation_rx.await.expect("receive delivery receipt");
+        let receipt = receipt.expect("delivery should succeed");
+        let file_id = receipt.file_id.expect("file id in receipt");
+        let download_url = receipt.download_url.expect("download url in receipt");
+        assert_eq!(
+            download_url,
+            format!(
+                "/api/v1/sessions/{}/tasks/{}/files/{}",
+                scope.session_id, scope.task_id, file_id
+            )
+        );
+
+        let file_event = &result.persisted_events[0];
+        assert_eq!(file_event.kind, TaskEventKind::FileToSend);
+        assert_eq!(file_event.payload["file_id"], file_id);
+        assert_eq!(file_event.payload["download_url"], download_url);
+        assert_eq!(file_event.payload["content_type"], "application/pdf");
+        assert_eq!(file_event.payload["size_bytes"], 7);
+
+        let stored_file = web_store
+            .load_task_file(7, &scope.session_id, &scope.task_id, &file_id)
+            .await
+            .expect("load stored file")
+            .expect("stored file exists");
+        assert_eq!(stored_file.record.file_name, "report.pdf");
+        assert_eq!(stored_file.record.content_type, "application/pdf");
+        assert_eq!(stored_file.content, b"pdf-ish".to_vec());
     }
 
     #[tokio::test]
@@ -1201,6 +1465,7 @@ mod tests {
                 "session-1".to_string(),
                 "task-1".to_string(),
             )),
+            None,
             None,
             None,
         )
@@ -1264,6 +1529,7 @@ mod tests {
             )),
             None,
             None,
+            None,
         )
         .await;
 
@@ -1298,6 +1564,7 @@ mod tests {
                 "session-1".to_string(),
                 "task-1".to_string(),
             )),
+            None,
             None,
             None,
         )
@@ -1336,6 +1603,7 @@ mod tests {
             )),
             None,
             None,
+            None,
         )
         .await;
 
@@ -1368,6 +1636,7 @@ mod tests {
                 "session-1".to_string(),
                 "task-1".to_string(),
             )),
+            None,
             None,
             None,
         )
@@ -1414,6 +1683,7 @@ mod tests {
                 "session-1".to_string(),
                 "task-1".to_string(),
             )),
+            None,
             None,
             None,
         )
@@ -1491,6 +1761,7 @@ mod tests {
             )),
             None,
             None,
+            None,
         )
         .await;
 
@@ -1525,7 +1796,7 @@ mod tests {
             .expect("send finished event");
         drop(event_tx);
 
-        let result = collect_events(event_log, event_rx, None, None, Some(progress_tx)).await;
+        let result = collect_events(event_log, event_rx, None, None, None, Some(progress_tx)).await;
         let mut snapshots = Vec::new();
         while let Some(snapshot) = progress_rx.recv().await {
             snapshots.push(snapshot);

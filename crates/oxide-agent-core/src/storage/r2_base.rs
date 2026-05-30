@@ -155,6 +155,44 @@ impl R2Storage {
         Ok(())
     }
 
+    /// Save raw bytes to R2 with the provided content type.
+    pub async fn save_bytes(
+        &self,
+        key: &str,
+        data: &[u8],
+        content_type: &str,
+    ) -> Result<(), StorageError> {
+        let body_bytes = data.to_vec();
+
+        self.cache
+            .insert(key.to_string(), Arc::new(body_bytes.clone()))
+            .await;
+
+        let mut request = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from(body_bytes));
+        if !content_type.is_empty() {
+            request = request.content_type(content_type);
+        }
+
+        match request.send().await {
+            Ok(_) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "ok");
+            }
+            Err(error) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "error");
+                return Err(StorageError::S3Put(error.to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn save_json_conditionally<T: serde::Serialize + Sync>(
         &self,
         key: &str,
@@ -309,6 +347,53 @@ impl R2Storage {
                 })
             }
             Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => {
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "not_found");
+                Ok(None)
+            }
+            Err(e) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "error");
+                Err(StorageError::S3Get(e.to_string()))
+            }
+        }
+    }
+
+    /// Load raw bytes from R2.
+    pub async fn load_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        if let Some(cached_data) = self.cache.get(key).await {
+            self.telemetry.record_cache_hit(key);
+            return Ok(Some(cached_data.to_vec()));
+        }
+
+        self.telemetry.record_cache_miss(key);
+
+        let result = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await;
+
+        match result {
+            Ok(output) => {
+                let data = output
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|e| StorageError::Io(std::io::Error::other(e)))?
+                    .into_bytes();
+
+                self.cache
+                    .insert(key.to_string(), Arc::new(data.to_vec()))
+                    .await;
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "ok");
+                Ok(Some(data.to_vec()))
+            }
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => {
+                self.cache.invalidate(key).await;
                 self.telemetry
                     .record_operation(StorageOperation::Get, key, "not_found");
                 Ok(None)

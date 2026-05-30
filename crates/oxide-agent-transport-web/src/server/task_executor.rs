@@ -223,6 +223,7 @@ fn spawn_event_collector(
             event_log,
             rx,
             browser_event_scope,
+            web_task.as_ref().map(|web_task| web_task.web_store.clone()),
             live_event_tx,
             live_progress_tx,
         )

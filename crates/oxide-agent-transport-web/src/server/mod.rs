@@ -37,7 +37,10 @@ use axum::{
     body::Body,
     extract::{Multipart, Path, Query, State},
     http::{
-        header::{CONTENT_SECURITY_POLICY, SET_COOKIE},
+        header::{
+            CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY,
+            CONTENT_TYPE, SET_COOKIE,
+        },
         HeaderMap, HeaderValue, Request, StatusCode,
     },
     middleware::{self, Next},
@@ -59,6 +62,7 @@ use oxide_agent_web_contracts::{
     TaskStatus as ApiTaskStatus, UpdateSessionRequest, UpdateSessionResponse,
     UploadTaskAttachmentsResponse, UserMessageEventPayload, WebSessionRecord, WebTaskRecord,
 };
+use serde::Deserialize;
 use std::collections::HashSet;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -892,6 +896,67 @@ async fn api_get_task_events(
     Ok(Json(events))
 }
 
+async fn api_download_task_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((session_id, task_id, file_id)): Path<(String, String, String)>,
+    Query(query): Query<TaskFileDownloadQuery>,
+) -> Result<Response, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user(&state, &headers).await?;
+    let _task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
+    let Some(file) = state
+        .web_store
+        .load_task_file(user.user_id, &session_id, &task_id, &file_id)
+        .await
+        .map_err(store_error_response)?
+    else {
+        return Err(not_found_response());
+    };
+
+    let mut response = Response::new(Body::from(file.content));
+    let headers = response.headers_mut();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(&file.record.content_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
+    if let Ok(length) = HeaderValue::from_str(&file.record.size_bytes.to_string()) {
+        headers.insert(CONTENT_LENGTH, length);
+    }
+    headers.insert(
+        CONTENT_DISPOSITION,
+        content_disposition_header(&file.record.file_name, query.inline()),
+    );
+    Ok(response)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TaskFileDownloadQuery {
+    disposition: Option<String>,
+}
+
+impl TaskFileDownloadQuery {
+    fn inline(&self) -> bool {
+        self.disposition
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("inline"))
+    }
+}
+
+fn content_disposition_header(file_name: &str, inline: bool) -> HeaderValue {
+    let sanitized = file_name
+        .chars()
+        .map(|ch| match ch {
+            '"' | '\\' | '\r' | '\n' => '_',
+            _ => ch,
+        })
+        .collect::<String>();
+    let disposition = if inline { "inline" } else { "attachment" };
+    HeaderValue::from_str(&format!("{disposition}; filename=\"{sanitized}\""))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
+}
+
 async fn api_create_task_version(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1306,6 +1371,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api_get_task_events),
         )
         .route(
+            "/api/v1/sessions/:session_id/tasks/:task_id/files/:file_id",
+            get(api_download_task_file),
+        )
+        .route(
             "/api/v1/sessions/:session_id/tasks/:task_id/stream",
             get(sse::api_sse_task_stream),
         )
@@ -1383,7 +1452,7 @@ mod tests {
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Instant;
 
-    use oxide_agent_core::agent::progress::{LlmRetryState, ProgressState};
+    use oxide_agent_core::agent::progress::{FileDeliveryKind, LlmRetryState, ProgressState};
     use oxide_agent_core::agent::AgentMemory;
     use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
     use oxide_agent_core::config::{AgentSettings, ModelInfo};
@@ -1398,9 +1467,11 @@ mod tests {
     use oxide_agent_web_contracts::{
         CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
         PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment, TaskEventKind,
-        TaskStatus as ApiTaskStatus, UserMessageEventPayload, WebTaskRecord,
+        TaskStatus as ApiTaskStatus, WebTaskRecord,
     };
     use tokio::sync::mpsc;
+
+    use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
 
     use super::{
         api_cancel_task, api_create_session, api_create_task_version, api_delete_session,
@@ -2176,6 +2247,265 @@ mod tests {
             axum::http::StatusCode::FORBIDDEN
         );
         assert_ne!(user_one.user_id, user_two.user_id);
+    }
+
+    #[tokio::test]
+    async fn api_download_task_file_serves_owned_file_and_supports_inline_preview() {
+        use tower::Service as _;
+
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        let user = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(created_session) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create session");
+        let session_id = created_session.session.session_id;
+        let task_id = "task-download".to_string();
+        state
+            .web_store
+            .save_task(task_record(
+                user.user_id,
+                &session_id,
+                &task_id,
+                ApiTaskStatus::Completed,
+                "Deliver a file",
+                now,
+            ))
+            .await
+            .expect("save task");
+
+        let file_id = "file-1".to_string();
+        state
+            .web_store
+            .save_task_file(
+                WebTaskFileRecord {
+                    schema_version: WEB_TASK_FILE_SCHEMA_VERSION,
+                    user_id: user.user_id,
+                    session_id: session_id.clone(),
+                    task_id: task_id.clone(),
+                    file_id: file_id.clone(),
+                    file_name: "report\n2026.pdf".to_string(),
+                    content_type: "application/pdf".to_string(),
+                    size_bytes: 7,
+                    delivery_kind: FileDeliveryKind::Document,
+                    created_at: now,
+                },
+                b"pdf-ish".to_vec(),
+            )
+            .await
+            .expect("save task file");
+
+        let mut app = super::build_router(state.clone());
+        let response = app
+            .call(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::GET)
+                    .uri(format!(
+                        "/api/v1/sessions/{session_id}/tasks/{task_id}/files/{file_id}"
+                    ))
+                    .header(
+                        axum::http::header::COOKIE,
+                        format!("{AUTH_COOKIE_NAME}={token}"),
+                    )
+                    .body(axum::body::Body::empty())
+                    .expect("download request"),
+            )
+            .await
+            .expect("download response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            axum::http::HeaderValue::from_static("private, no-store")
+        );
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            axum::http::HeaderValue::from_static("application/pdf")
+        );
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_LENGTH],
+            axum::http::HeaderValue::from_static("7")
+        );
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_DISPOSITION],
+            axum::http::HeaderValue::from_static("attachment; filename=\"report_2026.pdf\"")
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read download body");
+        assert_eq!(body.as_ref(), b"pdf-ish");
+
+        let response = app
+            .call(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::GET)
+                    .uri(format!(
+                        "/api/v1/sessions/{session_id}/tasks/{task_id}/files/{file_id}?disposition=inline"
+                    ))
+                    .header(
+                        axum::http::header::COOKIE,
+                        format!("{AUTH_COOKIE_NAME}={token}"),
+                    )
+                    .body(axum::body::Body::empty())
+                    .expect("inline preview request"),
+            )
+            .await
+            .expect("inline preview response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_DISPOSITION],
+            axum::http::HeaderValue::from_static("inline; filename=\"report_2026.pdf\"")
+        );
+    }
+
+    #[tokio::test]
+    async fn api_download_task_file_hides_foreign_or_missing_files() {
+        use tower::Service as _;
+
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        let owner = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register owner");
+        register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "bob".to_string(),
+                password: "another correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register second user");
+        let (_, owner_session, owner_token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login owner");
+        let (_, _, foreign_token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "bob".to_string(),
+                password: "another correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login foreign user");
+
+        let axum::Json(created_session) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&owner_token, Some(&owner_session.csrf_token)),
+        )
+        .await
+        .expect("create session");
+        let session_id = created_session.session.session_id;
+        let task_id = "task-download".to_string();
+        state
+            .web_store
+            .save_task(task_record(
+                owner.user_id,
+                &session_id,
+                &task_id,
+                ApiTaskStatus::Completed,
+                "Deliver a file",
+                now,
+            ))
+            .await
+            .expect("save task");
+        state
+            .web_store
+            .save_task_file(
+                WebTaskFileRecord {
+                    schema_version: WEB_TASK_FILE_SCHEMA_VERSION,
+                    user_id: owner.user_id,
+                    session_id: session_id.clone(),
+                    task_id: task_id.clone(),
+                    file_id: "file-1".to_string(),
+                    file_name: "report.pdf".to_string(),
+                    content_type: "application/pdf".to_string(),
+                    size_bytes: 7,
+                    delivery_kind: FileDeliveryKind::Document,
+                    created_at: now,
+                },
+                b"pdf-ish".to_vec(),
+            )
+            .await
+            .expect("save task file");
+
+        let mut app = super::build_router(state);
+        let foreign_response = app
+            .call(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::GET)
+                    .uri(format!(
+                        "/api/v1/sessions/{session_id}/tasks/{task_id}/files/file-1"
+                    ))
+                    .header(
+                        axum::http::header::COOKIE,
+                        format!("{AUTH_COOKIE_NAME}={foreign_token}"),
+                    )
+                    .body(axum::body::Body::empty())
+                    .expect("foreign request"),
+            )
+            .await
+            .expect("foreign response");
+        assert_eq!(foreign_response.status(), axum::http::StatusCode::NOT_FOUND);
+
+        let missing_response = app
+            .call(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::GET)
+                    .uri(format!(
+                        "/api/v1/sessions/{session_id}/tasks/{task_id}/files/missing"
+                    ))
+                    .header(
+                        axum::http::header::COOKIE,
+                        format!("{AUTH_COOKIE_NAME}={owner_token}"),
+                    )
+                    .body(axum::body::Body::empty())
+                    .expect("missing file request"),
+            )
+            .await
+            .expect("missing file response");
+        assert_eq!(missing_response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

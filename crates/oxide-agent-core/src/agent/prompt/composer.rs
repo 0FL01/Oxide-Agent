@@ -339,6 +339,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         let mut lines = Vec::new();
         if has_tool(&tool_names, "send_file_to_user") {
             lines.push("Use `send_file_to_user` to return finished sandbox files through the chat transport.".to_string());
+            lines.push("If `send_file_to_user` returns `download_url`, include that exact URL in `final_answer` as a markdown link so the user can download the file directly from the main chat response.".to_string());
         }
         if has_tool(&tool_names, "upload_file") {
             lines.push("Use `upload_file` for files too large for chat delivery or when an external file link is needed.".to_string());
@@ -389,6 +390,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                 "Use `ssh_send_file_to_user` to return remote files through the chat transport."
                     .to_string(),
             );
+            lines.push("If `ssh_send_file_to_user` returns `download_url`, include that exact URL in `final_answer` as a markdown link so the user can download the file directly from the main chat response.".to_string());
         }
         builder.push_section("ssh_workflow", "SSH Workflow", lines);
     }
@@ -705,6 +707,22 @@ mod tests {
         assert!(!prompt.contains("describe_image_file"));
         assert!(!prompt.contains("transcribe_audio_file"));
         assert!(!prompt.contains("text_to_speech_ru_file"));
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_system_prompt_requires_download_url_in_final_answer() {
+        let tools = [ToolDefinition {
+            name: "send_file_to_user".to_string(),
+            description: "demo".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }];
+        let mut session = AgentSession::new(1_i64.into());
+
+        let prompt =
+            create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+
+        assert!(prompt.contains("If `send_file_to_user` returns `download_url`"));
+        assert!(prompt.contains("main chat response"));
     }
 
     #[tokio::test]

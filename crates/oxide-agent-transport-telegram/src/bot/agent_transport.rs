@@ -5,7 +5,7 @@ use crate::bot::views::{
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
-use oxide_agent_core::agent::progress::{FileDeliveryKind, ProgressState};
+use oxide_agent_core::agent::progress::{FileDeliveryKind, FileDeliveryReceipt, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, InlineKeyboardMarkup, InputFile, MessageId, ParseMode};
@@ -101,7 +101,7 @@ impl AgentTransport for TelegramAgentTransport {
         kind: FileDeliveryKind,
         file_name: &str,
         content: &[u8],
-    ) -> Result<()> {
+    ) -> Result<FileDeliveryReceipt> {
         match mode {
             DeliveryMode::BestEffort => {
                 if let Err(e) = send_file_smart(
@@ -117,7 +117,7 @@ impl AgentTransport for TelegramAgentTransport {
                     warn!(file_name = %file_name, error = %e, "Failed to send file");
                     return Err(e);
                 }
-                Ok(())
+                Ok(FileDeliveryReceipt::default())
             }
             DeliveryMode::Confirmed => {
                 oxide_agent_core::utils::retry_transport_operation(|| async {
@@ -130,7 +130,7 @@ impl AgentTransport for TelegramAgentTransport {
                         self.message_thread_id,
                     )
                     .await
-                    .map(|_| ())
+                    .map(|_| FileDeliveryReceipt::default())
                     .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
                 })
                 .await
@@ -171,7 +171,7 @@ impl AgentTransport for SilentTelegramAgentTransport {
         kind: FileDeliveryKind,
         file_name: &str,
         content: &[u8],
-    ) -> Result<()> {
+    ) -> Result<FileDeliveryReceipt> {
         match mode {
             DeliveryMode::BestEffort => {
                 if let Err(e) = send_file_smart(
@@ -187,7 +187,7 @@ impl AgentTransport for SilentTelegramAgentTransport {
                     warn!(file_name = %file_name, error = %e, "Failed to send file");
                     return Err(e);
                 }
-                Ok(())
+                Ok(FileDeliveryReceipt::default())
             }
             DeliveryMode::Confirmed => {
                 oxide_agent_core::utils::retry_transport_operation(|| async {
@@ -200,7 +200,7 @@ impl AgentTransport for SilentTelegramAgentTransport {
                         self.message_thread_id,
                     )
                     .await
-                    .map(|_| ())
+                    .map(|_| FileDeliveryReceipt::default())
                     .map_err(|e| anyhow::anyhow!("Telegram error: {e}"))
                 })
                 .await

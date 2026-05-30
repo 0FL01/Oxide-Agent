@@ -5,7 +5,9 @@ use oxide_agent_web_contracts::{
     PersistedTaskEvent, TaskEventsResponse, WebSessionRecord, WebTaskRecord,
 };
 
-use super::{LoginIndexRecord, WebAuthSessionRecord, WebUserRecord};
+use super::{
+    LoginIndexRecord, WebAuthSessionRecord, WebTaskFileBlob, WebTaskFileRecord, WebUserRecord,
+};
 
 pub type WebUiStoreResult<T> = Result<T, WebUiStoreError>;
 
@@ -102,6 +104,20 @@ pub trait WebUiStore: Send + Sync {
         after_seq: u64,
         limit: usize,
     ) -> WebUiStoreResult<TaskEventsResponse>;
+
+    async fn save_task_file(
+        &self,
+        record: WebTaskFileRecord,
+        content: Vec<u8>,
+    ) -> WebUiStoreResult<()>;
+
+    async fn load_task_file(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        file_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskFileBlob>>;
 
     async fn mark_unfinished_tasks_interrupted(
         &self,

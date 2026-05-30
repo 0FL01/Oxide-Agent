@@ -8,12 +8,13 @@ use oxide_agent_web_contracts::{
 use tokio::sync::RwLock;
 
 use super::{
-    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebUiStore, WebUiStoreError,
-    WebUiStoreResult, WebUserRecord,
+    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebTaskFileBlob, WebTaskFileRecord,
+    WebUiStore, WebUiStoreError, WebUiStoreResult, WebUserRecord,
 };
 
 type SessionKey = (i64, String);
 type TaskKey = (i64, String, String);
+type TaskFileKey = (i64, String, String, String);
 
 #[derive(Default)]
 pub struct InMemoryWebUiStore {
@@ -23,6 +24,7 @@ pub struct InMemoryWebUiStore {
     sessions: RwLock<HashMap<SessionKey, WebSessionRecord>>,
     tasks: RwLock<HashMap<TaskKey, WebTaskRecord>>,
     events: RwLock<HashMap<TaskKey, Vec<PersistedTaskEvent>>>,
+    task_files: RwLock<HashMap<TaskFileKey, WebTaskFileBlob>>,
 }
 
 impl InMemoryWebUiStore {
@@ -37,6 +39,15 @@ impl InMemoryWebUiStore {
 
     fn task_key(user_id: i64, session_id: &str, task_id: &str) -> TaskKey {
         (user_id, session_id.to_string(), task_id.to_string())
+    }
+
+    fn task_file_key(user_id: i64, session_id: &str, task_id: &str, file_id: &str) -> TaskFileKey {
+        (
+            user_id,
+            session_id.to_string(),
+            task_id.to_string(),
+            file_id.to_string(),
+        )
     }
 }
 
@@ -194,6 +205,12 @@ impl WebUiStore for InMemoryWebUiStore {
                 .retain(|(event_user_id, event_session_id, _), _| {
                     *event_user_id != user_id || event_session_id != session_id
                 });
+            self.task_files
+                .write()
+                .await
+                .retain(|(file_user_id, file_session_id, _, _), _| {
+                    *file_user_id != user_id || file_session_id != session_id
+                });
         }
 
         Ok(removed)
@@ -287,6 +304,39 @@ impl WebUiStore for InMemoryWebUiStore {
             last_seq,
             has_more,
         })
+    }
+
+    async fn save_task_file(
+        &self,
+        record: WebTaskFileRecord,
+        content: Vec<u8>,
+    ) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
+        self.task_files.write().await.insert(
+            Self::task_file_key(
+                record.user_id,
+                &record.session_id,
+                &record.task_id,
+                &record.file_id,
+            ),
+            WebTaskFileBlob { record, content },
+        );
+        Ok(())
+    }
+
+    async fn load_task_file(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        file_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskFileBlob>> {
+        Ok(self
+            .task_files
+            .read()
+            .await
+            .get(&Self::task_file_key(user_id, session_id, task_id, file_id))
+            .cloned())
     }
 
     async fn mark_unfinished_tasks_interrupted(
