@@ -107,7 +107,7 @@ impl Hook for SearchBudgetHook {
                         reason: concat!(
                             "DuckDuckGo is temporarily unavailable in this task because it returned ",
                             "a block/rate-limit signal. Do not retry DuckDuckGo with rewritten ",
-                            "queries; synthesize from existing data or use another available source."
+                            "queries; use `searxng_search` instead or synthesize from existing data."
                         )
                         .to_string(),
                     };

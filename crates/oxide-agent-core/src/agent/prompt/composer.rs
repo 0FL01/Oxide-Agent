@@ -187,9 +187,14 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         if has_tool(&tool_names, "web_search") {
             lines.push("Use `web_search` for current web search, news, facts, documentation, or real-time data you cannot know locally.".to_string());
         }
+        if has_tool(&tool_names, "searxng_search") {
+            lines.push(
+                "Use `searxng_search` for self-hosted web search — preferred over DuckDuckGo (more reliable, engine rotation on failure).".to_string(),
+            );
+        }
         if has_tool(&tool_names, "duckduckgo_search") {
             lines.push(
-                "Use `duckduckgo_search` to discover relevant web pages and URLs.".to_string(),
+                "Use `duckduckgo_search` as fallback when SearXNG is unavailable.".to_string(),
             );
         }
         if has_tool(&tool_names, "duckduckgo_news") {
@@ -197,9 +202,9 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                 "Use `duckduckgo_news` for current news queries and recent articles.".to_string(),
             );
         }
-        if has_tool(&tool_names, "searxng_search") {
+        if has_tool(&tool_names, "searxng_search") && has_tool(&tool_names, "duckduckgo_search") {
             lines.push(
-                "Use `searxng_search` for self-hosted web search when available.".to_string(),
+                "Prefer `searxng_search` over `duckduckgo_search` — self-hosted SearXNG is less likely to be blocked and supports engine rotation.".to_string(),
             );
         }
         if has_tool(&tool_names, "web_extract") {
