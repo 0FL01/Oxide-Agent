@@ -680,50 +680,45 @@ label {
 
 /* ── Context Card (Activity drawer) ─────────────────────────────────── */
 
-.context-card-title {
-  color: var(--fg-muted);
-  font: 600 11px/1.5 var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 10px;
+.context-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .context-card-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
+  flex: 1;
 }
 
 .context-card-cell {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-root);
-  padding: 10px 12px;
+  padding: 4px 6px;
 }
 
 .context-card-cell-label {
   color: var(--fg-muted);
-  font: 600 10px/1 var(--font-mono);
+  font: 600 9px/1 var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  margin-bottom: 4px;
 }
 
 .context-card-cell-value {
   color: var(--fg);
-  font: 600 16px/1.2 var(--font-mono);
+  font: 600 13px/1.2 var(--font-mono);
 }
 
 .context-card-health {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 5px;
+  flex-shrink: 0;
 }
 
 .context-health-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
@@ -742,7 +737,7 @@ label {
 
 .context-health-label {
   color: var(--fg-muted);
-  font: 500 11px/1 var(--font-mono);
+  font: 500 10px/1 var(--font-mono);
   text-transform: lowercase;
 }
 
@@ -2640,6 +2635,11 @@ textarea {
   border-radius: 10px;
   background: var(--surface);
   padding: 12px;
+}
+
+/* context card lives outside .activity-timeline, needs matching horizontal inlay */
+.context-card {
+  margin: 0 14px 8px;
 }
 
 .tool-card-header,

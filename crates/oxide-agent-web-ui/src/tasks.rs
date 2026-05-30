@@ -630,6 +630,7 @@ fn ActivityDrawer(
                 </div>
                 <button class="activity-close" type="button" on:click=move |_| set_open.set(false)>"×"</button>
             </header>
+            <ContextCard progress=progress />
             <div class="activity-timeline">
                 {move || {
                     let Some(task_id) = latest_activity_task_id(active_task, tasks) else {
@@ -657,7 +658,6 @@ fn ActivityDrawer(
                     view! {
                         {todos.map(|value| view! { <TodosCard todos=value /> })}
                         {items.into_iter().map(|item| view! { <ActivityItemCard item=item /> }).collect::<Vec<_>>()}
-                        <ContextCard progress=progress />
                     }.into_any()
                 }}
             </div>
@@ -1633,7 +1633,6 @@ fn ContextCard(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView 
             };
             view! {
                 <section class="context-card">
-                    <div class="context-card-title">"Context"</div>
                     <div class="context-card-grid">
                         <div class="context-card-cell">
                             <div class="context-card-cell-label">"Free"</div>
