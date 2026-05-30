@@ -395,6 +395,7 @@ mod tests {
             parent_task_id: None,
             status,
             input_markdown: "Investigate".to_string(),
+            attachments: Vec::new(),
             input_edited_at: None,
             final_response_markdown: None,
             error_message: None,

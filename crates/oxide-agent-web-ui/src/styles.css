@@ -2221,6 +2221,61 @@ textarea {
   color: var(--fg);
 }
 
+.user-message-body {
+  display: grid;
+  gap: 12px;
+}
+
+.message-attachments,
+.pending-attachments {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+
+.message-attachment-item,
+.pending-attachment-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px 12px;
+}
+
+.message-attachment-copy,
+.pending-attachment-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.message-attachment-name,
+.pending-attachment-name {
+  color: var(--fg);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.message-attachment-meta,
+.pending-attachment-meta {
+  color: var(--muted);
+  font: 11px/1.5 var(--font-mono);
+}
+
+.message-attachment-path {
+  display: block;
+  max-width: min(48%, 360px);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .message-collapsible {
   width: 100%;
 }
@@ -2420,6 +2475,11 @@ textarea {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
+.composer-inner.drag-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
 .composer-inner:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-glow);
@@ -2457,6 +2517,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
 }
 
 .composer-hint {
@@ -2468,12 +2529,25 @@ textarea {
 .composer-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 
 .composer-actions.btn-hidden .btn-primary {
   opacity: 0;
   pointer-events: none;
   transform: translateY(4px);
+}
+
+.composer-attach-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.composer-file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .status-wrap {

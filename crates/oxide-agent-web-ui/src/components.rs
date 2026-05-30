@@ -32,15 +32,6 @@ pub fn AppLayout(route: AppRoute) -> impl IntoView {
 }
 
 #[component]
-pub fn EmptyState(title: &'static str) -> impl IntoView {
-    view! {
-        <div class="empty-state">
-            <div class="empty-state-title">{title}</div>
-        </div>
-    }
-}
-
-#[component]
 pub fn ErrorBanner(message: ReadSignal<Option<String>>) -> impl IntoView {
     view! {
         {move || {

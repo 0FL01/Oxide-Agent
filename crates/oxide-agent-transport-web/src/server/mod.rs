@@ -35,7 +35,7 @@ use crate::persistence::WebUiStore;
 use crate::session::web_session_sandbox_scope;
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{
         header::{CONTENT_SECURITY_POLICY, SET_COOKIE},
         HeaderMap, HeaderValue, Request, StatusCode,
@@ -45,6 +45,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
+use oxide_agent_core::agent::preprocessor::Preprocessor;
 use oxide_agent_web_contracts::{
     AuthUserResponse, BootstrapRequest, CancelTaskResponse as ApiCancelTaskResponse,
     ChangePasswordRequest, CreateSessionResponse as ApiCreateSessionResponse,
@@ -52,10 +53,11 @@ use oxide_agent_web_contracts::{
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest,
     CreateTaskVersionResponse as ApiCreateTaskVersionResponse, CurrentUser, CurrentUserResponse,
     ErrorCode, ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
-    ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse,
-    RegisterRequest, ResumeTaskRequest as ApiResumeTaskRequest,
-    ResumeTaskResponse as ApiResumeTaskResponse, TaskEventsResponse, TaskStatus as ApiTaskStatus,
-    UpdateSessionRequest, UpdateSessionResponse, WebSessionRecord, WebTaskRecord,
+    ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, PersistedTaskEvent,
+    PublicConfigResponse, RegisterRequest, ResumeTaskRequest as ApiResumeTaskRequest,
+    ResumeTaskResponse as ApiResumeTaskResponse, TaskAttachment, TaskEventKind, TaskEventsResponse,
+    TaskStatus as ApiTaskStatus, UpdateSessionRequest, UpdateSessionResponse,
+    UploadTaskAttachmentsResponse, UserMessageEventPayload, WebSessionRecord, WebTaskRecord,
 };
 use std::collections::HashSet;
 use tower_http::cors::{Any, CorsLayer};
@@ -163,6 +165,197 @@ async fn reconcile_web_sandbox_orphans(state: &AppState, user_id: i64) -> Result
         .await
         .map_err(|error| error.to_string())?;
     reconcile_web_sandbox_orphans_with_sessions(state, user_id, &sessions).await
+}
+
+fn format_attachment_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn task_preview_source(input_markdown: &str, attachments: &[TaskAttachment]) -> String {
+    let trimmed = input_markdown.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    match attachments {
+        [] => String::new(),
+        [attachment] => format!("Attachment: {}", attachment.file_name),
+        attachments => format!(
+            "Attachments: {}",
+            attachments
+                .iter()
+                .map(|attachment| attachment.file_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn build_task_execution_input(input_markdown: &str, attachments: &[TaskAttachment]) -> String {
+    let trimmed = input_markdown.trim();
+    if attachments.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let mut sections = Vec::new();
+    if !trimmed.is_empty() {
+        sections.push(trimmed.to_string());
+    }
+
+    let mut attachment_lines =
+        vec!["📎 User attached files that are already staged in the sandbox:".to_string()];
+    for attachment in attachments {
+        let mut line = format!(
+            "- `{}` ({}) at `{}`",
+            attachment.file_name,
+            format_attachment_size(attachment.size_bytes),
+            attachment.sandbox_path,
+        );
+        if let Some(mime_type) = &attachment.mime_type {
+            line.push_str(&format!(" [{mime_type}]"));
+        }
+        attachment_lines.push(line);
+    }
+    attachment_lines.push(
+        "These uploaded files are sandbox-local and will be lost if this sandbox is destroyed or recreated."
+            .to_string(),
+    );
+    sections.push(attachment_lines.join("\n"));
+
+    sections.join("\n\n")
+}
+
+fn persisted_user_message_event(
+    task: &WebTaskRecord,
+    seq: u64,
+    created_at: chrono::DateTime<chrono::Utc>,
+    input_markdown: &str,
+    attachments: &[TaskAttachment],
+) -> PersistedTaskEvent {
+    PersistedTaskEvent {
+        schema_version: 1,
+        task_id: task.task_id.clone(),
+        session_id: task.session_id.clone(),
+        user_id: task.user_id,
+        seq,
+        created_at,
+        kind: TaskEventKind::UserMessage,
+        summary: markdown_preview(&task_preview_source(input_markdown, attachments)),
+        payload: serde_json::to_value(UserMessageEventPayload {
+            input_markdown: input_markdown.to_string(),
+            attachments: attachments.to_vec(),
+        })
+        .expect("user message payload serializes"),
+        redacted: false,
+        truncated: false,
+    }
+}
+
+fn validate_task_attachments(
+    attachments: &[TaskAttachment],
+) -> Result<Vec<TaskAttachment>, (StatusCode, Json<ErrorEnvelope>)> {
+    if attachments
+        .iter()
+        .any(|attachment| attachment.file_name.trim().is_empty())
+    {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Attachment file_name must not be empty.",
+            false,
+        ));
+    }
+    if attachments
+        .iter()
+        .any(|attachment| !attachment.sandbox_path.starts_with("/workspace/uploads/"))
+    {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Attachment sandbox_path must point to /workspace/uploads/.",
+            false,
+        ));
+    }
+
+    Ok(attachments.to_vec())
+}
+
+async fn stage_task_attachments(
+    state: &AppState,
+    user_id: i64,
+    session: &WebSessionRecord,
+    mut multipart: Multipart,
+) -> Result<Vec<TaskAttachment>, (StatusCode, Json<ErrorEnvelope>)> {
+    let limit_mb = web_chat_upload_limit_mb();
+    let max_bytes = limit_mb.saturating_mul(1024 * 1024);
+    let sandbox_scope = web_session_sandbox_scope(user_id, &session.context_key);
+    let preprocessor = Preprocessor::new(state.session_manager.llm_client(), sandbox_scope);
+    let mut total_bytes = 0_u64;
+    let mut attachments = Vec::new();
+
+    while let Some(field) = multipart.next_field().await.map_err(|error| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::ValidationError,
+            format!("Invalid multipart upload payload: {error}"),
+            false,
+        )
+    })? {
+        let Some(file_name) = field.file_name().map(ToString::to_string) else {
+            continue;
+        };
+        let mime_type = field.content_type().map(ToString::to_string);
+        let bytes = field.bytes().await.map_err(|error| {
+            api_error(
+                StatusCode::BAD_REQUEST,
+                ErrorCode::ValidationError,
+                format!("Failed to read uploaded file bytes: {error}"),
+                false,
+            )
+        })?;
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        if total_bytes > max_bytes {
+            return Err(api_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::ValidationError,
+                format!("Total attachment upload size must be at most {limit_mb} MB per request."),
+                false,
+            ));
+        }
+
+        let staged = preprocessor
+            .stage_document_upload(bytes.to_vec(), file_name.clone(), mime_type.clone(), None)
+            .await
+            .map_err(|error| {
+                backend_unavailable_response(format!("Failed to stage uploaded file: {error}"))
+            })?;
+        attachments.push(TaskAttachment {
+            file_name,
+            mime_type,
+            size_bytes: staged.size_bytes,
+            sandbox_path: staged.sandbox_path,
+        });
+    }
+
+    if attachments.is_empty() {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "At least one attachment file must be provided.",
+            false,
+        ));
+    }
+
+    Ok(attachments)
 }
 
 async fn api_register(
@@ -422,6 +615,18 @@ async fn api_create_session(
     }))
 }
 
+async fn api_upload_task_attachments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    multipart: Multipart,
+) -> Result<Json<UploadTaskAttachmentsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let session = load_owned_session(&state, user.user_id, &session_id).await?;
+    let attachments = stage_task_attachments(&state, user.user_id, &session, multipart).await?;
+    Ok(Json(UploadTaskAttachmentsResponse { attachments }))
+}
+
 async fn api_get_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -527,13 +732,16 @@ async fn api_create_task(
 ) -> Result<Json<ApiCreateTaskResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
     let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
-    let input_markdown = validate_task_input(&request.input_markdown)?;
+    let attachments = validate_task_attachments(&request.attachments)?;
+    let input_markdown =
+        validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
+    let execution_input = build_task_execution_input(&input_markdown, &attachments);
     reject_active_task(&state, user.user_id, &session_id).await?;
 
     ensure_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
         .session_manager
-        .register_task(&session_id, input_markdown.clone())
+        .register_task(&session_id, execution_input.clone())
         .await
     else {
         return Err(api_error(
@@ -567,6 +775,7 @@ async fn api_create_task(
         parent_task_id: None,
         status: ApiTaskStatus::Running,
         input_markdown: input_markdown.clone(),
+        attachments: attachments.clone(),
         input_edited_at: None,
         final_response_markdown: None,
         error_message: None,
@@ -584,7 +793,8 @@ async fn api_create_task(
         .await
         .map_err(store_error_response)?;
 
-    let preview = markdown_preview(&input_markdown);
+    let preview_source = task_preview_source(&input_markdown, &attachments);
+    let preview = markdown_preview(&preview_source);
     let should_auto_title = is_first_task && !session.manually_renamed;
 
     session.active_task_id = Some(task_id.clone());
@@ -606,7 +816,7 @@ async fn api_create_task(
             auto_title::AutoTitleRequest {
                 user_id: user.user_id,
                 session_id: session_id.clone(),
-                first_user_message: input_markdown.clone(),
+                first_user_message: preview_source,
                 fallback_preview: preview,
             },
         );
@@ -622,7 +832,7 @@ async fn api_create_task(
         state.clone(),
         session_id,
         running_task,
-        task_executor::TaskRunRequest::Execute(input_markdown),
+        task_executor::TaskRunRequest::Execute(execution_input),
         Some(persistence),
     )
     .await;
@@ -690,7 +900,10 @@ async fn api_create_task_version(
 ) -> Result<Json<ApiCreateTaskVersionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
     let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
-    let input_markdown = validate_task_input(&request.input_markdown)?;
+    let attachments = validate_task_attachments(&request.attachments)?;
+    let input_markdown =
+        validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
+    let execution_input = build_task_execution_input(&input_markdown, &attachments);
     let parent_task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
     if !parent_task.status.is_terminal() {
         return Err(api_error(
@@ -726,7 +939,7 @@ async fn api_create_task_version(
     ensure_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
         .session_manager
-        .register_task(&session_id, input_markdown.clone())
+        .register_task(&session_id, execution_input.clone())
         .await
     else {
         return Err(api_error(
@@ -757,6 +970,7 @@ async fn api_create_task_version(
         parent_task_id: Some(parent_task.task_id.clone()),
         status: ApiTaskStatus::Running,
         input_markdown: input_markdown.clone(),
+        attachments: attachments.clone(),
         input_edited_at: Some(now),
         final_response_markdown: None,
         error_message: None,
@@ -774,7 +988,8 @@ async fn api_create_task_version(
         .await
         .map_err(store_error_response)?;
 
-    let preview = markdown_preview(&input_markdown);
+    let preview_source = task_preview_source(&input_markdown, &attachments);
+    let preview = markdown_preview(&preview_source);
     let old_preview = session.last_preview.clone();
     session.active_task_id = Some(version_task_id.clone());
     session.last_task_status = Some(ApiTaskStatus::Running);
@@ -806,7 +1021,7 @@ async fn api_create_task_version(
         state.clone(),
         session_id,
         running_task,
-        task_executor::TaskRunRequest::Execute(input_markdown),
+        task_executor::TaskRunRequest::Execute(execution_input),
         Some(persistence),
     )
     .await;
@@ -823,7 +1038,10 @@ async fn api_resume_task(
     Json(request): Json<ApiResumeTaskRequest>,
 ) -> Result<Json<ApiResumeTaskResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
-    let input_markdown = validate_task_input(&request.input_markdown)?;
+    let attachments = validate_task_attachments(&request.attachments)?;
+    let input_markdown =
+        validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
+    let execution_input = build_task_execution_input(&input_markdown, &attachments);
     let session = load_owned_session(&state, user.user_id, &session_id).await?;
     let mut task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
     if task.status != ApiTaskStatus::WaitingForUserInput {
@@ -846,7 +1064,7 @@ async fn api_resume_task(
     ensure_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
         .session_manager
-        .register_existing_task(&session_id, &task_id, input_markdown.clone())
+        .register_existing_task(&session_id, &task_id, execution_input.clone())
         .await
     else {
         return Err(api_error(
@@ -858,14 +1076,27 @@ async fn api_resume_task(
     };
 
     let now = chrono::Utc::now();
+    let resume_event = persisted_user_message_event(
+        &task,
+        task.last_event_seq.saturating_add(1),
+        now,
+        &input_markdown,
+        &attachments,
+    );
     task.status = ApiTaskStatus::Running;
     task.error_message = None;
     task.pending_user_input = None;
+    task.last_event_seq = resume_event.seq;
     task.updated_at = now;
     task.finished_at = None;
     if task.started_at.is_none() {
         task.started_at = Some(now);
     }
+    state
+        .web_store
+        .append_task_events(user.user_id, &session_id, &task_id, vec![resume_event])
+        .await
+        .map_err(store_error_response)?;
     state
         .web_store
         .save_task(task.clone())
@@ -875,7 +1106,10 @@ async fn api_resume_task(
     let mut session = session;
     session.active_task_id = Some(task_id.clone());
     session.last_task_status = Some(ApiTaskStatus::Running);
-    session.last_preview = Some(markdown_preview(&input_markdown));
+    session.last_preview = Some(markdown_preview(&task_preview_source(
+        &input_markdown,
+        &attachments,
+    )));
     session.updated_at = now;
     state
         .web_store
@@ -893,7 +1127,7 @@ async fn api_resume_task(
         state.clone(),
         session_id,
         running_task,
-        task_executor::TaskRunRequest::ResumeUserInput(input_markdown),
+        task_executor::TaskRunRequest::ResumeUserInput(execution_input),
         Some(persistence),
     )
     .await;
@@ -1053,6 +1287,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/sessions/:session_id", get(api_get_session))
         .route("/api/v1/sessions/:session_id", patch(api_update_session))
         .route("/api/v1/sessions/:session_id", delete(api_delete_session))
+        .route(
+            "/api/v1/sessions/:session_id/uploads",
+            post(api_upload_task_attachments),
+        )
         .route("/api/v1/sessions/:session_id/tasks", get(api_list_tasks))
         .route("/api/v1/sessions/:session_id/tasks", post(api_create_task))
         .route(
@@ -1159,8 +1397,8 @@ mod tests {
     };
     use oxide_agent_web_contracts::{
         CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
-        PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskEventKind,
-        TaskStatus as ApiTaskStatus, WebTaskRecord,
+        PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment, TaskEventKind,
+        TaskStatus as ApiTaskStatus, UserMessageEventPayload, WebTaskRecord,
     };
     use tokio::sync::mpsc;
 
@@ -2159,6 +2397,7 @@ mod tests {
             axum::extract::Path((session_id.clone(), "task-completed".to_string())),
             axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Edited prompt".to_string(),
+                attachments: Vec::new(),
             }),
         )
         .await
@@ -2215,6 +2454,7 @@ mod tests {
             axum::extract::Path((session_id.clone(), "task-running".to_string())),
             axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Should fail".to_string(),
+                attachments: Vec::new(),
             }),
         )
         .await;
@@ -2228,6 +2468,7 @@ mod tests {
             axum::extract::Path((session_id.clone(), "task-completed".to_string())),
             axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Should also fail".to_string(),
+                attachments: Vec::new(),
             }),
         )
         .await;
@@ -2768,6 +3009,7 @@ mod tests {
             axum::extract::Path(session_id.clone()),
             axum::Json(ApiCreateTaskRequest {
                 input_markdown: "Summarize this".to_string(),
+                attachments: Vec::new(),
             }),
         )
         .await
@@ -2853,6 +3095,7 @@ mod tests {
             axum::extract::Path(session_id.clone()),
             axum::Json(ApiCreateTaskRequest {
                 input_markdown: "Second task".to_string(),
+                attachments: Vec::new(),
             }),
         )
         .await;
@@ -2876,6 +3119,7 @@ mod tests {
             axum::extract::Path(session_id),
             axum::Json(ApiCreateTaskRequest {
                 input_markdown: "Third task".to_string(),
+                attachments: Vec::new(),
             }),
         )
         .await;
@@ -2944,6 +3188,7 @@ mod tests {
             axum::extract::Path(session_id.clone()),
             axum::Json(ApiCreateTaskRequest {
                 input_markdown: "Investigate Codex limits".to_string(),
+                attachments: Vec::new(),
             }),
         )
         .await
@@ -2966,18 +3211,40 @@ mod tests {
             Some("Send scope")
         );
 
+        let resume_attachments = vec![TaskAttachment {
+            file_name: "scope.txt".to_string(),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: 17,
+            sandbox_path: "/workspace/uploads/scope.txt".to_string(),
+        }];
         let axum::Json(resumed) = api_resume_task(
             axum::extract::State(state.clone()),
             auth_headers(&token, Some(&auth_session.csrf_token)),
             axum::extract::Path((session_id.clone(), task_id.clone())),
             axum::Json(ApiResumeTaskRequest {
                 input_markdown: "Scope is GPT-5.4-mini".to_string(),
+                attachments: resume_attachments.clone(),
             }),
         )
         .await
         .expect("resume waiting task");
         assert_eq!(resumed.task.task_id, task_id);
         assert_eq!(resumed.task.status, ApiTaskStatus::Running);
+
+        let persisted_events = state
+            .web_store
+            .list_task_events(user.user_id, &session_id, &task_id, 0, 256)
+            .await
+            .expect("list task events")
+            .events;
+        let resume_event = persisted_events
+            .iter()
+            .find(|event| event.kind == TaskEventKind::UserMessage)
+            .expect("resume user message event exists");
+        let payload: UserMessageEventPayload =
+            serde_json::from_value(resume_event.payload.clone()).expect("payload parses");
+        assert_eq!(payload.input_markdown, "Scope is GPT-5.4-mini");
+        assert_eq!(payload.attachments, resume_attachments);
 
         let completed = wait_for_task_status(
             &state,
@@ -3104,6 +3371,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn task_preview_source_falls_back_to_attachment_names() {
+        let attachments = vec![TaskAttachment {
+            file_name: "report.csv".to_string(),
+            mime_type: Some("text/csv".to_string()),
+            size_bytes: 42,
+            sandbox_path: "/workspace/uploads/demo-report.csv".to_string(),
+        }];
+
+        assert_eq!(
+            super::task_preview_source("   ", &attachments),
+            "Attachment: report.csv"
+        );
+    }
+
+    #[test]
+    fn build_task_execution_input_embeds_attachment_paths() {
+        let attachments = vec![TaskAttachment {
+            file_name: "report.csv".to_string(),
+            mime_type: Some("text/csv".to_string()),
+            size_bytes: 42,
+            sandbox_path: "/workspace/uploads/demo-report.csv".to_string(),
+        }];
+
+        let execution_input = super::build_task_execution_input("Analyze this", &attachments);
+
+        assert!(execution_input.contains("Analyze this"));
+        assert!(execution_input.contains("report.csv"));
+        assert!(execution_input.contains("/workspace/uploads/demo-report.csv"));
+        assert!(execution_input.contains("sandbox-local"));
+    }
+
     fn task_record(
         user_id: i64,
         session_id: &str,
@@ -3122,6 +3421,7 @@ mod tests {
             parent_task_id: None,
             status,
             input_markdown: input_markdown.to_string(),
+            attachments: Vec::new(),
             input_edited_at: None,
             final_response_markdown: status
                 .is_terminal()

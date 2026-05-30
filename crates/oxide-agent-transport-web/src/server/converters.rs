@@ -39,15 +39,16 @@ pub(crate) fn validate_session_title(
     Ok(title.to_string())
 }
 
-pub(crate) fn validate_task_input(
+pub(crate) fn validate_task_input_with_attachments(
     input: &str,
+    has_attachments: bool,
 ) -> Result<String, (StatusCode, Json<ErrorEnvelope>)> {
     let input = input.trim();
-    if input.is_empty() {
+    if input.is_empty() && !has_attachments {
         return Err(api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::ValidationError,
-            "Task input must not be empty.",
+            "Task input must not be empty unless at least one attachment is provided.",
             false,
         ));
     }
@@ -100,6 +101,7 @@ pub(crate) fn task_summary_from_record(record: WebTaskRecord) -> TaskSummary {
         parent_task_id: record.parent_task_id,
         status: record.status,
         input_markdown: record.input_markdown,
+        attachments: record.attachments,
         input_edited_at: record.input_edited_at,
         final_response_markdown: record.final_response_markdown,
         error_message: record.error_message,
@@ -123,6 +125,7 @@ pub(crate) fn task_detail_from_record(record: WebTaskRecord) -> TaskDetail {
         parent_task_id: record.parent_task_id,
         status: record.status,
         input_markdown: record.input_markdown,
+        attachments: record.attachments,
         input_edited_at: record.input_edited_at,
         final_response_markdown: record.final_response_markdown,
         error_message: record.error_message,

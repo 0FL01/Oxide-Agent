@@ -502,6 +502,7 @@ fn task_detail_to_summary(task: &TaskDetail) -> TaskSummary {
         parent_task_id: task.parent_task_id.clone(),
         status: task.status,
         input_markdown: task.input_markdown.clone(),
+        attachments: task.attachments.clone(),
         input_edited_at: task.input_edited_at,
         final_response_markdown: task.final_response_markdown.clone(),
         error_message: task.error_message.clone(),

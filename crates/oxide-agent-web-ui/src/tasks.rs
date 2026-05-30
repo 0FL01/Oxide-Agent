@@ -7,11 +7,17 @@ use crate::utils::{friendly_time, navigate, spawn_ui};
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     CreateTaskRequest, CreateTaskVersionRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
-    ResumeTaskRequest, SessionDetail, SessionSummary, SseConnectionState, TaskDetail,
-    TaskEventKind, TaskStatus, TaskSummary,
+    ResumeTaskRequest, SessionDetail, SessionSummary, SseConnectionState, TaskAttachment,
+    TaskDetail, TaskEventKind, TaskStatus, TaskSummary, UserMessageEventPayload,
 };
 use serde_json::Value;
 use std::collections::HashMap;
+
+#[derive(Clone)]
+struct PendingAttachmentFile {
+    id: usize,
+    file: web_sys::File,
+}
 
 #[component]
 pub fn TaskConsole(
@@ -49,11 +55,15 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
     let (input, set_input) = signal(String::new());
     let (loading, set_loading) = signal(false);
     let (error, set_error) = signal(None::<String>);
+    let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
+    let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
+    let (drag_active, set_drag_active) = signal(false);
 
     let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         let text = input.get();
-        if text.trim().is_empty() {
+        let files = pending_files.get();
+        if !can_submit_input(&text, &files) {
             return;
         }
         set_loading.set(true);
@@ -73,17 +83,37 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                     return;
                 }
             };
+            let attachments = if files.is_empty() {
+                Vec::new()
+            } else {
+                match client
+                    .upload_task_attachments(&session_id, &browser_files(&files))
+                    .await
+                {
+                    Ok(response) => response.attachments,
+                    Err(error) => {
+                        set_error.set(Some(error.to_string()));
+                        set_loading.set(false);
+                        return;
+                    }
+                }
+            };
             // 2. Create task with the user's message
             match client
                 .create_task(
                     &session_id,
                     &CreateTaskRequest {
                         input_markdown: text,
+                        attachments,
                     },
                 )
                 .await
             {
-                Ok(_) => navigate(&format!("/app/session/{session_id}")),
+                Ok(_) => {
+                    set_input.set(String::new());
+                    set_pending_files.set(Vec::new());
+                    navigate(&format!("/app/session/{session_id}"));
+                }
                 Err(e) => {
                     set_error.set(Some(e.to_string()));
                     set_loading.set(false);
@@ -110,7 +140,32 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                 <h2 class="welcome-view-title">"What can I help you with?"</h2>
                 <p class="welcome-view-text">"Send a message to start a new agent session."</p>
                 <form class="welcome-view-composer" on:submit=submit>
-                    <div class="composer-inner">
+                    <div
+                        class="composer-inner"
+                        class:drag-active=drag_active
+                        on:dragenter=move |ev| {
+                            ev.prevent_default();
+                            set_drag_active.set(true);
+                        }
+                        on:dragover=move |ev| {
+                            ev.prevent_default();
+                            set_drag_active.set(true);
+                        }
+                        on:dragleave=move |ev| {
+                            ev.prevent_default();
+                            set_drag_active.set(false);
+                        }
+                        on:drop=move |ev| {
+                            ev.prevent_default();
+                            set_drag_active.set(false);
+                            append_pending_browser_files(
+                                next_pending_file_id,
+                                set_next_pending_file_id,
+                                set_pending_files,
+                                browser_files_from_drag_event(&ev),
+                            );
+                        }
+                    >
                         <textarea
                             placeholder="Message Oxide Agent…"
                             prop:value=input
@@ -118,7 +173,9 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                             on:input=move |ev| {
                                 set_input.set(event_target_value(&ev));
                                 use wasm_bindgen::JsCast;
-                                let target = ev.target().unwrap();
+                                let Some(target) = ev.target() else {
+                                    return;
+                                };
                                 let el: web_sys::HtmlElement = target.unchecked_into();
                                 el.style().set_property("height", "auto").ok();
                                 let scroll = el.scroll_height();
@@ -142,9 +199,30 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                 }
                             }
                         />
+                        <PendingAttachmentList
+                            attachments=pending_files
+                            set_attachments=set_pending_files
+                        />
                         <div class="composer-footer">
                             <span class="composer-hint">"Ctrl+Enter to send"</span>
-                            <div class="composer-actions" class:btn-hidden=move || input.get().trim().is_empty()>
+                            <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get())>
+                                <label class="button secondary composer-attach-button">
+                                    <input
+                                        class="composer-file-input"
+                                        type="file"
+                                        multiple
+                                        disabled=loading
+                                        on:change=move |ev| {
+                                            append_pending_browser_files(
+                                                next_pending_file_id,
+                                                set_next_pending_file_id,
+                                                set_pending_files,
+                                                browser_files_from_input_event(&ev),
+                                            );
+                                        }
+                                    />
+                                    "Attach"
+                                </label>
                                 <button
                                     type="submit"
                                     disabled=loading
@@ -182,6 +260,9 @@ fn SessionWorkspace(
     let (loaded, set_loaded) = signal(false);
     let (_last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
     let (selected_versions, set_selected_versions) = signal(HashMap::<String, String>::new());
+    let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
+    let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
+    let (drag_active, set_drag_active) = signal(false);
 
     let (drawer_open, set_drawer_open) = signal(false);
 
@@ -272,7 +353,8 @@ fn SessionWorkspace(
     let submit_task = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         let text = input.get();
-        if text.trim().is_empty() {
+        let files = pending_files.get();
+        if !can_submit_input(&text, &files) {
             return;
         }
         set_loading.set(true);
@@ -283,6 +365,21 @@ fn SessionWorkspace(
         let session_id = session_id_for_submit.clone();
         spawn_ui(async move {
             let client = auth.client();
+            let attachments = if files.is_empty() {
+                Vec::new()
+            } else {
+                match client
+                    .upload_task_attachments(&session_id, &browser_files(&files))
+                    .await
+                {
+                    Ok(response) => response.attachments,
+                    Err(error) => {
+                        set_error.set(Some(error.to_string()));
+                        set_loading.set(false);
+                        return;
+                    }
+                }
+            };
             let resume_task_id = active_task
                 .get()
                 .filter(|task| task.status == TaskStatus::WaitingForUserInput)
@@ -294,6 +391,7 @@ fn SessionWorkspace(
                         task_id,
                         &ResumeTaskRequest {
                             input_markdown: text,
+                            attachments,
                         },
                     )
                     .await
@@ -303,6 +401,7 @@ fn SessionWorkspace(
                         &session_id,
                         &CreateTaskRequest {
                             input_markdown: text,
+                            attachments,
                         },
                     )
                     .await
@@ -313,6 +412,7 @@ fn SessionWorkspace(
                 Ok(task) => {
                     set_drawer_open.set(false);
                     set_input.set(String::new());
+                    set_pending_files.set(Vec::new());
                     set_active_task.set(Some(summary_to_detail(&session_id, &task)));
                     set_last_terminal_status.set(None);
                     set_selected_versions.update(|items| {
@@ -428,6 +528,7 @@ fn SessionWorkspace(
                                             <TaskCard
                                                 session_id=session_id_for_cards.clone()
                                                 versions=group.versions
+                                                events=events
                                                 editable_task_id=latest_editable_task_id.clone()
                                                 selected_versions=selected_versions
                                                 set_selected_versions=set_selected_versions
@@ -465,7 +566,32 @@ fn SessionWorkspace(
                 // Prompt input
                 <form class="composer" on:submit=submit_task>
                     <ComposerNotice active_task=active_task />
-                    <div class="composer-inner">
+                    <div
+                        class="composer-inner"
+                        class:drag-active=drag_active
+                        on:dragenter=move |ev| {
+                            ev.prevent_default();
+                            set_drag_active.set(true);
+                        }
+                        on:dragover=move |ev| {
+                            ev.prevent_default();
+                            set_drag_active.set(true);
+                        }
+                        on:dragleave=move |ev| {
+                            ev.prevent_default();
+                            set_drag_active.set(false);
+                        }
+                        on:drop=move |ev| {
+                            ev.prevent_default();
+                            set_drag_active.set(false);
+                            append_pending_browser_files(
+                                next_pending_file_id,
+                                set_next_pending_file_id,
+                                set_pending_files,
+                                browser_files_from_drag_event(&ev),
+                            );
+                        }
+                    >
                         <textarea
                             placeholder=move || if is_running() { "Agent is working…" } else if is_waiting() { "Reply to resume the task…" } else { "Message Oxide Agent…" }
                             prop:value=input
@@ -474,7 +600,9 @@ fn SessionWorkspace(
                                 set_input.set(event_target_value(&ev));
                                 // auto-resize
                                 use wasm_bindgen::JsCast;
-                                let target = ev.target().unwrap();
+                                let Some(target) = ev.target() else {
+                                    return;
+                                };
                                 let el: web_sys::HtmlElement = target.unchecked_into();
                                 el.style().set_property("height", "auto").ok();
                                 let scroll = el.scroll_height();
@@ -498,11 +626,32 @@ fn SessionWorkspace(
                                 }
                             }
                         />
+                        <PendingAttachmentList
+                            attachments=pending_files
+                            set_attachments=set_pending_files
+                        />
                         <div class="composer-footer">
                             <span class="composer-hint">
                                 {move || composer_hint(is_running(), is_waiting())}
                             </span>
-                            <div class="composer-actions" class:btn-hidden=move || input.get().trim().is_empty() && !is_waiting()>
+                            <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get()) && !is_waiting()>
+                                <label class="button secondary composer-attach-button">
+                                    <input
+                                        class="composer-file-input"
+                                        type="file"
+                                        multiple
+                                        disabled=move || loading.get() || is_running()
+                                        on:change=move |ev| {
+                                            append_pending_browser_files(
+                                                next_pending_file_id,
+                                                set_next_pending_file_id,
+                                                set_pending_files,
+                                                browser_files_from_input_event(&ev),
+                                            );
+                                        }
+                                    />
+                                    "Attach"
+                                </label>
                                 <button
                                     type="submit"
                                     disabled=move || loading.get() || is_running()
@@ -799,6 +948,7 @@ fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
         parent_task_id: task.parent_task_id.clone(),
         status: task.status,
         input_markdown: task.input_markdown.clone(),
+        attachments: task.attachments.clone(),
         input_edited_at: task.input_edited_at,
         final_response_markdown: task.final_response_markdown.clone(),
         error_message: task.error_message.clone(),
@@ -845,6 +995,7 @@ fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
 fn TaskCard(
     session_id: String,
     versions: Vec<TaskSummary>,
+    events: ReadSignal<Vec<PersistedTaskEvent>>,
     editable_task_id: Option<String>,
     selected_versions: ReadSignal<HashMap<String, String>>,
     set_selected_versions: WriteSignal<HashMap<String, String>>,
@@ -901,8 +1052,9 @@ fn TaskCard(
             let thought_label = thought_label(&task);
             let original_input = task.input_markdown.clone();
             let input_markdown = task.input_markdown.clone();
-            let rendered_input_markdown = input_markdown.clone();
+            let attachments = task.attachments.clone();
             let final_response_markdown = task.final_response_markdown.clone();
+            let resume_messages = resume_user_messages_for_task(&events.get(), &task.task_id);
             let can_select_previous = selected_index > 0;
             let can_select_next = selected_index + 1 < version_count;
             let version_counter = format!("{}/{}", selected_index + 1, version_count);
@@ -926,6 +1078,7 @@ fn TaskCard(
                                     task_id=task_id
                                     version_group_id=version_group_id
                                     original_input=original_input
+                                    attachments=attachments.clone()
                                     draft=draft
                                     set_draft=set_draft
                                     saving=saving
@@ -939,7 +1092,10 @@ fn TaskCard(
                             }.into_any()
                         } else {
                             view! {
-                                <CollapsibleMessageBody markdown=rendered_input_markdown.clone() />
+                                <UserMessageBody
+                                    input_markdown=input_markdown.clone()
+                                    attachments=attachments.clone()
+                                />
                             }.into_any()
                         }}
                         </div>
@@ -1015,6 +1171,21 @@ fn TaskCard(
                             })}
                         </div>
                     </div>
+                    {resume_messages
+                        .into_iter()
+                        .map(|message| {
+                            view! {
+                                <div class="message user-message-wrap">
+                                    <div class="user-message">
+                                        <UserMessageBody
+                                            input_markdown=message.input_markdown
+                                            attachments=message.attachments
+                                        />
+                                    </div>
+                                </div>
+                            }
+                        })
+                        .collect_view()}
                     {editable.then(|| view! {
                         <div class="task-action-row">
                             <ThinkingButton label=thought_label open=drawer_open set_open=set_drawer_open />
@@ -1064,7 +1235,7 @@ fn CollapsibleMessageBody(markdown: String) -> impl IntoView {
     let (expanded, set_expanded) = signal(false);
     let (overflowing, set_overflowing) = signal(false);
     let body_ref = NodeRef::<html::Div>::new();
-    let measure_ref = body_ref.clone();
+    let measure_ref = body_ref;
 
     Effect::new(move |_| {
         let Some(body) = measure_ref.get() else {
@@ -1115,6 +1286,128 @@ fn CollapsibleMessageBody(markdown: String) -> impl IntoView {
             }}
         </div>
     }
+}
+
+#[derive(Clone)]
+struct ResumeUserMessage {
+    input_markdown: String,
+    attachments: Vec<TaskAttachment>,
+}
+
+#[component]
+fn UserMessageBody(input_markdown: String, attachments: Vec<TaskAttachment>) -> impl IntoView {
+    let rendered_input_markdown = input_markdown.clone();
+
+    view! {
+        <div class="user-message-body">
+            <MessageAttachments attachments=attachments />
+            {(!rendered_input_markdown.trim().is_empty()).then(|| view! {
+                <CollapsibleMessageBody markdown=rendered_input_markdown />
+            })}
+        </div>
+    }
+}
+
+fn resume_user_messages_for_task(
+    events: &[PersistedTaskEvent],
+    task_id: &str,
+) -> Vec<ResumeUserMessage> {
+    events
+        .iter()
+        .filter(|event| event.task_id == task_id && event.kind == TaskEventKind::UserMessage)
+        .filter_map(|event| {
+            serde_json::from_value::<UserMessageEventPayload>(event.payload.clone()).ok()
+        })
+        .map(|payload| ResumeUserMessage {
+            input_markdown: payload.input_markdown,
+            attachments: payload.attachments,
+        })
+        .collect()
+}
+
+#[component]
+fn PendingAttachmentList(
+    attachments: ReadSignal<Vec<PendingAttachmentFile>>,
+    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
+) -> impl IntoView {
+    view! {
+        {move || {
+            let items = attachments.get();
+            if items.is_empty() {
+                ().into_any()
+            } else {
+                view! {
+                    <ul class="pending-attachments" aria-label="Pending attachments">
+                        {items
+                            .into_iter()
+                            .map(|attachment| {
+                                let attachment_id = attachment.id;
+                                let file_name = attachment.file.name();
+                                let meta = format_attachment_meta(
+                                    attachment.file.size() as u64,
+                                    attachment.file.type_(),
+                                );
+                                view! {
+                                    <li class="pending-attachment-item">
+                                        <div class="pending-attachment-copy">
+                                            <span class="pending-attachment-name">{file_name}</span>
+                                            <span class="pending-attachment-meta">{meta}</span>
+                                        </div>
+                                        <button
+                                            class="message-action-button"
+                                            type="button"
+                                            title="Remove attachment"
+                                            aria-label="Remove attachment"
+                                            on:click=move |_| {
+                                                set_attachments
+                                                    .update(|items| items.retain(|item| item.id != attachment_id));
+                                            }
+                                        >
+                                            "✕"
+                                        </button>
+                                    </li>
+                                }
+                            })
+                            .collect_view()}
+                    </ul>
+                }
+                .into_any()
+            }
+        }}
+    }
+}
+
+#[component]
+fn MessageAttachments(attachments: Vec<TaskAttachment>) -> impl IntoView {
+    if attachments.is_empty() {
+        return ().into_any();
+    }
+
+    view! {
+        <ul class="message-attachments" aria-label="Message attachments">
+            {attachments
+                .into_iter()
+                .map(|attachment| {
+                    let meta = format_attachment_meta(
+                        attachment.size_bytes,
+                        attachment.mime_type.clone().unwrap_or_default(),
+                    );
+                    let sandbox_path = attachment.sandbox_path.clone();
+                    let sandbox_title = sandbox_path.clone();
+                    view! {
+                        <li class="message-attachment-item" title=sandbox_title>
+                            <div class="message-attachment-copy">
+                                <span class="message-attachment-name">{attachment.file_name}</span>
+                                <span class="message-attachment-meta">{meta}</span>
+                            </div>
+                            <code class="message-attachment-path">{sandbox_path}</code>
+                        </li>
+                    }
+                })
+                .collect_view()}
+        </ul>
+    }
+    .into_any()
 }
 
 // ── Activity item model ──────────────────────────────────────────────────
@@ -1959,6 +2252,7 @@ fn TaskInputEditForm(
     task_id: String,
     version_group_id: String,
     original_input: String,
+    attachments: Vec<TaskAttachment>,
     draft: ReadSignal<String>,
     set_draft: WriteSignal<String>,
     saving: ReadSignal<bool>,
@@ -1980,6 +2274,7 @@ fn TaskInputEditForm(
             set_error.set(None);
             let request = CreateTaskVersionRequest {
                 input_markdown: draft.get(),
+                attachments: attachments.clone(),
             };
             let session_id = session_id.clone();
             let task_id = task_id.clone();
@@ -2040,6 +2335,99 @@ fn TaskInputEditForm(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
+
+fn can_submit_input(input: &str, attachments: &[PendingAttachmentFile]) -> bool {
+    !input.trim().is_empty() || !attachments.is_empty()
+}
+
+fn append_pending_browser_files(
+    next_id: ReadSignal<usize>,
+    set_next_id: WriteSignal<usize>,
+    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
+    files: Vec<web_sys::File>,
+) {
+    if files.is_empty() {
+        return;
+    }
+    let start_id = next_id.get_untracked();
+    let new_files = into_pending_attachment_files(files, start_id);
+    set_next_id.set(start_id + new_files.len());
+    set_attachments.update(|items| items.extend(new_files));
+}
+
+fn into_pending_attachment_files(
+    files: Vec<web_sys::File>,
+    start_id: usize,
+) -> Vec<PendingAttachmentFile> {
+    files
+        .into_iter()
+        .enumerate()
+        .map(|(offset, file)| PendingAttachmentFile {
+            id: start_id + offset,
+            file,
+        })
+        .collect()
+}
+
+fn browser_files(attachments: &[PendingAttachmentFile]) -> Vec<web_sys::File> {
+    attachments
+        .iter()
+        .map(|attachment| attachment.file.clone())
+        .collect()
+}
+
+fn browser_files_from_input_event(ev: &leptos::ev::Event) -> Vec<web_sys::File> {
+    use wasm_bindgen::JsCast;
+
+    let Some(target) = ev.target() else {
+        return Vec::new();
+    };
+    let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
+        return Vec::new();
+    };
+    let files = input
+        .files()
+        .map(browser_files_from_file_list)
+        .unwrap_or_default();
+    input.set_value("");
+    files
+}
+
+fn browser_files_from_drag_event(ev: &leptos::ev::DragEvent) -> Vec<web_sys::File> {
+    ev.data_transfer()
+        .and_then(|transfer| transfer.files())
+        .map(browser_files_from_file_list)
+        .unwrap_or_default()
+}
+
+fn browser_files_from_file_list(file_list: web_sys::FileList) -> Vec<web_sys::File> {
+    (0..file_list.length())
+        .filter_map(|index| file_list.item(index))
+        .collect()
+}
+
+fn format_attachment_meta(size_bytes: u64, mime_type: String) -> String {
+    let size = format_file_size(size_bytes);
+    let mime = mime_type.trim();
+    if mime.is_empty() {
+        size
+    } else {
+        format!("{size} • {mime}")
+    }
+}
+
+fn format_file_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
 
 fn latest_task(tasks: Vec<TaskSummary>) -> Option<TaskSummary> {
     tasks.into_iter().max_by_key(|task| task.updated_at)

@@ -69,6 +69,15 @@ pub enum UserInputKind {
     UrlOrFile,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TaskAttachment {
+    pub file_name: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: u64,
+    pub sandbox_path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct WebTaskRecord {
@@ -84,6 +93,8 @@ pub struct WebTaskRecord {
     pub parent_task_id: Option<String>,
     pub status: TaskStatus,
     pub input_markdown: String,
+    #[serde(default)]
+    pub attachments: Vec<TaskAttachment>,
     pub input_edited_at: Option<DateTime<Utc>>,
     pub final_response_markdown: Option<String>,
     pub error_message: Option<String>,
@@ -108,6 +119,8 @@ pub struct TaskSummary {
     pub parent_task_id: Option<String>,
     pub status: TaskStatus,
     pub input_markdown: String,
+    #[serde(default)]
+    pub attachments: Vec<TaskAttachment>,
     pub input_edited_at: Option<DateTime<Utc>>,
     pub final_response_markdown: Option<String>,
     pub error_message: Option<String>,
@@ -132,6 +145,8 @@ pub struct TaskDetail {
     pub parent_task_id: Option<String>,
     pub status: TaskStatus,
     pub input_markdown: String,
+    #[serde(default)]
+    pub attachments: Vec<TaskAttachment>,
     pub input_edited_at: Option<DateTime<Utc>>,
     pub final_response_markdown: Option<String>,
     pub error_message: Option<String>,
@@ -154,6 +169,8 @@ pub struct ListTasksResponse {
 #[serde(rename_all = "snake_case")]
 pub struct CreateTaskRequest {
     pub input_markdown: String,
+    #[serde(default)]
+    pub attachments: Vec<TaskAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,6 +183,8 @@ pub struct CreateTaskResponse {
 #[serde(rename_all = "snake_case")]
 pub struct CreateTaskVersionRequest {
     pub input_markdown: String,
+    #[serde(default)]
+    pub attachments: Vec<TaskAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -178,6 +197,14 @@ pub struct CreateTaskVersionResponse {
 #[serde(rename_all = "snake_case")]
 pub struct ResumeTaskRequest {
     pub input_markdown: String,
+    #[serde(default)]
+    pub attachments: Vec<TaskAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UploadTaskAttachmentsResponse {
+    pub attachments: Vec<TaskAttachment>,
 }
 
 const fn default_task_version_index() -> u32 {

@@ -1099,6 +1099,7 @@ mod tests {
             parent_task_id: None,
             status,
             input_markdown: "Prompt".to_string(),
+            attachments: Vec::new(),
             input_edited_at: None,
             final_response_markdown: status.is_terminal().then(|| "Done".to_string()),
             error_message: None,

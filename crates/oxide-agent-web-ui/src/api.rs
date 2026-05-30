@@ -6,7 +6,7 @@ use oxide_agent_web_contracts::{
     ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
     ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse,
     RegisterRequest, ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse,
-    UpdateSessionRequest, UpdateSessionResponse,
+    UpdateSessionRequest, UpdateSessionResponse, UploadTaskAttachmentsResponse,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt;
@@ -208,6 +208,31 @@ impl ApiClient {
         .await
     }
 
+    pub async fn upload_task_attachments(
+        &self,
+        session_id: &str,
+        files: &[web_sys::File],
+    ) -> Result<UploadTaskAttachmentsResponse, ApiClientError> {
+        let form_data = web_sys::FormData::new().map_err(|error| {
+            ApiClientError::Browser(format!("form data init failed: {error:?}"))
+        })?;
+        for file in files {
+            form_data
+                .append_with_blob_and_filename("files", file, &file.name())
+                .map_err(|error| {
+                    ApiClientError::Browser(format!(
+                        "failed to append attachment '{}': {error:?}",
+                        file.name()
+                    ))
+                })?;
+        }
+
+        let builder = self.with_csrf(with_credentials(Request::post(&format!(
+            "/api/v1/sessions/{session_id}/uploads"
+        ))))?;
+        decode(builder.body(form_data)?.send().await?).await
+    }
+
     pub async fn cancel_task(
         &self,
         session_id: &str,
@@ -272,6 +297,7 @@ where
 #[derive(Debug)]
 pub enum ApiClientError {
     Transport(gloo_net::Error),
+    Browser(String),
     Api {
         status: u16,
         envelope: Option<ErrorEnvelope>,
@@ -283,6 +309,7 @@ impl fmt::Display for ApiClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Transport(error) => write!(formatter, "request failed: {error}"),
+            Self::Browser(error) => write!(formatter, "browser request setup failed: {error}"),
             Self::Api {
                 status,
                 envelope: Some(envelope),
