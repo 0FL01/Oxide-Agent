@@ -2282,6 +2282,34 @@ textarea {
   opacity: 1;
 }
 
+.message-action-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  color: var(--faint);
+  background: rgba(255, 255, 255, 0.02);
+  border-color: transparent;
+}
+
+.message-action-button:disabled:hover {
+  color: var(--faint);
+  background: rgba(255, 255, 255, 0.02);
+  border-color: transparent;
+}
+
+.message-version-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.message-version-counter {
+  min-width: 40px;
+  text-align: center;
+  color: var(--muted);
+  font: 600 12px/1 var(--font-sans);
+  font-variant-numeric: tabular-nums;
+}
+
 .task-action-row {
   max-width: 800px;
   margin: -8px auto 24px;

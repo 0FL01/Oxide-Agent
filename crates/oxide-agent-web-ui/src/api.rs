@@ -2,11 +2,11 @@ use gloo_net::http::{Request, Response};
 use oxide_agent_web_contracts::{
     AuthUserResponse, BootstrapRequest, CancelTaskResponse, ChangePasswordRequest,
     CreateSessionRequest, CreateSessionResponse, CreateTaskRequest, CreateTaskResponse,
-    CurrentUserResponse, EditTaskInputRequest, EditTaskInputResponse, ErrorCode, ErrorEnvelope,
-    GetSessionResponse, GetTaskProgressResponse, GetTaskResponse, ListSessionsResponse,
-    ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse, RegisterRequest,
-    ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse, UpdateSessionRequest,
-    UpdateSessionResponse,
+    CreateTaskVersionRequest, CreateTaskVersionResponse, CurrentUserResponse, ErrorCode,
+    ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
+    ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse,
+    RegisterRequest, ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse,
+    UpdateSessionRequest, UpdateSessionResponse,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt;
@@ -180,14 +180,14 @@ impl ApiClient {
     }
 
     #[allow(dead_code)]
-    pub async fn edit_task_input(
+    pub async fn create_task_version(
         &self,
         session_id: &str,
         task_id: &str,
-        request: &EditTaskInputRequest,
-    ) -> Result<EditTaskInputResponse, ApiClientError> {
-        let mut builder = with_credentials(Request::patch(&format!(
-            "/api/v1/sessions/{session_id}/tasks/{task_id}/input"
+        request: &CreateTaskVersionRequest,
+    ) -> Result<CreateTaskVersionResponse, ApiClientError> {
+        let mut builder = with_credentials(Request::post(&format!(
+            "/api/v1/sessions/{session_id}/tasks/{task_id}/versions"
         )))
         .header("Content-Type", "application/json");
         builder = self.with_csrf(builder)?;

@@ -76,6 +76,12 @@ pub struct WebTaskRecord {
     pub task_id: String,
     pub session_id: String,
     pub user_id: i64,
+    #[serde(default)]
+    pub version_group_id: String,
+    #[serde(default = "default_task_version_index")]
+    pub version_index: u32,
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
     pub status: TaskStatus,
     pub input_markdown: String,
     pub input_edited_at: Option<DateTime<Utc>>,
@@ -94,6 +100,12 @@ pub struct WebTaskRecord {
 #[serde(rename_all = "snake_case")]
 pub struct TaskSummary {
     pub task_id: String,
+    #[serde(default)]
+    pub version_group_id: String,
+    #[serde(default = "default_task_version_index")]
+    pub version_index: u32,
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
     pub status: TaskStatus,
     pub input_markdown: String,
     pub input_edited_at: Option<DateTime<Utc>>,
@@ -112,6 +124,12 @@ pub struct TaskSummary {
 pub struct TaskDetail {
     pub task_id: String,
     pub session_id: String,
+    #[serde(default)]
+    pub version_group_id: String,
+    #[serde(default = "default_task_version_index")]
+    pub version_index: u32,
+    #[serde(default)]
+    pub parent_task_id: Option<String>,
     pub status: TaskStatus,
     pub input_markdown: String,
     pub input_edited_at: Option<DateTime<Utc>>,
@@ -146,13 +164,13 @@ pub struct CreateTaskResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct EditTaskInputRequest {
+pub struct CreateTaskVersionRequest {
     pub input_markdown: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct EditTaskInputResponse {
+pub struct CreateTaskVersionResponse {
     pub task: TaskSummary,
 }
 
@@ -160,6 +178,61 @@ pub struct EditTaskInputResponse {
 #[serde(rename_all = "snake_case")]
 pub struct ResumeTaskRequest {
     pub input_markdown: String,
+}
+
+const fn default_task_version_index() -> u32 {
+    1
+}
+
+impl WebTaskRecord {
+    pub fn effective_version_group_id(&self) -> &str {
+        if self.version_group_id.is_empty() {
+            &self.task_id
+        } else {
+            &self.version_group_id
+        }
+    }
+
+    pub fn effective_version_index(&self) -> u32 {
+        self.version_index.max(1)
+    }
+
+    pub fn normalize_version_lineage(&mut self) {
+        if self.version_group_id.is_empty() {
+            self.version_group_id = self.task_id.clone();
+        }
+        if self.version_index == 0 {
+            self.version_index = 1;
+        }
+    }
+}
+
+impl TaskSummary {
+    pub fn effective_version_group_id(&self) -> &str {
+        if self.version_group_id.is_empty() {
+            &self.task_id
+        } else {
+            &self.version_group_id
+        }
+    }
+
+    pub fn effective_version_index(&self) -> u32 {
+        self.version_index.max(1)
+    }
+}
+
+impl TaskDetail {
+    pub fn effective_version_group_id(&self) -> &str {
+        if self.version_group_id.is_empty() {
+            &self.task_id
+        } else {
+            &self.version_group_id
+        }
+    }
+
+    pub fn effective_version_index(&self) -> u32 {
+        self.version_index.max(1)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

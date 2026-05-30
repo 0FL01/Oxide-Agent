@@ -48,13 +48,13 @@ use oxide_agent_web_contracts::{
     AuthUserResponse, BootstrapRequest, CancelTaskResponse as ApiCancelTaskResponse,
     ChangePasswordRequest, CreateSessionResponse as ApiCreateSessionResponse,
     CreateTaskRequest as ApiCreateTaskRequest, CreateTaskResponse as ApiCreateTaskResponse,
-    CurrentUser, CurrentUserResponse, EditTaskInputRequest as ApiEditTaskInputRequest,
-    EditTaskInputResponse as ApiEditTaskInputResponse, ErrorCode, ErrorEnvelope,
-    GetSessionResponse, GetTaskProgressResponse, GetTaskResponse, ListSessionsResponse,
-    ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse, RegisterRequest,
-    ResumeTaskRequest as ApiResumeTaskRequest, ResumeTaskResponse as ApiResumeTaskResponse,
-    TaskEventsResponse, TaskStatus as ApiTaskStatus, UpdateSessionRequest, UpdateSessionResponse,
-    WebSessionRecord, WebTaskRecord,
+    CreateTaskVersionRequest as ApiCreateTaskVersionRequest,
+    CreateTaskVersionResponse as ApiCreateTaskVersionResponse, CurrentUser, CurrentUserResponse,
+    ErrorCode, ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
+    ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse,
+    RegisterRequest, ResumeTaskRequest as ApiResumeTaskRequest,
+    ResumeTaskResponse as ApiResumeTaskResponse, TaskEventsResponse, TaskStatus as ApiTaskStatus,
+    UpdateSessionRequest, UpdateSessionResponse, WebSessionRecord, WebTaskRecord,
 };
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -420,6 +420,9 @@ async fn api_create_task(
         task_id: task_id.clone(),
         session_id: session_id.clone(),
         user_id: user.user_id,
+        version_group_id: task_id.clone(),
+        version_index: 1,
+        parent_task_id: None,
         status: ApiTaskStatus::Running,
         input_markdown: input_markdown.clone(),
         input_edited_at: None,
@@ -537,20 +540,21 @@ async fn api_get_task_events(
     Ok(Json(events))
 }
 
-async fn api_edit_task_input(
+async fn api_create_task_version(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((session_id, task_id)): Path<(String, String)>,
-    Json(request): Json<ApiEditTaskInputRequest>,
-) -> Result<Json<ApiEditTaskInputResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    Json(request): Json<ApiCreateTaskVersionRequest>,
+) -> Result<Json<ApiCreateTaskVersionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
     let input_markdown = validate_task_input(&request.input_markdown)?;
-    let mut task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
-    if !task.status.is_terminal() {
+    let parent_task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
+    if !parent_task.status.is_terminal() {
         return Err(api_error(
             StatusCode::CONFLICT,
             ErrorCode::TaskActive,
-            "Only terminal tasks can be edited.",
+            "Only terminal tasks can be versioned.",
             false,
         ));
     }
@@ -572,24 +576,66 @@ async fn api_edit_task_input(
         return Err(api_error(
             StatusCode::CONFLICT,
             ErrorCode::Conflict,
-            "Only the latest task in a session can be edited.",
+            "Only the latest task in a session can be versioned.",
             false,
         ));
     }
 
+    ensure_runtime_session(&state, user.user_id, &session).await;
+    let Some(running_task) = state
+        .session_manager
+        .register_task(&session_id, input_markdown.clone())
+        .await
+    else {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::BackendUnavailable,
+            "Failed to register runtime task.",
+            true,
+        ));
+    };
+
     let now = chrono::Utc::now();
-    task.input_markdown = input_markdown.clone();
-    task.input_edited_at = Some(task.input_edited_at.unwrap_or(now));
-    task.updated_at = now;
+    let version_group_id = parent_task.effective_version_group_id().to_string();
+    let version_index = tasks
+        .iter()
+        .filter(|task| task.effective_version_group_id() == version_group_id.as_str())
+        .map(WebTaskRecord::effective_version_index)
+        .max()
+        .unwrap_or(parent_task.effective_version_index())
+        + 1;
+    let version_task_id = running_task.task_id.clone();
+    let task = WebTaskRecord {
+        schema_version: WEB_TASK_SCHEMA_VERSION,
+        task_id: version_task_id.clone(),
+        session_id: session_id.clone(),
+        user_id: user.user_id,
+        version_group_id,
+        version_index,
+        parent_task_id: Some(parent_task.task_id.clone()),
+        status: ApiTaskStatus::Running,
+        input_markdown: input_markdown.clone(),
+        input_edited_at: Some(now),
+        final_response_markdown: None,
+        error_message: None,
+        pending_user_input: None,
+        last_progress: None,
+        last_event_seq: 0,
+        created_at: now,
+        started_at: Some(now),
+        updated_at: now,
+        finished_at: None,
+    };
     state
         .web_store
         .save_task(task.clone())
         .await
         .map_err(store_error_response)?;
 
-    let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
     let preview = markdown_preview(&input_markdown);
     let old_preview = session.last_preview.clone();
+    session.active_task_id = Some(version_task_id.clone());
+    session.last_task_status = Some(ApiTaskStatus::Running);
     session.last_preview = Some(preview.clone());
     // Only update title from preview when it is still the default or the
     // previous fallback preview.  An LLM-generated auto-title must not be
@@ -608,7 +654,22 @@ async fn api_edit_task_input(
         .await
         .map_err(store_error_response)?;
 
-    Ok(Json(ApiEditTaskInputResponse {
+    let persistence = task_executor::WebTaskPersistence {
+        web_store: state.web_store.clone(),
+        user_id: user.user_id,
+        session_id: session_id.clone(),
+        task_id: version_task_id,
+    };
+    task_executor::spawn_registered_task(
+        state.clone(),
+        session_id,
+        running_task,
+        task_executor::TaskRunRequest::Execute(input_markdown),
+        Some(persistence),
+    )
+    .await;
+
+    Ok(Json(ApiCreateTaskVersionResponse {
         task: task_summary_from_record(task),
     }))
 }
@@ -871,8 +932,8 @@ pub fn build_router(state: AppState) -> Router {
             get(sse::api_sse_task_stream),
         )
         .route(
-            "/api/v1/sessions/:session_id/tasks/:task_id/input",
-            patch(api_edit_task_input),
+            "/api/v1/sessions/:session_id/tasks/:task_id/versions",
+            post(api_create_task_version),
         )
         .route(
             "/api/v1/sessions/:session_id/tasks/:task_id/resume",
@@ -954,14 +1015,14 @@ mod tests {
         ResumeTaskRequest as ApiResumeTaskRequest, UserInputKind as ApiUserInputKind,
     };
     use oxide_agent_web_contracts::{
-        EditTaskInputRequest as ApiEditTaskInputRequest, ErrorCode, LoginRequest,
+        CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
         PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskEventKind,
         TaskStatus as ApiTaskStatus, WebTaskRecord,
     };
     use tokio::sync::mpsc;
 
     use super::{
-        api_cancel_task, api_create_session, api_edit_task_input, api_get_session,
+        api_cancel_task, api_create_session, api_create_task_version, api_get_session,
         api_get_task_events, api_get_task_progress, api_list_sessions, auth_cookie_value,
         csrf_header_value, parse_web_bool, AppState, TaskEventsQuery, WebAssetsConfig,
         WebStartupError, AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
@@ -1611,7 +1672,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_edit_and_cancel_task_are_auth_scoped_and_status_checked() {
+    async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_checked() {
         let state = test_app_state();
         let now = chrono::Utc::now();
         let user_one = register_user(
@@ -1679,18 +1740,34 @@ mod tests {
             .await
             .expect("save completed task");
 
-        let axum::Json(edited) = api_edit_task_input(
+        let axum::Json(versioned) = api_create_task_version(
             axum::extract::State(state.clone()),
             auth_headers(&token_one, Some(&session_one.csrf_token)),
             axum::extract::Path((session_id.clone(), "task-completed".to_string())),
-            axum::Json(ApiEditTaskInputRequest {
+            axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Edited prompt".to_string(),
             }),
         )
         .await
-        .expect("edit terminal task");
-        assert_eq!(edited.task.input_markdown, "Edited prompt");
-        assert!(edited.task.input_edited_at.is_some());
+        .expect("create task version");
+        assert_eq!(versioned.task.input_markdown, "Edited prompt");
+        assert!(versioned.task.input_edited_at.is_some());
+        assert_eq!(versioned.task.version_group_id, "task-completed");
+        assert_eq!(versioned.task.version_index, 2);
+        assert_eq!(
+            versioned.task.parent_task_id.as_deref(),
+            Some("task-completed")
+        );
+        assert_ne!(versioned.task.task_id, "task-completed");
+
+        let original = state
+            .web_store
+            .load_task(user_one.user_id, &session_id, "task-completed")
+            .await
+            .expect("load original task")
+            .expect("original task exists");
+        assert_eq!(original.input_markdown, "Original prompt");
+        assert!(original.input_edited_at.is_none());
 
         let running = task_record(
             user_one.user_id,
@@ -1719,11 +1796,11 @@ mod tests {
             .await
             .expect("save active session");
 
-        let edit_running = api_edit_task_input(
+        let edit_running = api_create_task_version(
             axum::extract::State(state.clone()),
             auth_headers(&token_one, Some(&session_one.csrf_token)),
             axum::extract::Path((session_id.clone(), "task-running".to_string())),
-            axum::Json(ApiEditTaskInputRequest {
+            axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Should fail".to_string(),
             }),
         )
@@ -1732,11 +1809,11 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::CONFLICT);
         assert_eq!(error.error.code, ErrorCode::TaskActive);
 
-        let edit_non_latest = api_edit_task_input(
+        let edit_non_latest = api_create_task_version(
             axum::extract::State(state.clone()),
             auth_headers(&token_one, Some(&session_one.csrf_token)),
             axum::extract::Path((session_id.clone(), "task-completed".to_string())),
-            axum::Json(ApiEditTaskInputRequest {
+            axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Should also fail".to_string(),
             }),
         )
@@ -2622,6 +2699,9 @@ mod tests {
             task_id: task_id.to_string(),
             session_id: session_id.to_string(),
             user_id,
+            version_group_id: task_id.to_string(),
+            version_index: 1,
+            parent_task_id: None,
             status,
             input_markdown: input_markdown.to_string(),
             input_edited_at: None,

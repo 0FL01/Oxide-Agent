@@ -272,12 +272,14 @@ pub(crate) async fn load_owned_task(
     session_id: &str,
     task_id: &str,
 ) -> Result<WebTaskRecord, (StatusCode, Json<ErrorEnvelope>)> {
-    state
+    let mut task = state
         .web_store
         .load_task(user_id, session_id, task_id)
         .await
         .map_err(store_error_response)?
-        .ok_or_else(not_found_response)
+        .ok_or_else(not_found_response)?;
+    task.normalize_version_lineage();
+    Ok(task)
 }
 
 // ---------------------------------------------------------------------------

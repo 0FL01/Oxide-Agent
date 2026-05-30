@@ -6,11 +6,12 @@ use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{friendly_time, navigate, spawn_ui};
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
-    CreateTaskRequest, EditTaskInputRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
+    CreateTaskRequest, CreateTaskVersionRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
     ResumeTaskRequest, SessionDetail, SessionSummary, SseConnectionState, TaskDetail,
     TaskEventKind, TaskStatus, TaskSummary,
 };
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[component]
 pub fn TaskConsole(
@@ -171,7 +172,7 @@ fn SessionWorkspace(
     set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
     let auth = use_auth();
-    let (session_title, set_session_title) = signal("Session".to_string());
+    let (_session_title, set_session_title) = signal("Session".to_string());
     let (tasks, set_tasks) = signal(Vec::<TaskSummary>::new());
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
@@ -180,6 +181,7 @@ fn SessionWorkspace(
     let (_streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
     let (_last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
+    let (selected_versions, set_selected_versions) = signal(HashMap::<String, String>::new());
 
     let (drawer_open, set_drawer_open) = signal(false);
 
@@ -191,6 +193,7 @@ fn SessionWorkspace(
         set_events.set(Vec::new());
         set_progress.set(None);
         set_active_task.set(None);
+        set_selected_versions.set(HashMap::new());
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
@@ -312,6 +315,12 @@ fn SessionWorkspace(
                     set_input.set(String::new());
                     set_active_task.set(Some(summary_to_detail(&session_id, &task)));
                     set_last_terminal_status.set(None);
+                    set_selected_versions.update(|items| {
+                        items.insert(
+                            task.effective_version_group_id().to_string(),
+                            task.task_id.clone(),
+                        );
+                    });
                     start_task_stream(
                         client,
                         session_id.clone(),
@@ -329,11 +338,8 @@ fn SessionWorkspace(
                             set_sessions,
                         },
                     );
-                    if resume_task_id.is_some() {
-                        set_tasks.update(|items| upsert_task_summary(items, task));
-                    } else {
-                        set_tasks.update(|items| items.push(task));
-                    }
+                    let task_summary = task.clone();
+                    set_tasks.update(|items| upsert_task_summary(items, task_summary));
                 }
                 Err(error) => set_error.set(Some(error.to_string())),
             }
@@ -411,23 +417,34 @@ fn SessionWorkspace(
                             }
                             .into_any()
                         } else {
-                            let latest_editable_task_id = latest_terminal_task_id(&tasks.get());
+                            let latest_editable_task_id = latest_editable_task_id(&tasks.get());
                             let session_id_for_cards = session_id_for_cards.clone();
                             view! {
                                 <For
-                                    each=move || tasks.get()
-                                    key=|task| task.task_id.clone()
-                                    children=move |task| {
-                                        let editable =
-                                            latest_editable_task_id.as_ref() == Some(&task.task_id);
+                                    each=move || group_task_versions(&tasks.get())
+                                    key=|group| group.version_group_id.clone()
+                                    children=move |group| {
                                         view! {
                                             <TaskCard
                                                 session_id=session_id_for_cards.clone()
-                                                task=task
-                                                editable=editable
+                                                versions=group.versions
+                                                editable_task_id=latest_editable_task_id.clone()
+                                                selected_versions=selected_versions
+                                                set_selected_versions=set_selected_versions
                                                 drawer_open=drawer_open
                                                 set_drawer_open=set_drawer_open
-                                                set_tasks=set_tasks
+                                                stream_signals=StreamUiSignals {
+                                                    set_events,
+                                                    set_session_title,
+                                                    set_progress,
+                                                    set_active_task,
+                                                    set_tasks,
+                                                    set_sse_state,
+                                                    set_error,
+                                                    set_streaming_task_id,
+                                                    set_last_terminal_status,
+                                                    set_sessions,
+                                                }
                                                 set_error=set_error
                                             />
                                         }
@@ -777,6 +794,9 @@ fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
     TaskDetail {
         task_id: task.task_id.clone(),
         session_id: session_id.to_string(),
+        version_group_id: task.effective_version_group_id().to_string(),
+        version_index: task.effective_version_index(),
+        parent_task_id: task.parent_task_id.clone(),
         status: task.status,
         input_markdown: task.input_markdown.clone(),
         input_edited_at: task.input_edited_at,
@@ -824,127 +844,218 @@ fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
 #[component]
 fn TaskCard(
     session_id: String,
-    task: TaskSummary,
-    editable: bool,
+    versions: Vec<TaskSummary>,
+    editable_task_id: Option<String>,
+    selected_versions: ReadSignal<HashMap<String, String>>,
+    set_selected_versions: WriteSignal<HashMap<String, String>>,
     drawer_open: ReadSignal<bool>,
     set_drawer_open: WriteSignal<bool>,
-    set_tasks: WriteSignal<Vec<TaskSummary>>,
+    stream_signals: StreamUiSignals,
     set_error: WriteSignal<Option<String>>,
 ) -> impl IntoView {
-    let task_id = task.task_id.clone();
+    let version_group_id = versions
+        .first()
+        .map(|task| task.effective_version_group_id().to_string())
+        .unwrap_or_default();
+    let version_count = versions.len();
     let (editing, set_editing) = signal(false);
-    let (draft, set_draft) = signal(task.input_markdown.clone());
+    let (draft, set_draft) = signal(
+        versions
+            .last()
+            .map(|task| task.input_markdown.clone())
+            .unwrap_or_default(),
+    );
     let (saving, set_saving) = signal(false);
-    let original_input = task.input_markdown.clone();
-    let input_markdown = task.input_markdown.clone();
-    let rendered_input_markdown = input_markdown.clone();
-    let thought_label = thought_label(&task);
+    let selected_task = Memo::new({
+        let versions = versions.clone();
+        let version_group_id = version_group_id.clone();
+        move |_| {
+            let selected_task_id = selected_versions.get().get(&version_group_id).cloned();
+            let selected_index = selected_version_index(&versions, selected_task_id.as_deref());
+            versions[selected_index].clone()
+        }
+    });
 
-    let card_status_class = match task.status {
-        TaskStatus::Running | TaskStatus::Queued => "running",
-        TaskStatus::Completed => "success",
-        TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => "error",
-        _ => "",
-    };
-    let card_class = format!("task-card {card_status_class}");
-    let final_response_markdown = task.final_response_markdown.clone();
+    Effect::new(move |_| {
+        let task = selected_task.get();
+        if !editing.get() {
+            set_draft.set(task.input_markdown.clone());
+        }
+    });
 
     view! {
-        <article class=card_class>
-            <div class="task-card-header">
-                <time>{friendly_time(task.updated_at)}</time>
-            </div>
-            <div class="message user-message-wrap">
-                <div class="user-message">
-                {move || if editing.get() {
-                    let session_id = session_id.clone();
-                    let task_id = task_id.clone();
-                    let original_input = original_input.clone();
-                    view! {
-                        <TaskInputEditForm
-                            session_id=session_id
-                            task_id=task_id
-                            original_input=original_input
-                            draft=draft
-                            set_draft=set_draft
-                            saving=saving
-                            set_saving=set_saving
-                            set_editing=set_editing
-                            set_tasks=set_tasks
-                            set_error=set_error
-                        />
-                    }.into_any()
-                } else {
-                    view! {
-                        <CollapsibleMessageBody markdown=rendered_input_markdown.clone() />
-                    }.into_any()
-                }}
-                </div>
-                <div class="user-message-actions" aria-label="User message actions">
-                    {editable.then(|| view! {
-                        <button
-                            class="message-action-button"
-                            type="button"
-                            title="Edit input"
-                            aria-label="Edit input"
-                            on:click=move |_| set_editing.set(true)
-                        >
-                            "✎"
-                        </button>
-                    })}
-                    <button
-                        class="message-action-button"
-                        type="button"
-                        title="Copy user message"
-                        aria-label="Copy user message"
-                        on:click=move |_| {
-                            if let Some(window) = web_sys::window() {
-                                let _ = window.navigator().clipboard().write_text(&input_markdown);
-                            }
-                        }
-                    >
-                        "⧉"
-                    </button>
-                </div>
-            </div>
-            {editable.then(|| view! {
-                <div class="task-action-row">
-                    <ThinkingButton label=thought_label open=drawer_open set_open=set_drawer_open />
-                </div>
-            })}
+        {move || {
+            let task = selected_task.get();
+            let selected_index = versions
+                .iter()
+                .position(|candidate| candidate.task_id == task.task_id)
+                .unwrap_or_else(|| version_count.saturating_sub(1));
+            let editable = editable_task_id.as_ref() == Some(&task.task_id);
+            let card_status_class = match task.status {
+                TaskStatus::Running | TaskStatus::Queued => "running",
+                TaskStatus::Completed => "success",
+                TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Interrupted => "error",
+                _ => "",
+            };
+            let card_class = format!("task-card {card_status_class}");
+            let thought_label = thought_label(&task);
+            let original_input = task.input_markdown.clone();
+            let input_markdown = task.input_markdown.clone();
+            let rendered_input_markdown = input_markdown.clone();
+            let final_response_markdown = task.final_response_markdown.clone();
+            let can_select_previous = selected_index > 0;
+            let can_select_next = selected_index + 1 < version_count;
+            let version_counter = format!("{}/{}", selected_index + 1, version_count);
+            let previous_task = can_select_previous.then(|| versions[selected_index - 1].clone());
+            let next_task = can_select_next.then(|| versions[selected_index + 1].clone());
 
-            {final_response_markdown.map(|answer| {
-                let raw_answer = answer.clone();
-                view! {
-                    <div class="message assistant-message-wrap">
-                        <div class="assistant-message">
-                            <MarkdownContent markdown=answer />
+            view! {
+                <article class=card_class>
+                    <div class="task-card-header">
+                        <time>{friendly_time(task.updated_at)}</time>
+                    </div>
+                    <div class="message user-message-wrap">
+                        <div class="user-message">
+                        {if editing.get() {
+                            let session_id = session_id.clone();
+                            let task_id = task.task_id.clone();
+                            let version_group_id = version_group_id.clone();
+                            view! {
+                                <TaskInputEditForm
+                                    session_id=session_id
+                                    task_id=task_id
+                                    version_group_id=version_group_id
+                                    original_input=original_input
+                                    draft=draft
+                                    set_draft=set_draft
+                                    saving=saving
+                                    set_saving=set_saving
+                                    set_editing=set_editing
+                                    set_selected_versions=set_selected_versions
+                                    set_drawer_open=set_drawer_open
+                                    stream_signals=stream_signals
+                                    set_error=set_error
+                                />
+                            }.into_any()
+                        } else {
+                            view! {
+                                <CollapsibleMessageBody markdown=rendered_input_markdown.clone() />
+                            }.into_any()
+                        }}
                         </div>
-                        <div class="assistant-message-actions" aria-label="Assistant message actions">
+                        <div class="user-message-actions" aria-label="User message actions">
+                            {editable.then(|| view! {
+                                <button
+                                    class="message-action-button"
+                                    type="button"
+                                    title="Edit input"
+                                    aria-label="Edit input"
+                                    on:click=move |_| set_editing.set(true)
+                                >
+                                    "✎"
+                                </button>
+                            })}
                             <button
                                 class="message-action-button"
                                 type="button"
-                                title="Copy final response"
-                                aria-label="Copy final response"
+                                title="Copy user message"
+                                aria-label="Copy user message"
                                 on:click=move |_| {
                                     if let Some(window) = web_sys::window() {
-                                        let _ = window.navigator().clipboard().write_text(&raw_answer);
+                                        let _ = window.navigator().clipboard().write_text(&input_markdown);
                                     }
                                 }
                             >
                                 "⧉"
                             </button>
+                            {(version_count > 1).then(|| {
+                                let previous_version_group_id = version_group_id.clone();
+                                let next_version_group_id = version_group_id.clone();
+                                view! {
+                                    <div class="message-version-switcher" aria-label="Task version history">
+                                        <button
+                                            class="message-action-button"
+                                            type="button"
+                                            title="Previous version"
+                                            aria-label="Previous version"
+                                            disabled=!can_select_previous
+                                            on:click=move |_| {
+                                                if let Some(previous_task) = previous_task.clone() {
+                                                    set_editing.set(false);
+                                                    set_draft.set(previous_task.input_markdown.clone());
+                                                    set_selected_versions.update(|items| {
+                                                        items.insert(previous_version_group_id.clone(), previous_task.task_id.clone());
+                                                    });
+                                                }
+                                            }
+                                        >
+                                            "‹"
+                                        </button>
+                                        <div class="message-version-counter">{version_counter.clone()}</div>
+                                        <button
+                                            class="message-action-button"
+                                            type="button"
+                                            title="Next version"
+                                            aria-label="Next version"
+                                            disabled=!can_select_next
+                                            on:click=move |_| {
+                                                if let Some(next_task) = next_task.clone() {
+                                                    set_editing.set(false);
+                                                    set_draft.set(next_task.input_markdown.clone());
+                                                    set_selected_versions.update(|items| {
+                                                        items.insert(next_version_group_id.clone(), next_task.task_id.clone());
+                                                    });
+                                                }
+                                            }
+                                        >
+                                            "›"
+                                        </button>
+                                    </div>
+                                }
+                            })}
                         </div>
                     </div>
-                }
-            })}
-            {task.error_message.map(|error| view! {
-                <div class="message error-message">{error}</div>
-            })}
-            {task.pending_user_input.map(|pending| view! {
-                <div class="message pending-message">{pending.prompt}</div>
-            })}
-        </article>
+                    {editable.then(|| view! {
+                        <div class="task-action-row">
+                            <ThinkingButton label=thought_label open=drawer_open set_open=set_drawer_open />
+                        </div>
+                    })}
+
+                    {final_response_markdown.map(|answer| {
+                        let raw_answer = answer.clone();
+                        view! {
+                            <div class="message assistant-message-wrap">
+                                <div class="assistant-message">
+                                    <MarkdownContent markdown=answer />
+                                </div>
+                                <div class="assistant-message-actions" aria-label="Assistant message actions">
+                                    <button
+                                        class="message-action-button"
+                                        type="button"
+                                        title="Copy final response"
+                                        aria-label="Copy final response"
+                                        on:click=move |_| {
+                                            if let Some(window) = web_sys::window() {
+                                                let _ = window.navigator().clipboard().write_text(&raw_answer);
+                                            }
+                                        }
+                                    >
+                                        "⧉"
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    })}
+                    {task.error_message.map(|error| view! {
+                        <div class="message error-message">{error}</div>
+                    })}
+                    {task.pending_user_input.map(|pending| view! {
+                        <div class="message pending-message">{pending.prompt}</div>
+                    })}
+                </article>
+            }
+                .into_any()
+        }}
     }
 }
 
@@ -1847,42 +1958,60 @@ struct SearchResult {
 fn TaskInputEditForm(
     session_id: String,
     task_id: String,
+    version_group_id: String,
     original_input: String,
     draft: ReadSignal<String>,
     set_draft: WriteSignal<String>,
     saving: ReadSignal<bool>,
     set_saving: WriteSignal<bool>,
     set_editing: WriteSignal<bool>,
-    set_tasks: WriteSignal<Vec<TaskSummary>>,
+    set_selected_versions: WriteSignal<HashMap<String, String>>,
+    set_drawer_open: WriteSignal<bool>,
+    stream_signals: StreamUiSignals,
     set_error: WriteSignal<Option<String>>,
 ) -> impl IntoView {
     let auth = use_auth();
     let submit_edit = {
         let session_id = session_id.clone();
         let task_id = task_id.clone();
+        let version_group_id = version_group_id.clone();
         move |ev: leptos::ev::SubmitEvent| {
             ev.prevent_default();
             set_saving.set(true);
             set_error.set(None);
-            let request = EditTaskInputRequest {
+            let request = CreateTaskVersionRequest {
                 input_markdown: draft.get(),
             };
             let session_id = session_id.clone();
             let task_id = task_id.clone();
+            let version_group_id = version_group_id.clone();
             spawn_ui(async move {
-                match auth
-                    .client()
-                    .edit_task_input(&session_id, &task_id, &request)
+                let client = auth.client();
+                match client
+                    .create_task_version(&session_id, &task_id, &request)
                     .await
                 {
                     Ok(response) => {
-                        set_tasks.update(|items| {
-                            if let Some(item) =
-                                items.iter_mut().find(|item| item.task_id == task_id)
-                            {
-                                *item = response.task;
-                            }
+                        let task = response.task;
+                        stream_signals.set_events.set(Vec::new());
+                        stream_signals.set_progress.set(None);
+                        stream_signals
+                            .set_active_task
+                            .set(Some(summary_to_detail(&session_id, &task)));
+                        stream_signals.set_last_terminal_status.set(None);
+                        stream_signals
+                            .set_tasks
+                            .update(|items| upsert_task_summary(items, task.clone()));
+                        set_selected_versions.update(|items| {
+                            items.insert(version_group_id.clone(), task.task_id.clone());
                         });
+                        set_drawer_open.set(false);
+                        start_task_stream(
+                            client,
+                            session_id.clone(),
+                            task.task_id.clone(),
+                            stream_signals,
+                        );
                         set_editing.set(false);
                     }
                     Err(error) => set_error.set(Some(error.to_string())),
@@ -1917,12 +2046,15 @@ fn latest_task(tasks: Vec<TaskSummary>) -> Option<TaskSummary> {
     tasks.into_iter().max_by_key(|task| task.updated_at)
 }
 
-fn latest_terminal_task_id(tasks: &[TaskSummary]) -> Option<String> {
+fn latest_editable_task_id(tasks: &[TaskSummary]) -> Option<String> {
     tasks
         .iter()
-        .filter(|task| task.status.is_terminal())
-        .max_by_key(|task| task.updated_at)
-        .map(|task| task.task_id.clone())
+        .max_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        })
+        .and_then(|task| task.status.is_terminal().then(|| task.task_id.clone()))
 }
 
 fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummary) {
@@ -1931,6 +2063,63 @@ fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummary) {
     } else {
         items.push(task);
     }
+    items.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.task_id.cmp(&b.task_id))
+    });
+}
+
+#[derive(Clone)]
+struct TaskVersionGroup {
+    version_group_id: String,
+    versions: Vec<TaskSummary>,
+}
+
+fn group_task_versions(tasks: &[TaskSummary]) -> Vec<TaskVersionGroup> {
+    let mut grouped = HashMap::<String, Vec<TaskSummary>>::new();
+    for task in tasks {
+        grouped
+            .entry(task.effective_version_group_id().to_string())
+            .or_default()
+            .push(task.clone());
+    }
+
+    let mut groups = grouped
+        .into_iter()
+        .map(|(version_group_id, mut versions)| {
+            versions.sort_by(|a, b| {
+                a.effective_version_index()
+                    .cmp(&b.effective_version_index())
+                    .then_with(|| a.created_at.cmp(&b.created_at))
+                    .then_with(|| a.task_id.cmp(&b.task_id))
+            });
+            TaskVersionGroup {
+                version_group_id,
+                versions,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    groups.sort_by(|a, b| {
+        latest_group_task(&b.versions)
+            .updated_at
+            .cmp(&latest_group_task(&a.versions).updated_at)
+            .then_with(|| b.version_group_id.cmp(&a.version_group_id))
+    });
+    groups
+}
+
+fn latest_group_task(versions: &[TaskSummary]) -> &TaskSummary {
+    versions
+        .last()
+        .expect("task version groups must contain at least one task")
+}
+
+fn selected_version_index(versions: &[TaskSummary], selected_task_id: Option<&str>) -> usize {
+    selected_task_id
+        .and_then(|task_id| versions.iter().position(|task| task.task_id == task_id))
+        .unwrap_or_else(|| versions.len().saturating_sub(1))
 }
 
 fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {

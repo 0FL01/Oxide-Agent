@@ -91,8 +91,13 @@ pub(crate) fn session_detail_from_record(record: WebSessionRecord) -> SessionDet
 }
 
 pub(crate) fn task_summary_from_record(record: WebTaskRecord) -> TaskSummary {
+    let version_group_id = record.effective_version_group_id().to_string();
+    let version_index = record.effective_version_index();
     TaskSummary {
         task_id: record.task_id,
+        version_group_id,
+        version_index,
+        parent_task_id: record.parent_task_id,
         status: record.status,
         input_markdown: record.input_markdown,
         input_edited_at: record.input_edited_at,
@@ -108,9 +113,14 @@ pub(crate) fn task_summary_from_record(record: WebTaskRecord) -> TaskSummary {
 }
 
 pub(crate) fn task_detail_from_record(record: WebTaskRecord) -> TaskDetail {
+    let version_group_id = record.effective_version_group_id().to_string();
+    let version_index = record.effective_version_index();
     TaskDetail {
         task_id: record.task_id,
         session_id: record.session_id,
+        version_group_id,
+        version_index,
+        parent_task_id: record.parent_task_id,
         status: record.status,
         input_markdown: record.input_markdown,
         input_edited_at: record.input_edited_at,

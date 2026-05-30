@@ -497,6 +497,9 @@ fn append_unique_event(events: WriteSignal<Vec<PersistedTaskEvent>>, event: Pers
 fn task_detail_to_summary(task: &TaskDetail) -> TaskSummary {
     TaskSummary {
         task_id: task.task_id.clone(),
+        version_group_id: task.effective_version_group_id().to_string(),
+        version_index: task.effective_version_index(),
+        parent_task_id: task.parent_task_id.clone(),
         status: task.status,
         input_markdown: task.input_markdown.clone(),
         input_edited_at: task.input_edited_at,
