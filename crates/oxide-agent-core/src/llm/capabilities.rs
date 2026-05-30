@@ -325,7 +325,7 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn opencode_go_deepseek_v4_flash_supports_structured_output() {
+    fn opencode_go_models_support_structured_output() {
         let route = crate::config::ModelInfo {
             id: "deepseek-v4-flash".to_string(),
             max_output_tokens: 4096,
@@ -343,7 +343,7 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn opencode_go_unknown_model_does_not_overclaim_structured_output() {
+    fn opencode_go_any_model_supports_structured_output() {
         let route = crate::config::ModelInfo {
             id: "kimi-k2.6".to_string(),
             max_output_tokens: 4096,
@@ -355,7 +355,7 @@ mod tests {
         let capabilities = super::provider_capabilities_for_model(&route);
 
         assert!(capabilities.supports_tool_calling);
-        assert!(!capabilities.supports_structured_output);
+        assert!(capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "strict");
     }
 

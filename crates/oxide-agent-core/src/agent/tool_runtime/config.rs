@@ -104,18 +104,12 @@ impl Default for ToolRuntimeConfig {
 }
 
 /// Whether a model route is supported by the v1 typed tool runtime.
+///
+/// All models from the `opencode-go` provider are accepted because the provider exposes a
+/// unified, backward-compatible tool protocol across every model.
 #[must_use]
 pub fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
-    let provider = normalize_tool_runtime_route_part(&model.provider);
-    if provider != "opencode-go" {
-        return false;
-    }
-
-    let model_id = model
-        .id
-        .rsplit_once('/')
-        .map_or(model.id.as_str(), |(_, tail)| tail);
-    normalize_tool_runtime_route_part(model_id) == "deepseek-v4-flash"
+    normalize_tool_runtime_route_part(&model.provider) == "opencode-go"
 }
 
 fn normalize_tool_runtime_route_part(value: &str) -> String {

@@ -58,25 +58,8 @@ impl LlmProviderModule for OpenCodeGoProviderModule {
         ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
     }
 
-    fn capabilities_for_model(&self, model_info: &ModelInfo) -> ProviderCapabilities {
-        let mut capabilities = self.capabilities();
-        capabilities.supports_structured_output =
-            opencode_go_supports_structured_output(&model_info.id);
-        capabilities
+    fn capabilities_for_model(&self, _model_info: &ModelInfo) -> ProviderCapabilities {
+        // All opencode-go models share a unified tool and structured-output protocol.
+        self.capabilities()
     }
-}
-
-fn normalize_opencode_go_model_id(model_id: &str) -> String {
-    let trimmed = model_id.trim();
-    trimmed
-        .strip_prefix("opencode-go/")
-        .unwrap_or(trimmed)
-        .to_string()
-}
-
-fn opencode_go_supports_structured_output(model_id: &str) -> bool {
-    matches!(
-        normalize_opencode_go_model_id(model_id).as_str(),
-        "deepseek-v4-flash" | "deepseek-v4-pro"
-    )
 }

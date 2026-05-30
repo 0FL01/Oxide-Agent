@@ -65,7 +65,7 @@ fn registry_topic_infra_config() -> crate::storage::TopicInfraConfigRecord {
 }
 
 #[test]
-fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
+fn v1_tool_runtime_model_detection_accepts_all_opencode_go_routes() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-v4-flash".to_string(),
@@ -76,7 +76,7 @@ fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
 
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
-            id: "opencode-go/deepseek_v4_flash".to_string(),
+            id: "opencode-go/mimo-v2.5".to_string(),
             provider: "OpenCode Go".to_string(),
             ..ModelInfo::default()
         }
@@ -84,15 +84,23 @@ fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
 
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
-            id: "deepseek-v4-flash".to_string(),
+            id: "deepseek-v4-pro".to_string(),
             provider: "llm-provider/opencode-go".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "kimi-k2.6".to_string(),
+            provider: "opencode-go".to_string(),
             ..ModelInfo::default()
         }
     ));
 }
 
 #[test]
-fn v1_tool_runtime_model_detection_rejects_other_routes() {
+fn v1_tool_runtime_model_detection_rejects_non_opencode_go_routes() {
     assert!(!AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-v4-flash".to_string(),
@@ -104,7 +112,7 @@ fn v1_tool_runtime_model_detection_rejects_other_routes() {
     assert!(!AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-chat".to_string(),
-            provider: "opencode-go".to_string(),
+            provider: "openrouter".to_string(),
             ..ModelInfo::default()
         }
     ));

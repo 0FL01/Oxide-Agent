@@ -335,7 +335,7 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn opencode_go_module_owns_model_specific_structured_output() {
+    fn opencode_go_module_all_models_support_structured_output() {
         let route = crate::config::ModelInfo {
             id: "opencode-go/deepseek-v4-flash".to_string(),
             provider: "llm-provider/opencode-go".to_string(),
