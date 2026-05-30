@@ -32,6 +32,7 @@ use crate::auth::{
     login_user, logout_session, register_user,
 };
 use crate::persistence::WebUiStore;
+use crate::session::web_session_sandbox_scope;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -56,6 +57,7 @@ use oxide_agent_web_contracts::{
     ResumeTaskResponse as ApiResumeTaskResponse, TaskEventsResponse, TaskStatus as ApiTaskStatus,
     UpdateSessionRequest, UpdateSessionResponse, WebSessionRecord, WebTaskRecord,
 };
+use std::collections::HashSet;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -81,6 +83,86 @@ async fn api_public_config(State(state): State<AppState>) -> Json<PublicConfigRe
         ),
         build_version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+fn backend_unavailable_response(message: impl Into<String>) -> (StatusCode, Json<ErrorEnvelope>) {
+    api_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::BackendUnavailable,
+        message.into(),
+        true,
+    )
+}
+
+fn is_web_session_sandbox_scope(scope: &str) -> bool {
+    scope == "web" || scope.starts_with("web-session-")
+}
+
+async fn abort_task_handle(state: &AppState, task_id: &str) {
+    let handle = {
+        let mut handles = state.task_handles.write().await;
+        handles.remove(task_id)
+    };
+    if let Some(handle) = handle {
+        handle.abort();
+    }
+}
+
+async fn reconcile_web_sandbox_orphans_with_sessions(
+    state: &AppState,
+    user_id: i64,
+    sessions: &[WebSessionRecord],
+) -> Result<u64, String> {
+    let live_contexts = sessions
+        .iter()
+        .map(|session| session.context_key.clone())
+        .collect::<HashSet<_>>();
+    let sandbox_control = state.sandbox_control();
+    let sandboxes = sandbox_control
+        .list_user_sandboxes(user_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut deleted = 0u64;
+
+    for sandbox in sandboxes {
+        let Some(scope) = sandbox.scope.as_deref() else {
+            continue;
+        };
+        if !is_web_session_sandbox_scope(scope) {
+            continue;
+        }
+        if scope != "web" && live_contexts.contains(scope) {
+            continue;
+        }
+
+        match sandbox_control
+            .delete_sandbox_by_name(user_id, &sandbox.container_name)
+            .await
+        {
+            Ok(true) => deleted = deleted.saturating_add(1),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(
+                    user_id,
+                    scope,
+                    container_name = %sandbox.container_name,
+                    error = %error,
+                    "Failed to prune orphan web sandbox"
+                );
+            }
+        }
+    }
+
+    Ok(deleted)
+}
+
+async fn reconcile_web_sandbox_orphans(state: &AppState, user_id: i64) -> Result<u64, String> {
+    let sessions = state
+        .web_store
+        .list_sessions(user_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    reconcile_web_sandbox_orphans_with_sessions(state, user_id, &sessions).await
 }
 
 async fn api_register(
@@ -256,11 +338,21 @@ async fn api_list_sessions(
     headers: HeaderMap,
 ) -> Result<Json<ListSessionsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user(&state, &headers).await?;
-    let sessions = state
+    let session_records = state
         .web_store
         .list_sessions(user.user_id)
         .await
-        .map_err(store_error_response)?
+        .map_err(store_error_response)?;
+    if let Err(error) =
+        reconcile_web_sandbox_orphans_with_sessions(&state, user.user_id, &session_records).await
+    {
+        tracing::warn!(
+            user_id = user.user_id,
+            error = %error,
+            "Web sandbox reconcile during list_sessions failed"
+        );
+    }
+    let sessions = session_records
         .into_iter()
         .map(session_summary_from_record)
         .collect();
@@ -275,6 +367,12 @@ async fn api_create_session(
     let session_id = uuid::Uuid::new_v4().to_string();
     let context_key = format!("web-session-{session_id}");
     let now = chrono::Utc::now();
+    let sandbox_scope = web_session_sandbox_scope(user.user_id, &context_key);
+    state
+        .sandbox_control()
+        .ensure_scope_sandbox(sandbox_scope.clone())
+        .await
+        .map_err(|error| backend_unavailable_response(error.to_string()))?;
     state
         .session_manager
         .create_session_with_id(
@@ -299,11 +397,26 @@ async fn api_create_session(
         last_preview: None,
         manually_renamed: false,
     };
-    state
-        .web_store
-        .save_session(record.clone())
-        .await
-        .map_err(store_error_response)?;
+    if let Err(error) = state.web_store.save_session(record.clone()).await {
+        state
+            .session_manager
+            .delete_session(&record.session_id)
+            .await;
+        if let Err(cleanup_error) = state.sandbox_control().destroy_scope(sandbox_scope).await {
+            tracing::warn!(
+                error = %cleanup_error,
+                "Failed to rollback web sandbox after session save failure"
+            );
+        }
+        return Err(store_error_response(error));
+    }
+    if let Err(error) = reconcile_web_sandbox_orphans(&state, user.user_id).await {
+        tracing::warn!(
+            user_id = user.user_id,
+            error = %error,
+            "Web sandbox reconcile after create_session failed"
+        );
+    }
     Ok(Json(ApiCreateSessionResponse {
         session: session_summary_from_record(record),
     }))
@@ -349,13 +462,42 @@ async fn api_delete_session(
     Path(session_id): Path<String>,
 ) -> Result<Json<OkResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
-    let _record = load_owned_session(&state, user.user_id, &session_id).await?;
-    state.session_manager.delete_session(&session_id).await;
+    let record = load_owned_session(&state, user.user_id, &session_id).await?;
+    if let Some(active_task_id) = record.active_task_id.as_deref() {
+        state
+            .session_manager
+            .cancel_task(active_task_id, &session_id)
+            .await;
+        abort_task_handle(&state, active_task_id).await;
+    }
+    state
+        .sandbox_control()
+        .destroy_scope(web_session_sandbox_scope(user.user_id, &record.context_key))
+        .await
+        .map_err(|error| backend_unavailable_response(error.to_string()))?;
+    state
+        .session_manager
+        .storage()
+        .clear_agent_memory_for_flow(
+            user.user_id,
+            record.context_key.clone(),
+            record.agent_flow_id.clone(),
+        )
+        .await
+        .map_err(|error| backend_unavailable_response(error.to_string()))?;
     state
         .web_store
         .delete_session(user.user_id, &session_id)
         .await
         .map_err(store_error_response)?;
+    state.session_manager.delete_session(&session_id).await;
+    if let Err(error) = reconcile_web_sandbox_orphans(&state, user.user_id).await {
+        tracing::warn!(
+            user_id = user.user_id,
+            error = %error,
+            "Web sandbox reconcile after delete_session failed"
+        );
+    }
     Ok(Json(OkResponse::ok()))
 }
 
@@ -803,9 +945,7 @@ async fn api_cancel_task(
         .session_manager
         .cancel_task(&task_id, &session_id)
         .await;
-    if let Some(handle) = state.task_handles.read().await.get(&task_id).cloned() {
-        handle.abort();
-    }
+    abort_task_handle(&state, &task_id).await;
 
     Ok(Json(ApiCancelTaskResponse {
         ok: true,
@@ -1000,14 +1140,17 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use axum::http::HeaderMap;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Instant;
 
     use oxide_agent_core::agent::progress::{LlmRetryState, ProgressState};
+    use oxide_agent_core::agent::AgentMemory;
     use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
     use oxide_agent_core::config::{AgentSettings, ModelInfo};
     use oxide_agent_core::llm::LlmClient;
+    use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
     use oxide_agent_runtime::SessionRegistry;
     #[cfg(feature = "profile-lite")]
     use oxide_agent_web_contracts::{
@@ -1022,16 +1165,135 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        api_cancel_task, api_create_session, api_create_task_version, api_get_session,
-        api_get_task_events, api_get_task_progress, api_list_sessions, auth_cookie_value,
-        csrf_header_value, parse_web_bool, AppState, TaskEventsQuery, WebAssetsConfig,
-        WebStartupError, AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
+        api_cancel_task, api_create_session, api_create_task_version, api_delete_session,
+        api_get_session, api_get_task_events, api_get_task_progress, api_list_sessions,
+        auth_cookie_value, csrf_header_value, parse_web_bool, AppState, TaskEventsQuery,
+        WebAssetsConfig, WebSandboxControl, WebStartupError, AUTH_COOKIE_NAME,
+        WEB_TASK_SCHEMA_VERSION,
     };
     #[cfg(feature = "profile-lite")]
     use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
     use crate::auth::{login_user, register_user};
     use crate::scripted_llm::{ScriptedLlmProvider, ScriptedResponse};
     use crate::session::WebSessionManager;
+
+    #[derive(Clone, Default)]
+    struct FakeSandboxControl {
+        state: Arc<Mutex<FakeSandboxState>>,
+    }
+
+    #[derive(Default)]
+    struct FakeSandboxState {
+        ensured_scopes: Vec<SandboxScope>,
+        destroyed_scopes: Vec<SandboxScope>,
+        deleted_names: Vec<String>,
+        sandboxes: Vec<SandboxContainerRecord>,
+    }
+
+    impl FakeSandboxControl {
+        fn with_sandboxes(sandboxes: Vec<SandboxContainerRecord>) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(FakeSandboxState {
+                    sandboxes,
+                    ..FakeSandboxState::default()
+                })),
+            }
+        }
+
+        fn ensured_scopes(&self) -> Vec<SandboxScope> {
+            self.state
+                .lock()
+                .expect("fake sandbox state")
+                .ensured_scopes
+                .clone()
+        }
+
+        fn destroyed_scopes(&self) -> Vec<SandboxScope> {
+            self.state
+                .lock()
+                .expect("fake sandbox state")
+                .destroyed_scopes
+                .clone()
+        }
+
+        fn deleted_names(&self) -> Vec<String> {
+            self.state
+                .lock()
+                .expect("fake sandbox state")
+                .deleted_names
+                .clone()
+        }
+    }
+
+    fn fake_sandbox_record(scope: SandboxScope) -> SandboxContainerRecord {
+        SandboxContainerRecord {
+            container_id: scope.stable_name(),
+            container_name: scope.container_name(),
+            image: Some("fake-image".to_string()),
+            created_at: None,
+            state: Some("running".to_string()),
+            status: Some("running".to_string()),
+            running: true,
+            user_id: Some(scope.owner_id()),
+            scope: Some(scope.namespace().to_string()),
+            chat_id: scope.chat_id(),
+            thread_id: scope.thread_id(),
+            labels: scope.docker_labels(),
+        }
+    }
+
+    #[async_trait]
+    impl WebSandboxControl for FakeSandboxControl {
+        async fn destroy_scope(&self, scope: SandboxScope) -> anyhow::Result<()> {
+            let mut state = self.state.lock().expect("fake sandbox state");
+            state.destroyed_scopes.push(scope.clone());
+            state
+                .sandboxes
+                .retain(|sandbox| sandbox.container_name != scope.container_name());
+            Ok(())
+        }
+
+        async fn list_user_sandboxes(
+            &self,
+            user_id: i64,
+        ) -> anyhow::Result<Vec<SandboxContainerRecord>> {
+            let state = self.state.lock().expect("fake sandbox state");
+            Ok(state
+                .sandboxes
+                .iter()
+                .filter(|sandbox| sandbox.user_id == Some(user_id))
+                .cloned()
+                .collect())
+        }
+
+        async fn ensure_scope_sandbox(
+            &self,
+            scope: SandboxScope,
+        ) -> anyhow::Result<SandboxContainerRecord> {
+            let mut state = self.state.lock().expect("fake sandbox state");
+            state.ensured_scopes.push(scope.clone());
+            let record = fake_sandbox_record(scope);
+            state
+                .sandboxes
+                .retain(|sandbox| sandbox.container_name != record.container_name);
+            state.sandboxes.push(record.clone());
+            Ok(record)
+        }
+
+        async fn delete_sandbox_by_name(
+            &self,
+            user_id: i64,
+            container_name: &str,
+        ) -> anyhow::Result<bool> {
+            let mut state = self.state.lock().expect("fake sandbox state");
+            state.deleted_names.push(container_name.to_string());
+            let before = state.sandboxes.len();
+            state.sandboxes.retain(|sandbox| {
+                !(sandbox.user_id == Some(user_id) && sandbox.container_name == container_name)
+            });
+            Ok(before != state.sandboxes.len())
+        }
+    }
 
     #[test]
     fn parse_web_bool_accepts_common_enabled_values() {
@@ -1574,7 +1836,8 @@ mod tests {
 
     #[tokio::test]
     async fn api_sessions_are_auth_scoped_and_use_web_session_context() {
-        let state = test_app_state();
+        let (state, sandbox_control) =
+            test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
         let now = chrono::Utc::now();
         let user_one = register_user(
             state.web_store.as_ref(),
@@ -1634,6 +1897,12 @@ mod tests {
             .expect("session exists");
         assert_eq!(record.context_key, format!("web-session-{session_id}"));
         assert_eq!(record.agent_flow_id, "main");
+        assert_eq!(sandbox_control.ensured_scopes().len(), 1);
+        assert_eq!(
+            sandbox_control.ensured_scopes()[0].namespace(),
+            record.context_key,
+            "web session sandbox should be scoped per session context"
+        );
 
         let axum::Json(listed) = api_list_sessions(
             axum::extract::State(state.clone()),
@@ -1669,6 +1938,150 @@ mod tests {
             axum::http::StatusCode::FORBIDDEN
         );
         assert_ne!(user_one.user_id, user_two.user_id);
+    }
+
+    #[tokio::test]
+    async fn api_create_session_prunes_orphan_web_sandboxes() {
+        let (mut state, _) =
+            test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
+        let now = chrono::Utc::now();
+        let user = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+        let sandbox_control = FakeSandboxControl::with_sandboxes(vec![
+            fake_sandbox_record(SandboxScope::new(user.user_id, "web")),
+            fake_sandbox_record(SandboxScope::new(user.user_id, "web-session-orphan")),
+            fake_sandbox_record(SandboxScope::new(user.user_id, "topic-live")),
+        ]);
+        state.set_sandbox_control(Arc::new(sandbox_control.clone()));
+
+        let axum::Json(created) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create session");
+
+        let deleted_names = sandbox_control.deleted_names();
+        assert!(deleted_names
+            .iter()
+            .any(|name| name == &SandboxScope::new(user.user_id, "web").container_name()));
+        assert!(deleted_names.iter().any(|name| {
+            name == &SandboxScope::new(user.user_id, "web-session-orphan").container_name()
+        }));
+        assert!(!deleted_names.iter().any(|name| {
+            name == &SandboxScope::new(
+                user.user_id,
+                format!("web-session-{}", created.session.session_id),
+            )
+            .container_name()
+        }));
+    }
+
+    #[tokio::test]
+    async fn api_delete_session_destroys_web_sandbox_and_clears_flow_memory() {
+        let (mut state, _) =
+            test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
+        let sandbox_control = FakeSandboxControl::default();
+        state.set_sandbox_control(Arc::new(sandbox_control.clone()));
+        let now = chrono::Utc::now();
+        let user = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(created) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create session");
+        let record = state
+            .web_store
+            .load_session(user.user_id, &created.session.session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        let memory = AgentMemory::new(usize::MAX);
+        state
+            .session_manager
+            .storage()
+            .save_agent_memory_for_flow(
+                user.user_id,
+                record.context_key.clone(),
+                record.agent_flow_id.clone(),
+                &memory,
+            )
+            .await
+            .expect("save flow memory");
+
+        let axum::Json(response) = api_delete_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::extract::Path(created.session.session_id.clone()),
+        )
+        .await
+        .expect("delete session");
+
+        assert!(response.ok);
+        assert!(state
+            .web_store
+            .load_session(user.user_id, &created.session.session_id)
+            .await
+            .expect("load deleted session")
+            .is_none());
+        assert!(state
+            .session_manager
+            .storage()
+            .load_agent_memory_for_flow(
+                user.user_id,
+                record.context_key.clone(),
+                record.agent_flow_id.clone(),
+            )
+            .await
+            .expect("load flow memory")
+            .is_none());
+        assert_eq!(sandbox_control.destroyed_scopes().len(), 1);
+        assert_eq!(
+            sandbox_control.destroyed_scopes()[0].namespace(),
+            record.context_key,
+            "delete session should destroy the per-session sandbox"
+        );
     }
 
     #[tokio::test]
@@ -2492,7 +2905,8 @@ mod tests {
                 ),
             },
             ScriptedResponse::Text("resumed ok".to_string()),
-        ]);
+        ])
+        .0;
         let now = chrono::Utc::now();
         let user = register_user(
             state.web_store.as_ref(),
@@ -2589,10 +3003,12 @@ mod tests {
     }
 
     fn test_app_state() -> AppState {
-        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())])
+        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]).0
     }
 
-    fn test_app_state_with_responses(responses: Vec<ScriptedResponse>) -> AppState {
+    fn test_app_state_with_responses(
+        responses: Vec<ScriptedResponse>,
+    ) -> (AppState, FakeSandboxControl) {
         let scripted = Arc::new(ScriptedLlmProvider::new(responses));
         let settings = Arc::new(AgentSettings {
             agent_model_id: Some("opencode-go/deepseek-v4-flash".to_string()),
@@ -2611,8 +3027,10 @@ mod tests {
         let session_manager =
             WebSessionManager::new(SessionRegistry::new(), Arc::new(llm), settings);
         let mut state = AppState::new(Arc::new(session_manager));
+        let sandbox_control = FakeSandboxControl::default();
+        state.set_sandbox_control(Arc::new(sandbox_control.clone()));
         state.auto_title_enabled = false;
-        state
+        (state, sandbox_control)
     }
 
     fn unique_test_asset_dir(label: &str) -> std::path::PathBuf {

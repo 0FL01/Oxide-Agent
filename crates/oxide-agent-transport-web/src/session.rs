@@ -176,6 +176,11 @@ pub struct WebSessionManager {
     running_tasks: Arc<RwLock<HashMap<String, RunningTask>>>,
 }
 
+#[must_use]
+pub(crate) fn web_session_sandbox_scope(user_id: i64, context_key: &str) -> SandboxScope {
+    SandboxScope::new(user_id, context_key.to_string())
+}
+
 impl WebSessionManager {
     /// Create a new session manager.
     ///
@@ -291,7 +296,7 @@ impl WebSessionManager {
         };
 
         let sid = SessionId::from(session_id_i64);
-        let sandbox_scope = SandboxScope::new(user_id, "web");
+        let sandbox_scope = web_session_sandbox_scope(user_id, &context_key);
 
         let mut session = AgentSession::new_with_scopes(
             sid,
@@ -371,7 +376,7 @@ impl WebSessionManager {
         self.sessions.read().await.get(session_id).cloned()
     }
 
-    /// Delete a session and cancel any running task.
+    /// Delete a session from the runtime registry.
     pub async fn delete_session(&self, session_id: &str) -> bool {
         let sid = self.resolve_session_id(session_id).await;
         if let Some(sid) = sid {
@@ -746,6 +751,31 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content.contains("Bootstrap instructions")));
+    }
+
+    #[tokio::test]
+    async fn web_session_uses_context_scoped_sandbox_scope() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage);
+        let context_key = "web-session-scope-test".to_string();
+
+        manager
+            .create_session_with_id(
+                91,
+                "scope-test".to_string(),
+                context_key.clone(),
+                "main".to_string(),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "scope-test").await;
+        let executor = executor_arc.read().await;
+
+        assert_eq!(
+            executor.session().sandbox_scope().namespace(),
+            context_key,
+            "web sessions should use a per-session sandbox namespace"
+        );
     }
 
     // -----------------------------------------------------------------------

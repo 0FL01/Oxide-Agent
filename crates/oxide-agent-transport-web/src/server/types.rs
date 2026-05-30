@@ -2,6 +2,11 @@
 
 use crate::persistence::{InMemoryWebUiStore, WebUiStore};
 use crate::session::WebSessionManager;
+use anyhow::Result as AnyResult;
+use async_trait::async_trait;
+use oxide_agent_core::sandbox::{
+    SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxScope,
+};
 #[cfg(feature = "storage-s3-r2")]
 use oxide_agent_core::{
     config::AgentSettings,
@@ -49,6 +54,47 @@ pub enum WebStoreKind {
 }
 
 // ---------------------------------------------------------------------------
+// Sandbox admin facade
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+pub(crate) trait WebSandboxControl: Send + Sync {
+    async fn destroy_scope(&self, scope: SandboxScope) -> AnyResult<()>;
+
+    async fn list_user_sandboxes(&self, user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>>;
+
+    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord>;
+
+    async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool>;
+}
+
+#[derive(Default)]
+struct RuntimeWebSandboxControl {
+    admin: SandboxAdminRuntime,
+}
+
+#[async_trait]
+impl WebSandboxControl for RuntimeWebSandboxControl {
+    async fn destroy_scope(&self, scope: SandboxScope) -> AnyResult<()> {
+        self.admin.destroy_scope(scope).await
+    }
+
+    async fn list_user_sandboxes(&self, user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>> {
+        self.admin.list_user_sandboxes(user_id).await
+    }
+
+    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord> {
+        self.admin.ensure_scope_sandbox(scope).await
+    }
+
+    async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool> {
+        self.admin
+            .delete_sandbox_by_name(user_id, container_name)
+            .await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Startup error
 // ---------------------------------------------------------------------------
 
@@ -86,6 +132,7 @@ impl std::error::Error for WebStartupError {}
 pub struct AppState {
     pub session_manager: Arc<WebSessionManager>,
     pub web_store: Arc<dyn WebUiStore>,
+    sandbox_control: Arc<dyn WebSandboxControl>,
     pub web_store_kind: WebStoreKind,
     pub web_assets: WebAssetsConfig,
     pub(crate) auth_rate_limiter: Arc<AsyncMutex<AuthRateLimiter>>,
@@ -125,6 +172,7 @@ impl AppState {
         Self {
             session_manager,
             web_store,
+            sandbox_control: Arc::new(RuntimeWebSandboxControl::default()),
             web_store_kind,
             web_assets: WebAssetsConfig::from_env(),
             auth_rate_limiter: Arc::new(AsyncMutex::new(AuthRateLimiter::new())),
@@ -182,6 +230,16 @@ impl AppState {
     #[must_use]
     pub fn web_store(&self) -> Arc<dyn WebUiStore> {
         self.web_store.clone()
+    }
+
+    #[must_use]
+    pub(crate) fn sandbox_control(&self) -> Arc<dyn WebSandboxControl> {
+        self.sandbox_control.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_sandbox_control(&mut self, sandbox_control: Arc<dyn WebSandboxControl>) {
+        self.sandbox_control = sandbox_control;
     }
 }
 
