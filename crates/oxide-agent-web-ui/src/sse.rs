@@ -252,9 +252,12 @@ async fn handle_task_event_message(
                 *last_seq = event.seq;
                 append_unique_event(config.set_events, event.clone());
             }
-            // No HTTP refresh here — progress comes via SSE progress channel.
-            // Terminal events still need a detail refresh to pick up final_response_markdown.
-            event.kind == TaskEventKind::Finished
+            if event.kind == TaskEventKind::Finished {
+                // The event can arrive before task completion details are persisted.
+                // Refresh and close only after the task record reports a closed state.
+                return refresh_task_detail_closes_stream(config).await;
+            }
+            false
         }
         Err(error) => {
             config.set_error.set(Some(error.to_string()));
@@ -340,14 +343,7 @@ async fn handle_keepalive_message(
         return false;
     }
     // Periodic refresh on keepalive to pick up any missed state
-    matches!(
-        refresh_task_detail(config).await,
-        Some(TaskStatus::WaitingForUserInput)
-            | Some(TaskStatus::Completed)
-            | Some(TaskStatus::Failed)
-            | Some(TaskStatus::Cancelled)
-            | Some(TaskStatus::Interrupted)
-    )
+    refresh_task_detail_closes_stream(config).await
 }
 
 // ── Backfill and refresh ─────────────────────────────────────────────────
@@ -365,8 +361,7 @@ async fn backfill_missed_events(config: &TaskStreamConfig, last_seq: &mut u64) -
                     append_unique_event(config.set_events, event.clone());
                 }
                 if event.kind == TaskEventKind::Finished {
-                    let _ = refresh_task_detail(config).await;
-                    return true;
+                    return refresh_task_detail_closes_stream(config).await;
                 }
             }
         }
@@ -434,6 +429,16 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<TaskStatus> {
     }
 }
 
+async fn refresh_task_detail_closes_stream(config: &TaskStreamConfig) -> bool {
+    refresh_task_detail(config)
+        .await
+        .is_some_and(task_status_closes_stream)
+}
+
+const fn task_status_closes_stream(status: TaskStatus) -> bool {
+    matches!(status, TaskStatus::WaitingForUserInput) || status.is_terminal()
+}
+
 async fn refresh_session_summary(config: &TaskStreamConfig) {
     match config.client.get_session(&config.session_id).await {
         Ok(response) => {
@@ -448,7 +453,9 @@ async fn refresh_session_summary(config: &TaskStreamConfig) {
 async fn poll_session_summary_after_terminal(config: &TaskStreamConfig) {
     for _ in 0..20 {
         TimeoutFuture::new(1_500).await;
-        refresh_session_summary(config).await;
+        if refresh_task_detail(config).await.is_none() {
+            refresh_session_summary(config).await;
+        }
     }
 }
 
