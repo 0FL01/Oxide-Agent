@@ -16,7 +16,12 @@ fn build_date_context(tools: &[ToolDefinition]) -> String {
     let tool_names = tool_name_set(tools);
     let search_tools = available_tool_names(
         &tool_names,
-        &["web_search", "duckduckgo_search", "duckduckgo_news"],
+        &[
+            "web_search",
+            "duckduckgo_search",
+            "duckduckgo_news",
+            "searxng_search",
+        ],
     );
 
     let mut context = format!(
@@ -174,6 +179,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
             "web_extract",
             "duckduckgo_search",
             "duckduckgo_news",
+            "searxng_search",
             "web_markdown",
         ],
     ) {
@@ -189,6 +195,11 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         if has_tool(&tool_names, "duckduckgo_news") {
             lines.push(
                 "Use `duckduckgo_news` for current news queries and recent articles.".to_string(),
+            );
+        }
+        if has_tool(&tool_names, "searxng_search") {
+            lines.push(
+                "Use `searxng_search` for self-hosted web search when available.".to_string(),
             );
         }
         if has_tool(&tool_names, "web_extract") {

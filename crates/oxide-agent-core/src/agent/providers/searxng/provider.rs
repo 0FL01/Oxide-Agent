@@ -1,0 +1,174 @@
+use super::backoff::MAX_RETRIES;
+use super::client::SearxngClient;
+use super::format::format_search_results;
+use super::types::{SearxngSearchArgs, TOOL_NAME};
+use crate::agent::tool_runtime::{
+    OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
+    ToolRuntimeError,
+};
+use crate::config::{get_searxng_rotation_engines, get_searxng_timeout};
+use crate::llm::ToolDefinition;
+use anyhow::Result;
+use async_trait::async_trait;
+use serde_json::json;
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::debug;
+use tracing::error;
+
+#[derive(Debug, Clone)]
+/// Tool provider for self-hosted SearXNG web search.
+pub struct SearxngProvider {
+    client: SearxngClient,
+}
+
+impl SearxngProvider {
+    /// Create a provider using the configured default timeout.
+    pub fn new(base_url: &str) -> Result<Self> {
+        Self::new_with_timeout(base_url, Duration::from_secs(get_searxng_timeout()))
+    }
+
+    /// Create a provider with an explicit HTTP timeout.
+    pub fn new_with_timeout(base_url: &str, timeout: Duration) -> Result<Self> {
+        Ok(Self {
+            client: SearxngClient::new(base_url, timeout, get_searxng_rotation_engines())?,
+        })
+    }
+
+    /// Build native typed runtime executors for SearXNG tools.
+    #[must_use]
+    pub fn tool_runtime_executors(self: &Arc<Self>) -> Vec<Arc<dyn ToolExecutor>> {
+        let spec = Self::tool_definition();
+        vec![Arc::new(SearxngToolExecutor {
+            provider: Arc::clone(self),
+            name: ToolName::from(spec.name.clone()),
+            spec,
+        })]
+    }
+
+    fn tool_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: TOOL_NAME.to_string(),
+            description: concat!(
+                "Search the public web using a self-hosted SearXNG instance. ",
+                "Best for fast web discovery, current facts, documentation leads, and finding URLs before deeper crawling."
+            )
+            .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of search results to return (1-10, default: 5)"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Preferred search language, for example 'en', 'ru', or 'all'"
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["day", "week", "month", "year"],
+                        "description": "Optional recency filter"
+                    },
+                    "safe_search": {
+                        "type": "integer",
+                        "enum": [0, 1, 2],
+                        "description": "Safe search level: 0 off, 1 moderate, 2 strict"
+                    },
+                    "categories": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional SearXNG categories such as general, news, images, science"
+                    },
+                    "engines": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional search engines to restrict the query to"
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Result page number starting from 1"
+                    }
+                },
+                "required": ["query"]
+            }),
+        }
+    }
+
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
+        debug!(tool = tool_name, "Executing SearXNG tool");
+
+        match tool_name {
+            TOOL_NAME => {
+                let args: SearxngSearchArgs = match serde_json::from_str(arguments) {
+                    Ok(args) => args,
+                    Err(_) => return Ok("Invalid search arguments".to_string()),
+                };
+
+                debug!(
+                    query = %args.query,
+                    max_results = args.normalized_max_results(),
+                    language = ?args.language,
+                    time_range = ?args.time_range,
+                    safe_search = ?args.normalized_safe_search(),
+                    "SearXNG search"
+                );
+
+                match self.client.search(&args).await {
+                    Ok(response) => Ok(format_search_results(
+                        &args.query,
+                        &response,
+                        args.normalized_max_results(),
+                    )),
+                    Err(error) => {
+                        error!(
+                            query = %args.query,
+                            error = %error,
+                            "SearXNG search failed after {} attempts",
+                            MAX_RETRIES + 1,
+                        );
+                        Ok(error.agent_message())
+                    }
+                }
+            }
+            _ => anyhow::bail!("Unknown SearXNG tool: {tool_name}"),
+        }
+    }
+}
+
+struct SearxngToolExecutor {
+    provider: Arc<SearxngProvider>,
+    name: ToolName,
+    spec: ToolDefinition,
+}
+
+#[async_trait]
+impl ToolExecutor for SearxngToolExecutor {
+    fn name(&self) -> ToolName {
+        self.name.clone()
+    }
+
+    fn spec(&self) -> ToolDefinition {
+        self.spec.clone()
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+    ) -> std::result::Result<ToolOutput, ToolRuntimeError> {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig {
+            timeout: invocation.timeout.clone(),
+            artifact_dir: invocation.execution_context.artifact_dir.clone(),
+            ..ToolRuntimeConfig::default()
+        });
+        self.provider
+            .execute_tool(self.name.as_str(), &invocation.raw_arguments)
+            .await
+            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
+    }
+}

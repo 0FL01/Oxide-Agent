@@ -20,6 +20,7 @@ cargo_features = ["profile-host-bwrap"]
 "tool/sandbox-recreate" = { enabled = true }
 "tool/tavily" = { enabled = true }
 "tool/duckduckgo" = { enabled = true }
+"tool/searxng" = { enabled = true }
 "tool/todos" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
 "tool/wiki-memory" = { enabled = true }

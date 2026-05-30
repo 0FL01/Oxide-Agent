@@ -92,6 +92,7 @@ with profile_path.open("rb") as fh:
 module_ids = set((profile_doc.get("modules") or {}).keys())
 
 uses_sandboxd = "sandbox-daemon/sandboxd" in module_ids
+uses_searxng = "tool/searxng" in module_ids
 uses_browser_use = False  # Browser Use bridge is intentionally dormant until a cost-effective vision model is selected.
 uses_ssh_mcp = "integration/ssh-mcp" in module_ids
 
@@ -178,6 +179,12 @@ if ("sandbox_image" in services) != uses_sandboxd:
 if "browser_use" in services and not uses_browser_use:
     fail("browser_use service must stay absent while the bridge is intentionally dormant")
 
+if ("searxng" in services) != uses_searxng:
+    fail(
+        "searxng service selection does not match tool/searxng module; "
+        f"service_present={'searxng' in services}; module_selected={uses_searxng}"
+    )
+
 app_service_name = "oxide_web" if is_web_profile else "oxide_agent"
 app_service = services.get(app_service_name)
 if not app_service:
@@ -251,6 +258,7 @@ case "${profile}" in
     require_service oxide_agent
     forbid_service sandboxd
     forbid_service sandbox_image
+    forbid_service searxng
     forbid_service browser_use
     forbid_config_text "MCP_BINARIES"
     forbid_config_text "ssh-mcp"
@@ -264,6 +272,7 @@ case "${profile}" in
     require_service oxide_agent
     require_service sandboxd
     require_service sandbox_image
+    require_service searxng
     forbid_service oxide_web
     require_config_text "sandbox/Dockerfile.dev"
     forbid_config_text "sandbox/Dockerfile.sandbox"
@@ -280,6 +289,7 @@ case "${profile}" in
     require_service oxide_web
     require_service sandboxd
     require_service sandbox_image
+    require_service searxng
     forbid_service oxide_agent
     require_config_text "sandbox/Dockerfile.dev"
     forbid_config_text "sandbox/Dockerfile.sandbox"
@@ -296,6 +306,7 @@ case "${profile}" in
     require_service oxide_agent
     require_service sandboxd
     require_service sandbox_image
+    require_service searxng
     require_config_text "sandbox/Dockerfile.dev"
     forbid_config_text "sandbox/Dockerfile.sandbox"
     if ! grep -q "/var/run/docker.sock" <<<"${config}"; then

@@ -30,6 +30,7 @@ cargo_features = ["profile-full"]
 "tool/sandbox-fileops" = { enabled = true }
 "tool/sandbox-recreate" = { enabled = true }
 "tool/duckduckgo" = { enabled = true }
+"tool/searxng" = { enabled = true }
 "tool/stack-logs" = { enabled = true }
 "tool/tavily" = { enabled = true }
 "tool/todos" = { enabled = true }

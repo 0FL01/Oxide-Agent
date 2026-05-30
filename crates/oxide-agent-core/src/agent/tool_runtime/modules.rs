@@ -42,6 +42,8 @@ use crate::agent::providers::FileHosterProvider;
     feature = "tool-media-video"
 ))]
 use crate::agent::providers::MediaFileProvider;
+#[cfg(feature = "tool-searxng")]
+use crate::agent::providers::SearxngProvider;
 #[cfg(feature = "tool-stack-logs")]
 use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-tavily")]
@@ -883,6 +885,52 @@ impl DuckDuckGoToolModule {
 impl ToolModule for DuckDuckGoToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/duckduckgo")
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
+    }
+}
+
+/// Capability module for SearXNG web search.
+#[cfg(feature = "tool-searxng")]
+pub struct SearxngToolModule;
+
+#[cfg(feature = "tool-searxng")]
+impl SearxngToolModule {
+    fn provider(&self) -> Option<SearxngProvider> {
+        if !crate::config::is_searxng_enabled() {
+            return None;
+        }
+
+        match crate::config::get_searxng_url() {
+            Some(url) if !url.trim().is_empty() => match SearxngProvider::new(&url) {
+                Ok(provider) => Some(provider),
+                Err(error) => {
+                    tracing::warn!(error = %error, "SearXNG provider initialization failed");
+                    None
+                }
+            },
+            Some(_) => {
+                tracing::warn!("SearXNG enabled but SEARXNG_URL is empty; provider not registered");
+                None
+            }
+            None => {
+                tracing::warn!(
+                    "SearXNG enabled but SEARXNG_URL is not set; provider not registered"
+                );
+                None
+            }
+        }
+    }
+}
+
+#[cfg(feature = "tool-searxng")]
+impl ToolModule for SearxngToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/searxng")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

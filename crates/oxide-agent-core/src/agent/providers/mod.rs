@@ -45,6 +45,9 @@ pub mod tavily;
 #[cfg(feature = "tool-duckduckgo")]
 pub mod duckduckgo;
 
+#[cfg(feature = "tool-searxng")]
+pub mod searxng;
+
 #[cfg(feature = "tool-browser-use")]
 pub mod browser_use;
 
@@ -110,6 +113,9 @@ pub use tavily::TavilyProvider;
 
 #[cfg(feature = "tool-duckduckgo")]
 pub use duckduckgo::DuckDuckGoProvider;
+
+#[cfg(feature = "tool-searxng")]
+pub use searxng::SearxngProvider;
 
 #[cfg(feature = "tool-browser-use")]
 pub use browser_use::BrowserUseProvider;

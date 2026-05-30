@@ -85,6 +85,12 @@ pub struct AgentSettings {
     pub duckduckgo_user_agent: Option<String>,
     /// Optional DuckDuckGo proxy URL.
     pub duckduckgo_proxy_url: Option<String>,
+    /// SearXNG base URL.
+    pub searxng_url: Option<String>,
+    /// Enable SearXNG tool provider registration.
+    pub searxng_enabled: Option<bool>,
+    /// SearXNG request timeout (seconds).
+    pub searxng_timeout_secs: Option<u64>,
     /// Browser Use bridge base URL.
     pub browser_use_url: Option<String>,
     /// Browser Use request timeout (seconds).
@@ -735,6 +741,18 @@ impl AgentSettings {
                     self.duckduckgo_proxy_url = Some(val);
                 }
             }
+        }
+
+        if self.searxng_url.is_none() {
+            if let Ok(val) = std::env::var("SEARXNG_URL") {
+                if !val.is_empty() {
+                    self.searxng_url = Some(val);
+                }
+            }
+        }
+
+        if self.searxng_enabled.is_none() {
+            self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
         }
 
         if self.browser_use_url.is_none() {
@@ -1882,6 +1900,54 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn searxng_enabled_flag_falls_back_to_url_presence() {
+        env::remove_var("SEARXNG_ENABLED");
+        env::set_var("SEARXNG_URL", "http://searxng:8080");
+
+        assert!(is_searxng_enabled());
+
+        env::remove_var("SEARXNG_URL");
+    }
+
+    #[test]
+    fn searxng_rotation_engines_use_defaults_when_env_missing() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::remove_var("SEARXNG_ROTATION_ENGINES");
+
+        assert_eq!(
+            get_searxng_rotation_engines(),
+            vec![
+                "brave".to_string(),
+                "bing".to_string(),
+                "qwant".to_string(),
+                "mojeek".to_string(),
+                "yandex".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn searxng_rotation_engines_parse_csv() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::set_var("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
+
+        assert_eq!(
+            get_searxng_rotation_engines(),
+            vec![
+                "bing".to_string(),
+                "qwant".to_string(),
+                "yandex".to_string()
+            ]
+        );
+
+        env::remove_var("SEARXNG_ROTATION_ENGINES");
+    }
 }
 
 /// Information about a supported LLM model.
@@ -2168,6 +2234,13 @@ pub const DUCKDUCKGO_DEFAULT_MAX_BACKOFF_MS: u64 = 30_000;
 /// Default DuckDuckGo cooldown after blocks or transient failures.
 pub const DUCKDUCKGO_DEFAULT_COOLDOWN_SECS: u64 = 90;
 
+// Self-hosted SearXNG HTTP client configuration
+/// Default timeout for SearXNG requests (seconds)
+pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Default engines used for SearXNG rotation fallback.
+pub const SEARXNG_DEFAULT_ROTATION_ENGINES: &[&str] =
+    &["brave", "bing", "qwant", "mojeek", "yandex"];
+
 /// Default timeout for Browser Use bridge requests (seconds)
 pub const BROWSER_USE_DEFAULT_TIMEOUT_SECS: u64 = 300;
 
@@ -2287,6 +2360,63 @@ pub fn get_duckduckgo_backoff_config() -> DuckDuckGoBackoffConfig {
             .unwrap_or(DUCKDUCKGO_DEFAULT_INITIAL_BACKOFF_MS),
         max_backoff_ms: parse_env_u64("DUCKDUCKGO_MAX_BACKOFF_MS")
             .unwrap_or(DUCKDUCKGO_DEFAULT_MAX_BACKOFF_MS),
+    }
+}
+
+/// Get SearXNG base URL from env.
+///
+/// Environment variable: `SEARXNG_URL`
+#[must_use]
+pub fn get_searxng_url() -> Option<String> {
+    std::env::var("SEARXNG_URL").ok().filter(|s| !s.is_empty())
+}
+
+/// Determine whether SearXNG tools should be registered.
+///
+/// Enabled when `SEARXNG_ENABLED` is truthy **or** when `SEARXNG_URL` is set.
+#[must_use]
+pub fn is_searxng_enabled() -> bool {
+    if let Some(enabled) = parse_optional_env_bool("SEARXNG_ENABLED") {
+        return enabled;
+    }
+    get_searxng_url().is_some()
+}
+
+/// Get SearXNG timeout from env or default.
+///
+/// Environment variable: `SEARXNG_TIMEOUT_SECS`
+#[must_use]
+pub fn get_searxng_timeout() -> u64 {
+    std::env::var("SEARXNG_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SEARXNG_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get preferred engines for SearXNG rotation from env or defaults.
+///
+/// Environment variable: `SEARXNG_ROTATION_ENGINES`
+/// Value format: comma-separated engine names, for example "bing,qwant,yandex".
+#[must_use]
+pub fn get_searxng_rotation_engines() -> Vec<String> {
+    let parsed = std::env::var("SEARXNG_ROTATION_ENGINES")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if parsed.is_empty() {
+        SEARXNG_DEFAULT_ROTATION_ENGINES
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect()
+    } else {
+        parsed
     }
 }
 

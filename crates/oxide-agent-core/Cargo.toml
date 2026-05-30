@@ -97,6 +97,7 @@ profile-full = [
     "tool-webfetch-md",
     "tool-tavily",
     "tool-duckduckgo",
+    "tool-searxng",
     "tool-browser-use",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
@@ -134,6 +135,7 @@ profile-embedded-opencode-local = [
     "tool-media-video",
     "tool-tavily",
     "tool-duckduckgo",
+    "tool-searxng",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
@@ -157,6 +159,7 @@ profile-web-embedded-opencode-local = [
     "tool-media-video",
     "tool-tavily",
     "tool-duckduckgo",
+    "tool-searxng",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
@@ -178,6 +181,7 @@ profile-search-only = [
     "tool-webfetch-md",
     "tool-tavily",
     "tool-duckduckgo",
+    "tool-searxng",
 ]
 profile-no-sandbox = [
     "transport-telegram",
@@ -215,6 +219,7 @@ profile-host-bwrap = [
     "tool-media-video",
     "tool-tavily",
     "tool-duckduckgo",
+    "tool-searxng",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
@@ -255,6 +260,7 @@ tool-wiki-memory = []
 tool-webfetch-md = ["dep:htmd", "dep:reqwest"]
 tool-tavily = ["dep:reqwest"]
 tool-duckduckgo = ["dep:duckduckgo", "dep:reqwest", "dep:scraper"]
+tool-searxng = ["dep:reqwest"]
 tool-browser-use = ["dep:reqwest"]
 tool-sandbox-fileops = []
 tool-sandbox-exec = []

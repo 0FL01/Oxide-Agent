@@ -35,6 +35,8 @@ services:
       DUCKDUCKGO_ENABLED: "true"
       DUCKDUCKGO_MIN_DELAY_MS: "2500"
       DUCKDUCKGO_JITTER_MS: "1500"
+      SEARXNG_ENABLED: "true"
+      SEARXNG_URL: http://127.0.0.1:8081
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-agent-sandbox:latest}
       SANDBOX_BACKEND: broker
       SANDBOXD_SOCKET: /run/sandboxd/sandboxd.sock
@@ -44,6 +46,8 @@ services:
     network_mode: host
     depends_on:
       sandboxd:
+        condition: service_healthy
+      searxng:
         condition: service_healthy
     logging:
       driver: json-file
@@ -77,6 +81,31 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  searxng:
+    image: searxng/searxng:2026.5.31-300695de5
+    container_name: searxng
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Moscow
+      SEARXNG_BASE_URL: http://127.0.0.1:8081/
+      GRANIAN_HOST: 0.0.0.0
+      GRANIAN_PORT: "8080"
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
     logging:
       driver: json-file
       options:

@@ -236,6 +236,7 @@ impl ManagerControlPlaneProvider {
         #[cfg(not(any(
             feature = "tool-tavily",
             feature = "tool-duckduckgo",
+            feature = "tool-searxng",
             feature = "tool-webfetch-md"
         )))]
         let _ = groups;
@@ -255,6 +256,15 @@ impl ManagerControlPlaneProvider {
                 provider: "duckduckgo",
                 aliases: &["search", "duckduckgo", "ddg", "news"],
                 tools: TOPIC_AGENT_DUCKDUCKGO_TOOLS,
+            });
+        }
+
+        #[cfg(feature = "tool-searxng")]
+        if crate::config::is_searxng_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "searxng",
+                aliases: &["search", "searxng"],
+                tools: TOPIC_AGENT_SEARXNG_TOOLS,
             });
         }
 

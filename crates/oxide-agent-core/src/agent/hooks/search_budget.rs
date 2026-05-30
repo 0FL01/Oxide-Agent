@@ -32,7 +32,11 @@ impl SearchBudgetHook {
     fn is_search_tool(&self, tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "web_search" | "web_extract" | "duckduckgo_search" | "duckduckgo_news"
+            "web_search"
+                | "web_extract"
+                | "duckduckgo_search"
+                | "duckduckgo_news"
+                | "searxng_search"
         )
     }
 

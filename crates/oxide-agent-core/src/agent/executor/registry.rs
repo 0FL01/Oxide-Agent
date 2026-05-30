@@ -37,6 +37,8 @@ use crate::agent::tool_runtime::SandboxExecToolModule;
 use crate::agent::tool_runtime::SandboxFileOpsToolModule;
 #[cfg(feature = "tool-sandbox-recreate")]
 use crate::agent::tool_runtime::SandboxRecreateToolModule;
+#[cfg(feature = "tool-searxng")]
+use crate::agent::tool_runtime::SearxngToolModule;
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::tool_runtime::SileroTtsToolModule;
 #[cfg(feature = "tool-stack-logs")]
@@ -63,6 +65,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-media-video",
     feature = "tool-reminder",
     feature = "tool-duckduckgo",
+    feature = "tool-searxng",
     feature = "tool-stack-logs",
     feature = "tool-tavily",
     feature = "tool-todos",
@@ -138,6 +141,7 @@ impl AgentExecutor {
             feature = "tool-media-video",
             feature = "tool-reminder",
             feature = "tool-duckduckgo",
+            feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
             feature = "tool-todos",
@@ -175,6 +179,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
         #[cfg(feature = "tool-duckduckgo")]
         self.register_tool_runtime_module(registry, &DuckDuckGoToolModule, ctx);
+        #[cfg(feature = "tool-searxng")]
+        self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
         #[cfg(feature = "integration-ssh-mcp")]
         self.register_tool_runtime_module(registry, &SshMcpToolModule, ctx);
         #[cfg(feature = "tool-stack-logs")]
@@ -264,6 +270,7 @@ impl AgentExecutor {
             feature = "tool-media-video",
             feature = "tool-reminder",
             feature = "tool-duckduckgo",
+            feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
             feature = "tool-todos",

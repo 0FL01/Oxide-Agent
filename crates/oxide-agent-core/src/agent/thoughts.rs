@@ -18,6 +18,7 @@ const THOUGHT_TEMPLATES: &[(&str, &str)] = &[
     ("tavily_crawl", "Analyzing website structure {url}"),
     ("duckduckgo_search", "Searching the web: {query}"),
     ("duckduckgo_news", "Searching news: {query}"),
+    ("searxng_search", "Searching the web: {query}"),
     ("download_file", "Downloading file from {url}"),
     ("ytdlp_download", "Downloading video from {url}"),
     ("ytdlp_info", "Getting video information {url}"),
