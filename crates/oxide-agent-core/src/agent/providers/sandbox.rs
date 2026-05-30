@@ -610,7 +610,7 @@ fn sandbox_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "execute_command".to_string(),
-            description: "Execute a shell command in the isolated sandbox environment with /workspace as the working directory. Do not assume Bash-specific syntax unless the sandbox image provides bash. Returns JSON with ok, stdout, stderr, and exit_code. Common commands may include python3, pip, ffmpeg, yt-dlp, curl, wget, date, cat, ls, grep, and other standard Unix tools.".to_string(),
+            description: "Execute a shell command in the isolated sandbox environment with /workspace as the working directory. Do not assume Bash-specific syntax unless the sandbox image provides bash. Returns JSON with ok, stdout, stderr, and exit_code. Common commands may include python3, pip, ffmpeg, yt-dlp, curl, wget, git, date, cat, ls, grep, unzip, tar, and other standard Unix tools. You may use curl, wget, or git clone to bring external files, archives, and repositories into the sandbox for local analysis. Unpack archives with unzip, tar -xf, 7z x, etc., then inspect contents with list_files and read_file.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

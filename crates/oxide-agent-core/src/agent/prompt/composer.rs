@@ -148,6 +148,7 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
         let mut lines = vec![
             "Use `execute_command` for builds, tests, diagnostics, and shell-based transformations inside the sandbox.".to_string(),
             "Verify code or file changes with relevant commands when practical.".to_string(),
+            "To study external resources, download them into the sandbox first: use `git clone` for repositories, `curl` or `wget` for files and archives. Then unpack archives (unzip, tar -xf) and explore cloned repos with `list_files` and `read_file` to understand their structure and contents.".to_string(),
         ];
         if has_any_tool(&tool_names, &["read_file", "write_file", "apply_file_edit"]) {
             lines.push("Prefer dedicated file tools over shell `cat`, redirection, or ad-hoc text replacement for file operations.".to_string());
