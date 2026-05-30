@@ -143,7 +143,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                         />
                         <div class="composer-footer">
                             <span class="composer-hint">"Ctrl+Enter to send"</span>
-                            <div class="composer-actions">
+                            <div class="composer-actions" class:btn-hidden=move || input.get().trim().is_empty()>
                                 <button
                                     type="submit"
                                     disabled=loading
@@ -485,7 +485,7 @@ fn SessionWorkspace(
                             <span class="composer-hint">
                                 {move || composer_hint(is_running(), is_waiting())}
                             </span>
-                            <div class="composer-actions">
+                            <div class="composer-actions" class:btn-hidden=move || input.get().trim().is_empty() && !is_waiting()>
                                 <button
                                     type="submit"
                                     disabled=move || loading.get() || is_running()

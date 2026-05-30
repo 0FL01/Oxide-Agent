@@ -178,6 +178,7 @@ button:disabled:active {
   background: var(--accent-blue);
   border-color: var(--accent-blue);
   color: #fff;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .btn-primary:hover {
@@ -1816,6 +1817,7 @@ button.btn-primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .btn-primary:hover,
@@ -2370,6 +2372,12 @@ textarea {
 .composer-actions {
   display: flex;
   gap: 8px;
+}
+
+.composer-actions.btn-hidden .btn-primary {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
 }
 
 .status-wrap {
