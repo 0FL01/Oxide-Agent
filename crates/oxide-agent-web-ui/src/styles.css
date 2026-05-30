@@ -673,10 +673,6 @@ label {
   font-size: 12px;
 }
 
-.composer-notice.busy {
-  color: var(--accent-yellow);
-}
-
 .composer-notice.waiting {
   color: var(--accent-blue);
 }
@@ -2505,12 +2501,6 @@ textarea {
   border: 1px solid rgba(216, 162, 30, 0.35);
   background: rgba(216, 162, 30, 0.06);
   color: var(--warning);
-}
-
-.composer-notice.busy {
-  border: 1px solid rgba(16, 163, 127, 0.28);
-  background: rgba(16, 163, 127, 0.06);
-  color: var(--accent);
 }
 
 .agent-activity,

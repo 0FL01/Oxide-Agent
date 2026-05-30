@@ -528,9 +528,6 @@ fn ComposerNotice(active_task: ReadSignal<Option<TaskDetail>>) -> impl IntoView 
             Some(TaskStatus::WaitingForUserInput) => view! {
                 <p class="composer-notice waiting">"The task is waiting for your reply. Sending will resume the same task."</p>
             }.into_any(),
-            Some(TaskStatus::Queued | TaskStatus::Running) => view! {
-                <p class="composer-notice busy">"This session is busy. Stop the active task before starting another one."</p>
-            }.into_any(),
             _ => ().into_any(),
         }}
     }
