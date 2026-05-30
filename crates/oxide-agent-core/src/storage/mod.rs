@@ -57,7 +57,8 @@ pub use keys::{
     topic_infra_config_key, user_agent_memory_key, user_config_key, user_context_agent_flow_key,
     user_context_agent_flow_memory_key, user_context_agent_flow_prefix,
     user_context_agent_flows_prefix, user_context_agent_memory_key, wiki_context_inbox_key,
-    wiki_context_key, wiki_context_page_key, wiki_context_raw_key, wiki_global_key,
+    wiki_context_key, wiki_context_page_key, wiki_context_prefix, wiki_context_raw_key,
+    wiki_global_key,
 };
 #[cfg(feature = "storage-s3-r2")]
 pub use modules::{build_primary_storage, BuiltStorageBackend, StorageBackendModule};

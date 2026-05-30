@@ -71,6 +71,12 @@ pub fn wiki_context_key(prefix: &str, context_id: &str, file: &str) -> String {
     key_with_optional_prefix(prefix, &format!("wiki/v1/contexts/{context_id}/{file}"))
 }
 
+/// Returns the S3 prefix that covers all objects for a wiki context (pages, inbox, raw, core files).
+#[must_use]
+pub fn wiki_context_prefix(prefix: &str, context_id: &str) -> String {
+    key_with_optional_prefix(prefix, &format!("wiki/v1/contexts/{context_id}/"))
+}
+
 /// Returns the S3 key for a context-scoped LLM Wiki topic page.
 #[must_use]
 pub fn wiki_context_page_key(prefix: &str, context_id: &str, slug: &str) -> String {

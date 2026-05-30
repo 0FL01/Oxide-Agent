@@ -142,6 +142,14 @@ pub trait StorageProvider: Send + Sync {
             "wiki text deletion is not implemented for this storage provider".to_string(),
         ))
     }
+    /// Delete all wiki objects (pages, inbox, raw, core files) for a context.
+    async fn delete_wiki_context(
+        &self,
+        _user_id: i64,
+        _context_key: String,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
     /// Clear all context (history and memory) for a user.
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError>;
     /// Check connection to storage.

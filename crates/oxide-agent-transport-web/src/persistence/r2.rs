@@ -398,6 +398,11 @@ where
         self.object_store
             .delete_prefix(&web_task_events_prefix(user_id, session_id))
             .await?;
+        let context_key = format!("web-session-{session_id}");
+        let context_id =
+            oxide_agent_core::agent::wiki_memory::scope::wiki_context_id(user_id, &context_key);
+        let wiki_prefix = oxide_agent_core::storage::wiki_context_prefix("", &context_id);
+        self.object_store.delete_prefix(&wiki_prefix).await?;
         Ok(true)
     }
 
@@ -1118,5 +1123,80 @@ mod tests {
             redacted: false,
             truncated: false,
         }
+    }
+
+    #[tokio::test]
+    async fn delete_session_removes_wiki_context_objects() {
+        let store = ObjectStoreWebUiStore::new(InMemoryObjectStore::default());
+        let now = Utc::now();
+        store
+            .save_session(session_record(7, "s-wiki", now))
+            .await
+            .unwrap();
+
+        // Insert wiki objects under the expected context prefix.
+        let context_key = "web-session-s-wiki";
+        let context_id =
+            oxide_agent_core::agent::wiki_memory::scope::wiki_context_id(7, context_key);
+        let wiki_prefix =
+            oxide_agent_core::storage::wiki_context_prefix("", &context_id);
+        let page_key = format!("{wiki_prefix}pages/runbook.md");
+        let inbox_key = format!("{wiki_prefix}inbox/note.md");
+        let overview_key = format!("{wiki_prefix}overview.md");
+
+        store
+            .object_store
+            .save_json(&page_key, &"page content")
+            .await
+            .unwrap();
+        store
+            .object_store
+            .save_json(&inbox_key, &"inbox content")
+            .await
+            .unwrap();
+        store
+            .object_store
+            .save_json(&overview_key, &"overview content")
+            .await
+            .unwrap();
+
+        // Insert a wiki object for a different session -- must survive.
+        let foreign_context_id =
+            oxide_agent_core::agent::wiki_memory::scope::wiki_context_id(7, "web-session-other");
+        let foreign_prefix =
+            oxide_agent_core::storage::wiki_context_prefix("", &foreign_context_id);
+        let foreign_key = format!("{foreign_prefix}pages/runbook.md");
+        store
+            .object_store
+            .save_json(&foreign_key, &"foreign content")
+            .await
+            .unwrap();
+
+        assert!(store.delete_session(7, "s-wiki").await.unwrap());
+
+        // Wiki objects for the deleted session must be gone.
+        let remaining: Vec<String> = store
+            .object_store
+            .list_keys_under_prefix(&wiki_prefix)
+            .await
+            .unwrap();
+        assert!(
+            remaining.is_empty(),
+            "wiki objects for deleted session should be removed, got: {remaining:?}"
+        );
+
+        // Foreign session wiki must be intact.
+        let foreign_remaining: Vec<String> = store
+            .object_store
+            .list_keys_under_prefix(&foreign_prefix)
+            .await
+            .unwrap();
+        assert_eq!(foreign_remaining, vec![foreign_key]);
+    }
+
+    #[tokio::test]
+    async fn delete_session_returns_false_when_missing() {
+        let store = ObjectStoreWebUiStore::new(InMemoryObjectStore::default());
+        assert!(!store.delete_session(999, "nonexistent").await.unwrap());
     }
 }
