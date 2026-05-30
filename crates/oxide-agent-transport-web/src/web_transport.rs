@@ -8,12 +8,12 @@ use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressSt
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use oxide_agent_web_contracts::{PersistedTaskEvent, TaskEventKind};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
+use tokio::sync::RwLock;
 
 /// Returns the snake_case variant name of an AgentEvent.
 fn event_variant_name(event: &AgentEvent) -> String {
@@ -995,7 +995,7 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{BrowserEventScope, TaskEventLog, collect_events, event_variant_name};
+    use super::{collect_events, event_variant_name, BrowserEventScope, TaskEventLog};
     use oxide_agent_core::agent::compaction::{
         CompactionBackend, CompactionPhase, CompactionReason,
     };
@@ -1107,13 +1107,11 @@ mod tests {
             ]
         );
         assert!(!event_names.iter().any(|event| event == "pruning_applied"));
-        assert!(
-            result
-                .state
-                .last_compaction_status
-                .as_deref()
-                .is_some_and(|status| status.contains("Compaction: compacted history"))
-        );
+        assert!(result
+            .state
+            .last_compaction_status
+            .as_deref()
+            .is_some_and(|status| status.contains("Compaction: compacted history")));
     }
 
     #[tokio::test]
@@ -1499,12 +1497,10 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 2);
         assert_eq!(result.tool_calls[0].id, "tool-a");
         assert_eq!(result.tool_calls[1].id, "tool-b");
-        assert!(
-            result
-                .tool_calls
-                .iter()
-                .all(|call| call.finished_at.is_some())
-        );
+        assert!(result
+            .tool_calls
+            .iter()
+            .all(|call| call.finished_at.is_some()));
         assert_eq!(result.persisted_events[0].payload["id"], "tool-a");
         assert_eq!(result.persisted_events[1].payload["id"], "tool-b");
         assert_eq!(result.persisted_events[2].payload["id"], "tool-b");
@@ -1538,11 +1534,9 @@ mod tests {
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.current_thought.as_deref() == Some("Collecting detailed evidence")
         }));
-        assert!(
-            snapshots
-                .last()
-                .is_some_and(|snapshot| snapshot.is_finished)
-        );
+        assert!(snapshots
+            .last()
+            .is_some_and(|snapshot| snapshot.is_finished));
         assert!(result.state.is_finished);
     }
 }

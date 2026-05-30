@@ -201,11 +201,7 @@ impl StorageProvider for R2Storage {
     ) -> Result<(), StorageError> {
         let context_id = crate::agent::wiki_memory::scope::wiki_context_id(user_id, &context_key);
         let prefix = super::keys::wiki_context_prefix("", &context_id);
-        with_storage_reason(
-            "delete_wiki_context",
-            self.delete_prefix(&prefix),
-        )
-        .await
+        with_storage_reason("delete_wiki_context", self.delete_prefix(&prefix)).await
     }
 
     /// Clear all context for a user.

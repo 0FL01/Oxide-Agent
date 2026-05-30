@@ -5,8 +5,8 @@
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
 use std::collections::HashSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use url::Url;
 
 /// Hook that limits the number of search tool calls.

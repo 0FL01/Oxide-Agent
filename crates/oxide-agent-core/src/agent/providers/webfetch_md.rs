@@ -8,11 +8,11 @@ use crate::agent::tool_runtime::{
     ToolRuntimeError,
 };
 use crate::llm::ToolDefinition;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, SERVER, USER_AGENT};
 use reqwest::Url;
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, HeaderMap, SERVER, USER_AGENT};
 use serde::Deserialize;
 use serde_json::json;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -751,73 +751,60 @@ mod tests {
     fn rejects_non_http_urls() {
         let error = parse_web_url("file:///etc/passwd").err();
         assert!(error.is_some());
-        assert!(
-            error
-                .map(|error| error.to_string().contains("unsupported URL scheme"))
-                .unwrap_or(false)
-        );
+        assert!(error
+            .map(|error| error.to_string().contains("unsupported URL scheme"))
+            .unwrap_or(false));
     }
 
     #[test]
     fn rejects_localhost_and_private_ips() {
         let localhost = Url::parse("http://localhost/page");
         assert!(localhost.is_ok());
-        assert!(
-            localhost
-                .ok()
-                .and_then(|url| reject_unsafe_url(&url).err())
-                .is_some()
-        );
+        assert!(localhost
+            .ok()
+            .and_then(|url| reject_unsafe_url(&url).err())
+            .is_some());
 
         let private_ip = Url::parse("http://192.168.1.1/page");
         assert!(private_ip.is_ok());
-        assert!(
-            private_ip
-                .ok()
-                .and_then(|url| reject_unsafe_url(&url).err())
-                .is_some()
-        );
+        assert!(private_ip
+            .ok()
+            .and_then(|url| reject_unsafe_url(&url).err())
+            .is_some());
 
         let metadata_ip = Url::parse("http://169.254.169.254/latest/meta-data");
         assert!(metadata_ip.is_ok());
-        assert!(
-            metadata_ip
-                .ok()
-                .and_then(|url| reject_unsafe_url(&url).err())
-                .is_some()
-        );
+        assert!(metadata_ip
+            .ok()
+            .and_then(|url| reject_unsafe_url(&url).err())
+            .is_some());
 
         let unique_local_ipv6 = Url::parse("http://[fd00::1]/page");
         assert!(unique_local_ipv6.is_ok());
-        assert!(
-            unique_local_ipv6
-                .ok()
-                .and_then(|url| reject_unsafe_url(&url).err())
-                .is_some()
-        );
+        assert!(unique_local_ipv6
+            .ok()
+            .and_then(|url| reject_unsafe_url(&url).err())
+            .is_some());
     }
 
     #[test]
     fn allows_public_urls() {
         let public_url = Url::parse("https://example.com/page");
         assert!(public_url.is_ok());
-        assert!(
-            public_url
-                .ok()
-                .map(|url| reject_unsafe_url(&url).is_ok())
-                .unwrap_or(false)
-        );
+        assert!(public_url
+            .ok()
+            .map(|url| reject_unsafe_url(&url).is_ok())
+            .unwrap_or(false));
     }
 
     #[test]
     fn rejects_direct_media_urls() {
         let url = Url::parse("https://example.com/photo.jpg");
         assert!(url.is_ok());
-        assert!(
-            url.ok()
-                .and_then(|url| reject_media_url(&url).err())
-                .is_some()
-        );
+        assert!(url
+            .ok()
+            .and_then(|url| reject_media_url(&url).err())
+            .is_some());
     }
 
     #[test]
@@ -864,13 +851,11 @@ mod tests {
     fn allows_regular_html_without_antibot_markers() {
         let headers = HeaderMap::new();
 
-        assert!(
-            reject_anti_bot_challenge(
-                &headers,
-                "<html><body><h1>Regular article</h1></body></html>",
-            )
-            .is_ok()
-        );
+        assert!(reject_anti_bot_challenge(
+            &headers,
+            "<html><body><h1>Regular article</h1></body></html>",
+        )
+        .is_ok());
     }
 
     #[test]
@@ -907,13 +892,11 @@ mod tests {
             .expect("typed web_markdown returns failure output");
 
         assert_eq!(output.status, ToolOutputStatus::Failure);
-        assert!(
-            output
-                .error_message
-                .as_deref()
-                .expect("error message")
-                .contains("anti-bot protection at example.test")
-        );
+        assert!(output
+            .error_message
+            .as_deref()
+            .expect("error message")
+            .contains("anti-bot protection at example.test"));
 
         let payload = output.structured_payload.expect("structured payload");
         assert_eq!(

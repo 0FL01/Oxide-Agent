@@ -2,9 +2,9 @@ use crate::auth::use_auth;
 use crate::components::ErrorBanner;
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
-use crate::sse::{TaskStreamConfig, spawn_task_stream};
+use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{friendly_time, navigate, spawn_ui};
-use leptos::prelude::*;
+use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     CreateTaskRequest, EditTaskInputRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
     ResumeTaskRequest, SessionDetail, SessionSummary, SseConnectionState, TaskDetail,
@@ -837,6 +837,7 @@ fn TaskCard(
     let (saving, set_saving) = signal(false);
     let original_input = task.input_markdown.clone();
     let input_markdown = task.input_markdown.clone();
+    let rendered_input_markdown = input_markdown.clone();
     let thought_label = thought_label(&task);
 
     let card_status_class = match task.status {
@@ -846,6 +847,7 @@ fn TaskCard(
         _ => "",
     };
     let card_class = format!("task-card {card_status_class}");
+    let final_response_markdown = task.final_response_markdown.clone();
 
     view! {
         <article class=card_class>
@@ -874,21 +876,36 @@ fn TaskCard(
                     }.into_any()
                 } else {
                     view! {
-                        <MarkdownContent markdown=input_markdown.clone() />
+                        <CollapsibleMessageBody markdown=rendered_input_markdown.clone() />
                     }.into_any()
                 }}
                 </div>
-                {editable.then(|| view! {
+                <div class="user-message-actions" aria-label="User message actions">
+                    {editable.then(|| view! {
+                        <button
+                            class="message-action-button"
+                            type="button"
+                            title="Edit input"
+                            aria-label="Edit input"
+                            on:click=move |_| set_editing.set(true)
+                        >
+                            "✎"
+                        </button>
+                    })}
                     <button
-                        class="edit-input-icon"
+                        class="message-action-button"
                         type="button"
-                        title="Edit input"
-                        aria-label="Edit input"
-                        on:click=move |_| set_editing.set(true)
+                        title="Copy user message"
+                        aria-label="Copy user message"
+                        on:click=move |_| {
+                            if let Some(window) = web_sys::window() {
+                                let _ = window.navigator().clipboard().write_text(&input_markdown);
+                            }
+                        }
                     >
-                        "✎"
+                        "⧉"
                     </button>
-                })}
+                </div>
             </div>
             {editable.then(|| view! {
                 <div class="task-action-row">
@@ -896,10 +913,30 @@ fn TaskCard(
                 </div>
             })}
 
-            {task.final_response_markdown.map(|answer| view! {
-                <div class="message assistant-message">
-                    <MarkdownContent markdown=answer />
-                </div>
+            {final_response_markdown.map(|answer| {
+                let raw_answer = answer.clone();
+                view! {
+                    <div class="message assistant-message-wrap">
+                        <div class="assistant-message">
+                            <MarkdownContent markdown=answer />
+                        </div>
+                        <div class="assistant-message-actions" aria-label="Assistant message actions">
+                            <button
+                                class="message-action-button"
+                                type="button"
+                                title="Copy final response"
+                                aria-label="Copy final response"
+                                on:click=move |_| {
+                                    if let Some(window) = web_sys::window() {
+                                        let _ = window.navigator().clipboard().write_text(&raw_answer);
+                                    }
+                                }
+                            >
+                                "⧉"
+                            </button>
+                        </div>
+                    </div>
+                }
             })}
             {task.error_message.map(|error| view! {
                 <div class="message error-message">{error}</div>
@@ -908,6 +945,64 @@ fn TaskCard(
                 <div class="message pending-message">{pending.prompt}</div>
             })}
         </article>
+    }
+}
+
+#[component]
+fn CollapsibleMessageBody(markdown: String) -> impl IntoView {
+    let (expanded, set_expanded) = signal(false);
+    let (overflowing, set_overflowing) = signal(false);
+    let body_ref = NodeRef::<html::Div>::new();
+    let measure_ref = body_ref.clone();
+
+    Effect::new(move |_| {
+        let Some(body) = measure_ref.get() else {
+            return;
+        };
+        if expanded.get() {
+            return;
+        }
+        set_overflowing.set(body.scroll_height() > body.client_height() + 1);
+    });
+
+    view! {
+        <div class="message-collapsible">
+            <div
+                class=move || {
+                    if expanded.get() {
+                        "message-collapsible-body is-expanded"
+                    } else {
+                        "message-collapsible-body is-collapsed"
+                    }
+                }
+                node_ref=body_ref
+            >
+                <MarkdownContent markdown=markdown />
+                {move || {
+                    if overflowing.get() && !expanded.get() {
+                        view! { <div class="message-collapsible-fade"></div> }.into_any()
+                    } else {
+                        ().into_any()
+                    }
+                }}
+            </div>
+            {move || {
+                if overflowing.get() {
+                    view! {
+                        <button
+                            class="message-expand-button secondary"
+                            type="button"
+                            on:click=move |_| set_expanded.update(|value| *value = !*value)
+                        >
+                            {move || if expanded.get() { "Show less" } else { "Show more" }}
+                        </button>
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
+                }
+            }}
+        </div>
     }
 }
 
@@ -1804,6 +1899,7 @@ fn TaskInputEditForm(
     view! {
         <form class="inline-edit" on:submit=submit_edit>
             <textarea
+                rows="14"
                 prop:value=draft
                 on:input=move |ev| set_draft.set(event_target_value(&ev))
             />

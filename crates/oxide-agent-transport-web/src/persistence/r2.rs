@@ -1138,8 +1138,7 @@ mod tests {
         let context_key = "web-session-s-wiki";
         let context_id =
             oxide_agent_core::agent::wiki_memory::scope::wiki_context_id(7, context_key);
-        let wiki_prefix =
-            oxide_agent_core::storage::wiki_context_prefix("", &context_id);
+        let wiki_prefix = oxide_agent_core::storage::wiki_context_prefix("", &context_id);
         let page_key = format!("{wiki_prefix}pages/runbook.md");
         let inbox_key = format!("{wiki_prefix}inbox/note.md");
         let overview_key = format!("{wiki_prefix}overview.md");
