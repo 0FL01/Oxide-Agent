@@ -1,4 +1,5 @@
 use super::client::DuckDuckGoClient;
+use super::error::DuckDuckGoError;
 use super::format::{format_news_results, format_search_results};
 use super::types::{
     DuckDuckGoNewsArgs, DuckDuckGoSearchArgs, TOOL_DUCKDUCKGO_NEWS, TOOL_DUCKDUCKGO_SEARCH,
@@ -64,20 +65,15 @@ impl DuckDuckGoProvider {
                     Ok(results) => {
                         let (markdown, payload) =
                             format_search_results(&args.query, &region, &results, max_results);
-                        Ok(DuckDuckGoToolResult { markdown, payload })
+                        Ok(DuckDuckGoToolResult {
+                            markdown,
+                            payload,
+                            success: true,
+                        })
                     }
                     Err(error) => {
                         error!(query = %args.query, error = %error, "DuckDuckGo search failed");
-                        Ok(DuckDuckGoToolResult {
-                            markdown: error.agent_message(),
-                            payload: json!({
-                                "provider": "duckduckgo",
-                                "kind": "search",
-                                "query": args.query,
-                                "region": region,
-                                "error": error.to_string(),
-                            }),
-                        })
+                        Ok(error_tool_result("search", &args.query, &region, &error))
                     }
                 }
             }
@@ -97,20 +93,15 @@ impl DuckDuckGoProvider {
                     Ok(results) => {
                         let (markdown, payload) =
                             format_news_results(&args.query, &region, &results, max_results);
-                        Ok(DuckDuckGoToolResult { markdown, payload })
+                        Ok(DuckDuckGoToolResult {
+                            markdown,
+                            payload,
+                            success: true,
+                        })
                     }
                     Err(error) => {
                         error!(query = %args.query, error = %error, "DuckDuckGo news failed");
-                        Ok(DuckDuckGoToolResult {
-                            markdown: error.agent_message(),
-                            payload: json!({
-                                "provider": "duckduckgo",
-                                "kind": "news",
-                                "query": args.query,
-                                "region": region,
-                                "error": error.to_string(),
-                            }),
-                        })
+                        Ok(error_tool_result("news", &args.query, &region, &error))
                     }
                 }
             }
@@ -122,13 +113,39 @@ impl DuckDuckGoProvider {
 struct DuckDuckGoToolResult {
     markdown: String,
     payload: Value,
+    success: bool,
+}
+
+fn error_tool_result(
+    kind: &'static str,
+    query: &str,
+    region: &str,
+    error: &DuckDuckGoError,
+) -> DuckDuckGoToolResult {
+    DuckDuckGoToolResult {
+        markdown: error.agent_message(),
+        payload: json!({
+            "provider": "duckduckgo",
+            "kind": kind,
+            "query": query,
+            "region": region,
+            "error_kind": error.code(),
+            "error": error.to_string(),
+            "provider_unavailable": matches!(
+                error,
+                DuckDuckGoError::Blocked(_) | DuckDuckGoError::RateLimited
+            ),
+            "results": [],
+        }),
+        success: false,
+    }
 }
 
 fn search_definition() -> ToolDefinition {
     ToolDefinition {
         name: TOOL_DUCKDUCKGO_SEARCH.to_string(),
         description: concat!(
-            "Search public web using DuckDuckGo Lite. Use this to discover URLs. ",
+            "Search public web using DuckDuckGo HTML/Lite. Use this to discover URLs. ",
             "Use web_markdown to fetch selected result pages; do not fetch every result automatically."
         )
         .to_string(),
@@ -215,7 +232,11 @@ impl ToolExecutor for DuckDuckGoToolExecutor {
             .execute_tool(self.name.as_str(), &invocation.raw_arguments)
             .await
             .map(|result| {
-                let mut output = normalizer.success(&invocation, &result.markdown, "");
+                let mut output = if result.success {
+                    normalizer.success(&invocation, &result.markdown, "")
+                } else {
+                    normalizer.failure(&invocation, result.markdown)
+                };
                 output.structured_payload = Some(result.payload);
                 output
             })

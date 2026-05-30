@@ -64,6 +64,9 @@ pub enum AgentEvent {
     },
     /// Agent is calling a tool
     ToolCall {
+        /// Stable runtime invocation identifier for pairing call/result events.
+        #[serde(default)]
+        id: String,
         /// Tool name
         name: String,
         /// Tool input arguments
@@ -73,6 +76,9 @@ pub enum AgentEvent {
     },
     /// Agent received a tool result
     ToolResult {
+        /// Stable runtime invocation identifier for pairing call/result events.
+        #[serde(default)]
+        id: String,
         /// Tool name
         name: String,
         /// Tool execution output
@@ -358,6 +364,8 @@ pub struct Step {
     pub tokens: Option<usize>,
     /// Tool name for grouping (None for non-tool steps like Thinking)
     pub tool_name: Option<String>,
+    /// Tool invocation id for pairing concurrent calls/results.
+    pub tool_id: Option<String>,
 }
 
 /// Possible statuses for an execution step
@@ -424,11 +432,12 @@ impl ProgressState {
                 self.handle_token_snapshot_updated(snapshot)
             }
             AgentEvent::ToolCall {
+                id,
                 name,
                 input,
                 command_preview,
-            } => self.handle_tool_call(name, input, command_preview),
-            AgentEvent::ToolResult { success, .. } => self.handle_tool_result(success),
+            } => self.handle_tool_call(id, name, input, command_preview),
+            AgentEvent::ToolResult { id, success, .. } => self.handle_tool_result(&id, success),
             AgentEvent::WaitingForApproval {
                 tool_name,
                 target_name,
@@ -603,6 +612,7 @@ impl ProgressState {
             status: StepStatus::InProgress,
             tokens: Some(snapshot.hot_memory_tokens),
             tool_name: None,
+            tool_id: None,
         });
     }
 
@@ -613,8 +623,20 @@ impl ProgressState {
         }
     }
 
-    fn handle_tool_call(&mut self, name: String, input: String, command_preview: Option<String>) {
-        self.complete_last_step();
+    fn handle_tool_call(
+        &mut self,
+        id: String,
+        name: String,
+        input: String,
+        command_preview: Option<String>,
+    ) {
+        if !self
+            .steps
+            .last()
+            .is_some_and(|step| step.status == StepStatus::InProgress && step.tool_name.is_some())
+        {
+            self.complete_last_step();
+        }
 
         // Try to infer a human-readable thought from tool call
         let inferred_thought = thoughts::infer_thought(&name, &input);
@@ -636,10 +658,24 @@ impl ProgressState {
             status: StepStatus::InProgress,
             tokens: None,
             tool_name: Some(name),
+            tool_id: Some(id),
         });
     }
 
-    fn handle_tool_result(&mut self, success: bool) {
+    fn handle_tool_result(&mut self, id: &str, success: bool) {
+        if !id.is_empty() {
+            if let Some(step) = self.steps.iter_mut().rev().find(|step| {
+                step.status == StepStatus::InProgress && step.tool_id.as_deref() == Some(id)
+            }) {
+                step.status = if success {
+                    StepStatus::Completed
+                } else {
+                    StepStatus::Failed
+                };
+                return;
+            }
+        }
+
         if success {
             self.complete_last_step();
         } else {
@@ -659,6 +695,7 @@ impl ProgressState {
             status: StepStatus::InProgress,
             tokens: None,
             tool_name: None,
+            tool_id: None,
         });
     }
 
@@ -679,6 +716,7 @@ impl ProgressState {
             status: StepStatus::InProgress,
             tokens: None,
             tool_name: None,
+            tool_id: None,
         });
     }
 
@@ -713,6 +751,7 @@ impl ProgressState {
             status: StepStatus::Completed,
             tokens: None,
             tool_name: Some("file_send".to_string()),
+            tool_id: None,
         });
     }
 
@@ -746,6 +785,7 @@ impl ProgressState {
                 status: StepStatus::InProgress,
                 tokens: None,
                 tool_name: None,
+                tool_id: None,
             });
         }
     }
@@ -787,6 +827,7 @@ impl ProgressState {
             status: StepStatus::InProgress,
             tokens: None,
             tool_name: None,
+            tool_id: None,
         });
         self.last_compaction_status = Some(format!(
             "Compaction: running {} ({}/{}){}.",

@@ -8,12 +8,12 @@ use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressSt
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use oxide_agent_web_contracts::{PersistedTaskEvent, TaskEventKind};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use tokio::sync::RwLock;
 
 /// Returns the snake_case variant name of an AgentEvent.
 fn event_variant_name(event: &AgentEvent) -> String {
@@ -239,6 +239,7 @@ pub struct MilestoneTimestamps {
 /// Timing capture for an individual tool call observed during event collection.
 #[derive(Debug, Clone)]
 pub struct CollectedToolCallTiming {
+    pub id: String,
     pub name: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -270,7 +271,7 @@ pub async fn collect_events(
     let mut state = ProgressState::new(100); // max_iterations, can be overridden
     let mut timestamps = MilestoneTimestamps::default();
     let mut tool_calls = Vec::new();
-    let mut active_tool_calls: HashMap<String, VecDeque<usize>> = HashMap::new();
+    let mut active_tool_calls: HashMap<String, usize> = HashMap::new();
     let mut persisted_events = Vec::new();
     let mut next_seq = 1;
 
@@ -302,27 +303,22 @@ pub async fn collect_events(
         }
 
         match &event {
-            AgentEvent::ToolCall { name, .. } => {
+            AgentEvent::ToolCall { id, name, .. } => {
                 let idx = tool_calls.len();
+                let key = tool_event_pairing_key(id, name);
                 tool_calls.push(CollectedToolCallTiming {
+                    id: id.clone(),
                     name: name.clone(),
                     started_at: chrono::Utc::now(),
                     finished_at: None,
                 });
-                active_tool_calls
-                    .entry(name.clone())
-                    .or_default()
-                    .push_back(idx);
+                active_tool_calls.insert(key, idx);
             }
-            AgentEvent::ToolResult { name, .. } => {
-                if let Some(indices) = active_tool_calls.get_mut(name) {
-                    if let Some(idx) = indices.pop_front() {
-                        if let Some(tool_call) = tool_calls.get_mut(idx) {
-                            tool_call.finished_at = Some(chrono::Utc::now());
-                        }
-                    }
-                    if indices.is_empty() {
-                        active_tool_calls.remove(name);
+            AgentEvent::ToolResult { id, name, .. } => {
+                let key = tool_event_pairing_key(id, name);
+                if let Some(idx) = active_tool_calls.remove(&key) {
+                    if let Some(tool_call) = tool_calls.get_mut(idx) {
+                        tool_call.finished_at = Some(chrono::Utc::now());
                     }
                 }
             }
@@ -336,13 +332,15 @@ pub async fn collect_events(
         }
 
         if let Some(scope) = browser_event_scope.as_ref() {
-            let persisted_event =
-                persisted_event_from_agent_event(scope, next_seq, event_received_at, &event);
-            if let Some(live_event_tx) = live_event_tx.as_ref() {
-                let _ = live_event_tx.send(persisted_event.clone());
+            if should_persist_browser_event(&event) {
+                let persisted_event =
+                    persisted_event_from_agent_event(scope, next_seq, event_received_at, &event);
+                if let Some(live_event_tx) = live_event_tx.as_ref() {
+                    let _ = live_event_tx.send(persisted_event.clone());
+                }
+                persisted_events.push(persisted_event);
+                next_seq += 1;
             }
-            persisted_events.push(persisted_event);
-            next_seq += 1;
         }
 
         state.update(event);
@@ -367,6 +365,14 @@ pub async fn collect_events(
     }
 }
 
+fn tool_event_pairing_key(id: &str, name: &str) -> String {
+    if id.is_empty() {
+        format!("legacy-name:{name}")
+    } else {
+        format!("id:{id}")
+    }
+}
+
 fn persisted_event_from_agent_event(
     scope: &BrowserEventScope,
     seq: u64,
@@ -387,6 +393,15 @@ fn persisted_event_from_agent_event(
         redacted,
         truncated,
     }
+}
+
+fn should_persist_browser_event(event: &AgentEvent) -> bool {
+    !matches!(
+        event,
+        AgentEvent::RateLimitRetrying { .. }
+            | AgentEvent::LlmRetrying { .. }
+            | AgentEvent::ProviderFailoverActivated { .. }
+    )
 }
 
 fn browser_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
@@ -466,6 +481,7 @@ fn token_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool,
 fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
     match event {
         AgentEvent::ToolCall {
+            id,
             name,
             input,
             command_preview,
@@ -482,6 +498,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
                 TaskEventKind::ToolCall,
                 truncate_summary(name),
                 json!({
+                    "id": id,
                     "name": name,
                     "input_preview": input_preview,
                     "command_preview": command_preview,
@@ -491,18 +508,22 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
             )
         }
         AgentEvent::ToolResult {
+            id,
             name,
             output,
             success,
         } => {
             let (output_preview, truncated, redacted) =
                 preview_event_text(output, EVENT_PREVIEW_MAX_CHARS);
+            let result_summary = tool_result_summary(name, *success, output);
             (
                 TaskEventKind::ToolResult,
-                truncate_summary(name),
+                truncate_summary(result_summary.as_deref().unwrap_or(name)),
                 json!({
+                    "id": id,
                     "name": name,
                     "success": success,
+                    "result_summary": result_summary,
                     "output_preview": output_preview,
                 }),
                 redacted,
@@ -848,6 +869,51 @@ fn truncate_summary(value: &str) -> String {
     truncate_text(value, EVENT_SUMMARY_MAX_CHARS).0
 }
 
+fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String> {
+    if success {
+        return None;
+    }
+
+    let value = serde_json::from_str::<Value>(output).ok()?;
+    let payload = value.get("structured_payload")?;
+    match (name, payload.get("provider").and_then(Value::as_str)) {
+        ("web_markdown", Some("web_markdown")) => {
+            let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
+            let host = payload.get("host").and_then(Value::as_str);
+            let status_code = payload.get("status_code").and_then(Value::as_u64);
+
+            Some(match error_kind {
+                "anti_bot" => host
+                    .map(|host| format!("anti_bot at {host}"))
+                    .unwrap_or_else(|| "anti_bot".to_string()),
+                "http_status" => status_code
+                    .map(|code| format!("http_status {code}"))
+                    .unwrap_or_else(|| "http_status".to_string()),
+                "timeout" => host
+                    .map(|host| format!("timeout at {host}"))
+                    .unwrap_or_else(|| "timeout".to_string()),
+                "network" => host
+                    .map(|host| format!("network at {host}"))
+                    .unwrap_or_else(|| "network".to_string()),
+                other => host
+                    .map(|host| format!("{other} at {host}"))
+                    .unwrap_or_else(|| other.to_string()),
+            })
+        }
+        ("duckduckgo_search" | "duckduckgo_news", Some("duckduckgo")) => {
+            let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
+            Some(match error_kind {
+                "rate_limited" => "rate_limited".to_string(),
+                "blocked" => "blocked".to_string(),
+                "parser_break" => "parser_break".to_string(),
+                "timeout" => "timeout".to_string(),
+                other => other.to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn preview_event_text(value: &str, max_chars: usize) -> (String, bool, bool) {
     let (redacted_value, redacted) = redact_sensitive_text(value);
     let (preview, truncated) = truncate_text(&redacted_value, max_chars);
@@ -929,7 +995,7 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_events, event_variant_name, BrowserEventScope, TaskEventLog};
+    use super::{BrowserEventScope, TaskEventLog, collect_events, event_variant_name};
     use oxide_agent_core::agent::compaction::{
         CompactionBackend, CompactionPhase, CompactionReason,
     };
@@ -1041,11 +1107,13 @@ mod tests {
             ]
         );
         assert!(!event_names.iter().any(|event| event == "pruning_applied"));
-        assert!(result
-            .state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status.contains("Compaction: compacted history")));
+        assert!(
+            result
+                .state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("Compaction: compacted history"))
+        );
     }
 
     #[tokio::test]
@@ -1055,6 +1123,7 @@ mod tests {
         let long_output = "x".repeat(super::EVENT_PREVIEW_MAX_CHARS + 10);
 
         tx.send(AgentEvent::ToolResult {
+            id: "tool-1".to_string(),
             name: "execute_command".to_string(),
             output: long_output,
             success: true,
@@ -1089,11 +1158,235 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_events_summarizes_web_markdown_failures() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        let output = serde_json::json!({
+            "tool_call_id": "call-web-markdown",
+            "tool_name": "web_markdown",
+            "status": "failure",
+            "success": false,
+            "duration_ms": 418,
+            "stdout": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
+            "stderr": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
+            "structured_payload": {
+                "provider": "web_markdown",
+                "kind": "fetch",
+                "host": "ftbwiki.org",
+                "error_kind": "anti_bot",
+                "status_code": null
+            },
+            "error_message": "web_markdown blocked by anti-bot protection at ftbwiki.org",
+            "timeout_reason": null,
+            "cancellation_reason": null,
+            "cleanup_status": "not_needed",
+            "truncation": { "artifact_write_failed": false, "content_truncated": false, "max_stderr_bytes": 65536, "max_stdout_bytes": 65536, "max_tool_output_content_bytes": 131072, "stderr_truncated": false, "stdout_truncated": false },
+            "artifacts": []
+        })
+        .to_string();
+
+        tx.send(AgentEvent::ToolResult {
+            id: "tool-1".to_string(),
+            name: "web_markdown".to_string(),
+            output,
+            success: false,
+        })
+        .await
+        .expect("send tool result");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+        )
+        .await;
+
+        let tool_result = &result.persisted_events[0];
+        assert_eq!(tool_result.kind, TaskEventKind::ToolResult);
+        assert_eq!(tool_result.summary, "anti_bot at ftbwiki.org");
+        assert_eq!(
+            tool_result.payload["result_summary"],
+            "anti_bot at ftbwiki.org"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_events_summarizes_duckduckgo_failures() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        let output = serde_json::json!({
+            "tool_call_id": "call-duckduckgo",
+            "tool_name": "duckduckgo_search",
+            "status": "failure",
+            "success": false,
+            "duration_ms": 458,
+            "stdout": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
+            "stderr": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
+            "structured_payload": {
+                "provider": "duckduckgo",
+                "kind": "search",
+                "query": "Thaumcraft 4 Pech spawning biome",
+                "error_kind": "blocked",
+                "provider_unavailable": true,
+                "results": []
+            },
+            "error_message": "DuckDuckGo is temporarily blocking requests",
+            "timeout_reason": null,
+            "cancellation_reason": null,
+            "cleanup_status": "not_needed",
+            "truncation": { "artifact_write_failed": false, "content_truncated": false, "max_stderr_bytes": 65536, "max_stdout_bytes": 65536, "max_tool_output_content_bytes": 131072, "stderr_truncated": false, "stdout_truncated": false },
+            "artifacts": []
+        })
+        .to_string();
+
+        tx.send(AgentEvent::ToolResult {
+            id: "tool-1".to_string(),
+            name: "duckduckgo_search".to_string(),
+            output,
+            success: false,
+        })
+        .await
+        .expect("send tool result");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+        )
+        .await;
+
+        let tool_result = &result.persisted_events[0];
+        assert_eq!(tool_result.kind, TaskEventKind::ToolResult);
+        assert_eq!(tool_result.summary, "blocked");
+        assert_eq!(tool_result.payload["result_summary"], "blocked");
+    }
+
+    #[tokio::test]
+    async fn collect_events_omits_rate_limit_retrying_browser_events() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::RateLimitRetrying {
+            attempt: 1,
+            max_attempts: 15,
+            unbounded: false,
+            wait_secs: Some(10),
+            provider: "llm-provider/opencode-go".to_string(),
+        })
+        .await
+        .expect("send rate limit retrying");
+        tx.send(AgentEvent::Finished).await.expect("send finished");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 1);
+        assert_eq!(result.persisted_events[0].kind, TaskEventKind::Finished);
+        assert_eq!(result.persisted_events[0].seq, 1);
+    }
+
+    #[tokio::test]
+    async fn collect_events_omits_llm_retrying_browser_events() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::LlmRetrying {
+            attempt: 1,
+            max_attempts: 15,
+            unbounded: false,
+            wait_secs: Some(1),
+            provider: "llm-provider/opencode-go".to_string(),
+            error_class: "server_error".to_string(),
+        })
+        .await
+        .expect("send llm retrying");
+        tx.send(AgentEvent::Finished).await.expect("send finished");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 1);
+        assert_eq!(result.persisted_events[0].kind, TaskEventKind::Finished);
+        assert_eq!(result.persisted_events[0].seq, 1);
+    }
+
+    #[tokio::test]
+    async fn collect_events_omits_provider_failover_browser_events() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::ProviderFailoverActivated {
+            from_provider: "llm-provider/opencode-go".to_string(),
+            from_model: "mimo-v2.5".to_string(),
+            to_provider: "llm-provider/backup".to_string(),
+            to_model: "backup-model".to_string(),
+        })
+        .await
+        .expect("send provider failover");
+        tx.send(AgentEvent::Finished).await.expect("send finished");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 1);
+        assert_eq!(result.persisted_events[0].kind, TaskEventKind::Finished);
+        assert_eq!(result.persisted_events[0].seq, 1);
+    }
+
+    #[tokio::test]
     async fn collect_events_redacts_sensitive_tool_payload_previews() {
         let event_log = TaskEventLog::new();
         let (tx, rx) = mpsc::channel(8);
 
         tx.send(AgentEvent::ToolCall {
+            id: "tool-1".to_string(),
             name: "ssh_exec".to_string(),
             input: serde_json::json!({
                 "command": "deploy",
@@ -1106,6 +1399,7 @@ mod tests {
         .await
         .expect("send tool call");
         tx.send(AgentEvent::ToolResult {
+            id: "tool-1".to_string(),
             name: "ssh_exec".to_string(),
             output: "SESSION_TOKEN=raw-session-token".to_string(),
             success: true,
@@ -1151,6 +1445,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_events_pairs_concurrent_tool_timings_by_id() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::ToolCall {
+            id: "tool-a".to_string(),
+            name: "duckduckgo_search".to_string(),
+            input: "q1".to_string(),
+            command_preview: None,
+        })
+        .await
+        .expect("send first tool call");
+        tx.send(AgentEvent::ToolCall {
+            id: "tool-b".to_string(),
+            name: "duckduckgo_search".to_string(),
+            input: "q2".to_string(),
+            command_preview: None,
+        })
+        .await
+        .expect("send second tool call");
+        tx.send(AgentEvent::ToolResult {
+            id: "tool-b".to_string(),
+            name: "duckduckgo_search".to_string(),
+            output: "result2".to_string(),
+            success: true,
+        })
+        .await
+        .expect("send second tool result");
+        tx.send(AgentEvent::ToolResult {
+            id: "tool-a".to_string(),
+            name: "duckduckgo_search".to_string(),
+            output: "result1".to_string(),
+            success: false,
+        })
+        .await
+        .expect("send first tool result");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.tool_calls.len(), 2);
+        assert_eq!(result.tool_calls[0].id, "tool-a");
+        assert_eq!(result.tool_calls[1].id, "tool-b");
+        assert!(
+            result
+                .tool_calls
+                .iter()
+                .all(|call| call.finished_at.is_some())
+        );
+        assert_eq!(result.persisted_events[0].payload["id"], "tool-a");
+        assert_eq!(result.persisted_events[1].payload["id"], "tool-b");
+        assert_eq!(result.persisted_events[2].payload["id"], "tool-b");
+        assert_eq!(result.persisted_events[3].payload["id"], "tool-a");
+    }
+
+    #[tokio::test]
     async fn collect_events_streams_live_progress_snapshots() {
         let event_log = TaskEventLog::new();
         let (event_tx, event_rx) = mpsc::channel(8);
@@ -1177,9 +1538,11 @@ mod tests {
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.current_thought.as_deref() == Some("Collecting detailed evidence")
         }));
-        assert!(snapshots
-            .last()
-            .is_some_and(|snapshot| snapshot.is_finished));
+        assert!(
+            snapshots
+                .last()
+                .is_some_and(|snapshot| snapshot.is_finished)
+        );
         assert!(result.state.is_finished);
     }
 }

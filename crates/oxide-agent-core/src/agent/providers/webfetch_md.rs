@@ -8,11 +8,11 @@ use crate::agent::tool_runtime::{
     ToolRuntimeError,
 };
 use crate::llm::ToolDefinition;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, SERVER, USER_AGENT};
 use reqwest::Url;
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, HeaderMap, SERVER, USER_AGENT};
 use serde::Deserialize;
 use serde_json::json;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -29,17 +29,15 @@ const MAX_OUTPUT_CHARS: usize = 20_000;
 const MAX_REDIRECTS: usize = 5;
 const MARKDOWN_ACCEPT_HEADER: &str =
     "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1";
-const BROWSER_USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
-const ANTI_BOT_ERROR: &str =
-    "web_markdown blocked by anti-bot protection; this lightweight fetcher cannot solve JS/CAPTCHA challenges";
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+const ANTI_BOT_ERROR: &str = "web_markdown blocked by anti-bot protection; this lightweight fetcher cannot solve JS/CAPTCHA challenges";
 
 /// Local provider for fetching a single URL as Markdown.
 pub struct WebFetchMdProvider {
     client: reqwest::Client,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct WebMarkdownArgs {
     url: String,
     #[serde(default)]
@@ -114,21 +112,6 @@ impl WebFetchMdProvider {
                 "required": ["url"]
             }),
         }
-    }
-
-    async fn execute_tool(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-        cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
-        if tool_name != TOOL_WEB_MARKDOWN {
-            bail!("unknown webfetch_md tool: {tool_name}");
-        }
-
-        let args: WebMarkdownArgs =
-            serde_json::from_str(arguments).context("invalid web_markdown arguments")?;
-        self.fetch_markdown(args, cancellation_token).await
     }
 
     async fn fetch_markdown(
@@ -261,16 +244,35 @@ impl ToolExecutor for WebFetchMdToolExecutor {
             artifact_dir: invocation.execution_context.artifact_dir.clone(),
             ..ToolRuntimeConfig::default()
         });
-        self.provider
-            .execute_tool(
-                self.name.as_str(),
-                &invocation.raw_arguments,
-                Some(&invocation.cancellation_token),
-            )
+
+        if self.name.as_str() != TOOL_WEB_MARKDOWN {
+            return Err(ToolRuntimeError::Failure(format!(
+                "unknown webfetch_md tool: {}",
+                self.name.as_str()
+            )));
+        }
+
+        let args =
+            parse_web_markdown_args(&invocation.raw_arguments).map_err(webfetch_runtime_error)?;
+
+        match self
+            .provider
+            .fetch_markdown(args.clone(), Some(&invocation.cancellation_token))
             .await
-            .map(|output| normalizer.success(&invocation, &output, ""))
-            .map_err(webfetch_runtime_error)
+        {
+            Ok(output) => Ok(normalizer.success(&invocation, &output, "")),
+            Err(error) => {
+                let mut output =
+                    normalizer.failure(&invocation, webfetch_failure_message(Some(&args), &error));
+                output.structured_payload = Some(webfetch_failure_payload(Some(&args), &error));
+                Ok(output)
+            }
+        }
     }
+}
+
+fn parse_web_markdown_args(arguments: &str) -> Result<WebMarkdownArgs> {
+    serde_json::from_str(arguments).context("invalid web_markdown arguments")
 }
 
 fn webfetch_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
@@ -457,10 +459,119 @@ fn body_has_anti_bot_marker(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
 
     lower.contains("just a moment")
+        || lower.contains("making sure you're not a bot")
         || lower.contains("checking your browser")
         || lower.contains("enable javascript and cookies")
+        || lower.contains("requires the use of modern javascript")
+        || lower.contains("anubis uses a proof-of-work scheme")
+        || lower.contains("set up anubis to protect the server")
         || lower.contains("cf-chl-")
         || lower.contains("captcha")
+}
+
+fn webfetch_failure_payload(
+    args: Option<&WebMarkdownArgs>,
+    error: &anyhow::Error,
+) -> serde_json::Value {
+    let error_kind = webfetch_error_kind(error);
+    let host = args.and_then(|args| webfetch_host_from_url(&args.url));
+    let retryable = webfetch_error_retryable(error_kind, error);
+
+    json!({
+        "provider": "web_markdown",
+        "kind": "fetch",
+        "url": args.map(|args| args.url.as_str()),
+        "host": host,
+        "error_kind": error_kind,
+        "status_code": webfetch_http_status_code(error),
+        "error": format!("{error:#}"),
+        "retryable": retryable,
+        "provider_unavailable": error_kind == "anti_bot"
+    })
+}
+
+fn webfetch_failure_message(args: Option<&WebMarkdownArgs>, error: &anyhow::Error) -> String {
+    let error_kind = webfetch_error_kind(error);
+    if error_kind == "anti_bot" {
+        if let Some(host) = args.and_then(|args| webfetch_host_from_url(&args.url)) {
+            return format!(
+                "web_markdown blocked by anti-bot protection at {host}; this lightweight fetcher cannot solve JS/CAPTCHA/PoW challenges. Do not retry this host in this task; use another source."
+            );
+        }
+        return concat!(
+            "web_markdown blocked by anti-bot protection; this lightweight fetcher cannot solve JS/CAPTCHA/PoW challenges. ",
+            "Do not retry this host in this task; use another source."
+        )
+        .to_string();
+    }
+
+    format!("{error:#}")
+}
+
+fn webfetch_error_kind(error: &anyhow::Error) -> &'static str {
+    let message = format!("{error:#}").to_ascii_lowercase();
+
+    if message.contains("anti-bot protection") {
+        "anti_bot"
+    } else if message.contains("cancelled") {
+        "cancelled"
+    } else if message.contains("timed out") || message.contains("timeout") {
+        "timeout"
+    } else if message.contains("non-success status") {
+        "http_status"
+    } else if message.contains("response too large") {
+        "too_large"
+    } else if message.contains("unsafe redirect target")
+        || message.contains("unsupported url scheme")
+        || message.contains("refusing to fetch")
+        || message.contains("not direct media/pdf urls")
+    {
+        "unsupported_url"
+    } else if message.contains("request failed")
+        || message.contains("failed to read response chunk")
+    {
+        "network"
+    } else {
+        "fetch_failed"
+    }
+}
+
+fn webfetch_error_retryable(error_kind: &str, error: &anyhow::Error) -> bool {
+    match error_kind {
+        "timeout" => true,
+        "network" => {
+            let message = format!("{error:#}").to_ascii_lowercase();
+            message.contains("connection")
+                || message.contains("reset")
+                || message.contains("refused")
+                || message.contains("broken pipe")
+                || message.contains("eof")
+                || message.contains("dns")
+        }
+        "http_status" => {
+            let message = format!("{error:#}").to_ascii_lowercase();
+            message.contains(" 500")
+                || message.contains(" 502")
+                || message.contains(" 503")
+                || message.contains(" 504")
+                || message.contains(" 429")
+        }
+        _ => false,
+    }
+}
+
+fn webfetch_host_from_url(raw_url: &str) -> Option<String> {
+    Url::parse(raw_url)
+        .ok()?
+        .host_str()
+        .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+}
+
+fn webfetch_http_status_code(error: &anyhow::Error) -> Option<u16> {
+    let message = format!("{error:#}");
+    let marker = "non-success status: ";
+    let status = message.split(marker).nth(1)?;
+    status.split_whitespace().next()?.parse().ok()
 }
 
 fn html_to_markdown(html: &str) -> Result<String> {
@@ -640,60 +751,73 @@ mod tests {
     fn rejects_non_http_urls() {
         let error = parse_web_url("file:///etc/passwd").err();
         assert!(error.is_some());
-        assert!(error
-            .map(|error| error.to_string().contains("unsupported URL scheme"))
-            .unwrap_or(false));
+        assert!(
+            error
+                .map(|error| error.to_string().contains("unsupported URL scheme"))
+                .unwrap_or(false)
+        );
     }
 
     #[test]
     fn rejects_localhost_and_private_ips() {
         let localhost = Url::parse("http://localhost/page");
         assert!(localhost.is_ok());
-        assert!(localhost
-            .ok()
-            .and_then(|url| reject_unsafe_url(&url).err())
-            .is_some());
+        assert!(
+            localhost
+                .ok()
+                .and_then(|url| reject_unsafe_url(&url).err())
+                .is_some()
+        );
 
         let private_ip = Url::parse("http://192.168.1.1/page");
         assert!(private_ip.is_ok());
-        assert!(private_ip
-            .ok()
-            .and_then(|url| reject_unsafe_url(&url).err())
-            .is_some());
+        assert!(
+            private_ip
+                .ok()
+                .and_then(|url| reject_unsafe_url(&url).err())
+                .is_some()
+        );
 
         let metadata_ip = Url::parse("http://169.254.169.254/latest/meta-data");
         assert!(metadata_ip.is_ok());
-        assert!(metadata_ip
-            .ok()
-            .and_then(|url| reject_unsafe_url(&url).err())
-            .is_some());
+        assert!(
+            metadata_ip
+                .ok()
+                .and_then(|url| reject_unsafe_url(&url).err())
+                .is_some()
+        );
 
         let unique_local_ipv6 = Url::parse("http://[fd00::1]/page");
         assert!(unique_local_ipv6.is_ok());
-        assert!(unique_local_ipv6
-            .ok()
-            .and_then(|url| reject_unsafe_url(&url).err())
-            .is_some());
+        assert!(
+            unique_local_ipv6
+                .ok()
+                .and_then(|url| reject_unsafe_url(&url).err())
+                .is_some()
+        );
     }
 
     #[test]
     fn allows_public_urls() {
         let public_url = Url::parse("https://example.com/page");
         assert!(public_url.is_ok());
-        assert!(public_url
-            .ok()
-            .map(|url| reject_unsafe_url(&url).is_ok())
-            .unwrap_or(false));
+        assert!(
+            public_url
+                .ok()
+                .map(|url| reject_unsafe_url(&url).is_ok())
+                .unwrap_or(false)
+        );
     }
 
     #[test]
     fn rejects_direct_media_urls() {
         let url = Url::parse("https://example.com/photo.jpg");
         assert!(url.is_ok());
-        assert!(url
-            .ok()
-            .and_then(|url| reject_media_url(&url).err())
-            .is_some());
+        assert!(
+            url.ok()
+                .and_then(|url| reject_media_url(&url).err())
+                .is_some()
+        );
     }
 
     #[test]
@@ -723,8 +847,11 @@ mod tests {
 
         for body in [
             "Just a moment...",
+            "Making sure you're not a bot!",
             "Checking your browser before accessing the site",
             "Please enable JavaScript and cookies to continue",
+            "Anubis uses a Proof-of-Work scheme to protect the server",
+            "This page requires the use of modern JavaScript features",
             "<script src=\"/cdn-cgi/challenge-platform/h/b/cf-chl-jschl\"></script>",
             "captcha verification required",
         ] {
@@ -737,11 +864,13 @@ mod tests {
     fn allows_regular_html_without_antibot_markers() {
         let headers = HeaderMap::new();
 
-        assert!(reject_anti_bot_challenge(
-            &headers,
-            "<html><body><h1>Regular article</h1></body></html>",
-        )
-        .is_ok());
+        assert!(
+            reject_anti_bot_challenge(
+                &headers,
+                "<html><body><h1>Regular article</h1></body></html>",
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -750,5 +879,64 @@ mod tests {
 
         assert!(output.was_truncated);
         assert_eq!(output.text, "abc\n\n... (truncated)");
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_returns_structured_antibot_failure() {
+        let addr = serve_http_once(
+            r#"<html><body><h1>Making sure you're not a bot!</h1><p>Anubis uses a Proof-of-Work scheme to protect the server.</p></body></html>"#,
+            "text/html; charset=utf-8",
+        )
+        .await;
+        let client = reqwest::Client::builder()
+            .resolve("example.test", addr)
+            .build()
+            .expect("test client");
+        let provider = Arc::new(WebFetchMdProvider::with_client(client));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_WEB_MARKDOWN)
+            .expect("typed web_markdown executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(
+                r#"{"url":"http://example.test/protected","timeout_secs":5}"#,
+            ))
+            .await
+            .expect("typed web_markdown returns failure output");
+
+        assert_eq!(output.status, ToolOutputStatus::Failure);
+        assert!(
+            output
+                .error_message
+                .as_deref()
+                .expect("error message")
+                .contains("anti-bot protection at example.test")
+        );
+
+        let payload = output.structured_payload.expect("structured payload");
+        assert_eq!(
+            payload.get("provider").and_then(|value| value.as_str()),
+            Some("web_markdown")
+        );
+        assert_eq!(
+            payload.get("error_kind").and_then(|value| value.as_str()),
+            Some("anti_bot")
+        );
+        assert_eq!(
+            payload.get("host").and_then(|value| value.as_str()),
+            Some("example.test")
+        );
+        assert_eq!(
+            payload
+                .get("provider_unavailable")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            payload.get("retryable").and_then(|value| value.as_bool()),
+            Some(false)
+        );
     }
 }

@@ -2,7 +2,7 @@ use crate::auth::use_auth;
 use crate::components::ErrorBanner;
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
-use crate::sse::{spawn_task_stream, TaskStreamConfig};
+use crate::sse::{TaskStreamConfig, spawn_task_stream};
 use crate::utils::{friendly_time, navigate, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
@@ -936,10 +936,13 @@ fn group_activity_events(events: Vec<PersistedTaskEvent>) -> Vec<ActivityItem> {
                 });
             }
             TaskEventKind::ToolResult => {
+                let id = payload_str_event(&event, "id").filter(|value| !value.is_empty());
                 let name = payload_str_event(&event, "name");
                 let mut attached = false;
 
                 // Walk backwards to find the matching ToolCall without a result yet.
+                // Prefer stable invocation id; fall back to legacy name matching for
+                // older persisted events that do not carry an id.
                 for item in items.iter_mut().rev() {
                     let ActivityItem::Tool { call, result } = item else {
                         continue;
@@ -947,8 +950,15 @@ fn group_activity_events(events: Vec<PersistedTaskEvent>) -> Vec<ActivityItem> {
                     if result.is_some() {
                         continue;
                     }
+                    let call_id = call
+                        .as_ref()
+                        .and_then(|c| payload_str_event(c, "id"))
+                        .filter(|value| !value.is_empty());
                     let call_name = call.as_ref().and_then(|c| payload_str_event(c, "name"));
-                    if call_name == name {
+                    let stable_id_matches = id.is_some() && id == call_id;
+                    let legacy_name_matches =
+                        id.is_none() && call_id.is_none() && call_name == name;
+                    if stable_id_matches || legacy_name_matches {
                         *result = Some(event.clone());
                         attached = true;
                         break;
@@ -1155,6 +1165,9 @@ fn SearchToolCard(
         .as_ref()
         .and_then(|e| payload_str_event(e, "input_preview"));
     let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
+    let result_summary = result
+        .as_ref()
+        .and_then(|event| tool_result_summary(event, output.as_ref()));
 
     // Try to parse structured results from structured_payload.
     let search_results: Vec<SearchResult> = output
@@ -1211,6 +1224,8 @@ fn SearchToolCard(
         .first()
         .filter(|sr| !sr.snippet.is_empty())
         .map(|sr| sr.snippet.clone());
+    let preview_text =
+        preview_snippet.or_else(|| (!success).then(|| result_summary.clone()).flatten());
 
     view! {
         <div class="tool-card-header">
@@ -1220,8 +1235,11 @@ fn SearchToolCard(
             {result_count.map(|n| view! {
                 <span class="tool-meta">{format!("{n} results")}</span>
             })}
+            {(!success).then(|| result_summary.clone().map(|summary| view! {
+                <span class="tool-meta danger">{summary}</span>
+            })).flatten()}
         </div>
-        {preview_snippet.map(|text| view! {
+        {preview_text.map(|text| view! {
             <div class="tool-preview">{text}</div>
         })}
         <details class="tool-card-body" open=default_open>
@@ -1288,6 +1306,9 @@ fn GenericToolCard(
     let exit_code = output.as_ref().and_then(|v| field_i64(v, "exit_code"));
     let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
     let stderr = output.as_ref().and_then(|v| stream_text(v, "stderr"));
+    let result_summary = result
+        .as_ref()
+        .and_then(|event| tool_result_summary(event, output.as_ref()));
 
     let icon = if is_running {
         "\u{23f3}"
@@ -1312,7 +1333,9 @@ fn GenericToolCard(
     let command_preview = call
         .as_ref()
         .and_then(|e| payload_str_event(e, "command_preview"));
-    let preview_text = command_preview.or_else(|| stdout.as_ref().map(|t| first_line(t)));
+    let preview_text = command_preview
+        .or_else(|| stdout.as_ref().map(|t| first_line(t)))
+        .or_else(|| (!success).then(|| result_summary.clone()).flatten());
 
     view! {
         <div class="tool-card-header">
@@ -1324,6 +1347,9 @@ fn GenericToolCard(
                     {format!("exit {code}")}
                 </span>
             })}
+            {(!success).then(|| result_summary.clone().map(|summary| view! {
+                <span class="tool-meta danger">{summary}</span>
+            })).flatten()}
         </div>
         {preview_text.map(|text| view! {
             <div class="tool-preview">{text}</div>
@@ -1498,9 +1524,6 @@ fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
             | TaskEventKind::RuntimeCompactionSkipped
             | TaskEventKind::RepeatedCompactionWarning
             | TaskEventKind::HistoryRepairApplied
-            | TaskEventKind::RateLimitRetrying
-            | TaskEventKind::LlmRetrying
-            | TaskEventKind::ProviderFailoverActivated
             | TaskEventKind::Finished
     )
 }
@@ -1547,8 +1570,15 @@ fn event_kind_label(kind: &TaskEventKind) -> &'static str {
 
 fn event_title(event: &PersistedTaskEvent) -> String {
     match event.kind {
-        TaskEventKind::ToolCall | TaskEventKind::ToolResult => {
+        TaskEventKind::ToolCall => {
             payload_str_event(event, "name").unwrap_or_else(|| event.summary.clone())
+        }
+        TaskEventKind::ToolResult => {
+            let name = payload_str_event(event, "name").unwrap_or_else(|| event.summary.clone());
+            payload_str_event(event, "result_summary")
+                .filter(|summary| !summary.is_empty() && summary != &name)
+                .map(|summary| format!("{name} — {summary}"))
+                .unwrap_or(name)
         }
         _ => event.summary.clone(),
     }
@@ -1611,6 +1641,41 @@ fn field_str(value: &Value, key: &str) -> Option<String> {
 /// Extract an i64 field from a JSON value.
 fn field_i64(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(|v| v.as_i64())
+}
+
+fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Option<String> {
+    payload_str_event(event, "result_summary").or_else(|| {
+        let output = output?;
+        let payload = output.get("structured_payload")?;
+        let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
+
+        match payload.get("provider").and_then(Value::as_str) {
+            Some("web_markdown") => {
+                let host = payload.get("host").and_then(Value::as_str);
+                let status_code = payload.get("status_code").and_then(Value::as_i64);
+
+                Some(match error_kind {
+                    "anti_bot" => host
+                        .map(|host| format!("anti_bot at {host}"))
+                        .unwrap_or_else(|| "anti_bot".to_string()),
+                    "http_status" => status_code
+                        .map(|status| format!("http_status {status}"))
+                        .unwrap_or_else(|| "http_status".to_string()),
+                    other => host
+                        .map(|host| format!("{other} at {host}"))
+                        .unwrap_or_else(|| other.to_string()),
+                })
+            }
+            Some("duckduckgo") => Some(match error_kind {
+                "rate_limited" => "rate_limited".to_string(),
+                "blocked" => "blocked".to_string(),
+                "parser_break" => "parser_break".to_string(),
+                "timeout" => "timeout".to_string(),
+                other => other.to_string(),
+            }),
+            _ => None,
+        }
+    })
 }
 
 /// Extract text from a stream object (stdout/stderr) in the ToolOutput JSON.

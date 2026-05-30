@@ -262,6 +262,7 @@ if any of it is needed for the user, include it explicitly in a later final_answ
         };
         let _ = tx
             .send(AgentEvent::ToolCall {
+                id: tool_call.invocation_id().into_inner(),
                 name: sanitized_name,
                 input: sanitized_args,
                 command_preview,
@@ -314,6 +315,7 @@ if any of it is needed for the user, include it explicitly in a later final_answ
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::ToolResult {
+                    id: output.invocation_id.as_str().to_string(),
                     name: sanitize_xml_tags(&tool_name),
                     output: content.clone(),
                     success: output.success,
