@@ -10,6 +10,7 @@ use super::{
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
 use tracing::{error, info};
+use uuid::Uuid;
 
 #[async_trait]
 impl StorageProvider for R2Storage {
@@ -212,17 +213,46 @@ impl StorageProvider for R2Storage {
 
     /// Check connection to R2 storage
     async fn check_connection(&self) -> Result<(), String> {
-        match self.client.list_buckets().send().await {
-            Ok(_) => {
-                info!("Successfully connected to R2 storage.");
-                Ok(())
-            }
-            Err(e) => {
-                let err_msg = format!("R2 connectivity test failed: {e:#?}");
-                error!("{}", err_msg);
-                Err(err_msg)
-            }
+        if let Err(error) = self.client.head_bucket().bucket(&self.bucket).send().await {
+            let err_msg = format!(
+                "R2 connectivity test failed for bucket '{}' during HeadBucket: {error:#?}",
+                self.bucket
+            );
+            error!("{}", err_msg);
+            return Err(err_msg);
         }
+
+        let probe_key = format!(
+            "__oxide_agent_healthchecks/connection-check/{}.txt",
+            Uuid::new_v4()
+        );
+
+        if let Err(error) = self
+            .save_text(&probe_key, "oxide-agent connection probe")
+            .await
+        {
+            let err_msg = format!(
+                "R2 connectivity test failed for bucket '{}' during write probe '{}': {}",
+                self.bucket, probe_key, error
+            );
+            error!("{}", err_msg);
+            return Err(err_msg);
+        }
+
+        if let Err(error) = self.delete_object(&probe_key).await {
+            let err_msg = format!(
+                "R2 connectivity test failed for bucket '{}' during cleanup of probe '{}': {}",
+                self.bucket, probe_key, error
+            );
+            error!("{}", err_msg);
+            return Err(err_msg);
+        }
+
+        info!(
+            bucket = %self.bucket,
+            "Successfully connected to R2 storage with bucket-scoped validation."
+        );
+        Ok(())
     }
 
     async fn get_agent_profile(

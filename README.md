@@ -168,6 +168,10 @@ This path is for the prebuilt `x86_64` release artifact built with the embedded 
    OXIDE_R2_BUCKET_NAME=your_bucket
    OXIDE_R2_REGION=auto
 
+   # Use a bucket-scoped token where possible.
+   # For Cloudflare R2, Object Read & Write on the target bucket is sufficient.
+   # Account-wide admin/list-all-buckets permissions are not required.
+
    OPENCODE_GO_API_KEY=YOUR_OPENCODE_GO_API_KEY
    OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
 
