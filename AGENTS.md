@@ -24,9 +24,9 @@ Default branch: `dev`.
 
 ## External Services
 
-### browser_use_bridge (disabled)
-- Browser Use is disabled until a cost-effective high-quality vision-agent model is available.
-- Code remains in `services/browser_use_bridge/`; enable it with `BROWSER_USE_URL` and see `docs/browser-use.md`.
+### browser_use_bridge
+- Browser Use is enabled for `web-embedded-opencode-local` through the `browser_use` service in `docker-compose.web.yml`.
+- Code remains in `services/browser_use_bridge/`; runtime registration still requires non-empty `BROWSER_USE_URL` and see `docs/browser-use.md`.
 - Keep scope isolation, `navigation_only` guardrails, and runtime liveness/reconnect behavior when touching the bridge.
 
 ## Workspace Overview
@@ -114,7 +114,7 @@ Default branch: `dev`.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
 
 ### Tool providers
-- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), browser-use (disabled), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), browser-use (web profile sidecar), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
 
 ## Configuration
 
@@ -166,7 +166,7 @@ feat(sources): add bybit proof of reserves source
 ## Where to find details
 
 - `docs/hooks/` - hook lifecycle and managed hook behavior.
-- `docs/browser-use.md` - disabled browser-use bridge details.
+- `docs/browser-use.md` - browser-use bridge operations and web compose enablement.
 - `docs/wiki-memory.md` - wiki memory system: storage, planner, context assembly.
 - `docs/bwrap-sandbox.md` - Bubblewrap sandbox backend: setup, rootfs, execution.
 - `docs/silero-tts-api.md` - Silero TTS integration for Russian voice.

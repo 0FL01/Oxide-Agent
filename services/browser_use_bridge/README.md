@@ -79,6 +79,7 @@ Bridge принимает нормализованный `browser_llm_config` в
 - `browser_use`
 - `anthropic`
 - `minimax`
+- `opencode_go`
 - `zai`
 - `openrouter`
 - `openai_compatible`

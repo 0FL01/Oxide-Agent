@@ -70,6 +70,7 @@ fn settings_with_browser_route_keys(
         ("llm-provider/minimax", "minimax-secret"),
         ("llm-provider/zai", "zai-secret"),
         ("llm-provider/openrouter", "openrouter-secret"),
+        ("llm-provider/opencode-go", "opencode-go-secret"),
     ] {
         settings.modules.insert(
             module_id.to_string(),
@@ -549,6 +550,72 @@ fn browser_llm_config_maps_minimax_route() {
     assert_eq!(api_key, "minimax-secret");
     assert!(!config.supports_vision);
     assert!(config.supports_tools);
+}
+
+#[test]
+fn browser_llm_config_maps_opencode_go_mimo_route() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "mimo-v2.5".to_string(),
+        provider: "opencode-go".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, api_key) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("opencode-go route config");
+
+    assert_eq!(config.provider, "opencode_go");
+    assert_eq!(config.model, "mimo-v2.5");
+    assert_eq!(
+        config.api_base.as_deref(),
+        Some(OPENCODE_GO_DEFAULT_API_BASE)
+    );
+    assert_eq!(config.api_key_ref, None);
+    assert_eq!(api_key, "opencode-go-secret");
+    assert!(config.supports_vision);
+    assert!(config.supports_tools);
+}
+
+#[test]
+fn browser_llm_config_marks_opencode_go_deepseek_text_only() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "deepseek-v4-flash".to_string(),
+        provider: "opencode-go".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, _) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("opencode-go deepseek route config");
+
+    assert_eq!(config.provider, "opencode_go");
+    assert!(!config.supports_vision);
+}
+
+#[test]
+fn browser_llm_config_accepts_canonical_opencode_go_provider_id() {
+    let provider = BrowserUseProvider::new("http://localhost:8002", test_settings());
+    let route = crate::config::ModelInfo {
+        id: "opencode-go/mimo-v2.5-free".to_string(),
+        provider: "llm-provider/opencode-go".to_string(),
+        max_output_tokens: 4096,
+        context_window_tokens: 128_000,
+        weight: 1,
+    };
+
+    let (config, api_key) = provider
+        .browser_llm_config_for_route(&route)
+        .expect("canonical OpenCode Go route config");
+
+    assert_eq!(config.provider, "opencode_go");
+    assert_eq!(api_key, "opencode-go-secret");
+    assert!(config.supports_vision);
 }
 
 #[test]

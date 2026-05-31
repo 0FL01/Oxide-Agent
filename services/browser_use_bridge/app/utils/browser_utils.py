@@ -25,6 +25,7 @@ BROWSER_RUNTIME_UNAVAILABLE_PATTERNS = [
     "target closed",
     "browser has been closed",
     "browser session is not alive",
+    "expected at least one handler to return a non-none result",
 ]
 
 

@@ -417,15 +417,15 @@ class SessionManager:
         async with session.lock:
             try:
                 self._reset_browser_reconnect_observability(session)
-                browser = await self._ensure_follow_up_browser_session(session)
-                content, truncated, total_chars = await extract_content(
-                    browser, request.format, request.max_chars
+                content, truncated, total_chars, current_url = (
+                    await self._run_follow_up_operation_with_reconnect(
+                        session,
+                        lambda browser: self._extract_content_from_follow_up_browser(
+                            browser, request
+                        ),
+                    )
                 )
-                current_url = await infer_url(browser, None)
                 session.current_url = current_url
-                await self._refresh_browser_runtime_observability(
-                    session, browser=browser
-                )
                 session.updated_at = utc_now()
                 await self._persist(session)
             except Exception as error:
@@ -451,19 +451,15 @@ class SessionManager:
         async with session.lock:
             try:
                 self._reset_browser_reconnect_observability(session)
-                browser = await self._ensure_follow_up_browser_session(session)
-                artifact = await take_screenshot(
-                    browser,
-                    self._artifacts_dir,
-                    session.session_id,
-                    request.full_page,
+                artifact = await self._run_follow_up_operation_with_reconnect(
+                    session,
+                    lambda browser: self._take_follow_up_browser_screenshot(
+                        browser, session, request
+                    ),
                 )
                 session.artifacts.append(artifact)
-                current_url = await infer_url(browser, None)
+                current_url = await infer_url(session.browser, None)
                 session.current_url = current_url
-                await self._refresh_browser_runtime_observability(
-                    session, browser=browser
-                )
                 session.updated_at = utc_now()
                 await self._persist(session)
             except Exception as error:
@@ -474,6 +470,25 @@ class SessionManager:
             status="completed",
             current_url=current_url,
             artifact=artifact,
+        )
+
+    async def _extract_content_from_follow_up_browser(
+        self, browser: Any, request: ExtractContentRequest
+    ) -> tuple[str, bool, int, str | None]:
+        content, truncated, total_chars = await extract_content(
+            browser, request.format, request.max_chars
+        )
+        current_url = await infer_url(browser, None)
+        return content, truncated, total_chars, current_url
+
+    async def _take_follow_up_browser_screenshot(
+        self, browser: Any, session: SessionRecord, request: ScreenshotRequest
+    ) -> dict[str, Any]:
+        return await take_screenshot(
+            browser,
+            self._artifacts_dir,
+            session.session_id,
+            request.full_page,
         )
 
     async def get_artifact_path(
@@ -750,6 +765,24 @@ class SessionManager:
                 ),
             )
         return session.browser
+
+    async def _run_follow_up_operation_with_reconnect(
+        self, session: SessionRecord, operation: Any
+    ) -> Any:
+        """Run one follow-up operation and retry once after a reconnectable browser error."""
+        browser = await self._ensure_follow_up_browser_session(session)
+        try:
+            result = await operation(browser)
+        except Exception as error:
+            browser = await self._attempt_follow_up_browser_reconnect(
+                session,
+                browser,
+                error,
+            )
+            result = await operation(browser)
+
+        await self._refresh_browser_runtime_observability(session, browser=browser)
+        return result
 
     async def _raise_follow_up_browser_error(
         self, session: SessionRecord, error: Exception

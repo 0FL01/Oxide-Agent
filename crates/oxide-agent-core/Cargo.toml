@@ -160,6 +160,7 @@ profile-web-embedded-opencode-local = [
     "tool-tavily",
     "tool-duckduckgo",
     "tool-searxng",
+    "tool-browser-use",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",

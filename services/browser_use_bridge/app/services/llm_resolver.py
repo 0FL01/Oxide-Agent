@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from app.constants import (
     MINIMAX_DEFAULT_API_BASE,
+    OPENCODE_GO_DEFAULT_API_BASE,
     ZAI_DEFAULT_API_BASE,
     OPENAI_CHAT_COMPLETIONS_SUFFIX,
 )
@@ -84,6 +85,7 @@ def infer_transport(provider: str, api_base: str | None, transport: str | None) 
         "openai",
         "openai_compatible",
         "openrouter",
+        "opencode_go",
         "zai",
         "zhipuai",
         "glm",
@@ -110,6 +112,8 @@ def resolve_requested_llm_config(
         api_base = MINIMAX_DEFAULT_API_BASE
     if provider in {"zai", "zhipuai", "glm"} and api_base is None:
         api_base = ZAI_DEFAULT_API_BASE
+    if provider == "opencode_go" and api_base is None:
+        api_base = OPENCODE_GO_DEFAULT_API_BASE
     if transport == "openai_compatible":
         api_base = normalize_openai_api_base(api_base)
 
@@ -230,7 +234,9 @@ def needs_openai_schema_compat_preset(config: ResolvedBrowserLlmConfig) -> bool:
 
     provider = normalize_name(config.provider)
     model = normalize_name(config.model)
-    return provider in {"zai", "zhipuai", "glm"} or model.startswith("glm-")
+    return provider in {"opencode_go", "zai", "zhipuai", "glm"} or model.startswith(
+        "glm-"
+    )
 
 
 def vision_mode_label(config: ResolvedBrowserLlmConfig) -> Literal["auto", "disabled"]:

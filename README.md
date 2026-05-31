@@ -101,7 +101,7 @@ The bot supports **6 main providers** for Agent Mode with tool calling:
 *   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
 *   **DuckDuckGo** — built-in public web/news discovery provider (`DUCKDUCKGO_ENABLED`)
 *   **Local Web Markdown** — lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
-*   **Browser Use Bridge** — self-hosted browser automation sidecar for high-level browser tasks (`BROWSER_USE_URL`) — **currently disabled**, requires a quality vision-capable agent model at a reasonable price-per-token
+*   **Browser Use Bridge** — self-hosted browser automation sidecar for high-level browser tasks (`BROWSER_USE_URL`), enabled by the web compose profile
 *   **Kokoro TTS Server** — optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** — optional for Russian voice message synthesis (`SILERO_TTS_URL`)
 </details>
@@ -298,18 +298,18 @@ TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enab
 DUCKDUCKGO_ENABLED=true        # DuckDuckGo web/news search (no API key or sidecar required)
 DUCKDUCKGO_MIN_DELAY_MS=2500   # Process-wide DDG throttle
 DUCKDUCKGO_JITTER_MS=1500      # Random DDG throttle jitter
-# Browser Use self-hosted bridge (disabled: requires a quality vision-capable agent model)
+# Browser Use self-hosted bridge (docker-compose.web.yml starts the local sidecar)
 # BROWSER_USE_URL=http://127.0.0.1:8002
 # BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3 # Optional retained reusable profiles per topic/context scope
 # BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=604800 # Optional idle/stale reusable profile TTL in the bridge
 # BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=2 # Retry early transient browser readiness failures in the bridge
 # BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750 # Delay between bridge readiness retries in milliseconds
-# BROWSER_USE_MODEL_ID="GLM-4.6V" # Browser Use dedicated route
-# BROWSER_USE_MODEL_PROVIDER="zai" # Browser Use dedicated provider
+# BROWSER_USE_MODEL_ID="mimo-v2.5" # Browser Use dedicated vision route
+# BROWSER_USE_MODEL_PROVIDER="opencode-go" # Browser Use dedicated provider
 ```
 </details>
 
-For Browser Use task execution, Oxide sends the configured dedicated or inherited route to the bridge server-to-server. The bridge stays disabled by default until a cost-effective high-quality vision-agent model is available.
+For Browser Use task execution, Oxide sends the configured dedicated or inherited route to the bridge server-to-server. The web compose profile starts the local bridge and defaults the Browser Use route to OpenCode Go `mimo-v2.5`.
 
 ## Model Configuration
 
@@ -386,17 +386,17 @@ The agent runtime skips unsupported NVIDIA NIM routes before tool-enabled execut
 </details>
 
 <details>
-<summary>🌐 Browser Use default route (disabled)</summary>
+<summary>🌐 Browser Use default route</summary>
 
-> **NOTE**: Browser Use is currently disabled. It requires a quality vision-capable agent model
-> at a reasonable price-per-token. To re-enable, set `BROWSER_USE_URL` and optionally
-> `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`. See `docs/browser-use.md`.
+> **NOTE**: Browser Use is enabled by the web compose profile. Other profiles still require
+> `tool-browser-use` at compile time and non-empty `BROWSER_USE_URL` at runtime.
+> See `docs/browser-use.md`.
 
-When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `openrouter / google/gemini-3-flash-preview`) even when main/sub-agent stay on a different route:
+Browser Use can be pinned to a dedicated vision-capable route even when main/sub-agent stay on a different route. The web compose default is OpenCode Go `mimo-v2.5`; OpenCode Go `deepseek-v4-flash` is supported only for text-only browse tasks:
 
 ```dotenv
-BROWSER_USE_MODEL_ID="GLM-4.6V"
-BROWSER_USE_MODEL_PROVIDER="zai"
+BROWSER_USE_MODEL_ID="mimo-v2.5"
+BROWSER_USE_MODEL_PROVIDER="opencode-go"
 ```
 
 Browser Use prefers this dedicated route over the currently active main/sub-agent route and falls back to the inherited route only when the dedicated override is absent.

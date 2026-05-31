@@ -332,10 +332,6 @@ fn assert_tool_availability_contract(
                 enabled_module_ids.contains("sandbox-backend/bwrap"),
                 "embedded-opencode-local profile must enable the bwrap sandbox backend"
             );
-            assert!(
-                enabled_module_ids.contains("sandbox-backend/docker-direct"),
-                "embedded-opencode-local profile must enable the direct Docker sandbox backend"
-            );
             if profile == "profile-web-embedded-opencode-local" {
                 assert!(
                     enabled_module_ids.contains("transport/web"),
@@ -345,10 +341,18 @@ fn assert_tool_availability_contract(
                     !enabled_module_ids.contains("transport/telegram"),
                     "web embedded profile must not enable the Telegram transport"
                 );
+                assert!(
+                    enabled_module_ids.contains("sandbox-backend/sandboxd-client"),
+                    "web embedded profile must enable the sandboxd client backend"
+                );
             } else {
                 assert!(
                     enabled_module_ids.contains("transport/telegram"),
                     "embedded-opencode-local profile must enable the Telegram transport"
+                );
+                assert!(
+                    enabled_module_ids.contains("sandbox-backend/docker-direct"),
+                    "embedded-opencode-local profile must enable the direct Docker sandbox backend"
                 );
             }
             assert_present_capabilities(
@@ -357,9 +361,6 @@ fn assert_tool_availability_contract(
                     "sandbox-backend/bwrap/exec",
                     "sandbox-backend/bwrap/fileops",
                     "sandbox-backend/bwrap/lifecycle",
-                    "sandbox-backend/docker-direct/exec",
-                    "sandbox-backend/docker-direct/fileops",
-                    "sandbox-backend/docker-direct/lifecycle",
                     "tool/compression",
                     "tool/delegation",
                     "tool/file-delivery",
@@ -375,6 +376,28 @@ fn assert_tool_availability_contract(
                 ],
                 profile,
             );
+            if profile == "profile-web-embedded-opencode-local" {
+                assert_present_capabilities(
+                    &enabled_capability_ids,
+                    &[
+                        "sandbox-backend/sandboxd-client/exec",
+                        "sandbox-backend/sandboxd-client/fileops",
+                        "sandbox-backend/sandboxd-client/lifecycle",
+                        "tool/browser-use",
+                    ],
+                    profile,
+                );
+            } else {
+                assert_present_capabilities(
+                    &enabled_capability_ids,
+                    &[
+                        "sandbox-backend/docker-direct/exec",
+                        "sandbox-backend/docker-direct/fileops",
+                        "sandbox-backend/docker-direct/lifecycle",
+                    ],
+                    profile,
+                );
+            }
             assert_present_tools(
                 &tool_names,
                 &[
@@ -567,7 +590,14 @@ fn allowed_provider_names_for_enabled_modules(
                 allowed.extend(["llm-provider/openai-chatgpt", "chatgpt", "openai-chatgpt"]);
             }
             "llm-provider/opencode-go" => {
-                allowed.extend(["llm-provider/opencode-go", "opencode-go", "opencode_go"]);
+                allowed.extend([
+                    "llm-provider/opencode-go",
+                    "opencode-go",
+                    "opencode_go",
+                    "llm-provider/opencode-zen",
+                    "opencode-zen",
+                    "opencode_zen",
+                ]);
             }
             "llm-provider/openrouter" => {
                 allowed.extend(["llm-provider/openrouter", "openrouter"]);

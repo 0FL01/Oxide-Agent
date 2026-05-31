@@ -73,6 +73,7 @@ async def health() -> JSONResponse:
         "browser_llm_api_key_header": OXIDE_BROWSER_LLM_API_KEY_HEADER,
         "supported_inherited_route_providers": [
             "minimax",
+            "opencode_go",
             "zai",
             "openrouter",
         ],
@@ -80,6 +81,7 @@ async def health() -> JSONResponse:
             "browser_use",
             "anthropic",
             "minimax",
+            "opencode_go",
             "zai",
             "openrouter",
             "openai_compatible",

@@ -16,6 +16,7 @@ from fastapi import HTTPException
 class FakeBrowser:
     instances = []
     initial_start_failures = 0
+    state_text_failures = 0
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -101,6 +102,11 @@ class FakeBrowser:
             raise RuntimeError("browser has been closed")
         if self.session_manager is None:
             raise RuntimeError("SessionManager not initialized")
+        if type(self).state_text_failures > 0:
+            type(self).state_text_failures -= 1
+            raise ValueError(
+                "Expected at least one handler to return a non-None result, but none did!"
+            )
         return "Example page text"
 
     async def take_screenshot(self, path=None, full_page=False):
@@ -230,6 +236,7 @@ def import_bridge_module(extra_env: dict[str, str]):
     FakeAgent.next_download_file_name = None
     FakeBrowser.instances = []
     FakeBrowser.initial_start_failures = 0
+    FakeBrowser.state_text_failures = 0
 
     browser_use_stub = make_browser_use_module()
     with mock.patch.dict(sys.modules, {"browser_use": browser_use_stub}):
@@ -294,6 +301,7 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(payload["browser_runtime_reconnect_supported"])
             self.assertTrue(payload["orphan_profile_recovery_supported"])
             self.assertIn("minimax", payload["supported_inherited_route_providers"])
+            self.assertIn("opencode_go", payload["supported_inherited_route_providers"])
 
     async def test_run_requires_request_level_browser_llm_config(self):
         with TemporaryDirectory() as tmpdir:
@@ -382,6 +390,76 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(
                 FakeAgent.instances[-1].llm.kwargs["remove_min_items_from_schema"]
             )
+
+    async def test_opencode_go_request_config_uses_openai_compatible_transport(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            request = module.RunTaskRequest(
+                task="Open the docs page and summarize it",
+                browser_llm_config={
+                    "provider": "opencode_go",
+                    "model": "mimo-v2.5",
+                    "supports_vision": True,
+                },
+            )
+
+            response = await manager.run_task(request, "opencode-go-secret")
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.llm_provider, "opencode_go")
+            self.assertEqual(response.llm_transport, "openai_compatible")
+            self.assertEqual(response.vision_mode, "auto")
+            self.assertEqual(FakeAgent.instances[-1].use_vision, "auto")
+            self.assertIsInstance(FakeAgent.instances[-1].llm, FakeChatOpenAI)
+            self.assertEqual(
+                FakeAgent.instances[-1].llm.kwargs["base_url"],
+                "https://opencode.ai/zen/go/v1",
+            )
+            self.assertEqual(
+                FakeAgent.instances[-1].llm.kwargs["api_key"], "opencode-go-secret"
+            )
+            self.assertTrue(
+                FakeAgent.instances[-1].llm.kwargs["dont_force_structured_output"]
+            )
+            self.assertTrue(
+                FakeAgent.instances[-1].llm.kwargs["add_schema_to_system_prompt"]
+            )
+            self.assertTrue(
+                FakeAgent.instances[-1].llm.kwargs["remove_defaults_from_schema"]
+            )
+            self.assertTrue(
+                FakeAgent.instances[-1].llm.kwargs["remove_min_items_from_schema"]
+            )
+
+    async def test_opencode_go_deepseek_request_config_disables_vision(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                }
+            )
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            request = module.RunTaskRequest(
+                task="Open the docs page and summarize the text",
+                browser_llm_config={
+                    "provider": "opencode_go",
+                    "model": "deepseek-v4-flash",
+                    "supports_vision": False,
+                },
+            )
+
+            response = await manager.run_task(request, "opencode-go-secret")
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.llm_provider, "opencode_go")
+            self.assertEqual(response.llm_transport, "openai_compatible")
+            self.assertEqual(response.vision_mode, "disabled")
+            self.assertEqual(FakeAgent.instances[-1].use_vision, False)
 
     async def test_anthropic_request_config_does_not_apply_openai_schema_compat_preset(
         self,
@@ -558,6 +636,44 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(screenshot.status, "completed")
+            refreshed = await manager.get_session(run_response.session_id)
+            self.assertTrue(refreshed.browser_runtime_alive)
+            self.assertTrue(refreshed.browser_reconnect_attempted)
+            self.assertTrue(refreshed.browser_reconnect_succeeded)
+            self.assertIsNone(refreshed.browser_reconnect_error)
+            self.assertEqual(browser.start_calls, start_calls_before + 1)
+
+    async def test_navigation_only_extract_retries_browser_state_handler_failure(self):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                }
+            )
+            FakeAgent.auto_close_after_run = True
+            FakeBrowser.state_text_failures = 1
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+
+            run_response = await manager.run_task(
+                module.RunTaskRequest(
+                    task="Open the dashboard",
+                    execution_mode="navigation_only",
+                ),
+                None,
+            )
+            session = await manager.get_session(run_response.session_id)
+            browser = session.browser
+            self.assertIsNotNone(browser)
+            browser.current_page = None
+            start_calls_before = browser.start_calls
+
+            response = await manager.extract_content(
+                run_response.session_id,
+                module.ExtractContentRequest(format="text"),
+            )
+
+            self.assertEqual(response.status, "completed")
+            self.assertEqual(response.content, "Example page text")
             refreshed = await manager.get_session(run_response.session_id)
             self.assertTrue(refreshed.browser_runtime_alive)
             self.assertTrue(refreshed.browser_reconnect_attempted)
@@ -851,6 +967,42 @@ class BrowserUseBridgeTests(unittest.IsolatedAsyncioTestCase):
                 "browser runtime is closed", refreshed.browser_runtime_dead_reason
             )
             self.assertIn("browser runtime is closed", refreshed.last_error)
+
+    async def test_extract_content_reports_browser_state_handler_failure_as_terminal_error(
+        self,
+    ):
+        with TemporaryDirectory() as tmpdir:
+            module = import_bridge_module(
+                {
+                    "BROWSER_USE_BRIDGE_DATA_DIR": tmpdir,
+                }
+            )
+            FakeBrowser.state_text_failures = 1
+            manager = module.SessionManager(Path(tmpdir), max_concurrent_sessions=1)
+            run_response = await manager.run_task(
+                module.RunTaskRequest(task="Open the homepage and summarize it"), None
+            )
+            session = await manager.get_session(run_response.session_id)
+            session.browser.current_page = None
+
+            with self.assertRaises(HTTPException) as context:
+                await manager.extract_content(
+                    run_response.session_id,
+                    module.ExtractContentRequest(format="text"),
+                )
+
+            self.assertEqual(context.exception.status_code, 409)
+            self.assertEqual(
+                context.exception.detail["error"], "browser_session_not_alive"
+            )
+            refreshed = await manager.get_session(run_response.session_id)
+            self.assertIsNone(refreshed.browser)
+            self.assertFalse(refreshed.browser_runtime_alive)
+            self.assertIn(
+                "Expected at least one handler",
+                refreshed.browser_runtime_dead_reason,
+            )
+            self.assertIn("Expected at least one handler", refreshed.last_error)
 
     async def test_screenshot_reports_dead_browser_session_as_terminal_error(self):
         with TemporaryDirectory() as tmpdir:

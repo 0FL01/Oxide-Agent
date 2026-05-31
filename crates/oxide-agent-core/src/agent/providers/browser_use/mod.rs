@@ -46,10 +46,17 @@ const TOOL_EXTRACT_CONTENT: &str = "browser_use_extract_content";
 const TOOL_SCREENSHOT: &str = "browser_use_screenshot";
 const MINIMAX_DEFAULT_API_BASE: &str = "https://api.minimax.io/anthropic";
 const OPENROUTER_DEFAULT_API_BASE: &str = "https://openrouter.ai/api/v1";
+const OPENCODE_GO_DEFAULT_API_BASE: &str = "https://opencode.ai/zen/go/v1/chat/completions";
 const MINIMAX_PROVIDER_MODULE_ID: &str = "llm-provider/minimax";
 const ZAI_PROVIDER_MODULE_ID: &str = "llm-provider/zai";
 const OPENROUTER_PROVIDER_MODULE_ID: &str = "llm-provider/openrouter";
+const OPENCODE_GO_PROVIDER_MODULE_ID: &str = "llm-provider/opencode-go";
 const ZAI_DEFAULT_API_BASE: &str = "https://api.z.ai/api/coding/paas/v4/chat/completions";
+const OPENCODE_GO_API_KEY_ENVS: &[&str] = &[
+    "OPENCODE_API_KEY",
+    "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_GO_API_KEY",
+];
 const OXIDE_BROWSER_LLM_API_KEY_HEADER: &str = "x-oxide-browser-llm-api-key";
 const BROWSER_USE_UNSTABLE_VISUAL_ROUTES_ENV: &str = "BROWSER_USE_UNSTABLE_VISUAL_ROUTES";
 
@@ -476,9 +483,22 @@ impl BrowserUseProvider {
                     "OPENROUTER_API_KEY",
                 )?,
             ),
+            "llm-provider/opencode-go" | "opencode-go" | "opencode_go" => (
+                "opencode_go",
+                Some(self.route_api_base_for_module(
+                    OPENCODE_GO_PROVIDER_MODULE_ID,
+                    "OPENCODE_GO_API_BASE",
+                    OPENCODE_GO_DEFAULT_API_BASE,
+                )),
+                self.require_route_api_key_for_module_envs(
+                    "opencode-go",
+                    OPENCODE_GO_PROVIDER_MODULE_ID,
+                    OPENCODE_GO_API_KEY_ENVS,
+                )?,
+            ),
             unsupported => {
                 return Err(anyhow!(
-                    "Browser Use route inheritance does not support provider `{}` yet; supported routes: minimax, zai, openrouter",
+                    "Browser Use route inheritance does not support provider `{}` yet; supported routes: minimax, zai, openrouter, opencode-go",
                     if configured_provider.is_empty() {
                         unsupported
                     } else {
@@ -510,6 +530,18 @@ impl BrowserUseProvider {
         let api_key = self
             .settings
             .module_string_value_or_env(module_id, "api_key", env_name);
+        self.require_route_api_key(provider, api_key.as_deref())
+    }
+
+    fn require_route_api_key_for_module_envs(
+        &self,
+        provider: &str,
+        module_id: &str,
+        env_names: &[&str],
+    ) -> Result<String> {
+        let api_key = self
+            .settings
+            .module_string_value_or_envs(module_id, "api_key", env_names);
         self.require_route_api_key(provider, api_key.as_deref())
     }
 
@@ -1366,6 +1398,9 @@ fn route_supports_vision(provider: &str, model: &str) -> bool {
     match provider {
         "llm-provider/zai" | "zai" => is_zai_vision_model(model),
         "llm-provider/openrouter" | "openrouter" => is_openrouter_vision_model(model),
+        "llm-provider/opencode-go" | "opencode-go" | "opencode_go" => {
+            is_opencode_go_vision_model(model)
+        }
         _ => false,
     }
 }
@@ -1394,6 +1429,16 @@ fn is_openrouter_vision_model(model: &str) -> bool {
     ]
     .iter()
     .any(|needle| model.contains(needle))
+}
+
+fn is_opencode_go_vision_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    let model = model
+        .strip_prefix("opencode-go/")
+        .or_else(|| model.strip_prefix("opencode_go/"))
+        .or_else(|| model.strip_prefix("llm-provider/opencode-go/"))
+        .unwrap_or(&model);
+    model.starts_with("mimo-v2.5")
 }
 
 fn is_unstable_autonomous_visual_route(config: &BrowserLlmConfig) -> bool {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-profile="${1:?usage: scripts/check-compose-profile.sh <embedded-opencode-local|search|media|dev|full|root-full>}"
+profile="${1:?usage: scripts/check-compose-profile.sh <embedded-opencode-local|search|media|dev|full|root-full|telegram|web>}"
 
 if [[ -f Dockerfile ]]; then
   echo "root Dockerfile must stay removed; use docker/Dockerfile.app with explicit profile args" >&2
@@ -91,9 +91,9 @@ with profile_path.open("rb") as fh:
     profile_doc = tomllib.load(fh)
 module_ids = set((profile_doc.get("modules") or {}).keys())
 
-uses_sandboxd = "sandbox-daemon/sandboxd" in module_ids
+uses_sandboxd = "sandbox-daemon/sandboxd" in module_ids or profile in {"telegram", "web", "dev", "full"}
 uses_searxng = "tool/searxng" in module_ids
-uses_browser_use = False  # Browser Use bridge is intentionally dormant until a cost-effective vision model is selected.
+uses_browser_use = defaults_profile == "web-embedded-opencode-local" and "tool/browser-use" in module_ids
 uses_ssh_mcp = "integration/ssh-mcp" in module_ids
 
 is_web_profile = defaults_profile == "web-embedded-opencode-local"
@@ -176,8 +176,11 @@ if ("sandbox_image" in services) != uses_sandboxd:
         f"service_present={'sandbox_image' in services}; module_selected={uses_sandboxd}"
     )
 
-if "browser_use" in services and not uses_browser_use:
-    fail("browser_use service must stay absent while the bridge is intentionally dormant")
+if ("browser_use" in services) != uses_browser_use:
+    fail(
+        "browser_use service selection does not match profile topology; "
+        f"service_present={'browser_use' in services}; expected={uses_browser_use}"
+    )
 
 if ("searxng" in services) != uses_searxng:
     fail(
@@ -290,8 +293,11 @@ case "${profile}" in
     require_service sandboxd
     require_service sandbox_image
     require_service searxng
+    require_service browser_use
     forbid_service oxide_agent
     require_config_text "sandbox/Dockerfile.dev"
+    require_config_text "browser-use-data"
+    require_config_text "BROWSER_USE_URL"
     forbid_config_text "sandbox/Dockerfile.sandbox"
     if ! grep -q "/var/run/docker.sock" <<<"${config}"; then
       echo "web compose must mount Docker socket into sandboxd" >&2

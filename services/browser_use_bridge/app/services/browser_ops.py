@@ -14,6 +14,7 @@ from app.models.internal import ProfileRecord
 from app.utils.browser_utils import (
     browser_state_snapshot,
     invoke_with_supported_kwargs,
+    is_browser_session_unavailable_error,
     maybe_await,
     resolve_browser_page,
 )
@@ -294,7 +295,9 @@ async def take_screenshot(
                     method, path=str(path), full_page=full_page
                 )
             )
-        except Exception:
+        except Exception as error:
+            if is_browser_session_unavailable_error(error):
+                raise RuntimeError(f"browser session is not alive: {error}") from error
             continue
 
         if path.exists():
