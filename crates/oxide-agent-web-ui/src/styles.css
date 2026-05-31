@@ -801,19 +801,6 @@ label {
   background: var(--accent-red);
 }
 
-.task-card-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-
-.task-card-header time {
-  font-size: 11px;
-  color: var(--text-faint);
-  font-family: var(--font-mono);
-}
-
 .message {
   font-size: 13px;
   line-height: 1.7;
@@ -2241,12 +2228,6 @@ textarea {
 
 .task-card::before {
   content: none;
-}
-
-.task-card-header {
-  margin-bottom: 10px;
-  color: var(--faint);
-  font: 11px/1.5 var(--font-mono);
 }
 
 .message {

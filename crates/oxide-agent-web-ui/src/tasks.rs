@@ -3,7 +3,7 @@ use crate::components::ErrorBanner;
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
 use crate::sse::{spawn_task_stream, TaskStreamConfig};
-use crate::utils::{friendly_time, navigate, spawn_ui};
+use crate::utils::{navigate, spawn_ui};
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     AgentProfileSelection, AgentProfileView, CreateSessionRequest, CreateTaskRequest,
@@ -1237,9 +1237,6 @@ fn TaskCard(
 
             view! {
                 <article class=card_class>
-                    <div class="task-card-header">
-                        <time>{friendly_time(task.updated_at)}</time>
-                    </div>
                     <div class="message user-message-wrap">
                         <div class="user-message">
                         {if editing.get() {
@@ -2947,17 +2944,17 @@ fn group_task_versions(tasks: &[TaskSummary]) -> Vec<TaskVersionGroup> {
         .collect::<Vec<_>>();
 
     groups.sort_by(|a, b| {
-        latest_group_task(&b.versions)
-            .updated_at
-            .cmp(&latest_group_task(&a.versions).updated_at)
-            .then_with(|| b.version_group_id.cmp(&a.version_group_id))
+        first_group_task(&a.versions)
+            .created_at
+            .cmp(&first_group_task(&b.versions).created_at)
+            .then_with(|| a.version_group_id.cmp(&b.version_group_id))
     });
     groups
 }
 
-fn latest_group_task(versions: &[TaskSummary]) -> &TaskSummary {
+fn first_group_task(versions: &[TaskSummary]) -> &TaskSummary {
     versions
-        .last()
+        .first()
         .expect("task version groups must contain at least one task")
 }
 

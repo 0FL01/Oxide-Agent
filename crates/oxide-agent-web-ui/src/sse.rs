@@ -417,7 +417,11 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<TaskStatus> {
                 } else {
                     items.push(summary);
                 }
-                items.sort_by_key(|item| item.updated_at);
+                items.sort_by(|a, b| {
+                    a.created_at
+                        .cmp(&b.created_at)
+                        .then_with(|| a.task_id.cmp(&b.task_id))
+                });
             });
             refresh_session_summary(config).await;
             Some(status)
