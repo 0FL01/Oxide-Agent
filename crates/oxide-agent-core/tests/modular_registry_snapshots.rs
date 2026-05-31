@@ -240,19 +240,6 @@ fn assert_tool_availability_contract(
         &compiled_module_ids,
         &enabled_module_ids,
         &tool_names,
-        "tool/browser-use",
-        &[
-            "browser_use_run_task",
-            "browser_use_get_session",
-            "browser_use_close_session",
-            "browser_use_extract_content",
-            "browser_use_screenshot",
-        ],
-    );
-    assert_tools_absent_when_module_unavailable(
-        &compiled_module_ids,
-        &enabled_module_ids,
-        &tool_names,
         "tool/media-audio",
         &["transcribe_audio_file"],
     );
@@ -383,7 +370,6 @@ fn assert_tool_availability_contract(
                         "sandbox-backend/sandboxd-client/exec",
                         "sandbox-backend/sandboxd-client/fileops",
                         "sandbox-backend/sandboxd-client/lifecycle",
-                        "tool/browser-use",
                     ],
                     profile,
                 );
@@ -419,14 +405,12 @@ fn assert_tool_availability_contract(
                 ],
                 profile,
             );
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
         }
         "profile-lite" => {
             assert_absent_tools(&tool_names, &["execute_command"], profile);
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
@@ -442,7 +426,6 @@ fn assert_tool_availability_contract(
                 profile,
             );
             assert_present_tools(&tool_names, &["web_markdown"], profile);
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
@@ -467,7 +450,6 @@ fn assert_tool_availability_contract(
                 profile,
             );
             assert_absent_tools(&tool_names, &["execute_command"], profile);
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert!(
                 enabled_module_ids
                     .iter()
@@ -513,7 +495,6 @@ fn assert_tool_availability_contract(
                 ],
                 profile,
             );
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);

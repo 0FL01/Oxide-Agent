@@ -93,7 +93,6 @@ module_ids = set((profile_doc.get("modules") or {}).keys())
 
 uses_sandboxd = "sandbox-daemon/sandboxd" in module_ids or profile in {"telegram", "web", "dev", "full"}
 uses_searxng = "tool/searxng" in module_ids
-uses_browser_use = defaults_profile == "web-embedded-opencode-local" and "tool/browser-use" in module_ids
 uses_ssh_mcp = "integration/ssh-mcp" in module_ids
 
 is_web_profile = defaults_profile == "web-embedded-opencode-local"
@@ -151,7 +150,6 @@ else:
         fail(f"Docker socket must be mounted only into sandboxd; mounts={docker_socket_mounts}")
 
 module_volume_owners = {
-    "browser-use-data": "browser_use",
     "sandboxd-run": "sandboxd",
 }
 for volume_name, owner_service in module_volume_owners.items():
@@ -160,9 +158,6 @@ for volume_name, owner_service in module_volume_owners.items():
 
 if "sandboxd" in services and "sandboxd-run" not in declared_volumes:
     fail("sandboxd service requires sandboxd-run volume")
-
-if "browser_use" in services and "browser-use-data" not in declared_volumes:
-    fail("browser_use service requires browser-use-data volume")
 
 if ("sandboxd" in services) != uses_sandboxd:
     fail(
@@ -174,12 +169,6 @@ if ("sandbox_image" in services) != uses_sandboxd:
     fail(
         "sandbox image service selection does not match sandbox daemon module; "
         f"service_present={'sandbox_image' in services}; module_selected={uses_sandboxd}"
-    )
-
-if ("browser_use" in services) != uses_browser_use:
-    fail(
-        "browser_use service selection does not match profile topology; "
-        f"service_present={'browser_use' in services}; expected={uses_browser_use}"
     )
 
 if ("searxng" in services) != uses_searxng:
@@ -262,14 +251,12 @@ case "${profile}" in
     forbid_service sandboxd
     forbid_service sandbox_image
     forbid_service searxng
-    forbid_service browser_use
     forbid_config_text "MCP_BINARIES"
     forbid_config_text "ssh-mcp"
     forbid_config_text "jira-mcp"
     forbid_config_text "mattermost-mcp"
     forbid_config_text "/var/run/docker.sock"
     forbid_config_text "sandboxd-run"
-    forbid_config_text "browser-use-data"
     ;;
   telegram)
     require_service oxide_agent
@@ -293,11 +280,8 @@ case "${profile}" in
     require_service sandboxd
     require_service sandbox_image
     require_service searxng
-    require_service browser_use
     forbid_service oxide_agent
     require_config_text "sandbox/Dockerfile.dev"
-    require_config_text "browser-use-data"
-    require_config_text "BROWSER_USE_URL"
     forbid_config_text "sandbox/Dockerfile.sandbox"
     if ! grep -q "/var/run/docker.sock" <<<"${config}"; then
       echo "web compose must mount Docker socket into sandboxd" >&2

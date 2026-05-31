@@ -30,8 +30,6 @@ pub use invocation::{
 pub use modules::AgentsMdModuleContext;
 #[cfg(feature = "tool-agents-md")]
 pub use modules::AgentsMdToolModule;
-#[cfg(feature = "tool-browser-use")]
-pub use modules::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-delegation")]

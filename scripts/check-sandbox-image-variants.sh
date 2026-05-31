@@ -54,7 +54,7 @@ contains_token() {
 }
 
 minimal_text="$(normalized_dockerfile "${sandbox_dir}/Dockerfile.minimal")"
-for forbidden in ffmpeg python3 python3-pip pip yt-dlp nmap mtr chromium google-chrome firefox playwright browser-use; do
+for forbidden in ffmpeg python3 python3-pip pip yt-dlp nmap mtr chromium google-chrome firefox playwright; do
   if contains_token "${minimal_text}" "${forbidden}"; then
     echo "minimal sandbox image must not include '${forbidden}'" >&2
     exit 1
@@ -63,7 +63,7 @@ done
 
 for variant in "${variants[@]}"; do
   text="$(normalized_dockerfile "${sandbox_dir}/Dockerfile.${variant}")"
-  for forbidden_browser in chromium google-chrome firefox playwright browser-use; do
+  for forbidden_browser in chromium google-chrome firefox playwright; do
     if contains_token "${text}" "${forbidden_browser}"; then
       echo "sandbox image variant '${variant}' must not include browser package '${forbidden_browser}'" >&2
       exit 1

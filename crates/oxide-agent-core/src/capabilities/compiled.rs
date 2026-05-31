@@ -439,13 +439,6 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         Search,
         ["tool/searxng-search"]
     );
-    push_module!(
-        modules,
-        "tool-browser-use",
-        "tool/browser-use",
-        Browser,
-        ["tool/browser-use"]
-    );
     push_module_with_requires!(
         modules,
         "tool-sandbox-fileops",

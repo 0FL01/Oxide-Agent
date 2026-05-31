@@ -91,19 +91,6 @@ pub struct AgentSettings {
     pub searxng_enabled: Option<bool>,
     /// SearXNG request timeout (seconds).
     pub searxng_timeout_secs: Option<u64>,
-    /// Browser Use bridge base URL.
-    pub browser_use_url: Option<String>,
-    /// Browser Use request timeout (seconds).
-    pub browser_use_timeout_secs: Option<u64>,
-    /// Dedicated Browser Use model ID override.
-    pub browser_use_model_id: Option<String>,
-    /// Dedicated Browser Use model provider override.
-    pub browser_use_model_provider: Option<String>,
-    /// Dedicated Browser Use model max output tokens override.
-    pub browser_use_model_max_output_tokens: Option<u32>,
-    /// Dedicated Browser Use model context window tokens override.
-    pub browser_use_model_context_window_tokens: Option<u32>,
-
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
 
@@ -432,10 +419,6 @@ impl AgentSettings {
             self.media_model_provider.as_deref(),
         )?;
         self.validate_optional_route_provider(
-            "BROWSER_USE_MODEL_PROVIDER",
-            self.browser_use_model_provider.as_deref(),
-        )?;
-        self.validate_optional_route_provider(
             "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
             self.wiki_memory_writer_model_provider.as_deref(),
         )?;
@@ -585,10 +568,6 @@ impl AgentSettings {
             &mut self.media_model_provider,
         )?;
         Self::canonicalize_optional_provider_field(
-            "BROWSER_USE_MODEL_PROVIDER",
-            &mut self.browser_use_model_provider,
-        )?;
-        Self::canonicalize_optional_provider_field(
             "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
             &mut self.wiki_memory_writer_model_provider,
         )?;
@@ -662,7 +641,6 @@ impl AgentSettings {
             self.agent_model_provider.as_deref(),
             self.sub_agent_model_provider.as_deref(),
             self.media_model_provider.as_deref(),
-            self.browser_use_model_provider.as_deref(),
             self.wiki_memory_writer_model_provider.as_deref(),
         ];
         let agent_route_providers = self
@@ -811,14 +789,6 @@ impl AgentSettings {
 
         if self.searxng_enabled.is_none() {
             self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
-        }
-
-        if self.browser_use_url.is_none() {
-            if let Ok(val) = std::env::var("BROWSER_USE_URL") {
-                if !val.is_empty() {
-                    self.browser_use_url = Some(val);
-                }
-            }
         }
     }
 
@@ -978,22 +948,6 @@ impl AgentSettings {
         let context_window_tokens = self
             .media_model_context_window_tokens
             .unwrap_or(DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS);
-
-        Some((
-            id.clone(),
-            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
-        ))
-    }
-
-    fn browser_use_model_spec(&self) -> Option<(String, ModelInfo)> {
-        let id = self.browser_use_model_id.as_ref()?;
-        let provider = self.browser_use_model_provider.as_ref()?;
-        let max_output_tokens = self
-            .browser_use_model_max_output_tokens
-            .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS);
-        let context_window_tokens = self
-            .browser_use_model_context_window_tokens
-            .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
@@ -1196,11 +1150,6 @@ impl AgentSettings {
         self.agent_timeout_secs.unwrap_or(AGENT_TIMEOUT_SECS)
     }
 
-    /// Returns the dedicated Browser Use model when configured.
-    pub fn get_configured_browser_use_model(&self) -> Option<ModelInfo> {
-        self.browser_use_model_spec().map(|(_, info)| info)
-    }
-
     /// Returns the configured sub-agent timeout in seconds
     pub fn get_sub_agent_timeout_secs(&self) -> u64 {
         self.sub_agent_timeout_secs
@@ -1222,14 +1171,6 @@ pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
 
     static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
     ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
-}
-
-#[cfg(all(test, feature = "tool-browser-use"))]
-pub(crate) fn test_env_async_mutex() -> &'static tokio::sync::Mutex<()> {
-    use std::sync::OnceLock;
-
-    static ENV_MUTEX: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    ENV_MUTEX.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 #[cfg(test)]
@@ -1508,7 +1449,6 @@ mod tests {
             agent_model_provider: Some(" OpenRouter ".to_string()),
             media_model_id: Some("google/gemini-3-flash-preview".to_string()),
             media_model_provider: Some("llm-provider/openrouter".to_string()),
-            browser_use_model_provider: Some(" ".to_string()),
             agent_model_routes: Some(vec![ModelInfo {
                 id: "deepseek/deepseek-v4-flash".to_string(),
                 provider: "openrouter".to_string(),
@@ -1541,7 +1481,6 @@ mod tests {
             settings.media_model_provider.as_deref(),
             Some("llm-provider/openrouter")
         );
-        assert_eq!(settings.browser_use_model_provider, None);
         assert_eq!(
             settings
                 .agent_model_routes
@@ -1923,26 +1862,6 @@ mod tests {
     }
 
     #[test]
-    fn browser_use_model_returns_dedicated_route_when_configured() {
-        let settings = AgentSettings {
-            browser_use_model_id: Some("GLM-4.6V".to_string()),
-            browser_use_model_provider: Some("zai".to_string()),
-            browser_use_model_max_output_tokens: Some(16_384),
-            browser_use_model_context_window_tokens: Some(131_072),
-            ..AgentSettings::default()
-        };
-
-        let route = settings
-            .get_configured_browser_use_model()
-            .expect("browser-use route should be configured");
-
-        assert_eq!(route.id, "GLM-4.6V");
-        assert_eq!(route.provider, "zai");
-        assert_eq!(route.max_output_tokens, 16_384);
-        assert_eq!(route.context_window_tokens, 131_072);
-    }
-
-    #[test]
     fn tavily_enabled_flag_overrides_api_key_fallback() {
         env::set_var("TAVILY_API_KEY", "dummy-key");
         env::set_var("TAVILY_ENABLED", "false");
@@ -1951,18 +1870,6 @@ mod tests {
 
         env::remove_var("TAVILY_ENABLED");
         env::remove_var("TAVILY_API_KEY");
-    }
-
-    #[test]
-    fn browser_use_enabled_falls_back_to_url_presence() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-
-        assert!(is_browser_use_enabled());
-
-        env::remove_var("BROWSER_USE_URL");
     }
 
     #[test]
@@ -2349,21 +2256,6 @@ pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const SEARXNG_DEFAULT_ROTATION_ENGINES: &[&str] =
     &["brave", "bing", "qwant", "mojeek", "yandex"];
 
-/// Default timeout for Browser Use bridge requests (seconds)
-pub const BROWSER_USE_DEFAULT_TIMEOUT_SECS: u64 = 300;
-
-/// Default max concurrent Browser Use requests per sub-agent.
-pub const BROWSER_USE_DEFAULT_MAX_CONCURRENT: usize = 2;
-
-/// Default max retries for Browser Use bridge requests.
-pub const BROWSER_USE_DEFAULT_MAX_RETRIES: usize = 3;
-
-/// Default initial backoff delay for Browser Use bridge retries (seconds).
-pub const BROWSER_USE_DEFAULT_INITIAL_BACKOFF_SECS: u64 = 2;
-
-/// Default max backoff delay for Browser Use bridge retries (seconds).
-pub const BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS: u64 = 20;
-
 /// DuckDuckGo browser configuration.
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct DuckDuckGoBrowserConfig {
@@ -2528,38 +2420,6 @@ pub fn get_searxng_rotation_engines() -> Vec<String> {
     }
 }
 
-/// Get Browser Use bridge base URL from env.
-///
-/// Environment variable: `BROWSER_USE_URL`
-#[must_use]
-pub fn get_browser_use_url() -> Option<String> {
-    std::env::var("BROWSER_USE_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Get Browser Use bridge timeout from env or default.
-///
-/// Environment variable: `BROWSER_USE_TIMEOUT_SECS`
-#[must_use]
-pub fn get_browser_use_timeout() -> u64 {
-    std::env::var("BROWSER_USE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_TIMEOUT_SECS)
-}
-
-/// Get max concurrent Browser Use requests from env or default.
-///
-/// Environment variable: `BROWSER_USE_MAX_CONCURRENT`
-#[must_use]
-pub fn get_browser_use_max_concurrent() -> usize {
-    std::env::var("BROWSER_USE_MAX_CONCURRENT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_MAX_CONCURRENT)
-}
-
 /// Get max concurrent OpenCode Go requests from env or default.
 ///
 /// Environment variable: `OPENCODE_GO_MAX_CONCURRENT`
@@ -2570,39 +2430,6 @@ pub fn get_opencode_go_max_concurrent() -> usize {
         .and_then(|s| s.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(OPENCODE_GO_DEFAULT_MAX_CONCURRENT)
-}
-
-/// Get max retries for Browser Use bridge requests from env or default.
-///
-/// Environment variable: `BROWSER_USE_MAX_RETRIES`
-#[must_use]
-pub fn get_browser_use_max_retries() -> usize {
-    std::env::var("BROWSER_USE_MAX_RETRIES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_MAX_RETRIES)
-}
-
-/// Get initial backoff delay for Browser Use bridge retries from env or default.
-///
-/// Environment variable: `BROWSER_USE_INITIAL_BACKOFF_SECS`
-#[must_use]
-pub fn get_browser_use_initial_backoff() -> u64 {
-    std::env::var("BROWSER_USE_INITIAL_BACKOFF_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_INITIAL_BACKOFF_SECS)
-}
-
-/// Get max backoff delay for Browser Use bridge retries from env or default.
-///
-/// Environment variable: `BROWSER_USE_MAX_BACKOFF_SECS`
-#[must_use]
-pub fn get_browser_use_max_backoff() -> u64 {
-    std::env::var("BROWSER_USE_MAX_BACKOFF_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS)
 }
 
 fn parse_optional_env_bool(name: &str) -> Option<bool> {
@@ -2657,19 +2484,6 @@ pub fn is_tavily_enabled() -> bool {
 #[must_use]
 pub fn is_duckduckgo_enabled() -> bool {
     parse_optional_env_bool("DUCKDUCKGO_ENABLED").unwrap_or(true)
-}
-
-/// Determine whether Browser Use tools should be registered.
-///
-/// Controlled by code: returns true if `BROWSER_USE_URL` is set and non-empty.
-///
-/// NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
-/// price-per-token. When such a model is available, re-enable by setting
-/// `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`).
-/// See `docs/browser-use.md` for current model recommendations.
-#[must_use]
-pub fn is_browser_use_enabled() -> bool {
-    get_browser_use_url().is_some_and(|value| !value.trim().is_empty())
 }
 
 // LLM HTTP client configuration

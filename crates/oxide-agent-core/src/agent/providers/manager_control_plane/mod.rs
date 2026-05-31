@@ -215,14 +215,6 @@ const TOPIC_AGENT_DUCKDUCKGO_TOOLS: &[&str] = &["duckduckgo_search", "duckduckgo
 const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
 #[cfg(feature = "tool-webfetch-md")]
 const TOPIC_AGENT_WEBFETCH_TOOLS: &[&str] = &["web_markdown"];
-#[cfg(feature = "tool-browser-use")]
-const TOPIC_AGENT_BROWSER_USE_TOOLS: &[&str] = &[
-    "browser_use_run_task",
-    "browser_use_get_session",
-    "browser_use_close_session",
-    "browser_use_extract_content",
-    "browser_use_screenshot",
-];
 #[cfg(feature = "integration-ssh-mcp")]
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",

@@ -98,7 +98,6 @@ profile-full = [
     "tool-tavily",
     "tool-duckduckgo",
     "tool-searxng",
-    "tool-browser-use",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
@@ -160,7 +159,6 @@ profile-web-embedded-opencode-local = [
     "tool-tavily",
     "tool-duckduckgo",
     "tool-searxng",
-    "tool-browser-use",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
     "tool-sandbox-recreate",
@@ -262,7 +260,6 @@ tool-webfetch-md = ["dep:htmd", "dep:reqwest"]
 tool-tavily = ["dep:reqwest"]
 tool-duckduckgo = ["dep:duckduckgo", "dep:reqwest", "dep:scraper"]
 tool-searxng = ["dep:reqwest"]
-tool-browser-use = ["dep:reqwest"]
 tool-sandbox-fileops = []
 tool-sandbox-exec = []
 tool-sandbox-recreate = []

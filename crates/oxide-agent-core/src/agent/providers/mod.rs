@@ -48,9 +48,6 @@ pub mod duckduckgo;
 #[cfg(feature = "tool-searxng")]
 pub mod searxng;
 
-#[cfg(feature = "tool-browser-use")]
-pub mod browser_use;
-
 #[cfg(feature = "integration-mcp-jira")]
 pub mod jira_mcp;
 
@@ -116,9 +113,6 @@ pub use duckduckgo::DuckDuckGoProvider;
 
 #[cfg(feature = "tool-searxng")]
 pub use searxng::SearxngProvider;
-
-#[cfg(feature = "tool-browser-use")]
-pub use browser_use::BrowserUseProvider;
 
 #[cfg(feature = "integration-mcp-jira")]
 pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};

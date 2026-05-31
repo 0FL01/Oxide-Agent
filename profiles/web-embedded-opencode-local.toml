@@ -25,4 +25,3 @@ cargo_features = ["profile-web-embedded-opencode-local"]
 "tool/webfetch-md" = { enabled = true }
 "tool/duckduckgo" = { enabled = true }
 "tool/searxng" = { enabled = true }
-"tool/browser-use" = { enabled = true }

@@ -399,42 +399,6 @@ fn typed_runtime_registry_exposes_media_tools() {
     }
 }
 
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn typed_runtime_registry_exposes_browser_use_tools_when_enabled() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-    std::env::set_var("BROWSER_USE_ENABLED", "true");
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry.tool_names();
-
-    for tool_name in [
-        "browser_use_run_task",
-        "browser_use_get_session",
-        "browser_use_close_session",
-        "browser_use_extract_content",
-        "browser_use_screenshot",
-    ] {
-        assert!(
-            tool_names.iter().any(|name| name == tool_name),
-            "missing typed runtime Browser Use tool: {tool_name}"
-        );
-        assert_eq!(
-            tool_names.iter().filter(|name| *name == tool_name).count(),
-            1,
-            "expected one typed registration for {tool_name}"
-        );
-    }
-
-    std::env::remove_var("BROWSER_USE_ENABLED");
-    std::env::remove_var("BROWSER_USE_URL");
-}
-
 #[cfg(feature = "tool-sandbox-exec")]
 #[test]
 fn typed_runtime_registry_applies_execution_profile_tool_policy() {
@@ -697,67 +661,6 @@ fn typed_runtime_registry_skips_disabled_ytdlp_module() {
 
     assert!(!tool_names.contains("ytdlp_get_video_metadata"));
     assert!(!tool_names.contains("ytdlp_download_video"));
-    assert!(tool_names.contains("write_todos"));
-}
-
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn typed_runtime_registry_skips_disabled_browser_use_module() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-    std::env::set_var("BROWSER_USE_ENABLED", "true");
-
-    let settings = Arc::new(AgentSettings {
-        modules: std::collections::BTreeMap::from([(
-            "tool/browser-use".to_string(),
-            ModuleRuntimeConfig::disabled(),
-        )]),
-        ..AgentSettings::default()
-    });
-    let llm = Arc::new(LlmClient::new(settings.as_ref()));
-    let session = AgentSession::new(9_i64.into());
-    let executor = AgentExecutor::new(llm, session, settings);
-
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(!tool_names.contains("browser_use_run_task"));
-    assert!(!tool_names.contains("browser_use_get_session"));
-    assert!(!tool_names.contains("browser_use_close_session"));
-    assert!(!tool_names.contains("browser_use_extract_content"));
-    assert!(!tool_names.contains("browser_use_screenshot"));
-    assert!(tool_names.contains("write_todos"));
-
-    std::env::remove_var("BROWSER_USE_ENABLED");
-    std::env::remove_var("BROWSER_USE_URL");
-}
-
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn typed_runtime_registry_skips_browser_use_tools_when_disabled() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(!tool_names.contains("browser_use_run_task"));
-    assert!(!tool_names.contains("browser_use_get_session"));
-    assert!(!tool_names.contains("browser_use_close_session"));
-    assert!(!tool_names.contains("browser_use_extract_content"));
-    assert!(!tool_names.contains("browser_use_screenshot"));
     assert!(tool_names.contains("write_todos"));
 }
 
@@ -1339,46 +1242,4 @@ fn current_tool_definitions_include_manager_tools_for_v1_route() {
     assert!(tool_names.contains("topic_agent_tools_get"));
     assert!(tool_names.contains("topic_agent_tools_enable"));
     assert!(tool_names.contains("agent_profile_upsert"));
-}
-
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn browser_use_profile_scope_uses_agents_md_topic() {
-    let mut executor = build_executor();
-    executor.set_agents_md_context(
-        Arc::new(MockStorageProvider::new()),
-        77,
-        "topic-a".to_string(),
-    );
-
-    assert_eq!(
-        executor.browser_use_profile_scope().as_deref(),
-        Some("topic-a")
-    );
-}
-
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn browser_use_profile_scope_prefers_reminder_context() {
-    let mut executor = build_executor();
-    executor.set_agents_md_context(
-        Arc::new(MockStorageProvider::new()),
-        77,
-        "topic-a".to_string(),
-    );
-    executor.set_reminder_context(crate::agent::providers::ReminderContext {
-        storage: Arc::new(MockStorageProvider::new()),
-        user_id: 77,
-        context_key: "topic-reminder".to_string(),
-        flow_id: "flow-1".to_string(),
-        chat_id: 77,
-        thread_id: None,
-        thread_kind: crate::storage::ReminderThreadKind::None,
-        notifier: None,
-    });
-
-    assert_eq!(
-        executor.browser_use_profile_scope().as_deref(),
-        Some("topic-reminder")
-    );
 }

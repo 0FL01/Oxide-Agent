@@ -59,10 +59,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/agents-md"
       },
       {
-        "id": "tool/browser-use",
-        "module": "tool/browser-use"
-      },
-      {
         "id": "tool/compression",
         "module": "tool/compression"
       },
@@ -300,17 +296,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "tool-browser-use",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/browser-use",
-        "kind": "browser",
-        "provides": [
-          "tool/browser-use"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "tool-compression",
         "config_properties": [],
         "conflicts": [],
@@ -544,7 +529,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client/lifecycle",
       "storage/r2",
       "tool/agents-md",
-      "tool/browser-use",
       "tool/compression",
       "tool/delegation",
       "tool/duckduckgo-news",
@@ -573,7 +557,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client",
       "storage/r2",
       "tool/agents-md",
-      "tool/browser-use",
       "tool/compression",
       "tool/delegation",
       "tool/duckduckgo",
@@ -676,13 +659,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "storage/r2",
       "kind": "storage-backend",
       "cargo_feature": "storage-s3-r2",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/browser-use",
-      "kind": "browser",
-      "cargo_feature": "tool-browser-use",
       "config_env": [],
       "requires_capabilities": []
     },

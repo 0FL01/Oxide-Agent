@@ -40,8 +40,6 @@ use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-#[cfg(feature = "tool-browser-use")]
-use crate::agent::tool_runtime::BrowserUseToolModule;
 #[cfg(feature = "tool-duckduckgo")]
 use crate::agent::tool_runtime::DuckDuckGoToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
@@ -55,7 +53,6 @@ use crate::agent::tool_runtime::TavilyToolModule;
 #[cfg(feature = "tool-todos")]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
-    feature = "tool-browser-use",
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
     feature = "tool-duckduckgo",
@@ -148,18 +145,12 @@ pub struct DelegationProvider {
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-ytdlp",
-            feature = "tool-browser-use"
         )),
         allow(dead_code)
     )]
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
-    browser_use_profile_scope: Option<String>,
     topic_agents_md_context: Option<TopicAgentsMdContext>,
-    /// Semaphore to limit concurrent Browser Use requests per sub-agent.
-    /// Used via Arc::clone() in build_sub_agent_tool_runtime_executors().
-    #[allow(dead_code)]
-    browser_use_semaphore: Arc<Semaphore>,
     jobs: Arc<SubAgentJobStore>,
 }
 
@@ -526,23 +517,9 @@ impl DelegationProvider {
             llm_client,
             sandbox_scope: sandbox_scope.into(),
             settings,
-            browser_use_profile_scope: None,
             topic_agents_md_context: None,
-            browser_use_semaphore: Arc::new(Semaphore::new(
-                crate::config::get_browser_use_max_concurrent(),
-            )),
             jobs: Arc::new(SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS)),
         }
-    }
-
-    /// Inherit a topic/context profile scope for Browser Use sub-agent reuse.
-    #[must_use]
-    pub fn with_browser_use_profile_scope(mut self, profile_scope: impl Into<String>) -> Self {
-        let profile_scope = profile_scope.into();
-        if !profile_scope.trim().is_empty() {
-            self.browser_use_profile_scope = Some(profile_scope);
-        }
-        self
     }
 
     /// Inherit topic-scoped `AGENTS.md` context for sub-agent prompt composition.
@@ -683,7 +660,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
 
         #[cfg(not(any(
-            feature = "tool-browser-use",
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-duckduckgo",
@@ -718,9 +694,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(feature = "tool-searxng")]
         self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
 
-        #[cfg(feature = "tool-browser-use")]
-        self.push_sub_agent_tool_module(&mut executors, &BrowserUseToolModule, &module_ctx);
-
         self.warn_for_uncompiled_sub_agent_tool_modules();
 
         executors
@@ -744,8 +717,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             sandbox_runtime,
             llm_client: Arc::clone(&self.llm_client),
             settings: Arc::clone(&self.settings),
-            browser_use_profile_scope: self.browser_use_profile_scope.clone(),
-            browser_use_semaphore: Some(Arc::clone(&self.browser_use_semaphore)),
             #[cfg(feature = "tool-agents-md")]
             agents_md_context: None,
             #[cfg(feature = "manager-control-plane")]
@@ -763,7 +734,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     }
 
     #[cfg(any(
-        feature = "tool-browser-use",
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
         feature = "tool-duckduckgo",
@@ -810,11 +780,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             warn!("SearXNG enabled but feature not compiled in");
-        }
-
-        #[cfg(not(feature = "tool-browser-use"))]
-        if crate::config::is_browser_use_enabled() {
-            warn!("Browser Use enabled but feature not compiled in");
         }
     }
 
@@ -2085,36 +2050,6 @@ mod tests {
         assert!(error
             .to_string()
             .contains("Failed to load topic AGENTS.md for sub-agent bootstrap"));
-    }
-
-    #[cfg(feature = "tool-browser-use")]
-    #[test]
-    fn build_sub_agent_tool_runtime_executors_registers_browser_use_when_enabled() {
-        let _guard = crate::config::test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-        std::env::set_var("BROWSER_USE_ENABLED", "true");
-
-        let settings = Arc::new(AgentSettings::default());
-        let provider =
-            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
-        let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors =
-            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
-        let tools: HashSet<String> = executors
-            .iter()
-            .map(|executor| executor.name().into_inner())
-            .collect();
-
-        assert!(tools.contains("browser_use_run_task"));
-        assert!(tools.contains("browser_use_get_session"));
-        assert!(tools.contains("browser_use_close_session"));
-        assert!(tools.contains("browser_use_extract_content"));
-        assert!(tools.contains("browser_use_screenshot"));
-
-        std::env::remove_var("BROWSER_USE_ENABLED");
-        std::env::remove_var("BROWSER_USE_URL");
     }
 
     #[test]

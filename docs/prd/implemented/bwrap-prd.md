@@ -406,7 +406,6 @@ These providers/modules reference sandbox runtime or sandbox file/exec capabilit
 - `crates/oxide-agent-core/src/agent/providers/ytdlp.rs`
 - `crates/oxide-agent-core/src/agent/providers/filehoster.rs`
 - `crates/oxide-agent-core/src/agent/providers/media_file.rs`
-- `crates/oxide-agent-core/src/agent/providers/browser_use/mod.rs`
 - `crates/oxide-agent-core/src/agent/providers/tts/provider.rs`
 - `crates/oxide-agent-core/src/agent/providers/silero_tts/provider.rs`
 - `crates/oxide-agent-core/src/agent/providers/delegation.rs`
