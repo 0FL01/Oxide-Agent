@@ -1,12 +1,14 @@
 use gloo_net::http::{Request, Response};
 use oxide_agent_web_contracts::{
     AuthUserResponse, BootstrapRequest, CancelTaskResponse, ChangePasswordRequest,
-    CreateSessionRequest, CreateSessionResponse, CreateTaskRequest, CreateTaskResponse,
-    CreateTaskVersionRequest, CreateTaskVersionResponse, CurrentUserResponse, ErrorCode,
-    ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
-    ListModelRoutesResponse, ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse,
-    PublicConfigResponse, RegisterRequest, ResumeTaskRequest, ResumeTaskResponse,
-    TaskEventsResponse, UpdateSessionRequest, UpdateSessionResponse, UpdateUserSettingsRequest,
+    CreateAgentProfileRequest, CreateAgentProfileResponse, CreateSessionRequest,
+    CreateSessionResponse, CreateTaskRequest, CreateTaskResponse, CreateTaskVersionRequest,
+    CreateTaskVersionResponse, CurrentUserResponse, ErrorCode, ErrorEnvelope, GetSessionResponse,
+    GetTaskProgressResponse, GetTaskResponse, ListAgentProfilesResponse, ListModelRoutesResponse,
+    ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse,
+    RegisterRequest, ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse,
+    UpdateAgentProfileRequest, UpdateAgentProfileResponse, UpdateSessionProfileRequest,
+    UpdateSessionRequest, UpdateSessionResponse, UpdateUserSettingsRequest,
     UploadTaskAttachmentsResponse, UserSettingsResponse,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -103,9 +105,47 @@ impl ApiClient {
         .await
     }
 
-    pub async fn create_session(&self) -> Result<CreateSessionResponse, ApiClientError> {
-        self.post("/api/v1/sessions", &CreateSessionRequest::default(), true)
-            .await
+    pub async fn create_session(
+        &self,
+        request: &CreateSessionRequest,
+    ) -> Result<CreateSessionResponse, ApiClientError> {
+        self.post("/api/v1/sessions", request, true).await
+    }
+
+    pub async fn list_agent_profiles(&self) -> Result<ListAgentProfilesResponse, ApiClientError> {
+        decode(
+            with_credentials(Request::get("/api/v1/agent-profiles"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn create_agent_profile(
+        &self,
+        request: &CreateAgentProfileRequest,
+    ) -> Result<CreateAgentProfileResponse, ApiClientError> {
+        self.post("/api/v1/agent-profiles", request, true).await
+    }
+
+    pub async fn update_agent_profile(
+        &self,
+        agent_id: &str,
+        request: &UpdateAgentProfileRequest,
+    ) -> Result<UpdateAgentProfileResponse, ApiClientError> {
+        let mut builder = with_credentials(Request::patch(&format!(
+            "/api/v1/agent-profiles/{agent_id}"
+        )))
+        .header("Content-Type", "application/json");
+        builder = self.with_csrf(builder)?;
+        decode(builder.json(request)?.send().await?).await
+    }
+
+    pub async fn delete_agent_profile(&self, agent_id: &str) -> Result<OkResponse, ApiClientError> {
+        let builder = self.with_csrf(with_credentials(Request::delete(&format!(
+            "/api/v1/agent-profiles/{agent_id}"
+        ))))?;
+        decode(builder.send().await?).await
     }
 
     pub async fn get_session(
@@ -129,6 +169,19 @@ impl ApiClient {
         let mut builder =
             with_credentials(Request::patch(&format!("/api/v1/sessions/{session_id}")))
                 .header("Content-Type", "application/json");
+        builder = self.with_csrf(builder)?;
+        decode(builder.json(request)?.send().await?).await
+    }
+
+    pub async fn update_session_profile(
+        &self,
+        session_id: &str,
+        request: &UpdateSessionProfileRequest,
+    ) -> Result<UpdateSessionResponse, ApiClientError> {
+        let mut builder = with_credentials(Request::patch(&format!(
+            "/api/v1/sessions/{session_id}/profile"
+        )))
+        .header("Content-Type", "application/json");
         builder = self.with_csrf(builder)?;
         decode(builder.json(request)?.send().await?).await
     }

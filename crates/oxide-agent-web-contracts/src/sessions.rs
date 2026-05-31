@@ -16,6 +16,8 @@ pub struct WebSessionRecord {
     pub agent_flow_id: String,
     #[serde(default)]
     pub model_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub agent_profile_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub active_task_id: Option<String>,
@@ -69,6 +71,8 @@ pub struct SessionSummary {
     pub title: String,
     #[serde(default)]
     pub model_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub agent_profile_id: Option<String>,
     pub last_preview: Option<String>,
     pub active_task_id: Option<String>,
     pub last_task_status: Option<TaskStatus>,
@@ -83,6 +87,8 @@ pub struct SessionDetail {
     pub title: String,
     #[serde(default)]
     pub model_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub agent_profile_id: Option<String>,
     pub last_preview: Option<String>,
     pub active_task_id: Option<String>,
     pub last_task_status: Option<TaskStatus>,
@@ -101,6 +107,19 @@ pub struct ListSessionsResponse {
 pub struct CreateSessionRequest {
     #[serde(default)]
     pub model_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub agent_profile_selection: AgentProfileSelection,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum AgentProfileSelection {
+    #[default]
+    Default,
+    None,
+    Profile {
+        agent_profile_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +142,13 @@ pub struct UpdateSessionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct UpdateSessionProfileRequest {
+    #[serde(default)]
+    pub agent_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct UpdateSessionResponse {
     pub session: SessionDetail,
 }
@@ -141,6 +167,7 @@ mod tests {
             context_key: "context".to_string(),
             agent_flow_id: "main".to_string(),
             model_selection: None,
+            agent_profile_id: None,
             created_at: now,
             updated_at: now,
             active_task_id: None,

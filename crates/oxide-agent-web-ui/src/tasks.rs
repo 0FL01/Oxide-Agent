@@ -6,9 +6,10 @@ use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{friendly_time, navigate, spawn_ui};
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
-    CreateTaskRequest, CreateTaskVersionRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot,
-    ResumeTaskRequest, SessionDetail, SessionSummary, SseConnectionState, TaskAttachment,
-    TaskDetail, TaskEventKind, TaskStatus, TaskSummary, UserMessageEventPayload,
+    AgentProfileSelection, AgentProfileView, CreateSessionRequest, CreateTaskRequest,
+    CreateTaskVersionRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest,
+    SessionDetail, SessionSummary, SseConnectionState, TaskAttachment, TaskDetail, TaskEventKind,
+    TaskStatus, TaskSummary, UpdateSessionProfileRequest, UserMessageEventPayload,
 };
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};
@@ -18,6 +19,9 @@ struct PendingAttachmentFile {
     id: usize,
     file: web_sys::File,
 }
+
+const PROFILE_VALUE_DEFAULT: &str = "__default__";
+const PROFILE_VALUE_NONE: &str = "__none__";
 
 #[component]
 pub fn TaskConsole(
@@ -58,6 +62,21 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
     let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
     let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
     let (drag_active, set_drag_active) = signal(false);
+    let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
+    let (profiles_loaded, set_profiles_loaded) = signal(false);
+    let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_DEFAULT.to_string());
+
+    Effect::new(move |_| {
+        if profiles_loaded.get() {
+            return;
+        }
+        set_profiles_loaded.set(true);
+        spawn_ui(async move {
+            if let Ok(response) = auth.client().list_agent_profiles().await {
+                set_profiles.set(response.profiles);
+            }
+        });
+    });
 
     let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
@@ -68,10 +87,17 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
         }
         set_loading.set(true);
         set_error.set(None);
+        let agent_profile_selection = agent_profile_selection_from_value(&selected_profile.get());
         spawn_ui(async move {
             let client = auth.client();
             // 1. Create session
-            let session_id = match client.create_session().await {
+            let session_id = match client
+                .create_session(&CreateSessionRequest {
+                    model_selection: None,
+                    agent_profile_selection,
+                })
+                .await
+            {
                 Ok(resp) => {
                     let session_id = resp.session.session_id.clone();
                     upsert_session_summary(set_sessions, resp.session);
@@ -206,6 +232,15 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                         <div class="composer-footer">
                             <span class="composer-hint">"Ctrl+Enter to send"</span>
                             <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get())>
+                                <AgentProfileSelect
+                                    profiles=profiles
+                                    selected_profile=selected_profile
+                                    disabled=Signal::derive(move || loading.get())
+                                    include_default=true
+                                    on_change=Callback::new(move |ev| {
+                                        set_selected_profile.set(event_target_value(&ev));
+                                    })
+                                />
                                 <label class="button secondary composer-attach-button">
                                     <input
                                         class="composer-file-input"
@@ -263,8 +298,23 @@ fn SessionWorkspace(
     let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
     let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
     let (drag_active, set_drag_active) = signal(false);
+    let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
+    let (profiles_loaded, set_profiles_loaded) = signal(false);
+    let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_NONE.to_string());
 
     let (drawer_open, set_drawer_open) = signal(false);
+
+    Effect::new(move |_| {
+        if profiles_loaded.get() {
+            return;
+        }
+        set_profiles_loaded.set(true);
+        spawn_ui(async move {
+            if let Ok(response) = auth.client().list_agent_profiles().await {
+                set_profiles.set(response.profiles);
+            }
+        });
+    });
 
     let session_id_for_load = session_id.clone();
     let load_all = move || {
@@ -281,6 +331,13 @@ fn SessionWorkspace(
             match client.get_session(&session_id).await {
                 Ok(response) => {
                     set_session_title.set(response.session.title.clone());
+                    set_selected_profile.set(
+                        response
+                            .session
+                            .agent_profile_id
+                            .clone()
+                            .unwrap_or_else(|| PROFILE_VALUE_NONE.to_string()),
+                    );
                     upsert_session_summary(
                         set_sessions,
                         session_detail_to_summary(response.session),
@@ -350,6 +407,39 @@ fn SessionWorkspace(
     });
 
     let session_id_for_submit = session_id.clone();
+    let session_id_for_profile = session_id.clone();
+    let update_profile = move |ev: leptos::ev::Event| {
+        let value = event_target_value(&ev);
+        set_selected_profile.set(value.clone());
+        let session_id = session_id_for_profile.clone();
+        set_error.set(None);
+        spawn_ui(async move {
+            let request = UpdateSessionProfileRequest {
+                agent_profile_id: profile_value_to_id(&value),
+            };
+            match auth
+                .client()
+                .update_session_profile(&session_id, &request)
+                .await
+            {
+                Ok(response) => {
+                    set_selected_profile.set(
+                        response
+                            .session
+                            .agent_profile_id
+                            .clone()
+                            .unwrap_or_else(|| PROFILE_VALUE_NONE.to_string()),
+                    );
+                    upsert_session_summary(
+                        set_sessions,
+                        session_detail_to_summary(response.session),
+                    );
+                }
+                Err(error) => set_error.set(Some(error.to_string())),
+            }
+        });
+    };
+
     let submit_task = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         let text = input.get();
@@ -635,6 +725,13 @@ fn SessionWorkspace(
                                 {move || composer_hint(is_running(), is_waiting())}
                             </span>
                             <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get()) && !is_waiting()>
+                                <AgentProfileSelect
+                                    profiles=profiles
+                                    selected_profile=selected_profile
+                                    disabled=Signal::derive(move || loading.get() || is_running() || is_waiting())
+                                    include_default=false
+                                    on_change=Callback::new(update_profile)
+                                />
                                 <label class="button secondary composer-attach-button">
                                     <input
                                         class="composer-file-input"
@@ -1054,6 +1151,7 @@ fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
         session_id: session.session_id,
         title: session.title,
         model_selection: session.model_selection,
+        agent_profile_id: session.agent_profile_id,
         last_preview: session.last_preview,
         active_task_id: session.active_task_id,
         last_task_status: session.last_task_status,
@@ -1452,6 +1550,52 @@ fn linkify_delivered_files_in_markdown(markdown: &str, files: &[DeliveredFileLin
     }
 
     result
+}
+
+#[component]
+fn AgentProfileSelect(
+    profiles: ReadSignal<Vec<AgentProfileView>>,
+    selected_profile: ReadSignal<String>,
+    disabled: Signal<bool>,
+    include_default: bool,
+    on_change: Callback<leptos::ev::Event>,
+) -> impl IntoView {
+    view! {
+        <select
+            class="agent-profile-select"
+            prop:value=selected_profile
+            disabled=move || disabled.get()
+            on:change=move |ev| on_change.run(ev)
+        >
+            {include_default.then(|| view! {
+                <option value=PROFILE_VALUE_DEFAULT>"Default profile"</option>
+            })}
+            <option value=PROFILE_VALUE_NONE>"No profile"</option>
+            <For
+                each=move || profiles.get()
+                key=|profile| profile.agent_id.clone()
+                children=move |profile| {
+                    let value = profile.agent_id.clone();
+                    view! { <option value=value.clone()>{profile.display_name}</option> }
+                }
+            />
+        </select>
+    }
+}
+
+fn agent_profile_selection_from_value(value: &str) -> AgentProfileSelection {
+    match value {
+        PROFILE_VALUE_DEFAULT => AgentProfileSelection::Default,
+        PROFILE_VALUE_NONE => AgentProfileSelection::None,
+        value => AgentProfileSelection::Profile {
+            agent_profile_id: value.to_string(),
+        },
+    }
+}
+
+fn profile_value_to_id(value: &str) -> Option<String> {
+    (value != PROFILE_VALUE_NONE && value != PROFILE_VALUE_DEFAULT && !value.trim().is_empty())
+        .then(|| value.to_string())
 }
 
 #[component]

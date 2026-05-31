@@ -35,6 +35,7 @@ pub struct InMemoryStorage {
     wiki_objects: RwLock<HashMap<String, String>>,
     reminder_jobs: RwLock<HashMap<(i64, String), ReminderJobRecord>>,
     topic_agents_md: RwLock<HashMap<(i64, String), TopicAgentsMdRecord>>,
+    agent_profiles: RwLock<HashMap<(i64, String), AgentProfileRecord>>,
 }
 
 impl InMemoryStorage {
@@ -50,6 +51,7 @@ impl InMemoryStorage {
             wiki_objects: RwLock::new(HashMap::new()),
             reminder_jobs: RwLock::new(HashMap::new()),
             topic_agents_md: RwLock::new(HashMap::new()),
+            agent_profiles: RwLock::new(HashMap::new()),
         }
     }
 
@@ -311,36 +313,67 @@ impl crate::api::StorageProvider for InMemoryStorage {
         Ok(())
     }
 
-    // --- Profile (noop for E2E) ---
+    // --- Profile ---
 
     async fn get_agent_profile(
         &self,
-        _user_id: i64,
-        _agent_id: String,
+        user_id: i64,
+        agent_id: String,
     ) -> Result<Option<AgentProfileRecord>, StorageError> {
-        Ok(None)
+        Ok(self
+            .agent_profiles
+            .read()
+            .await
+            .get(&(user_id, agent_id))
+            .cloned())
+    }
+
+    async fn list_agent_profiles(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<AgentProfileRecord>, StorageError> {
+        let mut records = self
+            .agent_profiles
+            .read()
+            .await
+            .values()
+            .filter(|record| record.user_id == user_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        Ok(records)
     }
 
     async fn upsert_agent_profile(
         &self,
         options: UpsertAgentProfileOptions,
     ) -> Result<AgentProfileRecord, StorageError> {
-        Ok(AgentProfileRecord {
+        let key = (options.user_id, options.agent_id.clone());
+        let now = Utc::now().timestamp();
+        let mut profiles = self.agent_profiles.write().await;
+        let existing = profiles.get(&key);
+        let record = AgentProfileRecord {
             schema_version: 1,
-            version: 1,
+            version: existing.map_or(1, |record| record.version.saturating_add(1)),
             user_id: options.user_id,
             agent_id: options.agent_id,
             profile: options.profile,
-            created_at: 0,
-            updated_at: 0,
-        })
+            created_at: existing.map_or(now, |record| record.created_at),
+            updated_at: now,
+        };
+        profiles.insert(key, record.clone());
+        Ok(record)
     }
 
     async fn delete_agent_profile(
         &self,
-        _user_id: i64,
-        _agent_id: String,
+        user_id: i64,
+        agent_id: String,
     ) -> Result<(), StorageError> {
+        self.agent_profiles
+            .write()
+            .await
+            .remove(&(user_id, agent_id));
         Ok(())
     }
 

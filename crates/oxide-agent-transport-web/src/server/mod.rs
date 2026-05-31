@@ -34,7 +34,7 @@ use crate::auth::{
     login_user, logout_session, register_user,
 };
 use crate::persistence::{WebUiStore, WebUserRecord};
-use crate::session::web_session_sandbox_scope;
+use crate::session::{web_session_sandbox_scope, WebSessionRuntimeOptions};
 use axum::{
     body::Body,
     extract::{Multipart, Path, Query, State},
@@ -50,21 +50,26 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use oxide_agent_core::agent::preprocessor::Preprocessor;
+use oxide_agent_core::agent::{
+    parse_agent_profile, preprocessor::Preprocessor, AgentExecutionProfile, ToolAccessPolicy,
+};
 use oxide_agent_core::llm::DiscoveredLlmModel;
+use oxide_agent_core::storage::{AgentProfileRecord, StorageError, UpsertAgentProfileOptions};
 use oxide_agent_web_contracts::{
-    AuthUserResponse, BootstrapRequest, CancelTaskResponse as ApiCancelTaskResponse,
-    ChangePasswordRequest, CreateSessionRequest as ApiCreateSessionRequest,
+    AgentProfileSelection, AgentProfileView, AuthUserResponse, BootstrapRequest,
+    CancelTaskResponse as ApiCancelTaskResponse, ChangePasswordRequest, CreateAgentProfileRequest,
+    CreateAgentProfileResponse, CreateSessionRequest as ApiCreateSessionRequest,
     CreateSessionResponse as ApiCreateSessionResponse, CreateTaskRequest as ApiCreateTaskRequest,
     CreateTaskResponse as ApiCreateTaskResponse,
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest,
     CreateTaskVersionResponse as ApiCreateTaskVersionResponse, CurrentUser, CurrentUserResponse,
     ErrorCode, ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
-    ListModelRoutesResponse, ListSessionsResponse, ListTasksResponse, LoginRequest,
-    ModelRouteProtocolView, ModelRouteSourceView, ModelRouteView, ModelSelection, OkResponse,
-    PersistedTaskEvent, PublicConfigResponse, RegisterRequest,
+    ListAgentProfilesResponse, ListModelRoutesResponse, ListSessionsResponse, ListTasksResponse,
+    LoginRequest, ModelRouteProtocolView, ModelRouteSourceView, ModelRouteView, ModelSelection,
+    OkResponse, PersistedTaskEvent, PublicConfigResponse, RegisterRequest,
     ResumeTaskRequest as ApiResumeTaskRequest, ResumeTaskResponse as ApiResumeTaskResponse,
     TaskAttachment, TaskEventKind, TaskEventsResponse, TaskStatus as ApiTaskStatus,
+    UpdateAgentProfileRequest, UpdateAgentProfileResponse, UpdateSessionProfileRequest,
     UpdateSessionRequest, UpdateSessionResponse, UpdateUserSettingsRequest,
     UploadTaskAttachmentsResponse, UserMessageEventPayload, UserSettingsResponse, WebSessionRecord,
     WebTaskRecord,
@@ -80,6 +85,9 @@ use tower_http::trace::TraceLayer;
 
 const DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID: &str = "opencode-go/kimi-k2.6";
 const MAX_MODEL_SELECTION_CHARS: usize = 128;
+const MAX_AGENT_PROFILE_ID_CHARS: usize = 64;
+const MAX_AGENT_PROFILE_NAME_CHARS: usize = 80;
+const MAX_AGENT_PROFILE_PROMPT_CHARS: usize = 32_000;
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
@@ -137,6 +145,13 @@ async fn api_update_settings(
         .default_model_selection
         .map(canonical_model_selection)
         .transpose()?;
+    record.default_agent_profile_id = validate_optional_agent_profile_id(
+        &state,
+        user.user_id,
+        request.default_agent_profile_id,
+        true,
+    )
+    .await?;
     record.updated_at = chrono::Utc::now();
     state
         .web_store
@@ -234,6 +249,7 @@ fn default_session_model_selection(state: &AppState) -> ModelSelection {
 fn user_settings_response_from_record(record: &WebUserRecord) -> UserSettingsResponse {
     UserSettingsResponse {
         default_model_selection: record.default_model_selection.clone(),
+        default_agent_profile_id: record.default_agent_profile_id.clone(),
     }
 }
 
@@ -254,6 +270,403 @@ async fn load_current_user_record(
                 false,
             )
         })
+}
+
+async fn api_list_agent_profiles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ListAgentProfilesResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user(&state, &headers).await?;
+    let mut profiles = state
+        .session_manager
+        .storage()
+        .list_agent_profiles(user.user_id)
+        .await
+        .map_err(control_plane_storage_error_response)?
+        .into_iter()
+        .map(agent_profile_view_from_record)
+        .collect::<Vec<_>>();
+    profiles.sort_by(|left, right| {
+        left.display_name
+            .to_ascii_lowercase()
+            .cmp(&right.display_name.to_ascii_lowercase())
+            .then_with(|| left.agent_id.cmp(&right.agent_id))
+    });
+    Ok(Json(ListAgentProfilesResponse { profiles }))
+}
+
+async fn api_create_agent_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateAgentProfileRequest>,
+) -> Result<Json<CreateAgentProfileResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let display_name = validate_agent_profile_display_name(&request.display_name)?;
+    let system_prompt = validate_agent_profile_system_prompt(&request.system_prompt)?;
+    let agent_id = uuid::Uuid::new_v4().to_string();
+    let record = state
+        .session_manager
+        .storage()
+        .upsert_agent_profile(UpsertAgentProfileOptions {
+            user_id: user.user_id,
+            agent_id,
+            profile: agent_profile_payload(&display_name, &system_prompt),
+        })
+        .await
+        .map_err(control_plane_storage_error_response)?;
+    Ok(Json(CreateAgentProfileResponse {
+        profile: agent_profile_view_from_record(record),
+    }))
+}
+
+async fn api_update_agent_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(request): Json<UpdateAgentProfileRequest>,
+) -> Result<Json<UpdateAgentProfileResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let agent_id = validate_agent_profile_id(&agent_id)?;
+    load_owned_agent_profile(&state, user.user_id, &agent_id).await?;
+    let display_name = validate_agent_profile_display_name(&request.display_name)?;
+    let system_prompt = validate_agent_profile_system_prompt(&request.system_prompt)?;
+    let record = state
+        .session_manager
+        .storage()
+        .upsert_agent_profile(UpsertAgentProfileOptions {
+            user_id: user.user_id,
+            agent_id: agent_id.clone(),
+            profile: agent_profile_payload(&display_name, &system_prompt),
+        })
+        .await
+        .map_err(control_plane_storage_error_response)?;
+    refresh_runtime_sessions_for_profile(&state, user.user_id, &agent_id).await?;
+    Ok(Json(UpdateAgentProfileResponse {
+        profile: agent_profile_view_from_record(record),
+    }))
+}
+
+async fn api_delete_agent_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> Result<Json<OkResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let agent_id = validate_agent_profile_id(&agent_id)?;
+    load_owned_agent_profile(&state, user.user_id, &agent_id).await?;
+    state
+        .session_manager
+        .storage()
+        .delete_agent_profile(user.user_id, agent_id.clone())
+        .await
+        .map_err(control_plane_storage_error_response)?;
+    clear_agent_profile_references(&state, user.user_id, &agent_id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn refresh_runtime_sessions_for_profile(
+    state: &AppState,
+    user_id: i64,
+    agent_id: &str,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    let execution_profile =
+        load_execution_profile_for_agent_profile_id(state, user_id, Some(agent_id))
+            .await?
+            .ok_or_else(not_found_response)?;
+    let sessions = state
+        .web_store
+        .list_sessions(user_id)
+        .await
+        .map_err(store_error_response)?;
+    for session in sessions {
+        if session.agent_profile_id.as_deref() == Some(agent_id) {
+            state
+                .session_manager
+                .set_session_execution_profile(
+                    &session.session_id,
+                    Some(agent_id.to_string()),
+                    Some(execution_profile.clone()),
+                )
+                .await;
+        }
+    }
+    Ok(())
+}
+
+async fn clear_agent_profile_references(
+    state: &AppState,
+    user_id: i64,
+    agent_id: &str,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    let mut user_record = load_current_user_record(state, user_id).await?;
+    if user_record.default_agent_profile_id.as_deref() == Some(agent_id) {
+        user_record.default_agent_profile_id = None;
+        user_record.updated_at = chrono::Utc::now();
+        state
+            .web_store
+            .save_user(user_record)
+            .await
+            .map_err(store_error_response)?;
+    }
+
+    let sessions = state
+        .web_store
+        .list_sessions(user_id)
+        .await
+        .map_err(store_error_response)?;
+    for mut session in sessions {
+        if session.agent_profile_id.as_deref() != Some(agent_id) {
+            continue;
+        }
+        session.agent_profile_id = None;
+        session.updated_at = chrono::Utc::now();
+        state
+            .web_store
+            .save_session(session.clone())
+            .await
+            .map_err(store_error_response)?;
+        state
+            .session_manager
+            .set_session_execution_profile(&session.session_id, None, None)
+            .await;
+    }
+    Ok(())
+}
+
+fn agent_profile_payload(display_name: &str, system_prompt: &str) -> serde_json::Value {
+    serde_json::json!({
+        "displayName": display_name,
+        "systemPrompt": system_prompt,
+    })
+}
+
+fn agent_profile_view_from_record(record: AgentProfileRecord) -> AgentProfileView {
+    AgentProfileView {
+        agent_id: record.agent_id,
+        display_name: agent_profile_display_name(&record.profile),
+        system_prompt: agent_profile_system_prompt(&record.profile),
+        version: record.version,
+        created_at: unix_secs_to_datetime(record.created_at),
+        updated_at: unix_secs_to_datetime(record.updated_at),
+    }
+}
+
+fn agent_profile_display_name(profile: &serde_json::Value) -> String {
+    profile
+        .get("displayName")
+        .or_else(|| profile.get("display_name"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Untitled profile")
+        .to_string()
+}
+
+fn agent_profile_system_prompt(profile: &serde_json::Value) -> String {
+    profile
+        .get("systemPrompt")
+        .or_else(|| profile.get("system_prompt"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn unix_secs_to_datetime(secs: i64) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0).unwrap_or_else(|| {
+        chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0)
+            .expect("unix epoch timestamp is valid")
+    })
+}
+
+fn validate_agent_profile_id(agent_id: &str) -> Result<String, (StatusCode, Json<ErrorEnvelope>)> {
+    let agent_id = agent_id.trim();
+    if agent_id.is_empty() {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Agent profile id must not be empty.",
+            false,
+        ));
+    }
+    if agent_id.chars().count() > MAX_AGENT_PROFILE_ID_CHARS {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            format!("Agent profile id must be at most {MAX_AGENT_PROFILE_ID_CHARS} characters."),
+            false,
+        ));
+    }
+    if !agent_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Agent profile id may contain only ASCII letters, digits, '.', '_' or '-'.",
+            false,
+        ));
+    }
+    Ok(agent_id.to_string())
+}
+
+fn validate_agent_profile_display_name(
+    display_name: &str,
+) -> Result<String, (StatusCode, Json<ErrorEnvelope>)> {
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Agent profile name must not be empty.",
+            false,
+        ));
+    }
+    if display_name.chars().count() > MAX_AGENT_PROFILE_NAME_CHARS {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            format!(
+                "Agent profile name must be at most {MAX_AGENT_PROFILE_NAME_CHARS} characters."
+            ),
+            false,
+        ));
+    }
+    Ok(display_name.to_string())
+}
+
+fn validate_agent_profile_system_prompt(
+    system_prompt: &str,
+) -> Result<String, (StatusCode, Json<ErrorEnvelope>)> {
+    let system_prompt = system_prompt.trim();
+    if system_prompt.is_empty() {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Agent profile system prompt must not be empty.",
+            false,
+        ));
+    }
+    if system_prompt.chars().count() > MAX_AGENT_PROFILE_PROMPT_CHARS {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            format!("Agent profile system prompt must be at most {MAX_AGENT_PROFILE_PROMPT_CHARS} characters."),
+            false,
+        ));
+    }
+    Ok(system_prompt.to_string())
+}
+
+async fn load_owned_agent_profile(
+    state: &AppState,
+    user_id: i64,
+    agent_id: &str,
+) -> Result<AgentProfileRecord, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .session_manager
+        .storage()
+        .get_agent_profile(user_id, agent_id.to_string())
+        .await
+        .map_err(control_plane_storage_error_response)?
+        .ok_or_else(not_found_response)
+}
+
+async fn validate_optional_agent_profile_id(
+    state: &AppState,
+    user_id: i64,
+    agent_profile_id: Option<String>,
+    missing_is_error: bool,
+) -> Result<Option<String>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(agent_profile_id) = agent_profile_id else {
+        return Ok(None);
+    };
+    let agent_profile_id = validate_agent_profile_id(&agent_profile_id)?;
+    let exists = state
+        .session_manager
+        .storage()
+        .get_agent_profile(user_id, agent_profile_id.clone())
+        .await
+        .map_err(control_plane_storage_error_response)?
+        .is_some();
+    if exists {
+        Ok(Some(agent_profile_id))
+    } else if missing_is_error {
+        Err(not_found_response())
+    } else {
+        Ok(None)
+    }
+}
+
+async fn resolve_session_agent_profile_id(
+    state: &AppState,
+    user_id: i64,
+    user_record: &WebUserRecord,
+    selection: AgentProfileSelection,
+) -> Result<Option<String>, (StatusCode, Json<ErrorEnvelope>)> {
+    match selection {
+        AgentProfileSelection::Default => {
+            validate_optional_agent_profile_id(
+                state,
+                user_id,
+                user_record.default_agent_profile_id.clone(),
+                false,
+            )
+            .await
+        }
+        AgentProfileSelection::None => Ok(None),
+        AgentProfileSelection::Profile { agent_profile_id } => {
+            validate_optional_agent_profile_id(state, user_id, Some(agent_profile_id), true).await
+        }
+    }
+}
+
+fn execution_profile_from_agent_profile(record: &AgentProfileRecord) -> AgentExecutionProfile {
+    let parsed_profile = parse_agent_profile(&record.profile);
+    AgentExecutionProfile::new(
+        Some(record.agent_id.clone()),
+        parsed_profile.prompt_instructions,
+        ToolAccessPolicy::default(),
+    )
+}
+
+async fn load_execution_profile_for_agent_profile_id(
+    state: &AppState,
+    user_id: i64,
+    agent_profile_id: Option<&str>,
+) -> Result<Option<AgentExecutionProfile>, (StatusCode, Json<ErrorEnvelope>)> {
+    let Some(agent_profile_id) = agent_profile_id else {
+        return Ok(None);
+    };
+    let Some(record) = state
+        .session_manager
+        .storage()
+        .get_agent_profile(user_id, agent_profile_id.to_string())
+        .await
+        .map_err(control_plane_storage_error_response)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(execution_profile_from_agent_profile(&record)))
+}
+
+fn control_plane_storage_error_response(error: StorageError) -> (StatusCode, Json<ErrorEnvelope>) {
+    match error {
+        StorageError::InvalidInput(message) => api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            message,
+            false,
+        ),
+        StorageError::ConcurrencyConflict { .. } => api_error(
+            StatusCode::CONFLICT,
+            ErrorCode::Conflict,
+            error.to_string(),
+            false,
+        ),
+        _ => backend_unavailable_response(error.to_string()),
+    }
 }
 
 fn canonical_model_selection(
@@ -817,14 +1230,15 @@ async fn create_session_for_request(
     request: ApiCreateSessionRequest,
 ) -> Result<Json<ApiCreateSessionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let user_record = load_current_user_record(&state, user.user_id).await?;
     let requested_model_selection = request
         .model_selection
         .map(canonical_model_selection)
         .transpose()?;
     let user_default_model_selection = if requested_model_selection.is_none() {
-        load_current_user_record(&state, user.user_id)
-            .await?
+        user_record
             .default_model_selection
+            .clone()
             .and_then(|selection| canonical_model_selection(selection).ok())
     } else {
         None
@@ -832,6 +1246,19 @@ async fn create_session_for_request(
     let model_selection = requested_model_selection
         .or(user_default_model_selection)
         .or_else(|| Some(default_session_model_selection(&state)));
+    let agent_profile_id = resolve_session_agent_profile_id(
+        &state,
+        user.user_id,
+        &user_record,
+        request.agent_profile_selection,
+    )
+    .await?;
+    let execution_profile = load_execution_profile_for_agent_profile_id(
+        &state,
+        user.user_id,
+        agent_profile_id.as_deref(),
+    )
+    .await?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let context_key = format!("web-session-{session_id}");
     let now = chrono::Utc::now();
@@ -848,7 +1275,11 @@ async fn create_session_for_request(
             session_id.clone(),
             context_key.clone(),
             WEB_SESSION_FLOW_ID.to_string(),
-            model_selection.clone(),
+            WebSessionRuntimeOptions {
+                model_selection: model_selection.clone(),
+                agent_profile_id: agent_profile_id.clone(),
+                execution_profile,
+            },
         )
         .await;
 
@@ -860,6 +1291,7 @@ async fn create_session_for_request(
         context_key,
         agent_flow_id: WEB_SESSION_FLOW_ID.to_string(),
         model_selection,
+        agent_profile_id,
         created_at: now,
         updated_at: now,
         active_task_id: None,
@@ -933,6 +1365,40 @@ async fn api_update_session(
         .save_session(record.clone())
         .await
         .map_err(store_error_response)?;
+    Ok(Json(UpdateSessionResponse {
+        session: session_detail_from_record(record),
+    }))
+}
+
+async fn api_update_session_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<UpdateSessionProfileRequest>,
+) -> Result<Json<UpdateSessionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    reject_active_task(&state, user.user_id, &session_id).await?;
+    let mut record = load_owned_session(&state, user.user_id, &session_id).await?;
+    let agent_profile_id =
+        validate_optional_agent_profile_id(&state, user.user_id, request.agent_profile_id, true)
+            .await?;
+    let execution_profile = load_execution_profile_for_agent_profile_id(
+        &state,
+        user.user_id,
+        agent_profile_id.as_deref(),
+    )
+    .await?;
+    record.agent_profile_id = agent_profile_id.clone();
+    record.updated_at = chrono::Utc::now();
+    state
+        .web_store
+        .save_session(record.clone())
+        .await
+        .map_err(store_error_response)?;
+    state
+        .session_manager
+        .set_session_execution_profile(&session_id, agent_profile_id, execution_profile)
+        .await;
     Ok(Json(UpdateSessionResponse {
         session: session_detail_from_record(record),
     }))
@@ -1580,6 +2046,25 @@ async fn ensure_runtime_session(state: &AppState, user_id: i64, session: &WebSes
         return;
     }
 
+    let execution_profile = match load_execution_profile_for_agent_profile_id(
+        state,
+        user_id,
+        session.agent_profile_id.as_deref(),
+    )
+    .await
+    {
+        Ok(execution_profile) => execution_profile,
+        Err((_, Json(error))) => {
+            tracing::warn!(
+                user_id,
+                session_id = %session.session_id,
+                message = %error.error.message,
+                "Failed to load web agent profile for runtime session restore"
+            );
+            None
+        }
+    };
+
     state
         .session_manager
         .create_session_with_model_selection(
@@ -1587,10 +2072,14 @@ async fn ensure_runtime_session(state: &AppState, user_id: i64, session: &WebSes
             session.session_id.clone(),
             session.context_key.clone(),
             session.agent_flow_id.clone(),
-            session
-                .model_selection
-                .clone()
-                .or_else(|| Some(default_session_model_selection(state))),
+            WebSessionRuntimeOptions {
+                model_selection: session
+                    .model_selection
+                    .clone()
+                    .or_else(|| Some(default_session_model_selection(state))),
+                agent_profile_id: session.agent_profile_id.clone(),
+                execution_profile,
+            },
         )
         .await;
 }
@@ -1633,10 +2122,24 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/model-routes/refresh",
             post(api_refresh_model_routes),
         )
+        .route("/api/v1/agent-profiles", get(api_list_agent_profiles))
+        .route("/api/v1/agent-profiles", post(api_create_agent_profile))
+        .route(
+            "/api/v1/agent-profiles/:agent_id",
+            patch(api_update_agent_profile),
+        )
+        .route(
+            "/api/v1/agent-profiles/:agent_id",
+            delete(api_delete_agent_profile),
+        )
         .route("/api/v1/sessions", get(api_list_sessions))
         .route("/api/v1/sessions", post(api_create_session_with_request))
         .route("/api/v1/sessions/:session_id", get(api_get_session))
         .route("/api/v1/sessions/:session_id", patch(api_update_session))
+        .route(
+            "/api/v1/sessions/:session_id/profile",
+            patch(api_update_session_profile),
+        )
         .route("/api/v1/sessions/:session_id", delete(api_delete_session))
         .route(
             "/api/v1/sessions/:session_id/uploads",
@@ -1746,10 +2249,12 @@ mod tests {
     use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
     use oxide_agent_runtime::SessionRegistry;
     use oxide_agent_web_contracts::{
+        AgentProfileSelection, CreateAgentProfileRequest,
         CreateSessionRequest as ApiCreateSessionRequest,
         CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
         ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
-        TaskEventKind, TaskStatus as ApiTaskStatus, UpdateUserSettingsRequest, WebTaskRecord,
+        TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest,
+        UpdateUserSettingsRequest, WebTaskRecord,
     };
     #[cfg(feature = "profile-lite")]
     use oxide_agent_web_contracts::{
@@ -1761,12 +2266,12 @@ mod tests {
     use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
 
     use super::{
-        api_cancel_task, api_create_session, api_create_session_with_request,
-        api_create_task_version, api_delete_session, api_get_session, api_get_settings,
-        api_get_task_events, api_get_task_progress, api_list_sessions, api_update_settings,
-        auth_cookie_value, csrf_header_value, parse_web_bool, AppState, TaskEventsQuery,
-        WebAssetsConfig, WebSandboxControl, WebStartupError, AUTH_COOKIE_NAME,
-        WEB_TASK_SCHEMA_VERSION,
+        api_cancel_task, api_create_agent_profile, api_create_session,
+        api_create_session_with_request, api_create_task_version, api_delete_session,
+        api_get_session, api_get_settings, api_get_task_events, api_get_task_progress,
+        api_list_sessions, api_update_session_profile, api_update_settings, auth_cookie_value,
+        csrf_header_value, parse_web_bool, AppState, TaskEventsQuery, WebAssetsConfig,
+        WebSandboxControl, WebStartupError, AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
     };
     #[cfg(feature = "profile-lite")]
     use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
@@ -2278,6 +2783,7 @@ mod tests {
             auth_headers(&token, Some(&auth_session.csrf_token)),
             axum::Json(UpdateUserSettingsRequest {
                 default_model_selection: Some(selected),
+                default_agent_profile_id: None,
             }),
         )
         .await
@@ -2306,6 +2812,7 @@ mod tests {
                 default_model_selection: Some(ModelSelection {
                     qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
                 }),
+                default_agent_profile_id: None,
             }),
         )
         .await
@@ -2324,6 +2831,7 @@ mod tests {
                 default_model_selection: Some(ModelSelection {
                     qualified_id: "other-provider/model".to_string(),
                 }),
+                default_agent_profile_id: None,
             }),
         )
         .await
@@ -2384,6 +2892,7 @@ mod tests {
                 default_model_selection: Some(ModelSelection {
                     qualified_id: "opencode-go/kimi-k2.6".to_string(),
                 }),
+                default_agent_profile_id: None,
             }),
         )
         .await
@@ -2414,6 +2923,7 @@ mod tests {
                 model_selection: Some(ModelSelection {
                     qualified_id: "glm-5".to_string(),
                 }),
+                agent_profile_selection: AgentProfileSelection::Default,
             }),
         )
         .await
@@ -2429,6 +2939,106 @@ mod tests {
             Some(ModelSelection {
                 qualified_id: "opencode-go/glm-5".to_string(),
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn api_agent_profile_default_and_session_selection_persist() {
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (user, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(created_profile) = api_create_agent_profile(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(CreateAgentProfileRequest {
+                display_name: "Reviewer".to_string(),
+                system_prompt: "Focus on review notes.".to_string(),
+            }),
+        )
+        .await
+        .expect("create agent profile");
+        assert_eq!(created_profile.profile.display_name, "Reviewer");
+
+        let _ = api_update_settings(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(UpdateUserSettingsRequest {
+                default_model_selection: None,
+                default_agent_profile_id: Some(created_profile.profile.agent_id.clone()),
+            }),
+        )
+        .await
+        .expect("save default profile");
+
+        let axum::Json(default_created) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create default-profile session");
+        let default_record = state
+            .web_store
+            .load_session(user.user_id, &default_created.session.session_id)
+            .await
+            .expect("load default-profile session")
+            .expect("session exists");
+        assert_eq!(
+            default_record.agent_profile_id,
+            Some(created_profile.profile.agent_id.clone())
+        );
+
+        let axum::Json(explicit_created) = api_create_session_with_request(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(ApiCreateSessionRequest {
+                model_selection: None,
+                agent_profile_selection: AgentProfileSelection::None,
+            }),
+        )
+        .await
+        .expect("create no-profile session");
+        let explicit_record = state
+            .web_store
+            .load_session(user.user_id, &explicit_created.session.session_id)
+            .await
+            .expect("load no-profile session")
+            .expect("session exists");
+        assert_eq!(explicit_record.agent_profile_id, None);
+
+        let axum::Json(updated_session) = api_update_session_profile(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::extract::Path(explicit_created.session.session_id.clone()),
+            axum::Json(UpdateSessionProfileRequest {
+                agent_profile_id: Some(created_profile.profile.agent_id.clone()),
+            }),
+        )
+        .await
+        .expect("select profile for existing session");
+        assert_eq!(
+            updated_session.session.agent_profile_id,
+            Some(created_profile.profile.agent_id.clone())
         );
     }
 

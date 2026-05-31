@@ -1617,6 +1617,21 @@ label {
   gap: 8px;
 }
 
+.agent-profiles-panel,
+.agent-profile-form,
+.agent-profile-list {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-profile-list-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-soft);
+}
+
 /* === NOT FOUND === */
 .not-found {
   display: grid;
@@ -2562,6 +2577,13 @@ textarea {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.agent-profile-select {
+  width: 150px;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
 }
 
 .composer-actions.btn-hidden .btn-primary {

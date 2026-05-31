@@ -30,7 +30,7 @@ use chrono::{DateTime, Utc};
 use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
-    AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
+    AgentExecutionProfile, AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
 };
 use oxide_agent_core::config::{
     AgentSettings, ModelInfo, DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
@@ -57,6 +57,8 @@ pub struct SessionMeta {
     pub agent_flow_id: String,
     #[serde(default)]
     pub model_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub agent_profile_id: Option<String>,
     pub status: SessionStatus,
     pub created_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
@@ -70,6 +72,13 @@ pub enum SessionStatus {
     Completed,
     TimedOut,
     Error,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WebSessionRuntimeOptions {
+    pub model_selection: Option<ModelSelection>,
+    pub agent_profile_id: Option<String>,
+    pub execution_profile: Option<AgentExecutionProfile>,
 }
 
 /// Task metadata.
@@ -435,7 +444,7 @@ impl WebSessionManager {
             session_id,
             context_key,
             agent_flow_id,
-            None,
+            WebSessionRuntimeOptions::default(),
         )
         .await
     }
@@ -446,8 +455,14 @@ impl WebSessionManager {
         session_id: String,
         context_key: String,
         agent_flow_id: String,
-        model_selection: Option<ModelSelection>,
+        options: WebSessionRuntimeOptions,
     ) -> String {
+        let WebSessionRuntimeOptions {
+            model_selection,
+            agent_profile_id,
+            execution_profile,
+        } = options;
+
         let session_id_i64 = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
@@ -522,6 +537,9 @@ impl WebSessionManager {
         {
             executor.set_model_routes_override(model_routes);
         }
+        if let Some(execution_profile) = execution_profile {
+            executor.set_execution_profile(execution_profile);
+        }
 
         self.registry.insert(sid, executor).await;
 
@@ -531,6 +549,7 @@ impl WebSessionManager {
             context_key,
             agent_flow_id,
             model_selection,
+            agent_profile_id,
             status: SessionStatus::Idle,
             created_at: Utc::now(),
             last_activity_at: Utc::now(),
@@ -543,6 +562,31 @@ impl WebSessionManager {
     /// Get session metadata.
     pub async fn get_session(&self, session_id: &str) -> Option<SessionMeta> {
         self.sessions.read().await.get(session_id).cloned()
+    }
+
+    /// Replace the execution profile for an already materialized runtime session.
+    pub async fn set_session_execution_profile(
+        &self,
+        session_id: &str,
+        agent_profile_id: Option<String>,
+        execution_profile: Option<AgentExecutionProfile>,
+    ) -> bool {
+        let Some(meta) = self.sessions.read().await.get(session_id).cloned() else {
+            return false;
+        };
+        let sid = derive_web_session_id(meta.user_id, session_id);
+        let Some(executor_arc) = self.registry.get(&sid).await else {
+            return false;
+        };
+        {
+            let mut executor = executor_arc.write().await;
+            executor.set_execution_profile(execution_profile.unwrap_or_default());
+        }
+        if let Some(meta) = self.sessions.write().await.get_mut(session_id) {
+            meta.agent_profile_id = agent_profile_id;
+            meta.last_activity_at = Utc::now();
+        }
+        true
     }
 
     /// Delete a session from the runtime registry.
@@ -979,9 +1023,12 @@ mod tests {
                 "model-selection-test".to_string(),
                 "web-session-model-selection-test".to_string(),
                 "main".to_string(),
-                Some(ModelSelection {
-                    qualified_id: "opencode-go/kimi-k2.6".to_string(),
-                }),
+                WebSessionRuntimeOptions {
+                    model_selection: Some(ModelSelection {
+                        qualified_id: "opencode-go/kimi-k2.6".to_string(),
+                    }),
+                    ..WebSessionRuntimeOptions::default()
+                },
             )
             .await;
 
@@ -1040,9 +1087,12 @@ mod tests {
                 "zen-model-selection-test".to_string(),
                 "web-session-zen-selection-test".to_string(),
                 "main".to_string(),
-                Some(ModelSelection {
-                    qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
-                }),
+                WebSessionRuntimeOptions {
+                    model_selection: Some(ModelSelection {
+                        qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
+                    }),
+                    ..WebSessionRuntimeOptions::default()
+                },
             )
             .await;
 

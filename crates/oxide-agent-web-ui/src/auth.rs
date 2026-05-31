@@ -2,10 +2,13 @@ use crate::api::ApiClient;
 use crate::utils::{navigate, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    BootstrapRequest, ChangePasswordRequest, CurrentUser, LoginRequest, ModelRouteProtocolView,
-    ModelRouteSourceView, ModelRouteView, ModelSelection, RegisterRequest,
-    UpdateUserSettingsRequest, UserRole,
+    AgentProfileView, BootstrapRequest, ChangePasswordRequest, CreateAgentProfileRequest,
+    CurrentUser, LoginRequest, ModelRouteProtocolView, ModelRouteSourceView, ModelRouteView,
+    ModelSelection, RegisterRequest, UpdateAgentProfileRequest, UpdateUserSettingsRequest,
+    UserRole,
 };
+
+const DEFAULT_PROFILE_NONE: &str = "__none__";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthState {
@@ -296,6 +299,7 @@ pub fn SettingsPage() -> impl IntoView {
                     <button class="secondary" type="button" on:click=logout>"Logout"</button>
                 </section>
                 <ModelSettingsPanel />
+                <AgentProfilesPanel />
                 <form class="panel" on:submit=submit>
                     <h2>"Change password"</h2>
                     <PasswordField
@@ -323,6 +327,7 @@ fn ModelSettingsPanel() -> impl IntoView {
     let (provider_available, set_provider_available) = signal(false);
     let (provider_default_model, set_provider_default_model) = signal(None::<String>);
     let (saved_default_model, set_saved_default_model) = signal(None::<String>);
+    let (saved_default_profile, set_saved_default_profile) = signal(None::<String>);
     let (selected_model, set_selected_model) = signal(String::new());
     let (loaded, set_loaded) = signal(false);
     let (loading, set_loading) = signal(false);
@@ -344,6 +349,7 @@ fn ModelSettingsPanel() -> impl IntoView {
                     let saved_default = settings
                         .default_model_selection
                         .map(|selection| selection.qualified_id);
+                    set_saved_default_profile.set(settings.default_agent_profile_id);
                     let selected = saved_default
                         .clone()
                         .or_else(|| model_routes.default_model_id.clone())
@@ -411,6 +417,7 @@ fn ModelSettingsPanel() -> impl IntoView {
             default_model_selection: Some(ModelSelection {
                 qualified_id: selected_model.get(),
             }),
+            default_agent_profile_id: saved_default_profile.get(),
         };
 
         spawn_ui(async move {
@@ -423,6 +430,7 @@ fn ModelSettingsPanel() -> impl IntoView {
                         set_selected_model.set(selection.clone());
                     }
                     set_saved_default_model.set(saved_default);
+                    set_saved_default_profile.set(settings.default_agent_profile_id);
                     set_message.set(Some(
                         "Web default saved. New sessions use it before .env fallback.".to_string(),
                     ));
@@ -527,6 +535,304 @@ fn ModelSettingsPanel() -> impl IntoView {
             {move || message.get().map(|text| view! { <p class="success">{text}</p> })}
         </form>
     }
+}
+
+#[component]
+fn AgentProfilesPanel() -> impl IntoView {
+    let auth = use_auth();
+    let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
+    let (default_model_selection, set_default_model_selection) = signal(None::<ModelSelection>);
+    let (selected_default_profile, set_selected_default_profile) =
+        signal(DEFAULT_PROFILE_NONE.to_string());
+    let (editing_profile_id, set_editing_profile_id) = signal(None::<String>);
+    let (display_name, set_display_name) = signal(String::new());
+    let (system_prompt, set_system_prompt) = signal(String::new());
+    let (loaded, set_loaded) = signal(false);
+    let (loading, set_loading) = signal(false);
+    let (saving_profile, set_saving_profile) = signal(false);
+    let (saving_default, set_saving_default) = signal(false);
+    let (message, set_message) = signal(None::<String>);
+    let (error, set_error) = signal(None::<String>);
+
+    let load_profiles = move || {
+        set_loading.set(true);
+        set_error.set(None);
+        set_message.set(None);
+        spawn_ui(async move {
+            let settings_result = auth.client().settings().await;
+            let profiles_result = auth.client().list_agent_profiles().await;
+            match (settings_result, profiles_result) {
+                (Ok(settings), Ok(response)) => {
+                    set_default_model_selection.set(settings.default_model_selection);
+                    set_selected_default_profile.set(
+                        settings
+                            .default_agent_profile_id
+                            .unwrap_or_else(|| DEFAULT_PROFILE_NONE.to_string()),
+                    );
+                    set_profiles.set(response.profiles);
+                }
+                (Err(error), _) | (_, Err(error)) => set_error.set(Some(error.to_string())),
+            }
+            set_loading.set(false);
+        });
+    };
+
+    Effect::new(move |_| {
+        if !loaded.get() {
+            set_loaded.set(true);
+            load_profiles();
+        }
+    });
+
+    let reset_form = move || {
+        set_editing_profile_id.set(None);
+        set_display_name.set(String::new());
+        set_system_prompt.set(String::new());
+    };
+
+    let save_profile = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        set_saving_profile.set(true);
+        set_error.set(None);
+        set_message.set(None);
+        let name = display_name.get();
+        let prompt = system_prompt.get();
+        let editing = editing_profile_id.get();
+
+        spawn_ui(async move {
+            let client = auth.client();
+            let result = if let Some(agent_id) = editing.as_deref() {
+                client
+                    .update_agent_profile(
+                        agent_id,
+                        &UpdateAgentProfileRequest {
+                            display_name: name,
+                            system_prompt: prompt,
+                        },
+                    )
+                    .await
+                    .map(|response| response.profile)
+            } else {
+                client
+                    .create_agent_profile(&CreateAgentProfileRequest {
+                        display_name: name,
+                        system_prompt: prompt,
+                    })
+                    .await
+                    .map(|response| response.profile)
+            };
+
+            match result {
+                Ok(profile) => {
+                    set_profiles.update(|profiles| upsert_agent_profile_view(profiles, profile));
+                    reset_form();
+                    set_message.set(Some("Agent profile saved.".to_string()));
+                }
+                Err(error) => set_error.set(Some(error.to_string())),
+            }
+            set_saving_profile.set(false);
+        });
+    };
+
+    let save_default_profile = move |_| {
+        set_saving_default.set(true);
+        set_error.set(None);
+        set_message.set(None);
+        let request = UpdateUserSettingsRequest {
+            default_model_selection: default_model_selection.get(),
+            default_agent_profile_id: default_profile_value_to_id(&selected_default_profile.get()),
+        };
+        spawn_ui(async move {
+            match auth.client().update_settings(&request).await {
+                Ok(settings) => {
+                    set_default_model_selection.set(settings.default_model_selection);
+                    set_selected_default_profile.set(
+                        settings
+                            .default_agent_profile_id
+                            .unwrap_or_else(|| DEFAULT_PROFILE_NONE.to_string()),
+                    );
+                    set_message.set(Some("Default profile saved.".to_string()));
+                }
+                Err(error) => set_error.set(Some(error.to_string())),
+            }
+            set_saving_default.set(false);
+        });
+    };
+
+    let read_prompt_file = move |ev: leptos::ev::Event| {
+        use wasm_bindgen::JsCast;
+        let Some(target) = ev.target() else {
+            return;
+        };
+        let input: web_sys::HtmlInputElement = target.unchecked_into();
+        let Some(files) = input.files() else {
+            return;
+        };
+        let Some(file) = files.get(0) else {
+            return;
+        };
+        spawn_ui(async move {
+            match wasm_bindgen_futures::JsFuture::from(file.text()).await {
+                Ok(value) => {
+                    if let Some(text) = value.as_string() {
+                        set_system_prompt.set(text);
+                    } else {
+                        set_error.set(Some("Selected file did not contain text.".to_string()));
+                    }
+                }
+                Err(_) => set_error.set(Some("Failed to read selected file.".to_string())),
+            }
+        });
+    };
+
+    view! {
+        <section class="panel agent-profiles-panel">
+            <h2>"Agent profiles"</h2>
+            <p class="muted">"V1 stores only additional system prompt instructions."</p>
+            <label>
+                <span>"Default for new chats"</span>
+                <select
+                    prop:value=selected_default_profile
+                    disabled=move || loading.get() || saving_default.get()
+                    on:change=move |ev| set_selected_default_profile.set(event_target_value(&ev))
+                >
+                    <option value=DEFAULT_PROFILE_NONE>"No default profile"</option>
+                    <For
+                        each=move || profiles.get()
+                        key=|profile| profile.agent_id.clone()
+                        children=move |profile| {
+                            let value = profile.agent_id.clone();
+                            view! { <option value=value.clone()>{profile.display_name}</option> }
+                        }
+                    />
+                </select>
+            </label>
+            <button
+                class="secondary"
+                type="button"
+                disabled=move || loading.get() || saving_default.get()
+                on:click=save_default_profile
+            >
+                {move || if saving_default.get() { "Saving default" } else { "Save default" }}
+            </button>
+
+            <form class="agent-profile-form" on:submit=save_profile>
+                <h3>{move || if editing_profile_id.get().is_some() { "Edit profile" } else { "Create profile" }}</h3>
+                <label>
+                    <span>"Name"</span>
+                    <input
+                        prop:value=display_name
+                        disabled=saving_profile
+                        on:input=move |ev| set_display_name.set(event_target_value(&ev))
+                    />
+                </label>
+                <label>
+                    <span>"System prompt"</span>
+                    <textarea
+                        prop:value=system_prompt
+                        disabled=saving_profile
+                        rows="8"
+                        on:input=move |ev| set_system_prompt.set(event_target_value(&ev))
+                    />
+                </label>
+                <label>
+                    <span>"Upload prompt"</span>
+                    <input
+                        type="file"
+                        accept=".txt,.md,text/plain,text/markdown"
+                        disabled=saving_profile
+                        on:change=read_prompt_file
+                    />
+                </label>
+                <div class="model-settings-actions">
+                    <button class="btn-primary" type="submit" disabled=saving_profile>
+                        {move || if saving_profile.get() { "Saving" } else { "Save profile" }}
+                    </button>
+                    <button class="secondary" type="button" on:click=move |_| reset_form()>
+                        "Clear form"
+                    </button>
+                </div>
+            </form>
+
+            <div class="agent-profile-list">
+                <For
+                    each=move || profiles.get()
+                    key=|profile| profile.agent_id.clone()
+                    children=move |profile| {
+                        let edit_profile = profile.clone();
+                        let delete_profile = profile.clone();
+                        view! {
+                            <article class="agent-profile-list-item">
+                                <strong>{profile.display_name.clone()}</strong>
+                                <p class="muted">{profile.agent_id.clone()}</p>
+                                <div class="model-settings-actions">
+                                    <button
+                                        class="secondary"
+                                        type="button"
+                                        on:click=move |_| {
+                                            set_editing_profile_id.set(Some(edit_profile.agent_id.clone()));
+                                            set_display_name.set(edit_profile.display_name.clone());
+                                            set_system_prompt.set(edit_profile.system_prompt.clone());
+                                        }
+                                    >"Edit"</button>
+                                    <button
+                                        class="btn-danger"
+                                        type="button"
+                                        on:click=move |_| {
+                                            let agent_id = delete_profile.agent_id.clone();
+                                            set_error.set(None);
+                                            set_message.set(None);
+                                            spawn_ui(async move {
+                                                match auth.client().delete_agent_profile(&agent_id).await {
+                                                    Ok(_) => {
+                                                        set_profiles.update(|profiles| {
+                                                            profiles.retain(|profile| profile.agent_id != agent_id);
+                                                        });
+                                                        if editing_profile_id.get().as_deref() == Some(agent_id.as_str()) {
+                                                            reset_form();
+                                                        }
+                                                        if selected_default_profile.get() == agent_id {
+                                                            set_selected_default_profile.set(DEFAULT_PROFILE_NONE.to_string());
+                                                        }
+                                                        set_message.set(Some("Agent profile deleted.".to_string()));
+                                                    }
+                                                    Err(error) => set_error.set(Some(error.to_string())),
+                                                }
+                                            });
+                                        }
+                                    >"Delete"</button>
+                                </div>
+                            </article>
+                        }
+                    }
+                />
+            </div>
+            {move || loading.get().then(|| view! { <p class="muted">"Loading profiles..."</p> })}
+            <ErrorText error=error />
+            {move || message.get().map(|text| view! { <p class="success">{text}</p> })}
+        </section>
+    }
+}
+
+fn default_profile_value_to_id(value: &str) -> Option<String> {
+    (value != DEFAULT_PROFILE_NONE && !value.trim().is_empty()).then(|| value.to_string())
+}
+
+fn upsert_agent_profile_view(profiles: &mut Vec<AgentProfileView>, profile: AgentProfileView) {
+    if let Some(existing) = profiles
+        .iter_mut()
+        .find(|existing| existing.agent_id == profile.agent_id)
+    {
+        *existing = profile;
+    } else {
+        profiles.push(profile);
+    }
+    profiles.sort_by(|left, right| {
+        left.display_name
+            .to_ascii_lowercase()
+            .cmp(&right.display_name.to_ascii_lowercase())
+            .then_with(|| left.agent_id.cmp(&right.agent_id))
+    });
 }
 
 fn apply_model_routes_response(

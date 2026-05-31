@@ -122,6 +122,8 @@ fn configure_agent_expectations(mock: &mut crate::storage::MockStorageProvider) 
 
 fn configure_control_plane_expectations(mock: &mut crate::storage::MockStorageProvider) {
     mock.expect_get_agent_profile().returning(|_, _| Ok(None));
+    mock.expect_list_agent_profiles()
+        .returning(|_| Ok(Vec::new()));
     mock.expect_upsert_agent_profile()
         .returning(|options: UpsertAgentProfileOptions| {
             Ok(AgentProfileRecord {

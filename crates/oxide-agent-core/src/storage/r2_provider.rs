@@ -267,6 +267,17 @@ impl StorageProvider for R2Storage {
         .await
     }
 
+    async fn list_agent_profiles(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<AgentProfileRecord>, StorageError> {
+        with_storage_reason(
+            "list_agent_profiles",
+            self.list_agent_profiles_inner(user_id),
+        )
+        .await
+    }
+
     async fn upsert_agent_profile(
         &self,
         options: UpsertAgentProfileOptions,

@@ -160,6 +160,13 @@ pub trait StorageProvider: Send + Sync {
         user_id: i64,
         agent_id: String,
     ) -> Result<Option<AgentProfileRecord>, StorageError>;
+    /// List all agent profile records for a user.
+    async fn list_agent_profiles(
+        &self,
+        _user_id: i64,
+    ) -> Result<Vec<AgentProfileRecord>, StorageError> {
+        Ok(Vec::new())
+    }
     /// Upsert an agent profile record.
     async fn upsert_agent_profile(
         &self,

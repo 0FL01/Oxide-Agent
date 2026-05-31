@@ -26,6 +26,8 @@ pub struct WebUserRecord {
     pub status: WebUserStatus,
     #[serde(default)]
     pub default_model_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub default_agent_profile_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,

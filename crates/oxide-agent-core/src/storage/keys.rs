@@ -110,6 +110,12 @@ pub fn agent_profile_key(user_id: i64, agent_id: &str) -> String {
     format!("users/{user_id}/control_plane/agent_profiles/{agent_id}.json")
 }
 
+/// Returns the R2 prefix for all agent profile records of a user.
+#[must_use]
+pub fn agent_profiles_prefix(user_id: i64) -> String {
+    format!("users/{user_id}/control_plane/agent_profiles/")
+}
+
 /// Returns the R2 key for a topic context record.
 #[must_use]
 pub fn topic_context_key(user_id: i64, topic_id: &str) -> String {
