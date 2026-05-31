@@ -32,11 +32,15 @@ use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
     AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
 };
-use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::config::{
+    AgentSettings, ModelInfo, DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+    DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::{ReminderThreadKind, StorageProvider};
 use oxide_agent_runtime::SessionRegistry;
+use oxide_agent_web_contracts::ModelSelection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,6 +55,8 @@ pub struct SessionMeta {
     pub user_id: i64,
     pub context_key: String,
     pub agent_flow_id: String,
+    #[serde(default)]
+    pub model_selection: Option<ModelSelection>,
     pub status: SessionStatus,
     pub created_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
@@ -181,6 +187,96 @@ pub(crate) fn web_session_sandbox_scope(user_id: i64, context_key: &str) -> Sand
     SandboxScope::new(user_id, context_key.to_string())
 }
 
+fn opencode_go_qualified_model_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    let model_id = value.strip_prefix("opencode-go/").unwrap_or(value).trim();
+    if model_id.is_empty() || model_id.contains('/') {
+        return None;
+    }
+    Some(format!("opencode-go/{model_id}"))
+}
+
+fn selected_opencode_go_route(
+    selected_qualified_id: &str,
+    provider: &str,
+    configured_routes: &[ModelInfo],
+) -> ModelInfo {
+    configured_routes
+        .iter()
+        .find(|route| {
+            is_opencode_go_provider(&route.provider)
+                && opencode_go_qualified_model_id(&route.id).as_deref()
+                    == Some(selected_qualified_id)
+        })
+        .cloned()
+        .and_then(|route| normalize_model_route(route, provider))
+        .unwrap_or_else(|| ModelInfo {
+            id: selected_qualified_id.to_string(),
+            provider: provider.to_string(),
+            max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+            context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+            weight: 1,
+        })
+}
+
+fn normalize_model_route(mut route: ModelInfo, opencode_go_provider: &str) -> Option<ModelInfo> {
+    let id = route.id.trim();
+    let provider = route.provider.trim();
+    if id.is_empty() || provider.is_empty() {
+        return None;
+    }
+
+    if is_opencode_go_provider(provider) {
+        route.id = opencode_go_qualified_model_id(id)?;
+        route.provider = opencode_go_provider.to_string();
+    } else {
+        route.id = id.to_string();
+        route.provider = provider.to_string();
+    }
+    if route.max_output_tokens == 0 {
+        route.max_output_tokens = DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS;
+    }
+    if route.context_window_tokens == 0 {
+        route.context_window_tokens = DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS;
+    }
+    route.weight = route.weight.max(1);
+    Some(route)
+}
+
+fn push_unique_route(routes: &mut Vec<ModelInfo>, route: ModelInfo) {
+    let key = model_route_key(&route);
+    if routes
+        .iter()
+        .any(|existing| model_route_key(existing) == key)
+    {
+        return;
+    }
+    routes.push(route);
+}
+
+fn model_route_key(route: &ModelInfo) -> String {
+    let provider = normalized_provider_name(&route.provider);
+    let id = if is_opencode_go_provider(&route.provider) {
+        opencode_go_qualified_model_id(&route.id).unwrap_or_else(|| route.id.trim().to_string())
+    } else {
+        route.id.trim().to_string()
+    };
+    format!("{provider}/{id}")
+}
+
+fn normalized_provider_name(provider: &str) -> String {
+    provider
+        .trim()
+        .strip_prefix("llm-provider/")
+        .unwrap_or(provider.trim())
+        .replace('_', "-")
+        .to_ascii_lowercase()
+}
+
+fn is_opencode_go_provider(provider: &str) -> bool {
+    normalized_provider_name(provider) == "opencode-go"
+}
+
 impl WebSessionManager {
     /// Create a new session manager.
     ///
@@ -245,6 +341,57 @@ impl WebSessionManager {
         self.agent_settings.clone()
     }
 
+    async fn model_routes_override_for_selection(
+        &self,
+        selection: Option<&ModelSelection>,
+    ) -> Option<Vec<ModelInfo>> {
+        let selection = selection?;
+        let selected_model_id = opencode_go_qualified_model_id(&selection.qualified_id)?;
+        let configured_routes = self.agent_settings.get_configured_agent_model_routes();
+        let provider = self.preferred_opencode_go_provider_name();
+        let mut routes = vec![selected_opencode_go_route(
+            &selected_model_id,
+            &provider,
+            &configured_routes,
+        )];
+
+        for route in configured_routes {
+            if let Some(route) = normalize_model_route(route, &provider) {
+                push_unique_route(&mut routes, route);
+            }
+        }
+
+        if let Some(discovered_models) = self.llm.opencode_go_models().await {
+            for model in discovered_models {
+                if model.protocol.eq_ignore_ascii_case("unknown") {
+                    continue;
+                }
+                push_unique_route(
+                    &mut routes,
+                    ModelInfo {
+                        id: model.qualified_id,
+                        provider: provider.clone(),
+                        max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+                        context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+                        weight: 1,
+                    },
+                );
+            }
+        }
+
+        Some(routes)
+    }
+
+    fn preferred_opencode_go_provider_name(&self) -> String {
+        if self.llm.is_provider_available("opencode-go") {
+            "opencode-go".to_string()
+        } else if self.llm.is_provider_available("opencode_go") {
+            "opencode_go".to_string()
+        } else {
+            "opencode-go".to_string()
+        }
+    }
+
     // --- Session CRUD ---
 
     /// Create a new session and register it in the `SessionRegistry`.
@@ -285,6 +432,24 @@ impl WebSessionManager {
         session_id: String,
         context_key: String,
         agent_flow_id: String,
+    ) -> String {
+        self.create_session_with_model_selection(
+            user_id,
+            session_id,
+            context_key,
+            agent_flow_id,
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_session_with_model_selection(
+        &self,
+        user_id: i64,
+        session_id: String,
+        context_key: String,
+        agent_flow_id: String,
+        model_selection: Option<ModelSelection>,
     ) -> String {
         let session_id_i64 = {
             use std::collections::hash_map::DefaultHasher;
@@ -354,6 +519,12 @@ impl WebSessionManager {
             thread_kind: ReminderThreadKind::None,
             notifier: None,
         });
+        if let Some(model_routes) = self
+            .model_routes_override_for_selection(model_selection.as_ref())
+            .await
+        {
+            executor.set_model_routes_override(model_routes);
+        }
 
         self.registry.insert(sid, executor).await;
 
@@ -362,6 +533,7 @@ impl WebSessionManager {
             user_id,
             context_key,
             agent_flow_id,
+            model_selection,
             status: SessionStatus::Idle,
             created_at: Utc::now(),
             last_activity_at: Utc::now(),
@@ -776,6 +948,64 @@ mod tests {
             context_key,
             "web sessions should use a per-session sandbox namespace"
         );
+    }
+
+    #[tokio::test]
+    async fn web_session_applies_model_route_override_from_selection() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![
+                ModelInfo {
+                    id: "opencode-go/deepseek-v4-flash".to_string(),
+                    provider: "opencode_go".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                },
+                ModelInfo {
+                    id: "mistral-large".to_string(),
+                    provider: "mistral".to_string(),
+                    max_output_tokens: 16_000,
+                    context_window_tokens: 128_000,
+                    weight: 1,
+                },
+            ]),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
+
+        manager
+            .create_session_with_model_selection(
+                91,
+                "model-selection-test".to_string(),
+                "web-session-model-selection-test".to_string(),
+                "main".to_string(),
+                Some(ModelSelection {
+                    qualified_id: "opencode-go/kimi-k2.6".to_string(),
+                }),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "model-selection-test").await;
+        let executor = executor_arc.read().await;
+        let routes = executor
+            .model_routes_override()
+            .expect("model route override should be set");
+
+        assert_eq!(routes[0].id, "opencode-go/kimi-k2.6");
+        assert_eq!(routes[0].provider, "opencode-go");
+        assert_eq!(
+            routes[0].max_output_tokens,
+            DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS
+        );
+        assert!(routes.iter().any(|route| {
+            route.id == "opencode-go/deepseek-v4-flash" && route.provider == "opencode-go"
+        }));
+        assert!(routes
+            .iter()
+            .any(|route| route.id == "mistral-large" && route.provider == "mistral"));
     }
 
     // -----------------------------------------------------------------------

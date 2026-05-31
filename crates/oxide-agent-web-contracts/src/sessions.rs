@@ -1,4 +1,4 @@
-use crate::tasks::TaskStatus;
+use crate::{config::ModelSelection, tasks::TaskStatus};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,8 @@ pub struct WebSessionRecord {
     pub title: String,
     pub context_key: String,
     pub agent_flow_id: String,
+    #[serde(default)]
+    pub model_selection: Option<ModelSelection>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub active_task_id: Option<String>,
@@ -65,6 +67,8 @@ fn looks_like_timestamp_title(value: &str) -> bool {
 pub struct SessionSummary {
     pub session_id: String,
     pub title: String,
+    #[serde(default)]
+    pub model_selection: Option<ModelSelection>,
     pub last_preview: Option<String>,
     pub active_task_id: Option<String>,
     pub last_task_status: Option<TaskStatus>,
@@ -77,6 +81,8 @@ pub struct SessionSummary {
 pub struct SessionDetail {
     pub session_id: String,
     pub title: String,
+    #[serde(default)]
+    pub model_selection: Option<ModelSelection>,
     pub last_preview: Option<String>,
     pub active_task_id: Option<String>,
     pub last_task_status: Option<TaskStatus>,
@@ -90,9 +96,12 @@ pub struct ListSessionsResponse {
     pub sessions: Vec<SessionSummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct CreateSessionRequest {}
+pub struct CreateSessionRequest {
+    #[serde(default)]
+    pub model_selection: Option<ModelSelection>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -131,6 +140,7 @@ mod tests {
             title: title.to_string(),
             context_key: "context".to_string(),
             agent_flow_id: "main".to_string(),
+            model_selection: None,
             created_at: now,
             updated_at: now,
             active_task_id: None,

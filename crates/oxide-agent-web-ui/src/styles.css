@@ -199,6 +199,7 @@ button:disabled:active {
 
 /* === INPUTS === */
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid var(--border-strong);
@@ -217,6 +218,7 @@ textarea::placeholder {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   border-color: var(--accent-blue);
   box-shadow: 0 0 0 1px var(--accent-glow);
@@ -1587,6 +1589,34 @@ label {
   font-size: 12px;
 }
 
+.model-settings-form {
+  display: grid;
+  gap: 12px;
+}
+
+.model-route-select {
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
+.model-route-select option:disabled {
+  color: var(--text-faint);
+}
+
+.model-settings-note {
+  margin: -4px 0 0;
+}
+
+.model-route-meta {
+  margin: 0;
+}
+
+.model-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* === NOT FOUND === */
 .not-found {
   display: grid;
@@ -1835,6 +1865,7 @@ button.btn-danger {
 }
 
 input,
+select,
 textarea {
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -1844,6 +1875,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-glow);

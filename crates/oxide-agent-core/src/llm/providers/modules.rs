@@ -299,13 +299,17 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_api_key = std::env::var("OPENCODE_GO_API_KEY").ok();
+        let previous_primary_api_key = std::env::var("OPENCODE_API_KEY").ok();
+        let previous_zen_api_key = std::env::var("OPENCODE_ZEN_API_KEY").ok();
         std::env::remove_var("OPENCODE_GO_API_KEY");
+        std::env::remove_var("OPENCODE_API_KEY");
+        std::env::remove_var("OPENCODE_ZEN_API_KEY");
 
         let settings = AgentSettings::default();
 
         assert_eq!(
             provider_missing_route_config_message("opencode_go", &settings),
-            Some("Critical: OPENCODE_GO_API_KEY is required for configured OpenCode Go routes")
+            Some("Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes")
         );
 
         let settings = settings_with_provider_key("llm-provider/opencode-go", "test-opencode-key");
@@ -317,6 +321,12 @@ mod tests {
 
         if let Some(api_key) = previous_api_key {
             std::env::set_var("OPENCODE_GO_API_KEY", api_key);
+        }
+        if let Some(api_key) = previous_primary_api_key {
+            std::env::set_var("OPENCODE_API_KEY", api_key);
+        }
+        if let Some(api_key) = previous_zen_api_key {
+            std::env::set_var("OPENCODE_ZEN_API_KEY", api_key);
         }
     }
 

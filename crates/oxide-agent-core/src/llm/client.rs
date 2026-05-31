@@ -12,6 +12,9 @@ use super::{
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
+    #[cfg(feature = "llm-opencode-go")]
+    opencode_go_model_catalog:
+        Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Optional explicit media model name for multimodal requests.
@@ -20,6 +23,45 @@ pub struct LlmClient {
     pub media_model_id: Option<String>,
     /// Optional media model provider for audio/image/video requests.
     pub media_model_provider: Option<String>,
+}
+
+/// Provider-discovered model metadata exposed without leaking provider-specific internals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredLlmModel {
+    /// Provider identifier, such as `opencode-go`.
+    pub provider_id: String,
+    /// Raw provider model ID without a provider prefix.
+    pub model_id: String,
+    /// Application-qualified model ID, such as `opencode-go/kimi-k2.6`.
+    pub qualified_id: String,
+    /// User-facing display name.
+    pub display_name: String,
+    /// Provider protocol label for routing diagnostics.
+    pub protocol: String,
+    /// Discovery source label: `network`, `cache`, or `fallback`.
+    pub source: String,
+    /// Timestamp associated with the discovered model list.
+    pub fetched_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[cfg(feature = "llm-opencode-go")]
+impl From<providers::opencode_go::discovery::DiscoveredOpenCodeGoModel> for DiscoveredLlmModel {
+    fn from(model: providers::opencode_go::discovery::DiscoveredOpenCodeGoModel) -> Self {
+        Self {
+            provider_id: model.provider_id,
+            model_id: model.model_id,
+            qualified_id: model.qualified_id,
+            display_name: model.display_name,
+            protocol: model.protocol.as_str().to_string(),
+            source: match model.source {
+                providers::opencode_go::discovery::DiscoverySource::Network => "network",
+                providers::opencode_go::discovery::DiscoverySource::Cache => "cache",
+                providers::opencode_go::discovery::DiscoverySource::Fallback => "fallback",
+            }
+            .to_string(),
+            fetched_at: model.fetched_at,
+        }
+    }
 }
 
 /// Internal plain-text completion use cases.
@@ -166,9 +208,16 @@ impl LlmClient {
         let media_model_name = media_model_id.clone();
 
         let providers = providers::build_configured_providers(settings);
+        #[cfg(feature = "llm-opencode-go")]
+        let opencode_go_model_catalog = providers::opencode_go::module::build_model_catalog(
+            settings,
+            support::http::create_http_client(),
+        );
 
         Self {
             providers,
+            #[cfg(feature = "llm-opencode-go")]
+            opencode_go_model_catalog,
             models: settings.get_available_models(),
             media_model_name,
             media_model_id,
@@ -201,6 +250,46 @@ impl LlmClient {
         let mut provider_names: Vec<String> = self.providers.keys().cloned().collect();
         provider_names.sort();
         provider_names
+    }
+
+    /// Returns OpenCode Go discovered models when the provider is compiled and configured.
+    pub async fn opencode_go_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
+        #[cfg(feature = "llm-opencode-go")]
+        {
+            let catalog = self.opencode_go_model_catalog.as_ref()?;
+            return Some(
+                catalog
+                    .models()
+                    .await
+                    .into_iter()
+                    .map(DiscoveredLlmModel::from)
+                    .collect(),
+            );
+        }
+        #[cfg(not(feature = "llm-opencode-go"))]
+        {
+            None
+        }
+    }
+
+    /// Refreshes OpenCode Go discovered models when the provider is compiled and configured.
+    pub async fn refresh_opencode_go_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
+        #[cfg(feature = "llm-opencode-go")]
+        {
+            let catalog = self.opencode_go_model_catalog.as_ref()?;
+            return Some(
+                catalog
+                    .refresh()
+                    .await
+                    .into_iter()
+                    .map(DiscoveredLlmModel::from)
+                    .collect(),
+            );
+        }
+        #[cfg(not(feature = "llm-opencode-go"))]
+        {
+            None
+        }
     }
 
     /// Returns the provider for the given name

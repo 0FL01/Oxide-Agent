@@ -4,9 +4,10 @@ use oxide_agent_web_contracts::{
     CreateSessionRequest, CreateSessionResponse, CreateTaskRequest, CreateTaskResponse,
     CreateTaskVersionRequest, CreateTaskVersionResponse, CurrentUserResponse, ErrorCode,
     ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
-    ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, PublicConfigResponse,
-    RegisterRequest, ResumeTaskRequest, ResumeTaskResponse, TaskEventsResponse,
-    UpdateSessionRequest, UpdateSessionResponse, UploadTaskAttachmentsResponse,
+    ListModelRoutesResponse, ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse,
+    PublicConfigResponse, RegisterRequest, ResumeTaskRequest, ResumeTaskResponse,
+    TaskEventsResponse, UpdateSessionRequest, UpdateSessionResponse, UpdateUserSettingsRequest,
+    UploadTaskAttachmentsResponse, UserSettingsResponse,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt;
@@ -61,6 +62,38 @@ impl ApiClient {
             .await
     }
 
+    pub async fn list_model_routes(&self) -> Result<ListModelRoutesResponse, ApiClientError> {
+        decode(
+            with_credentials(Request::get("/api/v1/model-routes"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn refresh_model_routes(&self) -> Result<ListModelRoutesResponse, ApiClientError> {
+        self.post_empty("/api/v1/model-routes/refresh").await
+    }
+
+    pub async fn settings(&self) -> Result<UserSettingsResponse, ApiClientError> {
+        decode(
+            with_credentials(Request::get("/api/v1/settings"))
+                .send()
+                .await?,
+        )
+        .await
+    }
+
+    pub async fn update_settings(
+        &self,
+        request: &UpdateUserSettingsRequest,
+    ) -> Result<UserSettingsResponse, ApiClientError> {
+        let mut builder = with_credentials(Request::patch("/api/v1/settings"))
+            .header("Content-Type", "application/json");
+        builder = self.with_csrf(builder)?;
+        decode(builder.json(request)?.send().await?).await
+    }
+
     pub async fn list_sessions(&self) -> Result<ListSessionsResponse, ApiClientError> {
         decode(
             with_credentials(Request::get("/api/v1/sessions"))
@@ -71,7 +104,7 @@ impl ApiClient {
     }
 
     pub async fn create_session(&self) -> Result<CreateSessionResponse, ApiClientError> {
-        self.post("/api/v1/sessions", &CreateSessionRequest {}, true)
+        self.post("/api/v1/sessions", &CreateSessionRequest::default(), true)
             .await
     }
 

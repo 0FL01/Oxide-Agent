@@ -338,6 +338,24 @@ impl AgentSettings {
         })
     }
 
+    /// Returns a module-local string value, falling back to provider-owned env vars in order.
+    #[must_use]
+    pub fn module_string_value_or_envs(
+        &self,
+        module_id: &str,
+        key: &str,
+        env_names: &[&str],
+    ) -> Option<String> {
+        self.module_string_value(module_id, key).or_else(|| {
+            env_names.iter().find_map(|env_name| {
+                std::env::var(env_name)
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+        })
+    }
+
     /// Returns a module-local string value, provider-owned env var, or default.
     #[must_use]
     pub fn module_string_value_or_env_or_default(
@@ -368,6 +386,7 @@ impl AgentSettings {
         let mut settings: Self = build_config()?.try_deserialize()?;
         settings.validate_configured_modules()?;
         settings.apply_model_routes_from_env();
+        settings.apply_opencode_go_bootstrap_route_if_available();
 
         if settings.agent_model_temperature.is_none() {
             settings.agent_model_temperature = parse_optional_env_f32("AGENT_MODEL_TEMPERATURE");
@@ -680,6 +699,45 @@ impl AgentSettings {
                 .is_some_and(|provider| !provider.trim().is_empty());
 
         has_primary_route || has_direct_route
+    }
+
+    fn apply_opencode_go_bootstrap_route_if_available(&mut self) {
+        if self.has_configured_agent_route() {
+            return;
+        }
+        let Some(module_id) = provider_module_id("opencode-go") else {
+            return;
+        };
+        if !self.is_module_enabled(module_id) {
+            return;
+        }
+        if self
+            .module_string_value_or_envs(
+                module_id,
+                "api_key",
+                &[
+                    "OPENCODE_API_KEY",
+                    "OPENCODE_ZEN_API_KEY",
+                    "OPENCODE_GO_API_KEY",
+                ],
+            )
+            .is_none()
+        {
+            return;
+        }
+
+        let route = ModelInfo {
+            id: "opencode-go/kimi-k2.6".to_string(),
+            max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+            context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+            provider: "opencode-go".to_string(),
+            weight: 1,
+        };
+        self.agent_model_id = Some(route.id.clone());
+        self.agent_model_provider = Some(route.provider.clone());
+        self.agent_model_max_output_tokens = Some(route.max_output_tokens);
+        self.agent_model_context_window_tokens = Some(route.context_window_tokens);
+        self.agent_model_routes = Some(vec![route]);
     }
 
     fn apply_model_routes_from_env(&mut self) {
@@ -1193,6 +1251,19 @@ mod tests {
         }
     }
 
+    fn clear_opencode_go_env() {
+        for key in [
+            "OPENCODE_API_KEY",
+            "OPENCODE_ZEN_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "OPENCODE_GO_API_BASE",
+            "OPENCODE_GO_MODELS_URL",
+            "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+        ] {
+            env::remove_var(key);
+        }
+    }
+
     // Tests run sequentially to avoid environment variable race conditions
     #[cfg(feature = "llm-openrouter")]
     #[test]
@@ -1540,6 +1611,10 @@ mod tests {
     #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn route_credentials_validation_resolves_provider_module_ids() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_opencode_go_env();
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("llm-provider/opencode-go".to_string()),
@@ -1550,9 +1625,8 @@ mod tests {
             .validate_route_credentials()
             .expect_err("missing OpenCode Go key should fail for module id provider");
 
-        assert!(error
-            .to_string()
-            .contains("OPENCODE_GO_API_KEY is required"));
+        assert!(error.to_string().contains("OPENCODE_API_KEY"));
+        clear_opencode_go_env();
     }
 
     #[test]
@@ -1717,10 +1791,11 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
         env::remove_var("ZAI_API_KEY");
+        clear_opencode_go_env();
 
         env::set_var("AGENT_MODEL_ID", "chat-model");
         env::set_var("AGENT_MODEL_PROVIDER", "opencode-go");
-        env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
+        env::set_var("OPENCODE_API_KEY", "opencode-key");
         env::set_var(
             "OPENCODE_GO_API_BASE",
             "https://opencode.example.test/v1/chat/completions",
@@ -1730,10 +1805,14 @@ mod tests {
 
         assert_eq!(
             settings
-                .module_string_value_or_env(
+                .module_string_value_or_envs(
                     "llm-provider/opencode-go",
                     "api_key",
-                    "OPENCODE_GO_API_KEY"
+                    &[
+                        "OPENCODE_API_KEY",
+                        "OPENCODE_ZEN_API_KEY",
+                        "OPENCODE_GO_API_KEY"
+                    ]
                 )
                 .as_deref(),
             Some("opencode-key")
@@ -1750,8 +1829,39 @@ mod tests {
 
         env::remove_var("AGENT_MODEL_ID");
         env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("OPENCODE_GO_API_KEY");
-        env::remove_var("OPENCODE_GO_API_BASE");
+        clear_opencode_go_env();
+        Ok(())
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn settings_bootstraps_opencode_go_route_from_api_key_only() -> Result<(), ConfigError> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_model_route_env();
+        clear_opencode_go_env();
+        env::remove_var("AGENT_MODEL_ID");
+        env::remove_var("AGENT_MODEL_PROVIDER");
+        env::remove_var("ZAI_API_KEY");
+
+        env::set_var("OPENCODE_API_KEY", "opencode-key");
+
+        let settings = AgentSettings::new()?;
+        let primary = settings.get_configured_agent_model();
+
+        assert_eq!(primary.id, "opencode-go/kimi-k2.6");
+        assert_eq!(primary.provider, "llm-provider/opencode-go");
+        assert_eq!(
+            primary.max_output_tokens,
+            DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(
+            primary.context_window_tokens,
+            DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS
+        );
+
+        clear_opencode_go_env();
         Ok(())
     }
 
@@ -1764,7 +1874,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
         env::remove_var("ZAI_API_KEY");
-        env::remove_var("OPENCODE_GO_API_BASE");
+        clear_opencode_go_env();
 
         env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
@@ -1788,7 +1898,7 @@ mod tests {
         );
 
         clear_model_route_env();
-        env::remove_var("OPENCODE_GO_API_KEY");
+        clear_opencode_go_env();
         Ok(())
     }
 
@@ -1800,18 +1910,16 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
         env::remove_var("ZAI_API_KEY");
-        env::remove_var("OPENCODE_GO_API_KEY");
-        env::remove_var("OPENCODE_GO_API_BASE");
+        clear_opencode_go_env();
 
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
         env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
 
         let error = AgentSettings::new().expect_err("missing OpenCode Go key should fail");
-        assert!(error
-            .to_string()
-            .contains("OPENCODE_GO_API_KEY is required"));
+        assert!(error.to_string().contains("OPENCODE_API_KEY"));
 
         clear_model_route_env();
+        clear_opencode_go_env();
     }
 
     #[test]

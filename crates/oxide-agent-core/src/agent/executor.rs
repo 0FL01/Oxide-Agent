@@ -19,6 +19,7 @@ use crate::agent::providers::ReminderContext;
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::{AgentSession, PendingUserInput};
 use crate::agent::wiki_memory::WikiStore;
+use crate::config::ModelInfo;
 use std::sync::{Arc, RwLock};
 
 /// Agent executor that runs tasks iteratively
@@ -26,6 +27,7 @@ pub struct AgentExecutor {
     runner: AgentRunner,
     session: AgentSession,
     settings: Arc<crate::config::AgentSettings>,
+    model_routes_override: Option<Vec<ModelInfo>>,
     agents_md: Option<AgentsMdContext>,
     manager_control_plane: Option<ManagerControlPlaneContext>,
     topic_infra: Option<TopicInfraContext>,

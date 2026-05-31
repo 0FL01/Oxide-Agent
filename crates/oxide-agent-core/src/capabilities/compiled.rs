@@ -149,12 +149,30 @@ const NVIDIA_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
 ];
 #[allow(dead_code)]
 const OPENCODE_GO_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
-    ModuleConfigProperty::string("api_key", "OpenCode Go API key.")
-        .with_env("OPENCODE_GO_API_KEY")
-        .secret(),
+    ModuleConfigProperty::string(
+        "api_key",
+        "OpenCode Go API key. Also accepts OPENCODE_ZEN_API_KEY and legacy OPENCODE_GO_API_KEY.",
+    )
+    .with_env("OPENCODE_API_KEY")
+    .secret(),
     ModuleConfigProperty::string("api_base", "OpenCode Go Chat Completions endpoint.")
         .with_env("OPENCODE_GO_API_BASE")
         .with_default("https://opencode.ai/zen/go/v1/chat/completions"),
+    ModuleConfigProperty::string(
+        "messages_api_base",
+        "OpenCode Go Anthropic Messages endpoint.",
+    )
+    .with_env("OPENCODE_GO_MESSAGES_API_BASE")
+    .with_default("https://opencode.ai/zen/go/v1/messages"),
+    ModuleConfigProperty::string("models_url", "OpenCode Go model discovery endpoint.")
+        .with_env("OPENCODE_GO_MODELS_URL")
+        .with_default("https://opencode.ai/zen/go/v1/models"),
+    ModuleConfigProperty::string(
+        "model_cache_ttl_secs",
+        "OpenCode Go model discovery cache TTL.",
+    )
+    .with_env("OPENCODE_GO_MODEL_CACHE_TTL_SECS")
+    .with_default("1800"),
 ];
 #[allow(dead_code)]
 const OPENROUTER_CONFIG_PROPERTIES: &[ModuleConfigProperty] =

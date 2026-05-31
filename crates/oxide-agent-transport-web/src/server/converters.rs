@@ -71,6 +71,7 @@ pub(crate) fn session_summary_from_record(record: WebSessionRecord) -> SessionSu
     SessionSummary {
         session_id: record.session_id,
         title: record.title,
+        model_selection: record.model_selection,
         last_preview: record.last_preview,
         active_task_id: record.active_task_id,
         last_task_status: record.last_task_status,
@@ -83,6 +84,7 @@ pub(crate) fn session_detail_from_record(record: WebSessionRecord) -> SessionDet
     SessionDetail {
         session_id: record.session_id,
         title: record.title,
+        model_selection: record.model_selection,
         last_preview: record.last_preview,
         active_task_id: record.active_task_id,
         last_task_status: record.last_task_status,

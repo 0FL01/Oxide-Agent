@@ -1,11 +1,14 @@
 use crate::config::{get_opencode_go_max_concurrent, OPENCODE_GO_CHAT_TEMPERATURE};
-use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
+use crate::llm::providers::protocol_profiles::{
+    ANTHROPIC_CLIENT_TOOL_PROFILE, CHAT_LIKE_TOOL_PROFILE,
+};
 use crate::llm::support::http::{create_http_client, send_json_request};
 use crate::llm::{
     ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage, ToolCall,
     ToolDefinition,
 };
 use async_trait::async_trait;
+use discovery::{ModelProtocol, OpenCodeGoDiscoveryConfig, OpenCodeGoModelCatalog};
 use reqwest::{Client as HttpClient, Url};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -13,6 +16,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tracing::{debug, trace, warn};
 
+pub mod discovery;
 pub(crate) mod module;
 pub(crate) use module::OpenCodeGoProviderModule;
 
@@ -20,6 +24,7 @@ const OPENCODE_GO_FAILURES_BEFORE_COOLDOWN: usize = 3;
 const OPENCODE_GO_COOLDOWN_STEP_SECS: u64 = 5;
 const OPENCODE_GO_MAX_COOLDOWN_SECS: u64 = 60;
 const OPENCODE_GO_SUCCESS_STREAK_TO_INCREASE: usize = 3;
+const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
 
 /// LLM provider implementation for OpenCode Go's OpenAI-compatible endpoint.
 #[derive(Debug, Clone)]
@@ -27,30 +32,74 @@ pub struct OpenCodeGoProvider {
     http_client: HttpClient,
     api_key: String,
     api_base: String,
+    api_base_messages: String,
     throttle: Arc<OpenCodeGoAdaptiveThrottle>,
+    model_catalog: Arc<OpenCodeGoModelCatalog>,
 }
 
 impl OpenCodeGoProvider {
     /// Create a new OpenCode Go provider instance.
     #[must_use]
     pub fn new(api_key: String, api_base: String) -> Self {
-        Self {
-            http_client: create_http_client(),
-            api_key,
-            api_base,
-            throttle: OpenCodeGoAdaptiveThrottle::from_env(),
-        }
+        let http_client = create_http_client();
+        Self::new_with_client(api_key, api_base, http_client)
     }
 
     /// Create a new OpenCode Go provider with a shared HTTP client.
     #[must_use]
     pub fn new_with_client(api_key: String, api_base: String, http_client: HttpClient) -> Self {
+        let api_base_messages = derive_messages_api_base(&api_base);
+        Self::new_with_client_and_discovery(
+            api_key,
+            api_base,
+            api_base_messages,
+            http_client,
+            OpenCodeGoDiscoveryConfig::from_env(),
+        )
+    }
+
+    /// Create a new OpenCode Go provider with an explicit model discovery config.
+    #[must_use]
+    pub fn new_with_client_and_discovery(
+        api_key: String,
+        api_base: String,
+        api_base_messages: String,
+        http_client: HttpClient,
+        discovery_config: OpenCodeGoDiscoveryConfig,
+    ) -> Self {
+        let model_catalog = Arc::new(OpenCodeGoModelCatalog::new(
+            http_client.clone(),
+            api_key.clone(),
+            discovery_config,
+        ));
+        Arc::clone(&model_catalog).spawn_background_refresh();
         Self {
             http_client,
             api_key,
             api_base,
+            api_base_messages,
             throttle: OpenCodeGoAdaptiveThrottle::from_env(),
+            model_catalog,
         }
+    }
+
+    /// Access the OpenCode Go model discovery catalog.
+    #[must_use]
+    pub fn model_catalog(&self) -> Arc<OpenCodeGoModelCatalog> {
+        Arc::clone(&self.model_catalog)
+    }
+
+    async fn resolve_model_protocol(&self, model_id: &str) -> ModelProtocol {
+        let raw_model_id = normalize_model_id(model_id);
+        let qualified_model_id = format!("opencode-go/{raw_model_id}");
+        self.model_catalog
+            .models()
+            .await
+            .into_iter()
+            .find(|model| {
+                model.model_id == raw_model_id || model.qualified_id == qualified_model_id
+            })
+            .map_or(ModelProtocol::Unknown, |model| model.protocol)
     }
 }
 
@@ -300,12 +349,39 @@ impl LlmProvider for OpenCodeGoProvider {
         model_id: &str,
         max_tokens: u32,
     ) -> Result<String, LlmError> {
+        let protocol = self.resolve_model_protocol(model_id).await;
+        let (request_kind, api_base, body, extra_headers): (&str, &str, Value, Vec<(&str, &str)>) =
+            match protocol {
+                ModelProtocol::OpenAiChatCompletions => (
+                    "chat_completion",
+                    &self.api_base,
+                    build_chat_completion_body(
+                        system_prompt,
+                        history,
+                        user_message,
+                        model_id,
+                        max_tokens,
+                    ),
+                    Vec::new(),
+                ),
+                ModelProtocol::AnthropicMessages => (
+                    "messages",
+                    &self.api_base_messages,
+                    build_anthropic_completion_body(
+                        system_prompt,
+                        history,
+                        user_message,
+                        model_id,
+                        max_tokens,
+                    ),
+                    anthropic_extra_headers(&self.api_key),
+                ),
+                ModelProtocol::Unknown => return Err(unsupported_protocol_error(model_id)),
+            };
         let _permit = self.throttle.acquire(model_id).await;
-        let body =
-            build_chat_completion_body(system_prompt, history, user_message, model_id, max_tokens);
         log_request_summary(
-            "chat_completion",
-            &self.api_base,
+            request_kind,
+            api_base,
             model_id,
             max_tokens,
             OPENCODE_GO_CHAT_TEMPERATURE,
@@ -314,16 +390,25 @@ impl LlmProvider for OpenCodeGoProvider {
         );
         let auth = format!("Bearer {}", self.api_key);
         let result = async {
-            let response =
-                send_json_request(&self.http_client, &self.api_base, &body, Some(&auth), &[])
-                    .await?;
-            let parsed = parse_chat_response(response)?;
-            log_response_summary("chat_completion", model_id, &parsed);
+            let response = send_json_request(
+                &self.http_client,
+                api_base,
+                &body,
+                Some(&auth),
+                &extra_headers,
+            )
+            .await?;
+            let parsed = match protocol {
+                ModelProtocol::OpenAiChatCompletions => parse_chat_response(response)?,
+                ModelProtocol::AnthropicMessages => parse_anthropic_messages_response(response)?,
+                ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
+            };
+            log_response_summary(request_kind, model_id, &parsed);
 
             parsed.content.ok_or_else(|| {
-                LlmError::ApiError(
-                    "OpenCode Go returned no text content for chat_completion".to_string(),
-                )
+                LlmError::ApiError(format!(
+                    "OpenCode Go returned no text content for {request_kind}"
+                ))
             })
         }
         .await;
@@ -367,18 +452,42 @@ impl LlmProvider for OpenCodeGoProvider {
             temperature,
             json_mode,
         } = request;
-        let body = build_tool_chat_body(
-            system_prompt,
-            messages,
-            tools,
-            model_id,
-            max_tokens,
-            temperature,
-            json_mode,
-        );
+        let protocol = self.resolve_model_protocol(model_id).await;
+        let (request_kind, api_base, body, extra_headers): (&str, &str, Value, Vec<(&str, &str)>) =
+            match protocol {
+                ModelProtocol::OpenAiChatCompletions => (
+                    "chat_with_tools",
+                    &self.api_base,
+                    build_tool_chat_body(
+                        system_prompt,
+                        messages,
+                        tools,
+                        model_id,
+                        max_tokens,
+                        temperature,
+                        json_mode,
+                    ),
+                    Vec::new(),
+                ),
+                ModelProtocol::AnthropicMessages => (
+                    "messages_with_tools",
+                    &self.api_base_messages,
+                    build_anthropic_messages_body(
+                        system_prompt,
+                        messages,
+                        tools,
+                        model_id,
+                        max_tokens,
+                        temperature,
+                        json_mode,
+                    ),
+                    anthropic_extra_headers(&self.api_key),
+                ),
+                ModelProtocol::Unknown => return Err(unsupported_protocol_error(model_id)),
+            };
         log_request_summary(
-            "chat_with_tools",
-            &self.api_base,
+            request_kind,
+            api_base,
             model_id,
             max_tokens,
             temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
@@ -388,12 +497,21 @@ impl LlmProvider for OpenCodeGoProvider {
         let auth = format!("Bearer {}", self.api_key);
         let _permit = self.throttle.acquire(model_id).await;
         let result = async {
-            let response =
-                send_json_request(&self.http_client, &self.api_base, &body, Some(&auth), &[])
-                    .await?;
+            let response = send_json_request(
+                &self.http_client,
+                api_base,
+                &body,
+                Some(&auth),
+                &extra_headers,
+            )
+            .await?;
 
-            let parsed = parse_chat_response(response)?;
-            log_response_summary("chat_with_tools", model_id, &parsed);
+            let parsed = match protocol {
+                ModelProtocol::OpenAiChatCompletions => parse_chat_response(response)?,
+                ModelProtocol::AnthropicMessages => parse_anthropic_messages_response(response)?,
+                ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
+            };
+            log_response_summary(request_kind, model_id, &parsed);
             Ok(parsed)
         }
         .await;
@@ -428,6 +546,27 @@ fn opencode_go_should_throttle(error: &LlmError) -> bool {
 fn normalize_model_id(model_id: &str) -> &str {
     let trimmed = model_id.trim();
     trimmed.strip_prefix("opencode-go/").unwrap_or(trimmed)
+}
+
+fn derive_messages_api_base(api_base: &str) -> String {
+    let trimmed = api_base.trim().trim_end_matches('/');
+    if trimmed.ends_with("/messages") {
+        return trimmed.to_string();
+    }
+    if let Some(prefix) = trimmed.strip_suffix("/chat/completions") {
+        return format!("{prefix}/messages");
+    }
+    if trimmed.ends_with("/v1") {
+        return format!("{trimmed}/messages");
+    }
+    format!("{trimmed}/messages")
+}
+
+fn unsupported_protocol_error(model_id: &str) -> LlmError {
+    LlmError::ApiError(format!(
+        "OpenCode Go model '{}' has unknown wire protocol; configure modules.llm-provider/opencode-go.protocol_overrides for this model",
+        normalize_model_id(model_id)
+    ))
 }
 
 fn log_request_summary(
@@ -519,6 +658,28 @@ fn build_chat_completion_body(
     })
 }
 
+fn build_anthropic_completion_body(
+    system_prompt: &str,
+    history: &[Message],
+    user_message: &str,
+    model_id: &str,
+    max_tokens: u32,
+) -> Value {
+    let mut messages = prepare_anthropic_messages(history);
+    messages.push(anthropic_text_message("user", user_message));
+    let mut body = json!({
+        "model": normalize_model_id(model_id),
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": OPENCODE_GO_CHAT_TEMPERATURE,
+        "stream": false,
+    });
+    if let Some(system) = anthropic_system_prompt(system_prompt, history) {
+        body["system"] = json!(system);
+    }
+    body
+}
+
 fn build_tool_chat_body(
     system_prompt: &str,
     history: &[Message],
@@ -548,6 +709,38 @@ fn build_tool_chat_body(
 
     if should_use_native_json_mode(json_mode, has_tools) {
         body["response_format"] = json!({ "type": "json_object" });
+    }
+
+    body
+}
+
+fn build_anthropic_messages_body(
+    system_prompt: &str,
+    history: &[Message],
+    tools: &[ToolDefinition],
+    model_id: &str,
+    max_tokens: u32,
+    temperature: Option<f32>,
+    _json_mode: bool,
+) -> Value {
+    let messages = prepare_anthropic_messages(history);
+    let anthropic_tools = prepare_anthropic_tools_json(tools);
+    let has_tools = !anthropic_tools.is_empty();
+
+    let mut body = json!({
+        "model": normalize_model_id(model_id),
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
+        "stream": false,
+    });
+
+    if let Some(system) = anthropic_system_prompt(system_prompt, history) {
+        body["system"] = json!(system);
+    }
+    if has_tools {
+        body["tools"] = json!(anthropic_tools);
+        body["tool_choice"] = json!({ "type": "auto" });
     }
 
     body
@@ -637,6 +830,122 @@ fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<
     messages
 }
 
+fn anthropic_system_prompt(system_prompt: &str, history: &[Message]) -> Option<String> {
+    let mut parts = Vec::new();
+    if !system_prompt.trim().is_empty() {
+        parts.push(system_prompt.trim().to_string());
+    }
+    parts.extend(
+        history
+            .iter()
+            .filter(|message| message.role == "system")
+            .map(|message| message.content.trim())
+            .filter(|content| !content.is_empty())
+            .map(ToString::to_string),
+    );
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+fn prepare_anthropic_messages(history: &[Message]) -> Vec<Value> {
+    let mut messages = Vec::with_capacity(history.len());
+    let mut index = 0;
+    while index < history.len() {
+        let message = &history[index];
+        if message.role == "system" {
+            index += 1;
+            continue;
+        }
+        if message.role == "tool" {
+            let mut blocks = Vec::new();
+            let mut cursor = index;
+            while cursor < history.len() && history[cursor].role == "tool" {
+                if let Some(block) = anthropic_tool_result_block(&history[cursor]) {
+                    blocks.push(block);
+                }
+                cursor += 1;
+            }
+            if !blocks.is_empty() {
+                messages.push(json!({
+                    "role": "user",
+                    "content": blocks,
+                }));
+            }
+            index = cursor;
+            continue;
+        }
+
+        messages.push(match message.role.as_str() {
+            "assistant" => anthropic_assistant_message(message),
+            "user" => anthropic_text_message("user", &message.content),
+            _ => anthropic_text_message("user", &message.content),
+        });
+        index += 1;
+    }
+    messages
+}
+
+fn anthropic_text_message(role: &str, text: &str) -> Value {
+    json!({
+        "role": role,
+        "content": [{
+            "type": "text",
+            "text": text,
+        }],
+    })
+}
+
+fn anthropic_assistant_message(message: &Message) -> Value {
+    let mut blocks = Vec::new();
+    if !message.content.is_empty() {
+        blocks.push(json!({
+            "type": "text",
+            "text": message.content,
+        }));
+    }
+    if let Some(tool_calls) = &message.tool_calls {
+        blocks.extend(tool_calls.iter().filter_map(|tool_call| {
+            ANTHROPIC_CLIENT_TOOL_PROFILE
+                .encode_tool_call(tool_call)
+                .and_then(|call| call.into_anthropic())
+                .map(|call| {
+                    json!({
+                        "type": "tool_use",
+                        "id": call.id,
+                        "name": call.name,
+                        "input": call.input,
+                    })
+                })
+        }));
+    }
+    if blocks.is_empty() {
+        blocks.push(json!({
+            "type": "text",
+            "text": "",
+        }));
+    }
+    json!({
+        "role": "assistant",
+        "content": blocks,
+    })
+}
+
+fn anthropic_tool_result_block(message: &Message) -> Option<Value> {
+    ANTHROPIC_CLIENT_TOOL_PROFILE
+        .encode_tool_result(message)
+        .and_then(|result| result.into_anthropic())
+        .map(|result| {
+            let mut block = json!({
+                "type": "tool_result",
+                "tool_use_id": result.tool_use_id,
+                "content": result.content,
+            });
+            if let Some(is_error) = result.is_error {
+                block["is_error"] = json!(is_error);
+            }
+            block
+        })
+}
+
 fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
     tools
         .iter()
@@ -651,6 +960,26 @@ fn prepare_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+fn prepare_anthropic_tools_json(tools: &[ToolDefinition]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.parameters,
+            })
+        })
+        .collect()
+}
+
+fn anthropic_extra_headers(api_key: &str) -> Vec<(&str, &str)> {
+    vec![
+        ("anthropic-version", ANTHROPIC_VERSION_HEADER),
+        ("x-api-key", api_key),
+    ]
 }
 
 fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
@@ -703,6 +1032,109 @@ fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
         reasoning_content,
         usage,
     })
+}
+
+fn parse_anthropic_messages_response(response: Value) -> Result<ChatResponse, LlmError> {
+    let blocks = response
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            LlmError::ApiError(
+                "Missing content blocks in OpenCode Go messages response".to_string(),
+            )
+        })?;
+    let mut content_parts = Vec::new();
+    let mut reasoning_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for (index, block) in blocks.iter().enumerate() {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    content_parts.push(text.to_string());
+                }
+            }
+            Some("tool_use") => {
+                let Some(name) = block.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let input = block.get("input").unwrap_or(&Value::Null);
+                let arguments = if input.is_null() {
+                    "{}".to_string()
+                } else {
+                    serde_json::to_string(input).unwrap_or_default()
+                };
+                let wire_id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| format!("opencode_go_tool_use_{index}"));
+                tool_calls.push(ANTHROPIC_CLIENT_TOOL_PROFILE.inbound_provider_tool_call(
+                    wire_id.as_str(),
+                    None,
+                    name.to_string(),
+                    arguments,
+                ));
+            }
+            Some("thinking") => {
+                if let Some(thinking) = block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|thinking| !thinking.is_empty())
+                {
+                    reasoning_parts.push(thinking.to_string());
+                }
+            }
+            Some("redacted_thinking") => {
+                if let Some(data) = block
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|data| !data.is_empty())
+                {
+                    reasoning_parts.push(data.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let content = (!content_parts.is_empty()).then(|| content_parts.join("\n"));
+    let reasoning_content = (!reasoning_parts.is_empty()).then(|| reasoning_parts.join("\n"));
+    if content.is_none() && reasoning_content.is_none() && tool_calls.is_empty() {
+        return Err(LlmError::ApiError(
+            "Empty OpenCode Go messages response".to_string(),
+        ));
+    }
+
+    Ok(ChatResponse {
+        content,
+        tool_calls,
+        finish_reason: response
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .map(map_anthropic_stop_reason)
+            .unwrap_or_else(|| "unknown".to_string()),
+        reasoning_content,
+        usage: response.get("usage").and_then(parse_anthropic_usage),
+    })
+}
+
+fn map_anthropic_stop_reason(stop_reason: &str) -> String {
+    match stop_reason {
+        "end_turn" => "stop".to_string(),
+        "tool_use" => "tool_calls".to_string(),
+        "stop_sequence" => "stop".to_string(),
+        "max_tokens" => "length".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn parse_tool_calls(value: &Value) -> Result<Vec<ToolCall>, LlmError> {
@@ -771,12 +1203,24 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
     })
 }
 
+fn parse_anthropic_usage(value: &Value) -> Option<TokenUsage> {
+    let prompt_tokens = value.get("input_tokens")?.as_u64()? as u32;
+    let completion_tokens = value.get("output_tokens")?.as_u64()? as u32;
+    Some(TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens.saturating_add(completion_tokens),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_completion_body, build_tool_chat_body, normalize_model_id,
-        opencode_go_should_throttle, parse_chat_response, parse_tool_calls,
-        prepare_structured_messages, prepare_tools_json, OpenCodeGoAdaptiveThrottle,
+        build_anthropic_messages_body, build_chat_completion_body, build_tool_chat_body,
+        derive_messages_api_base, normalize_model_id, opencode_go_should_throttle,
+        parse_anthropic_messages_response, parse_chat_response, parse_tool_calls,
+        prepare_anthropic_messages, prepare_structured_messages, prepare_tools_json,
+        unsupported_protocol_error, OpenCodeGoAdaptiveThrottle,
     };
     use crate::llm::{
         LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
@@ -895,6 +1339,101 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_messages_body_uses_messages_endpoint_shape() {
+        let history = vec![
+            Message::assistant_with_tools(
+                "Calling tools",
+                vec![ToolCall::new(
+                    "invoke-opencode-1",
+                    ToolCallFunction {
+                        name: "read_file".to_string(),
+                        arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+                    },
+                    false,
+                )
+                .with_correlation(
+                    ToolCallCorrelation::new("invoke-opencode-1")
+                        .with_provider_tool_call_id("toolu-opencode-1"),
+                )],
+            ),
+            Message::tool_with_correlation(
+                "invoke-opencode-1",
+                ToolCallCorrelation::new("invoke-opencode-1")
+                    .with_provider_tool_call_id("toolu-opencode-1"),
+                "read_file",
+                "contents",
+            ),
+        ];
+        let body = build_anthropic_messages_body(
+            "system",
+            &history,
+            &[read_file_tool()],
+            "opencode-go/minimax-m2.7",
+            32000,
+            Some(0.2),
+            true,
+        );
+
+        assert_eq!(body["model"], json!("minimax-m2.7"));
+        assert_eq!(body["system"], json!("system"));
+        assert_eq!(body["messages"][0]["role"], json!("assistant"));
+        assert_eq!(body["messages"][0]["content"][1]["type"], json!("tool_use"));
+        assert_eq!(
+            body["messages"][0]["content"][1]["id"],
+            json!("toolu-opencode-1")
+        );
+        assert_eq!(
+            body["messages"][1]["content"][0]["type"],
+            json!("tool_result")
+        );
+        assert_eq!(body["tools"][0]["name"], json!("read_file"));
+        assert_eq!(
+            body["tools"][0]["input_schema"]["properties"]["path"]["type"],
+            json!("string")
+        );
+        assert_eq!(body["tool_choice"], json!({ "type": "auto" }));
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn anthropic_message_conversion_groups_tool_results() {
+        let history = vec![
+            Message::tool_with_correlation(
+                "invoke-a",
+                ToolCallCorrelation::new("invoke-a").with_provider_tool_call_id("toolu-a"),
+                "read_file",
+                "a",
+            ),
+            Message::tool_with_correlation(
+                "invoke-b",
+                ToolCallCorrelation::new("invoke-b").with_provider_tool_call_id("toolu-b"),
+                "read_file",
+                "b",
+            ),
+        ];
+
+        let messages = prepare_anthropic_messages(&history);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], json!("user"));
+        assert_eq!(messages[0]["content"].as_array().expect("blocks").len(), 2);
+        assert_eq!(messages[0]["content"][0]["tool_use_id"], json!("toolu-a"));
+        assert_eq!(messages[0]["content"][1]["tool_use_id"], json!("toolu-b"));
+    }
+
+    #[test]
+    fn derives_messages_endpoint_from_chat_completions_endpoint() {
+        assert_eq!(
+            derive_messages_api_base("https://opencode.ai/zen/go/v1/chat/completions"),
+            "https://opencode.ai/zen/go/v1/messages"
+        );
+        assert_eq!(
+            derive_messages_api_base("https://opencode.ai/zen/go/v1"),
+            "https://opencode.ai/zen/go/v1/messages"
+        );
+    }
+
+    #[test]
     fn parse_tool_calls_preserves_provider_wire_ids() {
         let tool_calls = parse_tool_calls(&json!([
             {
@@ -963,6 +1502,53 @@ mod tests {
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.finish_reason, "tool_calls");
         assert_eq!(response.usage.expect("usage").total_tokens, 15);
+    }
+
+    #[test]
+    fn parse_anthropic_messages_response_extracts_text_tool_calls_reasoning_and_usage() {
+        let response = parse_anthropic_messages_response(json!({
+            "content": [
+                { "type": "thinking", "thinking": "internal reasoning" },
+                { "type": "text", "text": "Use a tool" },
+                {
+                    "type": "tool_use",
+                    "id": "toolu-opencode-2",
+                    "name": "read_file",
+                    "input": { "path": "Cargo.toml" }
+                }
+            ],
+            "stop_reason": "tool_use",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5
+            }
+        }))
+        .expect("anthropic response parses");
+
+        assert_eq!(response.content.as_deref(), Some("Use a tool"));
+        assert_eq!(
+            response.reasoning_content.as_deref(),
+            Some("internal reasoning")
+        );
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(
+            response.tool_calls[0].wire_tool_call_id(),
+            "toolu-opencode-2"
+        );
+        assert_eq!(
+            response.tool_calls[0].function.arguments,
+            r#"{"path":"Cargo.toml"}"#
+        );
+        assert_eq!(response.finish_reason, "tool_calls");
+        assert_eq!(response.usage.expect("usage").total_tokens, 15);
+    }
+
+    #[test]
+    fn unknown_protocol_error_mentions_override_path() {
+        let error = unsupported_protocol_error("opencode-go/hy3-preview");
+
+        assert!(error.to_string().contains("protocol_overrides"));
+        assert!(error.to_string().contains("hy3-preview"));
     }
 
     #[test]

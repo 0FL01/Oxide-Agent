@@ -10,6 +10,8 @@
 //! - `GET /api/v1/me` — current browser user
 //! - `POST /api/v1/auth/logout` — revoke browser auth session
 //! - `POST /api/v1/auth/change-password` — change current user's password
+//! - `GET /api/v1/settings` — read current user's web settings
+//! - `PATCH /api/v1/settings` — update current user's web settings
 //! - `GET /api/v1/sessions` — list current user's web sessions
 //! - `POST /api/v1/sessions` — create current user's web session
 //! - `GET /api/v1/sessions/:session_id` — get current user's web session
@@ -31,7 +33,7 @@ use crate::auth::{
     bootstrap_user, change_password, create_auth_session_for_user, current_user_for_token,
     login_user, logout_session, register_user,
 };
-use crate::persistence::WebUiStore;
+use crate::persistence::{WebUiStore, WebUserRecord};
 use crate::session::web_session_sandbox_scope;
 use axum::{
     body::Body,
@@ -49,18 +51,23 @@ use axum::{
     Json, Router,
 };
 use oxide_agent_core::agent::preprocessor::Preprocessor;
+use oxide_agent_core::llm::DiscoveredLlmModel;
 use oxide_agent_web_contracts::{
     AuthUserResponse, BootstrapRequest, CancelTaskResponse as ApiCancelTaskResponse,
-    ChangePasswordRequest, CreateSessionResponse as ApiCreateSessionResponse,
-    CreateTaskRequest as ApiCreateTaskRequest, CreateTaskResponse as ApiCreateTaskResponse,
+    ChangePasswordRequest, CreateSessionRequest as ApiCreateSessionRequest,
+    CreateSessionResponse as ApiCreateSessionResponse, CreateTaskRequest as ApiCreateTaskRequest,
+    CreateTaskResponse as ApiCreateTaskResponse,
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest,
     CreateTaskVersionResponse as ApiCreateTaskVersionResponse, CurrentUser, CurrentUserResponse,
     ErrorCode, ErrorEnvelope, GetSessionResponse, GetTaskProgressResponse, GetTaskResponse,
-    ListSessionsResponse, ListTasksResponse, LoginRequest, OkResponse, PersistedTaskEvent,
-    PublicConfigResponse, RegisterRequest, ResumeTaskRequest as ApiResumeTaskRequest,
-    ResumeTaskResponse as ApiResumeTaskResponse, TaskAttachment, TaskEventKind, TaskEventsResponse,
-    TaskStatus as ApiTaskStatus, UpdateSessionRequest, UpdateSessionResponse,
-    UploadTaskAttachmentsResponse, UserMessageEventPayload, WebSessionRecord, WebTaskRecord,
+    ListModelRoutesResponse, ListSessionsResponse, ListTasksResponse, LoginRequest,
+    ModelRouteProtocolView, ModelRouteSourceView, ModelRouteView, ModelSelection, OkResponse,
+    PersistedTaskEvent, PublicConfigResponse, RegisterRequest,
+    ResumeTaskRequest as ApiResumeTaskRequest, ResumeTaskResponse as ApiResumeTaskResponse,
+    TaskAttachment, TaskEventKind, TaskEventsResponse, TaskStatus as ApiTaskStatus,
+    UpdateSessionRequest, UpdateSessionResponse, UpdateUserSettingsRequest,
+    UploadTaskAttachmentsResponse, UserMessageEventPayload, UserSettingsResponse, WebSessionRecord,
+    WebTaskRecord,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -70,6 +77,9 @@ use tower_http::trace::TraceLayer;
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+const DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID: &str = "opencode-go/kimi-k2.6";
+const MAX_MODEL_SELECTION_CHARS: usize = 128;
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
@@ -89,6 +99,196 @@ async fn api_public_config(State(state): State<AppState>) -> Json<PublicConfigRe
         ),
         build_version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+async fn api_list_model_routes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ListModelRoutesResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    authenticated_user(&state, &headers).await?;
+    Ok(Json(model_routes_response(&state, false).await))
+}
+
+async fn api_refresh_model_routes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ListModelRoutesResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    authenticated_user_with_csrf(&state, &headers).await?;
+    Ok(Json(model_routes_response(&state, true).await))
+}
+
+async fn api_get_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<UserSettingsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user(&state, &headers).await?;
+    let record = load_current_user_record(&state, user.user_id).await?;
+    Ok(Json(user_settings_response_from_record(&record)))
+}
+
+async fn api_update_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateUserSettingsRequest>,
+) -> Result<Json<UserSettingsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let mut record = load_current_user_record(&state, user.user_id).await?;
+    record.default_model_selection = request
+        .default_model_selection
+        .map(canonical_model_selection)
+        .transpose()?;
+    record.updated_at = chrono::Utc::now();
+    state
+        .web_store
+        .save_user(record.clone())
+        .await
+        .map_err(store_error_response)?;
+    Ok(Json(user_settings_response_from_record(&record)))
+}
+
+async fn model_routes_response(state: &AppState, refresh: bool) -> ListModelRoutesResponse {
+    let llm = state.session_manager.llm_client();
+    let models = if refresh {
+        llm.refresh_opencode_go_models().await
+    } else {
+        llm.opencode_go_models().await
+    };
+    let routes = models
+        .unwrap_or_default()
+        .into_iter()
+        .map(model_route_view_from_discovered)
+        .collect();
+
+    ListModelRoutesResponse {
+        provider_id: "opencode-go".to_string(),
+        provider_available: opencode_go_provider_available(state),
+        default_model_id: default_opencode_go_model_id(state),
+        routes,
+    }
+}
+
+fn model_route_view_from_discovered(model: DiscoveredLlmModel) -> ModelRouteView {
+    let protocol = model_route_protocol_view(&model.protocol);
+    ModelRouteView {
+        provider_id: model.provider_id,
+        model_id: model.model_id,
+        qualified_id: model.qualified_id,
+        display_name: model.display_name,
+        protocol,
+        source: model_route_source_view(&model.source),
+        fetched_at: model.fetched_at,
+        runnable: protocol != ModelRouteProtocolView::Unknown,
+    }
+}
+
+fn model_route_protocol_view(value: &str) -> ModelRouteProtocolView {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "openai_chat_completions" => ModelRouteProtocolView::OpenAiChatCompletions,
+        "anthropic_messages" => ModelRouteProtocolView::AnthropicMessages,
+        _ => ModelRouteProtocolView::Unknown,
+    }
+}
+
+fn model_route_source_view(value: &str) -> ModelRouteSourceView {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "network" => ModelRouteSourceView::Network,
+        "cache" => ModelRouteSourceView::Cache,
+        _ => ModelRouteSourceView::Fallback,
+    }
+}
+
+fn opencode_go_provider_available(state: &AppState) -> bool {
+    let llm = state.session_manager.llm_client();
+    llm.is_provider_available("opencode-go") || llm.is_provider_available("opencode_go")
+}
+
+fn default_opencode_go_model_id(state: &AppState) -> Option<String> {
+    state
+        .session_manager
+        .agent_settings()
+        .get_configured_agent_model_routes()
+        .into_iter()
+        .find(|route| is_opencode_go_provider(&route.provider))
+        .map(|route| qualified_opencode_go_model_id(&route.id))
+}
+
+fn default_session_model_selection(state: &AppState) -> ModelSelection {
+    ModelSelection {
+        qualified_id: default_opencode_go_model_id(state)
+            .unwrap_or_else(|| DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID.to_string()),
+    }
+}
+
+fn user_settings_response_from_record(record: &WebUserRecord) -> UserSettingsResponse {
+    UserSettingsResponse {
+        default_model_selection: record.default_model_selection.clone(),
+    }
+}
+
+async fn load_current_user_record(
+    state: &AppState,
+    user_id: i64,
+) -> Result<WebUserRecord, (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .web_store
+        .load_user(user_id)
+        .await
+        .map_err(store_error_response)?
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::UNAUTHORIZED,
+                ErrorCode::Unauthorized,
+                "Authenticated web user no longer exists.",
+                false,
+            )
+        })
+}
+
+fn canonical_model_selection(
+    selection: ModelSelection,
+) -> Result<ModelSelection, (StatusCode, Json<ErrorEnvelope>)> {
+    let qualified_id = selection.qualified_id.trim();
+    if qualified_id.chars().count() > MAX_MODEL_SELECTION_CHARS {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            format!("Model selection must be at most {MAX_MODEL_SELECTION_CHARS} characters."),
+            false,
+        ));
+    }
+    let model_id = qualified_id
+        .strip_prefix("opencode-go/")
+        .unwrap_or(qualified_id)
+        .trim();
+    if model_id.is_empty() || model_id.contains('/') {
+        return Err(api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Model selection must be an OpenCode Go model id.",
+            false,
+        ));
+    }
+    Ok(ModelSelection {
+        qualified_id: qualified_opencode_go_model_id(model_id),
+    })
+}
+
+fn is_opencode_go_provider(provider: &str) -> bool {
+    provider
+        .trim()
+        .strip_prefix("llm-provider/")
+        .unwrap_or(provider.trim())
+        .replace('_', "-")
+        .eq_ignore_ascii_case("opencode-go")
+}
+
+fn qualified_opencode_go_model_id(model_id: &str) -> String {
+    let model_id = model_id.trim();
+    if model_id.starts_with("opencode-go/") {
+        model_id.to_string()
+    } else {
+        format!("opencode-go/{model_id}")
+    }
 }
 
 fn backend_unavailable_response(message: impl Into<String>) -> (StatusCode, Json<ErrorEnvelope>) {
@@ -556,11 +756,43 @@ async fn api_list_sessions(
     Ok(Json(ListSessionsResponse { sessions }))
 }
 
+#[cfg(test)]
 async fn api_create_session(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<ApiCreateSessionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    create_session_for_request(state, headers, ApiCreateSessionRequest::default()).await
+}
+
+async fn api_create_session_with_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ApiCreateSessionRequest>,
+) -> Result<Json<ApiCreateSessionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    create_session_for_request(state, headers, request).await
+}
+
+async fn create_session_for_request(
+    state: AppState,
+    headers: HeaderMap,
+    request: ApiCreateSessionRequest,
+) -> Result<Json<ApiCreateSessionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
+    let requested_model_selection = request
+        .model_selection
+        .map(canonical_model_selection)
+        .transpose()?;
+    let user_default_model_selection = if requested_model_selection.is_none() {
+        load_current_user_record(&state, user.user_id)
+            .await?
+            .default_model_selection
+            .and_then(|selection| canonical_model_selection(selection).ok())
+    } else {
+        None
+    };
+    let model_selection = requested_model_selection
+        .or(user_default_model_selection)
+        .or_else(|| Some(default_session_model_selection(&state)));
     let session_id = uuid::Uuid::new_v4().to_string();
     let context_key = format!("web-session-{session_id}");
     let now = chrono::Utc::now();
@@ -572,11 +804,12 @@ async fn api_create_session(
         .map_err(|error| backend_unavailable_response(error.to_string()))?;
     state
         .session_manager
-        .create_session_with_id(
+        .create_session_with_model_selection(
             user.user_id,
             session_id.clone(),
             context_key.clone(),
             WEB_SESSION_FLOW_ID.to_string(),
+            model_selection.clone(),
         )
         .await;
 
@@ -587,6 +820,7 @@ async fn api_create_session(
         title: WEB_SESSION_DEFAULT_TITLE.to_string(),
         context_key,
         agent_flow_id: WEB_SESSION_FLOW_ID.to_string(),
+        model_selection,
         created_at: now,
         updated_at: now,
         active_task_id: None,
@@ -1309,11 +1543,15 @@ async fn ensure_runtime_session(state: &AppState, user_id: i64, session: &WebSes
 
     state
         .session_manager
-        .create_session_with_id(
+        .create_session_with_model_selection(
             user_id,
             session.session_id.clone(),
             session.context_key.clone(),
             session.agent_flow_id.clone(),
+            session
+                .model_selection
+                .clone()
+                .or_else(|| Some(default_session_model_selection(state))),
         )
         .await;
 }
@@ -1347,8 +1585,17 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(api_login))
         .route("/api/v1/auth/logout", post(api_logout))
         .route("/api/v1/auth/change-password", post(api_change_password))
+        .route(
+            "/api/v1/settings",
+            get(api_get_settings).patch(api_update_settings),
+        )
+        .route("/api/v1/model-routes", get(api_list_model_routes))
+        .route(
+            "/api/v1/model-routes/refresh",
+            post(api_refresh_model_routes),
+        )
         .route("/api/v1/sessions", get(api_list_sessions))
-        .route("/api/v1/sessions", post(api_create_session))
+        .route("/api/v1/sessions", post(api_create_session_with_request))
         .route("/api/v1/sessions/:session_id", get(api_get_session))
         .route("/api/v1/sessions/:session_id", patch(api_update_session))
         .route("/api/v1/sessions/:session_id", delete(api_delete_session))
@@ -1459,23 +1706,26 @@ mod tests {
     use oxide_agent_core::llm::LlmClient;
     use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
     use oxide_agent_runtime::SessionRegistry;
+    use oxide_agent_web_contracts::{
+        CreateSessionRequest as ApiCreateSessionRequest,
+        CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
+        ModelRouteSourceView, ModelSelection, PersistedTaskEvent, ProgressSnapshot,
+        RegisterRequest, TaskAttachment, TaskEventKind, TaskStatus as ApiTaskStatus,
+        UpdateUserSettingsRequest, WebTaskRecord,
+    };
     #[cfg(feature = "profile-lite")]
     use oxide_agent_web_contracts::{
         CreateTaskRequest as ApiCreateTaskRequest, PendingUserInputView,
         ResumeTaskRequest as ApiResumeTaskRequest, UserInputKind as ApiUserInputKind,
-    };
-    use oxide_agent_web_contracts::{
-        CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
-        PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment, TaskEventKind,
-        TaskStatus as ApiTaskStatus, WebTaskRecord,
     };
     use tokio::sync::mpsc;
 
     use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
 
     use super::{
-        api_cancel_task, api_create_session, api_create_task_version, api_delete_session,
-        api_get_session, api_get_task_events, api_get_task_progress, api_list_sessions,
+        api_cancel_task, api_create_session, api_create_session_with_request,
+        api_create_task_version, api_delete_session, api_get_session, api_get_settings,
+        api_get_task_events, api_get_task_progress, api_list_sessions, api_update_settings,
         auth_cookie_value, csrf_header_value, parse_web_bool, AppState, TaskEventsQuery,
         WebAssetsConfig, WebSandboxControl, WebStartupError, AUTH_COOKIE_NAME,
         WEB_TASK_SCHEMA_VERSION,
@@ -1879,6 +2129,256 @@ mod tests {
             .expect_err("cross-origin mutating request should fail");
         assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
         assert_eq!(error.error.code, ErrorCode::CsrfInvalid);
+    }
+
+    #[tokio::test]
+    async fn api_list_model_routes_returns_opencode_fallback_models() {
+        let _lock = web_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = EnvGuard::capture(&[
+            "OPENCODE_API_KEY",
+            "OPENCODE_ZEN_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "OPENCODE_GO_MODELS_URL",
+            "LLM_HTTP_TIMEOUT_SECS",
+        ]);
+        std::env::set_var("OPENCODE_API_KEY", "test-opencode-key");
+        std::env::remove_var("OPENCODE_ZEN_API_KEY");
+        std::env::remove_var("OPENCODE_GO_API_KEY");
+        std::env::set_var("OPENCODE_GO_MODELS_URL", "http://127.0.0.1:9/models");
+        std::env::set_var("LLM_HTTP_TIMEOUT_SECS", "1");
+
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(response) = super::api_list_model_routes(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, None),
+        )
+        .await
+        .expect("model routes response");
+
+        assert!(response.provider_available);
+        assert_eq!(
+            response.default_model_id.as_deref(),
+            Some("opencode-go/deepseek-v4-flash")
+        );
+        assert!(response
+            .routes
+            .iter()
+            .any(|route| route.qualified_id == "opencode-go/kimi-k2.6"));
+        assert!(response
+            .routes
+            .iter()
+            .all(|route| route.source == ModelRouteSourceView::Fallback));
+
+        let axum::Json(refreshed) = super::api_refresh_model_routes(
+            axum::extract::State(state),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("refresh model routes response");
+        assert!(!refreshed.routes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn api_settings_round_trips_default_model_selection() {
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        let user = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(initial) = api_get_settings(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, None),
+        )
+        .await
+        .expect("settings response");
+        assert_eq!(initial.default_model_selection, None);
+
+        let selected = ModelSelection {
+            qualified_id: "kimi-k2.6".to_string(),
+        };
+        let axum::Json(updated) = api_update_settings(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(UpdateUserSettingsRequest {
+                default_model_selection: Some(selected),
+            }),
+        )
+        .await
+        .expect("update settings");
+        assert_eq!(
+            updated.default_model_selection,
+            Some(ModelSelection {
+                qualified_id: "opencode-go/kimi-k2.6".to_string(),
+            })
+        );
+        let stored = state
+            .web_store
+            .load_user(user.user_id)
+            .await
+            .expect("load user")
+            .expect("user exists");
+        assert_eq!(
+            stored.default_model_selection,
+            updated.default_model_selection
+        );
+
+        let (status, axum::Json(error)) = api_update_settings(
+            axum::extract::State(state),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(UpdateUserSettingsRequest {
+                default_model_selection: Some(ModelSelection {
+                    qualified_id: "other-provider/model".to_string(),
+                }),
+            }),
+        )
+        .await
+        .expect_err("non-opencode model selection should fail");
+        assert_eq!(status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(error.error.code, ErrorCode::ValidationError);
+    }
+
+    #[tokio::test]
+    async fn api_create_session_persists_request_user_default_and_fallback_model_selection() {
+        let state = test_app_state();
+        let now = chrono::Utc::now();
+        register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (user, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(fallback_created) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create fallback session");
+        let fallback_record = state
+            .web_store
+            .load_session(user.user_id, &fallback_created.session.session_id)
+            .await
+            .expect("load fallback session")
+            .expect("fallback session exists");
+        assert_eq!(
+            fallback_record.model_selection,
+            Some(ModelSelection {
+                qualified_id: "opencode-go/deepseek-v4-flash".to_string(),
+            })
+        );
+
+        let axum::Json(_) = api_update_settings(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(UpdateUserSettingsRequest {
+                default_model_selection: Some(ModelSelection {
+                    qualified_id: "opencode-go/kimi-k2.6".to_string(),
+                }),
+            }),
+        )
+        .await
+        .expect("save user default");
+        let axum::Json(default_created) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create default session");
+        let default_record = state
+            .web_store
+            .load_session(user.user_id, &default_created.session.session_id)
+            .await
+            .expect("load default session")
+            .expect("default session exists");
+        assert_eq!(
+            default_record.model_selection,
+            Some(ModelSelection {
+                qualified_id: "opencode-go/kimi-k2.6".to_string(),
+            })
+        );
+
+        let axum::Json(request_created) = api_create_session_with_request(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(ApiCreateSessionRequest {
+                model_selection: Some(ModelSelection {
+                    qualified_id: "glm-5".to_string(),
+                }),
+            }),
+        )
+        .await
+        .expect("create request-selected session");
+        let request_record = state
+            .web_store
+            .load_session(user.user_id, &request_created.session.session_id)
+            .await
+            .expect("load request session")
+            .expect("request session exists");
+        assert_eq!(
+            request_record.model_selection,
+            Some(ModelSelection {
+                qualified_id: "opencode-go/glm-5".to_string(),
+            })
+        );
     }
 
     #[test]

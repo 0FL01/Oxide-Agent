@@ -477,6 +477,7 @@ fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
     SessionSummary {
         session_id: session.session_id,
         title: session.title,
+        model_selection: session.model_selection,
         last_preview: session.last_preview,
         active_task_id: session.active_task_id,
         last_task_status: session.last_task_status,

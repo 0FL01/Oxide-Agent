@@ -306,6 +306,7 @@ async fn create_user(
         password_hash,
         role,
         status: WebUserStatus::Active,
+        default_model_selection: None,
         created_at: now,
         updated_at: now,
         last_login_at: None,
