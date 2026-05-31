@@ -1570,6 +1570,7 @@ fn AgentProfileSelect(
             {include_default.then(|| view! {
                 <option value=PROFILE_VALUE_DEFAULT>"Default profile"</option>
             })}
+            {move || selected_profile_missing_option(profiles, selected_profile)}
             <option value=PROFILE_VALUE_NONE>"No profile"</option>
             <For
                 each=move || profiles.get()
@@ -1581,6 +1582,28 @@ fn AgentProfileSelect(
             />
         </select>
     }
+}
+
+fn selected_profile_missing_option(
+    profiles: ReadSignal<Vec<AgentProfileView>>,
+    selected_profile: ReadSignal<String>,
+) -> Option<impl IntoView> {
+    let selected = selected_profile.get();
+    let label = missing_profile_option_label(&profiles.get(), &selected)?;
+    Some(view! {
+        <option value=selected.clone()>{label}</option>
+    })
+}
+
+fn missing_profile_option_label(profiles: &[AgentProfileView], selected: &str) -> Option<String> {
+    if selected.is_empty()
+        || selected == PROFILE_VALUE_DEFAULT
+        || selected == PROFILE_VALUE_NONE
+        || profiles.iter().any(|profile| profile.agent_id == selected)
+    {
+        return None;
+    }
+    Some(format!("Current profile · {selected}"))
 }
 
 fn agent_profile_selection_from_value(value: &str) -> AgentProfileSelection {
@@ -2958,7 +2981,10 @@ fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{linkify_delivered_files_in_markdown, DeliveredFileLink};
+    use super::{
+        linkify_delivered_files_in_markdown, missing_profile_option_label, DeliveredFileLink,
+        PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE,
+    };
 
     fn delivered_file(file_name: &str, download_url: &str) -> DeliveredFileLink {
         DeliveredFileLink {
@@ -2997,5 +3023,18 @@ mod tests {
 
         assert!(rendered.contains("Before [`duckduckgo.zip`](/api/v1/files/duckduckgo.zip)"));
         assert!(rendered.contains("```text\n`duckduckgo.zip`\n```"));
+    }
+
+    #[test]
+    fn missing_profile_option_keeps_persisted_selection_visible_before_profiles_load() {
+        assert_eq!(
+            missing_profile_option_label(&[], "sre-agent"),
+            Some("Current profile · sre-agent".to_string())
+        );
+        assert_eq!(missing_profile_option_label(&[], PROFILE_VALUE_NONE), None);
+        assert_eq!(
+            missing_profile_option_label(&[], PROFILE_VALUE_DEFAULT),
+            None
+        );
     }
 }
