@@ -175,6 +175,33 @@ const OPENCODE_GO_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
     .with_default("1800"),
 ];
 #[allow(dead_code)]
+const OPENCODE_ZEN_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string(
+        "api_key",
+        "OpenCode Zen API key. Also accepts OPENCODE_API_KEY and OPENCODE_GO_API_KEY.",
+    )
+    .with_env("OPENCODE_ZEN_API_KEY")
+    .secret(),
+    ModuleConfigProperty::string("api_base", "OpenCode Zen Chat Completions endpoint.")
+        .with_env("OPENCODE_ZEN_API_BASE")
+        .with_default("https://opencode.ai/zen/v1/chat/completions"),
+    ModuleConfigProperty::string(
+        "messages_api_base",
+        "OpenCode Zen Anthropic Messages endpoint.",
+    )
+    .with_env("OPENCODE_ZEN_MESSAGES_API_BASE")
+    .with_default("https://opencode.ai/zen/v1/messages"),
+    ModuleConfigProperty::string("models_url", "OpenCode Zen free model discovery endpoint.")
+        .with_env("OPENCODE_ZEN_MODELS_URL")
+        .with_default("https://opencode.ai/zen/v1/models"),
+    ModuleConfigProperty::string(
+        "model_cache_ttl_secs",
+        "OpenCode Zen model discovery cache TTL.",
+    )
+    .with_env("OPENCODE_ZEN_MODEL_CACHE_TTL_SECS")
+    .with_default("1800"),
+];
+#[allow(dead_code)]
 const OPENROUTER_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
     &[
         ModuleConfigProperty::string("api_key", "OpenRouter API key.")
@@ -327,6 +354,14 @@ fn push_llm_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         LlmProvider,
         ["llm-provider/opencode-go"],
         OPENCODE_GO_CONFIG_PROPERTIES
+    );
+    push_module_with_config!(
+        modules,
+        "llm-opencode-go",
+        "llm-provider/opencode-zen",
+        LlmProvider,
+        ["llm-provider/opencode-zen"],
+        OPENCODE_ZEN_CONFIG_PROPERTIES
     );
     push_module_with_config!(
         modules,

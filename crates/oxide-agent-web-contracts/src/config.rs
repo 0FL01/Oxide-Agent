@@ -74,7 +74,7 @@ mod tests {
     fn model_selection_uses_qualified_id_contract() {
         let request = UpdateUserSettingsRequest {
             default_model_selection: Some(ModelSelection {
-                qualified_id: "opencode-go/kimi-k2.6".to_string(),
+                qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
             }),
         };
 
@@ -82,7 +82,7 @@ mod tests {
 
         assert_eq!(
             value["default_model_selection"]["qualified_id"],
-            "opencode-go/kimi-k2.6"
+            "opencode-zen/deepseek-v4-flash-free"
         );
     }
 }

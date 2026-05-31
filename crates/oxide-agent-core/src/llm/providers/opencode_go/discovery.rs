@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use lazy_regex::lazy_regex;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -15,30 +16,20 @@ pub const DEFAULT_MODEL_DISCOVERY_TTL_SECS: u64 = 30 * 60;
 pub const MIN_MODEL_DISCOVERY_TTL_SECS: u64 = 10 * 60;
 pub const MAX_MODEL_DISCOVERY_TTL_SECS: u64 = 60 * 60;
 
-const FALLBACK_MODEL_IDS: &[&str] = &[
-    "minimax-m2.7",
-    "minimax-m2.5",
-    "kimi-k2.6",
-    "kimi-k2.5",
-    "glm-5.1",
-    "glm-5",
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-    "qwen3.7-max",
-    "qwen3.6-plus",
-    "qwen3.5-plus",
-    "mimo-v2-pro",
-    "mimo-v2-omni",
-    "mimo-v2.5-pro",
-    "mimo-v2.5",
-    "hy3-preview",
-];
+pub const OPENCODE_GO_PROVIDER_ID: &str = "opencode-go";
+pub const OPENCODE_ZEN_PROVIDER_ID: &str = "opencode-zen";
+
+static FREE_MODEL_RE: lazy_regex::Lazy<regex::Regex> = lazy_regex!(r"(?i)(^|[-_\s])free($|[-_\s])");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RawOpenCodeGoModel {
     pub id: String,
     pub object: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, alias = "displayName")]
+    pub display_name: Option<String>,
     #[serde(default)]
     pub created: Option<u64>,
     #[serde(default)]
@@ -101,9 +92,18 @@ pub struct DiscoveredOpenCodeGoModel {
 
 #[derive(Debug, Clone)]
 pub struct OpenCodeGoDiscoveryConfig {
+    pub provider_id: String,
+    pub model_prefix: String,
     pub models_url: String,
     pub ttl: Duration,
     pub protocol_overrides: BTreeMap<String, ModelProtocol>,
+    filter: ModelDiscoveryFilter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelDiscoveryFilter {
+    All,
+    FreeOnly,
 }
 
 impl OpenCodeGoDiscoveryConfig {
@@ -113,10 +113,47 @@ impl OpenCodeGoDiscoveryConfig {
         ttl: Duration,
         protocol_overrides: BTreeMap<String, ModelProtocol>,
     ) -> Self {
+        Self::new_for_provider(
+            OPENCODE_GO_PROVIDER_ID,
+            OPENCODE_GO_PROVIDER_ID,
+            models_url,
+            ttl,
+            protocol_overrides,
+            ModelDiscoveryFilter::All,
+        )
+    }
+
+    #[must_use]
+    pub fn new_zen(
+        models_url: impl Into<String>,
+        ttl: Duration,
+        protocol_overrides: BTreeMap<String, ModelProtocol>,
+    ) -> Self {
+        Self::new_for_provider(
+            OPENCODE_ZEN_PROVIDER_ID,
+            OPENCODE_ZEN_PROVIDER_ID,
+            models_url,
+            ttl,
+            protocol_overrides,
+            ModelDiscoveryFilter::FreeOnly,
+        )
+    }
+
+    fn new_for_provider(
+        provider_id: impl Into<String>,
+        model_prefix: impl Into<String>,
+        models_url: impl Into<String>,
+        ttl: Duration,
+        protocol_overrides: BTreeMap<String, ModelProtocol>,
+        filter: ModelDiscoveryFilter,
+    ) -> Self {
         Self {
+            provider_id: provider_id.into(),
+            model_prefix: model_prefix.into(),
             models_url: models_url.into(),
             ttl,
             protocol_overrides,
+            filter,
         }
     }
 
@@ -153,15 +190,15 @@ struct ModelCatalogState {
 
 #[derive(Debug, Error)]
 pub enum OpenCodeGoDiscoveryError {
-    #[error("OpenCode Go model discovery request failed: {0}")]
+    #[error("OpenCode model discovery request failed: {0}")]
     Network(String),
-    #[error("OpenCode Go model discovery returned HTTP {0}")]
+    #[error("OpenCode model discovery returned HTTP {0}")]
     HttpStatus(u16),
-    #[error("OpenCode Go model discovery response parse failed: {0}")]
+    #[error("OpenCode model discovery response parse failed: {0}")]
     Parse(String),
-    #[error("unsupported OpenCode Go model protocol override: {0}")]
+    #[error("unsupported OpenCode model protocol override: {0}")]
     InvalidProtocol(String),
-    #[error("OpenCode Go model discovery returned an empty model list")]
+    #[error("OpenCode model discovery returned an empty model list")]
     EmptyModelList,
 }
 
@@ -216,20 +253,25 @@ impl OpenCodeGoModelCatalog {
         match fetcher().await.and_then(validate_non_empty_models) {
             Ok(raw_models) => {
                 let fetched_at = Utc::now();
-                let models = normalize_models(
+                let models = normalize_models_for_config(
                     raw_models,
                     DiscoverySource::Network,
                     fetched_at,
-                    &self.config.protocol_overrides,
+                    &self.config,
                 );
+                if models.is_empty() {
+                    let error = OpenCodeGoDiscoveryError::EmptyModelList;
+                    warn!(%error, "OpenCode model discovery failed; using cached models if available");
+                    return self.cached_or_empty_models().await;
+                }
                 let mut state = self.state.write().await;
                 state.last_good = models.clone();
                 state.fetched_at = Some(fetched_at);
                 models
             }
             Err(error) => {
-                warn!(%error, "OpenCode Go model discovery failed; using cached or fallback models");
-                self.cached_or_fallback_models().await
+                warn!(%error, "OpenCode model discovery failed; using cached models if available");
+                self.cached_or_empty_models().await
             }
         }
     }
@@ -265,12 +307,12 @@ impl OpenCodeGoModelCatalog {
         (age < self.config.ttl).then(|| with_source(&state.last_good, DiscoverySource::Cache))
     }
 
-    async fn cached_or_fallback_models(&self) -> Vec<DiscoveredOpenCodeGoModel> {
+    async fn cached_or_empty_models(&self) -> Vec<DiscoveredOpenCodeGoModel> {
         let state = self.state.read().await;
         if !state.last_good.is_empty() {
             return with_source(&state.last_good, DiscoverySource::Cache);
         }
-        fallback_models(&self.config.protocol_overrides)
+        Vec::new()
     }
 }
 
@@ -309,29 +351,27 @@ pub fn normalize_models(
     fetched_at: DateTime<Utc>,
     protocol_overrides: &BTreeMap<String, ModelProtocol>,
 ) -> Vec<DiscoveredOpenCodeGoModel> {
-    raw_models
-        .into_iter()
-        .filter_map(|model| {
-            let model_id = raw_model_id(&model.id);
-            (!model_id.is_empty())
-                .then(|| discovered_model(model_id, source, fetched_at, protocol_overrides))
-        })
-        .collect()
+    let config = OpenCodeGoDiscoveryConfig::new(
+        DEFAULT_MODELS_URL,
+        Duration::from_secs(DEFAULT_MODEL_DISCOVERY_TTL_SECS),
+        protocol_overrides.clone(),
+    );
+    normalize_models_for_config(raw_models, source, fetched_at, &config)
 }
 
-pub fn fallback_models(
-    protocol_overrides: &BTreeMap<String, ModelProtocol>,
+pub fn normalize_models_for_config(
+    raw_models: Vec<RawOpenCodeGoModel>,
+    source: DiscoverySource,
+    fetched_at: DateTime<Utc>,
+    config: &OpenCodeGoDiscoveryConfig,
 ) -> Vec<DiscoveredOpenCodeGoModel> {
-    let fetched_at = Utc::now();
-    FALLBACK_MODEL_IDS
-        .iter()
-        .map(|id| {
-            discovered_model(
-                (*id).to_string(),
-                DiscoverySource::Fallback,
-                fetched_at,
-                protocol_overrides,
-            )
+    raw_models
+        .into_iter()
+        .filter(|model| model_matches_filter(model, config.filter))
+        .filter_map(|model| {
+            let model_id = raw_model_id_for_prefix(&model.id, &config.model_prefix);
+            (!model_id.is_empty())
+                .then(|| discovered_model_for_config(model_id, source, fetched_at, config))
         })
         .collect()
 }
@@ -340,10 +380,18 @@ pub fn infer_protocol(
     model_id: &str,
     protocol_overrides: &BTreeMap<String, ModelProtocol>,
 ) -> ModelProtocol {
-    let model_id = raw_model_id(model_id);
+    infer_protocol_for_prefix(model_id, OPENCODE_GO_PROVIDER_ID, protocol_overrides)
+}
+
+pub fn infer_protocol_for_prefix(
+    model_id: &str,
+    model_prefix: &str,
+    protocol_overrides: &BTreeMap<String, ModelProtocol>,
+) -> ModelProtocol {
+    let model_id = raw_model_id_for_prefix(model_id, model_prefix);
     if let Some(protocol) = protocol_overrides
         .get(&model_id)
-        .or_else(|| protocol_overrides.get(&qualified_model_id(&model_id)))
+        .or_else(|| protocol_overrides.get(&qualified_model_id_for_prefix(&model_id, model_prefix)))
     {
         return *protocol;
     }
@@ -353,6 +401,7 @@ pub fn infer_protocol(
         || lower.starts_with("kimi-")
         || lower.starts_with("deepseek-")
         || lower.starts_with("mimo-v2.5")
+        || lower.starts_with("nemotron-")
     {
         return ModelProtocol::OpenAiChatCompletions;
     }
@@ -364,34 +413,69 @@ pub fn infer_protocol(
 
 #[must_use]
 pub fn raw_model_id(model_id: &str) -> String {
+    let without_go = raw_model_id_for_prefix(model_id, OPENCODE_GO_PROVIDER_ID);
+    raw_model_id_for_prefix(&without_go, OPENCODE_ZEN_PROVIDER_ID)
+}
+
+#[must_use]
+pub fn raw_model_id_for_prefix(model_id: &str, model_prefix: &str) -> String {
     let trimmed = model_id.trim();
-    trimmed
-        .strip_prefix("opencode-go/")
-        .unwrap_or(trimmed)
-        .to_string()
+    let prefix = format!("{}/", model_prefix.trim().trim_end_matches('/'));
+    trimmed.strip_prefix(&prefix).unwrap_or(trimmed).to_string()
 }
 
 #[must_use]
 pub fn qualified_model_id(model_id: &str) -> String {
-    format!("opencode-go/{}", raw_model_id(model_id))
+    qualified_model_id_for_prefix(model_id, OPENCODE_GO_PROVIDER_ID)
 }
 
-fn discovered_model(
+#[must_use]
+pub fn qualified_model_id_for_prefix(model_id: &str, model_prefix: &str) -> String {
+    format!(
+        "{}/{}",
+        model_prefix.trim().trim_end_matches('/'),
+        raw_model_id_for_prefix(model_id, model_prefix)
+    )
+}
+
+fn discovered_model_for_config(
     model_id: String,
     source: DiscoverySource,
     fetched_at: DateTime<Utc>,
-    protocol_overrides: &BTreeMap<String, ModelProtocol>,
+    config: &OpenCodeGoDiscoveryConfig,
 ) -> DiscoveredOpenCodeGoModel {
-    let qualified_id = qualified_model_id(&model_id);
+    let qualified_id = qualified_model_id_for_prefix(&model_id, &config.model_prefix);
     DiscoveredOpenCodeGoModel {
-        provider_id: "opencode-go".to_string(),
+        provider_id: config.provider_id.clone(),
         model_id: model_id.clone(),
         qualified_id: qualified_id.clone(),
         display_name: qualified_id,
-        protocol: infer_protocol(&model_id, protocol_overrides),
+        protocol: infer_protocol_for_prefix(
+            &model_id,
+            &config.model_prefix,
+            &config.protocol_overrides,
+        ),
         source,
         fetched_at,
     }
+}
+
+fn model_matches_filter(model: &RawOpenCodeGoModel, filter: ModelDiscoveryFilter) -> bool {
+    match filter {
+        ModelDiscoveryFilter::All => true,
+        ModelDiscoveryFilter::FreeOnly => is_free_model(model),
+    }
+}
+
+fn is_free_model(model: &RawOpenCodeGoModel) -> bool {
+    [
+        Some(model.id.as_str()),
+        model.name.as_deref(),
+        model.display_name.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| FREE_MODEL_RE.is_match(value))
 }
 
 fn with_source(
@@ -437,6 +521,8 @@ mod tests {
             vec![RawOpenCodeGoModel {
                 id: "kimi-k2.6".to_string(),
                 object: "model".to_string(),
+                name: None,
+                display_name: None,
                 created: Some(1780207178),
                 owned_by: Some("opencode".to_string()),
             }],
@@ -491,6 +577,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn zen_discovery_keeps_only_free_models() {
+        let config = OpenCodeGoDiscoveryConfig::new_zen(
+            "https://opencode.ai/zen/v1/models",
+            Duration::from_secs(60),
+            BTreeMap::new(),
+        );
+
+        let models = normalize_models_for_config(
+            vec![
+                RawOpenCodeGoModel {
+                    id: "deepseek-v4-flash-free".to_string(),
+                    object: "model".to_string(),
+                    name: Some("DeepSeek V4 Flash FREE".to_string()),
+                    display_name: None,
+                    created: None,
+                    owned_by: None,
+                },
+                RawOpenCodeGoModel {
+                    id: "big-pickle".to_string(),
+                    object: "model".to_string(),
+                    name: Some("Big Pickle".to_string()),
+                    display_name: None,
+                    created: None,
+                    owned_by: None,
+                },
+                RawOpenCodeGoModel {
+                    id: "gpt-5.4".to_string(),
+                    object: "model".to_string(),
+                    name: Some("GPT 5.4".to_string()),
+                    display_name: None,
+                    created: None,
+                    owned_by: None,
+                },
+            ],
+            DiscoverySource::Network,
+            Utc::now(),
+            &config,
+        );
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].provider_id, "opencode-zen");
+        assert_eq!(
+            models[0].qualified_id,
+            "opencode-zen/deepseek-v4-flash-free"
+        );
+        assert_eq!(models[0].protocol, ModelProtocol::OpenAiChatCompletions);
+    }
+
     #[tokio::test]
     async fn refresh_uses_last_known_good_cache_after_error() {
         let catalog = OpenCodeGoModelCatalog::new(
@@ -504,6 +639,8 @@ mod tests {
                 Ok(vec![RawOpenCodeGoModel {
                     id: "kimi-k2.6".to_string(),
                     object: "model".to_string(),
+                    name: None,
+                    display_name: None,
                     created: None,
                     owned_by: None,
                 }])
@@ -522,7 +659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_uses_embedded_fallback_when_cache_is_empty() {
+    async fn refresh_returns_empty_when_cache_is_empty_after_error() {
         let catalog = OpenCodeGoModelCatalog::new(
             HttpClient::new(),
             "test-key".to_string(),
@@ -535,11 +672,6 @@ mod tests {
             })
             .await;
 
-        assert!(models
-            .iter()
-            .any(|model| model.qualified_id == "opencode-go/kimi-k2.6"));
-        assert!(models
-            .iter()
-            .all(|model| model.source == DiscoverySource::Fallback));
+        assert!(models.is_empty());
     }
 }

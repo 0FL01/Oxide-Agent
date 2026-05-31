@@ -401,7 +401,7 @@ fn ModelSettingsPanel() -> impl IntoView {
     let save_model_settings = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         if !selected_route_is_runnable(routes, selected_model) {
-            set_error.set(Some("Select a runnable OpenCode Go model.".to_string()));
+            set_error.set(Some("Select a runnable OpenCode model.".to_string()));
             return;
         }
         set_saving.set(true);
@@ -466,7 +466,7 @@ fn ModelSettingsPanel() -> impl IntoView {
     view! {
         <form class="panel model-settings-form" on:submit=save_model_settings>
             <h2>"Model"</h2>
-            <p class="muted">"Provider: OpenCode Go"</p>
+            <p class="muted">"Providers: OpenCode Go / Zen Free"</p>
             <p class="muted model-settings-note">
                 "Saved web default has priority for new web sessions; .env route remains a fallback."
             </p>
@@ -484,9 +484,8 @@ fn ModelSettingsPanel() -> impl IntoView {
                         key=|route| route.qualified_id.clone()
                         children=move |route| {
                             let value = route.qualified_id.clone();
-                            let label = model_route_option_label(&route);
                             view! {
-                                <option value=value disabled=!route.runnable>{label}</option>
+                                <option value=value.clone() disabled=!route.runnable>{value.clone()}</option>
                             }
                         }
                     />
@@ -575,20 +574,6 @@ fn selected_unavailable_option(
     Some(view! {
         <option value=selected.clone() disabled=true>{format!("{selected} · unavailable")}</option>
     })
-}
-
-fn model_route_option_label(route: &ModelRouteView) -> String {
-    let status = if route.runnable {
-        "runnable"
-    } else {
-        "unknown"
-    };
-    format!(
-        "{} · {} · {}",
-        route.qualified_id,
-        model_route_source_label(route.source),
-        status
-    )
 }
 
 const fn model_route_source_label(source: ModelRouteSourceView) -> &'static str {

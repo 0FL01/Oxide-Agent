@@ -9,34 +9,69 @@ use std::str::FromStr;
 
 /// Capability module for OpenCode Go routes.
 pub(crate) struct OpenCodeGoProviderModule;
+/// Capability module for free OpenCode Zen routes.
+pub(crate) struct OpenCodeZenProviderModule;
 
 const API_KEY_CONFIG_KEY: &str = "api_key";
-const API_KEY_ENVS: &[&str] = &[
+const GO_API_KEY_ENVS: &[&str] = &[
     "OPENCODE_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
 ];
+const ZEN_API_KEY_ENVS: &[&str] = &[
+    "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_API_KEY",
+    "OPENCODE_GO_API_KEY",
+];
 const API_BASE_CONFIG_KEY: &str = "api_base";
-const API_BASE_ENV: &str = "OPENCODE_GO_API_BASE";
-const DEFAULT_API_BASE: &str = "https://opencode.ai/zen/go/v1/chat/completions";
+const GO_API_BASE_ENV: &str = "OPENCODE_GO_API_BASE";
+const DEFAULT_GO_API_BASE: &str = "https://opencode.ai/zen/go/v1/chat/completions";
+const ZEN_API_BASE_ENV: &str = "OPENCODE_ZEN_API_BASE";
+const DEFAULT_ZEN_API_BASE: &str = "https://opencode.ai/zen/v1/chat/completions";
 const MESSAGES_API_BASE_CONFIG_KEY: &str = "messages_api_base";
-const MESSAGES_API_BASE_ENV: &str = "OPENCODE_GO_MESSAGES_API_BASE";
-const DEFAULT_MESSAGES_API_BASE: &str = "https://opencode.ai/zen/go/v1/messages";
+const GO_MESSAGES_API_BASE_ENV: &str = "OPENCODE_GO_MESSAGES_API_BASE";
+const DEFAULT_GO_MESSAGES_API_BASE: &str = "https://opencode.ai/zen/go/v1/messages";
+const ZEN_MESSAGES_API_BASE_ENV: &str = "OPENCODE_ZEN_MESSAGES_API_BASE";
+const DEFAULT_ZEN_MESSAGES_API_BASE: &str = "https://opencode.ai/zen/v1/messages";
 const MODELS_URL_CONFIG_KEY: &str = "models_url";
-const MODELS_URL_ENV: &str = "OPENCODE_GO_MODELS_URL";
+const GO_MODELS_URL_ENV: &str = "OPENCODE_GO_MODELS_URL";
+const ZEN_MODELS_URL_ENV: &str = "OPENCODE_ZEN_MODELS_URL";
 const MODEL_CACHE_TTL_SECS_CONFIG_KEY: &str = "model_cache_ttl_secs";
-const MODEL_CACHE_TTL_SECS_ENV: &str = "OPENCODE_GO_MODEL_CACHE_TTL_SECS";
+const GO_MODEL_CACHE_TTL_SECS_ENV: &str = "OPENCODE_GO_MODEL_CACHE_TTL_SECS";
+const ZEN_MODEL_CACHE_TTL_SECS_ENV: &str = "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS";
 const PROTOCOL_OVERRIDES_CONFIG_KEY: &str = "protocol_overrides";
 
 pub(crate) fn build_model_catalog(
     settings: &AgentSettings,
     http_client: reqwest::Client,
 ) -> Option<Arc<super::discovery::OpenCodeGoModelCatalog>> {
-    let api_key = configured_api_key(settings, OpenCodeGoProviderModule.provider_id())?;
+    let api_key = configured_api_key(
+        settings,
+        OpenCodeGoProviderModule.provider_id(),
+        GO_API_KEY_ENVS,
+    )?;
     let catalog = Arc::new(super::discovery::OpenCodeGoModelCatalog::new(
         http_client,
         api_key,
-        discovery_config(settings, OpenCodeGoProviderModule.provider_id()),
+        go_discovery_config(settings, OpenCodeGoProviderModule.provider_id()),
+    ));
+    Arc::clone(&catalog).spawn_background_refresh();
+    Some(catalog)
+}
+
+pub(crate) fn build_zen_model_catalog(
+    settings: &AgentSettings,
+    http_client: reqwest::Client,
+) -> Option<Arc<super::discovery::OpenCodeGoModelCatalog>> {
+    let api_key = configured_api_key(
+        settings,
+        OpenCodeZenProviderModule.provider_id(),
+        ZEN_API_KEY_ENVS,
+    )?;
+    let catalog = Arc::new(super::discovery::OpenCodeGoModelCatalog::new(
+        http_client,
+        api_key,
+        zen_discovery_config(settings, OpenCodeZenProviderModule.provider_id()),
     ));
     Arc::clone(&catalog).spawn_background_refresh();
     Some(catalog)
@@ -56,32 +91,32 @@ impl LlmProviderModule for OpenCodeGoProviderModule {
         settings: &AgentSettings,
         ctx: &LlmProviderBuildContext,
     ) -> Option<Arc<dyn LlmProvider>> {
-        configured_api_key(settings, self.provider_id()).map(|api_key| {
+        configured_api_key(settings, self.provider_id(), GO_API_KEY_ENVS).map(|api_key| {
             let api_base = settings.module_string_value_or_env_or_default(
                 self.provider_id(),
                 API_BASE_CONFIG_KEY,
-                API_BASE_ENV,
-                DEFAULT_API_BASE,
+                GO_API_BASE_ENV,
+                DEFAULT_GO_API_BASE,
             );
             let api_base_messages = settings.module_string_value_or_env_or_default(
                 self.provider_id(),
                 MESSAGES_API_BASE_CONFIG_KEY,
-                MESSAGES_API_BASE_ENV,
-                DEFAULT_MESSAGES_API_BASE,
+                GO_MESSAGES_API_BASE_ENV,
+                DEFAULT_GO_MESSAGES_API_BASE,
             );
             Arc::new(super::OpenCodeGoProvider::new_with_client_and_discovery(
                 api_key,
                 api_base,
                 api_base_messages,
                 ctx.http_client.clone(),
-                discovery_config(settings, self.provider_id()),
+                go_discovery_config(settings, self.provider_id()),
             )) as Arc<dyn LlmProvider>
         })
     }
 
     fn missing_route_config_message(&self, settings: &AgentSettings) -> Option<&'static str> {
         settings
-            .module_string_value_or_envs(self.provider_id(), API_KEY_CONFIG_KEY, API_KEY_ENVS)
+            .module_string_value_or_envs(self.provider_id(), API_KEY_CONFIG_KEY, GO_API_KEY_ENVS)
             .is_none()
             .then_some(
                 "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes",
@@ -98,11 +133,72 @@ impl LlmProviderModule for OpenCodeGoProviderModule {
     }
 }
 
-fn configured_api_key(settings: &AgentSettings, module_id: &str) -> Option<String> {
-    settings.module_string_value_or_envs(module_id, API_KEY_CONFIG_KEY, API_KEY_ENVS)
+impl LlmProviderModule for OpenCodeZenProviderModule {
+    fn provider_id(&self) -> &'static str {
+        "llm-provider/opencode-zen"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["opencode-zen", "opencode_zen"]
+    }
+
+    fn build_provider(
+        &self,
+        settings: &AgentSettings,
+        ctx: &LlmProviderBuildContext,
+    ) -> Option<Arc<dyn LlmProvider>> {
+        configured_api_key(settings, self.provider_id(), ZEN_API_KEY_ENVS).map(|api_key| {
+            let api_base = settings.module_string_value_or_env_or_default(
+                self.provider_id(),
+                API_BASE_CONFIG_KEY,
+                ZEN_API_BASE_ENV,
+                DEFAULT_ZEN_API_BASE,
+            );
+            let api_base_messages = settings.module_string_value_or_env_or_default(
+                self.provider_id(),
+                MESSAGES_API_BASE_CONFIG_KEY,
+                ZEN_MESSAGES_API_BASE_ENV,
+                DEFAULT_ZEN_MESSAGES_API_BASE,
+            );
+            Arc::new(
+                super::OpenCodeGoProvider::new_zen_with_client_and_discovery(
+                    api_key,
+                    api_base,
+                    api_base_messages,
+                    ctx.http_client.clone(),
+                    zen_discovery_config(settings, self.provider_id()),
+                ),
+            ) as Arc<dyn LlmProvider>
+        })
+    }
+
+    fn missing_route_config_message(&self, settings: &AgentSettings) -> Option<&'static str> {
+        settings
+            .module_string_value_or_envs(self.provider_id(), API_KEY_CONFIG_KEY, ZEN_API_KEY_ENVS)
+            .is_none()
+            .then_some(
+                "Critical: OPENCODE_ZEN_API_KEY, OPENCODE_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Zen routes",
+            )
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
+    }
+
+    fn capabilities_for_model(&self, _model_info: &ModelInfo) -> ProviderCapabilities {
+        self.capabilities()
+    }
 }
 
-fn discovery_config(
+fn configured_api_key(
+    settings: &AgentSettings,
+    module_id: &str,
+    env_names: &[&str],
+) -> Option<String> {
+    settings.module_string_value_or_envs(module_id, API_KEY_CONFIG_KEY, env_names)
+}
+
+fn go_discovery_config(
     settings: &AgentSettings,
     module_id: &str,
 ) -> super::discovery::OpenCodeGoDiscoveryConfig {
@@ -111,14 +207,37 @@ fn discovery_config(
             settings,
             module_id,
             MODELS_URL_CONFIG_KEY,
-            MODELS_URL_ENV,
+            GO_MODELS_URL_ENV,
             super::discovery::DEFAULT_MODELS_URL,
         ),
         std::time::Duration::from_secs(module_u64_value_or_env_or_default(
             settings,
             module_id,
             MODEL_CACHE_TTL_SECS_CONFIG_KEY,
-            MODEL_CACHE_TTL_SECS_ENV,
+            GO_MODEL_CACHE_TTL_SECS_ENV,
+            super::discovery::DEFAULT_MODEL_DISCOVERY_TTL_SECS,
+        )),
+        protocol_overrides(settings, module_id),
+    )
+}
+
+fn zen_discovery_config(
+    settings: &AgentSettings,
+    module_id: &str,
+) -> super::discovery::OpenCodeGoDiscoveryConfig {
+    super::discovery::OpenCodeGoDiscoveryConfig::new_zen(
+        module_string_value_or_env_or_default(
+            settings,
+            module_id,
+            MODELS_URL_CONFIG_KEY,
+            ZEN_MODELS_URL_ENV,
+            "https://opencode.ai/zen/v1/models",
+        ),
+        std::time::Duration::from_secs(module_u64_value_or_env_or_default(
+            settings,
+            module_id,
+            MODEL_CACHE_TTL_SECS_CONFIG_KEY,
+            ZEN_MODEL_CACHE_TTL_SECS_ENV,
             super::discovery::DEFAULT_MODEL_DISCOVERY_TTL_SECS,
         )),
         protocol_overrides(settings, module_id),

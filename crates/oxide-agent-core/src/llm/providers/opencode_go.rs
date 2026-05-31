@@ -8,7 +8,10 @@ use crate::llm::{
     ToolDefinition,
 };
 use async_trait::async_trait;
-use discovery::{ModelProtocol, OpenCodeGoDiscoveryConfig, OpenCodeGoModelCatalog};
+use discovery::{
+    ModelProtocol, OpenCodeGoDiscoveryConfig, OpenCodeGoModelCatalog, OPENCODE_GO_PROVIDER_ID,
+    OPENCODE_ZEN_PROVIDER_ID,
+};
 use reqwest::{Client as HttpClient, Url};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -18,13 +21,41 @@ use tracing::{debug, trace, warn};
 
 pub mod discovery;
 pub(crate) mod module;
-pub(crate) use module::OpenCodeGoProviderModule;
+pub(crate) use module::{OpenCodeGoProviderModule, OpenCodeZenProviderModule};
 
 const OPENCODE_GO_FAILURES_BEFORE_COOLDOWN: usize = 3;
 const OPENCODE_GO_COOLDOWN_STEP_SECS: u64 = 5;
 const OPENCODE_GO_MAX_COOLDOWN_SECS: u64 = 60;
 const OPENCODE_GO_SUCCESS_STREAK_TO_INCREASE: usize = 3;
 const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
+
+#[derive(Debug, Clone, Copy)]
+struct OpenCodeProviderProfile {
+    provider_id: &'static str,
+    model_prefix: &'static str,
+    display_name: &'static str,
+    module_id: &'static str,
+}
+
+impl OpenCodeProviderProfile {
+    const fn go() -> Self {
+        Self {
+            provider_id: OPENCODE_GO_PROVIDER_ID,
+            model_prefix: OPENCODE_GO_PROVIDER_ID,
+            display_name: "OpenCode Go",
+            module_id: "llm-provider/opencode-go",
+        }
+    }
+
+    const fn zen() -> Self {
+        Self {
+            provider_id: OPENCODE_ZEN_PROVIDER_ID,
+            model_prefix: OPENCODE_ZEN_PROVIDER_ID,
+            display_name: "OpenCode Zen",
+            module_id: "llm-provider/opencode-zen",
+        }
+    }
+}
 
 /// LLM provider implementation for OpenCode Go's OpenAI-compatible endpoint.
 #[derive(Debug, Clone)]
@@ -33,6 +64,7 @@ pub struct OpenCodeGoProvider {
     api_key: String,
     api_base: String,
     api_base_messages: String,
+    profile: OpenCodeProviderProfile,
     throttle: Arc<OpenCodeGoAdaptiveThrottle>,
     model_catalog: Arc<OpenCodeGoModelCatalog>,
 }
@@ -67,6 +99,43 @@ impl OpenCodeGoProvider {
         http_client: HttpClient,
         discovery_config: OpenCodeGoDiscoveryConfig,
     ) -> Self {
+        Self::new_with_profile_and_client_and_discovery(
+            api_key,
+            api_base,
+            api_base_messages,
+            http_client,
+            discovery_config,
+            OpenCodeProviderProfile::go(),
+        )
+    }
+
+    /// Create a new OpenCode Zen provider with an explicit model discovery config.
+    #[must_use]
+    pub(crate) fn new_zen_with_client_and_discovery(
+        api_key: String,
+        api_base: String,
+        api_base_messages: String,
+        http_client: HttpClient,
+        discovery_config: OpenCodeGoDiscoveryConfig,
+    ) -> Self {
+        Self::new_with_profile_and_client_and_discovery(
+            api_key,
+            api_base,
+            api_base_messages,
+            http_client,
+            discovery_config,
+            OpenCodeProviderProfile::zen(),
+        )
+    }
+
+    fn new_with_profile_and_client_and_discovery(
+        api_key: String,
+        api_base: String,
+        api_base_messages: String,
+        http_client: HttpClient,
+        discovery_config: OpenCodeGoDiscoveryConfig,
+        profile: OpenCodeProviderProfile,
+    ) -> Self {
         let model_catalog = Arc::new(OpenCodeGoModelCatalog::new(
             http_client.clone(),
             api_key.clone(),
@@ -78,6 +147,7 @@ impl OpenCodeGoProvider {
             api_key,
             api_base,
             api_base_messages,
+            profile,
             throttle: OpenCodeGoAdaptiveThrottle::from_env(),
             model_catalog,
         }
@@ -90,8 +160,8 @@ impl OpenCodeGoProvider {
     }
 
     async fn resolve_model_protocol(&self, model_id: &str) -> ModelProtocol {
-        let raw_model_id = normalize_model_id(model_id);
-        let qualified_model_id = format!("opencode-go/{raw_model_id}");
+        let raw_model_id = normalize_model_id_for_prefix(model_id, self.profile.model_prefix);
+        let qualified_model_id = format!("{}/{raw_model_id}", self.profile.model_prefix);
         self.model_catalog
             .models()
             .await
@@ -376,18 +446,21 @@ impl LlmProvider for OpenCodeGoProvider {
                     ),
                     anthropic_extra_headers(&self.api_key),
                 ),
-                ModelProtocol::Unknown => return Err(unsupported_protocol_error(model_id)),
+                ModelProtocol::Unknown => {
+                    return Err(unsupported_protocol_error(model_id, self.profile))
+                }
             };
         let _permit = self.throttle.acquire(model_id).await;
-        log_request_summary(
+        log_request_summary(OpenCodeRequestLog {
+            profile: self.profile,
             request_kind,
             api_base,
             model_id,
             max_tokens,
-            OPENCODE_GO_CHAT_TEMPERATURE,
-            false,
-            &body,
-        );
+            temperature: OPENCODE_GO_CHAT_TEMPERATURE,
+            json_mode: false,
+            body: &body,
+        });
         let auth = format!("Bearer {}", self.api_key);
         let result = async {
             let response = send_json_request(
@@ -403,11 +476,12 @@ impl LlmProvider for OpenCodeGoProvider {
                 ModelProtocol::AnthropicMessages => parse_anthropic_messages_response(response)?,
                 ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
             };
-            log_response_summary(request_kind, model_id, &parsed);
+            log_response_summary(self.profile, request_kind, model_id, &parsed);
 
             parsed.content.ok_or_else(|| {
                 LlmError::ApiError(format!(
-                    "OpenCode Go returned no text content for {request_kind}"
+                    "{} returned no text content for {request_kind}",
+                    self.profile.display_name
                 ))
             })
         }
@@ -422,9 +496,10 @@ impl LlmProvider for OpenCodeGoProvider {
         _mime_type: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
-            "Audio transcription not supported by OpenCode Go".to_string(),
-        ))
+        Err(LlmError::Unknown(format!(
+            "Audio transcription not supported by {}",
+            self.profile.display_name
+        )))
     }
 
     async fn analyze_image(
@@ -434,9 +509,10 @@ impl LlmProvider for OpenCodeGoProvider {
         _system_prompt: &str,
         _model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(
-            "Image analysis not supported by OpenCode Go".to_string(),
-        ))
+        Err(LlmError::Unknown(format!(
+            "Image analysis not supported by {}",
+            self.profile.display_name
+        )))
     }
 
     async fn chat_with_tools<'a>(
@@ -483,17 +559,20 @@ impl LlmProvider for OpenCodeGoProvider {
                     ),
                     anthropic_extra_headers(&self.api_key),
                 ),
-                ModelProtocol::Unknown => return Err(unsupported_protocol_error(model_id)),
+                ModelProtocol::Unknown => {
+                    return Err(unsupported_protocol_error(model_id, self.profile))
+                }
             };
-        log_request_summary(
+        log_request_summary(OpenCodeRequestLog {
+            profile: self.profile,
             request_kind,
             api_base,
             model_id,
             max_tokens,
-            temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
+            temperature: temperature.unwrap_or(OPENCODE_GO_CHAT_TEMPERATURE),
             json_mode,
-            &body,
-        );
+            body: &body,
+        });
         let auth = format!("Bearer {}", self.api_key);
         let _permit = self.throttle.acquire(model_id).await;
         let result = async {
@@ -511,7 +590,7 @@ impl LlmProvider for OpenCodeGoProvider {
                 ModelProtocol::AnthropicMessages => parse_anthropic_messages_response(response)?,
                 ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
             };
-            log_response_summary(request_kind, model_id, &parsed);
+            log_response_summary(self.profile, request_kind, model_id, &parsed);
             Ok(parsed)
         }
         .await;
@@ -544,8 +623,14 @@ fn opencode_go_should_throttle(error: &LlmError) -> bool {
 }
 
 fn normalize_model_id(model_id: &str) -> &str {
+    let without_go = normalize_model_id_for_prefix(model_id, OPENCODE_GO_PROVIDER_ID);
+    normalize_model_id_for_prefix(without_go, OPENCODE_ZEN_PROVIDER_ID)
+}
+
+fn normalize_model_id_for_prefix<'a>(model_id: &'a str, model_prefix: &str) -> &'a str {
     let trimmed = model_id.trim();
-    trimmed.strip_prefix("opencode-go/").unwrap_or(trimmed)
+    let prefix = format!("{}/", model_prefix.trim().trim_end_matches('/'));
+    trimmed.strip_prefix(&prefix).unwrap_or(trimmed)
 }
 
 fn derive_messages_api_base(api_base: &str) -> String {
@@ -562,55 +647,67 @@ fn derive_messages_api_base(api_base: &str) -> String {
     format!("{trimmed}/messages")
 }
 
-fn unsupported_protocol_error(model_id: &str) -> LlmError {
+fn unsupported_protocol_error(model_id: &str, profile: OpenCodeProviderProfile) -> LlmError {
     LlmError::ApiError(format!(
-        "OpenCode Go model '{}' has unknown wire protocol; configure modules.llm-provider/opencode-go.protocol_overrides for this model",
-        normalize_model_id(model_id)
+        "{} model '{}' has unknown wire protocol; configure modules.{}.protocol_overrides for this model",
+        profile.display_name,
+        normalize_model_id_for_prefix(model_id, profile.model_prefix),
+        profile.module_id
     ))
 }
 
-fn log_request_summary(
-    request_kind: &str,
-    api_base: &str,
-    model_id: &str,
+struct OpenCodeRequestLog<'a> {
+    profile: OpenCodeProviderProfile,
+    request_kind: &'a str,
+    api_base: &'a str,
+    model_id: &'a str,
     max_tokens: u32,
     temperature: f32,
     json_mode: bool,
-    body: &Value,
-) {
-    let (endpoint_host, endpoint_path) = endpoint_parts(api_base);
-    let message_count = body
+    body: &'a Value,
+}
+
+fn log_request_summary(event: OpenCodeRequestLog<'_>) {
+    let (endpoint_host, endpoint_path) = endpoint_parts(event.api_base);
+    let message_count = event
+        .body
         .get("messages")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
-    let tool_count = body
+    let tool_count = event
+        .body
         .get("tools")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
 
     debug!(
-        provider = "opencode-go",
-        request_kind,
-        model = normalize_model_id(model_id),
+        provider = event.profile.provider_id,
+        request_kind = event.request_kind,
+        model = normalize_model_id_for_prefix(event.model_id, event.profile.model_prefix),
         endpoint_host = endpoint_host.as_str(),
         endpoint_path = endpoint_path.as_str(),
-        json_mode,
+        json_mode = event.json_mode,
         has_tools = tool_count > 0,
         tool_count,
         message_count,
-        max_tokens,
-        temperature,
-        request_body_bytes = json_body_len(body),
-        "OpenCode Go request summary"
+        max_tokens = event.max_tokens,
+        temperature = event.temperature,
+        request_body_bytes = json_body_len(event.body),
+        "OpenCode request summary"
     );
 }
 
-fn log_response_summary(request_kind: &str, model_id: &str, response: &ChatResponse) {
+fn log_response_summary(
+    profile: OpenCodeProviderProfile,
+    request_kind: &str,
+    model_id: &str,
+    response: &ChatResponse,
+) {
     let usage = response.usage.as_ref();
     debug!(
-        provider = "opencode-go",
+        provider = profile.provider_id,
         request_kind,
-        model = normalize_model_id(model_id),
+        model = normalize_model_id_for_prefix(model_id, profile.model_prefix),
         finish_reason = response.finish_reason.as_str(),
         content_len = response.content.as_ref().map_or(0, String::len),
         reasoning_len = response.reasoning_content.as_ref().map_or(0, String::len),
@@ -618,7 +715,7 @@ fn log_response_summary(request_kind: &str, model_id: &str, response: &ChatRespo
         usage_prompt_tokens = usage.map(|usage| usage.prompt_tokens),
         usage_completion_tokens = usage.map(|usage| usage.completion_tokens),
         usage_total_tokens = usage.map(|usage| usage.total_tokens),
-        "OpenCode Go response summary"
+        "OpenCode response summary"
     );
 }
 
@@ -1220,7 +1317,7 @@ mod tests {
         derive_messages_api_base, normalize_model_id, opencode_go_should_throttle,
         parse_anthropic_messages_response, parse_chat_response, parse_tool_calls,
         prepare_anthropic_messages, prepare_structured_messages, prepare_tools_json,
-        unsupported_protocol_error, OpenCodeGoAdaptiveThrottle,
+        unsupported_protocol_error, OpenCodeGoAdaptiveThrottle, OpenCodeProviderProfile,
     };
     use crate::llm::{
         LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
@@ -1248,6 +1345,10 @@ mod tests {
         assert_eq!(
             normalize_model_id("opencode-go/deepseek-v4-flash"),
             "deepseek-v4-flash"
+        );
+        assert_eq!(
+            normalize_model_id("opencode-zen/deepseek-v4-flash-free"),
+            "deepseek-v4-flash-free"
         );
         assert_eq!(
             normalize_model_id(" deepseek-v4-flash "),
@@ -1545,10 +1646,23 @@ mod tests {
 
     #[test]
     fn unknown_protocol_error_mentions_override_path() {
-        let error = unsupported_protocol_error("opencode-go/hy3-preview");
+        let error =
+            unsupported_protocol_error("opencode-go/hy3-preview", OpenCodeProviderProfile::go());
 
         assert!(error.to_string().contains("protocol_overrides"));
         assert!(error.to_string().contains("hy3-preview"));
+    }
+
+    #[test]
+    fn unknown_protocol_error_uses_zen_override_path() {
+        let error =
+            unsupported_protocol_error("opencode-zen/custom-free", OpenCodeProviderProfile::zen());
+
+        assert!(error.to_string().contains("OpenCode Zen"));
+        assert!(error
+            .to_string()
+            .contains("modules.llm-provider/opencode-zen.protocol_overrides"));
+        assert!(error.to_string().contains("custom-free"));
     }
 
     #[test]

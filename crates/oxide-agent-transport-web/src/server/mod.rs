@@ -148,21 +148,30 @@ async fn api_update_settings(
 
 async fn model_routes_response(state: &AppState, refresh: bool) -> ListModelRoutesResponse {
     let llm = state.session_manager.llm_client();
-    let models = if refresh {
+    let mut models = Vec::new();
+    if let Some(go_models) = if refresh {
         llm.refresh_opencode_go_models().await
     } else {
         llm.opencode_go_models().await
-    };
+    } {
+        models.extend(go_models);
+    }
+    if let Some(zen_models) = if refresh {
+        llm.refresh_opencode_zen_models().await
+    } else {
+        llm.opencode_zen_models().await
+    } {
+        models.extend(zen_models);
+    }
     let routes = models
-        .unwrap_or_default()
         .into_iter()
         .map(model_route_view_from_discovered)
         .collect();
 
     ListModelRoutesResponse {
-        provider_id: "opencode-go".to_string(),
-        provider_available: opencode_go_provider_available(state),
-        default_model_id: default_opencode_go_model_id(state),
+        provider_id: "opencode".to_string(),
+        provider_available: opencode_provider_available(state),
+        default_model_id: default_opencode_model_id(state),
         routes,
     }
 }
@@ -197,24 +206,27 @@ fn model_route_source_view(value: &str) -> ModelRouteSourceView {
     }
 }
 
-fn opencode_go_provider_available(state: &AppState) -> bool {
+fn opencode_provider_available(state: &AppState) -> bool {
     let llm = state.session_manager.llm_client();
-    llm.is_provider_available("opencode-go") || llm.is_provider_available("opencode_go")
+    llm.is_provider_available("opencode-go")
+        || llm.is_provider_available("opencode_go")
+        || llm.is_provider_available("opencode-zen")
+        || llm.is_provider_available("opencode_zen")
 }
 
-fn default_opencode_go_model_id(state: &AppState) -> Option<String> {
+fn default_opencode_model_id(state: &AppState) -> Option<String> {
     state
         .session_manager
         .agent_settings()
         .get_configured_agent_model_routes()
         .into_iter()
-        .find(|route| is_opencode_go_provider(&route.provider))
-        .map(|route| qualified_opencode_go_model_id(&route.id))
+        .find(|route| opencode_provider_prefix(&route.provider).is_some())
+        .and_then(|route| qualified_opencode_model_id(&route.id, &route.provider))
 }
 
 fn default_session_model_selection(state: &AppState) -> ModelSelection {
     ModelSelection {
-        qualified_id: default_opencode_go_model_id(state)
+        qualified_id: default_opencode_model_id(state)
             .unwrap_or_else(|| DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID.to_string()),
     }
 }
@@ -256,38 +268,65 @@ fn canonical_model_selection(
             false,
         ));
     }
-    let model_id = qualified_id
-        .strip_prefix("opencode-go/")
-        .unwrap_or(qualified_id)
-        .trim();
+    let (prefix, model_id) = parse_opencode_model_selection(qualified_id).ok_or_else(|| {
+        api_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationError,
+            "Model selection must be an OpenCode Go or Zen model id.",
+            false,
+        )
+    })?;
     if model_id.is_empty() || model_id.contains('/') {
         return Err(api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::ValidationError,
-            "Model selection must be an OpenCode Go model id.",
+            "Model selection must be an OpenCode Go or Zen model id.",
             false,
         ));
     }
     Ok(ModelSelection {
-        qualified_id: qualified_opencode_go_model_id(model_id),
+        qualified_id: format!("{prefix}/{model_id}"),
     })
 }
 
-fn is_opencode_go_provider(provider: &str) -> bool {
-    provider
+fn parse_opencode_model_selection(value: &str) -> Option<(&'static str, &str)> {
+    let value = value.trim();
+    if let Some(model_id) = value.strip_prefix("opencode-go/") {
+        return Some(("opencode-go", model_id.trim()));
+    }
+    if let Some(model_id) = value.strip_prefix("opencode-zen/") {
+        return Some(("opencode-zen", model_id.trim()));
+    }
+    if value.contains('/') {
+        return None;
+    }
+    Some(("opencode-go", value))
+}
+
+fn opencode_provider_prefix(provider: &str) -> Option<&'static str> {
+    match provider
         .trim()
         .strip_prefix("llm-provider/")
         .unwrap_or(provider.trim())
         .replace('_', "-")
-        .eq_ignore_ascii_case("opencode-go")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "opencode-go" => Some("opencode-go"),
+        "opencode-zen" => Some("opencode-zen"),
+        _ => None,
+    }
 }
 
-fn qualified_opencode_go_model_id(model_id: &str) -> String {
+fn qualified_opencode_model_id(model_id: &str, provider: &str) -> Option<String> {
+    let prefix = opencode_provider_prefix(provider)?;
     let model_id = model_id.trim();
-    if model_id.starts_with("opencode-go/") {
-        model_id.to_string()
+    if model_id.starts_with("opencode-go/") || model_id.starts_with("opencode-zen/") {
+        parse_opencode_model_selection(model_id).and_then(|(route_prefix, route_model_id)| {
+            (route_prefix == prefix).then(|| format!("{route_prefix}/{route_model_id}"))
+        })
     } else {
-        format!("opencode-go/{model_id}")
+        Some(format!("{prefix}/{model_id}"))
     }
 }
 
@@ -1709,9 +1748,8 @@ mod tests {
     use oxide_agent_web_contracts::{
         CreateSessionRequest as ApiCreateSessionRequest,
         CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
-        ModelRouteSourceView, ModelSelection, PersistedTaskEvent, ProgressSnapshot,
-        RegisterRequest, TaskAttachment, TaskEventKind, TaskStatus as ApiTaskStatus,
-        UpdateUserSettingsRequest, WebTaskRecord,
+        ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
+        TaskEventKind, TaskStatus as ApiTaskStatus, UpdateUserSettingsRequest, WebTaskRecord,
     };
     #[cfg(feature = "profile-lite")]
     use oxide_agent_web_contracts::{
@@ -2132,7 +2170,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_list_model_routes_returns_opencode_fallback_models() {
+    async fn api_list_model_routes_returns_empty_models_when_discovery_is_unavailable() {
         let _lock = web_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2141,12 +2179,14 @@ mod tests {
             "OPENCODE_ZEN_API_KEY",
             "OPENCODE_GO_API_KEY",
             "OPENCODE_GO_MODELS_URL",
+            "OPENCODE_ZEN_MODELS_URL",
             "LLM_HTTP_TIMEOUT_SECS",
         ]);
         std::env::set_var("OPENCODE_API_KEY", "test-opencode-key");
         std::env::remove_var("OPENCODE_ZEN_API_KEY");
         std::env::remove_var("OPENCODE_GO_API_KEY");
         std::env::set_var("OPENCODE_GO_MODELS_URL", "http://127.0.0.1:9/models");
+        std::env::set_var("OPENCODE_ZEN_MODELS_URL", "http://127.0.0.1:9/models");
         std::env::set_var("LLM_HTTP_TIMEOUT_SECS", "1");
 
         let state = test_app_state();
@@ -2185,14 +2225,7 @@ mod tests {
             response.default_model_id.as_deref(),
             Some("opencode-go/deepseek-v4-flash")
         );
-        assert!(response
-            .routes
-            .iter()
-            .any(|route| route.qualified_id == "opencode-go/kimi-k2.6"));
-        assert!(response
-            .routes
-            .iter()
-            .all(|route| route.source == ModelRouteSourceView::Fallback));
+        assert!(response.routes.is_empty());
 
         let axum::Json(refreshed) = super::api_refresh_model_routes(
             axum::extract::State(state),
@@ -2200,7 +2233,7 @@ mod tests {
         )
         .await
         .expect("refresh model routes response");
-        assert!(!refreshed.routes.is_empty());
+        assert!(refreshed.routes.is_empty());
     }
 
     #[tokio::test]
@@ -2264,6 +2297,24 @@ mod tests {
         assert_eq!(
             stored.default_model_selection,
             updated.default_model_selection
+        );
+
+        let axum::Json(updated_zen) = api_update_settings(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::Json(UpdateUserSettingsRequest {
+                default_model_selection: Some(ModelSelection {
+                    qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
+                }),
+            }),
+        )
+        .await
+        .expect("update zen settings");
+        assert_eq!(
+            updated_zen.default_model_selection,
+            Some(ModelSelection {
+                qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
+            })
         );
 
         let (status, axum::Json(error)) = api_update_settings(

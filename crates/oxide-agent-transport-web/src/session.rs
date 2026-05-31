@@ -187,29 +187,51 @@ pub(crate) fn web_session_sandbox_scope(user_id: i64, context_key: &str) -> Sand
     SandboxScope::new(user_id, context_key.to_string())
 }
 
-fn opencode_go_qualified_model_id(value: &str) -> Option<String> {
+fn parse_opencode_model_id(value: &str) -> Option<(&'static str, String)> {
     let value = value.trim();
-    let model_id = value.strip_prefix("opencode-go/").unwrap_or(value).trim();
-    if model_id.is_empty() || model_id.contains('/') {
+    if let Some(model_id) = value.strip_prefix("opencode-go/") {
+        let model_id = model_id.trim();
+        return (!model_id.is_empty() && !model_id.contains('/'))
+            .then(|| ("opencode-go", model_id.to_string()));
+    }
+    if let Some(model_id) = value.strip_prefix("opencode-zen/") {
+        let model_id = model_id.trim();
+        return (!model_id.is_empty() && !model_id.contains('/'))
+            .then(|| ("opencode-zen", model_id.to_string()));
+    }
+    if value.is_empty() || value.contains('/') {
         return None;
     }
-    Some(format!("opencode-go/{model_id}"))
+    Some(("opencode-go", value.to_string()))
 }
 
-fn selected_opencode_go_route(
+fn opencode_qualified_model_id_for_prefix(value: &str, model_prefix: &str) -> Option<String> {
+    let value = value.trim();
+    if value.starts_with("opencode-go/") || value.starts_with("opencode-zen/") {
+        let (prefix, model_id) = parse_opencode_model_id(value)?;
+        return (prefix == model_prefix).then(|| format!("{prefix}/{model_id}"));
+    }
+    if value.is_empty() || value.contains('/') {
+        return None;
+    }
+    Some(format!("{model_prefix}/{value}"))
+}
+
+fn selected_opencode_route(
     selected_qualified_id: &str,
+    selected_prefix: &str,
     provider: &str,
     configured_routes: &[ModelInfo],
 ) -> ModelInfo {
     configured_routes
         .iter()
         .find(|route| {
-            is_opencode_go_provider(&route.provider)
-                && opencode_go_qualified_model_id(&route.id).as_deref()
+            opencode_provider_prefix(&route.provider) == Some(selected_prefix)
+                && opencode_qualified_model_id_for_prefix(&route.id, selected_prefix).as_deref()
                     == Some(selected_qualified_id)
         })
         .cloned()
-        .and_then(|route| normalize_model_route(route, provider))
+        .and_then(|route| normalize_model_route(route, provider, provider))
         .unwrap_or_else(|| ModelInfo {
             id: selected_qualified_id.to_string(),
             provider: provider.to_string(),
@@ -219,16 +241,24 @@ fn selected_opencode_go_route(
         })
 }
 
-fn normalize_model_route(mut route: ModelInfo, opencode_go_provider: &str) -> Option<ModelInfo> {
+fn normalize_model_route(
+    mut route: ModelInfo,
+    opencode_go_provider: &str,
+    opencode_zen_provider: &str,
+) -> Option<ModelInfo> {
     let id = route.id.trim();
     let provider = route.provider.trim();
     if id.is_empty() || provider.is_empty() {
         return None;
     }
 
-    if is_opencode_go_provider(provider) {
-        route.id = opencode_go_qualified_model_id(id)?;
-        route.provider = opencode_go_provider.to_string();
+    if let Some(model_prefix) = opencode_provider_prefix(provider) {
+        route.id = opencode_qualified_model_id_for_prefix(id, model_prefix)?;
+        route.provider = if model_prefix == "opencode-zen" {
+            opencode_zen_provider.to_string()
+        } else {
+            opencode_go_provider.to_string()
+        };
     } else {
         route.id = id.to_string();
         route.provider = provider.to_string();
@@ -256,8 +286,9 @@ fn push_unique_route(routes: &mut Vec<ModelInfo>, route: ModelInfo) {
 
 fn model_route_key(route: &ModelInfo) -> String {
     let provider = normalized_provider_name(&route.provider);
-    let id = if is_opencode_go_provider(&route.provider) {
-        opencode_go_qualified_model_id(&route.id).unwrap_or_else(|| route.id.trim().to_string())
+    let id = if let Some(prefix) = opencode_provider_prefix(&route.provider) {
+        opencode_qualified_model_id_for_prefix(&route.id, prefix)
+            .unwrap_or_else(|| route.id.trim().to_string())
     } else {
         route.id.trim().to_string()
     };
@@ -273,8 +304,12 @@ fn normalized_provider_name(provider: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn is_opencode_go_provider(provider: &str) -> bool {
-    normalized_provider_name(provider) == "opencode-go"
+fn opencode_provider_prefix(provider: &str) -> Option<&'static str> {
+    match normalized_provider_name(provider).as_str() {
+        "opencode-go" => Some("opencode-go"),
+        "opencode-zen" => Some("opencode-zen"),
+        _ => None,
+    }
 }
 
 impl WebSessionManager {
@@ -346,17 +381,22 @@ impl WebSessionManager {
         selection: Option<&ModelSelection>,
     ) -> Option<Vec<ModelInfo>> {
         let selection = selection?;
-        let selected_model_id = opencode_go_qualified_model_id(&selection.qualified_id)?;
+        let (selected_prefix, _) = parse_opencode_model_id(&selection.qualified_id)?;
+        let selected_model_id =
+            opencode_qualified_model_id_for_prefix(&selection.qualified_id, selected_prefix)?;
         let configured_routes = self.agent_settings.get_configured_agent_model_routes();
-        let provider = self.preferred_opencode_go_provider_name();
-        let mut routes = vec![selected_opencode_go_route(
+        let go_provider = self.preferred_opencode_provider_name("opencode-go");
+        let zen_provider = self.preferred_opencode_provider_name("opencode-zen");
+        let selected_provider = self.preferred_opencode_provider_name(selected_prefix);
+        let mut routes = vec![selected_opencode_route(
             &selected_model_id,
-            &provider,
+            selected_prefix,
+            &selected_provider,
             &configured_routes,
         )];
 
         for route in configured_routes {
-            if let Some(route) = normalize_model_route(route, &provider) {
+            if let Some(route) = normalize_model_route(route, &go_provider, &zen_provider) {
                 push_unique_route(&mut routes, route);
             }
         }
@@ -370,7 +410,24 @@ impl WebSessionManager {
                     &mut routes,
                     ModelInfo {
                         id: model.qualified_id,
-                        provider: provider.clone(),
+                        provider: go_provider.clone(),
+                        max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+                        context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+                        weight: 1,
+                    },
+                );
+            }
+        }
+        if let Some(discovered_models) = self.llm.opencode_zen_models().await {
+            for model in discovered_models {
+                if model.protocol.eq_ignore_ascii_case("unknown") {
+                    continue;
+                }
+                push_unique_route(
+                    &mut routes,
+                    ModelInfo {
+                        id: model.qualified_id,
+                        provider: zen_provider.clone(),
                         max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
                         context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
                         weight: 1,
@@ -382,13 +439,18 @@ impl WebSessionManager {
         Some(routes)
     }
 
-    fn preferred_opencode_go_provider_name(&self) -> String {
-        if self.llm.is_provider_available("opencode-go") {
-            "opencode-go".to_string()
-        } else if self.llm.is_provider_available("opencode_go") {
-            "opencode_go".to_string()
+    fn preferred_opencode_provider_name(&self, model_prefix: &str) -> String {
+        let (dash, underscore) = if model_prefix == "opencode-zen" {
+            ("opencode-zen", "opencode_zen")
         } else {
-            "opencode-go".to_string()
+            ("opencode-go", "opencode_go")
+        };
+        if self.llm.is_provider_available(dash) {
+            dash.to_string()
+        } else if self.llm.is_provider_available(underscore) {
+            underscore.to_string()
+        } else {
+            dash.to_string()
         }
     }
 
@@ -1006,6 +1068,57 @@ mod tests {
         assert!(routes
             .iter()
             .any(|route| route.id == "mistral-large" && route.provider == "mistral"));
+    }
+
+    #[tokio::test]
+    async fn web_session_applies_opencode_zen_model_route_override_from_selection() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![
+                ModelInfo {
+                    id: "opencode-zen/deepseek-v4-flash-free".to_string(),
+                    provider: "opencode_zen".to_string(),
+                    max_output_tokens: 16_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                },
+                ModelInfo {
+                    id: "opencode-go/deepseek-v4-flash".to_string(),
+                    provider: "opencode_go".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                },
+            ]),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
+
+        manager
+            .create_session_with_model_selection(
+                91,
+                "zen-model-selection-test".to_string(),
+                "web-session-zen-selection-test".to_string(),
+                "main".to_string(),
+                Some(ModelSelection {
+                    qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
+                }),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "zen-model-selection-test").await;
+        let executor = executor_arc.read().await;
+        let routes = executor
+            .model_routes_override()
+            .expect("model route override should be set");
+
+        assert_eq!(routes[0].id, "opencode-zen/deepseek-v4-flash-free");
+        assert_eq!(routes[0].provider, "opencode-zen");
+        assert!(routes.iter().any(|route| {
+            route.id == "opencode-go/deepseek-v4-flash" && route.provider == "opencode-go"
+        }));
     }
 
     // -----------------------------------------------------------------------

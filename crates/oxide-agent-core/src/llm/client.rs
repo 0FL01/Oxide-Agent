@@ -15,6 +15,9 @@ pub struct LlmClient {
     #[cfg(feature = "llm-opencode-go")]
     opencode_go_model_catalog:
         Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
+    #[cfg(feature = "llm-opencode-go")]
+    opencode_zen_model_catalog:
+        Option<Arc<providers::opencode_go::discovery::OpenCodeGoModelCatalog>>,
     /// Available models configured from settings
     pub models: Vec<(String, crate::config::ModelInfo)>,
     /// Optional explicit media model name for multimodal requests.
@@ -213,11 +216,18 @@ impl LlmClient {
             settings,
             support::http::create_http_client(),
         );
+        #[cfg(feature = "llm-opencode-go")]
+        let opencode_zen_model_catalog = providers::opencode_go::module::build_zen_model_catalog(
+            settings,
+            support::http::create_http_client(),
+        );
 
         Self {
             providers,
             #[cfg(feature = "llm-opencode-go")]
             opencode_go_model_catalog,
+            #[cfg(feature = "llm-opencode-go")]
+            opencode_zen_model_catalog,
             models: settings.get_available_models(),
             media_model_name,
             media_model_id,
@@ -277,6 +287,46 @@ impl LlmClient {
         #[cfg(feature = "llm-opencode-go")]
         {
             let catalog = self.opencode_go_model_catalog.as_ref()?;
+            return Some(
+                catalog
+                    .refresh()
+                    .await
+                    .into_iter()
+                    .map(DiscoveredLlmModel::from)
+                    .collect(),
+            );
+        }
+        #[cfg(not(feature = "llm-opencode-go"))]
+        {
+            None
+        }
+    }
+
+    /// Returns free OpenCode Zen discovered models when the provider is compiled and configured.
+    pub async fn opencode_zen_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
+        #[cfg(feature = "llm-opencode-go")]
+        {
+            let catalog = self.opencode_zen_model_catalog.as_ref()?;
+            return Some(
+                catalog
+                    .models()
+                    .await
+                    .into_iter()
+                    .map(DiscoveredLlmModel::from)
+                    .collect(),
+            );
+        }
+        #[cfg(not(feature = "llm-opencode-go"))]
+        {
+            None
+        }
+    }
+
+    /// Refreshes free OpenCode Zen discovered models when the provider is compiled and configured.
+    pub async fn refresh_opencode_zen_models(&self) -> Option<Vec<DiscoveredLlmModel>> {
+        #[cfg(feature = "llm-opencode-go")]
+        {
+            let catalog = self.opencode_zen_model_catalog.as_ref()?;
             return Some(
                 catalog
                     .refresh()
@@ -1086,6 +1136,28 @@ mod tests {
         assert!(llm
             .configured_provider_names()
             .contains(&"opencode-go".to_string()));
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn llm_client_registers_opencode_zen_when_key_present() {
+        let settings = with_provider_key(
+            AgentSettings {
+                agent_model_id: Some("opencode-zen/deepseek-v4-flash-free".to_string()),
+                agent_model_provider: Some("opencode-zen".to_string()),
+                ..AgentSettings::default()
+            },
+            "llm-provider/opencode-zen",
+            "test-opencode-key",
+        );
+
+        let llm = LlmClient::new(&settings);
+
+        assert!(llm.is_provider_available("opencode-zen"));
+        assert!(llm.is_provider_available("opencode_zen"));
+        assert!(llm
+            .configured_provider_names()
+            .contains(&"opencode-zen".to_string()));
     }
 
     #[cfg(feature = "llm-openrouter")]
