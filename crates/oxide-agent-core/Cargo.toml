@@ -148,7 +148,6 @@ profile-web-embedded-opencode-local = [
     "tool-todos",
     "tool-compression",
     "tool-delegation",
-    "tool-agents-md",
     "tool-reminder",
     "tool-wiki-memory",
     "tool-webfetch-md",
