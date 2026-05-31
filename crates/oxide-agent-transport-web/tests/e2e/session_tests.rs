@@ -10,7 +10,7 @@ use oxide_agent_core::agent::SessionId;
 use super::helpers::{
     create_session_http_with_user, create_task_http_expect_conflict, create_task_http_with_body,
     session_user_id, structured_awaiting_user_input_response, structured_final_answer_response,
-    wait_for_task_status, wait_for_zai_calls,
+    wait_for_task_status, wait_for_zai_calls, with_session_auth,
 };
 use super::providers::{RecordedToolRequest, SequencedZaiProvider};
 use super::setup::{
@@ -284,6 +284,67 @@ async fn e2e_web_followup_while_running_returns_session_busy() {
         "expected only the original top-level request"
     );
     assert!(request_contains(&requests[0], "Initial prompt"));
+
+    server.abort();
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_web_cancel_releases_executor_for_next_task() {
+    let zai_provider = Arc::new(
+        SequencedZaiProvider::new(vec![
+            structured_final_answer_response("cancelled response should be dropped"),
+            structured_final_answer_response("second answer"),
+        ])
+        .with_blocked_calls([1]),
+    );
+    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260412;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+    let task1_id = create_task_http_with_body(&client, &base_url, &session_id, "Long prompt").await;
+
+    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+
+    let cancel_status = with_session_auth(
+        client.post(format!(
+            "{base_url}/api/v1/sessions/{session_id}/tasks/{task1_id}/cancel"
+        )),
+        &base_url,
+        &session_id,
+        true,
+    )
+    .send()
+    .await
+    .expect("failed to cancel task")
+    .status();
+    assert!(
+        cancel_status.is_success(),
+        "cancel should succeed, got {cancel_status}"
+    );
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task1_id,
+        oxide_agent_transport_web::session::TaskStatus::Cancelled,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let task2_id =
+        create_task_http_with_body(&client, &base_url, &session_id, "Continue with corrections")
+            .await;
+    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task2_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(2),
+    )
+    .await;
 
     server.abort();
 }

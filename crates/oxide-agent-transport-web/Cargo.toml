@@ -47,7 +47,7 @@ profile-web-embedded-opencode-local = [
     "storage-s3-r2",
 ]
 storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
-socket_e2e = []
+socket_e2e = ["oxide-agent-core/llm-opencode-go"]
 delegation_e2e = ["oxide-agent-core/tool-delegation"]
 compression_e2e = ["oxide-agent-core/tool-compression"]
 

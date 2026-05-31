@@ -4,9 +4,9 @@ use crate::persistence::{InMemoryWebUiStore, WebUiStore};
 use crate::session::WebSessionManager;
 use anyhow::Result as AnyResult;
 use async_trait::async_trait;
-use oxide_agent_core::sandbox::{
-    SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxScope,
-};
+#[cfg(not(feature = "socket_e2e"))]
+use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
+use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
 #[cfg(feature = "storage-s3-r2")]
 use oxide_agent_core::{
     config::AgentSettings,
@@ -69,11 +69,13 @@ pub(crate) trait WebSandboxControl: Send + Sync {
     async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool>;
 }
 
+#[cfg(not(feature = "socket_e2e"))]
 #[derive(Default)]
 struct RuntimeWebSandboxControl {
     admin: SandboxAdminRuntime,
 }
 
+#[cfg(not(feature = "socket_e2e"))]
 #[async_trait]
 impl WebSandboxControl for RuntimeWebSandboxControl {
     async fn destroy_scope(&self, scope: SandboxScope) -> AnyResult<()> {
@@ -93,6 +95,57 @@ impl WebSandboxControl for RuntimeWebSandboxControl {
             .delete_sandbox_by_name(user_id, container_name)
             .await
     }
+}
+
+#[cfg(feature = "socket_e2e")]
+#[derive(Default)]
+struct NoopWebSandboxControl;
+
+#[cfg(feature = "socket_e2e")]
+#[async_trait]
+impl WebSandboxControl for NoopWebSandboxControl {
+    async fn destroy_scope(&self, _scope: SandboxScope) -> AnyResult<()> {
+        Ok(())
+    }
+
+    async fn list_user_sandboxes(&self, _user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord> {
+        Ok(SandboxContainerRecord {
+            container_id: scope.stable_name(),
+            container_name: scope.container_name(),
+            image: Some("socket-e2e-noop".to_string()),
+            created_at: None,
+            state: Some("running".to_string()),
+            status: Some("running".to_string()),
+            running: true,
+            user_id: Some(scope.owner_id()),
+            scope: Some(scope.namespace().to_string()),
+            chat_id: scope.chat_id(),
+            thread_id: scope.thread_id(),
+            labels: scope.docker_labels(),
+        })
+    }
+
+    async fn delete_sandbox_by_name(
+        &self,
+        _user_id: i64,
+        _container_name: &str,
+    ) -> AnyResult<bool> {
+        Ok(false)
+    }
+}
+
+#[cfg(feature = "socket_e2e")]
+fn default_web_sandbox_control() -> Arc<dyn WebSandboxControl> {
+    Arc::new(NoopWebSandboxControl)
+}
+
+#[cfg(not(feature = "socket_e2e"))]
+fn default_web_sandbox_control() -> Arc<dyn WebSandboxControl> {
+    Arc::new(RuntimeWebSandboxControl::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +226,7 @@ impl AppState {
         Self {
             session_manager,
             web_store,
-            sandbox_control: Arc::new(RuntimeWebSandboxControl::default()),
+            sandbox_control: default_web_sandbox_control(),
             web_store_kind,
             web_assets: WebAssetsConfig::from_env(),
             auth_rate_limiter: Arc::new(AsyncMutex::new(AuthRateLimiter::new())),

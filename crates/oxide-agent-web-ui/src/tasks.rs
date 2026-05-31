@@ -291,7 +291,7 @@ fn SessionWorkspace(
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
-    let (_streaming_task_id, set_streaming_task_id) = signal(None::<String>);
+    let (streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
     let (_last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
     let (selected_versions, set_selected_versions) = signal(HashMap::<String, String>::new());
@@ -324,6 +324,7 @@ fn SessionWorkspace(
         set_events.set(Vec::new());
         set_progress.set(None);
         set_active_task.set(None);
+        set_streaming_task_id.set(None);
         set_selected_versions.set(HashMap::new());
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
@@ -371,6 +372,7 @@ fn SessionWorkspace(
                                         set_tasks,
                                         set_sse_state,
                                         set_error,
+                                        streaming_task_id,
                                         set_streaming_task_id,
                                         set_last_terminal_status,
                                         set_sessions,
@@ -523,6 +525,7 @@ fn SessionWorkspace(
                             set_tasks,
                             set_sse_state,
                             set_error,
+                            streaming_task_id,
                             set_streaming_task_id,
                             set_last_terminal_status,
                             set_sessions,
@@ -551,6 +554,9 @@ fn SessionWorkspace(
                 Ok(_) => {
                     let task_id = task.task_id.clone();
                     set_active_task.set(None);
+                    if streaming_task_id.get_untracked().as_deref() == Some(task_id.as_str()) {
+                        set_streaming_task_id.set(None);
+                    }
                     set_tasks.update(|items| {
                         for item in items {
                             if item.task_id == task_id {
@@ -632,6 +638,7 @@ fn SessionWorkspace(
                                                     set_tasks,
                                                     set_sse_state,
                                                     set_error,
+                                                    streaming_task_id,
                                                     set_streaming_task_id,
                                                     set_last_terminal_status,
                                                     set_sessions,
@@ -1080,6 +1087,7 @@ struct StreamUiSignals {
     set_tasks: WriteSignal<Vec<TaskSummary>>,
     set_sse_state: WriteSignal<SseConnectionState>,
     set_error: WriteSignal<Option<String>>,
+    streaming_task_id: ReadSignal<Option<String>>,
     set_streaming_task_id: WriteSignal<Option<String>>,
     set_last_terminal_status: WriteSignal<Option<TaskStatus>>,
     set_sessions: WriteSignal<Vec<SessionSummary>>,
@@ -1104,6 +1112,7 @@ fn start_task_stream(
         set_tasks: signals.set_tasks,
         set_state: signals.set_sse_state,
         set_error: signals.set_error,
+        streaming_task_id: signals.streaming_task_id,
         set_streaming_task_id: signals.set_streaming_task_id,
         set_last_terminal_status: signals.set_last_terminal_status,
     });

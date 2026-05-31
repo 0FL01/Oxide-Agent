@@ -71,7 +71,9 @@ pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvid
 
     let registry = SessionRegistry::new();
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
-    AppState::new(Arc::new(session_manager))
+    let mut state = AppState::new(Arc::new(session_manager));
+    state.auto_title_enabled = false;
+    state
 }
 
 /// Set up AppState with a structured-output-capable main-agent route.
@@ -100,7 +102,9 @@ pub fn setup_web_test_with_structured_main_provider(
 
     let registry = SessionRegistry::new();
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
-    AppState::new(Arc::new(session_manager))
+    let mut state = AppState::new(Arc::new(session_manager));
+    state.auto_title_enabled = false;
+    state
 }
 
 /// Set up test infrastructure with the default ScriptedLlmProvider.
@@ -134,7 +138,9 @@ pub async fn setup_test() -> AppState {
 
     let registry = SessionRegistry::new();
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
-    AppState::new(Arc::new(session_manager))
+    let mut state = AppState::new(Arc::new(session_manager));
+    state.auto_title_enabled = false;
+    state
 }
 
 /// ZAI API base URL used by live E2E tests.

@@ -604,6 +604,10 @@ impl WebSessionManager {
     ///
     /// Does NOT start execution — use `start_task_execution` for that.
     pub async fn register_task(&self, session_id: &str, task_text: String) -> Option<RunningTask> {
+        if let Some(sid) = self.resolve_session_id(session_id).await {
+            self.registry.renew_cancellation_token(&sid).await;
+        }
+
         // Update session last_activity_at.
         {
             let mut sessions = self.sessions.write().await;
@@ -644,6 +648,10 @@ impl WebSessionManager {
         task_id: &str,
         task_text: String,
     ) -> Option<RunningTask> {
+        if let Some(sid) = self.resolve_session_id(session_id).await {
+            self.registry.renew_cancellation_token(&sid).await;
+        }
+
         {
             let mut sessions = self.sessions.write().await;
             if let Some(meta) = sessions.get_mut(session_id) {
@@ -684,14 +692,19 @@ impl WebSessionManager {
 
     /// Mark a task as completed.
     pub async fn complete_task(&self, task_id: &str, session_id: &str) {
+        let mut update_session = true;
         {
             let mut tasks = self.tasks.write().await;
             if let Some(meta) = tasks.get_mut(task_id) {
-                meta.status = TaskStatus::Completed;
-                meta.finished_at = Some(Utc::now());
+                if meta.status == TaskStatus::Cancelled {
+                    update_session = false;
+                } else {
+                    meta.status = TaskStatus::Completed;
+                    meta.finished_at = Some(Utc::now());
+                }
             }
         }
-        {
+        if update_session {
             let mut sessions = self.sessions.write().await;
             if let Some(meta) = sessions.get_mut(session_id) {
                 meta.status = SessionStatus::Idle;
@@ -702,14 +715,19 @@ impl WebSessionManager {
 
     /// Mark a task as failed.
     pub async fn fail_task(&self, task_id: &str, session_id: &str) {
+        let mut update_session = true;
         {
             let mut tasks = self.tasks.write().await;
             if let Some(meta) = tasks.get_mut(task_id) {
-                meta.status = TaskStatus::Failed;
-                meta.finished_at = Some(Utc::now());
+                if meta.status == TaskStatus::Cancelled {
+                    update_session = false;
+                } else {
+                    meta.status = TaskStatus::Failed;
+                    meta.finished_at = Some(Utc::now());
+                }
             }
         }
-        {
+        if update_session {
             let mut sessions = self.sessions.write().await;
             if let Some(meta) = sessions.get_mut(session_id) {
                 meta.status = SessionStatus::Error;
@@ -729,6 +747,13 @@ impl WebSessionManager {
             if let Some(meta) = tasks.get_mut(task_id) {
                 meta.status = TaskStatus::Cancelled;
                 meta.finished_at = Some(Utc::now());
+            }
+        }
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some(meta) = sessions.get_mut(session_id) {
+                meta.status = SessionStatus::Idle;
+                meta.last_activity_at = Utc::now();
             }
         }
         self.running_tasks.write().await.remove(task_id).is_some()

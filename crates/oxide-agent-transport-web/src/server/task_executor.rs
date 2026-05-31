@@ -154,6 +154,21 @@ async fn execute_agent_task(
             return;
         }
     };
+    let cancellation_token = match registry.get_cancellation_token(&sid).await {
+        Some(token) => token,
+        None => {
+            if let Some(web_task) = &ctx.web_task {
+                persist_task_failed(web_task, "Runtime cancellation token not found.").await;
+            }
+            session_manager.fail_task(task_id, session_id).await;
+            return;
+        }
+    };
+
+    {
+        let mut executor = executor_arc.write().await;
+        executor.session_mut().cancellation_token = (*cancellation_token).clone();
+    }
 
     // Capture chrono timestamp for calculating offsets from named milestones.
     let agent_started_at_chrono = chrono::Utc::now().timestamp_millis();
@@ -418,7 +433,7 @@ async fn persist_task_failed(web_task: &WebTaskPersistence, message: impl Into<S
 async fn persist_task_progress(web_task: &WebTaskPersistence, progress: SerializableProgress) {
     let now = chrono::Utc::now();
     let snapshot = progress_snapshot_from_serializable(progress);
-    update_web_task(web_task, |task| {
+    update_web_task_unless_cancelled(web_task, |task| {
         task.last_progress = Some(snapshot);
         task.updated_at = now;
     })
@@ -432,6 +447,9 @@ async fn persist_task_events(
     let Some(last_seq) = events.last().map(|event| event.seq) else {
         return;
     };
+    if web_task_is_cancelled(web_task).await {
+        return;
+    }
 
     if let Err(error) = web_task
         .web_store
@@ -452,34 +470,19 @@ async fn persist_task_events(
     }
 
     let now = chrono::Utc::now();
-    update_web_task(web_task, |task| {
+    update_web_task_unless_cancelled(web_task, |task| {
         task.last_event_seq = task.last_event_seq.max(last_seq);
         task.updated_at = now;
     })
     .await;
 }
 
-async fn update_web_task(web_task: &WebTaskPersistence, update: impl FnOnce(&mut WebTaskRecord)) {
+async fn web_task_is_cancelled(web_task: &WebTaskPersistence) -> bool {
     let task = web_task
         .web_store
         .load_task(web_task.user_id, &web_task.session_id, &web_task.task_id)
         .await;
-    let Ok(Some(mut task)) = task else {
-        warn!(
-            task_id = %web_task.task_id,
-            "Failed to load web task for persistence update"
-        );
-        return;
-    };
-
-    update(&mut task);
-    if let Err(error) = web_task.web_store.save_task(task).await {
-        warn!(
-            task_id = %web_task.task_id,
-            error = %error,
-            "Failed to persist web task update"
-        );
-    }
+    matches!(task, Ok(Some(task)) if task.status == ApiTaskStatus::Cancelled)
 }
 
 async fn update_web_task_unless_cancelled(
