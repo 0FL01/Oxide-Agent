@@ -105,11 +105,14 @@ impl Default for ToolRuntimeConfig {
 
 /// Whether a model route is supported by the v1 typed tool runtime.
 ///
-/// All models from the `opencode-go` provider are accepted because the provider exposes a
-/// unified, backward-compatible tool protocol across every model.
+/// OpenCode Go and Zen routes are accepted because both provider profiles use the same
+/// chat-like tool-call bridge inside the core provider implementation.
 #[must_use]
 pub fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
-    normalize_tool_runtime_route_part(&model.provider) == "opencode-go"
+    matches!(
+        normalize_tool_runtime_route_part(&model.provider).as_str(),
+        "opencode-go" | "opencode-zen"
+    )
 }
 
 fn normalize_tool_runtime_route_part(value: &str) -> String {

@@ -273,28 +273,6 @@ fn normalize_model_route(
     Some(route)
 }
 
-fn push_unique_route(routes: &mut Vec<ModelInfo>, route: ModelInfo) {
-    let key = model_route_key(&route);
-    if routes
-        .iter()
-        .any(|existing| model_route_key(existing) == key)
-    {
-        return;
-    }
-    routes.push(route);
-}
-
-fn model_route_key(route: &ModelInfo) -> String {
-    let provider = normalized_provider_name(&route.provider);
-    let id = if let Some(prefix) = opencode_provider_prefix(&route.provider) {
-        opencode_qualified_model_id_for_prefix(&route.id, prefix)
-            .unwrap_or_else(|| route.id.trim().to_string())
-    } else {
-        route.id.trim().to_string()
-    };
-    format!("{provider}/{id}")
-}
-
 fn normalized_provider_name(provider: &str) -> String {
     provider
         .trim()
@@ -385,58 +363,15 @@ impl WebSessionManager {
         let selected_model_id =
             opencode_qualified_model_id_for_prefix(&selection.qualified_id, selected_prefix)?;
         let configured_routes = self.agent_settings.get_configured_agent_model_routes();
-        let go_provider = self.preferred_opencode_provider_name("opencode-go");
-        let zen_provider = self.preferred_opencode_provider_name("opencode-zen");
         let selected_provider = self.preferred_opencode_provider_name(selected_prefix);
-        let mut routes = vec![selected_opencode_route(
+        let selected_route = selected_opencode_route(
             &selected_model_id,
             selected_prefix,
             &selected_provider,
             &configured_routes,
-        )];
+        );
 
-        for route in configured_routes {
-            if let Some(route) = normalize_model_route(route, &go_provider, &zen_provider) {
-                push_unique_route(&mut routes, route);
-            }
-        }
-
-        if let Some(discovered_models) = self.llm.opencode_go_models().await {
-            for model in discovered_models {
-                if model.protocol.eq_ignore_ascii_case("unknown") {
-                    continue;
-                }
-                push_unique_route(
-                    &mut routes,
-                    ModelInfo {
-                        id: model.qualified_id,
-                        provider: go_provider.clone(),
-                        max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
-                        context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
-                        weight: 1,
-                    },
-                );
-            }
-        }
-        if let Some(discovered_models) = self.llm.opencode_zen_models().await {
-            for model in discovered_models {
-                if model.protocol.eq_ignore_ascii_case("unknown") {
-                    continue;
-                }
-                push_unique_route(
-                    &mut routes,
-                    ModelInfo {
-                        id: model.qualified_id,
-                        provider: zen_provider.clone(),
-                        max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
-                        context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
-                        weight: 1,
-                    },
-                );
-            }
-        }
-
-        Some(routes)
+        Some(vec![selected_route])
     }
 
     fn preferred_opencode_provider_name(&self, model_prefix: &str) -> String {
@@ -1056,18 +991,21 @@ mod tests {
             .model_routes_override()
             .expect("model route override should be set");
 
+        assert_eq!(
+            routes.len(),
+            1,
+            "web model selection must not add fallback routes"
+        );
         assert_eq!(routes[0].id, "opencode-go/kimi-k2.6");
         assert_eq!(routes[0].provider, "opencode-go");
         assert_eq!(
             routes[0].max_output_tokens,
             DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS
         );
-        assert!(routes.iter().any(|route| {
-            route.id == "opencode-go/deepseek-v4-flash" && route.provider == "opencode-go"
-        }));
         assert!(routes
             .iter()
-            .any(|route| route.id == "mistral-large" && route.provider == "mistral"));
+            .all(|route| route.id != "opencode-go/deepseek-v4-flash"));
+        assert!(routes.iter().all(|route| route.provider != "mistral"));
     }
 
     #[tokio::test]
@@ -1114,11 +1052,16 @@ mod tests {
             .model_routes_override()
             .expect("model route override should be set");
 
+        assert_eq!(
+            routes.len(),
+            1,
+            "web model selection must not add fallback routes"
+        );
         assert_eq!(routes[0].id, "opencode-zen/deepseek-v4-flash-free");
         assert_eq!(routes[0].provider, "opencode-zen");
-        assert!(routes.iter().any(|route| {
-            route.id == "opencode-go/deepseek-v4-flash" && route.provider == "opencode-go"
-        }));
+        assert!(routes
+            .iter()
+            .all(|route| route.id != "opencode-go/deepseek-v4-flash"));
     }
 
     // -----------------------------------------------------------------------

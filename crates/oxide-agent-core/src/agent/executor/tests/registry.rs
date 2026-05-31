@@ -65,7 +65,7 @@ fn registry_topic_infra_config() -> crate::storage::TopicInfraConfigRecord {
 }
 
 #[test]
-fn v1_tool_runtime_model_detection_accepts_all_opencode_go_routes() {
+fn v1_tool_runtime_model_detection_accepts_opencode_go_and_zen_routes() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-v4-flash".to_string(),
@@ -97,10 +97,26 @@ fn v1_tool_runtime_model_detection_accepts_all_opencode_go_routes() {
             ..ModelInfo::default()
         }
     ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "opencode-zen/mimo-v2.5-free".to_string(),
+            provider: "opencode-zen".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "deepseek-v4-flash-free".to_string(),
+            provider: "llm-provider/opencode-zen".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
 }
 
 #[test]
-fn v1_tool_runtime_model_detection_rejects_non_opencode_go_routes() {
+fn v1_tool_runtime_model_detection_rejects_non_opencode_routes() {
     assert!(!AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-v4-flash".to_string(),

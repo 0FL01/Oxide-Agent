@@ -181,7 +181,7 @@ impl AgentRunner {
             .ok_or_else(|| anyhow::anyhow!("typed tool runtime requires an active model route"))?;
         if !v1_tool_runtime_enabled_for_model(&route) {
             return Err(anyhow::anyhow!(
-                "typed tool runtime v1 requires an opencode-go route; active route is {}/{}",
+                "typed tool runtime v1 requires an opencode-go or opencode-zen route; active route is {}/{}",
                 route.provider,
                 route.id
             ));
@@ -873,7 +873,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("typed tool runtime v1 requires an opencode-go route"));
+            .contains("typed tool runtime v1 requires an opencode-go or opencode-zen route"));
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
             "unsupported route must not write partial assistant/tool history"
