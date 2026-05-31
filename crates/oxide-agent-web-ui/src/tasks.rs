@@ -11,7 +11,7 @@ use oxide_agent_web_contracts::{
     TaskDetail, TaskEventKind, TaskStatus, TaskSummary, UserMessageEventPayload,
 };
 use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 #[derive(Clone)]
 struct PendingAttachmentFile {
@@ -770,12 +770,28 @@ fn ActivityDrawer(
     events: ReadSignal<Vec<PersistedTaskEvent>>,
     progress: ReadSignal<Option<ProgressSnapshot>>,
 ) -> impl IntoView {
+    let (elapsed_now_millis, set_elapsed_now_millis) =
+        signal(browser_now_millis().unwrap_or_default());
+    if let Ok(handle) = set_interval_with_handle(
+        move || {
+            let next = browser_now_millis()
+                .unwrap_or_else(|| elapsed_now_millis.get_untracked().saturating_add(1_000));
+            set_elapsed_now_millis.set(next);
+        },
+        Duration::from_secs(1),
+    ) {
+        on_cleanup(move || handle.clear());
+    }
+
     view! {
         <aside class=move || if open.get() && latest_activity_task_id(active_task, tasks).is_some() { "activity-drawer open" } else { "activity-drawer" }>
             <header class="activity-header">
-                <div>
-                    <div class="activity-title">"Activity"</div>
-                    <div class="activity-subtitle">{move || latest_activity_status(active_task, tasks).map(status_label).unwrap_or("idle")}</div>
+                <div class="activity-title-row">
+                    <span class="activity-title">"Activity"</span>
+                    {move || latest_activity_elapsed_label(active_task, tasks, elapsed_now_millis).map(|elapsed| view! {
+                        <span class="activity-title-separator">"·"</span>
+                        <span class="activity-elapsed">{elapsed}</span>
+                    })}
                 </div>
                 <button class="activity-close" type="button" on:click=move |_| set_open.set(false)>"×"</button>
             </header>
@@ -861,16 +877,73 @@ fn latest_activity_status(
     })
 }
 
-const fn status_label(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Queued => "queued",
-        TaskStatus::Running => "running",
-        TaskStatus::WaitingForUserInput => "waiting",
-        TaskStatus::Completed => "completed",
-        TaskStatus::Failed => "failed",
-        TaskStatus::Cancelled => "cancelled",
-        TaskStatus::Interrupted => "interrupted",
+#[derive(Clone, Copy)]
+struct ActivityTiming {
+    status: TaskStatus,
+    created_at_ms: i64,
+    started_at_ms: Option<i64>,
+    updated_at_ms: i64,
+    finished_at_ms: Option<i64>,
+}
+
+impl From<&TaskSummary> for ActivityTiming {
+    fn from(task: &TaskSummary) -> Self {
+        Self {
+            status: task.status,
+            created_at_ms: task.created_at.timestamp_millis(),
+            started_at_ms: task.started_at.map(|value| value.timestamp_millis()),
+            updated_at_ms: task.updated_at.timestamp_millis(),
+            finished_at_ms: task.finished_at.map(|value| value.timestamp_millis()),
+        }
     }
+}
+
+impl From<&TaskDetail> for ActivityTiming {
+    fn from(task: &TaskDetail) -> Self {
+        Self {
+            status: task.status,
+            created_at_ms: task.created_at.timestamp_millis(),
+            started_at_ms: task.started_at.map(|value| value.timestamp_millis()),
+            updated_at_ms: task.updated_at.timestamp_millis(),
+            finished_at_ms: task.finished_at.map(|value| value.timestamp_millis()),
+        }
+    }
+}
+
+fn latest_activity_elapsed_label(
+    active_task: ReadSignal<Option<TaskDetail>>,
+    tasks: ReadSignal<Vec<TaskSummary>>,
+    now_millis: ReadSignal<i64>,
+) -> Option<String> {
+    let timing = active_task
+        .get()
+        .map(|task| ActivityTiming::from(&task))
+        .or_else(|| {
+            tasks
+                .get()
+                .into_iter()
+                .max_by_key(|task| task.updated_at)
+                .map(|task| ActivityTiming::from(&task))
+        })?;
+    Some(format_duration(activity_elapsed_seconds(
+        timing, now_millis,
+    )))
+}
+
+fn activity_elapsed_seconds(timing: ActivityTiming, now_millis: ReadSignal<i64>) -> i64 {
+    let start_ms = timing.started_at_ms.unwrap_or(timing.created_at_ms);
+    let end_ms = if timing.status.is_terminal() {
+        timing.finished_at_ms.unwrap_or(timing.updated_at_ms)
+    } else {
+        now_millis.get().max(timing.updated_at_ms)
+    };
+    end_ms.saturating_sub(start_ms) / 1_000
+}
+
+fn browser_now_millis() -> Option<i64> {
+    let performance = web_sys::window()?.performance()?;
+    let millis = performance.time_origin() + performance.now();
+    millis.is_finite().then_some(millis.round() as i64)
 }
 
 fn thought_label(task: &TaskSummary) -> String {

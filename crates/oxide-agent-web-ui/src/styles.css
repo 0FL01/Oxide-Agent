@@ -2668,11 +2668,23 @@ textarea {
   font-weight: 600;
 }
 
-.activity-subtitle {
+.activity-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.activity-title-separator {
   color: var(--faint);
-  font: 11px/1.5 var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: 13px;
+}
+
+.activity-elapsed {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .activity-close {
