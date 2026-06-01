@@ -39,6 +39,8 @@ pub mod runner;
 pub mod session;
 /// Structured output parsing and validation
 pub mod structured_output;
+/// Deterministic summaries for noisy dead-end tool failures.
+pub(crate) mod tool_failure_summary;
 /// Async parallel tool runtime foundations.
 pub mod tool_runtime;
 /// Durable LLM Wiki memory primitives.

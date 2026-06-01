@@ -8,6 +8,7 @@ use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
+use crate::agent::tool_failure_summary::summarize_tool_failure_content;
 use crate::agent::tool_runtime::{
     v1_tool_runtime_enabled_for_model, ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata,
     ToolBatchId, ToolCallRuntime, ToolHistoryError, ToolHistoryWriter, ToolOutput,
@@ -332,20 +333,35 @@ if any of it is needed for the user, include it explicitly in a later final_answ
             .with_provider_tool_call_id(output.tool_call_id.as_str())
             .with_protocol(ToolProtocol::ChatLike)
             .with_transport(ToolTransport::ClientRoundTrip);
+        let failure_summary = summarize_tool_failure_content(&tool_name, &content);
+        let memory_content = failure_summary
+            .as_ref()
+            .map(|summary| summary.content.as_str())
+            .unwrap_or(content.as_str());
         ctx.messages.push(Message::tool_with_correlation(
             output.invocation_id.as_str(),
             correlation.clone(),
             &tool_name,
-            &content,
+            memory_content,
         ));
-        ctx.agent
-            .memory_mut()
-            .add_message(AgentMessage::tool_with_correlation(
+        let memory_message = if let Some(summary) = failure_summary {
+            AgentMessage::pruned_tool_with_correlation(
+                output.invocation_id.as_str(),
+                correlation,
+                &tool_name,
+                summary.content,
+                summary.pruned_artifact,
+                None,
+            )
+        } else {
+            AgentMessage::tool_with_correlation(
                 output.invocation_id.as_str(),
                 correlation,
                 &tool_name,
                 &content,
-            ));
+            )
+        };
+        ctx.agent.memory_mut().add_message(memory_message);
     }
 
     fn extract_command_preview(arguments: &str) -> Option<String> {
@@ -379,6 +395,7 @@ mod tests {
     use std::time::Duration;
 
     struct StaticRuntimeExecutor;
+    struct DeadEndFailureRuntimeExecutor;
     struct ParallelRuntimeExecutor {
         active: Arc<AtomicUsize>,
         max_seen: Arc<AtomicUsize>,
@@ -407,6 +424,41 @@ mod tests {
                 "runtime-ok",
                 "",
             ))
+        }
+    }
+
+    #[async_trait]
+    impl ToolExecutor for DeadEndFailureRuntimeExecutor {
+        fn name(&self) -> ToolName {
+            ToolName::from("web_markdown")
+        }
+
+        fn spec(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "web_markdown".to_string(),
+                description: "fetch markdown".to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<ToolOutput, ToolRuntimeError> {
+            let mut output = OutputNormalizer::new(ToolRuntimeConfig::default()).failure(
+                &invocation,
+                "web_markdown blocked by anti-bot protection at platform.kimi.ai; this lightweight fetcher cannot solve JS/CAPTCHA/PoW challenges. Do not retry this host in this task; use another source.",
+            );
+            output.structured_payload = Some(json!({
+                "provider": "web_markdown",
+                "kind": "fetch",
+                "error_kind": "anti_bot",
+                "host": "platform.kimi.ai",
+                "url": "https://platform.kimi.ai/pricing/limits",
+                "retryable": false,
+                "provider_unavailable": true
+            }));
+            Ok(output)
         }
     }
 
@@ -616,6 +668,96 @@ mod tests {
         assert_eq!(memory[2].kind, AgentMessageKind::UndeliveredAssistantDraft);
         assert!(memory[2].content.contains("not delivered to the user"));
         assert!(memory[2].content.contains(draft));
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_path_prunes_dead_end_tool_failure_in_memory() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(DeadEndFailureRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "fetch blocked page through runtime",
+            system_prompt: "system prompt",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-dead-end-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-web-1",
+            ToolCallFunction {
+                name: "web_markdown".to_string(),
+                arguments: r#"{"url":"https://platform.kimi.ai/pricing/limits"}"#.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-web-1")
+                .with_provider_tool_call_id("call-web-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::StructuredControlEnvelope,
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 2);
+        let tool_result = &memory[1];
+        assert_eq!(tool_result.kind, AgentMessageKind::ToolResult);
+        assert_eq!(tool_result.tool_call_id.as_deref(), Some("invoke-web-1"));
+        assert_eq!(
+            tool_result
+                .tool_call_correlation
+                .as_ref()
+                .map(ToolCallCorrelation::wire_tool_call_id),
+            Some("call-web-1")
+        );
+        assert!(tool_result.is_pruned());
+        assert!(tool_result.content.contains("\"dead_end\":true"));
+        assert!(tool_result.content.contains("\"dead_end_scope\":\"host\""));
+        assert!(!tool_result.content.contains("bytes_captured"));
+        assert_eq!(ctx.messages[1].content, tool_result.content);
     }
 
     #[tokio::test]
