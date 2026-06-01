@@ -179,12 +179,19 @@ impl AgentRunner {
 
         let context_window = Self::route_context_window(ctx, route);
         let policy = CompactionPolicy::default();
+        let warning_threshold_tokens =
+            context_window.saturating_mul(policy.warning_threshold_percent as usize) / 100;
         let compact_threshold_tokens =
             context_window.saturating_mul(policy.compact_threshold_percent as usize) / 100;
         let request_overhead = count_tokens_cached(ctx.system_prompt)
             .saturating_add(Self::tool_schema_tokens(ctx.tools))
             .saturating_add(route.max_output_tokens as usize)
             .saturating_add(policy.hard_reserve_tokens);
+        let warning_target = warning_threshold_tokens.saturating_sub(request_overhead);
+        if warning_target >= MIN_TARGET_TOKENS {
+            return warning_target;
+        }
+
         let compact_target = compact_threshold_tokens.saturating_sub(request_overhead);
         if compact_target >= MIN_TARGET_TOKENS {
             return compact_target;
@@ -465,8 +472,9 @@ impl AgentRunner {
 mod tests {
     use super::*;
     use crate::agent::compaction::{
-        CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
-        CompactedSummaryMetadata, CompactionController, OXIDE_COMPACTED_SUMMARY_PREFIX,
+        build_compacted_history, BuildCompactedHistoryRequest, CompactSummaryBackend,
+        CompactSummaryError, CompactSummaryRequest, CompactSummaryResult, CompactedSummaryMetadata,
+        CompactionController, OXIDE_COMPACTED_SUMMARY_PREFIX,
     };
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
@@ -477,7 +485,9 @@ mod tests {
     };
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
     use crate::config::{AgentSettings, ModelInfo};
-    use crate::llm::{LlmClient, LlmError, MockLlmProvider};
+    use crate::llm::{
+        LlmClient, LlmError, MockLlmProvider, ToolCall, ToolCallFunction, ToolDefinition,
+    };
     use async_trait::async_trait;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -722,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_compaction_target_stays_below_full_request_compact_threshold() {
+    fn runtime_compaction_target_returns_full_request_to_warning_budget() {
         let tools = Vec::new();
         let mut session = EphemeralSession::new(128_000);
         session.memory_mut().add_message(AgentMessage::user_task(
@@ -763,12 +773,157 @@ mod tests {
             .saturating_add(target)
             .saturating_add(route.max_output_tokens as usize)
             .saturating_add(policy.hard_reserve_tokens);
-        let compact_threshold = (route.context_window_tokens as usize)
-            .saturating_mul(policy.compact_threshold_percent as usize)
+        let warning_threshold = (route.context_window_tokens as usize)
+            .saturating_mul(policy.warning_threshold_percent as usize)
             / 100;
 
         assert!(target < AgentRunner::route_hot_history_budget(&ctx, &route));
-        assert!(projected_total <= compact_threshold);
+        assert!(projected_total <= warning_threshold);
+        drop(ctx);
+    }
+
+    #[test]
+    fn runtime_compaction_smoke_reduces_tool_loop_below_repeat_threshold() {
+        let tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search the web for current public pricing and product information."
+                .repeat(80),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "freshness": { "type": "string" }
+                },
+                "required": ["query"]
+            }),
+        }];
+        let mut session = EphemeralSession::new(272_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Research pricing plans"));
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user("Find current pricing details."));
+        for index in 0..28 {
+            let call_id = format!("call-search-{index}");
+            let search_call = ToolCall::new(
+                call_id.clone(),
+                ToolCallFunction {
+                    name: "search".to_string(),
+                    arguments: format!(r#"{{"query":"pricing plan {index}"}}"#),
+                },
+                false,
+            );
+            session
+                .memory_mut()
+                .add_message(AgentMessage::assistant_with_tools(
+                    format!("Searching pricing source {index}."),
+                    vec![search_call],
+                ));
+            session.memory_mut().add_message(AgentMessage::tool(
+                &call_id,
+                "search",
+                &format!(
+                    "pricing result {index}: {}",
+                    "large current pricing evidence ".repeat(450)
+                ),
+            ));
+        }
+
+        let before_tokens = session.memory().token_count();
+        let before_items = session.memory().get_messages().len();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let system_prompt = "system prompt with operational instructions".repeat(1_200);
+        let route = ModelInfo {
+            id: "opencode-go/deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 128_000,
+            context_window_tokens: 272_000,
+            weight: 1,
+        };
+        let ctx = AgentRunnerContext {
+            task: "Research pricing plans",
+            system_prompt: &system_prompt,
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-compaction-smoke-tool-loop",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new(
+                "opencode-go/deepseek-v4-flash".to_string(),
+                1,
+                1,
+                30,
+                128_000,
+            ),
+        };
+        let target = AgentRunner::route_compacted_history_budget(&ctx, &route);
+        assert!(before_tokens > target, "fixture must require compaction");
+
+        let metadata = CompactedSummaryMetadata {
+            generation: 1,
+            reason: CompactionReason::MidTurn,
+            phase: CompactionPhase::PreSampling,
+            token_before: before_tokens,
+            token_after: 0,
+            history_items_before: before_items,
+            history_items_after: 0,
+            provider: route.provider.clone(),
+            route: route.id.clone(),
+            backend: CompactionBackend::LocalLlmSummary,
+            created_at: "2026-06-01T10:20:00Z".to_string(),
+            previous_summary_detected: false,
+            repair_applied: false,
+            wiki_memory_lookup_available: false,
+        };
+        let replacement = build_compacted_history(BuildCompactedHistoryRequest {
+            messages: ctx.agent.memory().get_messages(),
+            summary_text: "GENERATION: 1\nGOAL: Research pricing.\nFINDINGS: Summarized older tool evidence.\nBLOCKERS: none.\nNEXT_STEPS: Continue with current source.",
+            metadata: &metadata,
+            target_token_budget: target,
+        })
+        .expect("smoke compaction replacement builds");
+        let after_tokens = replacement
+            .iter()
+            .map(|message| {
+                let mut tokens = count_tokens_cached(&message.content);
+                if let Some(reasoning) = &message.reasoning {
+                    tokens = tokens.saturating_add(count_tokens_cached(reasoning));
+                }
+                tokens
+            })
+            .sum::<usize>();
+
+        assert!(replacement.len() < before_items);
+        assert!(after_tokens < before_tokens);
+        assert!(after_tokens <= target);
+
+        ctx.agent.memory_mut().replace_messages(replacement);
+        let request = CompactionRequest::new(
+            CompactionTrigger::PreIteration,
+            ctx.task,
+            ctx.system_prompt,
+            ctx.tools,
+            &route.id,
+            route.max_output_tokens,
+            false,
+        );
+        let estimate = estimate_request_budget(&CompactionPolicy::default(), &request, ctx.agent);
+        assert!(
+            !matches!(
+                estimate.state,
+                BudgetState::ShouldCompact | BudgetState::OverLimit
+            ),
+            "post-compaction request must not immediately compact again: {estimate:?}"
+        );
+        assert!(estimate.projected_total_tokens < estimate.compact_threshold_tokens);
         drop(ctx);
     }
 

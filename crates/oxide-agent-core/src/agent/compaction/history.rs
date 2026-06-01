@@ -71,13 +71,13 @@ pub fn extract_previous_compacted_summary(
     })
 }
 
-/// Minimum number of complete conversation rounds guaranteed to survive compaction.
+/// Best-effort minimum number of recent user turns to retain when they fit.
 const MIN_RECENT_ROUNDS: usize = 3;
 
 /// Build a deterministic replacement history with one authoritative compacted summary.
 ///
 /// This builder keeps pinned model-visible state plus a recent raw tail that
-/// guarantees at least [`MIN_RECENT_ROUNDS`] complete user/assistant exchanges.
+/// best-effort retains up to [`MIN_RECENT_ROUNDS`] recent user-turn anchors.
 /// Complete tool-call pairs (AssistantToolCall + matching ToolResult) are
 /// retained when they fall within the recent budget or minimum floor.
 pub fn build_compacted_history(
@@ -120,7 +120,9 @@ pub fn build_compacted_history(
     // contains orphaned tool results or partially-trimmed tool calls.
     //
     // Phase 2 — minimum floor: if fewer than MIN_RECENT_ROUNDS user turns made
-    // it through the budget, continue collecting without budget constraint.
+    // it through, continue collecting only while the target budget still allows
+    // it. The summary carries older oversized context; the raw tail must not
+    // become a no-op compaction by dragging the entire tool loop back in.
 
     let mut collected_indices: HashSet<usize> = HashSet::new();
     let mut user_rounds = 0usize;
@@ -157,7 +159,7 @@ pub fn build_compacted_history(
         }
     }
 
-    // --- Phase 2: minimum floor (budget-blind) ---
+    // --- Phase 2: minimum floor (budget-respecting) ---
     if user_rounds < MIN_RECENT_ROUNDS {
         for (index, message) in request.messages.iter().enumerate().rev() {
             if collected_indices.contains(&index) {
@@ -171,6 +173,16 @@ pub fn build_compacted_history(
             ) else {
                 continue;
             };
+            let tokens = candidate
+                .iter()
+                .filter(|index| !collected_indices.contains(index))
+                .map(|index| message_tokens(&request.messages[*index]))
+                .sum::<usize>();
+            let fits_budget = request.target_token_budget == 0
+                || used_tokens.saturating_add(tokens) <= request.target_token_budget;
+            if !fits_budget {
+                continue;
+            }
             include_candidate_indices(
                 request.messages,
                 candidate,
@@ -541,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_floor_preserves_complete_tool_batch_over_budget() {
+    fn minimum_floor_respects_budget_for_oversized_tool_batch() {
         let search_call = ToolCall::new(
             "call-search".to_string(),
             ToolCallFunction {
@@ -568,14 +580,64 @@ mod tests {
             metadata: &metadata(false),
             target_token_budget: 2_000,
         })
-        .expect("minimum floor keeps complete tool batch");
+        .expect("minimum floor skips oversized complete tool batch");
 
         assert!(replacement
             .iter()
+            .any(|message| message.content == "Need fresh pricing data."));
+        assert!(!replacement
+            .iter()
             .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
-        assert!(replacement
+        assert!(!replacement
             .iter()
             .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult));
+        assert!(replacement.iter().map(message_tokens).sum::<usize>() <= 2_000);
+
+        let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
+        assert!(!repair_outcome.applied);
+        assert_eq!(validated.len(), replacement.len());
+    }
+
+    #[test]
+    fn minimum_floor_does_not_reinflate_tool_heavy_single_turn_history() {
+        let mut messages = vec![
+            AgentMessage::user_task("Research current pricing."),
+            AgentMessage::user("Find current pricing details."),
+        ];
+        for index in 0..12 {
+            let call_id = format!("call-search-{index}");
+            let search_call = ToolCall::new(
+                call_id.clone(),
+                ToolCallFunction {
+                    name: "search".to_string(),
+                    arguments: format!(r#"{{"query":"pricing {index}"}}"#),
+                },
+                false,
+            );
+            messages.push(AgentMessage::assistant_with_tools(
+                format!("Searching batch {index}."),
+                vec![search_call],
+            ));
+            messages.push(AgentMessage::tool(
+                &call_id,
+                "search",
+                &format!("result {index}: {}", "large tool result ".repeat(500)),
+            ));
+        }
+
+        let replacement = build_compacted_history(BuildCompactedHistoryRequest {
+            messages: &messages,
+            summary_text: "Current compacted pricing research state.",
+            metadata: &metadata(false),
+            target_token_budget: 2_000,
+        })
+        .expect("history compacts tool-heavy single-turn loop");
+
+        assert!(
+            replacement.len() < messages.len(),
+            "minimum floor must not re-add every skipped tool batch"
+        );
+        assert!(replacement.iter().map(message_tokens).sum::<usize>() <= 2_000);
 
         let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
         assert!(!repair_outcome.applied);
