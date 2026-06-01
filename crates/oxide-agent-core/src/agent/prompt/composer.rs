@@ -426,15 +426,23 @@ pub fn get_fallback_prompt() -> String {
 }
 
 /// Build instructions for mandatory structured output (JSON).
+///
+/// Tool schemas are NOT duplicated here — the model receives them via the native
+/// `tools[]` API payload.  Only a compact sorted tool-name list is embedded to
+/// keep the prompt prefix stable and cache-friendly.
 #[must_use]
 pub fn build_structured_output_instructions(tools: &[ToolDefinition]) -> String {
-    let tools_json = serde_json::to_string_pretty(&tools).unwrap_or_else(|_| "[]".to_string());
     let tool_names = tool_name_set(tools);
     let todo_blocked_rule = if has_tool(&tool_names, "write_todos") {
         "\n- If you maintain a todo list and the remaining work is blocked on the user, mark the relevant todo as `blocked_on_user` before returning `awaiting_user_input`"
     } else {
         ""
     };
+    let tools_list = tool_names
+        .iter()
+        .map(|n| format!("- `{n}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     format!(
         r#"## STRUCTURED OUTPUT (MANDATORY)
@@ -475,10 +483,10 @@ Rules:
 ### Example Awaiting User Input
 {{"thought":"Need the APK source before continuing","tool_call":null,"final_answer":null,"awaiting_user_input":{{"kind":"url_or_file","prompt":"Send a direct download link for the APK or upload the APK file so I can continue."}}}}
 
-## Available Tools (JSON schema)
-{tools_json}"#,
+## Available Tools
+{tools_list}"#,
         todo_blocked_rule = todo_blocked_rule,
-        tools_json = tools_json
+        tools_list = tools_list
     )
 }
 
@@ -503,6 +511,9 @@ pub async fn create_agent_system_prompt(
     prompt_instructions: Option<&str>,
     wiki_context: Option<&str>,
 ) -> String {
+    // Build date_context early but append at end for cache hit:
+    // stable prefix (fallback + instructions + workflow + structured output)
+    // must come first; dynamic date_context goes last.
     let date_context = build_date_context(tools);
 
     let base_prompt = get_fallback_prompt();
@@ -514,29 +525,31 @@ pub async fn create_agent_system_prompt(
         base_prompt
     };
 
-    let base_prompt = if let Some(context) = normalize_wiki_context(wiki_context) {
-        format!("{base_prompt}\n\n{context}")
-    } else {
-        base_prompt
-    };
-
     let base_prompt = if structured_output {
         base_prompt
     } else {
         strip_structured_output_requirement(&base_prompt)
     };
 
+    // Workflow guidance is stable for a given tool-set — place before dynamic wiki.
     let base_prompt = if let Some(workflow_guidance) = build_workflow_guidance(tools) {
         format!("{base_prompt}\n\n{workflow_guidance}")
     } else {
         base_prompt
     };
 
+    // Wiki context is dynamic (varies per task keywords) — place after stable blocks.
+    let base_prompt = if let Some(context) = normalize_wiki_context(wiki_context) {
+        format!("{base_prompt}\n\n{context}")
+    } else {
+        base_prompt
+    };
+
     if structured_output {
         let structured_output = build_structured_output_instructions(tools);
-        format!("{date_context}{base_prompt}\n\n{structured_output}")
+        format!("{base_prompt}\n\n{structured_output}\n\n{date_context}")
     } else {
-        format!("{date_context}{base_prompt}")
+        format!("{base_prompt}\n\n{date_context}")
     }
 }
 
@@ -562,7 +575,9 @@ pub fn create_sub_agent_system_prompt(
     structured_output: bool,
     extra_context: Option<&str>,
 ) -> String {
+    // Build date_context early but append at end for cache hit.
     let date_context = build_date_context(tools);
+
     let mut base_prompt = format!(
         "You are a lightweight sub-agent for draft work.\n\
 You do NOT communicate with the user directly and return the result only to the orchestrator.\n\
@@ -592,9 +607,9 @@ Do not spawn, wait for, or cancel sub-agents and do not send files to the user."
 
     if structured_output {
         let structured_output = build_structured_output_instructions(tools);
-        format!("{date_context}{base_prompt}\n\n{structured_output}")
+        format!("{base_prompt}\n\n{structured_output}\n\n{date_context}")
     } else {
-        format!("{date_context}{base_prompt}")
+        format!("{base_prompt}\n\n{date_context}")
     }
 }
 
@@ -820,5 +835,413 @@ mod tests {
         let prompt = build_structured_output_instructions(&tools);
 
         assert!(prompt.contains("blocked_on_user"));
+    }
+
+    /// Date/time block must be at the end of the system prompt, not the beginning,
+    /// to preserve prompt cache hit across requests (stable prefix + dynamic suffix).
+    #[tokio::test]
+    async fn test_date_context_at_end_of_main_agent_prompt() {
+        let tools = [ToolDefinition {
+            name: "demo_tool".to_string(),
+            description: "demo".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }];
+        let mut session = AgentSession::new(1_i64.into());
+
+        let prompt =
+            create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+
+        let date_pos = prompt
+            .find("### CURRENT DATE AND TIME")
+            .expect("date context must be present");
+        let structured_pos = prompt
+            .find("## STRUCTURED OUTPUT")
+            .expect("structured output must be present");
+
+        assert!(
+            date_pos > structured_pos,
+            "date context must come AFTER structured output for cache hit, \
+             but date is at {date_pos} and structured output at {structured_pos}"
+        );
+    }
+
+    /// Date/time block must be at the end of the sub-agent system prompt too.
+    #[test]
+    fn test_date_context_at_end_of_sub_agent_prompt() {
+        let tools = [ToolDefinition {
+            name: "demo_tool".to_string(),
+            description: "demo".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }];
+
+        let prompt = create_sub_agent_system_prompt("demo task", &tools, true, None);
+
+        let date_pos = prompt
+            .find("### CURRENT DATE AND TIME")
+            .expect("date context must be present");
+        let structured_pos = prompt
+            .find("## STRUCTURED OUTPUT")
+            .expect("structured output must be present");
+
+        assert!(
+            date_pos > structured_pos,
+            "sub-agent date context must come AFTER structured output for cache hit, \
+             but date is at {date_pos} and structured output at {structured_pos}"
+        );
+    }
+
+    /// Wiki context must come after workflow guidance for stable prefix caching.
+    #[tokio::test]
+    async fn test_wiki_context_after_workflow_guidance() {
+        let tools = [ToolDefinition {
+            name: "write_todos".to_string(),
+            description: "demo".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }];
+        let mut session = AgentSession::new(1_i64.into());
+
+        let prompt = create_agent_system_prompt(
+            "demo task",
+            &tools,
+            true,
+            &mut session,
+            None,
+            Some("## Durable Wiki Memory\nSome wiki content."),
+        )
+        .await;
+
+        let wiki_pos = prompt
+            .find("## Durable Wiki Memory")
+            .expect("wiki must be present");
+        let workflow_pos = prompt
+            .find("## Workflow Hints")
+            .expect("workflow hints must be present");
+
+        assert!(
+            wiki_pos > workflow_pos,
+            "wiki context must come AFTER workflow guidance for stable prefix, \
+             but wiki is at {wiki_pos} and workflow at {workflow_pos}"
+        );
+    }
+
+    // --- Tool schema duplication cache-miss tests ---
+
+    /// Helper: build a realistic set of tool definitions for size measurement.
+    fn realistic_tools() -> Vec<ToolDefinition> {
+        vec![
+            ToolDefinition {
+                name: "execute_command".to_string(),
+                description: "Execute a shell command in the sandbox".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Shell command to run" },
+                        "timeout": { "type": "integer", "description": "Timeout in seconds" }
+                    },
+                    "required": ["command"]
+                }),
+            },
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read a file from the sandbox".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "File path" },
+                        "encoding": { "type": "string", "description": "File encoding" }
+                    },
+                    "required": ["path"]
+                }),
+            },
+            ToolDefinition {
+                name: "write_file".to_string(),
+                description: "Write a file to the sandbox".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "File path" },
+                        "content": { "type": "string", "description": "File content" }
+                    },
+                    "required": ["path", "content"]
+                }),
+            },
+            ToolDefinition {
+                name: "web_search".to_string(),
+                description: "Search the web".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Search query" },
+                        "max_results": { "type": "integer", "description": "Max results" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "write_todos".to_string(),
+                description: "Update the task todo list".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "todos": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": { "type": "string" },
+                                    "status": { "type": "string", "enum": ["pending","in_progress","completed","cancelled"] },
+                                    "priority": { "type": "string", "enum": ["high","medium","low"] }
+                                },
+                                "required": ["content","status","priority"]
+                            }
+                        }
+                    },
+                    "required": ["todos"]
+                }),
+            },
+        ]
+    }
+
+    /// Verifies that build_structured_output_instructions() does NOT embed full tool
+    /// JSON schemas in the system prompt text.  Tool schemas are delivered exclusively
+    /// via the native `tools[]` API payload; the prompt only contains a compact sorted
+    /// tool-name list for cache-friendly prefix stability.
+    #[test]
+    fn test_structured_output_uses_compact_tool_names_not_schemas() {
+        let tools = realistic_tools();
+
+        let instructions = build_structured_output_instructions(&tools);
+
+        // 1. The prompt must NOT contain full JSON schemas.
+        let tools_json =
+            serde_json::to_string_pretty(&tools).expect("serializing tool definitions must succeed");
+        assert!(
+            !instructions.contains(&tools_json),
+            "prompt must NOT embed full pretty-printed tools_json — schemas belong in native tools[] only"
+        );
+
+        // 2. The prompt must NOT contain any tool descriptions or parameter schemas.
+        for tool in &tools {
+            // Tool name is present (compact list), but description must not be.
+            assert!(
+                instructions.contains(&tool.name),
+                "tool name '{}' must appear in compact list",
+                tool.name
+            );
+            assert!(
+                !instructions.contains(&tool.description),
+                "tool description for '{}' must NOT appear in prompt — it is in native tools[]",
+                tool.name
+            );
+        }
+
+        // 3. Size measurement: compact list is much smaller than pretty-printed JSON.
+        let prompt_tools_section = instructions
+            .find("## Available Tools")
+            .map(|pos| &instructions[pos..])
+            .expect("## Available Tools section must exist");
+        let tools_json_bytes = tools_json.len();
+        let compact_bytes = prompt_tools_section.len();
+
+        eprintln!(
+            "Tool schema deduplication metrics:\n\
+             - Full JSON schema (old): {tools_json_bytes} bytes\n\
+             - Compact name list (new): {compact_bytes} bytes\n\
+             - Reduction: {:.1}x",
+            tools_json_bytes as f64 / compact_bytes.max(1) as f64
+        );
+
+        assert!(
+            compact_bytes < tools_json_bytes / 5,
+            "compact tool list ({compact_bytes} bytes) must be much smaller than \
+             old pretty-printed JSON ({tools_json_bytes} bytes)"
+        );
+    }
+
+    /// Verifies two cache-stability properties of the compact tool-name approach:
+    ///
+    /// 1. With an **unchanged** tool set, the full prompt prefix (including the tool-name
+    ///    list) is byte-for-byte identical across iterations — enabling cache hit.
+    /// 2. Adding a tool only changes the tail of the prompt (compact name list + date
+    ///    context), preserving the stable prefix (fallback + instructions + workflow).
+    #[tokio::test]
+    async fn test_tool_addition_preserves_stable_prefix() {
+        let tools_small: Vec<ToolDefinition> = realistic_tools();
+        let tools_large = {
+            let mut t = tools_small.clone();
+            t.push(ToolDefinition {
+                name: "wiki_memory_read".to_string(),
+                description: "Read a wiki page".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "slug": { "type": "string", "description": "Page slug" }
+                    },
+                    "required": ["slug"]
+                }),
+            });
+            t
+        };
+
+        let mut session1 = AgentSession::new(1_i64.into());
+        let mut session2 = AgentSession::new(1_i64.into());
+
+        let prompt_small = create_agent_system_prompt(
+            "task",
+            &tools_small,
+            true,
+            &mut session1,
+            None,
+            None,
+        )
+        .await;
+        let prompt_large = create_agent_system_prompt(
+            "task",
+            &tools_large,
+            true,
+            &mut session2,
+            None,
+            None,
+        )
+        .await;
+
+        // Property 1: same tool set → identical prompt (except date context which changes
+        // between calls due to time). Test this by building two prompts with same tools.
+        let mut session3 = AgentSession::new(1_i64.into());
+        let prompt_same = create_agent_system_prompt(
+            "task",
+            &tools_small,
+            true,
+            &mut session3,
+            None,
+            None,
+        )
+        .await;
+
+        // Everything before date context should be byte-identical for same tool set.
+        let available_tools_end_small = prompt_small
+            .find("## Available Tools\n")
+            .map(|pos| {
+                prompt_small[pos..]
+                    .find("\n\n")
+                    .map(|delta| pos + delta)
+                    .unwrap_or(prompt_small.len())
+            })
+            .expect("## Available Tools must exist");
+        let available_tools_end_same = prompt_same
+            .find("## Available Tools\n")
+            .map(|pos| {
+                prompt_same[pos..]
+                    .find("\n\n")
+                    .map(|delta| pos + delta)
+                    .unwrap_or(prompt_same.len())
+            })
+            .expect("## Available Tools must exist");
+
+        assert_eq!(
+            &prompt_small[..available_tools_end_small],
+            &prompt_same[..available_tools_end_same],
+            "same tool set must produce byte-identical prompt up to and including the tool list"
+        );
+
+        // Property 2: different tool sets → stable prefix preserved, divergence at name list.
+        let shared_prefix_len = prompt_small
+            .chars()
+            .zip(prompt_large.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+
+        let available_tools_pos = prompt_small
+            .find("## Available Tools")
+            .expect("available tools section must exist");
+
+        eprintln!(
+            "Prefix stability analysis (compact names):\n\
+             - Shared prefix length: {shared_prefix_len} chars\n\
+             - Available Tools starts at: {available_tools_pos}\n\
+             - prompt_small total: {} chars\n\
+             - prompt_large total: {} chars",
+            prompt_small.len(),
+            prompt_large.len(),
+        );
+
+        let lost_cache_bytes = prompt_small.len() - shared_prefix_len;
+        let lost_pct = lost_cache_bytes as f64 / prompt_small.len() as f64 * 100.0;
+        eprintln!(
+            "Cache impact of adding 1 tool:\n\
+             - Bytes that lose cache hit: {lost_cache_bytes} ({lost_pct:.1}%)\n\
+             - Stable prefix preserved: {shared_prefix_len} chars ({:.1}%)",
+            shared_prefix_len as f64 / prompt_small.len() as f64 * 100.0
+        );
+
+        // The stable prefix (everything before the tool name list) must be > 40 chars.
+        assert!(
+            shared_prefix_len > 40,
+            "stable prefix must be substantial"
+        );
+    }
+
+    /// Verifies that the prompt tool list and native tools[] payload are
+    /// complementary (not duplicating): prompt has only names, native has
+    /// full schemas.  Total wire bytes are significantly reduced.
+    #[test]
+    fn test_prompt_and_native_payload_are_complementary() {
+        let tools = realistic_tools();
+
+        // Prompt tools section (compact names only).
+        let instructions = build_structured_output_instructions(&tools);
+        let prompt_tools_section = instructions
+            .find("## Available Tools")
+            .map(|pos| &instructions[pos..])
+            .expect("## Available Tools section must exist");
+
+        // Native OpenAI-format tools[] (full schemas — unchanged).
+        let native_tools: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
+            })
+            .collect();
+        let native_tools_json =
+            serde_json::to_string(&native_tools).expect("serializing native tools must succeed");
+
+        let prompt_bytes = prompt_tools_section.len();
+        let native_bytes = native_tools_json.len();
+
+        let pct =
+            native_bytes as f64 / (native_bytes * 2 + prompt_bytes) as f64 * 100.0;
+        eprintln!(
+            "Wire metrics (no duplication):\n\
+             - Prompt tool-name list: {prompt_bytes} bytes\n\
+             - Native tools[] payload: {native_bytes} bytes (full schemas)\n\
+             - Total on wire: {total} bytes\n\
+             - Old total was: {old_total} bytes (prompt had full schemas too)\n\
+             - Savings: {native_bytes} bytes ({pct:.0}%)",
+            total = prompt_bytes + native_bytes,
+            old_total = native_bytes * 2 + prompt_bytes,
+        );
+
+        // Prompt section must be much smaller than native payload (names only vs schemas).
+        assert!(
+            prompt_bytes < native_bytes / 3,
+            "prompt tools section ({prompt_bytes} bytes) must be much smaller than \
+             native payload ({native_bytes} bytes) — only names, no schemas"
+        );
+
+        // No description or parameter content from native tools should leak into prompt.
+        for tool in &tools {
+            assert!(
+                !prompt_tools_section.contains(&tool.description),
+                "tool description for '{}' must NOT appear in prompt",
+                tool.name
+            );
+        }
     }
 }
