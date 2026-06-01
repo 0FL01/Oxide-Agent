@@ -151,16 +151,15 @@ impl AgentRunner {
             return false;
         }
 
-        let projected_total = Self::projected_total_tokens_for_route(ctx, next_route);
+        let projected_total = Self::projected_total_tokens_for_route(ctx);
         projected_total > next_window as usize
     }
 
-    fn projected_total_tokens_for_route(ctx: &AgentRunnerContext<'_>, route: &ModelInfo) -> usize {
+    fn projected_total_tokens_for_route(ctx: &AgentRunnerContext<'_>) -> usize {
         let policy = CompactionPolicy::default();
         count_tokens_cached(ctx.system_prompt)
             .saturating_add(Self::tool_schema_tokens(ctx.tools))
             .saturating_add(ctx.agent.memory().token_count())
-            .saturating_add(route.max_output_tokens as usize)
             .saturating_add(policy.hard_reserve_tokens)
     }
 
@@ -170,7 +169,6 @@ impl AgentRunner {
         context_window
             .saturating_sub(count_tokens_cached(ctx.system_prompt))
             .saturating_sub(Self::tool_schema_tokens(ctx.tools))
-            .saturating_sub(route.max_output_tokens as usize)
             .saturating_sub(policy.hard_reserve_tokens)
     }
 
@@ -185,7 +183,6 @@ impl AgentRunner {
             context_window.saturating_mul(policy.compact_threshold_percent as usize) / 100;
         let request_overhead = count_tokens_cached(ctx.system_prompt)
             .saturating_add(Self::tool_schema_tokens(ctx.tools))
-            .saturating_add(route.max_output_tokens as usize)
             .saturating_add(policy.hard_reserve_tokens);
         let warning_target = warning_threshold_tokens.saturating_sub(request_overhead);
         if warning_target >= MIN_TARGET_TOKENS {
@@ -686,11 +683,11 @@ mod tests {
     }
 
     #[test]
-    fn runtime_compaction_threshold_uses_full_request_budget() {
+    fn runtime_compaction_threshold_ignores_output_reserve() {
         let tools = Vec::new();
         let mut session = EphemeralSession::new(20_000);
         session.memory_mut().add_message(AgentMessage::user_task(
-            "Compact because output reserve consumes the route window",
+            "Do not compact only because output cap is large",
         ));
 
         assert!(
@@ -702,7 +699,7 @@ mod tests {
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
         let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
         let ctx = AgentRunnerContext {
-            task: "Compact because output reserve consumes the route window",
+            task: "Do not compact only because output cap is large",
             system_prompt: "system prompt",
             tools: &tools,
             tool_runtime_registry: None,
@@ -725,7 +722,7 @@ mod tests {
             weight: 1,
         };
 
-        assert!(AgentRunner::runtime_compaction_threshold_reached(
+        assert!(!AgentRunner::runtime_compaction_threshold_reached(
             &ctx, &route
         ));
         drop(ctx);
@@ -736,7 +733,7 @@ mod tests {
         let tools = Vec::new();
         let mut session = EphemeralSession::new(128_000);
         session.memory_mut().add_message(AgentMessage::user_task(
-            "Compact to leave room for system prompt, tools, output and reserve",
+            "Compact to leave room for system prompt, tools and reserve",
         ));
 
         let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
@@ -771,7 +768,6 @@ mod tests {
         let projected_total = count_tokens_cached(ctx.system_prompt)
             .saturating_add(AgentRunner::tool_schema_tokens(ctx.tools))
             .saturating_add(target)
-            .saturating_add(route.max_output_tokens as usize)
             .saturating_add(policy.hard_reserve_tokens);
         let warning_threshold = (route.context_window_tokens as usize)
             .saturating_mul(policy.warning_threshold_percent as usize)
@@ -839,7 +835,7 @@ mod tests {
             id: "opencode-go/deepseek-v4-flash".to_string(),
             provider: "opencode-go".to_string(),
             max_output_tokens: 128_000,
-            context_window_tokens: 272_000,
+            context_window_tokens: 32_000,
             weight: 1,
         };
         let ctx = AgentRunnerContext {

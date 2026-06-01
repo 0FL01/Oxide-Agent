@@ -8,6 +8,7 @@ use super::{
     capabilities, support, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
     ProviderCapabilities, ToolDefinition,
 };
+use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
@@ -77,6 +78,10 @@ pub(crate) enum InternalTextPurpose {
 }
 
 impl LlmClient {
+    fn soft_cap_output_tokens(max_tokens: u32) -> u32 {
+        max_tokens.clamp(1, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS)
+    }
+
     fn provider_key(name: &str) -> String {
         providers::provider_key(name)
     }
@@ -412,7 +417,7 @@ impl LlmClient {
                 &history,
                 user_message,
                 &model_info.id,
-                model_info.max_output_tokens,
+                Self::soft_cap_output_tokens(model_info.max_output_tokens),
             )
             .await;
         let duration = start.elapsed();
@@ -503,7 +508,7 @@ impl LlmClient {
             messages: &messages,
             tools,
             model_id: &model_info.id,
-            max_tokens: model_info.max_output_tokens,
+            max_tokens: Self::soft_cap_output_tokens(model_info.max_output_tokens),
             temperature,
             json_mode,
         };
@@ -587,7 +592,7 @@ impl LlmClient {
                 messages: &messages,
                 tools,
                 model_id: &model_info.id,
-                max_tokens: model_info.max_output_tokens,
+                max_tokens: Self::soft_cap_output_tokens(model_info.max_output_tokens),
                 temperature: None,
                 json_mode,
             };

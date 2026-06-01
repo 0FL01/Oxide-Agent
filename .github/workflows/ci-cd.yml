@@ -32,10 +32,10 @@ jobs:
       LOOP_SCOUT_MODEL: labs-devstral-small-2512
       AGENT_MODEL_ID: glm-4.7
       AGENT_MODEL_PROVIDER: zai
-      AGENT_MODEL_MAX_OUTPUT_TOKENS: "200000"
+      AGENT_MODEL_MAX_OUTPUT_TOKENS: "48000"
       SUB_AGENT_MODEL_ID: glm-4.5-air
       SUB_AGENT_MODEL_PROVIDER: zai
-      SUB_AGENT_MAX_OUTPUT_TOKENS: "128000"
+      SUB_AGENT_MAX_OUTPUT_TOKENS: "48000"
       MEDIA_MODEL_ID: google/gemini-3-flash-preview
       MEDIA_MODEL_PROVIDER: openrouter
       NARRATOR_MODEL_ID: labs-mistral-small-creative
@@ -117,10 +117,10 @@ jobs:
           LOOP_SCOUT_MODEL: ${{ secrets.LOOP_SCOUT_MODEL || 'labs-devstral-small-2512' }}
           AGENT_MODEL_ID: ${{ secrets.AGENT_MODEL_ID || 'glm-4.7' }}
           AGENT_MODEL_PROVIDER: ${{ secrets.AGENT_MODEL_PROVIDER || 'zai' }}
-          AGENT_MODEL_MAX_OUTPUT_TOKENS: ${{ secrets.AGENT_MODEL_MAX_OUTPUT_TOKENS || '200000' }}
+          AGENT_MODEL_MAX_OUTPUT_TOKENS: ${{ secrets.AGENT_MODEL_MAX_OUTPUT_TOKENS || '48000' }}
           SUB_AGENT_MODEL_ID: ${{ secrets.SUB_AGENT_MODEL_ID || 'glm-4.5-air' }}
           SUB_AGENT_MODEL_PROVIDER: ${{ secrets.SUB_AGENT_MODEL_PROVIDER || 'zai' }}
-          SUB_AGENT_MAX_OUTPUT_TOKENS: ${{ secrets.SUB_AGENT_MAX_OUTPUT_TOKENS || '128000' }}
+          SUB_AGENT_MAX_OUTPUT_TOKENS: ${{ secrets.SUB_AGENT_MAX_OUTPUT_TOKENS || '48000' }}
           MEDIA_MODEL_ID: ${{ secrets.MEDIA_MODEL_ID || 'google/gemini-3-flash-preview' }}
           MEDIA_MODEL_PROVIDER: ${{ secrets.MEDIA_MODEL_PROVIDER || 'openrouter' }}
           NARRATOR_MODEL_ID: ${{ secrets.NARRATOR_MODEL_ID || 'labs-mistral-small-creative' }}
@@ -236,10 +236,10 @@ jobs:
             test -n "$LOOP_SCOUT_MODEL"; or set LOOP_SCOUT_MODEL labs-devstral-small-2512
             test -n "$AGENT_MODEL_ID"; or set AGENT_MODEL_ID "glm-4.7"
             test -n "$AGENT_MODEL_PROVIDER"; or set AGENT_MODEL_PROVIDER "zai"
-            test -n "$AGENT_MODEL_MAX_OUTPUT_TOKENS"; or set AGENT_MODEL_MAX_OUTPUT_TOKENS 200000
+            test -n "$AGENT_MODEL_MAX_OUTPUT_TOKENS"; or set AGENT_MODEL_MAX_OUTPUT_TOKENS 48000
             test -n "$SUB_AGENT_MODEL_ID"; or set SUB_AGENT_MODEL_ID "glm-4.5-air"
             test -n "$SUB_AGENT_MODEL_PROVIDER"; or set SUB_AGENT_MODEL_PROVIDER "zai"
-            test -n "$SUB_AGENT_MAX_OUTPUT_TOKENS"; or set SUB_AGENT_MAX_OUTPUT_TOKENS 128000
+            test -n "$SUB_AGENT_MAX_OUTPUT_TOKENS"; or set SUB_AGENT_MAX_OUTPUT_TOKENS 48000
             test -n "$MEDIA_MODEL_ID"; or set MEDIA_MODEL_ID "google/gemini-3-flash-preview"
             test -n "$MEDIA_MODEL_PROVIDER"; or set MEDIA_MODEL_PROVIDER "openrouter"
             test -n "$NARRATOR_MODEL_ID"; or set NARRATOR_MODEL_ID "labs-mistral-small-creative"

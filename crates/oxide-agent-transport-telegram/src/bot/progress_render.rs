@@ -233,8 +233,8 @@ fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSn
 
 fn format_budget_breakdown(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "📤 {} + 🛡️ {} = 📊 {} | 🟢 {} free",
-        oxide_agent_core::utils::format_tokens(snapshot.reserved_output_tokens),
+        "input {} + reserve {} = projected {} | {} free",
+        oxide_agent_core::utils::format_tokens(snapshot.total_input_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.hard_reserve_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.headroom_tokens),
@@ -288,11 +288,11 @@ mod tests {
             system_prompt_tokens: 1_200,
             tool_schema_tokens: 1_100,
             total_input_tokens: 8_000,
-            reserved_output_tokens: 8_000,
+            reserved_output_tokens: 0,
             hard_reserve_tokens: 8_192,
-            projected_total_tokens: 24_192,
+            projected_total_tokens: 16_192,
             context_window_tokens: 200_000,
-            headroom_tokens: 175_808,
+            headroom_tokens: 183_808,
             budget_state: BudgetState::Healthy,
             last_api_usage: Some(TokenUsage {
                 prompt_tokens: 15_200,
@@ -324,7 +324,7 @@ mod tests {
 
         assert!(output.contains("Iteration 1/5"));
         assert!(output.contains("flow 5.7k | prompt 1.2k | tools 1.1k"));
-        assert!(output.contains("📤 8k + 🛡️ 8.2k = 📊 24k | 🟢 176k free"));
+        assert!(output.contains("input 8k + reserve 8.2k = projected 16k | 184k free"));
         assert!(output.contains("Budget: healthy"));
         assert!(!output.contains("Last API usage:"));
     }

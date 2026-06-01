@@ -36,15 +36,12 @@ pub fn estimate_request_budget(
     let tool_schema_tokens = estimate_tool_tokens(request.tools);
     let hot_memory = estimate_hot_memory(agent.memory().get_messages());
     let context_window_tokens = agent.memory().max_tokens();
-    let reserved_output_tokens =
-        usize::try_from(request.model_max_output_tokens).unwrap_or(usize::MAX);
+    let reserved_output_tokens = 0;
     let hard_reserve_tokens = policy.hard_reserve_tokens;
     let total_input_tokens = system_prompt_tokens
         .saturating_add(tool_schema_tokens)
         .saturating_add(hot_memory.total_tokens);
-    let projected_total_tokens = total_input_tokens
-        .saturating_add(reserved_output_tokens)
-        .saturating_add(hard_reserve_tokens);
+    let projected_total_tokens = total_input_tokens.saturating_add(hard_reserve_tokens);
     let headroom_tokens = context_window_tokens.saturating_sub(projected_total_tokens);
     let warning_threshold_tokens =
         percent_of(context_window_tokens, policy.warning_threshold_percent);
@@ -210,7 +207,7 @@ mod tests {
         assert!(estimate.hot_memory.total_tokens > 0);
         assert!(estimate.hot_memory.pinned_tokens > 0);
         assert!(estimate.hot_memory.prunable_artifact_tokens > 0);
-        assert_eq!(estimate.reserved_output_tokens, 512);
+        assert_eq!(estimate.reserved_output_tokens, 0);
         assert_eq!(estimate.warning_threshold_tokens, 2_600);
         assert_eq!(estimate.compact_threshold_tokens, 3_400);
         assert_eq!(estimate.over_limit_threshold_tokens, 3_800);
@@ -219,6 +216,10 @@ mod tests {
             estimate.system_prompt_tokens
                 + estimate.tool_schema_tokens
                 + estimate.hot_memory.total_tokens
+        );
+        assert_eq!(
+            estimate.projected_total_tokens,
+            estimate.total_input_tokens + estimate.hard_reserve_tokens
         );
     }
 

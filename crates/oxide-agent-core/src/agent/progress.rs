@@ -16,12 +16,12 @@ pub struct TokenSnapshot {
     pub tool_schema_tokens: usize,
     /// Total estimated input tokens for the next request.
     pub total_input_tokens: usize,
-    /// Reserved output tokens for the active model.
+    /// Output tokens pre-reserved from the input window. Kept for API compatibility; currently zero.
     pub reserved_output_tokens: usize,
     /// Additional hard safety buffer kept free outside model completion reserve.
     #[serde(default)]
     pub hard_reserve_tokens: usize,
-    /// Estimated full request size including reserves.
+    /// Estimated input-side request size including the hard reserve.
     pub projected_total_tokens: usize,
     /// Effective model context window configured for the session.
     pub context_window_tokens: usize,
