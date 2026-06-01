@@ -666,6 +666,8 @@ impl AgentMemory {
             prompt_tokens = usage.prompt_tokens,
             completion_tokens = usage.completion_tokens,
             total_tokens = usage.total_tokens,
+            cached_tokens = usage.cached_tokens,
+            cache_creation_tokens = usage.cache_creation_tokens,
             diff = diff,
             "METRIC: Token usage synchronized from API"
         );
@@ -1013,6 +1015,7 @@ mod tests {
             prompt_tokens: 1000,
             completion_tokens: 234,
             total_tokens: 1234,
+            ..TokenUsage::default()
         });
         assert_eq!(memory.api_token_count(), Some(1234));
         assert_eq!(memory.token_count(), estimated_before_sync);
@@ -1035,6 +1038,7 @@ mod tests {
             prompt_tokens: 1024,
             completion_tokens: 1024,
             total_tokens: 2048,
+            ..TokenUsage::default()
         });
 
         memory.replace_messages(vec![
@@ -1318,9 +1322,7 @@ mod tests {
     /// decisions. Full metadata is logged via `log_runtime_compaction_success`.
     #[test]
     fn compacted_summary_excludes_volatile_metadata() {
-        use crate::agent::compaction::{
-            CompactionBackend, CompactionPhase, CompactionReason,
-        };
+        use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
 
         let metadata = CompactedSummaryMetadata {
             generation: 3,
@@ -1373,9 +1375,7 @@ mod tests {
     /// metadata field that differs (it is required for compaction chain).
     #[test]
     fn compacted_summary_differs_only_in_generation_across_metadata() {
-        use crate::agent::compaction::{
-            CompactionBackend, CompactionPhase, CompactionReason,
-        };
+        use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
 
         let metadata_a = CompactedSummaryMetadata {
             generation: 1,
@@ -1425,7 +1425,10 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        assert_eq!(strip_gen(&summary_a), strip_gen(&summary_b),
-            "summaries with identical semantic text must differ only in generation");
+        assert_eq!(
+            strip_gen(&summary_a),
+            strip_gen(&summary_b),
+            "summaries with identical semantic text must differ only in generation"
+        );
     }
 }

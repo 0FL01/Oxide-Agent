@@ -321,6 +321,12 @@ fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
             prompt_tokens: usage.get("prompt_tokens")?.as_u64()? as u32,
             completion_tokens: usage.get("completion_tokens")?.as_u64()? as u32,
             total_tokens: usage.get("total_tokens")?.as_u64()? as u32,
+            cached_tokens: usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+            cache_creation_tokens: None,
         })
     });
 

@@ -62,6 +62,7 @@ pub fn tool_call_response(name: &str, arguments: serde_json::Value) -> ChatRespo
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            ..TokenUsage::default()
         }),
     }
 }
@@ -77,6 +78,7 @@ pub fn unstructured_text_response(content: &str) -> ChatResponse {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            ..TokenUsage::default()
         }),
     }
 }

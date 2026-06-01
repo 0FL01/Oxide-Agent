@@ -201,6 +201,7 @@ fn two_todo_tool_calls_response() -> ChatResponse {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            ..TokenUsage::default()
         }),
     }
 }
@@ -240,6 +241,7 @@ fn compress_and_write_todos_response() -> ChatResponse {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            ..TokenUsage::default()
         }),
     }
 }

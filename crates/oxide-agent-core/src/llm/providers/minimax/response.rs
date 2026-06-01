@@ -79,6 +79,8 @@ pub fn from_claudius_message(msg: claudius::Message) -> Result<ChatResponse, cra
         prompt_tokens: msg.usage.input_tokens as u32,
         completion_tokens: msg.usage.output_tokens as u32,
         total_tokens: (msg.usage.input_tokens + msg.usage.output_tokens) as u32,
+        cached_tokens: msg.usage.cache_read_input_tokens.map(|v| v as u32),
+        cache_creation_tokens: msg.usage.cache_creation_input_tokens.map(|v| v as u32),
     };
 
     // Allow empty content if there are tool_calls or reasoning_content

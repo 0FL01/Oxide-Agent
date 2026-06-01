@@ -81,6 +81,11 @@ impl AgentRunner {
                 .as_ref()
                 .map(|usage| usage.completion_tokens),
             last_api_total_tokens = snapshot.last_api_usage.as_ref().map(|usage| usage.total_tokens),
+            last_api_cached_tokens = snapshot.last_api_usage.as_ref().and_then(|usage| usage.cached_tokens),
+            last_api_cache_creation_tokens = snapshot
+                .last_api_usage
+                .as_ref()
+                .and_then(|usage| usage.cache_creation_tokens),
             "Agent request token snapshot"
         );
     }

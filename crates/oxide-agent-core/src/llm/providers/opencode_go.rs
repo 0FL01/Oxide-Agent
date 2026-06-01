@@ -715,6 +715,8 @@ fn log_response_summary(
         usage_prompt_tokens = usage.map(|usage| usage.prompt_tokens),
         usage_completion_tokens = usage.map(|usage| usage.completion_tokens),
         usage_total_tokens = usage.map(|usage| usage.total_tokens),
+        usage_cached_tokens = usage.and_then(|u| u.cached_tokens),
+        usage_cache_creation_tokens = usage.and_then(|u| u.cache_creation_tokens),
         "OpenCode response summary"
     );
 }
@@ -1297,6 +1299,12 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
         prompt_tokens: value.get("prompt_tokens")?.as_u64()? as u32,
         completion_tokens: value.get("completion_tokens")?.as_u64()? as u32,
         total_tokens: value.get("total_tokens")?.as_u64()? as u32,
+        cached_tokens: value
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        cache_creation_tokens: None,
     })
 }
 
@@ -1307,6 +1315,14 @@ fn parse_anthropic_usage(value: &Value) -> Option<TokenUsage> {
         prompt_tokens,
         completion_tokens,
         total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        cached_tokens: value
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        cache_creation_tokens: value
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
     })
 }
 
@@ -1606,7 +1622,64 @@ mod tests {
     }
 
     #[test]
-    fn parse_anthropic_messages_response_extracts_text_tool_calls_reasoning_and_usage() {
+    fn parse_usage_extracts_cached_tokens_from_prompt_tokens_details() {
+        let usage = parse_usage(&json!({
+            "prompt_tokens": 3840,
+            "completion_tokens": 512,
+            "total_tokens": 4352,
+            "prompt_tokens_details": {
+                "cached_tokens": 2560
+            }
+        }))
+        .expect("usage should parse");
+
+        assert_eq!(usage.prompt_tokens, 3840);
+        assert_eq!(usage.cached_tokens, Some(2560));
+        assert_eq!(usage.cache_creation_tokens, None);
+    }
+
+    #[test]
+    fn parse_usage_returns_none_cached_when_no_details() {
+        let usage = parse_usage(&json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150
+        }))
+        .expect("usage should parse");
+
+        assert_eq!(usage.cached_tokens, None);
+    }
+
+    #[test]
+    fn parse_anthropic_usage_extracts_cache_fields() {
+        let usage = parse_anthropic_usage(&json!({
+            "input_tokens": 3840,
+            "output_tokens": 512,
+            "cache_read_input_tokens": 2560,
+            "cache_creation_input_tokens": 128
+        }))
+        .expect("anthropic usage should parse");
+
+        assert_eq!(usage.prompt_tokens, 3840);
+        assert_eq!(usage.total_tokens, 4352);
+        assert_eq!(usage.cached_tokens, Some(2560));
+        assert_eq!(usage.cache_creation_tokens, Some(128));
+    }
+
+    #[test]
+    fn parse_anthropic_usage_returns_none_when_no_cache_fields() {
+        let usage = parse_anthropic_usage(&json!({
+            "input_tokens": 10,
+            "output_tokens": 5
+        }))
+        .expect("anthropic usage should parse");
+
+        assert_eq!(usage.cached_tokens, None);
+        assert_eq!(usage.cache_creation_tokens, None);
+    }
+
+    #[test]
+    fn parse_chat_response_extracts_text_tool_calls_reasoning_and_usage() {
         let response = parse_anthropic_messages_response(json!({
             "content": [
                 { "type": "thinking", "thinking": "internal reasoning" },

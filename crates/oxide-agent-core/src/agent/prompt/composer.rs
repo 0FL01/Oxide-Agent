@@ -581,12 +581,11 @@ pub fn create_sub_agent_system_prompt(
     // Task is intentionally excluded from the system prompt to keep the prefix
     // cache-stable across different sub-agent invocations.  The task reaches the
     // model exclusively via the first user message (AgentMessage::user_task).
-    let mut base_prompt =
-        "You are a lightweight sub-agent for draft work.\n\
+    let mut base_prompt = "You are a lightweight sub-agent for draft work.\n\
 You do NOT communicate with the user directly and return the result only to the orchestrator.\n\
 Use only available tools if necessary.\n\
 Do not spawn, wait for, or cancel sub-agents and do not send files to the user."
-            .to_string();
+        .to_string();
 
     if let Some(extra) = extra_context {
         if !extra.trim().is_empty() {
@@ -1039,8 +1038,8 @@ mod tests {
         let instructions = build_structured_output_instructions(&tools);
 
         // 1. The prompt must NOT contain full JSON schemas.
-        let tools_json =
-            serde_json::to_string_pretty(&tools).expect("serializing tool definitions must succeed");
+        let tools_json = serde_json::to_string_pretty(&tools)
+            .expect("serializing tool definitions must succeed");
         assert!(
             !instructions.contains(&tools_json),
             "prompt must NOT embed full pretty-printed tools_json — schemas belong in native tools[] only"
@@ -1112,37 +1111,16 @@ mod tests {
         let mut session1 = AgentSession::new(1_i64.into());
         let mut session2 = AgentSession::new(1_i64.into());
 
-        let prompt_small = create_agent_system_prompt(
-            "task",
-            &tools_small,
-            true,
-            &mut session1,
-            None,
-            None,
-        )
-        .await;
-        let prompt_large = create_agent_system_prompt(
-            "task",
-            &tools_large,
-            true,
-            &mut session2,
-            None,
-            None,
-        )
-        .await;
+        let prompt_small =
+            create_agent_system_prompt("task", &tools_small, true, &mut session1, None, None).await;
+        let prompt_large =
+            create_agent_system_prompt("task", &tools_large, true, &mut session2, None, None).await;
 
         // Property 1: same tool set → identical prompt (except date context which changes
         // between calls due to time). Test this by building two prompts with same tools.
         let mut session3 = AgentSession::new(1_i64.into());
-        let prompt_same = create_agent_system_prompt(
-            "task",
-            &tools_small,
-            true,
-            &mut session3,
-            None,
-            None,
-        )
-        .await;
+        let prompt_same =
+            create_agent_system_prompt("task", &tools_small, true, &mut session3, None, None).await;
 
         // Everything before date context should be byte-identical for same tool set.
         let available_tools_end_small = prompt_small
@@ -1201,10 +1179,7 @@ mod tests {
         );
 
         // The stable prefix (everything before the tool name list) must be > 40 chars.
-        assert!(
-            shared_prefix_len > 40,
-            "stable prefix must be substantial"
-        );
+        assert!(shared_prefix_len > 40, "stable prefix must be substantial");
     }
 
     /// Verifies that the prompt tool list and native tools[] payload are
@@ -1241,8 +1216,7 @@ mod tests {
         let prompt_bytes = prompt_tools_section.len();
         let native_bytes = native_tools_json.len();
 
-        let pct =
-            native_bytes as f64 / (native_bytes * 2 + prompt_bytes) as f64 * 100.0;
+        let pct = native_bytes as f64 / (native_bytes * 2 + prompt_bytes) as f64 * 100.0;
         eprintln!(
             "Wire metrics (no duplication):\n\
              - Prompt tool-name list: {prompt_bytes} bytes\n\
