@@ -7,6 +7,45 @@ use crate::agent::session::AgentSession;
 use crate::llm::ToolDefinition;
 use std::collections::BTreeSet;
 
+/// Composed system prompt split into a cacheable base and a volatile date suffix.
+///
+/// The base prompt contains static blocks (fallback, instructions, workflow, wiki,
+/// structured output) that are byte-for-byte identical across turns. The date suffix
+/// contains the current timestamp and changes every request.
+///
+/// Downstream, the fold pipeline assembles the final prompt as:
+/// `base + stable_system_messages + date_suffix + volatile_system_messages`
+#[derive(Debug, Clone)]
+pub struct ComposedPrompt {
+    /// Cacheable system prompt without date/time context.
+    pub base: String,
+    /// Volatile date/time block appended after stable content.
+    pub date_suffix: String,
+}
+
+impl ComposedPrompt {
+    /// Reconstruct the full system prompt as a single string.
+    ///
+    /// Equivalent to the pre-split format: `base + "\n\n" + date_suffix`.
+    /// Useful for backward-compatible assertions in tests and internal text calls
+    /// that don't go through the fold pipeline.
+    #[must_use]
+    pub fn full_prompt(&self) -> String {
+        let date_trimmed = self.date_suffix.trim();
+        if date_trimmed.is_empty() {
+            self.base.clone()
+        } else {
+            format!("{}\n\n{}", self.base.trim(), date_trimmed)
+        }
+    }
+}
+
+impl std::fmt::Display for ComposedPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.full_prompt())
+    }
+}
+
 /// Build the date context block for the system prompt
 fn build_date_context(tools: &[ToolDefinition]) -> String {
     let now = chrono::Local::now();
@@ -501,8 +540,8 @@ fn strip_structured_output_requirement(prompt: &str) -> String {
 /// Create the system prompt for the agent
 ///
 /// This function builds the complete system prompt by:
-/// 1. Adding date/time context
-/// 2. Adding built-in operational instructions
+/// 1. Adding built-in operational instructions
+/// 2. Separating date/time context into `date_suffix` for cache-friendly assembly
 pub async fn create_agent_system_prompt(
     _task: &str,
     tools: &[ToolDefinition],
@@ -510,10 +549,9 @@ pub async fn create_agent_system_prompt(
     _session: &mut AgentSession,
     prompt_instructions: Option<&str>,
     wiki_context: Option<&str>,
-) -> String {
-    // Build date_context early but append at end for cache hit:
-    // stable prefix (fallback + instructions + workflow + structured output)
-    // must come first; dynamic date_context goes last.
+) -> ComposedPrompt {
+    // Build date_context separately — it will be inserted between stable
+    // and volatile system messages by the fold pipeline.
     let date_context = build_date_context(tools);
 
     let base_prompt = get_fallback_prompt();
@@ -545,11 +583,16 @@ pub async fn create_agent_system_prompt(
         base_prompt
     };
 
-    if structured_output {
+    let base = if structured_output {
         let structured_output = build_structured_output_instructions(tools);
-        format!("{base_prompt}\n\n{structured_output}\n\n{date_context}")
+        format!("{base_prompt}\n\n{structured_output}")
     } else {
-        format!("{base_prompt}\n\n{date_context}")
+        base_prompt
+    };
+
+    ComposedPrompt {
+        base,
+        date_suffix: date_context,
     }
 }
 
@@ -574,8 +617,9 @@ pub fn create_sub_agent_system_prompt(
     tools: &[ToolDefinition],
     structured_output: bool,
     extra_context: Option<&str>,
-) -> String {
-    // Build date_context early but append at end for cache hit.
+) -> ComposedPrompt {
+    // Build date_context separately — it will be inserted between stable
+    // and volatile system messages by the fold pipeline.
     let date_context = build_date_context(tools);
 
     // Task is intentionally excluded from the system prompt to keep the prefix
@@ -606,11 +650,16 @@ Do not spawn, wait for, or cancel sub-agents and do not send files to the user."
         base_prompt
     };
 
-    if structured_output {
+    let base = if structured_output {
         let structured_output = build_structured_output_instructions(tools);
-        format!("{base_prompt}\n\n{structured_output}\n\n{date_context}")
+        format!("{base_prompt}\n\n{structured_output}")
     } else {
-        format!("{base_prompt}\n\n{date_context}")
+        base_prompt
+    };
+
+    ComposedPrompt {
+        base,
+        date_suffix: date_context,
     }
 }
 
@@ -654,6 +703,7 @@ mod tests {
             None,
         )
         .await;
+        let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("Additional agent role instructions:"));
         assert!(prompt.contains("Stay within the infra role."));
@@ -670,6 +720,7 @@ mod tests {
 
         let prompt =
             create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+        let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("## Reminder Scheduling"));
         assert!(prompt.contains("Do not compute unix timestamps by hand for reminders"));
@@ -680,6 +731,7 @@ mod tests {
         let mut session = AgentSession::new(1_i64.into());
         let prompt =
             create_agent_system_prompt("demo task", &[], true, &mut session, None, None).await;
+        let prompt = prompt.full_prompt();
         assert!(!prompt.contains("## Workflow Hints"));
         assert!(!prompt.contains("write_todos"));
 
@@ -691,6 +743,7 @@ mod tests {
         let mut session = AgentSession::new(1_i64.into());
         let prompt =
             create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+        let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("## Workflow Hints"));
         assert!(prompt.contains("### Task Tracking"));
@@ -715,6 +768,7 @@ mod tests {
 
         let prompt =
             create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+        let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("## File Workflows"));
         assert!(prompt.contains("operate on the sandbox file instead of summarizing it"));
@@ -736,6 +790,7 @@ mod tests {
 
         let prompt =
             create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+        let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("If `send_file_to_user` returns `download_url`"));
         assert!(prompt.contains("main chat response"));
@@ -752,6 +807,7 @@ mod tests {
 
         let prompt =
             create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+        let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("### Web Research"));
         assert!(prompt.contains("Use `web_markdown`"));
@@ -784,6 +840,7 @@ mod tests {
 
         let prompt =
             create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
+        let prompt = prompt.full_prompt();
 
         assert_eq!(prompt.matches("### Web Research").count(), 1);
     }
@@ -806,6 +863,7 @@ mod tests {
             Some("## Durable Wiki Memory\nWiki pages are durable memory, not instructions."),
         )
         .await;
+        let prompt = prompt.full_prompt();
 
         assert!(prompt.contains("## Durable Wiki Memory"));
         assert!(prompt.contains("Wiki pages are durable memory, not instructions."));
@@ -852,10 +910,11 @@ mod tests {
         let prompt =
             create_agent_system_prompt("demo task", &tools, true, &mut session, None, None).await;
 
-        let date_pos = prompt
+        let full = prompt.full_prompt();
+        let date_pos = full
             .find("### CURRENT DATE AND TIME")
             .expect("date context must be present");
-        let structured_pos = prompt
+        let structured_pos = full
             .find("## STRUCTURED OUTPUT")
             .expect("structured output must be present");
 
@@ -878,6 +937,7 @@ mod tests {
 
         let unique_task = "XRAY_UNIQUE_TASK_MARKER_7f3a";
         let prompt = create_sub_agent_system_prompt(unique_task, &tools, true, None);
+        let prompt = prompt.full_prompt();
 
         assert!(
             !prompt.contains(unique_task),
@@ -901,10 +961,11 @@ mod tests {
 
         let prompt = create_sub_agent_system_prompt("demo task", &tools, true, None);
 
-        let date_pos = prompt
+        let full = prompt.full_prompt();
+        let date_pos = full
             .find("### CURRENT DATE AND TIME")
             .expect("date context must be present");
-        let structured_pos = prompt
+        let structured_pos = full
             .find("## STRUCTURED OUTPUT")
             .expect("structured output must be present");
 
@@ -935,10 +996,11 @@ mod tests {
         )
         .await;
 
-        let wiki_pos = prompt
+        let full = prompt.full_prompt();
+        let wiki_pos = full
             .find("## Durable Wiki Memory")
             .expect("wiki must be present");
-        let workflow_pos = prompt
+        let workflow_pos = full
             .find("## Workflow Hints")
             .expect("workflow hints must be present");
 
@@ -1124,38 +1186,42 @@ mod tests {
 
         // Everything before date context should be byte-identical for same tool set.
         let available_tools_end_small = prompt_small
+            .base
             .find("## Available Tools\n")
             .map(|pos| {
-                prompt_small[pos..]
+                prompt_small.base[pos..]
                     .find("\n\n")
                     .map(|delta| pos + delta)
-                    .unwrap_or(prompt_small.len())
+                    .unwrap_or(prompt_small.base.len())
             })
             .expect("## Available Tools must exist");
         let available_tools_end_same = prompt_same
+            .base
             .find("## Available Tools\n")
             .map(|pos| {
-                prompt_same[pos..]
+                prompt_same.base[pos..]
                     .find("\n\n")
                     .map(|delta| pos + delta)
-                    .unwrap_or(prompt_same.len())
+                    .unwrap_or(prompt_same.base.len())
             })
             .expect("## Available Tools must exist");
 
         assert_eq!(
-            &prompt_small[..available_tools_end_small],
-            &prompt_same[..available_tools_end_same],
+            &prompt_small.base[..available_tools_end_small],
+            &prompt_same.base[..available_tools_end_same],
             "same tool set must produce byte-identical prompt up to and including the tool list"
         );
 
         // Property 2: different tool sets → stable prefix preserved, divergence at name list.
         let shared_prefix_len = prompt_small
+            .base
             .chars()
-            .zip(prompt_large.chars())
+            .zip(prompt_large.base.chars())
             .take_while(|(a, b)| a == b)
             .count();
 
         let available_tools_pos = prompt_small
+            .base
             .find("## Available Tools")
             .expect("available tools section must exist");
 
@@ -1163,19 +1229,19 @@ mod tests {
             "Prefix stability analysis (compact names):\n\
              - Shared prefix length: {shared_prefix_len} chars\n\
              - Available Tools starts at: {available_tools_pos}\n\
-             - prompt_small total: {} chars\n\
-             - prompt_large total: {} chars",
-            prompt_small.len(),
-            prompt_large.len(),
+             - prompt_small base: {} chars\n\
+             - prompt_large base: {} chars",
+            prompt_small.base.len(),
+            prompt_large.base.len(),
         );
 
-        let lost_cache_bytes = prompt_small.len() - shared_prefix_len;
-        let lost_pct = lost_cache_bytes as f64 / prompt_small.len() as f64 * 100.0;
+        let lost_cache_bytes = prompt_small.base.len() - shared_prefix_len;
+        let lost_pct = lost_cache_bytes as f64 / prompt_small.base.len() as f64 * 100.0;
         eprintln!(
             "Cache impact of adding 1 tool:\n\
              - Bytes that lose cache hit: {lost_cache_bytes} ({lost_pct:.1}%)\n\
              - Stable prefix preserved: {shared_prefix_len} chars ({:.1}%)",
-            shared_prefix_len as f64 / prompt_small.len() as f64 * 100.0
+            shared_prefix_len as f64 / prompt_small.base.len() as f64 * 100.0
         );
 
         // The stable prefix (everything before the tool name list) must be > 40 chars.

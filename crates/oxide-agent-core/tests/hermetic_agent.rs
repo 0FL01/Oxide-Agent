@@ -68,7 +68,7 @@ async fn test_client_uses_registered_provider() {
     client.register_provider("opencode-go".to_string(), Arc::new(SuccessMock));
 
     let response = client
-        .chat_with_tools("sys", &[], &[], "test-model", false)
+        .chat_with_tools("sys", "", &[], &[], "test-model", false)
         .await
         .expect("Should succeed");
     assert_eq!(response.content.as_deref(), Some("Success"));
@@ -149,7 +149,7 @@ async fn test_retry_logic_eventual_success() {
     );
 
     let response = client
-        .chat_with_tools("sys", &[], &[], "test-model", false)
+        .chat_with_tools("sys", "", &[], &[], "test-model", false)
         .await
         .expect("Should eventually succeed");
     assert_eq!(response.content.expect("Should have content"), "Success");
@@ -222,7 +222,7 @@ async fn test_retry_logic_failure() {
 
     let handle = tokio::spawn(async move {
         client
-            .chat_with_tools("sys", &[], &[], "test-model", false)
+            .chat_with_tools("sys", "", &[], &[], "test-model", false)
             .await
     });
 

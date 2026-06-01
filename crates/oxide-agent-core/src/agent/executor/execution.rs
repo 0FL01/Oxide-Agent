@@ -373,7 +373,8 @@ impl AgentExecutor {
             todos_arc,
             tool_runtime_registry,
             tools,
-            system_prompt,
+            system_prompt: system_prompt.base,
+            date_suffix: system_prompt.date_suffix,
             messages,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),

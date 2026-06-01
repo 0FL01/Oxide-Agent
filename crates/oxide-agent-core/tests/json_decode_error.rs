@@ -114,7 +114,7 @@ async fn test_json_decoding_error_retried_on_failure() {
 
     let handle = tokio::spawn(async move {
         client
-            .chat_with_tools("sys", &[], &[], "test-model", false)
+            .chat_with_tools("sys", "", &[], &[], "test-model", false)
             .await
     });
 
@@ -167,7 +167,7 @@ async fn test_json_decoding_error_succeeds_after_retry() {
 
     let handle = tokio::spawn(async move {
         client
-            .chat_with_tools("sys", &[], &[], "test-model", false)
+            .chat_with_tools("sys", "", &[], &[], "test-model", false)
             .await
     });
 

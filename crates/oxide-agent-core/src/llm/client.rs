@@ -394,7 +394,7 @@ impl LlmClient {
         let provider = self.get_provider(&model_info.provider)?;
         let history = [];
         let (system_prompt, history) =
-            support::history::fold_system_messages_into_prompt(system_prompt, &history);
+            support::history::fold_system_messages_into_prompt(system_prompt, "", &history);
 
         debug!(
             purpose = ?purpose,
@@ -450,6 +450,7 @@ impl LlmClient {
     pub async fn chat_with_tools_single_attempt(
         &self,
         system_prompt: &str,
+        date_suffix: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
         model_name: &str,
@@ -460,6 +461,7 @@ impl LlmClient {
 
         self.chat_with_tools_single_attempt_for_model_info(
             system_prompt,
+            date_suffix,
             messages,
             tools,
             &model_info,
@@ -474,6 +476,7 @@ impl LlmClient {
     pub async fn chat_with_tools_single_attempt_for_model_info(
         &self,
         system_prompt: &str,
+        date_suffix: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
         model_info: &crate::config::ModelInfo,
@@ -482,8 +485,11 @@ impl LlmClient {
     ) -> Result<ChatResponse, LlmError> {
         let provider = self.get_provider(&model_info.provider)?;
         let capabilities = Self::provider_capabilities_for_model(model_info);
-        let (system_prompt, messages) =
-            support::history::fold_system_messages_into_prompt(system_prompt, messages);
+        let (system_prompt, messages) = support::history::fold_system_messages_into_prompt(
+            system_prompt,
+            date_suffix,
+            messages,
+        );
 
         if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
             return Err(LlmError::ApiError(format!(
@@ -555,6 +561,7 @@ impl LlmClient {
     pub async fn chat_with_tools(
         &self,
         system_prompt: &str,
+        date_suffix: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
         model_name: &str,
@@ -562,8 +569,11 @@ impl LlmClient {
     ) -> Result<ChatResponse, LlmError> {
         let model_info = self.get_model_info(model_name)?;
         let capabilities = Self::provider_capabilities_for_model(&model_info);
-        let (system_prompt, messages) =
-            support::history::fold_system_messages_into_prompt(system_prompt, messages);
+        let (system_prompt, messages) = support::history::fold_system_messages_into_prompt(
+            system_prompt,
+            date_suffix,
+            messages,
+        );
 
         if !capabilities.can_run_chat_with_tools_request(!tools.is_empty(), json_mode) {
             return Err(LlmError::ApiError(format!(
@@ -1305,6 +1315,7 @@ mod tests {
         let response = llm
             .chat_with_tools(
                 "You are helpful.",
+                "### CURRENT DATE AND TIME\nNow.",
                 &history,
                 &[],
                 "deepseek/deepseek-v4-flash",

@@ -276,6 +276,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Route selection regression",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -330,6 +331,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Typed runtime route selection",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(Arc::new(RuntimeToolRegistry::new())),
             progress_tx: None,
@@ -398,6 +400,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Typed runtime Zen route selection",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(Arc::new(RuntimeToolRegistry::new())),
             progress_tx: None,

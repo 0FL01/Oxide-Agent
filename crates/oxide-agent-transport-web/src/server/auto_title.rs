@@ -136,6 +136,7 @@ Keep it under 6 words.";
     let response = llm
         .chat_with_tools_single_attempt_for_model_info(
             system,
+            "",
             &[Message::user(&user)],
             &[],
             &model,

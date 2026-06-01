@@ -552,6 +552,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Retry after overflow",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
@@ -641,6 +642,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Pre-sampling compact",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
@@ -701,6 +703,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Do not compact only because output cap is large",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -742,6 +745,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Compact to leave room for request overhead",
             system_prompt: &system_prompt,
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -841,6 +845,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Research pricing plans",
             system_prompt: &system_prompt,
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -989,6 +994,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Fail over to a smaller model route",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),

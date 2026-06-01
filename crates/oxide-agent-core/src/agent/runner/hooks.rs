@@ -237,6 +237,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "test transient context",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,

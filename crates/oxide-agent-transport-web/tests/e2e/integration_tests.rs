@@ -84,7 +84,7 @@ async fn e2e_connection_pool_latency() {
 
     let t1 = Instant::now();
     let resp1 = llm
-        .chat_with_tools(system_prompt, &messages, &[], model_id, false)
+        .chat_with_tools(system_prompt, "", &messages, &[], model_id, false)
         .await;
     let time1 = t1.elapsed();
     assert!(resp1.is_ok(), "First request failed: {:?}", resp1.err());
@@ -95,7 +95,7 @@ async fn e2e_connection_pool_latency() {
 
     let t2 = Instant::now();
     let resp2 = llm
-        .chat_with_tools(system_prompt, &messages, &[], model_id, false)
+        .chat_with_tools(system_prompt, "", &messages, &[], model_id, false)
         .await;
     let time2 = t2.elapsed();
     assert!(resp2.is_ok(), "Second request failed: {:?}", resp2.err());

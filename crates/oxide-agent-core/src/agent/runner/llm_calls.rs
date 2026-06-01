@@ -131,6 +131,7 @@ impl AgentRunner {
                 .llm_client
                 .chat_with_tools_single_attempt(
                     ctx.system_prompt,
+                    ctx.date_suffix,
                     ctx.messages,
                     ctx.tools,
                     &ctx.config.model_name,
@@ -264,6 +265,7 @@ impl AgentRunner {
                     .llm_client
                     .chat_with_tools_single_attempt_for_model_info(
                         ctx.system_prompt,
+                        ctx.date_suffix,
                         ctx.messages,
                         ctx.tools,
                         &request_route,
@@ -833,6 +835,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Keep input context available",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -911,6 +914,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Repair invalid tool history",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -993,6 +997,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Fail over after persistent 429",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
@@ -1095,6 +1100,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Stay on primary when it wakes up",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
@@ -1174,6 +1180,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Skip unsupported NVIDIA route",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),

@@ -527,6 +527,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "read through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -618,6 +619,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "read through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -697,6 +699,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "fetch blocked page through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -796,6 +799,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "compress through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -884,6 +888,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "compress below threshold",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -964,6 +969,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "read several files through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -1062,6 +1068,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "unsupported typed runtime route",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
