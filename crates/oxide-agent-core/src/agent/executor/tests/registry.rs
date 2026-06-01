@@ -3,6 +3,8 @@ use super::*;
 use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use crate::config::{ModelInfo, ModuleRuntimeConfig};
 #[cfg(feature = "tool-sandbox-exec")]
+use crate::storage::MockStorageProvider;
+#[cfg(feature = "tool-sandbox-exec")]
 use std::collections::HashSet;
 
 #[cfg(feature = "tool-wiki-memory")]

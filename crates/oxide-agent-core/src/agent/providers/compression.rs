@@ -34,7 +34,7 @@ impl CompressionProvider {
     fn tools_definitions() -> Vec<ToolDefinition> {
         vec![ToolDefinition {
             name: TOOL_COMPRESS.to_string(),
-            description: "Compress the current Agent Mode hot context using the built-in compaction pipeline.".to_string(),
+            description: "Compress the current Agent Mode hot context using the built-in compaction pipeline. Only effective when context is above 85% utilization; below that threshold the call is a no-op. WARNING: compaction resets prompt cache — do not call preemptively.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {},

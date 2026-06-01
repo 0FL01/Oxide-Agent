@@ -1331,9 +1331,10 @@ mod tests {
     use super::{
         build_anthropic_messages_body, build_chat_completion_body, build_tool_chat_body,
         derive_messages_api_base, normalize_model_id, opencode_go_should_throttle,
-        parse_anthropic_messages_response, parse_chat_response, parse_tool_calls,
-        prepare_anthropic_messages, prepare_structured_messages, prepare_tools_json,
-        unsupported_protocol_error, OpenCodeGoAdaptiveThrottle, OpenCodeProviderProfile,
+        parse_anthropic_messages_response, parse_anthropic_usage, parse_chat_response,
+        parse_tool_calls, parse_usage, prepare_anthropic_messages, prepare_structured_messages,
+        prepare_tools_json, unsupported_protocol_error, OpenCodeGoAdaptiveThrottle,
+        OpenCodeProviderProfile,
     };
     use crate::llm::{
         LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
