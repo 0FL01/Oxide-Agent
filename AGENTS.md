@@ -138,7 +138,7 @@ Default branch: `dev`.
 - Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`).
 - Categories: hermetic, integration, snapshot (`insta`), property/fuzz (`proptest`).
 - E2E: `crates/oxide-agent-transport-web/tests/e2e.rs`.
-- Modular checks: `scripts/check-{runtime-env-surface,binary-feature-gates,cargo-tree-deny,compiled-capabilities,registry-snapshots,compose-profile,sandbox-image-variants,profile-size-budget}.sh`.
+- The legacy modular shell guard layer was removed; use focused `cargo check`, `cargo test`, and Docker build checks for touched areas.
 
 ### Bwrap rootfs
 - `scripts/build-bwrap-rootfs-debian.sh`, `build-bwrap-rootfs-host-smoke.sh`, `import-bwrap-rootfs-tar.sh`, `smoke-bwrap.sh`.

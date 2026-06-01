@@ -356,7 +356,7 @@ fn stale_compatibility_labels_are_removed_from_current_surfaces() {
         "crates/oxide-agent-core/src/storage/tests/keys_and_user.rs",
         "crates/oxide-agent-transport-telegram/src/bot/context.rs",
         "crates/oxide-agent-transport-web/src/in_memory_storage.rs",
-        "crates/oxide-agent-transport-web/src/server.rs",
+        "crates/oxide-agent-transport-web/src/server/mod.rs",
     ];
     let forbidden_patterns = [
         "chat_with_tools_once",

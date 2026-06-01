@@ -12,13 +12,6 @@ cargo build -p oxide-agent-telegram-bot \
   --features profile-host-bwrap
 ```
 
-Dependency boundary checks:
-
-```bash
-scripts/check-cargo-tree-deny.sh sandbox-backend-bwrap
-scripts/check-cargo-tree-deny.sh profile-host-bwrap
-```
-
 ## Host Requirements
 
 Debian 13 / trixie:

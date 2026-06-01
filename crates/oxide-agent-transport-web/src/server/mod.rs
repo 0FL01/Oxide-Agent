@@ -2254,7 +2254,7 @@ mod tests {
         CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
         ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
         TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest,
-        UpdateUserSettingsRequest, WebTaskRecord,
+        UpdateUserSettingsRequest, UserMessageEventPayload, WebTaskRecord,
     };
     #[cfg(feature = "profile-lite")]
     use oxide_agent_web_contracts::{
@@ -3070,6 +3070,12 @@ mod tests {
 
     #[test]
     fn static_assets_startup_requires_index_when_configured() {
+        let _lock = web_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = EnvGuard::capture(&["OXIDE_WEB_ALLOW_IN_MEMORY_STORE"]);
+        std::env::set_var("OXIDE_WEB_ALLOW_IN_MEMORY_STORE", "true");
+
         let asset_dir = unique_test_asset_dir("missing-index");
         std::fs::create_dir_all(&asset_dir).expect("create asset dir");
         let mut state = test_app_state();
@@ -4781,7 +4787,9 @@ mod tests {
             ..AgentSettings::default()
         });
         let mut llm = LlmClient::new(&settings);
-        llm.register_provider("opencode_go".to_string(), scripted);
+        llm.register_provider("opencode_go".to_string(), scripted.clone());
+        llm.register_provider("opencode-go".to_string(), scripted.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), scripted);
         let session_manager =
             WebSessionManager::new(SessionRegistry::new(), Arc::new(llm), settings);
         let mut state = AppState::new(Arc::new(session_manager));

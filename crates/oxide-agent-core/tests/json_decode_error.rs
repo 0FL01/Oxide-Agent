@@ -101,7 +101,7 @@ impl LlmProvider for JsonDecodeRetryMock {
 async fn test_json_decoding_error_retried_on_failure() {
     let settings = AgentSettings {
         agent_model_id: Some("test-model".to_string()),
-        agent_model_provider: Some("mock-provider".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         ..AgentSettings::default()
     };
 
@@ -110,7 +110,7 @@ async fn test_json_decoding_error_retried_on_failure() {
         "error decoding response body",
         None,
     ));
-    client.register_provider("mock-provider".to_string(), mock.clone());
+    client.register_provider("opencode-go".to_string(), mock.clone());
 
     let handle = tokio::spawn(async move {
         client
@@ -153,7 +153,7 @@ async fn test_json_decoding_error_retried_on_failure() {
 async fn test_json_decoding_error_succeeds_after_retry() {
     let settings = AgentSettings {
         agent_model_id: Some("test-model".to_string()),
-        agent_model_provider: Some("mock-provider".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         ..AgentSettings::default()
     };
 
@@ -163,7 +163,7 @@ async fn test_json_decoding_error_succeeds_after_retry() {
         "error decoding response body",
         Some(1),
     ));
-    client.register_provider("mock-provider".to_string(), mock.clone());
+    client.register_provider("opencode-go".to_string(), mock.clone());
 
     let handle = tokio::spawn(async move {
         client

@@ -65,7 +65,9 @@ pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvid
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("opencode_go".to_string(), zai_provider);
+        llm.register_provider("opencode_go".to_string(), zai_provider.clone());
+        llm.register_provider("opencode-go".to_string(), zai_provider.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), zai_provider);
         Arc::new(llm)
     };
 
@@ -96,7 +98,9 @@ pub fn setup_web_test_with_structured_main_provider(
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("opencode_go".to_string(), provider);
+        llm.register_provider("opencode_go".to_string(), provider.clone());
+        llm.register_provider("opencode-go".to_string(), provider.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), provider);
         Arc::new(llm)
     };
 
@@ -132,7 +136,9 @@ pub async fn setup_test() -> AppState {
     let llm = LlmClient::new(&agent_settings);
     let llm = {
         let mut llm = llm;
-        llm.register_provider("opencode_go".to_string(), scripted);
+        llm.register_provider("opencode_go".to_string(), scripted.clone());
+        llm.register_provider("opencode-go".to_string(), scripted.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), scripted);
         Arc::new(llm)
     };
 

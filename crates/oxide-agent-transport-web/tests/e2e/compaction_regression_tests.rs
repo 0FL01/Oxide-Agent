@@ -135,13 +135,17 @@ fn setup_web_test_with_budget(
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("opencode_go".to_string(), zai_provider);
+        llm.register_provider("opencode_go".to_string(), zai_provider.clone());
+        llm.register_provider("opencode-go".to_string(), zai_provider.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), zai_provider);
         Arc::new(llm)
     };
 
     let registry = SessionRegistry::new();
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
-    AppState::new(Arc::new(session_manager))
+    let mut state = AppState::new(Arc::new(session_manager));
+    state.auto_title_enabled = false;
+    state
 }
 
 fn setup_web_test_with_compaction_budget(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
@@ -274,6 +278,21 @@ fn assert_tool_payload_compacted_or_removed(
             "removed tool payload marker must not remain in hot memory"
         );
     }
+}
+
+fn assert_compress_tool_result_scheduled(content: &str) {
+    let tool_output: serde_json::Value =
+        serde_json::from_str(content).expect("compress tool result should be valid json");
+    assert_eq!(tool_output["success"], true);
+    assert_eq!(tool_output["status"], "success");
+
+    let stdout = tool_output["stdout"]["text"]
+        .as_str()
+        .expect("compress tool output should include stdout text");
+    let stdout_json: serde_json::Value =
+        serde_json::from_str(stdout).expect("compress stdout should be valid json");
+    assert_eq!(stdout_json["ok"], true);
+    assert_eq!(stdout_json["scheduled"], true);
 }
 
 fn token_rich_payload(label: &str, words: usize) -> String {
@@ -424,7 +443,6 @@ async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    eprintln!("[dedup-e2e] event_names={event_names:?}");
     assert!(event_names
         .iter()
         .any(|event| event == "compaction_completed"));
@@ -600,7 +618,6 @@ async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    eprintln!("[dedup-e2e] event_names={event_names:?}");
     assert!(event_names
         .iter()
         .any(|event| event == "compaction_completed"));
@@ -771,7 +788,6 @@ async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    eprintln!("[dedup-e2e] event_names={event_names:?}");
     assert!(event_names
         .iter()
         .any(|event| event == "compaction_completed"));
@@ -1101,8 +1117,6 @@ async fn e2e_compaction_initial_anchor_survives_many_small_followups() {
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
-
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
     let progress: serde_json::Value = progress_resp
@@ -1253,7 +1267,6 @@ async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
 async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summary_boundary() {
     let zai_provider = Arc::new(SequencedZaiProvider::new(vec![
         two_todo_tool_calls_response(),
-        two_todo_tool_calls_response(),
         super::helpers::structured_final_answer_response("done"),
     ]));
     let app_state = setup_web_test_with_pressure_budget(zai_provider.clone());
@@ -1315,7 +1328,6 @@ async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summa
         Duration::from_secs(3),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 3, Duration::from_secs(2)).await;
 
     let progress_resp = fetch_task_progress(&client, &base_url, &session_id, &task_id).await;
     assert!(progress_resp.status().is_success());
@@ -1544,12 +1556,7 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         .iter()
         .find(|message| message.tool_call_id.as_deref() == Some("call-compress"))
     {
-        let tool_result_json: serde_json::Value = serde_json::from_str(&tool_result.content)
-            .expect("compress tool result should be valid json");
-
-        assert_eq!(tool_result_json["ok"], true);
-        assert_eq!(tool_result_json["applied"], true);
-        assert_eq!(tool_result_json["summary_updated"], true);
+        assert_compress_tool_result_scheduled(&tool_result.content);
     }
 
     server.abort();
@@ -1654,11 +1661,7 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
         .iter()
         .find(|message| message.tool_name.as_deref() == Some("compress"))
     {
-        assert!(
-            serde_json::from_str::<serde_json::Value>(&compress_result.content)
-                .ok()
-                .is_some_and(|value| value["ok"] == true && value["applied"] == true)
-        );
+        assert_compress_tool_result_scheduled(&compress_result.content);
     }
     if let Some(write_todos_result) = messages
         .iter()

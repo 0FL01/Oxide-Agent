@@ -4,7 +4,7 @@ use super::budget::count_tokens_cached;
 use super::{AgentMessageKind, CompactedSummaryMetadata, OXIDE_COMPACTED_SUMMARY_PREFIX};
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::recovery::repair_agent_message_history_runtime;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Request for constructing a compacted replacement history.
@@ -203,6 +203,7 @@ pub fn build_compacted_history(
         .into_iter()
         .map(|index| request.messages[index].clone());
     replacement.extend(recent_tail);
+    deduplicate_superseded_read_file_results(&mut replacement);
 
     let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
     if repair_outcome.applied || validated.len() != replacement.len() {
@@ -338,6 +339,93 @@ fn is_pinned(message: &AgentMessage) -> bool {
             | AgentMessageKind::ApprovalReplay
             | AgentMessageKind::InfraStatus
     )
+}
+
+#[derive(Debug, Clone)]
+struct FileToolAction {
+    name: String,
+    path: String,
+}
+
+fn deduplicate_superseded_read_file_results(messages: &mut [AgentMessage]) {
+    let actions = file_tool_actions_by_invocation(messages);
+    let mut latest_read_by_path = HashSet::<String>::new();
+    let mut mutated_since_latest_read = HashSet::<String>::new();
+    let mut deduplicated_indices = Vec::new();
+
+    for (index, message) in messages.iter().enumerate().rev() {
+        let Some(action) = message
+            .tool_call_id
+            .as_deref()
+            .and_then(|tool_call_id| actions.get(tool_call_id))
+        else {
+            continue;
+        };
+
+        match action.name.as_str() {
+            "read_file" => {
+                if latest_read_by_path.contains(&action.path)
+                    && !mutated_since_latest_read.contains(&action.path)
+                {
+                    deduplicated_indices.push((index, action.path.clone()));
+                }
+                latest_read_by_path.insert(action.path.clone());
+                mutated_since_latest_read.remove(&action.path);
+            }
+            "write_file" | "apply_file_edit" => {
+                mutated_since_latest_read.insert(action.path.clone());
+            }
+            _ => {}
+        }
+    }
+
+    for (index, path) in deduplicated_indices {
+        if let Some(message) = messages.get_mut(index) {
+            message.content = format!(
+                "[deduplicated tool result]\ntool: read_file\npath: {path}\nreason: a newer read_file result for this path is retained later in context."
+            );
+        }
+    }
+}
+
+fn file_tool_actions_by_invocation(messages: &[AgentMessage]) -> HashMap<String, FileToolAction> {
+    let mut actions = HashMap::new();
+    for message in messages {
+        let Some(tool_calls) = message.tool_calls.as_ref() else {
+            continue;
+        };
+
+        for tool_call in tool_calls {
+            let name = tool_call.function.name.as_str();
+            if !matches!(name, "read_file" | "write_file" | "apply_file_edit") {
+                continue;
+            }
+            let Some(path) = file_tool_path(&tool_call.function.arguments) else {
+                continue;
+            };
+            actions.insert(
+                tool_call.invocation_id().into_inner(),
+                FileToolAction {
+                    name: name.to_string(),
+                    path,
+                },
+            );
+        }
+    }
+    actions
+}
+
+fn file_tool_path(arguments: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("path")
+                .and_then(|path| path.as_str())
+                .map(str::trim)
+                .map(str::to_string)
+        })
+        .filter(|path| !path.is_empty())
 }
 
 fn terminal_open_tool_batch_index(messages: &[AgentMessage]) -> Option<usize> {
