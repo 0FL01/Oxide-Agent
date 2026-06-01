@@ -105,7 +105,7 @@ impl AgentRunner {
             return Ok(false);
         }
 
-        let target_budget = Self::route_hot_history_budget(ctx, next_route);
+        let target_budget = Self::route_compacted_history_budget(ctx, next_route);
         self.run_runtime_compaction_with_target_budget(
             ctx,
             state,
@@ -165,17 +165,45 @@ impl AgentRunner {
     }
 
     fn route_hot_history_budget(ctx: &AgentRunnerContext<'_>, route: &ModelInfo) -> usize {
-        let context_window = if route.context_window_tokens == 0 {
-            ctx.agent.memory().max_tokens()
-        } else {
-            route.context_window_tokens as usize
-        };
+        let context_window = Self::route_context_window(ctx, route);
         let policy = CompactionPolicy::default();
         context_window
             .saturating_sub(count_tokens_cached(ctx.system_prompt))
             .saturating_sub(Self::tool_schema_tokens(ctx.tools))
             .saturating_sub(route.max_output_tokens as usize)
             .saturating_sub(policy.hard_reserve_tokens)
+    }
+
+    fn route_compacted_history_budget(ctx: &AgentRunnerContext<'_>, route: &ModelInfo) -> usize {
+        const MIN_TARGET_TOKENS: usize = 4_000;
+
+        let context_window = Self::route_context_window(ctx, route);
+        let policy = CompactionPolicy::default();
+        let compact_threshold_tokens =
+            context_window.saturating_mul(policy.compact_threshold_percent as usize) / 100;
+        let request_overhead = count_tokens_cached(ctx.system_prompt)
+            .saturating_add(Self::tool_schema_tokens(ctx.tools))
+            .saturating_add(route.max_output_tokens as usize)
+            .saturating_add(policy.hard_reserve_tokens);
+        let compact_target = compact_threshold_tokens.saturating_sub(request_overhead);
+        if compact_target >= MIN_TARGET_TOKENS {
+            return compact_target;
+        }
+
+        let hard_target = Self::route_hot_history_budget(ctx, route);
+        if hard_target > 0 {
+            return hard_target.max(MIN_TARGET_TOKENS).min(context_window);
+        }
+
+        MIN_TARGET_TOKENS.min(context_window)
+    }
+
+    fn route_context_window(ctx: &AgentRunnerContext<'_>, route: &ModelInfo) -> usize {
+        if route.context_window_tokens == 0 {
+            ctx.agent.memory().max_tokens()
+        } else {
+            route.context_window_tokens as usize
+        }
     }
 
     fn primary_runtime_route(
@@ -236,7 +264,7 @@ impl AgentRunner {
                 reason,
                 phase,
                 force,
-                target_token_budget: ctx.agent.memory().max_tokens(),
+                target_token_budget: Self::route_compacted_history_budget(ctx, route),
             },
         )
         .await
@@ -690,6 +718,57 @@ mod tests {
         assert!(AgentRunner::runtime_compaction_threshold_reached(
             &ctx, &route
         ));
+        drop(ctx);
+    }
+
+    #[test]
+    fn runtime_compaction_target_stays_below_full_request_compact_threshold() {
+        let tools = Vec::new();
+        let mut session = EphemeralSession::new(128_000);
+        session.memory_mut().add_message(AgentMessage::user_task(
+            "Compact to leave room for system prompt, tools, output and reserve",
+        ));
+
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let system_prompt = "system prompt with operational instructions".repeat(400);
+        let ctx = AgentRunnerContext {
+            task: "Compact to leave room for request overhead",
+            system_prompt: &system_prompt,
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-compaction-target-budget",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 16_000),
+        };
+        let route = ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 16_000,
+            context_window_tokens: 128_000,
+            weight: 1,
+        };
+
+        let target = AgentRunner::route_compacted_history_budget(&ctx, &route);
+        let policy = CompactionPolicy::default();
+        let projected_total = count_tokens_cached(ctx.system_prompt)
+            .saturating_add(AgentRunner::tool_schema_tokens(ctx.tools))
+            .saturating_add(target)
+            .saturating_add(route.max_output_tokens as usize)
+            .saturating_add(policy.hard_reserve_tokens);
+        let compact_threshold = (route.context_window_tokens as usize)
+            .saturating_mul(policy.compact_threshold_percent as usize)
+            / 100;
+
+        assert!(target < AgentRunner::route_hot_history_budget(&ctx, &route));
+        assert!(projected_total <= compact_threshold);
         drop(ctx);
     }
 

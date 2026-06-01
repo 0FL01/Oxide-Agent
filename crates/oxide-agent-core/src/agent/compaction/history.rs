@@ -122,31 +122,24 @@ pub fn build_compacted_history(
     // it through the budget, continue collecting without budget constraint.
 
     let mut recent_tail: Vec<AgentMessage> = Vec::new();
-    let mut collected_indices: std::collections::HashSet<usize> =
-        std::collections::HashSet::new();
+    let mut collected_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut tool_result_ids: Vec<String> = Vec::new();
     let mut user_rounds = 0usize;
 
     // Shared inclusion predicate used by both phases.
-    let include_fn = |index: usize,
-                      message: &AgentMessage,
-                      result_ids: &[String]|
-     -> bool {
+    let include_fn = |index: usize, message: &AgentMessage, result_ids: &[String]| -> bool {
         if is_pinned(message) || is_any_compaction_summary_message(message) {
             return false;
         }
         match message.role {
-            MessageRole::User => {
-                message.resolved_kind() == AgentMessageKind::UserTurn
-            }
+            MessageRole::User => message.resolved_kind() == AgentMessageKind::UserTurn,
             MessageRole::Assistant => {
                 if terminal_tool_batch_index == Some(index) {
                     return true;
                 }
                 let is_plain = matches!(
                     message.resolved_kind(),
-                    AgentMessageKind::AssistantResponse
-                        | AgentMessageKind::AssistantReasoning
+                    AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
                 ) && message.tool_calls.is_none();
                 if is_plain {
                     return true;
