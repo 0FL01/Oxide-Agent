@@ -156,7 +156,6 @@ profile-web-embedded-opencode-local = [
     "tool-media-image",
     "tool-media-video",
     "tool-tavily",
-    "tool-duckduckgo",
     "tool-searxng",
     "tool-sandbox-fileops",
     "tool-sandbox-exec",
@@ -258,7 +257,7 @@ tool-wiki-memory = []
 tool-webfetch-md = ["dep:htmd", "dep:reqwest"]
 tool-tavily = ["dep:reqwest"]
 tool-duckduckgo = ["dep:duckduckgo", "dep:reqwest", "dep:scraper"]
-tool-searxng = ["dep:reqwest"]
+tool-searxng = ["dep:reqwest", "reqwest/query"]
 tool-sandbox-fileops = []
 tool-sandbox-exec = []
 tool-sandbox-recreate = []

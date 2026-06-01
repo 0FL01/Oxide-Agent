@@ -55,24 +55,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "storage/r2"
       },
       {
-        "id": "tool/agents-md",
-        "module": "tool/agents-md"
-      },
-      {
         "id": "tool/compression",
         "module": "tool/compression"
       },
       {
         "id": "tool/delegation",
         "module": "tool/delegation"
-      },
-      {
-        "id": "tool/duckduckgo-news",
-        "module": "tool/duckduckgo"
-      },
-      {
-        "id": "tool/duckduckgo-search",
-        "module": "tool/duckduckgo"
       },
       {
         "id": "tool/file-delivery",
@@ -285,17 +273,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "tool-agents-md",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/agents-md",
-        "kind": "tool",
-        "provides": [
-          "tool/agents-md"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "tool-compression",
         "config_properties": [],
         "conflicts": [],
@@ -314,18 +291,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "tool",
         "provides": [
           "tool/delegation"
-        ],
-        "requires": []
-      },
-      {
-        "cargo_feature": "tool-duckduckgo",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "tool/duckduckgo",
-        "kind": "search",
-        "provides": [
-          "tool/duckduckgo-news",
-          "tool/duckduckgo-search"
         ],
         "requires": []
       },
@@ -528,11 +493,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client/fileops",
       "sandbox-backend/sandboxd-client/lifecycle",
       "storage/r2",
-      "tool/agents-md",
       "tool/compression",
       "tool/delegation",
-      "tool/duckduckgo-news",
-      "tool/duckduckgo-search",
       "tool/file-delivery",
       "tool/media-audio-transcription",
       "tool/media-image-description",
@@ -556,10 +518,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/bwrap",
       "sandbox-backend/sandboxd-client",
       "storage/r2",
-      "tool/agents-md",
       "tool/compression",
       "tool/delegation",
-      "tool/duckduckgo",
       "tool/file-delivery",
       "tool/media-audio",
       "tool/media-image",
@@ -582,8 +542,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "compress",
     "describe_image_file",
     "describe_video_file",
-    "duckduckgo_news",
-    "duckduckgo_search",
     "execute_command",
     "list_files",
     "read_file",
@@ -659,13 +617,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "storage/r2",
       "kind": "storage-backend",
       "cargo_feature": "storage-s3-r2",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "tool/duckduckgo",
-      "kind": "search",
-      "cargo_feature": "tool-duckduckgo",
       "config_env": [],
       "requires_capabilities": []
     },

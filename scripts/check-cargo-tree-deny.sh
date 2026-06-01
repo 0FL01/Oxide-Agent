@@ -55,7 +55,7 @@ if [[ ${#deny[@]} -eq 0 ]]; then
             deny=(rmcp zai-rs async-openai claudius)
             ;;
         profile-web-embedded-opencode-local)
-            deny=(rmcp zai-rs async-openai claudius)
+            deny=(rmcp zai-rs async-openai claudius duckduckgo scraper)
             ;;
         profile-media-enabled)
             deny=(bollard rmcp bincode serde_bytes tar zai-rs async-openai claudius tavily htmd)
