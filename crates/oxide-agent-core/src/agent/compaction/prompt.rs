@@ -23,7 +23,14 @@ Preserve only facts that matter for continuing the session:
 
 Use any previous compacted summary only as source signal. Do not summarize old summaries as separate facts.
 Do not invent state. If something is uncertain, say it is uncertain.
-Output concise but complete plain text."#
+
+Output a structured handoff using this format:
+
+GENERATION: <number, starting from 1>
+GOAL: <current goal and progress>
+FINDINGS: <key findings, decisions, user preferences, relevant state>
+BLOCKERS: <risks, blockers, approvals, open questions>
+NEXT_STEPS: <pending actions and remaining work>"#
 }
 
 /// Build the user payload for Codex-style local LLM summary compaction.

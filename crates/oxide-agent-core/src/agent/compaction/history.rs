@@ -70,12 +70,15 @@ pub fn extract_previous_compacted_summary(
     })
 }
 
+/// Minimum number of complete conversation rounds guaranteed to survive compaction.
+const MIN_RECENT_ROUNDS: usize = 3;
+
 /// Build a deterministic replacement history with one authoritative compacted summary.
 ///
-/// This first-stage builder intentionally keeps the retained raw tail narrow:
-/// pinned model-visible state plus recent real user/assistant text. Tool calls
-/// are not retained unless later controller work can prove the active turn is
-/// at a safe boundary and can preserve complete pairs.
+/// This builder keeps pinned model-visible state plus a recent raw tail that
+/// guarantees at least [`MIN_RECENT_ROUNDS`] complete user/assistant exchanges.
+/// Complete tool-call pairs (AssistantToolCall + matching ToolResult) are
+/// retained when they fall within the recent budget or minimum floor.
 pub fn build_compacted_history(
     request: BuildCompactedHistoryRequest<'_>,
 ) -> Result<Vec<AgentMessage>, CompactedHistoryBuildError> {
@@ -108,24 +111,115 @@ pub fn build_compacted_history(
     }
 
     let terminal_tool_batch_index = terminal_open_tool_batch_index(request.messages);
-    let mut recent_tail = Vec::new();
+
+    // Collect recent tail in two phases.
+    //
+    // Phase 1 — budget-constrained: collect messages from the end that fit the
+    // token budget.  Tool results are tracked so their matching tool-call
+    // assistant messages are also pulled in.
+    //
+    // Phase 2 — minimum floor: if fewer than MIN_RECENT_ROUNDS user turns made
+    // it through the budget, continue collecting without budget constraint.
+
+    let mut recent_tail: Vec<AgentMessage> = Vec::new();
+    let mut collected_indices: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    let mut tool_result_ids: Vec<String> = Vec::new();
+    let mut user_rounds = 0usize;
+
+    // Shared inclusion predicate used by both phases.
+    let include_fn = |index: usize,
+                      message: &AgentMessage,
+                      result_ids: &[String]|
+     -> bool {
+        if is_pinned(message) || is_any_compaction_summary_message(message) {
+            return false;
+        }
+        match message.role {
+            MessageRole::User => {
+                message.resolved_kind() == AgentMessageKind::UserTurn
+            }
+            MessageRole::Assistant => {
+                if terminal_tool_batch_index == Some(index) {
+                    return true;
+                }
+                let is_plain = matches!(
+                    message.resolved_kind(),
+                    AgentMessageKind::AssistantResponse
+                        | AgentMessageKind::AssistantReasoning
+                ) && message.tool_calls.is_none();
+                if is_plain {
+                    return true;
+                }
+                // Tool call that matches a result already collected.
+                if let Some(tool_calls) = &message.tool_calls {
+                    if tool_calls.iter().any(|tc| result_ids.contains(&tc.id)) {
+                        return true;
+                    }
+                }
+                false
+            }
+            MessageRole::Tool => true,
+            MessageRole::System => false,
+        }
+    };
+
+    // --- Phase 1: budget-constrained ---
     for (index, message) in request.messages.iter().enumerate().rev() {
-        if is_pinned(message)
-            || is_any_compaction_summary_message(message)
-            || !is_recent_raw_candidate(message, index, terminal_tool_batch_index)
-        {
+        if !include_fn(index, message, &tool_result_ids) {
             continue;
+        }
+
+        // Track tool result IDs for matching *before* the budget check so that
+        // paired tool calls can enter the tail when the result was collected on
+        // an earlier (later in forward order) iteration.
+        if message.role == MessageRole::Tool {
+            if let Some(tool_call_id) = &message.tool_call_id {
+                tool_result_ids.push(tool_call_id.clone());
+            }
         }
 
         let tokens = message_tokens(message);
-        if request.target_token_budget > 0
-            && used_tokens.saturating_add(tokens) > request.target_token_budget
-        {
-            continue;
-        }
+        let fits_budget = request.target_token_budget == 0
+            || used_tokens.saturating_add(tokens) <= request.target_token_budget;
 
-        used_tokens = used_tokens.saturating_add(tokens);
-        recent_tail.push(message.clone());
+        if fits_budget {
+            collected_indices.insert(index);
+            if message.resolved_kind() == AgentMessageKind::UserTurn {
+                user_rounds = user_rounds.saturating_add(1);
+            }
+            used_tokens = used_tokens.saturating_add(tokens);
+            recent_tail.push(message.clone());
+        }
+    }
+
+    // --- Phase 2: minimum floor (budget-blind) ---
+    if user_rounds < MIN_RECENT_ROUNDS {
+        for (index, message) in request.messages.iter().enumerate().rev() {
+            if collected_indices.contains(&index) {
+                continue;
+            }
+            if !include_fn(index, message, &tool_result_ids) {
+                continue;
+            }
+
+            // Track new tool result IDs so their matching calls can be found.
+            if message.role == MessageRole::Tool {
+                if let Some(tool_call_id) = &message.tool_call_id {
+                    tool_result_ids.push(tool_call_id.clone());
+                }
+            }
+
+            collected_indices.insert(index);
+            if message.resolved_kind() == AgentMessageKind::UserTurn {
+                user_rounds = user_rounds.saturating_add(1);
+            }
+            recent_tail.push(message.clone());
+
+            if user_rounds >= MIN_RECENT_ROUNDS {
+                break;
+            }
+        }
     }
 
     recent_tail.reverse();
@@ -163,27 +257,6 @@ fn terminal_open_tool_batch_index(messages: &[AgentMessage]) -> Option<usize> {
         AgentMessageKind::AssistantToolCall
     )
     .then_some(index)
-}
-
-fn is_recent_raw_candidate(
-    message: &AgentMessage,
-    index: usize,
-    terminal_tool_batch_index: Option<usize>,
-) -> bool {
-    match message.role {
-        MessageRole::User => matches!(message.resolved_kind(), AgentMessageKind::UserTurn),
-        MessageRole::Assistant => {
-            if terminal_tool_batch_index == Some(index) {
-                return true;
-            }
-
-            matches!(
-                message.resolved_kind(),
-                AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
-            ) && message.tool_calls.is_none()
-        }
-        MessageRole::System | MessageRole::Tool => false,
-    }
 }
 
 fn message_tokens(message: &AgentMessage) -> usize {

@@ -190,7 +190,7 @@ fn bounded_summary_source_messages(
     let source_budget = route_window
         .saturating_sub(output_budget)
         .saturating_sub(2_000)
-        .clamp(4_000, 32_000)
+        .clamp(4_000, 180_000)
         .saturating_sub(previous_summary_tokens.min(8_000));
 
     let mut selected_indices = std::collections::BTreeSet::new();
