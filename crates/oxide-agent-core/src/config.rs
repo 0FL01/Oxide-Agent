@@ -2117,7 +2117,7 @@ pub const SANDBOX_CPU_PERIOD: i64 = 100_000;
 /// CPU quota for sandbox container (2 CPUs)
 pub const SANDBOX_CPU_QUOTA: i64 = 200_000; // 2 CPUs (200% of period)
 /// Timeout for individual command execution in sandbox
-pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 60; // 1 minute per command
+pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 240; // 4 minutes per command
 
 /// Explicit sandbox backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
