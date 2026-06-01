@@ -6,7 +6,7 @@
 
 2.  ~~**Wiki context вставляется до стабильных операционных блоков.**~~ **FIXED.** Wiki context перенесён после workflow guidance (`composer.rs`). Regression test: `test_wiki_context_after_workflow_guidance`.
 
-3.  **Sub-agent включает task в system prompt.** `Your task: {task}` делает каждый sub-agent prompt уникальным, хотя task уже есть как user message в history. Для частых `spawn_sub_agents` полностью убивает cache hit.
+3.  ~~**Sub-agent включает task в system prompt.**~~ **FIXED.** `Your task: {task}` убран из system prompt sub-agent (`composer.rs`). Task доставляется исключительно через первый user message (`delegation.rs:904`), system prompt стабильный для одинаковых tool-sets. Regression test: `test_sub_agent_prompt_excludes_task`.
 
 4.  **System messages из history fold-ятся в prompt без разбора.** `fold_system_messages_into_prompt()` добавляет system messages (temporal context, compacted summaries, retry notes) в начало system prompt. Нестабильные system messages размывают prefix.
 
@@ -16,7 +16,7 @@
 
 7.  ~~**Tool schemas дублируются в prompt text и native `tools[]`.**~~ **FIXED.** `build_structured_output_instructions()` (`composer.rs`) теперь рендерит только compact sorted tool-name list (`## Available Tools`). Полные schemas доставляются исключительно через native `tools[]` payload. Prompt: 2673→98 bytes (27x reduction), wire duplication: -48%.
 
-8.  **Compacted summary содержит volatile metadata.** `format_compacted_summary()` (`memory.rs:816-858`) рендерит в prompt-visible текст: `created_at`, `provider`, `route`, `backend`, `token_before`, `token_after`, `history_items_before/after`, `repair_applied`. Эти поля churn-ятся даже когда semantic summary идентичен — каждый compaction генерирует уникальный prefix.
+8.  ~~**Compacted summary содержит volatile metadata.**~~ **FIXED.** `format_compacted_summary()` (`memory.rs`) убрал 12 volatile полей из prompt-visible текста. Оставлены только `generation` (нужен для compaction chain) и `wiki_memory_lookup_available` (влияет на tool-use). Остальная metadata логируется через `log_runtime_compaction_success`. Regression tests: `compacted_summary_excludes_volatile_metadata`, `compacted_summary_differs_only_in_generation_across_metadata`.
 
 9.  **Compaction pin-ит stale `UserTask`/`RuntimeContext` впереди summary.** `is_pinned()` (`compaction/history.rs:333-342`) сохраняет `UserTask`, `RuntimeContext`, `ApprovalReplay`, `InfraStatus` как pinned messages. После compaction старые dynamic messages остаются в начале non-system history, сжимая reusable stable prefix.
 
@@ -46,7 +46,7 @@
 **Порядок сборки** (`composer.rs` — sub-agent):
 
 ```
-["You are a lightweight sub-agent..." + "Your task: {task}" + extra_context + workflow + structured_output] + [date_context]
+["You are a lightweight sub-agent..." + extra_context + workflow + structured_output] + [date_context]
 ```
 
 Стабильные блоки (fallback, workflow, structured output) идут первыми, формируя cacheable prefix. Динамические (wiki, date/time) — в конце как suffix.
@@ -67,10 +67,10 @@
 **Файл:** `crates/oxide-agent-core/src/agent/prompt/composer.rs`
 
 ```
-"You are a lightweight sub-agent..." + "Your task: {task}" + [extra_context] + [workflow] + [structured_output] + [date_context]
+"You are a lightweight sub-agent..." + [extra_context] + [workflow] + [structured_output] + [date_context]
 ```
 
-`date_context` теперь в конце (fixed). Но task всё ещё дублируется: в system prompt (`Your task: {task}`) и как user message (`delegation.rs:904`). Task в system prompt делает каждый sub-agent prompt уникальным — **оставшаяся проблема**.
+`date_context` в конце (fixed). Task убран из system prompt (fixed) — доставляется только через user message. Prompt стабильный для одинаковых tool-sets.
 
 ### 4. Wiki context
 
@@ -109,12 +109,12 @@
 |---:|---|---|---|---:|---|
 | 1 | **Перенести date/time в конец system prompt.** | **DONE** | Очень высокий | Низкая | Smoke test: static prefix → 67.5% cache hit, dynamic prefix → 0% hit. |
 | 2 | **Переставить wiki context после workflow guidance.** | **DONE** | Высокий (если wiki включена) | Низкая | Wiki dynamic — стабильные блоки кэшируются первыми. |
-| 3 | **Убрать task из sub-agent system prompt.** Task уже загружен как user message (`delegation.rs:904`). System prompt sub-agent станет стабильным на одинаковых tool-sets между вызовами. | TODO | Высокий (для delegation) | Низкая | Сейчас каждый sub-agent prompt уникален по task. |
+| 3 | **Убрать task из sub-agent system prompt.** Task уже загружен как user message (`delegation.rs:904`). System prompt sub-agent стабильный на одинаковых tool-sets между вызовами. | **DONE** | Высокий (для delegation) | Низкая | Mirror main-agent approach (`_task`). Regression test: `test_sub_agent_prompt_excludes_task`. |
 | 4 | **Добавить cache telemetry.** Расширить `TokenUsage` до `cache_read_tokens`/`cache_write_tokens`, парсить provider-specific поля. | TODO | Средний (как валидация) | Низкая | Без этого любые изменения — гадание. |
 | 5 | **Выборочный fold system messages.** Fold-ить в prompt только `TopicAgentsMd` (pinned), `Summary` и стабильные блоки. `SystemContext`/temporal/repair оставлять в history. | TODO | Средний (в длинных сессиях) | Средняя | Меньше динамики в prefix. |
 | 6 | **Provider-native cache_control для Anthropic-совместимых путей.** MiniMax (`claudius`), OpenCode Go Anthropic: маркировать system prompt как cacheable, tool definitions как cacheable, динамические суффиксы как non-cacheable. | TODO | Высокий для Anthropic-маршрутов | Высокая | Зависит от активных routes и SDK. |
 | 7 | **Удалить дублирование tool schemas из prompt text.** `build_structured_output_instructions()` заменён на compact sorted tool-name list. Полные schemas доставляются только через native `tools[]` payload. | **DONE** | Высокий | Низкая | Prompt: 2673→98 bytes (27x reduction). Wire: -48% дублирования. |
-| 8 | **Вычистить volatile metadata из compacted summary.** Убрать `created_at`, `provider`, `route`, token counts из prompt-visible текста. Оставить только semantic handoff text. | TODO | Средний | Низкая | Summary churn-ится даже при идентичном semantic content. |
+| 8 | **Вычистить volatile metadata из compacted summary.** Убрать `created_at`, `provider`, `route`, token counts из prompt-visible текста. Оставить `generation` (compaction chain) + `wiki_memory_lookup_available` (tool-use) + guidance text. | **DONE** | Средний | Низкая | 12 volatile полей → 2 стабильных. Summary stable для одинакового semantic content. |
 | 9 | **Сузить pinned messages после compaction.** Не pin-ить `UserTask`/`RuntimeContext` бессрочно; fold-ить их в summary вместо сохранения как front-of-history anchors. | TODO | Средний | Средняя | Старые dynamic messages сжимают stable prefix после compaction. |
 | 10 | **Добавить prompt-layout hashes в observability.** `static_prefix_hash`, `tools_hash`, `topic_agents_md_hash` — для корреляции cache behavior с конкретной layout. | TODO | Средний (как валидация) | Средняя | Невозможно отличить layout regression от provider-side noise. |
 
@@ -316,9 +316,9 @@ total_cost = input_cost + completion_tokens/1M * $0.28
 | date_context в конец main prompt | `composer.rs` | `498-540` | **DONE** |
 | date_context в конец sub-agent prompt | `composer.rs` | `557-599` | **DONE** |
 | wiki после workflow guidance | `composer.rs` | `517-520` | **DONE** |
-| Убрать task из sub-agent system prompt | `composer.rs` | `566-572`; `delegation.rs` | `956-1004` |
+| Убрать task из sub-agent system prompt | `composer.rs` | `581-587` | **DONE** |
 | Удалить `## Available Tools (JSON schema)` из prompt — заменить на compact name list | `composer.rs` | `430-483` | **DONE** |
-| Убрать `created_at`/route/provider из prompt-visible summary | `memory.rs` | `816-858` |
+| Убрать `created_at`/route/provider из prompt-visible summary | `memory.rs` | `816-840` | **DONE** |
 | Добавить `static_prefix_hash` в logging | `token_snapshots.rs` | `12-40`; `memory.rs` | `657-682` |
 | Расширить `TokenUsage` cache fields | `types.rs` | `499-508` |
 

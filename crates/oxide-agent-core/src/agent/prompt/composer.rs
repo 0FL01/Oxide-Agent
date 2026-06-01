@@ -570,7 +570,7 @@ fn normalize_wiki_context(wiki_context: Option<&str>) -> Option<&str> {
 /// Create a minimal system prompt for sub-agent execution.
 #[must_use]
 pub fn create_sub_agent_system_prompt(
-    task: &str,
+    _task: &str,
     tools: &[ToolDefinition],
     structured_output: bool,
     extra_context: Option<&str>,
@@ -578,13 +578,15 @@ pub fn create_sub_agent_system_prompt(
     // Build date_context early but append at end for cache hit.
     let date_context = build_date_context(tools);
 
-    let mut base_prompt = format!(
+    // Task is intentionally excluded from the system prompt to keep the prefix
+    // cache-stable across different sub-agent invocations.  The task reaches the
+    // model exclusively via the first user message (AgentMessage::user_task).
+    let mut base_prompt =
         "You are a lightweight sub-agent for draft work.\n\
 You do NOT communicate with the user directly and return the result only to the orchestrator.\n\
-Your task: {task}.\n\
 Use only available tools if necessary.\n\
 Do not spawn, wait for, or cancel sub-agents and do not send files to the user."
-    );
+            .to_string();
 
     if let Some(extra) = extra_context {
         if !extra.trim().is_empty() {
@@ -862,6 +864,30 @@ mod tests {
             date_pos > structured_pos,
             "date context must come AFTER structured output for cache hit, \
              but date is at {date_pos} and structured output at {structured_pos}"
+        );
+    }
+
+    /// Task must NOT appear in the sub-agent system prompt — it is delivered
+    /// exclusively via the first user message to keep the prefix cache-stable.
+    #[test]
+    fn test_sub_agent_prompt_excludes_task() {
+        let tools = [ToolDefinition {
+            name: "demo_tool".to_string(),
+            description: "demo".to_string(),
+            parameters: serde_json::json!({ "type": "object" }),
+        }];
+
+        let unique_task = "XRAY_UNIQUE_TASK_MARKER_7f3a";
+        let prompt = create_sub_agent_system_prompt(unique_task, &tools, true, None);
+
+        assert!(
+            !prompt.contains(unique_task),
+            "sub-agent system prompt must not contain the task string; \
+             task is delivered via the user message for cache stability"
+        );
+        assert!(
+            prompt.contains("lightweight sub-agent"),
+            "sub-agent system prompt must still contain identity instructions"
         );
     }
 
