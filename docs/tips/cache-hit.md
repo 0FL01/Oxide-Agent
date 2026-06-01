@@ -117,7 +117,7 @@ Assembly order: `base + stable + date_suffix + volatile`
 | 2 | **Переставить wiki context после workflow guidance.** | **DONE** | Высокий (если wiki включена) | Низкая | Wiki dynamic — стабильные блоки кэшируются первыми. |
 | 3 | **Убрать task из sub-agent system prompt.** Task уже загружен как user message (`delegation.rs:904`). System prompt sub-agent стабильный на одинаковых tool-sets между вызовами. | **DONE** | Высокий (для delegation) | Низкая | Mirror main-agent approach (`_task`). Regression test: `test_sub_agent_prompt_excludes_task`. |
 | 4 | **Добавить cache telemetry.** Расширить `TokenUsage` до `cached_tokens`/`cache_creation_tokens`, парсить provider-specific поля. | **DONE** | Средний (как валидация) | Низкая | `TokenUsage` расширена. 9 parse sites обновлены. `cache_hit_rate()`. Commit: `20740c82`. |
-| 5 | **Выборочный fold system messages.** Fold-ить в prompt только `TopicAgentsMd` (pinned), `Summary` и стабильные блоки. `SystemContext`/temporal/repair оставлять в history. | **DONE** | Средний (в длинных сессиях) | Средняя | `fold_system_messages_into_prompt` разделяет stable/volatile по prefix (stable перед date, volatile после). `ComposedPrompt` (base + date_suffix). Тесты: `fold_stable_before_date_volatile_after`, `fold_all_volatile_when_no_stable_prefixes`. |
+| 5 | **Выборочный fold system messages.** Fold-ить в prompt только `TopicAgentsMd` (pinned), `Summary` и стабильные блоки. `SystemContext`/temporal/repair оставлять в history. | **DONE** | Высокий (с TopicAgentsMd/Summary) | Средняя | `fold_system_messages_into_prompt` разделяет stable/volatile по prefix (stable перед date, volatile после). `ComposedPrompt` (base + date_suffix). Commit: `182e1ef5`. system_prompt_tokens: 2629→2544 (−85 tok date_context). Тесты: `fold_stable_before_date_volatile_after`, `fold_all_volatile_when_no_stable_prefixes`. |
 | 6 | **Provider-native cache_control для Anthropic-совместимых путей.** MiniMax (`claudius`), OpenCode Go Anthropic: маркировать system prompt как cacheable, tool definitions как cacheable, динамические суффиксы как non-cacheable. | TODO | Высокий для Anthropic-маршрутов | Высокая | Зависит от активных routes и SDK. |
 | 7 | **Удалить дублирование tool schemas из prompt text.** `build_structured_output_instructions()` заменён на compact sorted tool-name list. Полные schemas доставляются только через native `tools[]` payload. | **DONE** | Высокий | Низкая | Prompt: 2673→98 bytes (27x reduction). Wire: -48% дублирования. |
 | 8 | **Вычистить volatile metadata из compacted summary.** Убрать `created_at`, `provider`, `route`, token counts из prompt-visible текста. Оставить `generation` (compaction chain) + `wiki_memory_lookup_available` (tool-use) + guidance text. | **DONE** | Средний | Низкая | 12 volatile полей → 2 стабильных. Summary stable для одинакового semantic content. |
@@ -218,7 +218,7 @@ total_cost = input_cost + completion_tokens/1M * output_price
 
 **Target:** `cache_hit_rate` 70–90% после прогрева. Падение — изменился prefix, tools, сериализация или dynamic data попали в начало.
 
-**Next step:** логирование `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` внедрено. Результаты: 89.5% overall hit rate, 99.7% на стабильных итерациях (14 iter, post-fix). ~~Прогнать 20–50 агентных задач, измерить hit rate.~~ Оставшиеся TODO: выборочный fold system messages (#5), provider-native `cache_control` (#6), prompt-layout hashes (#10).
+**Next step:** логирование `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` внедрено. Fold selective внедрён (commit `182e1ef5`). system_prompt_tokens: 2629→2544. Оставшиеся TODO: provider-native `cache_control` (#6), prompt-layout hashes (#10).
 
 ---
 
@@ -391,6 +391,37 @@ No compaction. Task completed naturally. Cache hit grew to 99.7%.
 | Iterations | 11 (forced end) | 13 (natural completion) |
 | Total cached tokens | 333,536 | 576,378 |
 | Est. cost (DeepSeek API) | ~$0.090 | ~$0.014 |
+
+### Run 3 (selective fold, 2026-06-02)
+
+Model: `deepseek-v4-flash` via OpenCode Go. Task: deep research (same prompt). 3 iterations. No `agents_md` set.
+
+```
+iter  prompt   cached   hit%     note
+──────────────────────────────────────────────
+ 0     7,537    2,688    36%     cold start — identical to baseline
+ 1     8,892    7,680    86%     
+ 2    21,839    9,472    43%     task completed, final prose salvaged
+```
+
+**system_prompt_tokens reduced: 2629 → 2544** (−85 tok date_context moved out to date_suffix).
+Task completed faster (3 iter vs 7 baseline) — different tool trajectories, not cache-attributable.
+
+No `TopicAgentsMd` in history → fold has no stable messages to classify. Full benefit of selective fold
+is measurable only with `agents_md` (or post-compaction `Summary`) in memory.
+
+**Comparison vs baseline (same experiment):**
+
+| Metric | Baseline | After selective fold |
+|---|---|---|
+| system_prompt_tokens | 2629 | 2544 (−85, date moved) |
+| Iter 0 hit rate | 35.7% | 35.7% (identical) |
+| Iter 1 hit rate | 92.7% | 86.4% |
+| Task iterations | 7 (6 LLM calls) | 3 (3 LLM calls) |
+| Tools trajectory | 6 web searches, 2 structured retries | 4 web searches, 1 structured salvage |
+
+**Expected delta with agents_md enabled:** `TopicAgentsMd` (~1000 tok) moves from miss zone
+to cacheable prefix. Iter 2+ hit rate would be ~95-99% instead of ~82-86%.
 
 ---
 
