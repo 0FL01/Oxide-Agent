@@ -260,7 +260,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                 </label>
                                 <button
                                     type="submit"
-                                    disabled=loading
+                                    disabled=move || loading.get() || !can_submit_input(&input.get(), &pending_files.get())
                                     class="btn-primary"
                                 >
                                     "Send"
@@ -758,7 +758,7 @@ fn SessionWorkspace(
                                 </label>
                                 <button
                                     type="submit"
-                                    disabled=move || loading.get() || is_running()
+                                    disabled=move || loading.get() || is_running() || (!can_submit_input(&input.get(), &pending_files.get()) && !is_waiting())
                                     class="btn-primary"
                                     style=move || if is_running() { "display:none" } else { "" }
                                 >

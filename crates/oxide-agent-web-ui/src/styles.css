@@ -186,6 +186,13 @@ button:disabled:active {
   border-color: #0e8c6d;
 }
 
+.btn-primary:disabled {
+  background: rgba(16, 163, 127, 0.35);
+  border-color: rgba(16, 163, 127, 0.35);
+  color: rgba(255, 255, 255, 0.5);
+  opacity: 1;
+}
+
 .btn-danger {
   color: var(--accent-red);
   border-color: rgba(239, 68, 68, 0.3);
@@ -1859,6 +1866,14 @@ button.btn-primary:hover {
   border-color: #0e8c6d;
 }
 
+.btn-primary:disabled,
+button.btn-primary:disabled {
+  background: rgba(16, 163, 127, 0.35);
+  border-color: rgba(16, 163, 127, 0.35);
+  color: rgba(255, 255, 255, 0.5);
+  opacity: 1;
+}
+
 .btn-danger,
 button.btn-danger {
   background: rgba(239, 68, 68, 0.08);
@@ -2574,9 +2589,10 @@ textarea {
 }
 
 .composer-actions.btn-hidden .btn-primary {
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(4px);
+  /* button stays visible but dimmed via :disabled */
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
 }
 
 .composer-attach-button {
