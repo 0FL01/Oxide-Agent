@@ -493,7 +493,7 @@ Hit rate 67.5% на 379-токенном промпте: 256 токенов syst
 
 ### Замечание про OpenCode Go
 
-OpenCode Go — подписка с flat-rate биллингом. Cache hit **не снижает стоимость** в подписке, но снижает TTFT (latency). Экономия на стоимости работает только при прямых per-token маршрутах (DeepSeek API напрямую, OpenRouter).
+OpenCode Go — подписка с flat-rate биллингом, но с лимитами на usage (входящие токены). Cache hit **снижает потребление input token лимита**, уменьшая TTFT (latency) и экономя квоту подписки. Прямая экономия стоимости работает при per-token маршрутах (DeepSeek API напрямую, OpenRouter).
 
 ---
 

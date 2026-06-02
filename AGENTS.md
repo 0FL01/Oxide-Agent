@@ -83,6 +83,16 @@ Default branch: `dev`.
 - Sub-agents: isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, cannot recurse/send files/mutate topics/control-plane/use reminders/`stack_logs`/`recreate_sandbox`.
 - Do not reintroduce embedding-selected skills.
 
+### Prompt cache hit
+- **Static prefix + dynamic suffix** — все динамические блоки (date/time, wiki context) строго в конце system prompt. Стабильные блоки (fallback, workflow, structured output, topic AGENTS.md) в начале формируют cacheable prefix.
+- **Assembly order**: `[fallback + profile + workflow_guidance + structured_output] + [wiki_context] + [date_context]`. Дата и wiki — всегда в конце.
+- **Fold system messages** (`history.rs`): stable (`[TOPIC_AGENTS_MD]`, `[OXIDE_COMPACTED_SUMMARY_V1]`) идут перед `date_suffix` в cacheable prefix; volatile (retry notes, temporal context, infra status) — после `date_suffix`.
+- **Tool schemas**: в prompt только compact sorted tool-name list (`~98 bytes`); полные JSON schemas — исключительно через native `tools[]` payload.
+- **Compacted summary**: в prompt-visible текст только `generation` + `wiki_memory_lookup_available`; `created_at`, provider, route, token counts — только в логах.
+- **Budget guard**: `compress` tool blocked при <85% context utilization, предотвращая premature compaction и сброс кэша.
+- **Cache telemetry**: `TokenUsage` содержит `cached_tokens`, `cache_creation_tokens`, метод `cache_hit_rate()`. Парсится у всех 9 production providers.
+- Детали: `docs/tips/cache-hit.md` — полный анализ, provider-specific механизмы, production validation, smoke test.
+
 ### Topic- and flow-scoped state
 - Contexts in `UserConfig.contexts` via `UserContextConfig`. Memory uses context-scoped APIs.
 - Chat history isolated via `scoped_chat_storage_id`.
@@ -158,6 +168,7 @@ feat(sources): add bybit proof of reserves source
 
 ## Where to find details
 
+- `docs/tips/cache-hit.md` - prompt cache hit analysis: architecture, assembly order, telemetry, production validation.
 - `docs/hooks/` - hook lifecycle and managed hook behavior.
 - `docs/wiki-memory.md` - wiki memory system: storage, planner, context assembly.
 - `docs/bwrap-sandbox.md` - Bubblewrap sandbox backend: setup, rootfs, execution.
