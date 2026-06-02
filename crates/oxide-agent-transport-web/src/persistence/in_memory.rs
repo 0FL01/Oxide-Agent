@@ -420,6 +420,7 @@ mod tests {
             user_id,
             title: format!("Session {session_id}"),
             context_key: format!("web-session-{session_id}"),
+            context_keys: vec![format!("web-session-{session_id}")],
             agent_flow_id: "main".to_string(),
             model_selection: None,
             agent_profile_id: None,

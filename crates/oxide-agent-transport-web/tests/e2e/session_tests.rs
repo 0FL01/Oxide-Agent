@@ -351,6 +351,77 @@ async fn e2e_web_cancel_releases_executor_for_next_task() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_web_edit_version_should_clear_previous_context() {
+    let provider = Arc::new(SequencedZaiProvider::new(vec![
+        structured_final_answer_response("branch one done"),
+        structured_final_answer_response("branch two done"),
+    ]));
+    let app_state = setup_web_test_with_custom_providers(provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260413;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+    let first_prompt = "BRANCH_ONE_MARKER keep this out of the edited branch";
+    let task_id = create_task_http_with_body(&client, &base_url, &session_id, first_prompt).await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_for_zai_calls(&provider, 1, Duration::from_secs(2)).await;
+
+    let edit_response = with_session_auth(
+        client.post(format!(
+            "{base_url}/api/v1/sessions/{session_id}/tasks/{task_id}/versions"
+        )),
+        &base_url,
+        &session_id,
+        true,
+    )
+    .json(&serde_json::json!({
+        "input_markdown": "BRANCH_TWO_MARKER should start isolated",
+        "attachments": [],
+    }))
+    .send()
+    .await
+    .expect("failed to create edited task version");
+    assert!(edit_response.status().is_success());
+    let edit_body: serde_json::Value = edit_response
+        .json()
+        .await
+        .expect("failed to decode edited task response");
+    let branch_task_id = edit_body["task"]["task_id"]
+        .as_str()
+        .expect("edited task id missing")
+        .to_string();
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &branch_task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_for_zai_calls(&provider, 2, Duration::from_secs(2)).await;
+
+    let requests = provider.request_log().await;
+    assert_eq!(requests.len(), 2);
+    assert!(request_contains(&requests[0], first_prompt));
+    assert!(
+        !request_contains(&requests[1], first_prompt),
+        "edited branch should start from a cleared context, but the old prompt leaked into the second request"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
 async fn e2e_resume_after_user_input_reuses_saved_task() {
     let provider = Arc::new(SequencedZaiProvider::new(vec![
         structured_awaiting_user_input_response("text", "Send the exact GPT-5.4-mini scope."),

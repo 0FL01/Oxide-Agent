@@ -773,7 +773,7 @@ async fn reconcile_web_sandbox_orphans_with_sessions(
 ) -> Result<u64, String> {
     let live_contexts = sessions
         .iter()
-        .map(|session| session.context_key.clone())
+        .flat_map(WebSessionRecord::tracked_context_keys)
         .collect::<HashSet<_>>();
     let sandbox_control = state.sandbox_control();
     let sandboxes = sandbox_control
@@ -1288,7 +1288,8 @@ async fn create_session_for_request(
         session_id,
         user_id: user.user_id,
         title: WEB_SESSION_DEFAULT_TITLE.to_string(),
-        context_key,
+        context_key: context_key.clone(),
+        context_keys: vec![context_key],
         agent_flow_id: WEB_SESSION_FLOW_ID.to_string(),
         model_selection,
         agent_profile_id,
@@ -1418,21 +1419,19 @@ async fn api_delete_session(
             .await;
         abort_task_handle(&state, active_task_id).await;
     }
-    state
-        .sandbox_control()
-        .destroy_scope(web_session_sandbox_scope(user.user_id, &record.context_key))
-        .await
-        .map_err(|error| backend_unavailable_response(error.to_string()))?;
-    state
-        .session_manager
-        .storage()
-        .clear_agent_memory_for_flow(
-            user.user_id,
-            record.context_key.clone(),
-            record.agent_flow_id.clone(),
-        )
-        .await
-        .map_err(|error| backend_unavailable_response(error.to_string()))?;
+    for context_key in record.tracked_context_keys() {
+        state
+            .sandbox_control()
+            .destroy_scope(web_session_sandbox_scope(user.user_id, &context_key))
+            .await
+            .map_err(|error| backend_unavailable_response(error.to_string()))?;
+        state
+            .session_manager
+            .storage()
+            .clear_agent_memory_for_flow(user.user_id, context_key, record.agent_flow_id.clone())
+            .await
+            .map_err(|error| backend_unavailable_response(error.to_string()))?;
+    }
     state
         .web_store
         .delete_session(user.user_id, &session_id)
@@ -1740,7 +1739,31 @@ async fn api_create_task_version(
         ));
     }
 
-    ensure_runtime_session(&state, user.user_id, &session).await;
+    let now = chrono::Utc::now();
+    let branch_context_key = web_task_version_context_key(&session_id);
+    if session.context_keys.is_empty() {
+        session.context_keys.push(session.context_key.clone());
+    }
+    if !session.context_keys.contains(&branch_context_key) {
+        session.context_keys.push(branch_context_key.clone());
+    }
+    session.context_key = branch_context_key;
+    session.updated_at = now;
+    state
+        .sandbox_control()
+        .ensure_scope_sandbox(web_session_sandbox_scope(
+            user.user_id,
+            &session.context_key,
+        ))
+        .await
+        .map_err(|error| backend_unavailable_response(error.to_string()))?;
+    state
+        .web_store
+        .save_session(session.clone())
+        .await
+        .map_err(store_error_response)?;
+
+    recreate_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
         .session_manager
         .register_task(&session_id, execution_input.clone())
@@ -1754,7 +1777,6 @@ async fn api_create_task_version(
         ));
     };
 
-    let now = chrono::Utc::now();
     let version_group_id = parent_task.effective_version_group_id().to_string();
     let version_index = tasks
         .iter()
@@ -2046,6 +2068,14 @@ async fn ensure_runtime_session(state: &AppState, user_id: i64, session: &WebSes
         return;
     }
 
+    materialize_runtime_session(state, user_id, session).await;
+}
+
+async fn recreate_runtime_session(state: &AppState, user_id: i64, session: &WebSessionRecord) {
+    materialize_runtime_session(state, user_id, session).await;
+}
+
+async fn materialize_runtime_session(state: &AppState, user_id: i64, session: &WebSessionRecord) {
     let execution_profile = match load_execution_profile_for_agent_profile_id(
         state,
         user_id,
@@ -2082,6 +2112,10 @@ async fn ensure_runtime_session(state: &AppState, user_id: i64, session: &WebSes
             },
         )
         .await;
+}
+
+fn web_task_version_context_key(session_id: &str) -> String {
+    format!("web-session-{session_id}-branch-{}", uuid::Uuid::new_v4())
 }
 
 pub(crate) fn api_error(
@@ -3873,6 +3907,13 @@ mod tests {
         .await
         .expect("create session");
         let session_id = created_session.session.session_id;
+        let original_context_key = state
+            .web_store
+            .load_session(user_one.user_id, &session_id)
+            .await
+            .expect("load session")
+            .expect("session exists")
+            .context_key;
 
         let completed = task_record(
             user_one.user_id,
@@ -3908,6 +3949,16 @@ mod tests {
             Some("task-completed")
         );
         assert_ne!(versioned.task.task_id, "task-completed");
+        let edited_session = state
+            .web_store
+            .load_session(user_one.user_id, &session_id)
+            .await
+            .expect("load edited session")
+            .expect("edited session exists");
+        assert_ne!(edited_session.context_key, original_context_key);
+        assert!(edited_session
+            .context_key
+            .starts_with(&format!("web-session-{session_id}-branch-")));
 
         let original = state
             .web_store
@@ -4021,6 +4072,138 @@ mod tests {
         .expect("cancel is idempotent");
         assert!(cancelled_again.ok);
         assert_eq!(cancelled_again.status, ApiTaskStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn api_delete_session_clears_all_edit_branch_memory_scopes() {
+        let (state, sandbox_control) = test_app_state_with_responses(vec![ScriptedResponse::Text(
+            "branch answer".to_string(),
+        )]);
+        let now = chrono::Utc::now();
+        let user = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(created_session) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create session");
+        let session_id = created_session.session.session_id;
+        let original_session = state
+            .web_store
+            .load_session(user.user_id, &session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        let original_context_key = original_session.context_key.clone();
+        let flow_id = original_session.agent_flow_id.clone();
+        let memory = AgentMemory::new(usize::MAX);
+        state
+            .session_manager
+            .storage()
+            .save_agent_memory_for_flow(
+                user.user_id,
+                original_context_key.clone(),
+                flow_id.clone(),
+                &memory,
+            )
+            .await
+            .expect("save original memory");
+
+        let completed = task_record(
+            user.user_id,
+            &session_id,
+            "task-completed",
+            ApiTaskStatus::Completed,
+            "Original prompt",
+            now,
+        );
+        state
+            .web_store
+            .save_task(completed)
+            .await
+            .expect("save completed task");
+
+        let axum::Json(_versioned) = api_create_task_version(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::extract::Path((session_id.clone(), "task-completed".to_string())),
+            axum::Json(ApiCreateTaskVersionRequest {
+                input_markdown: "Edited prompt".to_string(),
+                attachments: Vec::new(),
+            }),
+        )
+        .await
+        .expect("create task version");
+
+        let edited_session = state
+            .web_store
+            .load_session(user.user_id, &session_id)
+            .await
+            .expect("load edited session")
+            .expect("edited session exists");
+        let branch_context_key = edited_session.context_key.clone();
+        assert_ne!(branch_context_key, original_context_key);
+        state
+            .session_manager
+            .storage()
+            .save_agent_memory_for_flow(
+                user.user_id,
+                branch_context_key.clone(),
+                flow_id.clone(),
+                &memory,
+            )
+            .await
+            .expect("save branch memory");
+
+        let axum::Json(deleted) = api_delete_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::extract::Path(session_id.clone()),
+        )
+        .await
+        .expect("delete session");
+        assert!(deleted.ok);
+
+        for context_key in [&original_context_key, &branch_context_key] {
+            assert!(
+                state
+                    .session_manager
+                    .storage()
+                    .load_agent_memory_for_flow(user.user_id, context_key.clone(), flow_id.clone())
+                    .await
+                    .expect("load memory")
+                    .is_none(),
+                "delete session should clear flow memory for context {context_key}"
+            );
+        }
+        let destroyed_names = sandbox_control
+            .destroyed_scopes()
+            .into_iter()
+            .map(|scope| scope.namespace().to_string())
+            .collect::<Vec<_>>();
+        assert!(destroyed_names.contains(&original_context_key));
+        assert!(destroyed_names.contains(&branch_context_key));
     }
 
     #[tokio::test]

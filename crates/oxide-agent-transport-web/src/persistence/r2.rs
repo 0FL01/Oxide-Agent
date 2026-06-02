@@ -15,7 +15,6 @@ const TASK_EVENT_CHUNK_SIZE: u64 = 100;
 const WEB_USERS_PREFIX: &str = "web/auth/v1/users/";
 const WEB_LOGIN_INDEX_PREFIX: &str = "web/auth/v1/login_index/";
 const WEB_BROWSER_SESSIONS_PREFIX: &str = "web/auth/v1/browser_sessions/";
-const ALL_USERS_PREFIX: &str = "users/";
 
 struct ObjectStoreWebUiStore<S> {
     object_store: S,
@@ -433,9 +432,9 @@ where
 
     async fn delete_session(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
         let key = web_session_key(user_id, session_id);
-        if self.load_record::<WebSessionRecord>(&key).await?.is_none() {
+        let Some(session) = self.load_record::<WebSessionRecord>(&key).await? else {
             return Ok(false);
-        }
+        };
         self.object_store.delete_object(&key).await?;
         self.object_store
             .delete_prefix(&web_tasks_prefix(user_id, session_id))
@@ -446,11 +445,12 @@ where
         self.object_store
             .delete_prefix(&web_task_files_prefix(user_id, session_id))
             .await?;
-        let context_key = format!("web-session-{session_id}");
-        let context_id =
-            oxide_agent_core::agent::wiki_memory::scope::wiki_context_id(user_id, &context_key);
-        let wiki_prefix = oxide_agent_core::storage::wiki_context_prefix("", &context_id);
-        self.object_store.delete_prefix(&wiki_prefix).await?;
+        for context_key in session.tracked_context_keys() {
+            let context_id =
+                oxide_agent_core::agent::wiki_memory::scope::wiki_context_id(user_id, &context_key);
+            let wiki_prefix = oxide_agent_core::storage::wiki_context_prefix("", &context_id);
+            self.object_store.delete_prefix(&wiki_prefix).await?;
+        }
         Ok(true)
     }
 
@@ -609,7 +609,7 @@ where
     ) -> WebUiStoreResult<Vec<WebTaskRecord>> {
         let task_keys = self
             .object_store
-            .list_keys_under_prefix(ALL_USERS_PREFIX)
+            .list_keys_under_prefix("web/users/")
             .await?
             .into_iter()
             .filter(|key| is_web_task_record_key(key))
@@ -773,7 +773,7 @@ fn event_chunk_no(seq: u64) -> u64 {
 }
 
 fn is_web_task_record_key(key: &str) -> bool {
-    key.starts_with(ALL_USERS_PREFIX) && key.contains("/web/v1/tasks/") && key.ends_with(".json")
+    key.starts_with("web/users/") && key.contains("/tasks/") && key.ends_with(".json")
 }
 
 fn web_user_key(user_id: i64) -> String {
@@ -789,7 +789,7 @@ fn web_auth_session_key(session_token_hash: &str) -> String {
 }
 
 fn web_sessions_prefix(user_id: i64) -> String {
-    format!("users/{user_id}/web/v1/sessions/")
+    format!("web/users/{user_id}/sessions/")
 }
 
 fn web_session_key(user_id: i64, session_id: &str) -> String {
@@ -797,7 +797,7 @@ fn web_session_key(user_id: i64, session_id: &str) -> String {
 }
 
 fn web_tasks_prefix(user_id: i64, session_id: &str) -> String {
-    format!("users/{user_id}/web/v1/tasks/{session_id}/")
+    format!("web/users/{user_id}/tasks/{session_id}/")
 }
 
 fn web_task_key(user_id: i64, session_id: &str, task_id: &str) -> String {
@@ -805,11 +805,11 @@ fn web_task_key(user_id: i64, session_id: &str, task_id: &str) -> String {
 }
 
 fn web_task_events_prefix(user_id: i64, session_id: &str) -> String {
-    format!("users/{user_id}/web/v1/task_events/{session_id}/")
+    format!("web/users/{user_id}/task_events/{session_id}/")
 }
 
 fn web_task_files_prefix(user_id: i64, session_id: &str) -> String {
-    format!("users/{user_id}/web/v1/task_files/{session_id}/")
+    format!("web/users/{user_id}/task_files/{session_id}/")
 }
 
 fn web_task_event_chunks_prefix(user_id: i64, session_id: &str, task_id: &str) -> String {
@@ -965,23 +965,23 @@ mod tests {
         );
         assert_eq!(
             web_session_key(7, "session-1"),
-            "users/7/web/v1/sessions/session-1.json"
+            "web/users/7/sessions/session-1.json"
         );
         assert_eq!(
             web_task_key(7, "session-1", "task-1"),
-            "users/7/web/v1/tasks/session-1/task-1.json"
+            "web/users/7/tasks/session-1/task-1.json"
         );
         assert_eq!(
             web_task_event_chunk_key(7, "session-1", "task-1", 3),
-            "users/7/web/v1/task_events/session-1/task-1/chunk-000000000003.json"
+            "web/users/7/task_events/session-1/task-1/chunk-000000000003.json"
         );
         assert_eq!(
             web_task_file_key(7, "session-1", "task-1", "file-1"),
-            "users/7/web/v1/task_files/session-1/task-1/file-1.json"
+            "web/users/7/task_files/session-1/task-1/file-1.json"
         );
         assert_eq!(
             web_task_file_blob_key(7, "session-1", "task-1", "file-1"),
-            "users/7/web/v1/task_files/session-1/task-1/file-1.bin"
+            "web/users/7/task_files/session-1/task-1/file-1.bin"
         );
     }
 
@@ -1274,6 +1274,7 @@ mod tests {
             user_id,
             title: "Session".to_string(),
             context_key: format!("web-session-{session_id}"),
+            context_keys: vec![format!("web-session-{session_id}")],
             agent_flow_id: "main".to_string(),
             model_selection: None,
             agent_profile_id: None,
@@ -1337,10 +1338,12 @@ mod tests {
     async fn delete_session_removes_wiki_context_objects() {
         let store = ObjectStoreWebUiStore::new(InMemoryObjectStore::default());
         let now = Utc::now();
-        store
-            .save_session(session_record(7, "s-wiki", now))
-            .await
-            .unwrap();
+        let mut session = session_record(7, "s-wiki", now);
+        session
+            .context_keys
+            .push("web-session-s-wiki-branch-1".to_string());
+        session.context_key = "web-session-s-wiki-branch-1".to_string();
+        store.save_session(session).await.unwrap();
 
         // Insert wiki objects under the expected context prefix.
         let context_key = "web-session-s-wiki";
@@ -1350,6 +1353,12 @@ mod tests {
         let page_key = format!("{wiki_prefix}pages/runbook.md");
         let inbox_key = format!("{wiki_prefix}inbox/note.md");
         let overview_key = format!("{wiki_prefix}overview.md");
+        let branch_context_key = "web-session-s-wiki-branch-1";
+        let branch_context_id =
+            oxide_agent_core::agent::wiki_memory::scope::wiki_context_id(7, branch_context_key);
+        let branch_wiki_prefix =
+            oxide_agent_core::storage::wiki_context_prefix("", &branch_context_id);
+        let branch_page_key = format!("{branch_wiki_prefix}pages/branch.md");
 
         store
             .object_store
@@ -1364,6 +1373,11 @@ mod tests {
         store
             .object_store
             .save_json(&overview_key, &"overview content")
+            .await
+            .unwrap();
+        store
+            .object_store
+            .save_json(&branch_page_key, &"branch content")
             .await
             .unwrap();
 
@@ -1390,6 +1404,15 @@ mod tests {
         assert!(
             remaining.is_empty(),
             "wiki objects for deleted session should be removed, got: {remaining:?}"
+        );
+        let branch_remaining: Vec<String> = store
+            .object_store
+            .list_keys_under_prefix(&branch_wiki_prefix)
+            .await
+            .unwrap();
+        assert!(
+            branch_remaining.is_empty(),
+            "wiki objects for deleted branch should be removed, got: {branch_remaining:?}"
         );
 
         // Foreign session wiki must be intact.

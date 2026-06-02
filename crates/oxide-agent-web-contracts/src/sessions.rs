@@ -13,6 +13,8 @@ pub struct WebSessionRecord {
     pub user_id: i64,
     pub title: String,
     pub context_key: String,
+    #[serde(default)]
+    pub context_keys: Vec<String>,
     pub agent_flow_id: String,
     #[serde(default)]
     pub model_selection: Option<ModelSelection>,
@@ -36,6 +38,20 @@ impl WebSessionRecord {
             && (self.title == WEB_SESSION_DEFAULT_TITLE
                 || self.title == fallback_preview
                 || looks_like_timestamp_title(&self.title))
+    }
+
+    pub fn tracked_context_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        for key in self
+            .context_keys
+            .iter()
+            .chain(std::iter::once(&self.context_key))
+        {
+            if !key.is_empty() && !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+        keys
     }
 }
 
@@ -165,6 +181,7 @@ mod tests {
             user_id: 7,
             title: title.to_string(),
             context_key: "context".to_string(),
+            context_keys: vec!["context".to_string()],
             agent_flow_id: "main".to_string(),
             model_selection: None,
             agent_profile_id: None,
