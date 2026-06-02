@@ -12,7 +12,7 @@
 
 1. Проверить сборку текущего проекта до изменений.
 
-   Я не смог выполнить `cargo check` в этой среде, потому что `cargo` отсутствует в контейнере. Это не говорит о проблеме исходников; coder должен выполнить проверку локально.
+   Baseline проверка до изменений выполнена: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
 
 2. Подтвердить reference provider:
 
@@ -147,6 +147,8 @@ Do not add `headers`, `cookies`, `proxy`, `user_agent`, `browser profile`, `endp
 Создать новый файл:
 
 `crates/oxide-agent-core/src/agent/providers/crawl4ai_markdown.rs`
+
+Статус: первичный provider-contract slice реализован. Добавлены atomic feature gate, cfg-gated provider module/export, provider file, static tool schema, env config parsing, URL/SSRF/DNS preflight, health check, bounded REST response/output, structured failure payloads, and provider-local unit tests. Registry, capabilities, prompt, delegation, and manager-control-plane wiring остаются следующим чанком.
 
 Provider shape:
 
