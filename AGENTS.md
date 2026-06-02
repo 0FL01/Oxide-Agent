@@ -51,7 +51,7 @@ Default branch: `dev`.
 
 - `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; transport crates depend on core/runtime.
 - `teloxide` is used only in `oxide-agent-transport-telegram` and binaries that include it.
-- Build and runtime composition are capability-module based. Manifests in `capabilities/`; tool registration in `tool_runtime/`.
+- Build and runtime composition are capability-module based. Manifests in `crates/oxide-agent-core/src/capabilities/`; tool registration in `tool_runtime/`.
 - Cargo `default` features are intentionally empty. Use profile features: `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, `profile-full`.
 - Keep explicit `mod.rs` files and predictable public exports.
 - Use `thiserror` for library crates, `anyhow` for app/binary crates.
@@ -117,7 +117,7 @@ Default branch: `dev`.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
 
 ### Tool providers
-- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, crawl4ai-markdown, searxng, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
 
 ## Configuration
 
