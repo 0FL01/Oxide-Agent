@@ -28,6 +28,8 @@ use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 use crate::agent::providers::AgentsMdProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::providers::CompressionProvider;
+#[cfg(feature = "tool-crawl4ai-markdown")]
+use crate::agent::providers::Crawl4AiMarkdownProvider;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::providers::DelegationProvider;
 #[cfg(feature = "tool-duckduckgo")]
@@ -723,6 +725,21 @@ impl ToolModule for WebFetchMdToolModule {
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
         Arc::new(WebFetchMdProvider::new()).tool_runtime_executors()
+    }
+}
+
+/// Capability module for browser-rendered URL-to-Markdown crawls.
+#[cfg(feature = "tool-crawl4ai-markdown")]
+pub struct Crawl4AiMarkdownToolModule;
+
+#[cfg(feature = "tool-crawl4ai-markdown")]
+impl ToolModule for Crawl4AiMarkdownToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/crawl4ai-markdown")
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        Arc::new(Crawl4AiMarkdownProvider::new()).tool_runtime_executors()
     }
 }
 

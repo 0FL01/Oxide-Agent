@@ -148,7 +148,7 @@ Do not add `headers`, `cookies`, `proxy`, `user_agent`, `browser profile`, `endp
 
 `crates/oxide-agent-core/src/agent/providers/crawl4ai_markdown.rs`
 
-Статус: первичный provider-contract slice реализован. Добавлены atomic feature gate, cfg-gated provider module/export, provider file, static tool schema, env config parsing, URL/SSRF/DNS preflight, health check, bounded REST response/output, structured failure payloads, and provider-local unit tests. Registry, capabilities, prompt, delegation, and manager-control-plane wiring остаются следующим чанком.
+Статус: первичный provider-contract slice реализован. Добавлены atomic feature gate, cfg-gated provider module/export, provider file, static tool schema, env config parsing, URL/SSRF/DNS preflight, health check, bounded REST response/output, structured failure payloads, and provider-local unit tests.
 
 Provider shape:
 
@@ -369,6 +369,8 @@ Config rules:
 ---
 
 ### Чанк 6 — registry, capabilities, prompt
+
+Статус: tool-surface wiring реализован. Добавлены `Crawl4AiMarkdownToolModule`, registry/capability manifest wiring, static prompt guidance, sub-agent delegation wiring, manager-control-plane search group, thought template, `.env.example` knobs, registry tests, and updated all-features modular registry snapshot. Feature не добавлен в existing profiles.
 
 Files to change:
 

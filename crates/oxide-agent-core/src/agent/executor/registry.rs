@@ -5,6 +5,8 @@ use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
+#[cfg(feature = "tool-crawl4ai-markdown")]
+use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::tool_runtime::DelegationToolModule;
 #[cfg(feature = "tool-duckduckgo")]
@@ -68,6 +70,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-todos",
     feature = "tool-tts-kokoro",
     feature = "tool-tts-silero",
+    feature = "tool-crawl4ai-markdown",
     feature = "tool-webfetch-md",
     feature = "tool-wiki-memory",
     feature = "tool-ytdlp",
@@ -143,6 +146,7 @@ impl AgentExecutor {
             feature = "tool-todos",
             feature = "tool-tts-kokoro",
             feature = "tool-tts-silero",
+            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-wiki-memory",
             feature = "tool-ytdlp"
@@ -187,6 +191,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &KokoroTtsToolModule, ctx);
         #[cfg(feature = "tool-tts-silero")]
         self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
+        #[cfg(feature = "tool-crawl4ai-markdown")]
+        self.register_tool_runtime_module(registry, &Crawl4AiMarkdownToolModule, ctx);
         #[cfg(feature = "tool-webfetch-md")]
         self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
         #[cfg(feature = "tool-wiki-memory")]
@@ -223,6 +229,7 @@ impl AgentExecutor {
         feature = "tool-todos",
         feature = "tool-tts-kokoro",
         feature = "tool-tts-silero",
+        feature = "tool-crawl4ai-markdown",
         feature = "tool-webfetch-md",
         feature = "tool-wiki-memory",
         feature = "tool-ytdlp"
@@ -268,6 +275,7 @@ impl AgentExecutor {
             feature = "tool-todos",
             feature = "tool-tts-kokoro",
             feature = "tool-tts-silero",
+            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-wiki-memory",
             feature = "tool-ytdlp"

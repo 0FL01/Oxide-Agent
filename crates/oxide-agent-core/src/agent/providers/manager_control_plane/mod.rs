@@ -215,6 +215,8 @@ const TOPIC_AGENT_DUCKDUCKGO_TOOLS: &[&str] = &["duckduckgo_search", "duckduckgo
 const TOPIC_AGENT_SEARXNG_TOOLS: &[&str] = &["searxng_search"];
 #[cfg(feature = "tool-webfetch-md")]
 const TOPIC_AGENT_WEBFETCH_TOOLS: &[&str] = &["web_markdown"];
+#[cfg(feature = "tool-crawl4ai-markdown")]
+const TOPIC_AGENT_CRAWL4AI_TOOLS: &[&str] = &["crawl4ai_markdown"];
 #[cfg(feature = "integration-ssh-mcp")]
 const TOPIC_AGENT_SSH_TOOLS: &[&str] = &[
     "ssh_exec",

@@ -32,6 +32,8 @@ pub use modules::AgentsMdModuleContext;
 pub use modules::AgentsMdToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
+#[cfg(feature = "tool-crawl4ai-markdown")]
+pub use modules::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-delegation")]
 pub use modules::DelegationToolModule;
 #[cfg(feature = "tool-duckduckgo")]
