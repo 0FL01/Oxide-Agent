@@ -1081,8 +1081,8 @@ fn anthropic_extra_headers(api_key: &str) -> Vec<(&str, &str)> {
     ]
 }
 
-fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
-    json_mode && !has_tools
+fn should_use_native_json_mode(json_mode: bool, _has_tools: bool) -> bool {
+    json_mode
 }
 
 fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
