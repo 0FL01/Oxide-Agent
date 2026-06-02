@@ -20,6 +20,8 @@
 
 9.  **Compaction pin-ит stale `UserTask`/`RuntimeContext` впереди summary.** `is_pinned()` (`compaction/history.rs:333-342`) сохраняет `UserTask`, `RuntimeContext`, `ApprovalReplay`, `InfraStatus` как pinned messages. После compaction старые dynamic messages остаются в начале non-system history, сжимая reusable stable prefix. **ЧАСТИЧНО FIXED:** budget guard на `compress` tool (`tools.rs:327-335`) блокирует premature compaction (< 85% context utilization). Production: agent отработал 14 итераций до 65K/272K tokens без compaction, cache hit вырос до 99.7%. Commit: `7e599dac`. Pinning strategy пока без изменений.
 
+10. **Web-transport: предыдущая top-level задача остаётся в hot memory на старте новой.** Web-transport переиспользует один runtime executor и durable flow (`flow_id = "main"`) для всех задач в одном чате. `AgentMemory` аккумулирует все сообщения между задачами — assistant response, tool outputs, reasoning. Вторая top-level задача отправляет в LLM prompt: `system + date + вся история задачи 1 + новая задача 2`. Растущий меняющийся non-system prefix ломает provider-side cache. `cached_tokens` застревает на системном prefix (~5-6K), cache hit rate падает ниже 20% до прогрева внутри новой задачи. **DEFERRED** — см. секцию "Что не стоит делать" и "Закрытые проблемы: cross-task cache".
+
 ---
 
 ## Детальный RECON: как собираются LLM-запросы и что мешает cache hit
@@ -123,6 +125,7 @@ Assembly order: `base + stable + date_suffix + volatile`
 | 8 | **Вычистить volatile metadata из compacted summary.** Убрать `created_at`, `provider`, `route`, token counts из prompt-visible текста. Оставить `generation` (compaction chain) + `wiki_memory_lookup_available` (tool-use) + guidance text. | **DONE** | Средний | Низкая | 12 volatile полей → 2 стабильных. Summary stable для одинакового semantic content. |
 | 9 | **Сузить pinned messages после compaction.** Не pin-ить `UserTask`/`RuntimeContext` бессрочно; fold-ить их в summary вместо сохранения как front-of-history anchors. | ЧАСТИЧНО | Средний | Средняя | Budget guard предотвращает premature compaction (commit `7e599dac`). Pinning strategy без изменений. Production: 14 iter без compaction, 99.7% hit. |
 | 10 | **Добавить prompt-layout hashes в observability.** `static_prefix_hash`, `tools_hash`, `topic_agents_md_hash` — для корреляции cache behavior с конкретной layout. | TODO | Средний (как валидация) | Средняя | Невозможно отличить layout regression от provider-side noise. |
+| 11 | **Trim memory между top-level задачами в web-transport.** Перед новым task в том же web-чате заменять раздутую hot memory на короткий volatile handoff (предыдущий task input + final response preview + compact tool timeline). | DEFERRED | Высокий | Низкая | Предотвращает сброс cache prefix на второй задаче. Цена — потеря детального контекста предыдущей задачи в LLM prompt. |
 
 ---
 
@@ -133,6 +136,7 @@ Assembly order: `base + stable + date_suffix + volatile`
 - Ограничивать timestamp минутами (уменьшит miss, но не решит проблему — регулярный prefix bust останется).
 - Добавлять embedding-selected skills (уже удалены из архитектуры, не релевантно).
 - Менять compaction для cache (compaction по-прежнему убивает cache prefix по дизайну — summary text уникальный. Budget guard предотвращает premature compaction, но легитимная compaction на 85%+ всё равно сбросит prefix).
+- **Вырезать горячую историю между top-level задачами в web-transport.** Решение отложено (`DEFERRED`, #10/#11). Компромисса нет: либо тащим раздутую историю (ломаем cache), либо режем её (теряем прямой контекст для follow-up на предыдущую задачу). Provider-side cache нельзя сохранить и переиспользовать между разными запросами с разным составом messages. Единственный способ сохранить cache — не менять prefix запроса, что невозможно при появлении новой top-level задачи в том же чате.
 
 ---
 
@@ -436,6 +440,47 @@ to cacheable prefix. Iter 2+ hit rate would be ~95-99% instead of ~82-86%.
 - `user_id`/`chat_id`/`topic_id`/`request_id` **не рендерятся** напрямую в main-agent prompt. Косвенный impact через topic/wiki/session state и route selection.
 - Tool executor `spec()` implementations: deterministic registry ordering есть, но byte-for-byte стабильность каждой схемы нуждается в snapshot-test.
 - Mistral: adapter-specific system-message reorder logic (`mistral/messages.rs:17-27`), но main path fold-ит раньше (`client.rs:485-486`). Cache impact нужно подтвердить adapter-parity snapshots.
+
+---
+
+## Закрытые проблемы: cross-task cache в web-transport
+
+**Проблема:** Web-transport переиспользует один runtime executor и durable flow (`WEB_SESSION_FLOW_ID = "main"`) для всех сообщений в чате. Каждая новая top-level задача (API create task) просто append-ит новое user message в ту же `AgentMemory`. Второй task получает в LLM prompt: `system prompt + date + вся history первой задачи + new task`. Provider-side cache не совпадает между задачами, потому что prefix запроса изменился — вместо assistant/tool сообщений первой задачи теперь идёт другая последовательность.
+
+**Точки входа:**
+
+| Компонент | Файл | Строки |
+|---|---|---|
+| Один executor, один flow | `session.rs` | 478-481 |
+| Task append-ится в ту же memory | `execution.rs` | 259-278 |
+| Вся memory идёт в LLM | `execution.rs` | 371 |
+| Новый task (API) | `server/mod.rs` | 1469-1481 |
+
+**Наблюдение (production DeepSeek V4 Flash, 2026-06-02):**
+
+```text
+Задача 1: 11 итераций, cache hit прогрелся до 99.3%
+Задача 2 (сразу следом, тот же чат):
+  iter 0: prompt=36401, cached=5632, hit=15.5%  ← cache сбит
+  iter 1: prompt=36444, cached=5632, hit=15.5%  ← не прогревается
+```
+
+5632 cached tokens = только system prompt (fallback + profile + tool names). Остальные ~30K токенов (hot memory первой задачи) — каждый раз miss.
+
+**Статус:** `DEFERRED` (без срока).
+
+**Почему не чиним:**
+
+- **Сохранить cache + полный контекст** невозможно. Provider-side cache привязан к exact prefix запроса. Две разные задачи в одном чате = разный prefix.
+- **Trim контекста** ломает сценарии "поясни предыдущий ответ подробнее" — модель не видит raw tool outputs, reasoning, промежуточных шагов первой задачи.
+- **Решение "оставить как есть"** — cache между задачами работает на уровне system prompt (~5-6K токенов), давая ~15-20% hit rate на первой итерации. Внутри новой задачи cache прогревается нормально (до 90%+).
+- **Нет provider API** для переноса cache handle между запросами. Единственный чистый способ — переносить старую историю строго после volatile suffix, что невозможно в плоском messages array OpenAI-формата.
+
+**Когда пересмотреть решение:**
+
+- Если provider (DeepSeek/OpenAI) добавит поддержку многослойного KV cache с именованными сегментами.
+- Если архитектура web-transport перейдёт на отдельный flow для каждой задачи (сейчас один `"main"` flow на весь чат).
+- Если появится веская причина (cost/prod issue) перевесить потерю контекста для follow-up.
 
 ---
 
