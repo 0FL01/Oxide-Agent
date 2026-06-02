@@ -456,6 +456,8 @@ No Python files. No Dockerfile changes required for Oxide image.
 
 ### Чанк 7 — tests
 
+Статус: HTTP contract tests добавлены. Mock server покрывает `GET /health`, `POST /crawl` payload shape, auth header, success output extraction, health structured failure, and one retry for retryable crawl 5xx. Normal CI не требует real Crawl4AI/browser.
+
 Required provider tests:
 
 1. Tool definition snapshot/stability:

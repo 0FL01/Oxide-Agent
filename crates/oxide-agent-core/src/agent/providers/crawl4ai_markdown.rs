@@ -937,6 +937,167 @@ fn millis_u64(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    const PUBLIC_TEST_URL: &str = "http://93.184.216.34/article";
+
+    #[derive(Clone)]
+    struct MockResponse {
+        status: u16,
+        body: &'static str,
+    }
+
+    #[derive(Debug)]
+    struct ObservedRequest {
+        method: String,
+        path: String,
+        headers: HashMap<String, String>,
+        body: String,
+    }
+
+    fn runtime_invocation(raw_arguments: &str) -> ToolInvocation {
+        let now = Utc::now();
+        ToolInvocation {
+            session_id: SessionId::from(77),
+            turn_id: TurnId::from("turn-crawl4ai-markdown"),
+            batch_id: ToolBatchId::from("batch-crawl4ai-markdown"),
+            batch_index: 0,
+            invocation_id: InvocationId::from("invoke-crawl4ai-markdown"),
+            tool_call_id: ToolCallId::from("call-crawl4ai-markdown"),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(TOOL_CRAWL4AI_MARKDOWN),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::Value::Null,
+            cancellation_token: CancellationToken::new(),
+            timeout: ToolTimeoutConfig::default(),
+            execution_context: ToolExecutionContext::new(std::env::temp_dir()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: now,
+            started_at: Some(now),
+        }
+    }
+
+    fn test_config(base_url: Url) -> Crawl4AiMarkdownConfig {
+        Crawl4AiMarkdownConfig {
+            base_url,
+            api_token: Some("test-token".to_string()),
+            default_timeout_secs: 5,
+            max_timeout_secs: 10,
+            max_output_chars: DEFAULT_MAX_OUTPUT_CHARS,
+            health_timeout_ms: 1_000,
+            jitter_min_ms: 0,
+            jitter_max_ms: 0,
+            max_retries: 0,
+        }
+    }
+
+    async fn serve_crawl4ai_sequence(
+        responses: Vec<MockResponse>,
+    ) -> (SocketAddr, Arc<Mutex<Vec<ObservedRequest>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local test server");
+        let addr = listener.local_addr().expect("local address");
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_task = Arc::clone(&observed);
+
+        tokio::spawn(async move {
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let request = read_http_request(&mut stream).await;
+                observed_for_task
+                    .lock()
+                    .expect("observed request lock")
+                    .push(request);
+                let status_text = match response.status {
+                    200 => "OK",
+                    429 => "Too Many Requests",
+                    500 => "Internal Server Error",
+                    503 => "Service Unavailable",
+                    _ => "Error",
+                };
+                let raw_response = format!(
+                    "HTTP/1.1 {} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.status,
+                    response.body.len(),
+                    response.body
+                );
+                stream
+                    .write_all(raw_response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+
+        (addr, observed)
+    }
+
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> ObservedRequest {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        let header_len = loop {
+            let read = stream.read(&mut buffer).await.expect("read request");
+            if read == 0 {
+                break request.len();
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break header_end + 4;
+            }
+        };
+
+        let headers_raw = String::from_utf8_lossy(&request[..header_len]);
+        let mut lines = headers_raw.lines();
+        let request_line = lines.next().expect("request line");
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or_default().to_string();
+        let path = parts.next().unwrap_or_default().to_string();
+        let headers: HashMap<String, String> = lines
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect();
+        let content_length = headers
+            .get("content-length")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        while request.len().saturating_sub(header_len) < content_length {
+            let read = stream.read(&mut buffer).await.expect("read request body");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+
+        let body = String::from_utf8_lossy(&request[header_len..]).to_string();
+        ObservedRequest {
+            method,
+            path,
+            headers,
+            body,
+        }
+    }
 
     #[test]
     fn tool_definition_is_static_and_bounded() {
@@ -960,6 +1121,171 @@ mod tests {
 
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name().as_str(), TOOL_CRAWL4AI_MARKDOWN);
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_posts_expected_crawl_contract() {
+        let (addr, observed) = serve_crawl4ai_sequence(vec![
+            MockResponse {
+                status: 200,
+                body: r#"{"status":"ok"}"#,
+            },
+            MockResponse {
+                status: 200,
+                body: r##"{"results":[{"success":true,"url":"http://93.184.216.34/final","status_code":200,"elapsed_ms":42,"markdown":{"raw_markdown":"# Rendered\n\nArticle body"}}]}"##,
+            },
+        ])
+        .await;
+        let config = test_config(Url::parse(&format!("http://{addr}")).expect("base url"));
+        let provider = Arc::new(Crawl4AiMarkdownProvider::with_config(config));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == TOOL_CRAWL4AI_MARKDOWN)
+            .expect("typed crawl4ai_markdown executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(&format!(
+                r#"{{"url":"{PUBLIC_TEST_URL}","timeout_secs":3,"wait_for":"main article","fresh":true,"max_chars":1000}}"#
+            )))
+            .await
+            .expect("crawl4ai_markdown runtime output");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let stdout = output.stdout.text.as_deref().expect("stdout text");
+        let payload: Value = serde_json::from_str(stdout).expect("success payload json");
+        assert_eq!(payload["provider"], json!(TOOL_CRAWL4AI_MARKDOWN));
+        assert_eq!(payload["url"], json!(PUBLIC_TEST_URL));
+        assert_eq!(payload["final_url"], json!("http://93.184.216.34/final"));
+        assert_eq!(payload["status_code"], json!(200));
+        assert_eq!(payload["markdown_kind"], json!("raw_markdown"));
+        assert_eq!(payload["markdown"], json!("# Rendered\n\nArticle body"));
+        assert_eq!(payload["fresh"], json!(true));
+
+        let observed = observed.lock().expect("observed request lock");
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0].method, "GET");
+        assert_eq!(observed[0].path, "/health");
+        assert_eq!(
+            observed[0].headers.get("authorization"),
+            Some(&"Bearer test-token".to_string())
+        );
+        assert_eq!(observed[1].method, "POST");
+        assert_eq!(observed[1].path, "/crawl");
+        assert_eq!(
+            observed[1].headers.get("authorization"),
+            Some(&"Bearer test-token".to_string())
+        );
+        let crawl_request: Value =
+            serde_json::from_str(&observed[1].body).expect("crawl request json");
+        assert_eq!(crawl_request["urls"], json!([PUBLIC_TEST_URL]));
+        assert_eq!(
+            crawl_request["browser_config"]["params"]["browser_type"],
+            json!("chromium")
+        );
+        assert_eq!(
+            crawl_request["browser_config"]["params"]["headless"],
+            json!(true)
+        );
+        assert_eq!(
+            crawl_request["crawler_config"]["params"]["cache_mode"],
+            json!("bypass")
+        );
+        assert_eq!(
+            crawl_request["crawler_config"]["params"]["wait_for"],
+            json!("css:main article")
+        );
+        assert_eq!(
+            crawl_request["crawler_config"]["params"]["page_timeout"],
+            json!(3000)
+        );
+        assert!(crawl_request["crawler_config"]["params"]
+            .get("js_code")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn health_unavailable_returns_structured_failure() {
+        let (addr, observed) = serve_crawl4ai_sequence(vec![MockResponse {
+            status: 503,
+            body: r#"{"status":"down"}"#,
+        }])
+        .await;
+        let config = test_config(Url::parse(&format!("http://{addr}")).expect("base url"));
+        let provider = Arc::new(Crawl4AiMarkdownProvider::with_config(config));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .next()
+            .expect("executor");
+
+        let output = executor
+            .execute(runtime_invocation(&format!(
+                r#"{{"url":"{PUBLIC_TEST_URL}"}}"#
+            )))
+            .await
+            .expect("structured failure output");
+
+        assert_eq!(output.status, ToolOutputStatus::Failure);
+        let payload = output
+            .structured_payload
+            .expect("structured crawl4ai failure payload");
+        assert_eq!(payload["error_kind"], json!("crawl4ai_unavailable"));
+        assert_eq!(payload["provider_unavailable"], json!(true));
+        assert_eq!(payload["retryable"], json!(true));
+        assert_eq!(payload["status_code"], json!(503));
+        assert!(!payload.to_string().contains("test-token"));
+        let observed = observed.lock().expect("observed request lock");
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].path, "/health");
+    }
+
+    #[tokio::test]
+    async fn retries_retryable_crawl_status_once_when_configured() {
+        let (addr, observed) = serve_crawl4ai_sequence(vec![
+            MockResponse {
+                status: 200,
+                body: r#"{"status":"ok"}"#,
+            },
+            MockResponse {
+                status: 500,
+                body: r#"{"error":"temporary"}"#,
+            },
+            MockResponse {
+                status: 200,
+                body: r#"{"status":"ok"}"#,
+            },
+            MockResponse {
+                status: 200,
+                body: r##"{"results":[{"success":true,"url":"http://93.184.216.34/article","status_code":200,"markdown":"# Retry succeeded"}]}"##,
+            },
+        ])
+        .await;
+        let mut config = test_config(Url::parse(&format!("http://{addr}")).expect("base url"));
+        config.max_retries = 1;
+        let provider = Arc::new(Crawl4AiMarkdownProvider::with_config(config));
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .next()
+            .expect("executor");
+
+        let output = executor
+            .execute(runtime_invocation(&format!(
+                r#"{{"url":"{PUBLIC_TEST_URL}"}}"#
+            )))
+            .await
+            .expect("retry success output");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
+        let stdout = output.stdout.text.as_deref().expect("stdout text");
+        assert!(stdout.contains("# Retry succeeded"));
+        let observed = observed.lock().expect("observed request lock");
+        let paths = observed
+            .iter()
+            .map(|request| request.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["/health", "/crawl", "/health", "/crawl"]);
     }
 
     #[test]
