@@ -225,10 +225,7 @@ fn looks_like_prose(text: &str) -> bool {
     let trimmed = text.trim();
 
     // Reject obvious non-prose: code fences, XML/HTML-like tags, system markers
-    if trimmed.starts_with("```")
-        || trimmed.starts_with('<')
-        || trimmed.starts_with("[SYSTEM:")
-    {
+    if trimmed.starts_with("```") || trimmed.starts_with('<') || trimmed.starts_with("[SYSTEM:") {
         return false;
     }
 
@@ -496,7 +493,10 @@ mod tests {
     fn wraps_prose_as_final_answer() {
         let raw = "Summary: This is a detailed answer about structured output handling. It contains enough text to pass the prose heuristic.";
         let result = parse_structured_output(raw, &tools_fixture());
-        assert!(result.is_ok(), "Prose should be wrapped as structured output");
+        assert!(
+            result.is_ok(),
+            "Prose should be wrapped as structured output"
+        );
         let parsed = result.unwrap();
         assert!(parsed.final_answer.is_some());
         assert!(parsed.final_answer.unwrap().contains("Summary:"));
@@ -514,7 +514,10 @@ mod tests {
     fn does_not_wrap_code_fence() {
         let raw = "```python\nprint('hello')\n```";
         let result = parse_structured_output(raw, &tools_fixture());
-        assert!(result.is_err(), "Code fences should not be wrapped as prose");
+        assert!(
+            result.is_err(),
+            "Code fences should not be wrapped as prose"
+        );
     }
 
     #[test]
@@ -533,7 +536,10 @@ mod tests {
             "{{\"thought\":\"line1\nline2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}}"
         );
         let result = parse_structured_output(&raw, &tools_fixture());
-        assert!(result.is_ok(), "Should parse after aggressive control char stripping");
+        assert!(
+            result.is_ok(),
+            "Should parse after aggressive control char stripping"
+        );
         let parsed = result.unwrap();
         assert_eq!(parsed.thought, "line1line2");
         assert_eq!(parsed.final_answer.as_deref(), Some("ok"));
@@ -545,6 +551,9 @@ mod tests {
             "{{\"thought\":\"col1\tcol2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}}"
         );
         let result = parse_structured_output(&raw, &tools_fixture());
-        assert!(result.is_ok(), "Should parse after aggressive control char stripping");
+        assert!(
+            result.is_ok(),
+            "Should parse after aggressive control char stripping"
+        );
     }
 }

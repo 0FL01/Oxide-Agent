@@ -386,6 +386,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
+        "id": "tool/crawl4ai-markdown",
+        "kind": "search",
+        "cargo_feature": "tool-crawl4ai-markdown",
+        "provides": [
+          "tool/crawl4ai-markdown"
+        ],
+        "requires": [],
+        "conflicts": [],
+        "config_properties": []
+      },
+      {
         "id": "tool/delegation",
         "kind": "tool",
         "cargo_feature": "tool-delegation",
@@ -826,6 +837,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/compression"
       },
       {
+        "id": "tool/crawl4ai-markdown",
+        "module": "tool/crawl4ai-markdown"
+      },
+      {
         "id": "tool/delegation",
         "module": "tool/delegation"
       },
@@ -960,6 +975,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "storage/r2",
       "tool/agents-md",
       "tool/compression",
+      "tool/crawl4ai-markdown",
       "tool/delegation",
       "tool/duckduckgo",
       "tool/file-delivery",
@@ -1017,6 +1033,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "storage/r2",
       "tool/agents-md",
       "tool/compression",
+      "tool/crawl4ai-markdown",
       "tool/delegation",
       "tool/duckduckgo-news",
       "tool/duckduckgo-search",
@@ -1051,6 +1068,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "apply_file_edit",
     "cancel_sub_agents",
     "compress",
+    "crawl4ai_markdown",
     "describe_image_file",
     "describe_video_file",
     "duckduckgo_news",
@@ -1250,6 +1268,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "storage/r2",
       "kind": "storage-backend",
       "cargo_feature": "storage-s3-r2",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/crawl4ai-markdown",
+      "kind": "search",
+      "cargo_feature": "tool-crawl4ai-markdown",
       "config_env": [],
       "requires_capabilities": []
     },

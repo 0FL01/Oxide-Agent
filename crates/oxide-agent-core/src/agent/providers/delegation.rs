@@ -40,6 +40,8 @@ use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+#[cfg(feature = "tool-crawl4ai-markdown")]
+use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-duckduckgo")]
 use crate::agent::tool_runtime::DuckDuckGoToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
@@ -59,6 +61,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-searxng",
     feature = "tool-tavily",
     feature = "tool-todos",
+    feature = "tool-crawl4ai-markdown",
     feature = "tool-webfetch-md",
     feature = "tool-ytdlp"
 ))]
@@ -666,6 +669,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             feature = "tool-duckduckgo",
             feature = "tool-tavily",
             feature = "tool-todos",
+            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-ytdlp"
         )))]
@@ -685,6 +689,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
         #[cfg(feature = "tool-webfetch-md")]
         self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-crawl4ai-markdown")]
+        self.push_sub_agent_tool_module(&mut executors, &Crawl4AiMarkdownToolModule, &module_ctx);
 
         #[cfg(feature = "tool-tavily")]
         self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
@@ -740,6 +747,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         feature = "tool-duckduckgo",
         feature = "tool-tavily",
         feature = "tool-todos",
+        feature = "tool-crawl4ai-markdown",
         feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
     ))]

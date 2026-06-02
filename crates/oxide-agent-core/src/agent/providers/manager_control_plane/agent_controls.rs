@@ -237,6 +237,7 @@ impl ManagerControlPlaneProvider {
             feature = "tool-tavily",
             feature = "tool-duckduckgo",
             feature = "tool-searxng",
+            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md"
         )))]
         let _ = groups;
@@ -273,6 +274,13 @@ impl ManagerControlPlaneProvider {
             provider: "webfetch_md",
             aliases: &["search", "webfetch", "web_markdown"],
             tools: TOPIC_AGENT_WEBFETCH_TOOLS,
+        });
+
+        #[cfg(feature = "tool-crawl4ai-markdown")]
+        groups.push(TopicAgentToolGroup {
+            provider: "crawl4ai",
+            aliases: &["search", "crawl4ai", "browser_markdown"],
+            tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
         });
     }
 

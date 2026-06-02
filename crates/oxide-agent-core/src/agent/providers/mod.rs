@@ -5,6 +5,8 @@
 /// Topic-scoped self-editing tools for `AGENTS.md`.
 pub mod agents_md;
 pub mod compression;
+#[cfg(feature = "tool-crawl4ai-markdown")]
+pub mod crawl4ai_markdown;
 pub mod delegation;
 mod file_delivery;
 pub mod filehoster;
@@ -56,6 +58,8 @@ pub mod mattermost_mcp;
 
 pub use agents_md::{agents_md_tool_names, AgentsMdProvider};
 pub use compression::{compress_tool_names, CompressionProvider, TOOL_COMPRESS};
+#[cfg(feature = "tool-crawl4ai-markdown")]
+pub use crawl4ai_markdown::Crawl4AiMarkdownProvider;
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
 pub use manager_control_plane::{
