@@ -47,6 +47,7 @@ services:
       - DUCKDUCKGO_JITTER_MS=1500
       - SEARXNG_ENABLED=true
       - SEARXNG_URL=http://127.0.0.1:8081
+      - OXIDE_CRAWL4AI_BASE_URL=http://127.0.0.1:11235
       - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent_core=info,oxide_agent_transport_web=info,oxide_agent_runtime=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
@@ -58,6 +59,8 @@ services:
       sandboxd:
         condition: service_healthy
       searxng:
+        condition: service_healthy
+      crawl4ai:
         condition: service_healthy
     logging:
       driver: json-file
@@ -112,6 +115,27 @@ services:
       - ./docker/searxng/settings.yml:/etc/searxng/settings.yml
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  crawl4ai:
+    image: unclecode/crawl4ai:0.8.7
+    container_name: crawl4ai
+    restart: unless-stopped
+    shm_size: "1g"
+    environment:
+      - TZ=Europe/Moscow
+    ports:
+      - "127.0.0.1:11235:11235"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:11235/health || wget -qO- http://localhost:11235/health"]
       interval: 5s
       timeout: 3s
       retries: 30

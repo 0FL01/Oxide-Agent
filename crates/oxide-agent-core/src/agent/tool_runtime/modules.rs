@@ -393,17 +393,20 @@ pub struct DelegationToolModule;
 #[cfg(feature = "tool-delegation")]
 impl DelegationToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> DelegationProvider {
-        let mut provider =
+        let provider =
             DelegationProvider::new(ctx.llm_client(), ctx.sandbox_scope(), ctx.settings());
 
         #[cfg(feature = "tool-agents-md")]
-        if let Some(agents_md) = ctx.agents_md_context() {
-            provider = provider.with_topic_agents_md_context(
+        let provider = if let Some(agents_md) = ctx.agents_md_context() {
+            provider.with_topic_agents_md_context(
                 agents_md.storage,
                 agents_md.user_id,
                 agents_md.topic_id,
-            );
-        }
+            )
+        } else {
+            provider
+        };
+
         provider
     }
 }
