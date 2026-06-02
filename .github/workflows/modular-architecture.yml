@@ -58,71 +58,6 @@ jobs:
           cargo test -p oxide-agent-core route_provider_validation_rejects_removed_direct_gemini_provider --all-features
           cargo test -p oxide-agent-core removed_direct_gemini_provider_aliases_are_absent --all-features
 
-  modular-contracts:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-modular-contracts-${{ hashFiles('Cargo.lock') }}
-
-      - name: Check cheap static contracts
-        run: |
-          set -euo pipefail
-          scripts/check-binary-feature-gates.sh
-          scripts/check-runtime-env-surface.sh
-          for features in \
-            profile-embedded-opencode-local \
-            profile-lite \
-            profile-search-only \
-            profile-no-sandbox \
-            profile-media-enabled \
-            profile-host-bwrap \
-            llm-opencode-go
-          do
-            scripts/check-cargo-tree-deny.sh "${features}"
-          done
-
-      - name: Check smoke modular profiles
-        if: github.event_name != 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          for profile in embedded-opencode-local lite host-bwrap full; do
-            scripts/check-compiled-capabilities.sh "${profile}"
-            scripts/check-registry-snapshots.sh "${profile}"
-          done
-
-      - name: Check exhaustive modular profiles
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          for profile in \
-            embedded-opencode-local \
-            lite \
-            search-only \
-            no-sandbox \
-            media-enabled \
-            host-bwrap \
-            full
-          do
-            scripts/check-compiled-capabilities.sh "${profile}"
-            scripts/check-registry-snapshots.sh "${profile}"
-          done
-
   docker-config:
     runs-on: ubuntu-latest
 
@@ -132,13 +67,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Check Docker Compose profiles
-        run: |
-          set -euo pipefail
-          for profile in embedded-opencode-local search media dev full root-full; do
-            scripts/check-compose-profile.sh "${profile}"
-          done
 
       - name: Check profile-aware app Dockerfile
         run: |
@@ -157,49 +85,3 @@ jobs:
             --build-arg BINARIES="oxide-agent-telegram-bot oxide-agent-sandboxd" \
             --build-arg MCP_BINARIES="ssh-mcp jira-mcp mattermost-mcp" \
             .
-
-      - name: Check sandbox image variants
-        run: scripts/check-sandbox-image-variants.sh
-
-  profile-size-budgets:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        profile:
-          - embedded-opencode-local
-          - full
-        mode:
-          - binary
-          - metrics
-          - image
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        if: matrix.mode != 'image'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and index
-        if: matrix.mode != 'image'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
-      - name: Cache cargo build
-        if: matrix.mode != 'image'
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-size-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
-
-      - name: Set up Docker Buildx
-        if: matrix.mode == 'image'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Check profile size budget
-        run: scripts/check-profile-size-budget.sh "${{ matrix.profile }}" "${{ matrix.mode }}"

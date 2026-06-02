@@ -73,7 +73,7 @@ Arguments:
 
 ```json
 {
-  "services": ["oxide_agent", "browser_use"],
+  "services": ["oxide_agent", "searxng"],
   "include_stopped": false
 }
 ```

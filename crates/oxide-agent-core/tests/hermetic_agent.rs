@@ -60,15 +60,15 @@ impl LlmProvider for SuccessMock {
 async fn test_client_uses_registered_provider() {
     let settings = AgentSettings {
         agent_model_id: Some("test-model".to_string()),
-        agent_model_provider: Some("mock-provider".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         ..AgentSettings::default()
     };
 
     let mut client = LlmClient::new(&settings);
-    client.register_provider("mock-provider".to_string(), Arc::new(SuccessMock));
+    client.register_provider("opencode-go".to_string(), Arc::new(SuccessMock));
 
     let response = client
-        .chat_with_tools("sys", &[], &[], "test-model", false)
+        .chat_with_tools("sys", "", &[], &[], "test-model", false)
         .await
         .expect("Should succeed");
     assert_eq!(response.content.as_deref(), Some("Success"));
@@ -136,20 +136,20 @@ async fn test_retry_logic_eventual_success() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let settings = AgentSettings {
         agent_model_id: Some("test-model".to_string()),
-        agent_model_provider: Some("mock-provider".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         ..AgentSettings::default()
     };
 
     let mut client = LlmClient::new(&settings);
     client.register_provider(
-        "mock-provider".to_string(),
+        "opencode-go".to_string(),
         Arc::new(RetrySuccessMock {
             call_count: call_count.clone(),
         }),
     );
 
     let response = client
-        .chat_with_tools("sys", &[], &[], "test-model", false)
+        .chat_with_tools("sys", "", &[], &[], "test-model", false)
         .await
         .expect("Should eventually succeed");
     assert_eq!(response.content.expect("Should have content"), "Success");
@@ -208,13 +208,13 @@ async fn test_retry_logic_failure() {
     let call_count = Arc::new(AtomicUsize::new(0));
     let settings = AgentSettings {
         agent_model_id: Some("test-model".to_string()),
-        agent_model_provider: Some("mock-provider".to_string()),
+        agent_model_provider: Some("opencode-go".to_string()),
         ..AgentSettings::default()
     };
 
     let mut client = LlmClient::new(&settings);
     client.register_provider(
-        "mock-provider".to_string(),
+        "opencode-go".to_string(),
         Arc::new(AlwaysFailMock {
             call_count: call_count.clone(),
         }),
@@ -222,7 +222,7 @@ async fn test_retry_logic_failure() {
 
     let handle = tokio::spawn(async move {
         client
-            .chat_with_tools("sys", &[], &[], "test-model", false)
+            .chat_with_tools("sys", "", &[], &[], "test-model", false)
             .await
     });
 

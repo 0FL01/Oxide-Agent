@@ -5,6 +5,7 @@ use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
+use crate::agent::tool_failure_summary::rewrite_tool_failure_messages;
 use anyhow::{anyhow, Result};
 use std::future::Future;
 use tracing::debug;
@@ -105,6 +106,7 @@ impl AgentRunner {
         state: &mut RunState,
         iteration: usize,
     ) -> Result<()> {
+        Self::prune_stored_tool_failure_noise(ctx);
         self.apply_before_iteration_hooks(ctx, state)?;
 
         let cancellation_token = ctx.agent.cancellation_token().clone();
@@ -135,6 +137,21 @@ impl AgentRunner {
         }
 
         Ok(())
+    }
+
+    fn prune_stored_tool_failure_noise(ctx: &mut AgentRunnerContext<'_>) {
+        let Some(rewrite) = rewrite_tool_failure_messages(ctx.agent.memory().get_messages()) else {
+            return;
+        };
+
+        let rewritten_count = rewrite.rewritten_count;
+        ctx.agent.memory_mut().replace_messages(rewrite.messages);
+        ctx.agent.persist_memory_checkpoint_background();
+        Self::refresh_messages_from_memory(ctx);
+        debug!(
+            rewritten_tool_failures = rewritten_count,
+            "Pruned noisy dead-end tool failures from hot memory"
+        );
     }
 
     async fn emit_pre_run_compaction_done(

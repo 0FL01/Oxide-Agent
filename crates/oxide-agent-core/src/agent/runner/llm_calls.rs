@@ -2,10 +2,12 @@
 
 use super::types::{AgentRunnerContext, RunState};
 use super::AgentRunner;
-use crate::agent::compaction::CompactionTrigger;
+use crate::agent::compaction::{
+    estimate_request_budget, CompactionPolicy, CompactionRequest, CompactionTrigger,
+};
 use crate::agent::progress::AgentEvent;
 use crate::agent::recovery::repair_agent_message_history_for_provider;
-use crate::config::ModelInfo;
+use crate::config::{ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
 use crate::llm::{ChatResponse, LlmClient, LlmError, ProviderCapabilities};
 use anyhow::{anyhow, Result};
 use std::time::Duration;
@@ -129,6 +131,7 @@ impl AgentRunner {
                 .llm_client
                 .chat_with_tools_single_attempt(
                     ctx.system_prompt,
+                    ctx.date_suffix,
                     ctx.messages,
                     ctx.tools,
                     &ctx.config.model_name,
@@ -257,13 +260,15 @@ impl AgentRunner {
                     route.provider.as_str(),
                     route.id.as_str(),
                 );
+                let request_route = Self::route_with_soft_output_cap(ctx, &route);
                 let result = self
                     .llm_client
                     .chat_with_tools_single_attempt_for_model_info(
                         ctx.system_prompt,
+                        ctx.date_suffix,
                         ctx.messages,
                         ctx.tools,
-                        &route,
+                        &request_route,
                         ctx.config.temperature,
                         json_mode,
                     )
@@ -727,6 +732,42 @@ impl AgentRunner {
         .any(|needle| message.contains(needle))
     }
 
+    fn route_with_soft_output_cap(ctx: &AgentRunnerContext<'_>, route: &ModelInfo) -> ModelInfo {
+        let mut capped_route = route.clone();
+        capped_route.max_output_tokens = Self::effective_request_max_output_tokens(ctx, route);
+        capped_route
+    }
+
+    fn effective_request_max_output_tokens(ctx: &AgentRunnerContext<'_>, route: &ModelInfo) -> u32 {
+        let policy = CompactionPolicy::default();
+        let request = CompactionRequest::new(
+            CompactionTrigger::PreIteration,
+            ctx.task,
+            ctx.system_prompt,
+            ctx.tools,
+            &route.id,
+            route.max_output_tokens,
+            ctx.config.is_sub_agent,
+        );
+        let budget = estimate_request_budget(&policy, &request, ctx.agent);
+        let context_window_tokens = if route.context_window_tokens == 0 {
+            budget.context_window_tokens
+        } else {
+            route.context_window_tokens as usize
+        };
+        let remaining_output_tokens = context_window_tokens
+            .saturating_sub(budget.total_input_tokens)
+            .saturating_sub(policy.hard_reserve_tokens);
+        let remaining_output_tokens = u32::try_from(remaining_output_tokens)
+            .unwrap_or(u32::MAX)
+            .max(1);
+
+        route
+            .max_output_tokens
+            .clamp(1, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS)
+            .min(remaining_output_tokens)
+    }
+
     fn opencode_go_unbounded_retry_allowed(provider_name: &str, error: &LlmError) -> bool {
         Self::is_opencode_go_provider_name(provider_name) && LlmClient::is_retryable_error(error)
     }
@@ -750,7 +791,7 @@ mod tests {
         single_final_response_provider, stub_non_chat_methods,
     };
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
-    use crate::config::{AgentSettings, ModelInfo};
+    use crate::config::{AgentSettings, ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
     use crate::llm::{LlmError, MockLlmProvider, ToolCall, ToolCallFunction};
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -779,6 +820,57 @@ mod tests {
             "opencode-go",
             &invalid_request
         ));
+    }
+
+    #[test]
+    fn route_with_soft_output_cap_limits_provider_request_without_reserving_context() {
+        let tools = Vec::new();
+        let mut session = EphemeralSession::new(200_000);
+        session
+            .memory_mut()
+            .add_message(AgentMessage::user_task("Keep input context available"));
+
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = AgentRunner::convert_memory_to_messages(session.memory().get_messages());
+        let ctx = AgentRunnerContext {
+            task: "Keep input context available",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-soft-output-cap",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("wide-model".to_string(), 1, 1, 30, 200_000),
+        };
+        let route = ModelInfo {
+            id: "wide-model".to_string(),
+            provider: "mock".to_string(),
+            max_output_tokens: 200_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        };
+
+        let capped = AgentRunner::route_with_soft_output_cap(&ctx, &route);
+        assert_eq!(
+            capped.max_output_tokens,
+            AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS
+        );
+
+        let tight_route = ModelInfo {
+            context_window_tokens: 10_000,
+            ..route
+        };
+        let tight = AgentRunner::route_with_soft_output_cap(&ctx, &tight_route);
+        assert!(tight.max_output_tokens < AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS);
+        assert!(tight.max_output_tokens <= 1_808);
+        drop(ctx);
     }
 
     #[tokio::test]
@@ -822,6 +914,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Repair invalid tool history",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -904,6 +997,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Fail over after persistent 429",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
@@ -1006,6 +1100,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Stay on primary when it wakes up",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),
@@ -1085,6 +1180,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Skip unsupported NVIDIA route",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: Some(&progress_tx),

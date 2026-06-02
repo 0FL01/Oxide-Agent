@@ -5,9 +5,11 @@ FROM rust:1.94-slim-trixie AS chef
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     pkg-config \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install cargo-chef
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo install cargo-chef
 
 FROM chef AS planner
 WORKDIR /app
@@ -20,16 +22,22 @@ WORKDIR /app
 ARG CARGO_FEATURES="oxide-agent-telegram-bot/profile-embedded-opencode-local"
 ARG PACKAGES="oxide-agent-telegram-bot"
 ARG BINARIES="oxide-agent-telegram-bot"
+ARG BUILD_WEB_UI="false"
 
 COPY --from=planner /app/recipe.json recipe.json
-RUN if [ -n "${CARGO_FEATURES}" ]; then \
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    if [ -n "${CARGO_FEATURES}" ]; then \
       cargo chef cook --release --workspace --no-default-features --features "${CARGO_FEATURES}" --recipe-path recipe.json; \
     else \
       cargo chef cook --release --workspace --no-default-features --recipe-path recipe.json; \
     fi
 
 COPY . .
-RUN set -eux; \
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    set -eux; \
     package_args=""; \
     for package in ${PACKAGES}; do package_args="${package_args} -p ${package}"; done; \
     if [ -n "${CARGO_FEATURES}" ]; then \
@@ -37,11 +45,20 @@ RUN set -eux; \
     else \
       cargo build --release --no-default-features ${package_args}; \
     fi; \
-    mkdir -p /runtime/bin; \
+    mkdir -p /runtime/bin /runtime/web; \
     for binary in ${BINARIES}; do \
       test -x "/app/target/release/${binary}"; \
       cp "/app/target/release/${binary}" "/runtime/bin/${binary}"; \
-    done
+    done; \
+    if [ "${BUILD_WEB_UI}" = "true" ]; then \
+      rustup target add wasm32-unknown-unknown; \
+      TRUNK_VERSION="v0.21.14"; \
+      curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+        | tar xz -C /usr/local/cargo/bin trunk; \
+      cd /app/crates/oxide-agent-web-ui; \
+      env -u NO_COLOR trunk build --release; \
+      cp -R /app/crates/oxide-agent-web-ui/dist/. /runtime/web/; \
+    fi
 
 FROM debian:trixie-slim AS external-runtime-binaries
 
@@ -103,6 +120,7 @@ RUN groupadd --system --gid 10001 oxide \
 
 WORKDIR /app
 COPY --from=builder /runtime/bin/ /app/
+COPY --from=builder /runtime/web/ /app/web/
 COPY --from=external-runtime-binaries /runtime/bin/ /app/
 RUN chown -R oxide:oxide /app /home/oxide
 

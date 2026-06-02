@@ -317,6 +317,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "produce report",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,

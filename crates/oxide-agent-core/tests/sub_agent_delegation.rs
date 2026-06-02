@@ -214,14 +214,14 @@ async fn sub_agent_delegation_budget_path_smoke_test() -> anyhow::Result<()> {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let settings = Arc::new(AgentSettings {
         sub_agent_model_id: Some("sub-model".to_string()),
-        sub_agent_model_provider: Some("mock-provider".to_string()),
+        sub_agent_model_provider: Some("opencode-go".to_string()),
         sub_agent_max_output_tokens: Some(1_234),
         sub_agent_context_window_tokens: Some(48_000),
         ..AgentSettings::default()
     });
     let mut llm = LlmClient::new(&settings);
     llm.register_provider(
-        "mock-provider".to_string(),
+        "opencode-go".to_string(),
         Arc::new(BudgetProbeProvider {
             requests: Arc::clone(&requests),
         }),
@@ -270,13 +270,13 @@ async fn sub_agent_delegation_budget_path_smoke_test() -> anyhow::Result<()> {
 async fn sub_agent_spawn_returns_before_background_result() -> anyhow::Result<()> {
     let settings = Arc::new(AgentSettings {
         sub_agent_model_id: Some("sub-model".to_string()),
-        sub_agent_model_provider: Some("mock-provider".to_string()),
+        sub_agent_model_provider: Some("opencode-go".to_string()),
         ..AgentSettings::default()
     });
     let (release_tx, release_rx) = watch::channel(false);
     let mut llm = LlmClient::new(&settings);
     llm.register_provider(
-        "mock-provider".to_string(),
+        "opencode-go".to_string(),
         Arc::new(GatedProbeProvider {
             release_rx: AsyncMutex::new(release_rx),
         }),

@@ -4,6 +4,7 @@ use super::budget::count_tokens_cached;
 use super::{AgentMessageKind, CompactedSummaryMetadata, OXIDE_COMPACTED_SUMMARY_PREFIX};
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::recovery::repair_agent_message_history_runtime;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Request for constructing a compacted replacement history.
@@ -70,12 +71,15 @@ pub fn extract_previous_compacted_summary(
     })
 }
 
+/// Best-effort minimum number of recent user turns to retain when they fit.
+const MIN_RECENT_ROUNDS: usize = 3;
+
 /// Build a deterministic replacement history with one authoritative compacted summary.
 ///
-/// This first-stage builder intentionally keeps the retained raw tail narrow:
-/// pinned model-visible state plus recent real user/assistant text. Tool calls
-/// are not retained unless later controller work can prove the active turn is
-/// at a safe boundary and can preserve complete pairs.
+/// This builder keeps pinned model-visible state plus a recent raw tail that
+/// best-effort retains up to [`MIN_RECENT_ROUNDS`] recent user-turn anchors.
+/// Complete tool-call pairs (AssistantToolCall + matching ToolResult) are
+/// retained when they fall within the recent budget or minimum floor.
 pub fn build_compacted_history(
     request: BuildCompactedHistoryRequest<'_>,
 ) -> Result<Vec<AgentMessage>, CompactedHistoryBuildError> {
@@ -108,28 +112,98 @@ pub fn build_compacted_history(
     }
 
     let terminal_tool_batch_index = terminal_open_tool_batch_index(request.messages);
-    let mut recent_tail = Vec::new();
+
+    // Collect recent tail in two phases.
+    //
+    // Phase 1 — budget-constrained: collect messages from the end that fit the
+    // token budget. Tool-call batches are collected atomically so the tail never
+    // contains orphaned tool results or partially-trimmed tool calls.
+    //
+    // Phase 2 — minimum floor: if fewer than MIN_RECENT_ROUNDS user turns made
+    // it through, continue collecting only while the target budget still allows
+    // it. The summary carries older oversized context; the raw tail must not
+    // become a no-op compaction by dragging the entire tool loop back in.
+
+    let mut collected_indices: HashSet<usize> = HashSet::new();
+    let mut user_rounds = 0usize;
+
+    // --- Phase 1: budget-constrained ---
     for (index, message) in request.messages.iter().enumerate().rev() {
-        if is_pinned(message)
-            || is_any_compaction_summary_message(message)
-            || !is_recent_raw_candidate(message, index, terminal_tool_batch_index)
-        {
+        if collected_indices.contains(&index) {
             continue;
         }
-
-        let tokens = message_tokens(message);
-        if request.target_token_budget > 0
-            && used_tokens.saturating_add(tokens) > request.target_token_budget
-        {
+        let Some(candidate) = recent_tail_candidate_indices(
+            request.messages,
+            index,
+            message,
+            terminal_tool_batch_index,
+        ) else {
             continue;
-        }
+        };
+        let tokens = candidate
+            .iter()
+            .filter(|index| !collected_indices.contains(index))
+            .map(|index| message_tokens(&request.messages[*index]))
+            .sum::<usize>();
+        let fits_budget = request.target_token_budget == 0
+            || used_tokens.saturating_add(tokens) <= request.target_token_budget;
 
-        used_tokens = used_tokens.saturating_add(tokens);
-        recent_tail.push(message.clone());
+        if fits_budget {
+            include_candidate_indices(
+                request.messages,
+                candidate,
+                &mut collected_indices,
+                &mut used_tokens,
+                &mut user_rounds,
+            );
+        }
     }
 
-    recent_tail.reverse();
+    // --- Phase 2: minimum floor (budget-respecting) ---
+    if user_rounds < MIN_RECENT_ROUNDS {
+        for (index, message) in request.messages.iter().enumerate().rev() {
+            if collected_indices.contains(&index) {
+                continue;
+            }
+            let Some(candidate) = recent_tail_candidate_indices(
+                request.messages,
+                index,
+                message,
+                terminal_tool_batch_index,
+            ) else {
+                continue;
+            };
+            let tokens = candidate
+                .iter()
+                .filter(|index| !collected_indices.contains(index))
+                .map(|index| message_tokens(&request.messages[*index]))
+                .sum::<usize>();
+            let fits_budget = request.target_token_budget == 0
+                || used_tokens.saturating_add(tokens) <= request.target_token_budget;
+            if !fits_budget {
+                continue;
+            }
+            include_candidate_indices(
+                request.messages,
+                candidate,
+                &mut collected_indices,
+                &mut used_tokens,
+                &mut user_rounds,
+            );
+
+            if user_rounds >= MIN_RECENT_ROUNDS {
+                break;
+            }
+        }
+    }
+
+    let mut collected_indices = collected_indices.into_iter().collect::<Vec<_>>();
+    collected_indices.sort_unstable();
+    let recent_tail = collected_indices
+        .into_iter()
+        .map(|index| request.messages[index].clone());
     replacement.extend(recent_tail);
+    deduplicate_superseded_read_file_results(&mut replacement);
 
     let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
     if repair_outcome.applied || validated.len() != replacement.len() {
@@ -137,6 +211,123 @@ pub fn build_compacted_history(
     }
 
     Ok(replacement)
+}
+
+fn include_candidate_indices(
+    messages: &[AgentMessage],
+    candidate: Vec<usize>,
+    collected_indices: &mut HashSet<usize>,
+    used_tokens: &mut usize,
+    user_rounds: &mut usize,
+) {
+    for index in candidate {
+        if collected_indices.insert(index) {
+            let message = &messages[index];
+            if message.resolved_kind() == AgentMessageKind::UserTurn {
+                *user_rounds = user_rounds.saturating_add(1);
+            }
+            *used_tokens = used_tokens.saturating_add(message_tokens(message));
+        }
+    }
+}
+
+fn recent_tail_candidate_indices(
+    messages: &[AgentMessage],
+    index: usize,
+    message: &AgentMessage,
+    terminal_tool_batch_index: Option<usize>,
+) -> Option<Vec<usize>> {
+    if is_pinned(message) || is_any_compaction_summary_message(message) {
+        return None;
+    }
+
+    match message.role {
+        MessageRole::User => {
+            (message.resolved_kind() == AgentMessageKind::UserTurn).then_some(vec![index])
+        }
+        MessageRole::Assistant => match message.resolved_kind() {
+            AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
+                if message.tool_calls.is_none() =>
+            {
+                Some(vec![index])
+            }
+            AgentMessageKind::AssistantToolCall if terminal_tool_batch_index == Some(index) => {
+                Some(vec![index])
+            }
+            AgentMessageKind::AssistantToolCall => completed_tool_batch_indices(messages, index),
+            _ => None,
+        },
+        MessageRole::Tool => tool_batch_start_for_result(messages, index)
+            .and_then(|assistant_index| completed_tool_batch_indices(messages, assistant_index))
+            .filter(|indices| indices.contains(&index)),
+        MessageRole::System => None,
+    }
+}
+
+fn completed_tool_batch_indices(
+    messages: &[AgentMessage],
+    assistant_index: usize,
+) -> Option<Vec<usize>> {
+    let assistant = messages.get(assistant_index)?;
+    if assistant.resolved_kind() != AgentMessageKind::AssistantToolCall {
+        return None;
+    }
+
+    let expected_ids = assistant_tool_invocation_ids(assistant)?;
+    if expected_ids.is_empty() || expected_ids.iter().any(|id| id.trim().is_empty()) {
+        return None;
+    }
+
+    let expected_set = expected_ids.iter().cloned().collect::<HashSet<_>>();
+    if expected_set.len() != expected_ids.len() {
+        return None;
+    }
+    let mut seen_ids = HashSet::new();
+    let mut indices = vec![assistant_index];
+    let mut cursor = assistant_index + 1;
+    while cursor < messages.len()
+        && messages[cursor].resolved_kind() == AgentMessageKind::ToolResult
+    {
+        if let Some(invocation_id) = tool_result_invocation_id(&messages[cursor]) {
+            if expected_set.contains(&invocation_id) && seen_ids.insert(invocation_id) {
+                indices.push(cursor);
+            }
+        }
+        cursor += 1;
+    }
+
+    (seen_ids.len() == expected_set.len()).then_some(indices)
+}
+
+fn tool_batch_start_for_result(messages: &[AgentMessage], result_index: usize) -> Option<usize> {
+    if messages.get(result_index)?.resolved_kind() != AgentMessageKind::ToolResult {
+        return None;
+    }
+
+    let mut cursor = result_index;
+    while cursor > 0 && messages[cursor - 1].resolved_kind() == AgentMessageKind::ToolResult {
+        cursor -= 1;
+    }
+    let assistant_index = cursor.checked_sub(1)?;
+    (messages[assistant_index].resolved_kind() == AgentMessageKind::AssistantToolCall)
+        .then_some(assistant_index)
+}
+
+fn assistant_tool_invocation_ids(message: &AgentMessage) -> Option<Vec<String>> {
+    message
+        .resolved_tool_call_correlations()
+        .map(|correlations| {
+            correlations
+                .into_iter()
+                .map(|correlation| correlation.invocation_id.into_inner())
+                .collect()
+        })
+}
+
+fn tool_result_invocation_id(message: &AgentMessage) -> Option<String> {
+    message
+        .resolved_tool_call_correlation()
+        .map(|correlation| correlation.invocation_id.into_inner())
 }
 
 fn is_pinned(message: &AgentMessage) -> bool {
@@ -148,6 +339,93 @@ fn is_pinned(message: &AgentMessage) -> bool {
             | AgentMessageKind::ApprovalReplay
             | AgentMessageKind::InfraStatus
     )
+}
+
+#[derive(Debug, Clone)]
+struct FileToolAction {
+    name: String,
+    path: String,
+}
+
+fn deduplicate_superseded_read_file_results(messages: &mut [AgentMessage]) {
+    let actions = file_tool_actions_by_invocation(messages);
+    let mut latest_read_by_path = HashSet::<String>::new();
+    let mut mutated_since_latest_read = HashSet::<String>::new();
+    let mut deduplicated_indices = Vec::new();
+
+    for (index, message) in messages.iter().enumerate().rev() {
+        let Some(action) = message
+            .tool_call_id
+            .as_deref()
+            .and_then(|tool_call_id| actions.get(tool_call_id))
+        else {
+            continue;
+        };
+
+        match action.name.as_str() {
+            "read_file" => {
+                if latest_read_by_path.contains(&action.path)
+                    && !mutated_since_latest_read.contains(&action.path)
+                {
+                    deduplicated_indices.push((index, action.path.clone()));
+                }
+                latest_read_by_path.insert(action.path.clone());
+                mutated_since_latest_read.remove(&action.path);
+            }
+            "write_file" | "apply_file_edit" => {
+                mutated_since_latest_read.insert(action.path.clone());
+            }
+            _ => {}
+        }
+    }
+
+    for (index, path) in deduplicated_indices {
+        if let Some(message) = messages.get_mut(index) {
+            message.content = format!(
+                "[deduplicated tool result]\ntool: read_file\npath: {path}\nreason: a newer read_file result for this path is retained later in context."
+            );
+        }
+    }
+}
+
+fn file_tool_actions_by_invocation(messages: &[AgentMessage]) -> HashMap<String, FileToolAction> {
+    let mut actions = HashMap::new();
+    for message in messages {
+        let Some(tool_calls) = message.tool_calls.as_ref() else {
+            continue;
+        };
+
+        for tool_call in tool_calls {
+            let name = tool_call.function.name.as_str();
+            if !matches!(name, "read_file" | "write_file" | "apply_file_edit") {
+                continue;
+            }
+            let Some(path) = file_tool_path(&tool_call.function.arguments) else {
+                continue;
+            };
+            actions.insert(
+                tool_call.invocation_id().into_inner(),
+                FileToolAction {
+                    name: name.to_string(),
+                    path,
+                },
+            );
+        }
+    }
+    actions
+}
+
+fn file_tool_path(arguments: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("path")
+                .and_then(|path| path.as_str())
+                .map(str::trim)
+                .map(str::to_string)
+        })
+        .filter(|path| !path.is_empty())
 }
 
 fn terminal_open_tool_batch_index(messages: &[AgentMessage]) -> Option<usize> {
@@ -163,27 +441,6 @@ fn terminal_open_tool_batch_index(messages: &[AgentMessage]) -> Option<usize> {
         AgentMessageKind::AssistantToolCall
     )
     .then_some(index)
-}
-
-fn is_recent_raw_candidate(
-    message: &AgentMessage,
-    index: usize,
-    terminal_tool_batch_index: Option<usize>,
-) -> bool {
-    match message.role {
-        MessageRole::User => matches!(message.resolved_kind(), AgentMessageKind::UserTurn),
-        MessageRole::Assistant => {
-            if terminal_tool_batch_index == Some(index) {
-                return true;
-            }
-
-            matches!(
-                message.resolved_kind(),
-                AgentMessageKind::AssistantResponse | AgentMessageKind::AssistantReasoning
-            ) && message.tool_calls.is_none()
-        }
-        MessageRole::System | MessageRole::Tool => false,
-    }
 }
 
 fn message_tokens(message: &AgentMessage) -> usize {
@@ -334,6 +591,145 @@ mod tests {
             "compress result should not become orphaned after compaction"
         );
         assert_eq!(validated.len(), with_result.len());
+    }
+
+    #[test]
+    fn skips_complete_tool_batch_when_pair_cannot_fit_budget() {
+        let search_call = ToolCall::new(
+            "call-search".to_string(),
+            ToolCallFunction {
+                name: "search".to_string(),
+                arguments: r#"{"query":"pricing"}"#.to_string(),
+            },
+            false,
+        );
+        let messages = vec![
+            AgentMessage::user("round 1"),
+            AgentMessage::assistant("answer 1"),
+            AgentMessage::user("round 2"),
+            AgentMessage::assistant("answer 2"),
+            AgentMessage::user("round 3"),
+            AgentMessage::assistant("answer 3"),
+            AgentMessage::assistant_with_tools(
+                format!(
+                    "Calling search. {}",
+                    "large assistant payload ".repeat(20_000)
+                ),
+                vec![search_call],
+            ),
+            AgentMessage::tool("call-search", "search", "small result"),
+        ];
+
+        let replacement = build_compacted_history(BuildCompactedHistoryRequest {
+            messages: &messages,
+            summary_text: "Current compacted state.",
+            metadata: &metadata(false),
+            target_token_budget: 2_000,
+        })
+        .expect("history builds without orphaning tool result");
+
+        assert!(!replacement
+            .iter()
+            .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult));
+        assert!(!replacement
+            .iter()
+            .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
+
+        let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
+        assert!(!repair_outcome.applied);
+        assert_eq!(validated.len(), replacement.len());
+    }
+
+    #[test]
+    fn minimum_floor_respects_budget_for_oversized_tool_batch() {
+        let search_call = ToolCall::new(
+            "call-search".to_string(),
+            ToolCallFunction {
+                name: "search".to_string(),
+                arguments: r#"{"query":"pricing"}"#.to_string(),
+            },
+            false,
+        );
+        let messages = vec![
+            AgentMessage::user("Need fresh pricing data."),
+            AgentMessage::assistant_with_tools(
+                format!(
+                    "Calling search. {}",
+                    "large assistant payload ".repeat(20_000)
+                ),
+                vec![search_call],
+            ),
+            AgentMessage::tool("call-search", "search", "small result"),
+        ];
+
+        let replacement = build_compacted_history(BuildCompactedHistoryRequest {
+            messages: &messages,
+            summary_text: "Current compacted state.",
+            metadata: &metadata(false),
+            target_token_budget: 2_000,
+        })
+        .expect("minimum floor skips oversized complete tool batch");
+
+        assert!(replacement
+            .iter()
+            .any(|message| message.content == "Need fresh pricing data."));
+        assert!(!replacement
+            .iter()
+            .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
+        assert!(!replacement
+            .iter()
+            .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult));
+        assert!(replacement.iter().map(message_tokens).sum::<usize>() <= 2_000);
+
+        let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
+        assert!(!repair_outcome.applied);
+        assert_eq!(validated.len(), replacement.len());
+    }
+
+    #[test]
+    fn minimum_floor_does_not_reinflate_tool_heavy_single_turn_history() {
+        let mut messages = vec![
+            AgentMessage::user_task("Research current pricing."),
+            AgentMessage::user("Find current pricing details."),
+        ];
+        for index in 0..12 {
+            let call_id = format!("call-search-{index}");
+            let search_call = ToolCall::new(
+                call_id.clone(),
+                ToolCallFunction {
+                    name: "search".to_string(),
+                    arguments: format!(r#"{{"query":"pricing {index}"}}"#),
+                },
+                false,
+            );
+            messages.push(AgentMessage::assistant_with_tools(
+                format!("Searching batch {index}."),
+                vec![search_call],
+            ));
+            messages.push(AgentMessage::tool(
+                &call_id,
+                "search",
+                &format!("result {index}: {}", "large tool result ".repeat(500)),
+            ));
+        }
+
+        let replacement = build_compacted_history(BuildCompactedHistoryRequest {
+            messages: &messages,
+            summary_text: "Current compacted pricing research state.",
+            metadata: &metadata(false),
+            target_token_budget: 2_000,
+        })
+        .expect("history compacts tool-heavy single-turn loop");
+
+        assert!(
+            replacement.len() < messages.len(),
+            "minimum floor must not re-add every skipped tool batch"
+        );
+        assert!(replacement.iter().map(message_tokens).sum::<usize>() <= 2_000);
+
+        let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
+        assert!(!repair_outcome.applied);
+        assert_eq!(validated.len(), replacement.len());
     }
 
     #[test]

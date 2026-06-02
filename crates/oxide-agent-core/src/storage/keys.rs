@@ -71,6 +71,12 @@ pub fn wiki_context_key(prefix: &str, context_id: &str, file: &str) -> String {
     key_with_optional_prefix(prefix, &format!("wiki/v1/contexts/{context_id}/{file}"))
 }
 
+/// Returns the S3 prefix that covers all objects for a wiki context (pages, inbox, raw, core files).
+#[must_use]
+pub fn wiki_context_prefix(prefix: &str, context_id: &str) -> String {
+    key_with_optional_prefix(prefix, &format!("wiki/v1/contexts/{context_id}/"))
+}
+
 /// Returns the S3 key for a context-scoped LLM Wiki topic page.
 #[must_use]
 pub fn wiki_context_page_key(prefix: &str, context_id: &str, slug: &str) -> String {
@@ -102,6 +108,12 @@ pub fn wiki_context_raw_key(prefix: &str, context_id: &str, yyyy_mm: &str, run_i
 #[must_use]
 pub fn agent_profile_key(user_id: i64, agent_id: &str) -> String {
     format!("users/{user_id}/control_plane/agent_profiles/{agent_id}.json")
+}
+
+/// Returns the R2 prefix for all agent profile records of a user.
+#[must_use]
+pub fn agent_profiles_prefix(user_id: i64) -> String {
+    format!("users/{user_id}/control_plane/agent_profiles/")
 }
 
 /// Returns the R2 key for a topic context record.

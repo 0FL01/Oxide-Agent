@@ -1,0 +1,645 @@
+---
+source: crates/oxide-agent-core/tests/modular_registry_snapshots.rs
+expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should serialize\")"
+---
+{
+  "profile": "profile-web-embedded-opencode-local",
+  "compiled_manifest": {
+    "capabilities": [
+      {
+        "id": "llm-provider/opencode-go",
+        "module": "llm-provider/opencode-go"
+      },
+      {
+        "id": "llm-provider/opencode-zen",
+        "module": "llm-provider/opencode-zen"
+      },
+      {
+        "id": "sandbox-backend/bwrap",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/exec",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/fileops",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/bwrap/lifecycle",
+        "module": "sandbox-backend/bwrap"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/diagnostics",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/exec",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/fileops",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "sandbox-backend/sandboxd-client/lifecycle",
+        "module": "sandbox-backend/sandboxd-client"
+      },
+      {
+        "id": "storage/r2",
+        "module": "storage/r2"
+      },
+      {
+        "id": "tool/compression",
+        "module": "tool/compression"
+      },
+      {
+        "id": "tool/delegation",
+        "module": "tool/delegation"
+      },
+      {
+        "id": "tool/file-delivery",
+        "module": "tool/file-delivery"
+      },
+      {
+        "id": "tool/media-audio-transcription",
+        "module": "tool/media-audio"
+      },
+      {
+        "id": "tool/media-image-description",
+        "module": "tool/media-image"
+      },
+      {
+        "id": "tool/media-video-description",
+        "module": "tool/media-video"
+      },
+      {
+        "id": "tool/reminder",
+        "module": "tool/reminder"
+      },
+      {
+        "id": "tool/sandbox-exec",
+        "module": "tool/sandbox-exec"
+      },
+      {
+        "id": "tool/sandbox-fileops",
+        "module": "tool/sandbox-fileops"
+      },
+      {
+        "id": "tool/sandbox-list-files",
+        "module": "tool/sandbox-fileops"
+      },
+      {
+        "id": "tool/sandbox-recreate",
+        "module": "tool/sandbox-recreate"
+      },
+      {
+        "id": "tool/searxng-search",
+        "module": "tool/searxng"
+      },
+      {
+        "id": "tool/tavily-extract",
+        "module": "tool/tavily"
+      },
+      {
+        "id": "tool/tavily-search",
+        "module": "tool/tavily"
+      },
+      {
+        "id": "tool/todos",
+        "module": "tool/todos"
+      },
+      {
+        "id": "tool/webfetch-md",
+        "module": "tool/webfetch-md"
+      },
+      {
+        "id": "tool/wiki-memory",
+        "module": "tool/wiki-memory"
+      },
+      {
+        "id": "transport/web",
+        "module": "transport/web"
+      }
+    ],
+    "modules": [
+      {
+        "cargo_feature": "llm-opencode-go",
+        "config_properties": [
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/chat/completions",
+            "description": "OpenCode Go Chat Completions endpoint.",
+            "env": "OPENCODE_GO_API_BASE",
+            "name": "api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenCode Go API key. Also accepts OPENCODE_ZEN_API_KEY and legacy OPENCODE_GO_API_KEY.",
+            "env": "OPENCODE_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/messages",
+            "description": "OpenCode Go Anthropic Messages endpoint.",
+            "env": "OPENCODE_GO_MESSAGES_API_BASE",
+            "name": "messages_api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "1800",
+            "description": "OpenCode Go model discovery cache TTL.",
+            "env": "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+            "name": "model_cache_ttl_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/models",
+            "description": "OpenCode Go model discovery endpoint.",
+            "env": "OPENCODE_GO_MODELS_URL",
+            "name": "models_url",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/opencode-go",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-go"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-opencode-go",
+        "config_properties": [
+          {
+            "default_value": "https://opencode.ai/zen/v1/chat/completions",
+            "description": "OpenCode Zen Chat Completions endpoint.",
+            "env": "OPENCODE_ZEN_API_BASE",
+            "name": "api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenCode Zen API key. Also accepts OPENCODE_API_KEY and OPENCODE_GO_API_KEY.",
+            "env": "OPENCODE_ZEN_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/v1/messages",
+            "description": "OpenCode Zen Anthropic Messages endpoint.",
+            "env": "OPENCODE_ZEN_MESSAGES_API_BASE",
+            "name": "messages_api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "1800",
+            "description": "OpenCode Zen model discovery cache TTL.",
+            "env": "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
+            "name": "model_cache_ttl_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/v1/models",
+            "description": "OpenCode Zen free model discovery endpoint.",
+            "env": "OPENCODE_ZEN_MODELS_URL",
+            "name": "models_url",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/opencode-zen",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-zen"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "sandbox-backend-bwrap",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "sandbox-backend/bwrap",
+        "kind": "sandbox-backend",
+        "provides": [
+          "sandbox-backend/bwrap",
+          "sandbox-backend/bwrap/exec",
+          "sandbox-backend/bwrap/fileops",
+          "sandbox-backend/bwrap/lifecycle"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "sandbox-backend-sandboxd-client",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "sandbox-backend/sandboxd-client",
+        "kind": "sandbox-backend",
+        "provides": [
+          "sandbox-backend/sandboxd-client",
+          "sandbox-backend/sandboxd-client/diagnostics",
+          "sandbox-backend/sandboxd-client/exec",
+          "sandbox-backend/sandboxd-client/fileops",
+          "sandbox-backend/sandboxd-client/lifecycle"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "storage-s3-r2",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "storage/r2",
+        "kind": "storage-backend",
+        "provides": [
+          "storage/r2"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-compression",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/compression",
+        "kind": "tool",
+        "provides": [
+          "tool/compression"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-delegation",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/delegation",
+        "kind": "tool",
+        "provides": [
+          "tool/delegation"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-file-delivery",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/file-delivery",
+        "kind": "file-delivery",
+        "provides": [
+          "tool/file-delivery"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-audio",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-audio",
+        "kind": "media",
+        "provides": [
+          "tool/media-audio-transcription"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-image",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-image",
+        "kind": "media",
+        "provides": [
+          "tool/media-image-description"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-media-video",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/media-video",
+        "kind": "media",
+        "provides": [
+          "tool/media-video-description"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-reminder",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/reminder",
+        "kind": "reminder",
+        "provides": [
+          "tool/reminder"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-sandbox-exec",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-exec",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-exec"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/exec",
+              "sandbox-backend/sandboxd-client/exec",
+              "sandbox-backend/bwrap/exec"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-sandbox-fileops",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-fileops",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-fileops",
+          "tool/sandbox-list-files"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/fileops",
+              "sandbox-backend/sandboxd-client/fileops",
+              "sandbox-backend/bwrap/fileops"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-sandbox-recreate",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/sandbox-recreate",
+        "kind": "sandbox-tool",
+        "provides": [
+          "tool/sandbox-recreate"
+        ],
+        "requires": [
+          {
+            "capabilities": [
+              "sandbox-backend/docker-direct/lifecycle",
+              "sandbox-backend/sandboxd-client/lifecycle",
+              "sandbox-backend/bwrap/lifecycle"
+            ],
+            "kind": "any-of"
+          }
+        ]
+      },
+      {
+        "cargo_feature": "tool-searxng",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/searxng",
+        "kind": "search",
+        "provides": [
+          "tool/searxng-search"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-tavily",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/tavily",
+        "kind": "search",
+        "provides": [
+          "tool/tavily-extract",
+          "tool/tavily-search"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-todos",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/todos",
+        "kind": "tool",
+        "provides": [
+          "tool/todos"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-webfetch-md",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/webfetch-md",
+        "kind": "search",
+        "provides": [
+          "tool/webfetch-md"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-wiki-memory",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/wiki-memory",
+        "kind": "memory",
+        "provides": [
+          "tool/wiki-memory"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "transport-web",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "transport/web",
+        "kind": "transport",
+        "provides": [
+          "transport/web"
+        ],
+        "requires": []
+      }
+    ]
+  },
+  "enabled_manifest_default_config": {
+    "capabilities": [
+      "llm-provider/opencode-go",
+      "llm-provider/opencode-zen",
+      "sandbox-backend/bwrap",
+      "sandbox-backend/bwrap/exec",
+      "sandbox-backend/bwrap/fileops",
+      "sandbox-backend/bwrap/lifecycle",
+      "sandbox-backend/sandboxd-client",
+      "sandbox-backend/sandboxd-client/diagnostics",
+      "sandbox-backend/sandboxd-client/exec",
+      "sandbox-backend/sandboxd-client/fileops",
+      "sandbox-backend/sandboxd-client/lifecycle",
+      "storage/r2",
+      "tool/compression",
+      "tool/delegation",
+      "tool/file-delivery",
+      "tool/media-audio-transcription",
+      "tool/media-image-description",
+      "tool/media-video-description",
+      "tool/reminder",
+      "tool/sandbox-exec",
+      "tool/sandbox-fileops",
+      "tool/sandbox-list-files",
+      "tool/sandbox-recreate",
+      "tool/searxng-search",
+      "tool/tavily-extract",
+      "tool/tavily-search",
+      "tool/todos",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "transport/web"
+    ],
+    "modules": [
+      "llm-provider/opencode-go",
+      "llm-provider/opencode-zen",
+      "sandbox-backend/bwrap",
+      "sandbox-backend/sandboxd-client",
+      "storage/r2",
+      "tool/compression",
+      "tool/delegation",
+      "tool/file-delivery",
+      "tool/media-audio",
+      "tool/media-image",
+      "tool/media-video",
+      "tool/reminder",
+      "tool/sandbox-exec",
+      "tool/sandbox-fileops",
+      "tool/sandbox-recreate",
+      "tool/searxng",
+      "tool/tavily",
+      "tool/todos",
+      "tool/webfetch-md",
+      "tool/wiki-memory",
+      "transport/web"
+    ]
+  },
+  "registered_tool_names_default_config": [
+    "apply_file_edit",
+    "cancel_sub_agents",
+    "compress",
+    "describe_image_file",
+    "describe_video_file",
+    "execute_command",
+    "list_files",
+    "read_file",
+    "recreate_sandbox",
+    "send_file_to_user",
+    "spawn_sub_agents",
+    "transcribe_audio_file",
+    "upload_file",
+    "wait_sub_agents",
+    "web_markdown",
+    "write_file",
+    "write_todos"
+  ],
+  "registered_llm_provider_ids_dummy_config": [
+    "llm-provider/opencode-go",
+    "llm-provider/opencode-zen"
+  ],
+  "registered_llm_provider_aliases_dummy_config": [
+    "opencode-go",
+    "opencode-zen",
+    "opencode_go",
+    "opencode_zen"
+  ],
+  "storage_backend_module_ids": [
+    "storage/r2"
+  ],
+  "sandbox_backend_module_ids": [
+    "sandbox-backend/bwrap",
+    "sandbox-backend/sandboxd-client"
+  ],
+  "external_service_requirements": [
+    {
+      "module_id": "llm-provider/opencode-go",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-opencode-go",
+      "config_env": [
+        "OPENCODE_GO_API_BASE",
+        "OPENCODE_API_KEY",
+        "OPENCODE_GO_MESSAGES_API_BASE",
+        "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+        "OPENCODE_GO_MODELS_URL"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/opencode-zen",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-opencode-go",
+      "config_env": [
+        "OPENCODE_ZEN_API_BASE",
+        "OPENCODE_ZEN_API_KEY",
+        "OPENCODE_ZEN_MESSAGES_API_BASE",
+        "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
+        "OPENCODE_ZEN_MODELS_URL"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "sandbox-backend/bwrap",
+      "kind": "sandbox-backend",
+      "cargo_feature": "sandbox-backend-bwrap",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "sandbox-backend/sandboxd-client",
+      "kind": "sandbox-backend",
+      "cargo_feature": "sandbox-backend-sandboxd-client",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "storage/r2",
+      "kind": "storage-backend",
+      "cargo_feature": "storage-s3-r2",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/searxng",
+      "kind": "search",
+      "cargo_feature": "tool-searxng",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/tavily",
+      "kind": "search",
+      "cargo_feature": "tool-tavily",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/webfetch-md",
+      "kind": "search",
+      "cargo_feature": "tool-webfetch-md",
+      "config_env": [],
+      "requires_capabilities": []
+    }
+  ]
+}

@@ -89,6 +89,50 @@ fn executor_registers_episodic_extract_hook_for_wiki_drafts() {
     assert!(executor.runner.has_registered_hook("episodic_extract"));
 }
 
+#[tokio::test]
+async fn prepare_execution_uses_executor_model_routes_override() {
+    let settings = Arc::new(crate::config::AgentSettings {
+        agent_model_routes: Some(vec![crate::config::ModelInfo {
+            id: "global-primary".to_string(),
+            provider: "global-provider".to_string(),
+            max_output_tokens: 1_000,
+            context_window_tokens: 8_000,
+            weight: 1,
+        }]),
+        ..crate::config::AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let mut executor = AgentExecutor::new(llm, session, settings);
+    let override_routes = vec![
+        crate::config::ModelInfo {
+            id: "override-primary".to_string(),
+            provider: "override-provider".to_string(),
+            max_output_tokens: 2_000,
+            context_window_tokens: 16_000,
+            weight: 1,
+        },
+        crate::config::ModelInfo {
+            id: "override-fallback".to_string(),
+            provider: "override-provider".to_string(),
+            max_output_tokens: 3_000,
+            context_window_tokens: 32_000,
+            weight: 1,
+        },
+    ];
+    executor.set_model_routes_override(override_routes.clone());
+
+    let prepared = executor.prepare_execution("use selected model", None).await;
+
+    assert_eq!(prepared.runner_config.model_name, "override-primary");
+    assert_eq!(
+        prepared.runner_config.model_provider.as_deref(),
+        Some("override-provider")
+    );
+    assert_eq!(prepared.runner_config.model_max_output_tokens, 2_000);
+    assert_eq!(prepared.runner_config.model_routes, override_routes);
+}
+
 #[cfg(feature = "tool-wiki-memory")]
 #[test]
 fn executor_exposes_wiki_memory_tools_when_store_configured() {

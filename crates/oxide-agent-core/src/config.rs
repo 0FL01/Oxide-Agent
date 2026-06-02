@@ -59,25 +59,38 @@ pub struct AgentSettings {
     pub tavily_api_key: Option<String>,
     /// Enable Tavily tool provider registration.
     pub tavily_enabled: Option<bool>,
+    /// Enable DuckDuckGo tool provider registration.
+    pub duckduckgo_enabled: Option<bool>,
+    /// DuckDuckGo request timeout (seconds).
+    pub duckduckgo_timeout_secs: Option<u64>,
+    /// Default DuckDuckGo region.
+    pub duckduckgo_region: Option<String>,
+    /// Default DuckDuckGo news safe-search setting.
+    pub duckduckgo_safe_search: Option<bool>,
+    /// Process-wide DuckDuckGo max concurrent operations.
+    pub duckduckgo_max_concurrent: Option<usize>,
+    /// Process-wide DuckDuckGo minimum delay between operations.
+    pub duckduckgo_min_delay_ms: Option<u64>,
+    /// Process-wide DuckDuckGo random delay jitter.
+    pub duckduckgo_jitter_ms: Option<u64>,
+    /// DuckDuckGo retry count.
+    pub duckduckgo_max_retries: Option<u8>,
+    /// DuckDuckGo initial retry backoff.
+    pub duckduckgo_initial_backoff_ms: Option<u64>,
+    /// DuckDuckGo maximum retry backoff.
+    pub duckduckgo_max_backoff_ms: Option<u64>,
+    /// DuckDuckGo process-wide cooldown after blocks or transient failures.
+    pub duckduckgo_cooldown_secs: Option<u64>,
+    /// DuckDuckGo user-agent alias or literal value.
+    pub duckduckgo_user_agent: Option<String>,
+    /// Optional DuckDuckGo proxy URL.
+    pub duckduckgo_proxy_url: Option<String>,
     /// SearXNG base URL.
     pub searxng_url: Option<String>,
     /// Enable SearXNG tool provider registration.
     pub searxng_enabled: Option<bool>,
     /// SearXNG request timeout (seconds).
     pub searxng_timeout_secs: Option<u64>,
-    /// Browser Use bridge base URL.
-    pub browser_use_url: Option<String>,
-    /// Browser Use request timeout (seconds).
-    pub browser_use_timeout_secs: Option<u64>,
-    /// Dedicated Browser Use model ID override.
-    pub browser_use_model_id: Option<String>,
-    /// Dedicated Browser Use model provider override.
-    pub browser_use_model_provider: Option<String>,
-    /// Dedicated Browser Use model max output tokens override.
-    pub browser_use_model_max_output_tokens: Option<u32>,
-    /// Dedicated Browser Use model context window tokens override.
-    pub browser_use_model_context_window_tokens: Option<u32>,
-
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
 
@@ -312,6 +325,24 @@ impl AgentSettings {
         })
     }
 
+    /// Returns a module-local string value, falling back to provider-owned env vars in order.
+    #[must_use]
+    pub fn module_string_value_or_envs(
+        &self,
+        module_id: &str,
+        key: &str,
+        env_names: &[&str],
+    ) -> Option<String> {
+        self.module_string_value(module_id, key).or_else(|| {
+            env_names.iter().find_map(|env_name| {
+                std::env::var(env_name)
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+        })
+    }
+
     /// Returns a module-local string value, provider-owned env var, or default.
     #[must_use]
     pub fn module_string_value_or_env_or_default(
@@ -342,6 +373,7 @@ impl AgentSettings {
         let mut settings: Self = build_config()?.try_deserialize()?;
         settings.validate_configured_modules()?;
         settings.apply_model_routes_from_env();
+        settings.apply_opencode_go_bootstrap_route_if_available();
 
         if settings.agent_model_temperature.is_none() {
             settings.agent_model_temperature = parse_optional_env_f32("AGENT_MODEL_TEMPERATURE");
@@ -385,10 +417,6 @@ impl AgentSettings {
         self.validate_optional_route_provider(
             "MEDIA_MODEL_PROVIDER",
             self.media_model_provider.as_deref(),
-        )?;
-        self.validate_optional_route_provider(
-            "BROWSER_USE_MODEL_PROVIDER",
-            self.browser_use_model_provider.as_deref(),
         )?;
         self.validate_optional_route_provider(
             "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
@@ -540,10 +568,6 @@ impl AgentSettings {
             &mut self.media_model_provider,
         )?;
         Self::canonicalize_optional_provider_field(
-            "BROWSER_USE_MODEL_PROVIDER",
-            &mut self.browser_use_model_provider,
-        )?;
-        Self::canonicalize_optional_provider_field(
             "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
             &mut self.wiki_memory_writer_model_provider,
         )?;
@@ -617,7 +641,6 @@ impl AgentSettings {
             self.agent_model_provider.as_deref(),
             self.sub_agent_model_provider.as_deref(),
             self.media_model_provider.as_deref(),
-            self.browser_use_model_provider.as_deref(),
             self.wiki_memory_writer_model_provider.as_deref(),
         ];
         let agent_route_providers = self
@@ -654,6 +677,45 @@ impl AgentSettings {
                 .is_some_and(|provider| !provider.trim().is_empty());
 
         has_primary_route || has_direct_route
+    }
+
+    fn apply_opencode_go_bootstrap_route_if_available(&mut self) {
+        if self.has_configured_agent_route() {
+            return;
+        }
+        let Some(module_id) = provider_module_id("opencode-go") else {
+            return;
+        };
+        if !self.is_module_enabled(module_id) {
+            return;
+        }
+        if self
+            .module_string_value_or_envs(
+                module_id,
+                "api_key",
+                &[
+                    "OPENCODE_API_KEY",
+                    "OPENCODE_ZEN_API_KEY",
+                    "OPENCODE_GO_API_KEY",
+                ],
+            )
+            .is_none()
+        {
+            return;
+        }
+
+        let route = ModelInfo {
+            id: "opencode-go/kimi-k2.6".to_string(),
+            max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+            context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+            provider: "opencode-go".to_string(),
+            weight: 1,
+        };
+        self.agent_model_id = Some(route.id.clone());
+        self.agent_model_provider = Some(route.provider.clone());
+        self.agent_model_max_output_tokens = Some(route.max_output_tokens);
+        self.agent_model_context_window_tokens = Some(route.context_window_tokens);
+        self.agent_model_routes = Some(vec![route]);
     }
 
     fn apply_model_routes_from_env(&mut self) {
@@ -695,6 +757,28 @@ impl AgentSettings {
             self.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
         }
 
+        if self.duckduckgo_enabled.is_none() {
+            self.duckduckgo_enabled = parse_optional_env_bool("DUCKDUCKGO_ENABLED");
+        }
+
+        if self.duckduckgo_user_agent.is_none() {
+            if let Ok(val) = std::env::var("DUCKDUCKGO_USER_AGENT") {
+                if !val.is_empty() {
+                    self.duckduckgo_user_agent = Some(val);
+                }
+            }
+        }
+
+        if self.duckduckgo_proxy_url.is_none() {
+            if let Ok(val) =
+                std::env::var("DUCKDUCKGO_PROXY_URL").or_else(|_| std::env::var("DUCKDUCKGO_PROXY"))
+            {
+                if !val.is_empty() {
+                    self.duckduckgo_proxy_url = Some(val);
+                }
+            }
+        }
+
         if self.searxng_url.is_none() {
             if let Ok(val) = std::env::var("SEARXNG_URL") {
                 if !val.is_empty() {
@@ -705,14 +789,6 @@ impl AgentSettings {
 
         if self.searxng_enabled.is_none() {
             self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
-        }
-
-        if self.browser_use_url.is_none() {
-            if let Ok(val) = std::env::var("BROWSER_USE_URL") {
-                if !val.is_empty() {
-                    self.browser_use_url = Some(val);
-                }
-            }
         }
     }
 
@@ -872,22 +948,6 @@ impl AgentSettings {
         let context_window_tokens = self
             .media_model_context_window_tokens
             .unwrap_or(DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS);
-
-        Some((
-            id.clone(),
-            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
-        ))
-    }
-
-    fn browser_use_model_spec(&self) -> Option<(String, ModelInfo)> {
-        let id = self.browser_use_model_id.as_ref()?;
-        let provider = self.browser_use_model_provider.as_ref()?;
-        let max_output_tokens = self
-            .browser_use_model_max_output_tokens
-            .unwrap_or(DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS);
-        let context_window_tokens = self
-            .browser_use_model_context_window_tokens
-            .unwrap_or(DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS);
 
         Some((
             id.clone(),
@@ -1090,11 +1150,6 @@ impl AgentSettings {
         self.agent_timeout_secs.unwrap_or(AGENT_TIMEOUT_SECS)
     }
 
-    /// Returns the dedicated Browser Use model when configured.
-    pub fn get_configured_browser_use_model(&self) -> Option<ModelInfo> {
-        self.browser_use_model_spec().map(|(_, info)| info)
-    }
-
     /// Returns the configured sub-agent timeout in seconds
     pub fn get_sub_agent_timeout_secs(&self) -> u64 {
         self.sub_agent_timeout_secs
@@ -1118,14 +1173,6 @@ pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
     ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(()))
 }
 
-#[cfg(all(test, feature = "tool-browser-use"))]
-pub(crate) fn test_env_async_mutex() -> &'static tokio::sync::Mutex<()> {
-    use std::sync::OnceLock;
-
-    static ENV_MUTEX: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    ENV_MUTEX.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1141,6 +1188,19 @@ mod tests {
             })
             .collect();
         for key in keys {
+            env::remove_var(key);
+        }
+    }
+
+    fn clear_opencode_go_env() {
+        for key in [
+            "OPENCODE_API_KEY",
+            "OPENCODE_ZEN_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "OPENCODE_GO_API_BASE",
+            "OPENCODE_GO_MODELS_URL",
+            "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+        ] {
             env::remove_var(key);
         }
     }
@@ -1389,7 +1449,6 @@ mod tests {
             agent_model_provider: Some(" OpenRouter ".to_string()),
             media_model_id: Some("google/gemini-3-flash-preview".to_string()),
             media_model_provider: Some("llm-provider/openrouter".to_string()),
-            browser_use_model_provider: Some(" ".to_string()),
             agent_model_routes: Some(vec![ModelInfo {
                 id: "deepseek/deepseek-v4-flash".to_string(),
                 provider: "openrouter".to_string(),
@@ -1422,7 +1481,6 @@ mod tests {
             settings.media_model_provider.as_deref(),
             Some("llm-provider/openrouter")
         );
-        assert_eq!(settings.browser_use_model_provider, None);
         assert_eq!(
             settings
                 .agent_model_routes
@@ -1492,6 +1550,10 @@ mod tests {
     #[cfg(feature = "llm-opencode-go")]
     #[test]
     fn route_credentials_validation_resolves_provider_module_ids() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_opencode_go_env();
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("llm-provider/opencode-go".to_string()),
@@ -1502,9 +1564,8 @@ mod tests {
             .validate_route_credentials()
             .expect_err("missing OpenCode Go key should fail for module id provider");
 
-        assert!(error
-            .to_string()
-            .contains("OPENCODE_GO_API_KEY is required"));
+        assert!(error.to_string().contains("OPENCODE_API_KEY"));
+        clear_opencode_go_env();
     }
 
     #[test]
@@ -1669,10 +1730,11 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
         env::remove_var("ZAI_API_KEY");
+        clear_opencode_go_env();
 
         env::set_var("AGENT_MODEL_ID", "chat-model");
         env::set_var("AGENT_MODEL_PROVIDER", "opencode-go");
-        env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
+        env::set_var("OPENCODE_API_KEY", "opencode-key");
         env::set_var(
             "OPENCODE_GO_API_BASE",
             "https://opencode.example.test/v1/chat/completions",
@@ -1682,10 +1744,14 @@ mod tests {
 
         assert_eq!(
             settings
-                .module_string_value_or_env(
+                .module_string_value_or_envs(
                     "llm-provider/opencode-go",
                     "api_key",
-                    "OPENCODE_GO_API_KEY"
+                    &[
+                        "OPENCODE_API_KEY",
+                        "OPENCODE_ZEN_API_KEY",
+                        "OPENCODE_GO_API_KEY"
+                    ]
                 )
                 .as_deref(),
             Some("opencode-key")
@@ -1702,8 +1768,39 @@ mod tests {
 
         env::remove_var("AGENT_MODEL_ID");
         env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("OPENCODE_GO_API_KEY");
-        env::remove_var("OPENCODE_GO_API_BASE");
+        clear_opencode_go_env();
+        Ok(())
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn settings_bootstraps_opencode_go_route_from_api_key_only() -> Result<(), ConfigError> {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_model_route_env();
+        clear_opencode_go_env();
+        env::remove_var("AGENT_MODEL_ID");
+        env::remove_var("AGENT_MODEL_PROVIDER");
+        env::remove_var("ZAI_API_KEY");
+
+        env::set_var("OPENCODE_API_KEY", "opencode-key");
+
+        let settings = AgentSettings::new()?;
+        let primary = settings.get_configured_agent_model();
+
+        assert_eq!(primary.id, "opencode-go/kimi-k2.6");
+        assert_eq!(primary.provider, "llm-provider/opencode-go");
+        assert_eq!(
+            primary.max_output_tokens,
+            DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(
+            primary.context_window_tokens,
+            DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS
+        );
+
+        clear_opencode_go_env();
         Ok(())
     }
 
@@ -1716,7 +1813,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
         env::remove_var("ZAI_API_KEY");
-        env::remove_var("OPENCODE_GO_API_BASE");
+        clear_opencode_go_env();
 
         env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
@@ -1740,7 +1837,7 @@ mod tests {
         );
 
         clear_model_route_env();
-        env::remove_var("OPENCODE_GO_API_KEY");
+        clear_opencode_go_env();
         Ok(())
     }
 
@@ -1752,38 +1849,16 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
         env::remove_var("ZAI_API_KEY");
-        env::remove_var("OPENCODE_GO_API_KEY");
-        env::remove_var("OPENCODE_GO_API_BASE");
+        clear_opencode_go_env();
 
         env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
         env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
 
         let error = AgentSettings::new().expect_err("missing OpenCode Go key should fail");
-        assert!(error
-            .to_string()
-            .contains("OPENCODE_GO_API_KEY is required"));
+        assert!(error.to_string().contains("OPENCODE_API_KEY"));
 
         clear_model_route_env();
-    }
-
-    #[test]
-    fn browser_use_model_returns_dedicated_route_when_configured() {
-        let settings = AgentSettings {
-            browser_use_model_id: Some("GLM-4.6V".to_string()),
-            browser_use_model_provider: Some("zai".to_string()),
-            browser_use_model_max_output_tokens: Some(16_384),
-            browser_use_model_context_window_tokens: Some(131_072),
-            ..AgentSettings::default()
-        };
-
-        let route = settings
-            .get_configured_browser_use_model()
-            .expect("browser-use route should be configured");
-
-        assert_eq!(route.id, "GLM-4.6V");
-        assert_eq!(route.provider, "zai");
-        assert_eq!(route.max_output_tokens, 16_384);
-        assert_eq!(route.context_window_tokens, 131_072);
+        clear_opencode_go_env();
     }
 
     #[test]
@@ -1798,15 +1873,47 @@ mod tests {
     }
 
     #[test]
-    fn browser_use_enabled_falls_back_to_url_presence() {
+    fn duckduckgo_enabled_defaults_to_true_without_sidecar_url() {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
+        env::remove_var("DUCKDUCKGO_ENABLED");
 
-        assert!(is_browser_use_enabled());
+        assert!(is_duckduckgo_enabled());
+    }
 
-        env::remove_var("BROWSER_USE_URL");
+    #[test]
+    fn duckduckgo_enabled_flag_overrides_default() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::set_var("DUCKDUCKGO_ENABLED", "false");
+
+        assert!(!is_duckduckgo_enabled());
+
+        env::remove_var("DUCKDUCKGO_ENABLED");
+    }
+
+    #[test]
+    fn duckduckgo_rate_limit_config_uses_defaults_when_env_missing() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::remove_var("DUCKDUCKGO_MAX_CONCURRENT");
+        env::remove_var("DUCKDUCKGO_MIN_DELAY_MS");
+        env::remove_var("DUCKDUCKGO_JITTER_MS");
+        env::remove_var("DUCKDUCKGO_COOLDOWN_SECS");
+
+        let config = get_duckduckgo_rate_limit_config();
+        assert_eq!(
+            config,
+            DuckDuckGoRateLimitConfig {
+                max_concurrent: DUCKDUCKGO_DEFAULT_MAX_CONCURRENT,
+                min_delay_ms: DUCKDUCKGO_DEFAULT_MIN_DELAY_MS,
+                jitter_ms: DUCKDUCKGO_DEFAULT_JITTER_MS,
+                cooldown_secs: DUCKDUCKGO_DEFAULT_COOLDOWN_SECS,
+            }
+        );
     }
 
     #[test]
@@ -1949,14 +2056,16 @@ pub const DEFAULT_MEDIA_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
 pub const DEFAULT_INTERNAL_TEXT_MAX_OUTPUT_TOKENS: u32 = 64_000;
 /// Default internal text route context window tokens.
 pub const DEFAULT_INTERNAL_TEXT_CONTEXT_WINDOW_TOKENS: u32 = 64_000;
+/// Soft cap for a single agent response. It is not reserved from the input context window.
+pub const AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS: u32 = 48_000;
 /// Default main-agent model max output tokens.
-pub const DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 128_000;
+pub const DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 /// Default main-agent model context window tokens.
-pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 200_000;
+pub const DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 240_000;
 /// Default internal main-agent context budget when no model window is configured.
-pub const DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS: usize = 200_000;
+pub const DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS: usize = 240_000;
 /// Default sub-agent model max output tokens.
-pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = 64_000;
+pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 /// Max forced continuations when todos incomplete
 pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when todos incomplete
 /// Default limit for search tool calls per agent session
@@ -2008,7 +2117,7 @@ pub const SANDBOX_CPU_PERIOD: i64 = 100_000;
 /// CPU quota for sandbox container (2 CPUs)
 pub const SANDBOX_CPU_QUOTA: i64 = 200_000; // 2 CPUs (200% of period)
 /// Timeout for individual command execution in sandbox
-pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 60; // 1 minute per command
+pub const SANDBOX_EXEC_TIMEOUT_SECS: u64 = 240; // 4 minutes per command
 
 /// Explicit sandbox backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2120,27 +2229,141 @@ pub const TRANSPORT_API_INITIAL_BACKOFF_MS: u64 = 500;
 /// Maximum backoff delay in milliseconds for transport retries.
 pub const TRANSPORT_API_MAX_BACKOFF_MS: u64 = 4000;
 
-// Self-hosted tool provider HTTP client configuration
+// Public search provider HTTP client configuration
+/// Default timeout for DuckDuckGo requests (seconds).
+pub const DUCKDUCKGO_DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Default DuckDuckGo region.
+pub const DUCKDUCKGO_DEFAULT_REGION: &str = "wt-wt";
+/// Default DuckDuckGo news safe-search setting.
+pub const DUCKDUCKGO_DEFAULT_SAFE_SEARCH: bool = true;
+/// Default process-wide DuckDuckGo max concurrent operations.
+pub const DUCKDUCKGO_DEFAULT_MAX_CONCURRENT: usize = 1;
+/// Default process-wide DuckDuckGo minimum delay between operations.
+pub const DUCKDUCKGO_DEFAULT_MIN_DELAY_MS: u64 = 2_500;
+/// Default process-wide DuckDuckGo delay jitter.
+pub const DUCKDUCKGO_DEFAULT_JITTER_MS: u64 = 1_500;
+/// Default DuckDuckGo retry count.
+pub const DUCKDUCKGO_DEFAULT_MAX_RETRIES: u8 = 2;
+/// Default DuckDuckGo initial retry backoff.
+pub const DUCKDUCKGO_DEFAULT_INITIAL_BACKOFF_MS: u64 = 1_500;
+/// Default DuckDuckGo maximum retry backoff.
+pub const DUCKDUCKGO_DEFAULT_MAX_BACKOFF_MS: u64 = 30_000;
+/// Default DuckDuckGo cooldown after blocks or transient failures.
+pub const DUCKDUCKGO_DEFAULT_COOLDOWN_SECS: u64 = 90;
+
+// Self-hosted SearXNG HTTP client configuration
 /// Default timeout for SearXNG requests (seconds)
 pub const SEARXNG_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Default engines used for SearXNG rotation fallback.
 pub const SEARXNG_DEFAULT_ROTATION_ENGINES: &[&str] =
     &["brave", "bing", "qwant", "mojeek", "yandex"];
 
-/// Default timeout for Browser Use bridge requests (seconds)
-pub const BROWSER_USE_DEFAULT_TIMEOUT_SECS: u64 = 300;
+/// DuckDuckGo browser configuration.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct DuckDuckGoBrowserConfig {
+    /// User-agent alias or literal value.
+    pub user_agent: Option<String>,
+    /// Optional proxy URL.
+    pub proxy_url: Option<String>,
+}
 
-/// Default max concurrent Browser Use requests per sub-agent.
-pub const BROWSER_USE_DEFAULT_MAX_CONCURRENT: usize = 2;
+/// DuckDuckGo rate-limit configuration.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DuckDuckGoRateLimitConfig {
+    /// Max concurrent high-level DuckDuckGo operations.
+    pub max_concurrent: usize,
+    /// Minimum delay between high-level operations.
+    pub min_delay_ms: u64,
+    /// Random delay jitter.
+    pub jitter_ms: u64,
+    /// Cooldown after likely rate limits or blocks.
+    pub cooldown_secs: u64,
+}
 
-/// Default max retries for Browser Use bridge requests.
-pub const BROWSER_USE_DEFAULT_MAX_RETRIES: usize = 3;
+/// DuckDuckGo retry backoff configuration.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct DuckDuckGoBackoffConfig {
+    /// Maximum retry attempts after the first request.
+    pub max_retries: u8,
+    /// Initial retry backoff in milliseconds.
+    pub initial_backoff_ms: u64,
+    /// Maximum retry backoff in milliseconds.
+    pub max_backoff_ms: u64,
+}
 
-/// Default initial backoff delay for Browser Use bridge retries (seconds).
-pub const BROWSER_USE_DEFAULT_INITIAL_BACKOFF_SECS: u64 = 2;
+/// Get DuckDuckGo timeout from env or default.
+///
+/// Environment variable: `DUCKDUCKGO_TIMEOUT_SECS`
+#[must_use]
+pub fn get_duckduckgo_timeout() -> u64 {
+    parse_env_u64("DUCKDUCKGO_TIMEOUT_SECS").unwrap_or(DUCKDUCKGO_DEFAULT_TIMEOUT_SECS)
+}
 
-/// Default max backoff delay for Browser Use bridge retries (seconds).
-pub const BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS: u64 = 20;
+/// Get DuckDuckGo default region from env or default.
+///
+/// Environment variable: `DUCKDUCKGO_REGION`
+#[must_use]
+pub fn get_duckduckgo_region() -> String {
+    std::env::var("DUCKDUCKGO_REGION")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DUCKDUCKGO_DEFAULT_REGION.to_string())
+}
+
+/// Get DuckDuckGo news safe-search setting from env or default.
+///
+/// Environment variable: `DUCKDUCKGO_SAFE_SEARCH`
+#[must_use]
+pub fn get_duckduckgo_safe_search() -> bool {
+    parse_optional_env_bool("DUCKDUCKGO_SAFE_SEARCH").unwrap_or(DUCKDUCKGO_DEFAULT_SAFE_SEARCH)
+}
+
+/// Get DuckDuckGo browser config from env.
+///
+/// Environment variables: `DUCKDUCKGO_USER_AGENT`, `DUCKDUCKGO_PROXY_URL`, `DUCKDUCKGO_PROXY`.
+#[must_use]
+pub fn get_duckduckgo_browser_config() -> DuckDuckGoBrowserConfig {
+    DuckDuckGoBrowserConfig {
+        user_agent: std::env::var("DUCKDUCKGO_USER_AGENT")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        proxy_url: std::env::var("DUCKDUCKGO_PROXY_URL")
+            .or_else(|_| std::env::var("DUCKDUCKGO_PROXY"))
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    }
+}
+
+/// Get DuckDuckGo process-wide rate-limit config from env or defaults.
+#[must_use]
+pub fn get_duckduckgo_rate_limit_config() -> DuckDuckGoRateLimitConfig {
+    DuckDuckGoRateLimitConfig {
+        max_concurrent: parse_env_usize("DUCKDUCKGO_MAX_CONCURRENT")
+            .filter(|value| *value > 0)
+            .unwrap_or(DUCKDUCKGO_DEFAULT_MAX_CONCURRENT),
+        min_delay_ms: parse_env_u64("DUCKDUCKGO_MIN_DELAY_MS")
+            .unwrap_or(DUCKDUCKGO_DEFAULT_MIN_DELAY_MS),
+        jitter_ms: parse_env_u64("DUCKDUCKGO_JITTER_MS").unwrap_or(DUCKDUCKGO_DEFAULT_JITTER_MS),
+        cooldown_secs: parse_env_u64("DUCKDUCKGO_COOLDOWN_SECS")
+            .unwrap_or(DUCKDUCKGO_DEFAULT_COOLDOWN_SECS),
+    }
+}
+
+/// Get DuckDuckGo retry backoff config from env or defaults.
+#[must_use]
+pub fn get_duckduckgo_backoff_config() -> DuckDuckGoBackoffConfig {
+    DuckDuckGoBackoffConfig {
+        max_retries: parse_env_u8("DUCKDUCKGO_MAX_RETRIES")
+            .unwrap_or(DUCKDUCKGO_DEFAULT_MAX_RETRIES),
+        initial_backoff_ms: parse_env_u64("DUCKDUCKGO_INITIAL_BACKOFF_MS")
+            .unwrap_or(DUCKDUCKGO_DEFAULT_INITIAL_BACKOFF_MS),
+        max_backoff_ms: parse_env_u64("DUCKDUCKGO_MAX_BACKOFF_MS")
+            .unwrap_or(DUCKDUCKGO_DEFAULT_MAX_BACKOFF_MS),
+    }
+}
 
 /// Get SearXNG base URL from env.
 ///
@@ -2148,6 +2371,17 @@ pub const BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS: u64 = 20;
 #[must_use]
 pub fn get_searxng_url() -> Option<String> {
     std::env::var("SEARXNG_URL").ok().filter(|s| !s.is_empty())
+}
+
+/// Determine whether SearXNG tools should be registered.
+///
+/// Enabled when `SEARXNG_ENABLED` is truthy **or** when `SEARXNG_URL` is set.
+#[must_use]
+pub fn is_searxng_enabled() -> bool {
+    if let Some(enabled) = parse_optional_env_bool("SEARXNG_ENABLED") {
+        return enabled;
+    }
+    get_searxng_url().is_some()
 }
 
 /// Get SearXNG timeout from env or default.
@@ -2188,38 +2422,6 @@ pub fn get_searxng_rotation_engines() -> Vec<String> {
     }
 }
 
-/// Get Browser Use bridge base URL from env.
-///
-/// Environment variable: `BROWSER_USE_URL`
-#[must_use]
-pub fn get_browser_use_url() -> Option<String> {
-    std::env::var("BROWSER_USE_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Get Browser Use bridge timeout from env or default.
-///
-/// Environment variable: `BROWSER_USE_TIMEOUT_SECS`
-#[must_use]
-pub fn get_browser_use_timeout() -> u64 {
-    std::env::var("BROWSER_USE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_TIMEOUT_SECS)
-}
-
-/// Get max concurrent Browser Use requests from env or default.
-///
-/// Environment variable: `BROWSER_USE_MAX_CONCURRENT`
-#[must_use]
-pub fn get_browser_use_max_concurrent() -> usize {
-    std::env::var("BROWSER_USE_MAX_CONCURRENT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_MAX_CONCURRENT)
-}
-
 /// Get max concurrent OpenCode Go requests from env or default.
 ///
 /// Environment variable: `OPENCODE_GO_MAX_CONCURRENT`
@@ -2232,39 +2434,6 @@ pub fn get_opencode_go_max_concurrent() -> usize {
         .unwrap_or(OPENCODE_GO_DEFAULT_MAX_CONCURRENT)
 }
 
-/// Get max retries for Browser Use bridge requests from env or default.
-///
-/// Environment variable: `BROWSER_USE_MAX_RETRIES`
-#[must_use]
-pub fn get_browser_use_max_retries() -> usize {
-    std::env::var("BROWSER_USE_MAX_RETRIES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_MAX_RETRIES)
-}
-
-/// Get initial backoff delay for Browser Use bridge retries from env or default.
-///
-/// Environment variable: `BROWSER_USE_INITIAL_BACKOFF_SECS`
-#[must_use]
-pub fn get_browser_use_initial_backoff() -> u64 {
-    std::env::var("BROWSER_USE_INITIAL_BACKOFF_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_INITIAL_BACKOFF_SECS)
-}
-
-/// Get max backoff delay for Browser Use bridge retries from env or default.
-///
-/// Environment variable: `BROWSER_USE_MAX_BACKOFF_SECS`
-#[must_use]
-pub fn get_browser_use_max_backoff() -> u64 {
-    std::env::var("BROWSER_USE_MAX_BACKOFF_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(BROWSER_USE_DEFAULT_MAX_BACKOFF_SECS)
-}
-
 fn parse_optional_env_bool(name: &str) -> Option<bool> {
     std::env::var(name)
         .ok()
@@ -2273,6 +2442,24 @@ fn parse_optional_env_bool(name: &str) -> Option<bool> {
             "0" | "false" | "no" | "off" => Some(false),
             _ => None,
         })
+}
+
+fn parse_env_u64(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+}
+
+fn parse_env_u8(name: &str) -> Option<u8> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+}
+
+fn parse_env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
 }
 
 fn parse_optional_env_f32(name: &str) -> Option<f32> {
@@ -2293,26 +2480,12 @@ pub fn is_tavily_enabled() -> bool {
     })
 }
 
-/// Determine whether SearXNG tools should be registered.
+/// Determine whether DuckDuckGo tools should be registered.
 ///
-/// Environment variable: `SEARXNG_ENABLED`
+/// Environment variable: `DUCKDUCKGO_ENABLED`
 #[must_use]
-pub fn is_searxng_enabled() -> bool {
-    parse_optional_env_bool("SEARXNG_ENABLED")
-        .unwrap_or_else(|| get_searxng_url().is_some_and(|value| !value.trim().is_empty()))
-}
-
-/// Determine whether Browser Use tools should be registered.
-///
-/// Controlled by code: returns true if `BROWSER_USE_URL` is set and non-empty.
-///
-/// NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
-/// price-per-token. When such a model is available, re-enable by setting
-/// `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`).
-/// See `docs/browser-use.md` for current model recommendations.
-#[must_use]
-pub fn is_browser_use_enabled() -> bool {
-    get_browser_use_url().is_some_and(|value| !value.trim().is_empty())
+pub fn is_duckduckgo_enabled() -> bool {
+    parse_optional_env_bool("DUCKDUCKGO_ENABLED").unwrap_or(true)
 }
 
 // LLM HTTP client configuration

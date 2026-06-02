@@ -46,7 +46,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
         <img width="977" height="762" alt="image" src="https://github.com/user-attachments/assets/1ffb66b7-559b-453f-9330-fbe27ccee90e" />
 
     *   **☁️ File Hosting:** Upload files from sandbox to public hosting with short retention time.
-    *   **Web Search and Data Extraction:** SearXNG (self-hosted, default) and Tavily (API) handle discovery; local `web_markdown` fetches one known URL as Markdown.
+    *   **Web Search and Data Extraction:** DuckDuckGo and Tavily handle discovery; local `web_markdown` fetches one known URL as Markdown.
     *   **🔗 Hooks System:** Extensible architecture for intercepting and customizing agent behavior:
         - Completion Check Hook - validates task completion
         - Tool Access Policy - enforces profile-level tool allowlists and blocklists
@@ -99,9 +99,8 @@ The bot supports **6 main providers** for Agent Mode with tool calling:
 *   **Sandbox Broker** — Unix socket broker for Docker access isolation in Docker Compose (`SANDBOX_BACKEND=broker`)
 *   **Bubblewrap** — optional bare-host sandbox backend without Docker daemon/socket access (`SANDBOX_BACKEND=bwrap`, see `docs/bwrap-sandbox.md`)
 *   **Tavily API** — optional web search provider (`TAVILY_API_KEY`)
-*   **SearXNG** — self-hosted search engine, runs as Docker sidecar (`SEARXNG_URL`)
+*   **DuckDuckGo** — built-in public web/news discovery provider (`DUCKDUCKGO_ENABLED`)
 *   **Local Web Markdown** — lightweight single-URL HTTP fetch with HTML-to-Markdown conversion and response/output limits
-*   **Browser Use Bridge** — self-hosted browser automation sidecar for high-level browser tasks (`BROWSER_USE_URL`) — **currently disabled**, requires a quality vision-capable agent model at a reasonable price-per-token
 *   **Kokoro TTS Server** — optional for English voice message synthesis (`KOKORO_TTS_URL`)
 *   **Silero TTS Server** — optional for Russian voice message synthesis (`SILERO_TTS_URL`)
 </details>
@@ -167,6 +166,10 @@ This path is for the prebuilt `x86_64` release artifact built with the embedded 
    OXIDE_R2_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com
    OXIDE_R2_BUCKET_NAME=your_bucket
    OXIDE_R2_REGION=auto
+
+   # Use a bucket-scoped token where possible.
+   # For Cloudflare R2, Object Read & Write on the target bucket is sufficient.
+   # Account-wide admin/list-all-buckets permissions are not required.
 
    OPENCODE_GO_API_KEY=YOUR_OPENCODE_GO_API_KEY
    OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
@@ -271,7 +274,7 @@ REMINDER_SILENT_NO_CHANGE_ENABLED=true # Watch/ward reminders: stay silent on no
 
 # Agent Configuration
 AGENT_TIMEOUT_SECS=300          # Agent execution timeout
-SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / SEARXNG_ENABLED
+SEARCH_PROVIDER=tavily          # [DEPRECATED] use TAVILY_ENABLED / DUCKDUCKGO_ENABLED
 DEBUG_MODE=false                # Debug logging mode
 
 # Cloudflare R2 (S3)
@@ -291,20 +294,11 @@ OPENCODE_GO_API_KEY=...         # OpenCode Go subscription provider
 OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
 MINIMAX_API_KEY=...             # MiniMax Provider (Claude SDK-compatible)
 TAVILY_API_KEY=...             # Tavily web search in Agent mode (optional, enable via TAVILY_ENABLED=true)
-SEARXNG_URL=http://127.0.0.1:8081  # SearXNG self-hosted search (auto-enabled when set)
-SEARXNG_ENABLED=true            # Explicit toggle for SearXNG provider
-# Browser Use self-hosted bridge (disabled: requires a quality vision-capable agent model)
-# BROWSER_USE_URL=http://127.0.0.1:8002
-# BROWSER_USE_BRIDGE_MAX_PROFILES_PER_SCOPE=3 # Optional retained reusable profiles per topic/context scope
-# BROWSER_USE_BRIDGE_PROFILE_IDLE_TTL_SECS=604800 # Optional idle/stale reusable profile TTL in the bridge
-# BROWSER_USE_BRIDGE_BROWSER_READY_RETRIES=2 # Retry early transient browser readiness failures in the bridge
-# BROWSER_USE_BRIDGE_BROWSER_READY_RETRY_DELAY_MS=750 # Delay between bridge readiness retries in milliseconds
-# BROWSER_USE_MODEL_ID="GLM-4.6V" # Browser Use dedicated route
-# BROWSER_USE_MODEL_PROVIDER="zai" # Browser Use dedicated provider
+DUCKDUCKGO_ENABLED=true        # DuckDuckGo web/news search (no API key or sidecar required)
+DUCKDUCKGO_MIN_DELAY_MS=2500   # Process-wide DDG throttle
+DUCKDUCKGO_JITTER_MS=1500      # Random DDG throttle jitter
 ```
 </details>
-
-For Browser Use task execution, Oxide sends the configured dedicated or inherited route to the bridge server-to-server. The bridge stays disabled by default until a cost-effective high-quality vision-agent model is available.
 
 ## Model Configuration
 
@@ -377,24 +371,6 @@ AGENT_MODEL_ROUTES__1__WEIGHT=3
 ```
 
 The agent runtime skips unsupported NVIDIA NIM routes before tool-enabled execution. Structured output is enabled only for explicitly approved model routes.
-
-</details>
-
-<details>
-<summary>🌐 Browser Use default route (disabled)</summary>
-
-> **NOTE**: Browser Use is currently disabled. It requires a quality vision-capable agent model
-> at a reasonable price-per-token. To re-enable, set `BROWSER_USE_URL` and optionally
-> `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`. See `docs/browser-use.md`.
-
-When enabled, Browser Use can be pinned to a dedicated vision-capable route (e.g. `zai / GLM-4.6V` or `openrouter / google/gemini-3-flash-preview`) even when main/sub-agent stay on a different route:
-
-```dotenv
-BROWSER_USE_MODEL_ID="GLM-4.6V"
-BROWSER_USE_MODEL_PROVIDER="zai"
-```
-
-Browser Use prefers this dedicated route over the currently active main/sub-agent route and falls back to the inherited route only when the dedicated override is absent.
 
 </details>
 
@@ -587,7 +563,7 @@ Extensible architecture for personalizing agent behavior:
 ### 🛠️ Tool Providers
 The agent uses a modular provider system, each offering a specialized set of tools:
 - **Sandbox Provider** (`sandbox.rs`) — code execution, file read/write, shell commands
-- **SearXNG Provider** (`searxng/`) — self-hosted web search via JSON API
+- **DuckDuckGo Provider** (`duckduckgo/`) — public web/news URL discovery
 - **Tavily Provider** (`tavily.rs`) — web search and data extraction
 - **WebFetch Markdown Provider** (`webfetch_md.rs`) — single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 - **Todos Provider** (`todos.rs`) — task list management for long-term planning
@@ -665,12 +641,6 @@ The default Docker Compose deployment uses the broker backend. Bare-host Bubblew
    - Runs as user 0 (privileged for Docker access)
    - Mounts: `/var/run/docker.sock:/var/run/docker.sock` (only sandboxd has Docker access)
    - Socket: `/run/sandboxd/sandboxd.sock`
-
-4. **searxng** (self-hosted search)
-    - Image: `searxng/searxng:2026.3.24-054174a19`
-    - Port: `127.0.0.1:8081:8080`
-    - Health check: `wget -qO- http://localhost:8080/healthz`
-    - Config: `docker/searxng/settings.yml`
 
 ### Sandbox Broker Protocol
 - Unix socket communication with binary serialization (bincode)
@@ -804,13 +774,13 @@ config/                         # Configuration files (default.yaml, local.yaml,
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `tavily` | Enable Tavily web search provider | Enabled |
-| `searxng` | Enable SearXNG self-hosted search provider | Enabled |
+| `tool-duckduckgo` | Enable DuckDuckGo web/news search provider | Enabled |
 | `jira` | Enable Jira MCP integration | Disabled |
 | `mattermost` | Enable Mattermost MCP integration | Disabled |
 
 Build with features:
 ```bash
-cargo build --release --features searxng,jira,mattermost
+cargo build --release --no-default-features --features profile-full
 ```
 
 ## License

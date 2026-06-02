@@ -43,6 +43,7 @@ pub(super) struct PreparedExecution {
     pub(super) tool_runtime_registry: Arc<RuntimeToolRegistry>,
     pub(super) tools: Vec<ToolDefinition>,
     pub(super) system_prompt: String,
+    pub(super) date_suffix: String,
     pub(super) messages: Vec<Message>,
     pub(super) runner_config: AgentRunnerConfig,
 }
@@ -67,6 +68,7 @@ impl PreparedExecution {
             AgentRunnerContextBase {
                 task,
                 system_prompt: &self.system_prompt,
+                date_suffix: &self.date_suffix,
                 tools: &self.tools,
                 progress_tx,
                 todos_arc: &self.todos_arc,

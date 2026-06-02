@@ -106,8 +106,10 @@ impl Default for AgentRunnerConfig {
 pub struct AgentRunnerContext<'a> {
     /// Original task prompt.
     pub task: &'a str,
-    /// System prompt for the model.
+    /// System prompt for the model (cacheable base, without date/time).
     pub system_prompt: &'a str,
+    /// Volatile date/time suffix appended after stable system messages.
+    pub date_suffix: &'a str,
     /// Available tools for the model.
     pub tools: &'a [ToolDefinition],
     /// Optional typed runtime registry for v1 async tool execution.
@@ -137,6 +139,7 @@ pub struct AgentRunnerContext<'a> {
 pub(crate) struct AgentRunnerContextBase<'a> {
     pub(crate) task: &'a str,
     pub(crate) system_prompt: &'a str,
+    pub(crate) date_suffix: &'a str,
     pub(crate) tools: &'a [ToolDefinition],
     pub(crate) progress_tx: Option<&'a tokio::sync::mpsc::Sender<AgentEvent>>,
     pub(crate) todos_arc: &'a Arc<Mutex<TodoList>>,
@@ -155,6 +158,7 @@ impl<'a> AgentRunnerContext<'a> {
         Self {
             task: base.task,
             system_prompt: base.system_prompt,
+            date_suffix: base.date_suffix,
             tools: base.tools,
             tool_runtime_registry: None,
             progress_tx: base.progress_tx,

@@ -326,6 +326,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Какие инструменты тебе доступны?",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -366,6 +367,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "tool runtime missing",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -433,6 +435,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "Inspect token metrics",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -455,6 +458,7 @@ mod tests {
                 prompt_tokens: 9_000,
                 completion_tokens: 512,
                 total_tokens: 9_512,
+                ..TokenUsage::default()
             }),
         };
 

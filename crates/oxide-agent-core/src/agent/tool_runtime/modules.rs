@@ -20,18 +20,18 @@ use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 #[cfg(feature = "integration-ssh-mcp")]
 use std::sync::OnceLock;
-use tokio::sync::{mpsc::Sender, Mutex, Semaphore};
+use tokio::sync::{mpsc::Sender, Mutex};
 
 #[cfg(feature = "integration-ssh-mcp")]
 use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::providers::AgentsMdProvider;
-#[cfg(feature = "tool-browser-use")]
-use crate::agent::providers::BrowserUseProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::providers::CompressionProvider;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::providers::DelegationProvider;
+#[cfg(feature = "tool-duckduckgo")]
+use crate::agent::providers::DuckDuckGoProvider;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::providers::FileHosterProvider;
 #[cfg(any(
@@ -164,8 +164,6 @@ pub struct ToolModuleContext {
     sandbox_runtime: Arc<SandboxRuntime>,
     llm_client: Arc<LlmClient>,
     settings: Arc<AgentSettings>,
-    browser_use_profile_scope: Option<String>,
-    browser_use_semaphore: Option<Arc<Semaphore>>,
     #[cfg(feature = "tool-agents-md")]
     agents_md_context: Option<AgentsMdModuleContext>,
     #[cfg(feature = "manager-control-plane")]
@@ -193,10 +191,6 @@ pub struct ToolModuleContextParts {
     pub llm_client: Arc<LlmClient>,
     /// Shared agent settings.
     pub settings: Arc<AgentSettings>,
-    /// Optional Browser Use profile scope.
-    pub browser_use_profile_scope: Option<String>,
-    /// Optional Browser Use concurrency limiter.
-    pub browser_use_semaphore: Option<Arc<Semaphore>>,
     /// Optional AGENTS.md context.
     #[cfg(feature = "tool-agents-md")]
     pub agents_md_context: Option<AgentsMdModuleContext>,
@@ -229,8 +223,6 @@ impl ToolModuleContext {
             sandbox_runtime: parts.sandbox_runtime,
             llm_client: parts.llm_client,
             settings: parts.settings,
-            browser_use_profile_scope: parts.browser_use_profile_scope,
-            browser_use_semaphore: parts.browser_use_semaphore,
             #[cfg(feature = "tool-agents-md")]
             agents_md_context: parts.agents_md_context,
             #[cfg(feature = "manager-control-plane")]
@@ -275,18 +267,6 @@ impl ToolModuleContext {
     #[must_use]
     pub fn settings(&self) -> Arc<AgentSettings> {
         Arc::clone(&self.settings)
-    }
-
-    /// Optional Browser Use profile scope derived from topic/reminder context.
-    #[must_use]
-    pub fn browser_use_profile_scope(&self) -> Option<String> {
-        self.browser_use_profile_scope.clone()
-    }
-
-    /// Optional Browser Use concurrency limiter.
-    #[must_use]
-    pub fn browser_use_semaphore(&self) -> Option<Arc<Semaphore>> {
-        self.browser_use_semaphore.clone()
     }
 
     /// Optional context for topic-scoped AGENTS.md tools.
@@ -422,11 +402,6 @@ impl DelegationToolModule {
                 agents_md.topic_id,
             );
         }
-
-        if let Some(profile_scope) = ctx.browser_use_profile_scope() {
-            provider = provider.with_browser_use_profile_scope(profile_scope);
-        }
-
         provider
     }
 }
@@ -629,63 +604,6 @@ impl ToolModule for MediaVideoToolModule {
     }
 }
 
-/// Capability module for the Browser Use sidecar tools.
-#[cfg(feature = "tool-browser-use")]
-pub struct BrowserUseToolModule;
-
-#[cfg(feature = "tool-browser-use")]
-impl BrowserUseToolModule {
-    fn provider(&self, ctx: &ToolModuleContext) -> Option<BrowserUseProvider> {
-        // NOTE: Browser Use is disabled until a quality vision-capable agent model
-        // is available at a reasonable price-per-token. To re-enable, set
-        // `BROWSER_USE_URL` (and optionally `BROWSER_USE_MODEL_ID` /
-        // `BROWSER_USE_MODEL_PROVIDER`). See `docs/browser-use.md`.
-        if !crate::config::is_browser_use_enabled() {
-            return None;
-        }
-
-        match crate::config::get_browser_use_url() {
-            Some(url) if !url.trim().is_empty() => {
-                let mut provider = if let Some(semaphore) = ctx.browser_use_semaphore() {
-                    BrowserUseProvider::new_with_semaphore(&url, ctx.settings(), semaphore)
-                } else {
-                    BrowserUseProvider::new(&url, ctx.settings())
-                };
-                if let Some(profile_scope) = ctx.browser_use_profile_scope() {
-                    provider = provider.with_profile_scope(profile_scope);
-                }
-                provider = provider.with_sandbox_runtime(ctx.sandbox_runtime());
-                Some(provider)
-            }
-            Some(_) => {
-                tracing::warn!(
-                    "Browser Use enabled but BROWSER_USE_URL is empty; provider not registered"
-                );
-                None
-            }
-            None => {
-                tracing::warn!(
-                    "Browser Use enabled but BROWSER_USE_URL is not set; provider not registered"
-                );
-                None
-            }
-        }
-    }
-}
-
-#[cfg(feature = "tool-browser-use")]
-impl ToolModule for BrowserUseToolModule {
-    fn module_id(&self) -> ModuleId {
-        ModuleId::new("tool/browser-use")
-    }
-
-    fn tool_runtime_executors(&self, ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        self.provider(ctx)
-            .map(|provider| Arc::new(provider).tool_runtime_executors())
-            .unwrap_or_default()
-    }
-}
-
 /// Capability module for Jira MCP tools.
 #[cfg(feature = "integration-mcp-jira")]
 pub struct JiraMcpToolModule;
@@ -849,6 +767,40 @@ impl TavilyToolModule {
 impl ToolModule for TavilyToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/tavily")
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
+    }
+}
+
+/// Capability module for DuckDuckGo web and news search.
+#[cfg(feature = "tool-duckduckgo")]
+pub struct DuckDuckGoToolModule;
+
+#[cfg(feature = "tool-duckduckgo")]
+impl DuckDuckGoToolModule {
+    fn provider(&self) -> Option<DuckDuckGoProvider> {
+        if !crate::config::is_duckduckgo_enabled() {
+            return None;
+        }
+
+        match DuckDuckGoProvider::new() {
+            Ok(provider) => Some(provider),
+            Err(error) => {
+                tracing::warn!(error = %error, "DuckDuckGo provider initialization failed");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(feature = "tool-duckduckgo")]
+impl ToolModule for DuckDuckGoToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/duckduckgo")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

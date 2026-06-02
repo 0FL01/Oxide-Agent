@@ -160,6 +160,7 @@ impl BwrapImageBootstrapConfig {
         fs::create_dir_all(&rootfs)
             .with_context(|| format!("Failed to create rootfs dir {}", rootfs.display()))?;
         extract_bootstrap_tarball(&tarball, &rootfs, url)?;
+        fix_absolute_symlinks(&rootfs)?;
         prepare_bootstrap_rootfs(&rootfs)?;
         write_bootstrap_image_metadata(self, staging_dir, url, expected_sha256)?;
         fs::remove_file(&tarball)
@@ -344,6 +345,92 @@ fn prepare_bootstrap_rootfs(rootfs: &Path) -> Result<()> {
         bail!("Downloaded bwrap rootfs is missing /bin/sh.");
     }
     Ok(())
+}
+
+/// Rewrite absolute symlinks inside the rootfs to use relative targets.
+///
+/// Rootfs tarballs (e.g. Alpine minirootfs) ship symlinks like
+/// `bin/sh -> /bin/busybox`.  When extracted to a subdirectory the
+/// absolute target resolves against the **host** filesystem, producing
+/// a broken symlink that fails `Path::is_file()`.  Since the rootfs
+/// is eventually bind-mounted as `/` inside bwrap, relative paths work
+/// in both contexts.
+fn fix_absolute_symlinks(rootfs: &Path) -> Result<()> {
+    fix_absolute_symlinks_recursive(rootfs, rootfs)
+}
+
+fn fix_absolute_symlinks_recursive(rootfs: &Path, dir: &Path) -> Result<()> {
+    let entries: Vec<_> = fs::read_dir(dir)
+        .with_context(|| format!("Failed to read rootfs dir {}", dir.display()))?
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("Failed to iterate rootfs dir {}", dir.display()))?;
+
+    for entry in &entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("Failed to read file type for {}", path.display()))?;
+
+        if file_type.is_dir() {
+            fix_absolute_symlinks_recursive(rootfs, &path)?;
+        } else if file_type.is_symlink() {
+            let target = fs::read_link(&path)
+                .with_context(|| format!("Failed to read symlink {}", path.display()))?;
+            if !target.is_absolute() {
+                continue;
+            }
+            // Resolve the absolute target relative to rootfs.
+            let relative_component = target
+                .strip_prefix(std::path::Path::new("/"))
+                .unwrap_or(&target);
+            let target_in_rootfs = rootfs.join(relative_component);
+            if !target_in_rootfs.exists() {
+                // Target does not exist inside this rootfs; leave as-is.
+                continue;
+            }
+            let link_dir = path.parent().unwrap_or(rootfs);
+            let relative_target = make_relative_path(link_dir, &target_in_rootfs)?;
+            fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove old symlink {}", path.display()))?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&relative_target, &path).with_context(|| {
+                format!(
+                    "Failed to create relative symlink {} -> {}",
+                    path.display(),
+                    relative_target.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Compute a relative path from `from` (a directory) to `to`.
+fn make_relative_path(from: &Path, to: &Path) -> Result<PathBuf> {
+    let from = from
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize {}", from.display()))?;
+    let to = to
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize {}", to.display()))?;
+
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+
+    let common = from_components
+        .iter()
+        .zip(to_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut result = PathBuf::new();
+    for _ in common..from_components.len() {
+        result.push("..");
+    }
+    for component in &to_components[common..] {
+        result.push(component);
+    }
+    Ok(result)
 }
 
 fn write_bootstrap_image_metadata(

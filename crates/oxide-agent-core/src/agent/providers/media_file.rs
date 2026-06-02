@@ -328,42 +328,6 @@ impl MediaFileProvider {
         }
     }
 
-    fn browser_use_session_from_screenshot_path(path: &str) -> Option<&str> {
-        let normalized = path.trim();
-        let rest = normalized.strip_prefix("/workspace/browser_use/")?;
-        let (session_id, file_name) = rest.split_once('/')?;
-        if session_id.is_empty()
-            || file_name.is_empty()
-            || !file_name.starts_with("screenshot-")
-            || !file_name.ends_with(".png")
-        {
-            return None;
-        }
-        Some(session_id)
-    }
-
-    async fn read_browser_use_latest_screenshot(
-        &self,
-        original_path: &str,
-    ) -> Result<Option<(String, Vec<u8>)>> {
-        let Some(session_id) = Self::browser_use_session_from_screenshot_path(original_path) else {
-            return Ok(None);
-        };
-
-        let stable_path = format!("/workspace/browser_use/{session_id}/latest.png");
-        match self.fileops.read_file(&stable_path).await {
-            Ok(bytes) => {
-                warn!(
-                    requested_path = %original_path,
-                    fallback_path = %stable_path,
-                    "Browser Use screenshot path missing, using stable latest screenshot"
-                );
-                Ok(Some((stable_path, bytes)))
-            }
-            Err(_) => Ok(None),
-        }
-    }
-
     async fn handle_transcribe_audio_file(&self, arguments: &str) -> Result<String> {
         let args: AudioFileArgs = serde_json::from_str(arguments)?;
         let (resolved_path, audio_bytes) = self.read_media_file(&args.path).await?;
@@ -393,21 +357,9 @@ impl MediaFileProvider {
 
     async fn handle_describe_image_file(&self, arguments: &str) -> Result<String> {
         let args: ImageFileArgs = serde_json::from_str(arguments)?;
-        let (resolved_path, image_bytes, cleanup_path) = match self
+        let (resolved_path, image_bytes, cleanup_path) = self
             .read_media_source(&args.path, Some(MediaKind::Image))
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                if let Some((fallback_path, bytes)) =
-                    self.read_browser_use_latest_screenshot(&args.path).await?
-                {
-                    (fallback_path, bytes, None)
-                } else {
-                    return Err(error);
-                }
-            }
-        };
+            .await?;
         let prompt = args.prompt.unwrap_or_else(|| {
             "Describe this image in detail for an AI agent. Include all important details, text, objects and their locations.".to_string()
         });
@@ -749,26 +701,6 @@ mod tests {
         assert_eq!(infer_video_mime_type("movie.webm"), "video/webm");
         assert_eq!(infer_video_mime_type("clip.mov"), "video/mov");
         assert_eq!(infer_video_mime_type("clip.bin"), "video/mp4");
-    }
-
-    #[test]
-    fn browser_use_session_parses_valid_screenshot_path() {
-        let session_id = MediaFileProvider::browser_use_session_from_screenshot_path(
-            "/workspace/browser_use/browser-use-123/screenshot-20260402T163159020465Z.png",
-        );
-        assert_eq!(session_id, Some("browser-use-123"));
-    }
-
-    #[test]
-    fn browser_use_session_rejects_non_screenshot_paths() {
-        assert!(MediaFileProvider::browser_use_session_from_screenshot_path(
-            "/workspace/browser_use/browser-use-123/latest.png"
-        )
-        .is_none());
-        assert!(MediaFileProvider::browser_use_session_from_screenshot_path(
-            "/workspace/other/screenshot-20260402T163159020465Z.png"
-        )
-        .is_none());
     }
 
     #[test]

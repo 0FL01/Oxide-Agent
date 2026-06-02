@@ -773,6 +773,12 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
             .or_else(|| value.get("completion_tokens"))?
             .as_u64()? as u32,
         total_tokens: value.get("total_tokens")?.as_u64()? as u32,
+        cached_tokens: value
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32),
+        cache_creation_tokens: None,
     })
 }
 

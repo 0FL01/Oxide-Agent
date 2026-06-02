@@ -9,7 +9,7 @@ use super::{
 use crate::agent::memory::{
     AgentMemory, AgentMessage, CompactedHistoryReplacementError, CompactedHistoryReplacementOutcome,
 };
-use crate::config::ModelInfo;
+use crate::config::{ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
 use crate::llm::LlmClient;
 use std::sync::Arc;
 use std::time::Duration;
@@ -186,11 +186,14 @@ fn bounded_summary_source_messages(
         .map(|summary| crate::agent::compaction::count_tokens_cached(&summary.content))
         .unwrap_or(0);
     let route_window = (route.context_window_tokens as usize).max(8_000);
-    let output_budget = (route.max_output_tokens as usize).max(512);
+    let output_budget = (route
+        .max_output_tokens
+        .min(AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS) as usize)
+        .max(512);
     let source_budget = route_window
         .saturating_sub(output_budget)
         .saturating_sub(2_000)
-        .clamp(4_000, 32_000)
+        .clamp(4_000, 180_000)
         .saturating_sub(previous_summary_tokens.min(8_000));
 
     let mut selected_indices = std::collections::BTreeSet::new();

@@ -30,12 +30,12 @@ pub use invocation::{
 pub use modules::AgentsMdModuleContext;
 #[cfg(feature = "tool-agents-md")]
 pub use modules::AgentsMdToolModule;
-#[cfg(feature = "tool-browser-use")]
-pub use modules::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-delegation")]
 pub use modules::DelegationToolModule;
+#[cfg(feature = "tool-duckduckgo")]
+pub use modules::DuckDuckGoToolModule;
 #[cfg(feature = "tool-file-delivery")]
 pub use modules::FileDeliveryToolModule;
 #[cfg(feature = "integration-mcp-jira")]

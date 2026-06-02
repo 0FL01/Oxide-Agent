@@ -42,11 +42,11 @@ pub mod ytdlp;
 #[cfg(feature = "tool-tavily")]
 pub mod tavily;
 
+#[cfg(feature = "tool-duckduckgo")]
+pub mod duckduckgo;
+
 #[cfg(feature = "tool-searxng")]
 pub mod searxng;
-
-#[cfg(feature = "tool-browser-use")]
-pub mod browser_use;
 
 #[cfg(feature = "integration-mcp-jira")]
 pub mod jira_mcp;
@@ -108,11 +108,11 @@ pub use ytdlp::YtdlpProvider;
 #[cfg(feature = "tool-tavily")]
 pub use tavily::TavilyProvider;
 
+#[cfg(feature = "tool-duckduckgo")]
+pub use duckduckgo::DuckDuckGoProvider;
+
 #[cfg(feature = "tool-searxng")]
 pub use searxng::SearxngProvider;
-
-#[cfg(feature = "tool-browser-use")]
-pub use browser_use::BrowserUseProvider;
 
 #[cfg(feature = "integration-mcp-jira")]
 pub use jira_mcp::{JiraMcpConfig, JiraMcpProvider};

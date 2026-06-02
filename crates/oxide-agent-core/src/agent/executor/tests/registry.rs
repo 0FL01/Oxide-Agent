@@ -3,6 +3,8 @@ use super::*;
 use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use crate::config::{ModelInfo, ModuleRuntimeConfig};
 #[cfg(feature = "tool-sandbox-exec")]
+use crate::storage::MockStorageProvider;
+#[cfg(feature = "tool-sandbox-exec")]
 use std::collections::HashSet;
 
 #[cfg(feature = "tool-wiki-memory")]
@@ -65,7 +67,7 @@ fn registry_topic_infra_config() -> crate::storage::TopicInfraConfigRecord {
 }
 
 #[test]
-fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
+fn v1_tool_runtime_model_detection_accepts_opencode_go_and_zen_routes() {
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-v4-flash".to_string(),
@@ -76,7 +78,7 @@ fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
 
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
-            id: "opencode-go/deepseek_v4_flash".to_string(),
+            id: "opencode-go/mimo-v2.5".to_string(),
             provider: "OpenCode Go".to_string(),
             ..ModelInfo::default()
         }
@@ -84,15 +86,39 @@ fn v1_tool_runtime_model_detection_accepts_opencode_deepseek_route() {
 
     assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
-            id: "deepseek-v4-flash".to_string(),
+            id: "deepseek-v4-pro".to_string(),
             provider: "llm-provider/opencode-go".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "kimi-k2.6".to_string(),
+            provider: "opencode-go".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "opencode-zen/mimo-v2.5-free".to_string(),
+            provider: "opencode-zen".to_string(),
+            ..ModelInfo::default()
+        }
+    ));
+
+    assert!(AgentExecutor::v1_tool_runtime_enabled_for_model(
+        &ModelInfo {
+            id: "deepseek-v4-flash-free".to_string(),
+            provider: "llm-provider/opencode-zen".to_string(),
             ..ModelInfo::default()
         }
     ));
 }
 
 #[test]
-fn v1_tool_runtime_model_detection_rejects_other_routes() {
+fn v1_tool_runtime_model_detection_rejects_non_opencode_routes() {
     assert!(!AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-v4-flash".to_string(),
@@ -104,7 +130,7 @@ fn v1_tool_runtime_model_detection_rejects_other_routes() {
     assert!(!AgentExecutor::v1_tool_runtime_enabled_for_model(
         &ModelInfo {
             id: "deepseek-chat".to_string(),
-            provider: "opencode-go".to_string(),
+            provider: "openrouter".to_string(),
             ..ModelInfo::default()
         }
     ));
@@ -375,42 +401,6 @@ fn typed_runtime_registry_exposes_media_tools() {
     }
 }
 
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn typed_runtime_registry_exposes_browser_use_tools_when_enabled() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-    std::env::set_var("BROWSER_USE_ENABLED", "true");
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry.tool_names();
-
-    for tool_name in [
-        "browser_use_run_task",
-        "browser_use_get_session",
-        "browser_use_close_session",
-        "browser_use_extract_content",
-        "browser_use_screenshot",
-    ] {
-        assert!(
-            tool_names.iter().any(|name| name == tool_name),
-            "missing typed runtime Browser Use tool: {tool_name}"
-        );
-        assert_eq!(
-            tool_names.iter().filter(|name| *name == tool_name).count(),
-            1,
-            "expected one typed registration for {tool_name}"
-        );
-    }
-
-    std::env::remove_var("BROWSER_USE_ENABLED");
-    std::env::remove_var("BROWSER_USE_URL");
-}
-
 #[cfg(feature = "tool-sandbox-exec")]
 #[test]
 fn typed_runtime_registry_applies_execution_profile_tool_policy() {
@@ -676,67 +666,6 @@ fn typed_runtime_registry_skips_disabled_ytdlp_module() {
     assert!(tool_names.contains("write_todos"));
 }
 
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn typed_runtime_registry_skips_disabled_browser_use_module() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-    std::env::set_var("BROWSER_USE_ENABLED", "true");
-
-    let settings = Arc::new(AgentSettings {
-        modules: std::collections::BTreeMap::from([(
-            "tool/browser-use".to_string(),
-            ModuleRuntimeConfig::disabled(),
-        )]),
-        ..AgentSettings::default()
-    });
-    let llm = Arc::new(LlmClient::new(settings.as_ref()));
-    let session = AgentSession::new(9_i64.into());
-    let executor = AgentExecutor::new(llm, session, settings);
-
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(!tool_names.contains("browser_use_run_task"));
-    assert!(!tool_names.contains("browser_use_get_session"));
-    assert!(!tool_names.contains("browser_use_close_session"));
-    assert!(!tool_names.contains("browser_use_extract_content"));
-    assert!(!tool_names.contains("browser_use_screenshot"));
-    assert!(tool_names.contains("write_todos"));
-
-    std::env::remove_var("BROWSER_USE_ENABLED");
-    std::env::remove_var("BROWSER_USE_URL");
-}
-
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn typed_runtime_registry_skips_browser_use_tools_when_disabled() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    let executor = build_executor();
-    let registry =
-        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
-    let tool_names = registry
-        .tool_names()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    assert!(!tool_names.contains("browser_use_run_task"));
-    assert!(!tool_names.contains("browser_use_get_session"));
-    assert!(!tool_names.contains("browser_use_close_session"));
-    assert!(!tool_names.contains("browser_use_extract_content"));
-    assert!(!tool_names.contains("browser_use_screenshot"));
-    assert!(tool_names.contains("write_todos"));
-}
-
 #[cfg(feature = "tool-delegation")]
 #[test]
 fn typed_runtime_registry_skips_disabled_delegation_module() {
@@ -799,6 +728,40 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
     std::env::remove_var("TAVILY_API_KEY");
 }
 
+#[cfg(feature = "tool-duckduckgo")]
+#[test]
+fn typed_runtime_registry_skips_disabled_duckduckgo_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("DUCKDUCKGO_ENABLED", "true");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/duckduckgo".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("duckduckgo_search"));
+    assert!(!tool_names.contains("duckduckgo_news"));
+    #[cfg(feature = "tool-todos")]
+    assert!(tool_names.contains("write_todos"));
+
+    std::env::remove_var("DUCKDUCKGO_ENABLED");
+}
+
 #[cfg(feature = "tool-searxng")]
 #[test]
 fn typed_runtime_registry_skips_disabled_searxng_module() {
@@ -827,13 +790,14 @@ fn typed_runtime_registry_skips_disabled_searxng_module() {
         .collect::<std::collections::BTreeSet<_>>();
 
     assert!(!tool_names.contains("searxng_search"));
+    #[cfg(feature = "tool-todos")]
     assert!(tool_names.contains("write_todos"));
 
     std::env::remove_var("SEARXNG_ENABLED");
     std::env::remove_var("SEARXNG_URL");
 }
 
-#[cfg(all(feature = "tool-tavily", feature = "tool-searxng"))]
+#[cfg(all(feature = "tool-tavily", feature = "tool-duckduckgo"))]
 #[test]
 fn typed_runtime_registry_registers_search_modules_once() {
     let _guard = crate::config::test_env_mutex()
@@ -841,8 +805,7 @@ fn typed_runtime_registry_registers_search_modules_once() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     std::env::set_var("TAVILY_API_KEY", "dummy-key");
     std::env::set_var("TAVILY_ENABLED", "true");
-    std::env::set_var("SEARXNG_URL", "http://searxng:8080");
-    std::env::set_var("SEARXNG_ENABLED", "true");
+    std::env::set_var("DUCKDUCKGO_ENABLED", "true");
 
     let executor = build_executor();
     let registry =
@@ -866,13 +829,19 @@ fn typed_runtime_registry_registers_search_modules_once() {
     assert_eq!(
         tool_names
             .iter()
-            .filter(|name| *name == "searxng_search")
+            .filter(|name| *name == "duckduckgo_search")
+            .count(),
+        1
+    );
+    assert_eq!(
+        tool_names
+            .iter()
+            .filter(|name| *name == "duckduckgo_news")
             .count(),
         1
     );
 
-    std::env::remove_var("SEARXNG_ENABLED");
-    std::env::remove_var("SEARXNG_URL");
+    std::env::remove_var("DUCKDUCKGO_ENABLED");
     std::env::remove_var("TAVILY_ENABLED");
     std::env::remove_var("TAVILY_API_KEY");
 }
@@ -1275,46 +1244,4 @@ fn current_tool_definitions_include_manager_tools_for_v1_route() {
     assert!(tool_names.contains("topic_agent_tools_get"));
     assert!(tool_names.contains("topic_agent_tools_enable"));
     assert!(tool_names.contains("agent_profile_upsert"));
-}
-
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn browser_use_profile_scope_uses_agents_md_topic() {
-    let mut executor = build_executor();
-    executor.set_agents_md_context(
-        Arc::new(MockStorageProvider::new()),
-        77,
-        "topic-a".to_string(),
-    );
-
-    assert_eq!(
-        executor.browser_use_profile_scope().as_deref(),
-        Some("topic-a")
-    );
-}
-
-#[cfg(feature = "tool-browser-use")]
-#[test]
-fn browser_use_profile_scope_prefers_reminder_context() {
-    let mut executor = build_executor();
-    executor.set_agents_md_context(
-        Arc::new(MockStorageProvider::new()),
-        77,
-        "topic-a".to_string(),
-    );
-    executor.set_reminder_context(crate::agent::providers::ReminderContext {
-        storage: Arc::new(MockStorageProvider::new()),
-        user_id: 77,
-        context_key: "topic-reminder".to_string(),
-        flow_id: "flow-1".to_string(),
-        chat_id: 77,
-        thread_id: None,
-        thread_kind: crate::storage::ReminderThreadKind::None,
-        notifier: None,
-    });
-
-    assert_eq!(
-        executor.browser_use_profile_scope().as_deref(),
-        Some("topic-reminder")
-    );
 }

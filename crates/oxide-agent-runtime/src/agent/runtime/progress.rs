@@ -1,7 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::loop_detection::LoopType;
-use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
+use oxide_agent_core::agent::progress::{
+    AgentEvent, FileDeliveryKind, FileDeliveryReceipt, ProgressState,
+};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
@@ -29,7 +31,7 @@ pub trait AgentTransport: Send + Sync + 'static {
         kind: FileDeliveryKind,
         file_name: &str,
         content: &[u8],
-    ) -> Result<()>;
+    ) -> Result<FileDeliveryReceipt>;
 
     /// Notify the user about loop detection and prompt for an action.
     async fn notify_loop_detected(&self, _loop_type: LoopType, _iteration: usize) -> Result<()> {
@@ -112,8 +114,8 @@ pub async fn run_progress_loop<T: AgentTransport>(
                         .await;
 
                     match result {
-                        Ok(_) => {
-                            let _ = confirmation_tx.send(Ok(()));
+                        Ok(receipt) => {
+                            let _ = confirmation_tx.send(Ok(receipt));
                         }
                         Err(e) => {
                             error!(
@@ -212,6 +214,7 @@ mod tests {
                 prompt_tokens: 6,
                 completion_tokens: 4,
                 total_tokens: 10,
+                ..TokenUsage::default()
             }),
         }
     }
@@ -238,14 +241,14 @@ mod tests {
             kind: FileDeliveryKind,
             file_name: &str,
             content: &[u8],
-        ) -> Result<()> {
+        ) -> Result<FileDeliveryReceipt> {
             if self.fail_deliver {
                 anyhow::bail!("simulated deliver failure");
             }
 
             let mut delivered = self.delivered.lock().await;
             delivered.push((mode, kind, file_name.to_string(), content.len()));
-            Ok(())
+            Ok(FileDeliveryReceipt::default())
         }
 
         async fn notify_loop_detected(
@@ -402,7 +405,7 @@ mod tests {
             Ok(ack) => ack,
             Err(err) => panic!("ack channel closed: {err}"),
         };
-        assert!(ack.is_ok());
+        assert_eq!(ack, Ok(FileDeliveryReceipt::default()));
 
         let _state = match handle.await {
             Ok(state) => state,

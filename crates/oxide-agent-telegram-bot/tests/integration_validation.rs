@@ -4,7 +4,7 @@ use aws_sdk_s3::Client;
 use aws_types::region::Region;
 use dotenvy::dotenv;
 use oxide_agent_core::config::AgentSettings;
-use oxide_agent_core::storage::R2StorageConfig;
+use oxide_agent_core::storage::{R2Storage, R2StorageConfig, StorageProvider};
 use oxide_agent_transport_telegram::config::TelegramSettings;
 use std::path::Path;
 use tracing::info;
@@ -115,9 +115,7 @@ fn validate_telegram_token(telegram_token: &str) {
 }
 
 async fn validate_r2_storage(env: &IntegrationEnv) -> Result<()> {
-    info!(
-        "Validating R2 Storage credentials with manual client construction (Theory: Force Path Style)..."
-    );
+    info!("Validating R2 Storage credentials with bucket-scoped probe...");
     info!("R2 Endpoint: {}", env.r2_endpoint);
     info!("R2 Bucket: {}", env.r2_bucket);
     info!(
@@ -127,7 +125,24 @@ async fn validate_r2_storage(env: &IntegrationEnv) -> Result<()> {
 
     let client = build_r2_client(env).await?;
     verify_r2_put_and_cleanup(&client, &env.r2_bucket).await?;
+    verify_r2_provider_check_connection(env).await?;
     Ok(())
+}
+
+async fn verify_r2_provider_check_connection(env: &IntegrationEnv) -> Result<()> {
+    let storage = R2Storage::new(&R2StorageConfig {
+        endpoint_url: env.r2_endpoint.clone(),
+        bucket_name: env.r2_bucket.clone(),
+        access_key_id: env.r2_access.clone(),
+        secret_access_key: env.r2_secret.clone(),
+        region: env.r2_region.clone(),
+    })
+    .await?;
+
+    storage
+        .check_connection()
+        .await
+        .map_err(|error| anyhow!("R2 storage provider connection check failed: {error}"))
 }
 
 async fn build_r2_client(env: &IntegrationEnv) -> Result<Client> {
@@ -169,7 +184,7 @@ async fn verify_r2_put_and_cleanup(client: &Client, bucket: &str) -> Result<()> 
 
     match put_result {
         Ok(_) => {
-            info!("PutObject successful! Theory verified: force_path_style works for writing.");
+            info!("PutObject successful for bucket-scoped credential probe.");
             info!("Cleaning up...");
             let _ = client
                 .delete_object()

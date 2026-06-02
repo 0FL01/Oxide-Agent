@@ -2,7 +2,7 @@
 
 use super::prompt::{build_local_compaction_user_message, local_compaction_system_prompt};
 use super::{CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest};
-use crate::config::ModelInfo;
+use crate::config::{ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
 use crate::llm::{InternalTextPurpose, LlmClient};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -10,7 +10,6 @@ use std::time::Duration;
 use tracing::warn;
 
 const SUMMARY_MAX_ATTEMPTS: usize = 3;
-const SUMMARY_MAX_OUTPUT_TOKENS: u32 = 48_000;
 
 /// Default compaction backend: ordinary text generation through a configured LLM route.
 pub struct LocalLlmSummary {
@@ -35,8 +34,8 @@ impl LocalLlmSummary {
 
 fn compact_summary_route(route: &ModelInfo) -> ModelInfo {
     let mut summary_route = route.clone();
-    if summary_route.max_output_tokens > SUMMARY_MAX_OUTPUT_TOKENS {
-        summary_route.max_output_tokens = SUMMARY_MAX_OUTPUT_TOKENS;
+    if summary_route.max_output_tokens > AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS {
+        summary_route.max_output_tokens = AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
     }
     summary_route
 }
@@ -174,7 +173,7 @@ mod tests {
             .in_sequence(&mut sequence)
             .return_once(|_, _, _, model_id, max_tokens| {
                 assert_eq!(model_id, "agent-model");
-                assert_eq!(max_tokens, SUMMARY_MAX_OUTPUT_TOKENS);
+                assert_eq!(max_tokens, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS);
                 Err(LlmError::NetworkError(
                     "temporary network failure".to_string(),
                 ))
@@ -185,7 +184,7 @@ mod tests {
             .in_sequence(&mut sequence)
             .return_once(|_, _, _, model_id, max_tokens| {
                 assert_eq!(model_id, "agent-model");
-                assert_eq!(max_tokens, SUMMARY_MAX_OUTPUT_TOKENS);
+                assert_eq!(max_tokens, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS);
                 Ok("Recovered handoff summary.".to_string())
             });
         let backend = backend_with_provider(provider);

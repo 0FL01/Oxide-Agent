@@ -276,6 +276,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Route selection regression",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: None,
             progress_tx: None,
@@ -330,6 +331,7 @@ mod tests {
         let ctx = AgentRunnerContext {
             task: "Typed runtime route selection",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(Arc::new(RuntimeToolRegistry::new())),
             progress_tx: None,
@@ -369,6 +371,71 @@ mod tests {
         let mut exhausted = std::collections::HashSet::new();
         exhausted.insert(AgentRunner::route_key(&ctx.config.model_routes[0]));
         assert_eq!(runner.select_model_route_index(&ctx, &exhausted), None);
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn select_model_route_index_keeps_selected_opencode_zen_route_with_go_fallbacks() {
+        let mut zen = MockLlmProvider::new();
+        stub_non_chat_methods(&mut zen);
+        let mut go = MockLlmProvider::new();
+        stub_non_chat_methods(&mut go);
+
+        let settings = AgentSettings {
+            agent_model_id: Some("mimo-v2.5-free".to_string()),
+            agent_model_provider: Some("llm-provider/opencode-zen".to_string()),
+            agent_model_max_output_tokens: Some(256),
+            ..AgentSettings::default()
+        };
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-zen".to_string(), Arc::new(zen));
+        llm.register_provider("opencode-go".to_string(), Arc::new(go));
+        let llm_client = Arc::new(llm);
+
+        let mut runner = AgentRunner::new(Arc::clone(&llm_client));
+        let mut session = EphemeralSession::new(768);
+        let tools: Vec<crate::llm::ToolDefinition> = Vec::new();
+        let todos_arc = Arc::new(Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let ctx = AgentRunnerContext {
+            task: "Typed runtime Zen route selection",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(Arc::new(RuntimeToolRegistry::new())),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runner-typed-zen-route-selection",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("mimo-v2.5-free".to_string(), 8, 4, 60, 4096)
+                .with_model_provider("llm-provider/opencode-zen")
+                .with_model_routes(vec![
+                    ModelInfo {
+                        id: "opencode-zen/mimo-v2.5-free".to_string(),
+                        provider: "opencode-zen".to_string(),
+                        max_output_tokens: 4096,
+                        context_window_tokens: 200_000,
+                        weight: 1,
+                    },
+                    ModelInfo {
+                        id: "opencode-go/qwen3.7-max".to_string(),
+                        provider: "opencode-go".to_string(),
+                        max_output_tokens: 4096,
+                        context_window_tokens: 200_000,
+                        weight: 1,
+                    },
+                ]),
+        };
+
+        assert_eq!(
+            runner.select_model_route_index(&ctx, &std::collections::HashSet::new()),
+            Some(0)
+        );
     }
 
     #[test]

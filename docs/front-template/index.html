@@ -1,0 +1,1202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Oxide Agent</title>
+<style>
+  :root {
+    --bg:      #171717;
+    --surface: #212121;
+    --fg:      #ececec;
+    --muted:   #8e8e93;
+    --faint:   #6e6e73;
+    --border:  #2a2a2a;
+    --border-strong: #3a3a3a;
+    --surface-hover: #2f2f2f;
+    --accent:  #10a37f;
+    --accent-glow: rgba(16,163,127,0.18);
+    --warning: #d8a21e;
+    --error:   #ef4444;
+
+    --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+
+    --sidebar-width: 260px;
+    --drawer-width:  400px;
+    --topbar-height: 48px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.5 var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Scrollbars */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+  * { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent; }
+
+  /* Layout */
+  .app {
+    display: flex;
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    width: var(--sidebar-width);
+    flex-shrink: 0;
+    background: var(--bg);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-header {
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-header .logo-icon {
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .sidebar-header .logo-text {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    flex: 1;
+  }
+  .btn-new {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    border: 1px solid var(--border-strong);
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    display: grid; place-items: center;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .btn-new:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+
+  .sidebar-search {
+    padding: 12px 16px;
+  }
+  .sidebar-search input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    color: var(--fg);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .sidebar-search input::placeholder { color: var(--faint); }
+  .sidebar-search input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+  }
+
+  .sidebar-sessions {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 8px 8px;
+  }
+  .session-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.12s;
+    margin-bottom: 2px;
+  }
+  .session-item:hover { background: var(--surface-hover); }
+  .session-item.active {
+    background: rgba(16,163,127,0.08);
+  }
+  .session-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+  .session-dot.idle { background: var(--faint); }
+  .session-dot.running {
+    background: var(--accent);
+    animation: pulse-dot 1.6s ease-in-out infinite;
+  }
+  .session-dot.completed { background: var(--accent); }
+  .session-dot.waiting { background: var(--warning); }
+  .session-dot.error { background: var(--error); }
+  .session-dot.cancelled { background: var(--muted); }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  .session-meta { min-width: 0; flex: 1; }
+  .session-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .session-preview {
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+  }
+  .session-time {
+    font-size: 11px;
+    color: var(--faint);
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .sidebar-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+  }
+  .sidebar-footer a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sidebar-footer a:hover { color: var(--fg); }
+
+  /* Main area */
+  .main-area {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .chat-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    position: relative;
+  }
+
+  .topbar {
+    height: var(--topbar-height);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--fg);
+  }
+
+  .chat-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 32px 20px 80px;
+  }
+  .chat-inner {
+    max-width: 800px;
+    margin: 0 auto;
+  }
+
+  /* Empty state */
+  .chat-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    text-align: center;
+    color: var(--muted);
+  }
+  .chat-empty h2 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--fg);
+    margin: 16px 0 8px;
+    letter-spacing: -0.01em;
+  }
+  .chat-empty p { font-size: 14px; }
+
+  /* Messages */
+  .message { margin-bottom: 24px; }
+  .message:last-child { margin-bottom: 0; }
+  .message-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--faint);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .message-content {
+    font-size: 14px;
+    line-height: 1.65;
+    color: var(--fg);
+  }
+  .message-user .message-content {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    max-width: 85%;
+  }
+  .message-assistant .message-content {
+    max-width: 95%;
+  }
+
+  /* Markdown-like styling inside assistant messages */
+  .md h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 18px 0 8px;
+    color: var(--fg);
+  }
+  .md p { margin-bottom: 10px; }
+  .md pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    margin: 10px 0;
+  }
+  .md code {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    background: rgba(255,255,255,0.06);
+    padding: 2px 5px;
+    border-radius: 4px;
+  }
+  .md pre code { background: none; padding: 0; }
+  .md ul { margin: 8px 0 8px 18px; }
+  .md li { margin-bottom: 4px; }
+  .md strong { font-weight: 600; }
+
+  /* Status chip */
+  .status-wrap { margin-top: 10px; }
+  .status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    user-select: none;
+  }
+  .status-chip:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+  }
+  .status-chip.active { color: var(--accent); }
+  .status-chip.waiting { color: var(--warning); }
+  .status-chip.warning { color: var(--warning); }
+  .status-chip.error { color: var(--error); }
+  .status-chip .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .status-chip.active .dot {
+    animation: pulse-dot 1.6s ease-in-out infinite;
+  }
+  .status-chip .chevron {
+    color: var(--faint);
+    font-size: 11px;
+    margin-left: 2px;
+  }
+
+  /* Composer */
+  .composer {
+    position: sticky;
+    bottom: 0;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    padding: 16px 20px 20px;
+  }
+  .composer-inner {
+    max-width: 800px;
+    margin: 0 auto;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .composer-inner:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+  }
+  .composer textarea {
+    width: 100%;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 1.5;
+    resize: none;
+    min-height: 24px;
+    max-height: 160px;
+    font-family: var(--font-sans);
+  }
+  .composer textarea::placeholder { color: var(--faint); }
+  .composer textarea:disabled { opacity: 0.6; cursor: not-allowed; }
+  .composer-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .composer-hint {
+    font-size: 11px;
+    color: var(--faint);
+    font-family: var(--font-mono);
+  }
+  .composer-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    font-family: var(--font-sans);
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #0b0b0b;
+    border-color: var(--accent);
+  }
+  .btn-primary:hover { background: #0d8f6e; border-color: #0d8f6e; }
+  .btn-danger {
+    background: rgba(239,68,68,0.12);
+    color: var(--error);
+    border-color: rgba(239,68,68,0.25);
+  }
+  .btn-danger:hover { background: rgba(239,68,68,0.18); }
+  .btn-ghost {
+    background: transparent;
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+  .btn-ghost:hover { background: var(--surface-hover); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Activity drawer */
+  .activity-drawer {
+    width: 0;
+    flex-shrink: 0;
+    background: var(--bg);
+    border-left: none;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: width 0.25s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.25s;
+  }
+  .activity-drawer.open {
+    width: var(--drawer-width);
+    border-left: 1px solid var(--border);
+  }
+
+  .activity-header {
+    height: var(--topbar-height);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .activity-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .activity-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .activity-time {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+  }
+  .activity-answer {
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+  }
+  .activity-answer:hover { text-decoration: underline; }
+  .activity-close {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    display: grid; place-items: center;
+    transition: background 0.12s, color 0.12s;
+  }
+  .activity-close:hover { background: var(--surface-hover); color: var(--fg); }
+
+  .activity-timeline {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 14px;
+  }
+
+  /* Event cards */
+  .event-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+  .event-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .event-kind {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--faint);
+    font-family: var(--font-mono);
+  }
+  .event-time {
+    font-size: 11px;
+    color: var(--faint);
+    font-family: var(--font-mono);
+  }
+  .event-body {
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--fg);
+  }
+  .event-body.collapsed {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* Tool cards */
+  .tool-card summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    list-style: none;
+  }
+  .tool-card summary::-webkit-details-marker { display: none; }
+  .tool-icon {
+    width: 20px; height: 20px;
+    display: grid; place-items: center;
+    border-radius: 5px;
+    background: rgba(255,255,255,0.05);
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .tool-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .tool-purpose {
+    font-size: 12px;
+    color: var(--muted);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .tool-status {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+  }
+  .tool-status.running { color: var(--accent); }
+  .tool-status.completed { color: var(--accent); }
+  .tool-status.failed { color: var(--error); }
+  .tool-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--faint);
+    font-family: var(--font-mono);
+  }
+  .tool-preview {
+    margin-top: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--muted);
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .tool-body {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  /* Todos */
+  .todos-list { list-style: none; }
+  .todos-list li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    font-size: 13px;
+  }
+  .todo-check {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1px solid var(--border-strong);
+    display: grid; place-items: center;
+    flex-shrink: 0;
+    font-size: 10px;
+  }
+  .todo-check.done {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #0b0b0b;
+  }
+  .todo-check.doing {
+    border-color: var(--accent);
+    background: rgba(16,163,127,0.1);
+  }
+  .todo-check.blocked {
+    border-color: var(--error);
+    background: rgba(239,68,68,0.1);
+    color: var(--error);
+  }
+  .todo-text { color: var(--fg); }
+  .todo-text.done { text-decoration: line-through; color: var(--muted); }
+  .todo-status-badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: auto;
+    font-family: var(--font-mono);
+  }
+  .todo-status-badge.doing { background: rgba(16,163,127,0.12); color: var(--accent); }
+  .todo-status-badge.blocked { background: rgba(239,68,68,0.12); color: var(--error); }
+  .todo-status-badge.todo { background: rgba(255,255,255,0.05); color: var(--faint); }
+
+  /* Context metrics */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .metric {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .metric-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--faint);
+    font-family: var(--font-mono);
+    margin-bottom: 2px;
+  }
+  .metric-value {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+    font-family: var(--font-mono);
+  }
+
+  /* Error card */
+  .event-error .event-body {
+    color: var(--error);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .event-error .retry-note {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--warning);
+  }
+
+  /* Waiting card */
+  .event-waiting {
+    border-color: var(--warning);
+    background: rgba(216,162,30,0.06);
+  }
+  .event-waiting .event-kind { color: var(--warning); }
+
+  /* Responsive */
+  @media (max-width: 1023px) {
+    .sidebar { display: none; }
+    .activity-drawer.open {
+      position: fixed;
+      inset: 0; left: auto;
+      width: 100vw;
+      z-index: 200;
+      border-left: none;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <svg class="logo-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+      </svg>
+      <span class="logo-text">Oxide Agent</span>
+      <button class="btn-new" title="New session" aria-label="New session">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+    </div>
+    <div class="sidebar-search">
+      <input type="text" placeholder="Search sessions" id="sessionSearch" />
+    </div>
+    <div class="sidebar-sessions" id="sessionList"></div>
+    <div class="sidebar-footer">
+      <a href="#"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> Settings</a>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main-area">
+    <div class="chat-wrapper">
+      <div class="topbar" id="topbar">Session</div>
+      <div class="chat-area" id="chatArea">
+        <div class="chat-inner" id="chatInner"></div>
+      </div>
+      <div class="composer" id="composer"></div>
+    </div>
+
+    <!-- Activity Drawer -->
+    <div class="activity-drawer" id="activityDrawer">
+      <div class="activity-header">
+        <span class="activity-title">Activity</span>
+        <div class="activity-meta">
+          <span class="activity-time" id="activityTime"></span>
+          <a href="#" class="activity-answer" id="activityAnswer" style="display:none">Answer now</a>
+          <button class="activity-close" id="activityClose" aria-label="Close activity panel">×</button>
+        </div>
+      </div>
+      <div class="activity-timeline" id="activityTimeline"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* ========================= Mock Data ========================= */
+  const sessions = [
+    {
+      id: 'empty',
+      title: 'New session',
+      preview: 'No messages yet',
+      timestamp: 'Just now',
+      status: 'idle',
+      messages: [],
+      statusChip: null,
+      activityEvents: [],
+      elapsed: null
+    },
+    {
+      id: 'running',
+      title: 'Fix auth middleware bug',
+      preview: 'Fix the auth middleware bug where JWT tokens are not validated on /api/v1/protected routes.',
+      timestamp: '2m ago',
+      status: 'running',
+      messages: [
+        { role: 'user', content: 'Fix the auth middleware bug where JWT tokens are not validated on /api/v1/protected routes. The user object is always undefined in req.user even when a valid token is present.' }
+      ],
+      statusChip: { text: 'Running execute_command', active: true },
+      activityEvents: [
+        { kind: 'thinking', summary: 'The user reports that JWT tokens are not validated on protected routes. I need to inspect the auth middleware code, check how the token is extracted and verified, then run tests to confirm the fix.', collapsed: true },
+        { kind: 'tool_call', toolName: 'read_file', purpose: 'src/middleware/auth.js', status: 'completed', duration: '0.2s' },
+        { kind: 'tool_result', toolName: 'read_file', success: true, duration: '0.2s', preview: 'function authenticateToken(req, res, next) {\n  const authHeader = req.headers["authorization"];\n  const token = authHeader && authHeader.split(" ")[1];\n  if (!token) return res.sendStatus(401);\n  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {\n    if (err) return res.sendStatus(403);\n    req.user = user;\n    next();\n  });\n}', exitCode: null },
+        { kind: 'tool_call', toolName: 'execute_command', purpose: 'cargo test', status: 'running', duration: null },
+        { kind: 'todos', items: [
+          { text: 'Inspect auth middleware source', status: 'done' },
+          { text: 'Identify root cause', status: 'done' },
+          { text: 'Write fix', status: 'doing' },
+          { text: 'Run tests', status: 'todo' },
+          { text: 'Verify fix in staging', status: 'todo' }
+        ]},
+        { kind: 'context', tokens: { free: '12k', flow: '8k', prompt: '4k', tools: '2k' }, healthy: true }
+      ],
+      elapsed: '2m 09s'
+    },
+    {
+      id: 'completed',
+      title: 'Refactor API handlers',
+      preview: 'Refactored the user API handlers to use async/await consistently and added input validation with zod.',
+      timestamp: '1h ago',
+      status: 'completed',
+      messages: [
+        { role: 'user', content: 'Refactor the user API handlers to use async/await and add zod validation for all POST and PATCH endpoints.' },
+        { role: 'assistant', content: 'Done. I\'ve refactored all user API handlers to use `async/await` consistently and added `zod` validation schemas for every POST and PATCH endpoint.\n\n### Changes made\n\n#### `src/routes/users.ts`\n- Converted all route handlers to async functions.\n- Added `createUserSchema`, `updateUserSchema`, and `userIdSchema` using zod.\n- Wrapped validation in a reusable `validateBody` middleware.\n\n#### New file: `src/middleware/validate.ts`\n```typescript\nimport { Request, Response, NextFunction } from "express";\nimport { ZodSchema } from "zod";\n\nexport const validateBody = (schema: ZodSchema) => {\n  return async (req: Request, res: Response, next: NextFunction) => {\n    const result = await schema.safeParseAsync(req.body);\n    if (!result.success) {\n      return res.status(400).json({ errors: result.error.flatten() });\n    }\n    req.body = result.data;\n    next();\n  };\n};\n```\n\nAll 14 existing tests pass. No breaking changes to the API contract.' }
+      ],
+      statusChip: null,
+      activityEvents: [
+        { kind: 'thinking', summary: 'I need to refactor the user API handlers to use async/await consistently and add zod validation.', collapsed: true },
+        { kind: 'tool_call', toolName: 'read_file', purpose: 'src/routes/users.ts', status: 'completed', duration: '0.1s' },
+        { kind: 'tool_result', toolName: 'read_file', success: true, duration: '0.1s', preview: '// ... existing code ...', exitCode: null },
+        { kind: 'tool_call', toolName: 'write_file', purpose: 'src/middleware/validate.ts', status: 'completed', duration: '0.3s' },
+        { kind: 'tool_result', toolName: 'write_file', success: true, duration: '0.3s', preview: 'File written successfully', exitCode: 0 },
+        { kind: 'tool_call', toolName: 'execute_command', purpose: 'npm test', status: 'completed', duration: '4.1s' },
+        { kind: 'tool_result', toolName: 'execute_command', success: true, duration: '4.1s', preview: 'Test Suites: 3 passed, 3 total', exitCode: 0 },
+        { kind: 'todos', items: [
+          { text: 'Read current handlers', status: 'done' },
+          { text: 'Add zod schemas', status: 'done' },
+          { text: 'Write validate middleware', status: 'done' },
+          { text: 'Run tests', status: 'done' }
+        ]}
+      ],
+      elapsed: '5m 42s'
+    },
+    {
+      id: 'waiting',
+      title: 'Deploy staging script',
+      preview: 'The deployment script needs confirmation before pushing to production. Please review the changes.',
+      timestamp: '15m ago',
+      status: 'waiting',
+      messages: [
+        { role: 'user', content: 'Deploy the latest changes to staging and then prepare the production deployment script.' },
+        { role: 'assistant', content: 'Staging deployment completed successfully. Before I proceed to production, I need your confirmation on the database migration steps. The migration will alter the `users` table and add a new `preferences` JSONB column. This is a blocking operation that requires a brief maintenance window.\n\nDo you want me to proceed with the production deployment including the migration?' }
+      ],
+      statusChip: { text: 'Waiting for your input', active: true },
+      activityEvents: [
+        { kind: 'thinking', summary: 'Staging deployment looks good. The migration adds a JSONB column which is low-risk but I should confirm with the user before running it on prod.', collapsed: true },
+        { kind: 'tool_call', toolName: 'execute_command', purpose: 'deploy --env staging', status: 'completed', duration: '12.4s' },
+        { kind: 'tool_result', toolName: 'execute_command', success: true, duration: '12.4s', preview: 'Deploying to staging... done. Build #4821 successful.', exitCode: 0 },
+        { kind: 'waiting', instruction: 'Confirm whether to run the database migration on production before continuing.' }
+      ],
+      elapsed: '3m 18s'
+    },
+    {
+      id: 'error',
+      title: 'Test failure analysis',
+      preview: 'The integration tests are failing with a timeout error. I need to investigate the root cause.',
+      timestamp: '45m ago',
+      status: 'error',
+      messages: [
+        { role: 'user', content: 'Investigate why the integration tests are timing out on the payment gateway mock. The tests pass locally but fail in CI.' },
+        { role: 'assistant', content: 'I found the issue. The CI environment sets `PAYMENT_MOCK_TIMEOUT` to 500ms, but the default local value is 5000ms. The tests expect a 3000ms window. I can patch the CI env or update the test expectations. Which do you prefer?' }
+      ],
+      statusChip: { text: 'Retrying after rate limit', active: true },
+      activityEvents: [
+        { kind: 'thinking', summary: 'CI timeout suggests environment-specific configuration drift.', collapsed: true },
+        { kind: 'tool_call', toolName: 'read_file', purpose: '.github/workflows/ci.yml', status: 'completed', duration: '0.2s' },
+        { kind: 'tool_result', toolName: 'read_file', success: true, duration: '0.2s', preview: 'env:\n  PAYMENT_MOCK_TIMEOUT: 500', exitCode: null },
+        { kind: 'tool_call', toolName: 'execute_command', purpose: 'npm run test:integration', status: 'failed', duration: '32.1s' },
+        { kind: 'tool_result', toolName: 'execute_command', success: false, duration: '32.1s', preview: 'TimeoutError: Payment mock did not respond within 500ms', exitCode: 1 },
+        { kind: 'error', message: 'Tool execution failed. Exceeded retry limit (3/3).', retrying: false },
+        { kind: 'todos', items: [
+          { text: 'Read CI config', status: 'done' },
+          { text: 'Run failing test locally', status: 'done' },
+          { text: 'Compare env vars', status: 'done' },
+          { text: 'Propose fix', status: 'blocked' }
+        ]}
+      ],
+      elapsed: '8m 12s'
+    },
+    {
+      id: 'cancelled',
+      title: 'Cancelled: large refactor',
+      preview: 'The user stopped this task before completion.',
+      timestamp: '3h ago',
+      status: 'cancelled',
+      messages: [
+        { role: 'user', content: 'Refactor the entire database layer to use Prisma instead of raw SQL.' }
+      ],
+      statusChip: { text: 'Cancelled', active: false },
+      activityEvents: [
+        { kind: 'thinking', summary: 'This is a large refactoring task. I will start by auditing the current raw SQL usage.', collapsed: true },
+        { kind: 'tool_call', toolName: 'execute_command', purpose: 'find src -name "*.ts" | xargs grep "SELECT\\|INSERT\\|UPDATE"', status: 'completed', duration: '1.2s' },
+        { kind: 'tool_result', toolName: 'execute_command', success: true, duration: '1.2s', preview: 'src/db/users.ts:12: SELECT * FROM users...', exitCode: 0 },
+        { kind: 'context', tokens: { free: '8k', flow: '6k', prompt: '2k', tools: '1k' }, healthy: true }
+      ],
+      elapsed: '1m 04s'
+    }
+  ];
+
+  let currentSessionId = 'running';
+  let drawerOpen = true;
+
+  /* ========================= Render ========================= */
+  function el(tag, cls, parent) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  function renderSidebar() {
+    const list = document.getElementById('sessionList');
+    list.innerHTML = '';
+    sessions.forEach(s => {
+      const item = el('div', 'session-item' + (s.id === currentSessionId ? ' active' : ''), list);
+      item.addEventListener('click', () => switchSession(s.id));
+      const dot = el('div', 'session-dot ' + s.status, item);
+      const meta = el('div', 'session-meta', item);
+      const title = el('div', 'session-title', meta);
+      title.textContent = s.title;
+      const preview = el('div', 'session-preview', meta);
+      preview.textContent = s.preview;
+      const time = el('div', 'session-time', item);
+      time.textContent = s.timestamp;
+    });
+  }
+
+  function switchSession(id) {
+    currentSessionId = id;
+    const s = sessions.find(x => x.id === id);
+    // Default drawer open only for running and waiting sessions with events
+    drawerOpen = (s.status === 'running' || s.status === 'waiting') && s.activityEvents.length > 0;
+    renderAll();
+  }
+
+  function renderAll() {
+    renderSidebar();
+    renderChat();
+    renderComposer();
+    renderDrawer();
+  }
+
+  function renderChat() {
+    const s = sessions.find(x => x.id === currentSessionId);
+    document.getElementById('topbar').textContent = s.title;
+    const inner = document.getElementById('chatInner');
+    inner.innerHTML = '';
+
+    if (s.messages.length === 0) {
+      const empty = el('div', 'chat-empty', inner);
+      empty.innerHTML = '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--faint)"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
+        '<h2>What can I help you with?</h2><p>Send a message to start a new agent session.</p>';
+      return;
+    }
+
+    s.messages.forEach((m, i) => {
+      const wrap = el('div', 'message message-' + m.role, inner);
+      const header = el('div', 'message-header', wrap);
+      header.textContent = m.role === 'user' ? 'You' : 'Oxide Agent';
+      const body = el('div', 'message-content' + (m.role === 'assistant' ? ' md' : ''), wrap);
+      if (m.role === 'assistant') {
+        // Simple markdown-like parsing
+        body.innerHTML = renderMarkdown(m.content);
+      } else {
+        body.textContent = m.content;
+      }
+    });
+
+    // Status chip
+    if (s.statusChip) {
+      const wrap = el('div', 'status-wrap', inner);
+      let chipCls = 'status-chip';
+      if (s.statusChip.active) chipCls += ' active';
+      if (s.status === 'waiting') chipCls += ' waiting';
+      if (s.status === 'error') chipCls += ' warning';
+      if (s.status === 'cancelled') chipCls += ' error';
+      const chip = el('div', chipCls, wrap);
+      chip.addEventListener('click', openDrawer);
+      const dot = el('span', 'dot', chip);
+      const text = el('span', '', chip);
+      text.textContent = s.statusChip.text;
+      const chevron = el('span', 'chevron', chip);
+      chevron.innerHTML = '&#8250;';
+    }
+
+    // Scroll to bottom
+    const area = document.getElementById('chatArea');
+    area.scrollTop = area.scrollHeight;
+  }
+
+  function renderMarkdown(text) {
+    // Escape HTML
+    let html = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Headings
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^#### (.+)$/gm, '<h4 style="font-size:14px;font-weight:600;margin:14px 0 6px">$1</h4>');
+    // Code blocks
+    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // Lists
+    html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+    html = html.replace(/<\/ul>\n?<ul>/g, '');
+    // Paragraphs
+    html = html.replace(/\n\n/g, '</p><p>');
+    html = '<p>' + html + '</p>';
+    html = html.replace(/<p><\/p>/g, '');
+    html = html.replace(/<p>(<h[34][\s\S]*?<\/h[34]>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<pre>[\s\S]*?<\/pre>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<ul>[\s\S]*?<\/ul>)<\/p>/g, '$1');
+    return html;
+  }
+
+  function renderComposer() {
+    const s = sessions.find(x => x.id === currentSessionId);
+    const composer = document.getElementById('composer');
+    const isRunning = s.status === 'running';
+    const isWaiting = s.status === 'waiting';
+    const placeholder = isRunning ? 'Agent is working…' : (isWaiting ? 'Reply to resume the task…' : 'Message Oxide Agent…');
+    const disabled = isRunning;
+    const sendLabel = isWaiting ? 'Resume' : 'Send';
+
+    composer.innerHTML = '';
+    const inner = el('div', 'composer-inner', composer);
+    const ta = el('textarea', '', inner);
+    ta.placeholder = placeholder;
+    ta.disabled = disabled;
+    ta.rows = 1;
+    ta.addEventListener('input', () => {
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    });
+
+    const footer = el('div', 'composer-footer', inner);
+    const hint = el('span', 'composer-hint', footer);
+    hint.textContent = isRunning ? 'Ctrl+Enter to stop' : 'Ctrl+Enter to send';
+
+    const actions = el('div', 'composer-actions', footer);
+    if (isRunning) {
+      const stopBtn = el('button', 'btn btn-danger', actions);
+      stopBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg> Stop';
+    } else {
+      const sendBtn = el('button', 'btn btn-primary', actions);
+      sendBtn.textContent = sendLabel;
+    }
+  }
+
+  function renderDrawer() {
+    const drawer = document.getElementById('activityDrawer');
+    const s = sessions.find(x => x.id === currentSessionId);
+    drawer.classList.toggle('open', drawerOpen && s.activityEvents.length > 0);
+
+    document.getElementById('activityTime').textContent = s.elapsed || '';
+    const answerBtn = document.getElementById('activityAnswer');
+    answerBtn.style.display = s.status === 'waiting' ? 'inline' : 'none';
+
+    const timeline = document.getElementById('activityTimeline');
+    timeline.innerHTML = '';
+
+    // Pair tool calls with results
+    const paired = [];
+    for (let i = 0; i < s.activityEvents.length; i++) {
+      const ev = s.activityEvents[i];
+      if (ev.kind === 'tool_call') {
+        const result = s.activityEvents[i+1] && s.activityEvents[i+1].kind === 'tool_result' ? s.activityEvents[i+1] : null;
+        paired.push({ kind: 'tool', call: ev, result });
+        if (result) i++;
+      } else {
+        paired.push(ev);
+      }
+    }
+
+    paired.forEach(ev => {
+      if (ev.kind === 'tool') {
+        renderToolCard(timeline, ev.call, ev.result);
+      } else if (ev.kind === 'thinking') {
+        const card = el('details', 'event-card', timeline);
+        const summary = el('summary', '', card);
+        summary.style.cssText = 'cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;';
+        summary.innerHTML = '<span class="event-kind">Thinking</span><span style="color:var(--faint);font-size:11px">Toggle</span>';
+        const body = el('div', 'event-body', card);
+        body.style.marginTop = '8px';
+        body.textContent = ev.summary;
+        if (!ev.collapsed) card.open = true;
+      } else if (ev.kind === 'todos') {
+        const card = el('div', 'event-card', timeline);
+        el('div', 'event-header', card).innerHTML = '<span class="event-kind">Todos</span>';
+        const list = el('ul', 'todos-list', card);
+        ev.items.forEach(todo => {
+          const li = el('li', '', list);
+          const check = el('span', 'todo-check ' + todo.status, li);
+          if (todo.status === 'done') check.textContent = '✓';
+          else if (todo.status === 'blocked') check.textContent = '!';
+          el('span', 'todo-text' + (todo.status==='done'?' done':''), li).textContent = todo.text;
+          if (todo.status !== 'done') {
+            const badge = el('span', 'todo-status-badge ' + todo.status, li);
+            badge.textContent = todo.status;
+          }
+        });
+      } else if (ev.kind === 'context') {
+        const card = el('div', 'event-card', timeline);
+        el('div', 'event-header', card).innerHTML = '<span class="event-kind">Context</span>';
+        const grid = el('div', 'metrics-grid', card);
+        Object.entries(ev.tokens).forEach(([k, v]) => {
+          const m = el('div', 'metric', grid);
+          el('div', 'metric-label', m).textContent = k;
+          el('div', 'metric-value', m).textContent = v;
+        });
+        const health = el('div', '', card);
+        health.style.cssText = 'margin-top:8px;font-size:11px;color:' + (ev.healthy?'var(--accent)':'var(--error)') + ';font-family:var(--font-mono)';
+        health.textContent = ev.healthy ? '● healthy' : '● over budget';
+      } else if (ev.kind === 'error') {
+        const card = el('div', 'event-card event-error', timeline);
+        el('div', 'event-header', card).innerHTML = '<span class="event-kind">Error</span>';
+        const body = el('div', 'event-body', card);
+        body.textContent = ev.message;
+        if (ev.retrying) {
+          const retry = el('div', 'retry-note', card);
+          retry.textContent = 'Retrying in 3s…';
+        }
+      } else if (ev.kind === 'waiting') {
+        const card = el('div', 'event-card event-waiting', timeline);
+        el('div', 'event-header', card).innerHTML = '<span class="event-kind">Waiting for input</span>';
+        const body = el('div', 'event-body', card);
+        body.textContent = ev.instruction;
+      }
+    });
+  }
+
+  function renderToolCard(parent, call, result) {
+    const details = el('details', 'event-card tool-card', parent);
+    const summary = el('summary', '', details);
+    const iconWrap = el('span', 'tool-icon', summary);
+    iconWrap.innerHTML = toolIcon(call.toolName);
+    el('span', 'tool-name', summary).textContent = toolLabel(call.toolName);
+    el('span', 'tool-purpose', summary).textContent = call.purpose;
+    const status = el('span', 'tool-status ' + (result ? (result.success ? 'completed' : 'failed') : call.status), summary);
+    status.textContent = result ? (result.success ? 'done' : 'failed') : call.status;
+
+    const meta = el('div', 'tool-meta', details);
+    meta.innerHTML = '<span>' + (result ? result.duration : (call.duration || '--')) + '</span>' +
+      (result && result.exitCode !== null ? '<span>exit ' + result.exitCode + '</span>' : '');
+
+    if (result && result.preview) {
+      const preview = el('div', 'tool-preview', details);
+      preview.textContent = result.preview;
+    } else if (call.status === 'running') {
+      const preview = el('div', 'tool-preview', details);
+      preview.textContent = '$ ' + call.purpose;
+    }
+
+    if (result && result.preview) {
+      const body = el('div', 'tool-body', details);
+      body.innerHTML = '<div style="font-size:11px;color:var(--faint);margin-bottom:6px;font-family:var(--font-mono)">STDOUT / DETAILS</div><div class="tool-preview" style="max-height:200px;overflow:auto">' + escapeHtml(result.preview) + '</div>';
+    }
+
+    // Auto-open if running or failed
+    if (!result || !result.success || call.status === 'running') details.open = true;
+  }
+
+  function toolIcon(name) {
+    if (name === 'execute_command') return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
+    if (name === 'read_file' || name === 'write_file') return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+    return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+  }
+  function toolLabel(name) {
+    if (name === 'execute_command') return 'Shell';
+    if (name === 'read_file') return 'Read';
+    if (name === 'write_file') return 'Write';
+    return name;
+  }
+  function escapeHtml(t) {
+    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function openDrawer() { drawerOpen = true; renderDrawer(); }
+  function closeDrawer() { drawerOpen = false; renderDrawer(); }
+
+  document.getElementById('activityClose').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeDrawer();
+  });
+
+  // Search filter (visual only)
+  document.getElementById('sessionSearch').addEventListener('input', e => {
+    const val = e.target.value.toLowerCase();
+    document.querySelectorAll('.session-item').forEach((item, idx) => {
+      const s = sessions[idx];
+      const match = s.title.toLowerCase().includes(val) || s.preview.toLowerCase().includes(val);
+      item.style.display = match ? '' : 'none';
+    });
+  });
+
+  /* Init */
+  renderAll();
+</script>
+</body>
+</html>

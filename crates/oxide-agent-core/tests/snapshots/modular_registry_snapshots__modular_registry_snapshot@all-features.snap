@@ -148,10 +148,86 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           {
             "name": "api_key",
             "value_kind": "string",
-            "description": "OpenCode Go API key.",
-            "env": "OPENCODE_GO_API_KEY",
+            "description": "OpenCode Go API key. Also accepts OPENCODE_ZEN_API_KEY and legacy OPENCODE_GO_API_KEY.",
+            "env": "OPENCODE_API_KEY",
             "secret": true,
             "default_value": null
+          },
+          {
+            "name": "messages_api_base",
+            "value_kind": "string",
+            "description": "OpenCode Go Anthropic Messages endpoint.",
+            "env": "OPENCODE_GO_MESSAGES_API_BASE",
+            "secret": false,
+            "default_value": "https://opencode.ai/zen/go/v1/messages"
+          },
+          {
+            "name": "model_cache_ttl_secs",
+            "value_kind": "string",
+            "description": "OpenCode Go model discovery cache TTL.",
+            "env": "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+            "secret": false,
+            "default_value": "1800"
+          },
+          {
+            "name": "models_url",
+            "value_kind": "string",
+            "description": "OpenCode Go model discovery endpoint.",
+            "env": "OPENCODE_GO_MODELS_URL",
+            "secret": false,
+            "default_value": "https://opencode.ai/zen/go/v1/models"
+          }
+        ]
+      },
+      {
+        "id": "llm-provider/opencode-zen",
+        "kind": "llm-provider",
+        "cargo_feature": "llm-opencode-go",
+        "provides": [
+          "llm-provider/opencode-zen"
+        ],
+        "requires": [],
+        "conflicts": [],
+        "config_properties": [
+          {
+            "name": "api_base",
+            "value_kind": "string",
+            "description": "OpenCode Zen Chat Completions endpoint.",
+            "env": "OPENCODE_ZEN_API_BASE",
+            "secret": false,
+            "default_value": "https://opencode.ai/zen/v1/chat/completions"
+          },
+          {
+            "name": "api_key",
+            "value_kind": "string",
+            "description": "OpenCode Zen API key. Also accepts OPENCODE_API_KEY and OPENCODE_GO_API_KEY.",
+            "env": "OPENCODE_ZEN_API_KEY",
+            "secret": true,
+            "default_value": null
+          },
+          {
+            "name": "messages_api_base",
+            "value_kind": "string",
+            "description": "OpenCode Zen Anthropic Messages endpoint.",
+            "env": "OPENCODE_ZEN_MESSAGES_API_BASE",
+            "secret": false,
+            "default_value": "https://opencode.ai/zen/v1/messages"
+          },
+          {
+            "name": "model_cache_ttl_secs",
+            "value_kind": "string",
+            "description": "OpenCode Zen model discovery cache TTL.",
+            "env": "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
+            "secret": false,
+            "default_value": "1800"
+          },
+          {
+            "name": "models_url",
+            "value_kind": "string",
+            "description": "OpenCode Zen free model discovery endpoint.",
+            "env": "OPENCODE_ZEN_MODELS_URL",
+            "secret": false,
+            "default_value": "https://opencode.ai/zen/v1/models"
           }
         ]
       },
@@ -299,17 +375,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
-        "id": "tool/browser-use",
-        "kind": "browser",
-        "cargo_feature": "tool-browser-use",
-        "provides": [
-          "tool/browser-use"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
         "id": "tool/compression",
         "kind": "tool",
         "cargo_feature": "tool-compression",
@@ -326,6 +391,18 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "cargo_feature": "tool-delegation",
         "provides": [
           "tool/delegation"
+        ],
+        "requires": [],
+        "conflicts": [],
+        "config_properties": []
+      },
+      {
+        "id": "tool/duckduckgo",
+        "kind": "search",
+        "cargo_feature": "tool-duckduckgo",
+        "provides": [
+          "tool/duckduckgo-news",
+          "tool/duckduckgo-search"
         ],
         "requires": [],
         "conflicts": [],
@@ -653,6 +730,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/opencode-go"
       },
       {
+        "id": "llm-provider/opencode-zen",
+        "module": "llm-provider/opencode-zen"
+      },
+      {
         "id": "llm-provider/openrouter",
         "module": "llm-provider/openrouter"
       },
@@ -741,16 +822,20 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/agents-md"
       },
       {
-        "id": "tool/browser-use",
-        "module": "tool/browser-use"
-      },
-      {
         "id": "tool/compression",
         "module": "tool/compression"
       },
       {
         "id": "tool/delegation",
         "module": "tool/delegation"
+      },
+      {
+        "id": "tool/duckduckgo-news",
+        "module": "tool/duckduckgo"
+      },
+      {
+        "id": "tool/duckduckgo-search",
+        "module": "tool/duckduckgo"
       },
       {
         "id": "tool/file-delivery",
@@ -864,6 +949,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/nvidia",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
+      "llm-provider/opencode-zen",
       "llm-provider/openrouter",
       "llm-provider/zai",
       "manager/control-plane",
@@ -873,9 +959,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-daemon/sandboxd",
       "storage/r2",
       "tool/agents-md",
-      "tool/browser-use",
       "tool/compression",
       "tool/delegation",
+      "tool/duckduckgo",
       "tool/file-delivery",
       "tool/media-audio",
       "tool/media-image",
@@ -907,6 +993,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/nvidia",
       "llm-provider/openai-chatgpt",
       "llm-provider/opencode-go",
+      "llm-provider/opencode-zen",
       "llm-provider/openrouter",
       "llm-provider/zai",
       "manager/agent-profile-admin",
@@ -929,9 +1016,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-daemon/sandboxd",
       "storage/r2",
       "tool/agents-md",
-      "tool/browser-use",
       "tool/compression",
       "tool/delegation",
+      "tool/duckduckgo-news",
+      "tool/duckduckgo-search",
       "tool/file-delivery",
       "tool/media-audio-transcription",
       "tool/media-image-description",
@@ -965,6 +1053,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "compress",
     "describe_image_file",
     "describe_video_file",
+    "duckduckgo_news",
+    "duckduckgo_search",
     "execute_command",
     "list_files",
     "read_file",
@@ -995,6 +1085,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "llm-provider/nvidia",
     "llm-provider/openai-chatgpt",
     "llm-provider/opencode-go",
+    "llm-provider/opencode-zen",
     "llm-provider/openrouter",
     "llm-provider/zai"
   ],
@@ -1005,7 +1096,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "nvidia",
     "openai-chatgpt",
     "opencode-go",
+    "opencode-zen",
     "opencode_go",
+    "opencode_zen",
     "openrouter",
     "zai"
   ],
@@ -1082,7 +1175,23 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "cargo_feature": "llm-opencode-go",
       "config_env": [
         "OPENCODE_GO_API_BASE",
-        "OPENCODE_GO_API_KEY"
+        "OPENCODE_API_KEY",
+        "OPENCODE_GO_MESSAGES_API_BASE",
+        "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+        "OPENCODE_GO_MODELS_URL"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/opencode-zen",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-opencode-go",
+      "config_env": [
+        "OPENCODE_ZEN_API_BASE",
+        "OPENCODE_ZEN_API_KEY",
+        "OPENCODE_ZEN_MESSAGES_API_BASE",
+        "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
+        "OPENCODE_ZEN_MODELS_URL"
       ],
       "requires_capabilities": []
     },
@@ -1145,9 +1254,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "tool/browser-use",
-      "kind": "browser",
-      "cargo_feature": "tool-browser-use",
+      "module_id": "tool/duckduckgo",
+      "kind": "search",
+      "cargo_feature": "tool-duckduckgo",
       "config_env": [],
       "requires_capabilities": []
     },

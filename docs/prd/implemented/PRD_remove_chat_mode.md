@@ -679,22 +679,6 @@ Media capability is separate from agent compatibility:
 - Direct provider IDs such as `gemini`, `google-gemini` or `llm-provider/gemini` remain forbidden unless a separate provider integration PR intentionally changes repo policy.
 
 
-### Browser Use and removed providers
-
-Browser Use must not maintain a separate compatibility matrix for removed chat-only providers. Groq is removed globally and must not remain as a Browser Use special case.
-
-Browser Use keeps only its explicit bridge-supported providers: `minimax`, `zai`, and `openrouter`. A dedicated Browser Use route may be configured with `BROWSER_USE_MODEL_ID` / `BROWSER_USE_MODEL_PROVIDER`; otherwise Browser Use inherits the active agent/tool route. If the provider is not one of the bridge-supported providers, Browser Use fails fast with a generic unsupported-provider error.
-
-This work must not introduce new Browser Use-specific provider registries, Groq rejection code, fallback routes, migration behavior for old Groq config, or tests that preserve Groq as a literal unsupported-provider fixture. Old `BROWSER_USE_MODEL_PROVIDER=groq` config is invalid because Groq is removed globally.
-
-Implementation guidance:
-
-- remove `matches!(provider.as_str(), "llm-provider/groq" | "groq")` and any equivalent Groq-specific branch;
-- do not add a Groq-specific rejection path;
-- set `supports_tools=true` only for routes that already passed the supported-provider match;
-- keep `supports_vision` as the existing Browser Use vision heuristic;
-- update tests to use a generic unsupported provider instead of literal `groq`.
-
 ### Required Provider Categories
 
 #### Keep
@@ -746,7 +730,7 @@ Implementation guidance:
 
 - None for provider category policy.
 
-Implementation still must verify exact code locations and update tests/snapshots, but product decisions for internal completion, OpenRouter, NVIDIA, Browser Use/Groq, media routes and ChatGPT alias handling are resolved by DR-002, DR-003, DR-004 and the policy sections above.
+Implementation still must verify exact code locations and update tests/snapshots, but product decisions for internal completion, OpenRouter, NVIDIA, Groq removal, media routes and ChatGPT alias handling are resolved by DR-002, DR-003, DR-004 and the policy sections above.
 
 ## 8. Functional Requirements
 
@@ -1224,7 +1208,6 @@ ID: `FR-011`
 - Remove `GROQ_API_KEY` from config schema/capabilities, env examples, workflows and docs.
 - Remove `llm-provider/groq` from `profiles/full.toml` and `scripts/check-compiled-capabilities.sh`.
 - Update snapshots and tests that expect Groq registration/capabilities.
-- Remove Groq-specific Browser Use branches, defaults, rejection paths, docs, tests or provider mappings; Browser Use unsupported-provider tests must use a generic unsupported provider fixture instead of literal `groq`.
 
 Rationale:
 
@@ -1241,7 +1224,6 @@ Affected Areas:
 
 - `llm/providers/groq.rs`
 - `llm/providers/groq/module.rs`
-- `crates/oxide-agent-core/src/agent/providers/browser_use/mod.rs`
 - `llm/providers/mod.rs`
 - `llm/providers/modules.rs`
 - `config.rs`
@@ -1252,10 +1234,8 @@ Affected Areas:
 
 Edge Cases:
 
-- Browser Use or docs reference `llm-provider/groq` indirectly.
 - `async-openai` dependency might still be needed by Mistral; remove only `llm-groq` feature, not shared dependencies used by other providers.
 - Snapshot tests with profile-full/all-features.
-- `BROWSER_USE_MODEL_PROVIDER=groq` old config must be invalid because Groq is removed globally, not because Browser Use has a special Groq compatibility rule.
 
 ### FR-012: Harden OpenRouter compatibility
 
@@ -1847,9 +1827,6 @@ rg -n "update_user_prompt|get_user_prompt|pick_system_prompt|resolve_system_prom
 
 # Provider features/profiles must not contain Groq.
 rg -n "llm-groq|llm-provider/groq|GROQ_API_KEY" Cargo.toml crates profiles scripts .github .env.example README.md AGENTS.md
-
-# Browser Use must not preserve Groq as a special case.
-rg -n "Groq|GROQ|llm-provider/groq|groq" crates/oxide-agent-core/src/agent/providers/browser_use crates/oxide-agent-core/tests crates/oxide-agent-transport-telegram/tests
 
 # Media/modality invariant: Telegram media handlers must not use Chat Mode storage/controls.
 rg -n "chat_mode|save_message_for_chat|ensure_scoped_chat_uuid|send_chat_flow_controls|process_llm_request" \

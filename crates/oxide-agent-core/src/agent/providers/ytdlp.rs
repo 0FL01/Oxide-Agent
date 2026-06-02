@@ -241,6 +241,12 @@ impl YtdlpProvider {
                     "✅ File '{file_name}' ({size_mb:.2} MB) sent to user successfully"
                 ))
             }
+            FileDeliveryStatus::TooLarge { limit_bytes } => Ok(format!(
+                "⚠️ File is too large for chat delivery ({size_mb:.2} MB > {:.2} MB)\n\
+                 File remains in sandbox at: {file_path}\n\
+                 Use `upload_file` or increase OXIDE_CHAT_DELIVERY_MAX_FILE_SIZE_BYTES.",
+                limit_bytes as f64 / 1024.0 / 1024.0
+            )),
             FileDeliveryStatus::DeliveryFailed(error) => {
                 warn!(error = %error, file_path = %file_path, "File delivery failed after retries");
                 Ok(format!(

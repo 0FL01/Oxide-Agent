@@ -1,0 +1,126 @@
+name: ${COMPOSE_PROJECT_NAME:-oxide-agent}-web
+
+x-oxide-web-build: &oxide_web_build
+  context: .
+  dockerfile: docker/Dockerfile.app
+  args:
+    CARGO_FEATURES: oxide-agent-transport-web/profile-web-embedded-opencode-local,oxide-agent-sandboxd/profile-full
+    PACKAGES: oxide-agent-transport-web oxide-agent-sandboxd
+    BINARIES: oxide-agent-web-console oxide-agent-sandboxd
+    ENTRYPOINT_BINARY: oxide-agent-web-console
+    RUNTIME_APT_PACKAGES: ""
+    BUILD_WEB_UI: "true"
+
+services:
+  sandbox_image:
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.dev
+    image: ${SANDBOX_IMAGE:-agent-sandbox:latest}
+    command: ["true"]
+    restart: "no"
+    environment:
+      - TZ=Europe/Moscow
+
+  oxide_web:
+    build: *oxide_web_build
+    image: oxide-agent-web:latest
+    container_name: oxide_agent_web
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - OXIDE_WEB_ADDR=${OXIDE_WEB_ADDR:-127.0.0.1:3010}
+      - OXIDE_WEB_STATIC_DIR=/app/web
+      - OXIDE_WEB_REQUIRE_STATIC_ASSETS=true
+      - OXIDE_WEB_ENABLED=true
+      - OXIDE_WEB_ALLOW_IN_MEMORY_STORE=${OXIDE_WEB_ALLOW_IN_MEMORY_STORE:-true}
+      - OXIDE_WEB_REGISTRATION_ENABLED=${OXIDE_WEB_REGISTRATION_ENABLED:-true}
+      - OXIDE_WEB_BOOTSTRAP_TOKEN=${OXIDE_WEB_BOOTSTRAP_TOKEN:-}
+      - OXIDE_WEB_COOKIE_SECURE=${OXIDE_WEB_COOKIE_SECURE:-false}
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
+      - SANDBOX_BACKEND=broker
+      - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+      - DUCKDUCKGO_ENABLED=true
+      - DUCKDUCKGO_MIN_DELAY_MS=2500
+      - DUCKDUCKGO_JITTER_MS=1500
+      - SEARXNG_ENABLED=true
+      - SEARXNG_URL=http://127.0.0.1:8081
+      - TZ=Europe/Moscow
+      - RUST_LOG=oxide_agent_core=info,oxide_agent_transport_web=info,oxide_agent_runtime=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
+      - DEBUG_MODE=false
+    volumes:
+      - ./config:/app/config
+      - sandboxd-run:/run/sandboxd
+    network_mode: host
+    depends_on:
+      sandboxd:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  sandboxd:
+    build: *oxide_web_build
+    image: oxide-agent-web:latest
+    container_name: oxide_agent_sandboxd
+    restart: unless-stopped
+    user: "0"
+    command: ["./oxide-agent-sandboxd"]
+    environment:
+      - RUST_LOG=oxide_agent_core=info,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn
+      - DEBUG_MODE=false
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
+      - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
+      - STACK_LOGS_PROJECT=${COMPOSE_PROJECT_NAME:-oxide-agent}-web
+    depends_on:
+      sandbox_image:
+        condition: service_completed_successfully
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandboxd-run:/run/sandboxd
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/sandboxd/sandboxd.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+  searxng:
+    image: searxng/searxng:2026.5.31-300695de5
+    container_name: searxng
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+      - SEARXNG_BASE_URL=http://127.0.0.1:8081/
+      - GRANIAN_HOST=0.0.0.0
+      - GRANIAN_PORT=8080
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+volumes:
+  sandboxd-run:
