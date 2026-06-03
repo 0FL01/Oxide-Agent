@@ -1,6 +1,6 @@
 use super::error::BraveSearchError;
 use super::types::{BraveSearchResponse, NormalizedBraveSearchArgs};
-use reqwest::header::{ACCEPT, ACCEPT_ENCODING};
+use reqwest::header::ACCEPT;
 use reqwest::StatusCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -140,7 +140,6 @@ impl BraveSearchClient {
             .http
             .get(url)
             .header(ACCEPT, "application/json")
-            .header(ACCEPT_ENCODING, "gzip")
             .header(SUBSCRIPTION_TOKEN_HEADER, self.api_key.as_str())
             .send()
             .await
@@ -321,7 +320,7 @@ mod tests {
         assert!(request.contains("safesearch=moderate"));
         assert!(request.contains("extra_snippets=true"));
         assert!(request.contains("accept: application/json"));
-        assert!(request.contains("accept-encoding: gzip"));
+        assert!(!request.contains("accept-encoding: gzip"));
         assert!(request.contains("x-subscription-token: test-key"));
     }
 
