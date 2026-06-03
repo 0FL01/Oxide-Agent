@@ -312,15 +312,18 @@ MINIMAX_API_KEY=...
 TAVILY_API_KEY=...
 # BRAVE_SEARCH_API_KEY=...
 # BRAVE_SEARCH_ENABLED=true
+# Brave Search — primary indexed web discovery when BRAVE_SEARCH_API_KEY is configured.
 DUCKDUCKGO_ENABLED=true
 DUCKDUCKGO_MIN_DELAY_MS=2500
 DUCKDUCKGO_JITTER_MS=1500
 # SEARXNG_ENABLED=true
 # SEARXNG_URL=http://127.0.0.1:8081
+# SearXNG — fallback/self-hosted aggregator.
 
 # Crawl4AI (browser-rendered Markdown)
 # OXIDE_CRAWL4AI_BASE_URL=http://127.0.0.1:11235
 # OXIDE_CRAWL4AI_API_TOKEN=...
+# Crawl4AI — browser-rendered opener for selected URLs.
 
 # Wiki Memory Writer (background, optional LLM-assisted)
 # WIKI_MEMORY_WRITER_ENABLED=true
@@ -447,10 +450,10 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 
 ### Web Search and Extraction
 - **DuckDuckGo Provider** (`tool-duckduckgo`) - public web/news URL discovery, no API key required
-- **Brave Search Provider** (`tool-brave-search`) - registered Brave Web Search API URL discovery tool with fallback-aware payloads and summaries
+- **Brave Search Provider** (`tool-brave-search`) - primary indexed web discovery when `BRAVE_SEARCH_API_KEY` is configured
 - **Tavily Provider** (`tool-tavily`) - web search and data extraction
-- **SearXNG Provider** (`tool-searxng`) - self-hosted search aggregator with engine rotation
-- **Crawl4AI Provider** (`tool-crawl4ai-markdown`) - browser-rendered Markdown extraction for selected search result URLs
+- **SearXNG Provider** (`tool-searxng`) - fallback/self-hosted aggregator
+- **Crawl4AI Provider** (`tool-crawl4ai-markdown`) - browser-rendered opener for selected search result URLs
 - **WebFetch Markdown Provider** (`tool-webfetch-md`) - single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 
 ### Sandbox
