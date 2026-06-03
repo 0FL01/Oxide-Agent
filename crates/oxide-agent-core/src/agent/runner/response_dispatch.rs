@@ -11,7 +11,7 @@ use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::ChatResponse;
 use anyhow::{anyhow, Result};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 impl AgentRunner {
     pub(super) async fn handle_llm_response(
@@ -261,6 +261,31 @@ impl AgentRunner {
         response: &mut ChatResponse,
         ctx: &mut AgentRunnerContext<'_>,
     ) {
+        {
+            let content_len = response.content.as_deref().map(|c| c.len()).unwrap_or(0);
+            let finish_reason = &response.finish_reason;
+            let is_truncated = finish_reason == "length";
+            if is_truncated {
+                warn!(
+                    task_id = %ctx.task_id,
+                    finish_reason,
+                    content_len,
+                    tool_calls = response.tool_calls.len(),
+                    provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
+                    model = %ctx.config.model_name,
+                    "LLM response truncated by provider (finish_reason=length)"
+                );
+            } else {
+                info!(
+                    task_id = %ctx.task_id,
+                    finish_reason,
+                    content_len,
+                    tool_calls = response.tool_calls.len(),
+                    "LLM response received"
+                );
+            }
+        }
+
         if let Some(u) = &response.usage {
             ctx.agent.memory_mut().sync_api_usage(u.clone());
             let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
