@@ -47,6 +47,9 @@ pub mod tavily;
 #[cfg(feature = "tool-duckduckgo")]
 pub mod duckduckgo;
 
+#[cfg(feature = "tool-brave-search")]
+pub mod brave_search;
+
 #[cfg(feature = "tool-searxng")]
 pub mod searxng;
 
@@ -114,6 +117,9 @@ pub use tavily::TavilyProvider;
 
 #[cfg(feature = "tool-duckduckgo")]
 pub use duckduckgo::DuckDuckGoProvider;
+
+#[cfg(feature = "tool-brave-search")]
+pub use brave_search::BraveSearchProvider;
 
 #[cfg(feature = "tool-searxng")]
 pub use searxng::SearxngProvider;

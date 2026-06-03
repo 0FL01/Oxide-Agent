@@ -447,6 +447,7 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 
 ### Web Search and Extraction
 - **DuckDuckGo Provider** (`tool-duckduckgo`) - public web/news URL discovery, no API key required
+- **Brave Search Provider** (`tool-brave-search`) - Brave Web Search API URL discovery plumbing
 - **Tavily Provider** (`tool-tavily`) - web search and data extraction
 - **SearXNG Provider** (`tool-searxng`) - self-hosted search aggregator with engine rotation
 - **Crawl4AI Provider** (`tool-crawl4ai-markdown`) - browser-rendered Markdown extraction
@@ -780,6 +781,7 @@ crates/
 │       │   │   ├── jira_mcp/             # Jira integration
 │       │   │   ├── mattermost_mcp/       # Mattermost integration
 │       │   │   ├── duckduckgo/           # DuckDuckGo search
+│       │   │   ├── brave_search/         # Brave Search API
 │       │   │   ├── searxng/             # SearXNG search
 │       │   │   ├── tts/                  # Kokoro TTS
 │       │   │   ├── silero_tts/           # Silero TTS
@@ -888,7 +890,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | Category | Features |
 |----------|----------|
 | **LLM Providers** | `llm-chatgpt`, `llm-mistral`, `llm-minimax`, `llm-zai`, `llm-nvidia`, `llm-opencode-go`, `llm-openrouter` |
-| **Search Tools** | `tool-tavily`, `tool-duckduckgo`, `tool-searxng`, `tool-crawl4ai-markdown`, `tool-webfetch-md` |
+| **Search Tools** | `tool-tavily`, `tool-duckduckgo`, `tool-brave-search`, `tool-searxng`, `tool-crawl4ai-markdown`, `tool-webfetch-md` |
 | **Sandbox** | `tool-sandbox-exec`, `tool-sandbox-fileops`, `tool-sandbox-recreate` |
 | **Sandbox Backends** | `sandbox-backend-docker-direct`, `sandbox-backend-sandboxd-client`, `sandbox-backend-bwrap` |
 | **Media** | `tool-media-audio`, `tool-media-image`, `tool-media-video`, `tool-ytdlp` |
