@@ -90,12 +90,20 @@ pub fn parse_structured_output(
         return Err(StructuredOutputError::new("Empty response content"));
     }
 
-    let mut last_error = match try_parse_structured_output(trimmed, tools) {
+    // Pre-strip code fences — some models wrap JSON in ```json...```
+    // despite json_object mode. Handle this upfront to avoid noisy recovery.
+    let preprocessed = if trimmed.starts_with("```") {
+        extract_fenced_json(trimmed).unwrap_or_else(|| trimmed.to_string())
+    } else {
+        trimmed.to_string()
+    };
+
+    let mut last_error = match try_parse_structured_output(&preprocessed, tools) {
         Ok(parsed) => return Ok(parsed),
         Err(err) => err.message().to_string(),
     };
 
-    let sanitized = strip_control_chars(trimmed);
+    let sanitized = strip_control_chars(&preprocessed);
     if sanitized != trimmed {
         match try_parse_structured_output(&sanitized, tools) {
             Ok(parsed) => {
@@ -103,6 +111,40 @@ pub fn parse_structured_output(
                 return Ok(parsed);
             }
             Err(err) => last_error = err.message().to_string(),
+        }
+    }
+
+    // Aggressive pass: strip ALL control characters including \n, \r, \t.
+    // Some models emit literal newlines inside JSON string values (which
+    // must be escaped). Removing them produces valid single-line JSON.
+    let aggressively_sanitized = strip_all_control_chars(&sanitized);
+    if aggressively_sanitized != sanitized {
+        match try_parse_structured_output(&aggressively_sanitized, tools) {
+            Ok(parsed) => {
+                warn!(
+                    "Structured output required aggressive control character stripping (newlines/tabs in string values)"
+                );
+                return Ok(parsed);
+            }
+            Err(err) => last_error = err.message().to_string(),
+        }
+    }
+
+    // Prose wrapper: if the response contains no JSON at all but looks like
+    // meaningful prose, wrap it as a structured final answer. This catches
+    // models that ignore structured output instructions and return plain text.
+    if !sanitized.contains('{') && looks_like_prose(&sanitized) {
+        if let Ok(escaped) = serde_json::to_string(&sanitized) {
+            let wrapped = format!(
+                r#"{{"thought":"Model provided direct response","tool_call":null,"final_answer":{escaped},"awaiting_user_input":null}}"#
+            );
+            if let Ok(parsed) = try_parse_structured_output(&wrapped, tools) {
+                warn!(
+                    raw_content = %crate::utils::truncate_str(trimmed, 200),
+                    "Structured output: wrapped prose response as final_answer"
+                );
+                return Ok(parsed);
+            }
         }
     }
 
@@ -154,6 +196,13 @@ fn strip_control_chars(input: &str) -> String {
     }
 }
 
+/// Strip ALL control characters including newlines, tabs, carriage returns.
+/// Used when the lenient `strip_control_chars` pass fails — some models emit
+/// literal newlines inside JSON string values which must be escaped.
+fn strip_all_control_chars(input: &str) -> String {
+    input.chars().filter(|ch| !ch.is_control()).collect()
+}
+
 fn recovery_candidates(input: &str) -> Vec<String> {
     let mut candidates = Vec::new();
 
@@ -168,6 +217,27 @@ fn recovery_candidates(input: &str) -> Vec<String> {
     }
 
     candidates
+}
+
+/// Heuristic check: the text looks like meaningful prose rather than
+/// garbled output, code fragments, or incomplete JSON.
+fn looks_like_prose(text: &str) -> bool {
+    let trimmed = text.trim();
+
+    // Reject obvious non-prose: code fences, XML/HTML-like tags, system markers
+    if trimmed.starts_with("```") || trimmed.starts_with('<') || trimmed.starts_with("[SYSTEM:") {
+        return false;
+    }
+
+    // Require at least 24 non-whitespace characters and some alphabetic content
+    let non_ws_count = trimmed.chars().filter(|ch| !ch.is_whitespace()).count();
+    if non_ws_count < 24 || !trimmed.chars().any(char::is_alphabetic) {
+        return false;
+    }
+
+    // Reject if it looks structurally unfinished
+    let unfinished_tail = ['{', '[', ':', ',', '-'];
+    !unfinished_tail.iter().any(|tail| trimmed.ends_with(*tail))
 }
 
 fn validate_structured_output(
@@ -415,5 +485,75 @@ mod tests {
             result,
             Ok(parsed) if parsed.final_answer.as_deref() == Some("ok")
         ));
+    }
+
+    // --- Prose wrapper tests ---
+
+    #[test]
+    fn wraps_prose_as_final_answer() {
+        let raw = "Summary: This is a detailed answer about structured output handling. It contains enough text to pass the prose heuristic.";
+        let result = parse_structured_output(raw, &tools_fixture());
+        assert!(
+            result.is_ok(),
+            "Prose should be wrapped as structured output"
+        );
+        let parsed = result.unwrap();
+        assert!(parsed.final_answer.is_some());
+        assert!(parsed.final_answer.unwrap().contains("Summary:"));
+        assert!(parsed.tool_call.is_none());
+    }
+
+    #[test]
+    fn does_not_wrap_short_text() {
+        let raw = "Too short";
+        let result = parse_structured_output(raw, &tools_fixture());
+        assert!(result.is_err(), "Short text should not be wrapped");
+    }
+
+    #[test]
+    fn does_not_wrap_code_fence() {
+        let raw = "```python\nprint('hello')\n```";
+        let result = parse_structured_output(raw, &tools_fixture());
+        assert!(
+            result.is_err(),
+            "Code fences should not be wrapped as prose"
+        );
+    }
+
+    #[test]
+    fn does_not_wrap_json_with_brace() {
+        let raw = r#"{"broken": true"#; // contains '{' so prose wrapper skips
+        let result = parse_structured_output(raw, &tools_fixture());
+        assert!(result.is_err());
+    }
+
+    // --- Aggressive control char stripping tests ---
+
+    #[test]
+    fn strips_literal_newlines_in_string_values() {
+        // Model puts raw newline inside "thought" value — aggressive stripping should fix it
+        let raw = format!(
+            "{{\"thought\":\"line1\nline2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}}"
+        );
+        let result = parse_structured_output(&raw, &tools_fixture());
+        assert!(
+            result.is_ok(),
+            "Should parse after aggressive control char stripping"
+        );
+        let parsed = result.unwrap();
+        assert_eq!(parsed.thought, "line1line2");
+        assert_eq!(parsed.final_answer.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn strips_literal_tabs_in_string_values() {
+        let raw = format!(
+            "{{\"thought\":\"col1\tcol2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}}"
+        );
+        let result = parse_structured_output(&raw, &tools_fixture());
+        assert!(
+            result.is_ok(),
+            "Should parse after aggressive control char stripping"
+        );
     }
 }

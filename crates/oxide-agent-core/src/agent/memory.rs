@@ -666,6 +666,8 @@ impl AgentMemory {
             prompt_tokens = usage.prompt_tokens,
             completion_tokens = usage.completion_tokens,
             total_tokens = usage.total_tokens,
+            cached_tokens = usage.cached_tokens,
+            cache_creation_tokens = usage.cache_creation_tokens,
             diff = diff,
             "METRIC: Token usage synchronized from API"
         );
@@ -820,38 +822,21 @@ fn format_compacted_summary(summary_text: &str, metadata: &CompactedSummaryMetad
     } else {
         ""
     };
+    // Only `generation` and `wiki_memory_lookup_available` are kept in prompt-visible text.
+    // `generation` is required by `previous_generation()` in controller.rs to chain
+    // compaction generations correctly. `wiki_memory_lookup_available` affects the model's
+    // tool-use decisions. All other metadata (reason, phase, provider, route, token counts,
+    // created_at, etc.) is purely diagnostic and is already logged via
+    // `log_runtime_compaction_success` (runtime_compaction.rs).
+    // Keeping them out of the prompt prevents cache-busting on every compaction round.
     format!(
         "{prefix}\n\
 generation: {generation}\n\
-reason: {reason:?}\n\
-phase: {phase:?}\n\
-provider: {provider}\n\
-route: {route}\n\
-backend: {backend}\n\
-token_before: {token_before}\n\
-token_after: {token_after}\n\
-history_items_before: {history_items_before}\n\
-history_items_after: {history_items_after}\n\
-created_at: {created_at}\n\
-previous_summary_detected: {previous_summary_detected}\n\
-repair_applied: {repair_applied}\n\
 {wiki_metadata_line}\n\
 {guidance}\n\n\
 {summary}",
         prefix = OXIDE_COMPACTED_SUMMARY_PREFIX,
         generation = metadata.generation,
-        reason = metadata.reason,
-        phase = metadata.phase,
-        provider = metadata.provider,
-        route = metadata.route,
-        backend = metadata.backend.as_str(),
-        token_before = metadata.token_before,
-        token_after = metadata.token_after,
-        history_items_before = metadata.history_items_before,
-        history_items_after = metadata.history_items_after,
-        created_at = metadata.created_at,
-        previous_summary_detected = metadata.previous_summary_detected,
-        repair_applied = metadata.repair_applied,
         wiki_metadata_line = wiki_metadata_line,
         guidance = guidance,
         summary = summary_text.trim(),
@@ -1030,6 +1015,7 @@ mod tests {
             prompt_tokens: 1000,
             completion_tokens: 234,
             total_tokens: 1234,
+            ..TokenUsage::default()
         });
         assert_eq!(memory.api_token_count(), Some(1234));
         assert_eq!(memory.token_count(), estimated_before_sync);
@@ -1052,6 +1038,7 @@ mod tests {
             prompt_tokens: 1024,
             completion_tokens: 1024,
             total_tokens: 2048,
+            ..TokenUsage::default()
         });
 
         memory.replace_messages(vec![
@@ -1327,5 +1314,121 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content.starts_with("[Previous context compressed]")));
+    }
+
+    /// Compacted summary must not contain volatile metadata (timestamps, provider,
+    /// route, token counts) that changes between compaction rounds and busts the
+    /// prompt cache. Only `wiki_memory_lookup_available` is kept for tool-use
+    /// decisions. Full metadata is logged via `log_runtime_compaction_success`.
+    #[test]
+    fn compacted_summary_excludes_volatile_metadata() {
+        use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
+
+        let metadata = CompactedSummaryMetadata {
+            generation: 3,
+            reason: CompactionReason::PreTurn,
+            phase: CompactionPhase::PreSampling,
+            token_before: 99_876,
+            token_after: 12_345,
+            history_items_before: 87,
+            history_items_after: 23,
+            provider: "openrouter".to_string(),
+            route: "anthropic/claude-sonnet-4".to_string(),
+            backend: CompactionBackend::LocalLlmSummary,
+            created_at: "2026-06-01T14:32:17.849032+00:00".to_string(),
+            previous_summary_detected: true,
+            repair_applied: false,
+            wiki_memory_lookup_available: true,
+        };
+
+        let summary = format_compacted_summary(
+            "The user asked to deploy the service. Three containers are running.",
+            &metadata,
+        );
+
+        assert!(summary.starts_with(OXIDE_COMPACTED_SUMMARY_PREFIX));
+        assert!(summary.contains("generation: 3"));
+        assert!(summary.contains("wiki_memory_lookup_available: true"));
+        assert!(summary.contains("Agent Mode hot context compacted"));
+        assert!(summary.contains("deploy the service"));
+
+        // Volatile fields must NOT appear in prompt-visible text.
+        assert!(!summary.contains("reason:"));
+        assert!(!summary.contains("phase:"));
+        assert!(!summary.contains("provider:"));
+        assert!(!summary.contains("route:"));
+        assert!(!summary.contains("backend:"));
+        assert!(!summary.contains("token_before:"));
+        assert!(!summary.contains("token_after:"));
+        assert!(!summary.contains("history_items_before:"));
+        assert!(!summary.contains("history_items_after:"));
+        assert!(!summary.contains("created_at:"));
+        assert!(!summary.contains("previous_summary_detected:"));
+        assert!(!summary.contains("repair_applied:"));
+        assert!(!summary.contains("2026-06-01"));
+        assert!(!summary.contains("openrouter"));
+        assert!(!summary.contains("99_876"));
+    }
+
+    /// Two summaries with different metadata but same semantic text produce
+    /// nearly identical prompt-visible content — `generation` is the only
+    /// metadata field that differs (it is required for compaction chain).
+    #[test]
+    fn compacted_summary_differs_only_in_generation_across_metadata() {
+        use crate::agent::compaction::{CompactionBackend, CompactionPhase, CompactionReason};
+
+        let metadata_a = CompactedSummaryMetadata {
+            generation: 1,
+            reason: CompactionReason::Manual,
+            phase: CompactionPhase::Manual,
+            token_before: 50_000,
+            token_after: 10_000,
+            history_items_before: 40,
+            history_items_after: 15,
+            provider: "opencode-go".to_string(),
+            route: "deepseek-v4-flash".to_string(),
+            backend: CompactionBackend::LocalLlmSummary,
+            created_at: "2026-01-01T00:00:00+00:00".to_string(),
+            previous_summary_detected: false,
+            repair_applied: false,
+            wiki_memory_lookup_available: false,
+        };
+
+        let metadata_b = CompactedSummaryMetadata {
+            generation: 5,
+            reason: CompactionReason::ContextLimit,
+            phase: CompactionPhase::MidTurn,
+            token_before: 120_000,
+            token_after: 30_000,
+            history_items_before: 100,
+            history_items_after: 40,
+            provider: "openrouter".to_string(),
+            route: "anthropic/claude-sonnet-4".to_string(),
+            backend: CompactionBackend::LocalLlmSummary,
+            created_at: "2026-12-31T23:59:59+00:00".to_string(),
+            previous_summary_detected: true,
+            repair_applied: true,
+            wiki_memory_lookup_available: false,
+        };
+
+        let summary_a = format_compacted_summary("Same semantic content.", &metadata_a);
+        let summary_b = format_compacted_summary("Same semantic content.", &metadata_b);
+
+        // Only the generation line differs.
+        assert!(summary_a.contains("generation: 1"));
+        assert!(summary_b.contains("generation: 5"));
+
+        // Stripping the generation line makes them identical.
+        let strip_gen = |s: &str| -> String {
+            s.lines()
+                .filter(|line| !line.starts_with("generation:"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(
+            strip_gen(&summary_a),
+            strip_gen(&summary_b),
+            "summaries with identical semantic text must differ only in generation"
+        );
     }
 }

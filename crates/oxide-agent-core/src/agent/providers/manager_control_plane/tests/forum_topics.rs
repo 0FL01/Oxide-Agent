@@ -186,6 +186,10 @@ async fn forum_topic_delete_cleans_topic_storage_and_sandbox() {
         .with(eq(77_i64), eq("-100999:42".to_string()))
         .times(1)
         .returning(|_, _| Ok(()));
+    mock.expect_delete_wiki_context()
+        .with(eq(77_i64), eq("-100999:42".to_string()))
+        .times(1)
+        .returning(|_, _| Ok(()));
     mock.expect_delete_topic_context()
         .with(eq(77_i64), eq("-100999:42".to_string()))
         .times(1)
@@ -257,6 +261,7 @@ async fn forum_topic_delete_cleans_topic_storage_and_sandbox() {
     assert_eq!(parsed["topic"]["thread_id"], 42);
     assert_eq!(cleanup["context_key"], "-100999:42");
     assert_eq!(cleanup["deleted_topic_agents_md"], true);
+    assert_eq!(cleanup["deleted_wiki_context"], true);
     assert_eq!(cleanup["deleted_container"], true);
     assert_eq!(parsed["audit_status"], "written");
     assert_eq!(

@@ -20,8 +20,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 
 use super::file_delivery::{
-    deliver_file_via_progress, format_generic_delivery_report, FileDeliveryReport,
-    FileDeliveryRequest, FileDeliveryStatus, CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
+    chat_delivery_max_file_size_bytes, deliver_file_via_progress, format_generic_delivery_report,
+    FileDeliveryReport, FileDeliveryRequest, FileDeliveryStatus,
 };
 use super::sandbox::SandboxRuntime;
 
@@ -114,14 +114,19 @@ impl FileHosterProvider {
             }));
         }
 
-        if file.size_bytes > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
+        let max_delivery_size_bytes = chat_delivery_max_file_size_bytes();
+        if file.size_bytes > max_delivery_size_bytes {
             return serialize_json(json!({
                 "ok": false,
                 "path": file.path,
                 "file_name": file.file_name,
                 "size_bytes": file.size_bytes,
                 "status": "too_large",
-                "message": "⚠️ ERROR: File too large for chat delivery (>50 MB). Please use the upload_file tool to upload it to the cloud.",
+                "max_size_bytes": max_delivery_size_bytes,
+                "message": format!(
+                    "⚠️ ERROR: File too large for chat delivery (>{:.2} MB). Please use the upload_file tool to upload it to the cloud.",
+                    max_delivery_size_bytes as f64 / 1024.0 / 1024.0
+                ),
             }));
         }
 
@@ -488,7 +493,7 @@ fn file_delivery_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "send_file_to_user".to_string(),
-            description: "Send a file from the sandbox to the user via the chat transport. Returns JSON with ok, status, file_name, size_bytes, and message. Supports absolute paths (/workspace/file.txt) and relative paths resolved under /workspace; use list_files to discover exact paths.".to_string(),
+            description: "Send a file from the sandbox to the user via the chat transport. Returns JSON with ok, status, file_name, size_bytes, and message; some transports also return file_id and download_url. When download_url is present, reuse that exact link in your final answer so the user can open the delivered file directly. Supports absolute paths (/workspace/file.txt) and relative paths resolved under /workspace; use list_files to discover exact paths.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -550,6 +555,7 @@ fn serialize_json(value: serde_json::Value) -> Result<String> {
 fn file_delivery_status_code(status: &FileDeliveryStatus) -> &'static str {
     match status {
         FileDeliveryStatus::Delivered => "delivered",
+        FileDeliveryStatus::TooLarge { .. } => "too_large",
         FileDeliveryStatus::DeliveryFailed(_) => "delivery_failed",
         FileDeliveryStatus::ConfirmationChannelClosed => "confirmation_channel_closed",
         FileDeliveryStatus::TimedOut => "timed_out",
@@ -569,7 +575,18 @@ fn build_send_file_response(path: &str, report: &FileDeliveryReport) -> serde_js
     });
 
     if let Some(object) = payload.as_object_mut() {
+        if let Some(receipt) = &report.receipt {
+            if let Some(file_id) = &receipt.file_id {
+                object.insert("file_id".to_string(), json!(file_id));
+            }
+            if let Some(download_url) = &receipt.download_url {
+                object.insert("download_url".to_string(), json!(download_url));
+            }
+        }
         match &report.status {
+            FileDeliveryStatus::TooLarge { limit_bytes } => {
+                object.insert("max_size_bytes".to_string(), json!(limit_bytes));
+            }
             FileDeliveryStatus::DeliveryFailed(error)
             | FileDeliveryStatus::QueueUnavailable(error) => {
                 object.insert("error".to_string(), json!(error));
@@ -622,6 +639,7 @@ mod tests {
                 source_path: "/workspace/report.txt".to_string(),
                 size_bytes: 12,
                 status: FileDeliveryStatus::DeliveryFailed("upload refused".to_string()),
+                receipt: None,
             },
         );
 

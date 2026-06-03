@@ -155,6 +155,44 @@ impl R2Storage {
         Ok(())
     }
 
+    /// Save raw bytes to R2 with the provided content type.
+    pub async fn save_bytes(
+        &self,
+        key: &str,
+        data: &[u8],
+        content_type: &str,
+    ) -> Result<(), StorageError> {
+        let body_bytes = data.to_vec();
+
+        self.cache
+            .insert(key.to_string(), Arc::new(body_bytes.clone()))
+            .await;
+
+        let mut request = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from(body_bytes));
+        if !content_type.is_empty() {
+            request = request.content_type(content_type);
+        }
+
+        match request.send().await {
+            Ok(_) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "ok");
+            }
+            Err(error) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Put, key, "error");
+                return Err(StorageError::S3Put(error.to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn save_json_conditionally<T: serde::Serialize + Sync>(
         &self,
         key: &str,
@@ -321,6 +359,53 @@ impl R2Storage {
         }
     }
 
+    /// Load raw bytes from R2.
+    pub async fn load_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        if let Some(cached_data) = self.cache.get(key).await {
+            self.telemetry.record_cache_hit(key);
+            return Ok(Some(cached_data.to_vec()));
+        }
+
+        self.telemetry.record_cache_miss(key);
+
+        let result = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await;
+
+        match result {
+            Ok(output) => {
+                let data = output
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|e| StorageError::Io(std::io::Error::other(e)))?
+                    .into_bytes();
+
+                self.cache
+                    .insert(key.to_string(), Arc::new(data.to_vec()))
+                    .await;
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "ok");
+                Ok(Some(data.to_vec()))
+            }
+            Err(SdkError::ServiceError(err)) if err.err().is_no_such_key() => {
+                self.cache.invalidate(key).await;
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "not_found");
+                Ok(None)
+            }
+            Err(e) => {
+                self.telemetry
+                    .record_operation(StorageOperation::Get, key, "error");
+                Err(StorageError::S3Get(e.to_string()))
+            }
+        }
+    }
+
     pub(super) async fn load_json_with_etag<T: serde::de::DeserializeOwned>(
         &self,
         key: &str,
@@ -429,7 +514,12 @@ impl R2Storage {
         Ok(())
     }
 
-    pub(super) async fn delete_prefix(&self, prefix: &str) -> Result<(), StorageError> {
+    /// Delete all objects whose keys start with the provided prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if object listing or deletion fails.
+    pub async fn delete_prefix(&self, prefix: &str) -> Result<(), StorageError> {
         let mut continuation_token: Option<String> = None;
 
         loop {
@@ -469,7 +559,59 @@ impl R2Storage {
         Ok(())
     }
 
-    pub(super) async fn list_json_under_prefix<T: serde::de::DeserializeOwned>(
+    /// List object keys whose keys start with the provided prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the S3/R2 list operation fails.
+    pub async fn list_keys_under_prefix(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
+        let mut continuation_token: Option<String> = None;
+        let mut keys = Vec::new();
+
+        loop {
+            let response = match self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_continuation_token(continuation_token.clone())
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    self.telemetry
+                        .record_operation(StorageOperation::List, prefix, "error");
+                    return Err(StorageError::S3Put(error.to_string()));
+                }
+            };
+
+            self.telemetry
+                .record_operation(StorageOperation::List, prefix, "ok");
+
+            keys.extend(
+                response
+                    .contents()
+                    .iter()
+                    .filter_map(|object| object.key().map(str::to_string)),
+            );
+
+            if !response.is_truncated().unwrap_or(false) {
+                break;
+            }
+
+            continuation_token = response.next_continuation_token().map(str::to_string);
+        }
+
+        Ok(keys)
+    }
+
+    /// List and deserialize JSON objects whose keys start with the provided prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if listing, loading, or JSON deserialization fails.
+    pub async fn list_json_under_prefix<T: serde::de::DeserializeOwned>(
         &self,
         prefix: &str,
     ) -> Result<Vec<T>, StorageError> {

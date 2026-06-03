@@ -4,6 +4,25 @@
 //! - creates / retrieves / removes sessions via `SessionRegistry`
 //! - tracks `TaskTimeline` for latency measurements
 //! - owns `InMemoryStorage` and `WebAgentTransport` instances
+//!
+//! ## Durable memory persistence
+//!
+//! On each task completion the `StorageFlowCheckpoint` persists `AgentMemory`
+//! to durable storage at key:
+//!
+//! ```text
+//! users/{user_id}/topics/{context_key}/flows/{flow_id}/memory.json
+//! ```
+//!
+//! When a web session is re-created after a backend restart, the
+//! [`WebSessionManager::create_session_with_id`] method hydrates the
+//! previously persisted `AgentMemory` from storage **before** injecting
+//! topic `AGENTS.md` or installing the checkpoint. This ensures the agent
+//! retains full conversation history across restarts.
+//!
+//! Identifiers (`context_key`, `agent_flow_id`) are stable across restarts
+//! because they are persisted in the `WebSessionRecord` and reused by
+//! `ensure_runtime_session` when the runtime session is re-created.
 
 use crate::in_memory_storage::InMemoryStorage;
 use crate::web_transport::TaskEventLog;
@@ -11,13 +30,17 @@ use chrono::{DateTime, Utc};
 use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::providers::ReminderContext;
 use oxide_agent_core::agent::{
-    AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
+    AgentExecutionProfile, AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
 };
-use oxide_agent_core::config::AgentSettings;
+use oxide_agent_core::config::{
+    AgentSettings, ModelInfo, DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+    DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::{ReminderThreadKind, StorageProvider};
 use oxide_agent_runtime::SessionRegistry;
+use oxide_agent_web_contracts::ModelSelection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,6 +55,10 @@ pub struct SessionMeta {
     pub user_id: i64,
     pub context_key: String,
     pub agent_flow_id: String,
+    #[serde(default)]
+    pub model_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub agent_profile_id: Option<String>,
     pub status: SessionStatus,
     pub created_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
@@ -45,6 +72,13 @@ pub enum SessionStatus {
     Completed,
     TimedOut,
     Error,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WebSessionRuntimeOptions {
+    pub model_selection: Option<ModelSelection>,
+    pub agent_profile_id: Option<String>,
+    pub execution_profile: Option<AgentExecutionProfile>,
 }
 
 /// Task metadata.
@@ -157,6 +191,114 @@ pub struct WebSessionManager {
     running_tasks: Arc<RwLock<HashMap<String, RunningTask>>>,
 }
 
+#[must_use]
+pub(crate) fn web_session_sandbox_scope(user_id: i64, context_key: &str) -> SandboxScope {
+    SandboxScope::new(user_id, context_key.to_string())
+}
+
+fn parse_opencode_model_id(value: &str) -> Option<(&'static str, String)> {
+    let value = value.trim();
+    if let Some(model_id) = value.strip_prefix("opencode-go/") {
+        let model_id = model_id.trim();
+        return (!model_id.is_empty() && !model_id.contains('/'))
+            .then(|| ("opencode-go", model_id.to_string()));
+    }
+    if let Some(model_id) = value.strip_prefix("opencode-zen/") {
+        let model_id = model_id.trim();
+        return (!model_id.is_empty() && !model_id.contains('/'))
+            .then(|| ("opencode-zen", model_id.to_string()));
+    }
+    if value.is_empty() || value.contains('/') {
+        return None;
+    }
+    Some(("opencode-go", value.to_string()))
+}
+
+fn opencode_qualified_model_id_for_prefix(value: &str, model_prefix: &str) -> Option<String> {
+    let value = value.trim();
+    if value.starts_with("opencode-go/") || value.starts_with("opencode-zen/") {
+        let (prefix, model_id) = parse_opencode_model_id(value)?;
+        return (prefix == model_prefix).then(|| format!("{prefix}/{model_id}"));
+    }
+    if value.is_empty() || value.contains('/') {
+        return None;
+    }
+    Some(format!("{model_prefix}/{value}"))
+}
+
+fn selected_opencode_route(
+    selected_qualified_id: &str,
+    selected_prefix: &str,
+    provider: &str,
+    configured_routes: &[ModelInfo],
+) -> ModelInfo {
+    configured_routes
+        .iter()
+        .find(|route| {
+            opencode_provider_prefix(&route.provider) == Some(selected_prefix)
+                && opencode_qualified_model_id_for_prefix(&route.id, selected_prefix).as_deref()
+                    == Some(selected_qualified_id)
+        })
+        .cloned()
+        .and_then(|route| normalize_model_route(route, provider, provider))
+        .unwrap_or_else(|| ModelInfo {
+            id: selected_qualified_id.to_string(),
+            provider: provider.to_string(),
+            max_output_tokens: DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+            context_window_tokens: DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+            weight: 1,
+        })
+}
+
+fn normalize_model_route(
+    mut route: ModelInfo,
+    opencode_go_provider: &str,
+    opencode_zen_provider: &str,
+) -> Option<ModelInfo> {
+    let id = route.id.trim();
+    let provider = route.provider.trim();
+    if id.is_empty() || provider.is_empty() {
+        return None;
+    }
+
+    if let Some(model_prefix) = opencode_provider_prefix(provider) {
+        route.id = opencode_qualified_model_id_for_prefix(id, model_prefix)?;
+        route.provider = if model_prefix == "opencode-zen" {
+            opencode_zen_provider.to_string()
+        } else {
+            opencode_go_provider.to_string()
+        };
+    } else {
+        route.id = id.to_string();
+        route.provider = provider.to_string();
+    }
+    if route.max_output_tokens == 0 {
+        route.max_output_tokens = DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS;
+    }
+    if route.context_window_tokens == 0 {
+        route.context_window_tokens = DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS;
+    }
+    route.weight = route.weight.max(1);
+    Some(route)
+}
+
+fn normalized_provider_name(provider: &str) -> String {
+    provider
+        .trim()
+        .strip_prefix("llm-provider/")
+        .unwrap_or(provider.trim())
+        .replace('_', "-")
+        .to_ascii_lowercase()
+}
+
+fn opencode_provider_prefix(provider: &str) -> Option<&'static str> {
+    match normalized_provider_name(provider).as_str() {
+        "opencode-go" => Some("opencode-go"),
+        "opencode-zen" => Some("opencode-zen"),
+        _ => None,
+    }
+}
+
 impl WebSessionManager {
     /// Create a new session manager.
     ///
@@ -167,9 +309,28 @@ impl WebSessionManager {
         llm: Arc<LlmClient>,
         agent_settings: Arc<AgentSettings>,
     ) -> Self {
+        Self::new_with_storage(
+            registry,
+            llm,
+            agent_settings,
+            Arc::new(InMemoryStorage::new()),
+        )
+    }
+
+    /// Create a new session manager using an explicit storage provider.
+    ///
+    /// Production web console setup passes the durable R2 provider here so
+    /// runtime memory, wiki memory, topic AGENTS.md and reminder context share
+    /// the same storage backend as the rest of the application.
+    pub fn new_with_storage(
+        registry: SessionRegistry,
+        llm: Arc<LlmClient>,
+        agent_settings: Arc<AgentSettings>,
+        storage: Arc<dyn StorageProvider>,
+    ) -> Self {
         Self {
             registry,
-            storage: Arc::new(InMemoryStorage::new()),
+            storage,
             llm,
             agent_settings,
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -190,6 +351,53 @@ impl WebSessionManager {
         &self.registry
     }
 
+    /// Shared LLM client for agent execution and auto-title generation.
+    #[must_use]
+    pub fn llm_client(&self) -> Arc<LlmClient> {
+        self.llm.clone()
+    }
+
+    /// Agent settings including configured model routes.
+    #[must_use]
+    pub fn agent_settings(&self) -> Arc<AgentSettings> {
+        self.agent_settings.clone()
+    }
+
+    async fn model_routes_override_for_selection(
+        &self,
+        selection: Option<&ModelSelection>,
+    ) -> Option<Vec<ModelInfo>> {
+        let selection = selection?;
+        let (selected_prefix, _) = parse_opencode_model_id(&selection.qualified_id)?;
+        let selected_model_id =
+            opencode_qualified_model_id_for_prefix(&selection.qualified_id, selected_prefix)?;
+        let configured_routes = self.agent_settings.get_configured_agent_model_routes();
+        let selected_provider = self.preferred_opencode_provider_name(selected_prefix);
+        let selected_route = selected_opencode_route(
+            &selected_model_id,
+            selected_prefix,
+            &selected_provider,
+            &configured_routes,
+        );
+
+        Some(vec![selected_route])
+    }
+
+    fn preferred_opencode_provider_name(&self, model_prefix: &str) -> String {
+        let (dash, underscore) = if model_prefix == "opencode-zen" {
+            ("opencode-zen", "opencode_zen")
+        } else {
+            ("opencode-go", "opencode_go")
+        };
+        if self.llm.is_provider_available(dash) {
+            dash.to_string()
+        } else if self.llm.is_provider_available(underscore) {
+            underscore.to_string()
+        } else {
+            dash.to_string()
+        }
+    }
+
     // --- Session CRUD ---
 
     /// Create a new session and register it in the `SessionRegistry`.
@@ -202,6 +410,59 @@ impl WebSessionManager {
         agent_flow_id: Option<String>,
     ) -> String {
         let session_id = Uuid::new_v4().to_string();
+        let context_key = context_key.unwrap_or_else(|| "default".to_string());
+        let agent_flow_id = agent_flow_id.unwrap_or_else(|| "default".to_string());
+        self.create_session_with_id(user_id, session_id, context_key, agent_flow_id)
+            .await
+    }
+
+    /// Create a new session with an externally selected public session id.
+    ///
+    /// Used by the production `/api/v1` web console API so the persisted web
+    /// session record and runtime memory scope can share the same id-derived
+    /// context key.
+    ///
+    /// ## Initialization order
+    ///
+    /// 1. Create an empty `AgentSession` with stable scopes.
+    /// 2. Hydrate `AgentMemory` from durable storage (if available).
+    /// 3. Restore volatile execution metadata derived from persisted memory.
+    /// 4. Inject topic `AGENTS.md` only if the restored memory does not already
+    ///    contain a pinned copy.
+    /// 5. Install the storage checkpoint so subsequent task execution persists
+    ///    memory snapshots to the same durable key.
+    /// 6. Create the `AgentExecutor` and register it.
+    pub async fn create_session_with_id(
+        &self,
+        user_id: i64,
+        session_id: String,
+        context_key: String,
+        agent_flow_id: String,
+    ) -> String {
+        self.create_session_with_model_selection(
+            user_id,
+            session_id,
+            context_key,
+            agent_flow_id,
+            WebSessionRuntimeOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn create_session_with_model_selection(
+        &self,
+        user_id: i64,
+        session_id: String,
+        context_key: String,
+        agent_flow_id: String,
+        options: WebSessionRuntimeOptions,
+    ) -> String {
+        let WebSessionRuntimeOptions {
+            model_selection,
+            agent_profile_id,
+            execution_profile,
+        } = options;
+
         let session_id_i64 = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
@@ -212,15 +473,27 @@ impl WebSessionManager {
         };
 
         let sid = SessionId::from(session_id_i64);
-        let sandbox_scope = SandboxScope::new(user_id, "web");
-        let context_key = context_key.unwrap_or_else(|| "default".to_string());
-        let agent_flow_id = agent_flow_id.unwrap_or_else(|| "default".to_string());
+        let sandbox_scope = web_session_sandbox_scope(user_id, &context_key);
 
         let mut session = AgentSession::new_with_scopes(
             sid,
             sandbox_scope,
             AgentMemoryScope::new(user_id, context_key.clone(), agent_flow_id.clone()),
         );
+
+        // 1. Hydrate persisted AgentMemory from durable storage.
+        //    This restores conversation history across backend restarts.
+        self.hydrate_agent_memory(
+            &mut session,
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+        )
+        .await;
+
+        // 2. Inject topic AGENTS.md only if the restored memory does not
+        //    already contain a pinned copy (e.g. after hydration from R2).
         inject_topic_agents_md_for_session(
             self.storage(),
             user_id,
@@ -229,14 +502,18 @@ impl WebSessionManager {
         )
         .await;
 
-        // Attach in-memory checkpoint so memory survives across tasks.
-        session.set_memory_checkpoint(Arc::new(InMemoryFlowCheckpoint {
-            storage: Arc::new(InMemoryStorage::new()),
+        // 3. Attach a checkpoint backed by the manager storage so memory
+        //    survives across tasks and follows the configured durable backend.
+        //    Must be installed AFTER hydration so the first checkpoint write
+        //    reflects the full hydrated state, not an empty snapshot.
+        session.set_memory_checkpoint(Arc::new(StorageFlowCheckpoint {
+            storage: self.storage(),
             user_id,
             context_key: context_key.clone(),
             agent_flow_id: agent_flow_id.clone(),
         }));
 
+        // 4. Create executor only after the session is fully hydrated.
         let mut executor =
             AgentExecutor::new(self.llm.clone(), session, self.agent_settings.clone())
                 .with_wiki_memory_store(oxide_agent_core::agent::WikiStore::from_storage_provider(
@@ -254,6 +531,15 @@ impl WebSessionManager {
             thread_kind: ReminderThreadKind::None,
             notifier: None,
         });
+        if let Some(model_routes) = self
+            .model_routes_override_for_selection(model_selection.as_ref())
+            .await
+        {
+            executor.set_model_routes_override(model_routes);
+        }
+        if let Some(execution_profile) = execution_profile {
+            executor.set_execution_profile(execution_profile);
+        }
 
         self.registry.insert(sid, executor).await;
 
@@ -262,6 +548,8 @@ impl WebSessionManager {
             user_id,
             context_key,
             agent_flow_id,
+            model_selection,
+            agent_profile_id,
             status: SessionStatus::Idle,
             created_at: Utc::now(),
             last_activity_at: Utc::now(),
@@ -276,7 +564,32 @@ impl WebSessionManager {
         self.sessions.read().await.get(session_id).cloned()
     }
 
-    /// Delete a session and cancel any running task.
+    /// Replace the execution profile for an already materialized runtime session.
+    pub async fn set_session_execution_profile(
+        &self,
+        session_id: &str,
+        agent_profile_id: Option<String>,
+        execution_profile: Option<AgentExecutionProfile>,
+    ) -> bool {
+        let Some(meta) = self.sessions.read().await.get(session_id).cloned() else {
+            return false;
+        };
+        let sid = derive_web_session_id(meta.user_id, session_id);
+        let Some(executor_arc) = self.registry.get(&sid).await else {
+            return false;
+        };
+        {
+            let mut executor = executor_arc.write().await;
+            executor.set_execution_profile(execution_profile.unwrap_or_default());
+        }
+        if let Some(meta) = self.sessions.write().await.get_mut(session_id) {
+            meta.agent_profile_id = agent_profile_id;
+            meta.last_activity_at = Utc::now();
+        }
+        true
+    }
+
+    /// Delete a session from the runtime registry.
     pub async fn delete_session(&self, session_id: &str) -> bool {
         let sid = self.resolve_session_id(session_id).await;
         if let Some(sid) = sid {
@@ -291,6 +604,10 @@ impl WebSessionManager {
     ///
     /// Does NOT start execution — use `start_task_execution` for that.
     pub async fn register_task(&self, session_id: &str, task_text: String) -> Option<RunningTask> {
+        if let Some(sid) = self.resolve_session_id(session_id).await {
+            self.registry.renew_cancellation_token(&sid).await;
+        }
+
         // Update session last_activity_at.
         {
             let mut sessions = self.sessions.write().await;
@@ -323,16 +640,71 @@ impl WebSessionManager {
         Some(running)
     }
 
+    /// Register an existing task id for a resumed run and return the new
+    /// in-memory running handle.
+    pub async fn register_existing_task(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        task_text: String,
+    ) -> Option<RunningTask> {
+        if let Some(sid) = self.resolve_session_id(session_id).await {
+            self.registry.renew_cancellation_token(&sid).await;
+        }
+
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some(meta) = sessions.get_mut(session_id) {
+                meta.last_activity_at = Utc::now();
+                meta.status = SessionStatus::Processing;
+            } else {
+                return None;
+            }
+        }
+
+        let task_id = task_id.to_string();
+        {
+            let mut tasks = self.tasks.write().await;
+            let created_at = tasks
+                .get(&task_id)
+                .map_or_else(Utc::now, |meta| meta.created_at);
+            tasks.insert(
+                task_id.clone(),
+                TaskMeta {
+                    task_id: task_id.clone(),
+                    session_id: session_id.to_string(),
+                    task_text,
+                    status: TaskStatus::Running,
+                    created_at,
+                    finished_at: None,
+                },
+            );
+        }
+
+        let running = RunningTask::new(task_id.clone());
+        self.running_tasks
+            .write()
+            .await
+            .insert(task_id, running.clone());
+
+        Some(running)
+    }
+
     /// Mark a task as completed.
     pub async fn complete_task(&self, task_id: &str, session_id: &str) {
+        let mut update_session = true;
         {
             let mut tasks = self.tasks.write().await;
             if let Some(meta) = tasks.get_mut(task_id) {
-                meta.status = TaskStatus::Completed;
-                meta.finished_at = Some(Utc::now());
+                if meta.status == TaskStatus::Cancelled {
+                    update_session = false;
+                } else {
+                    meta.status = TaskStatus::Completed;
+                    meta.finished_at = Some(Utc::now());
+                }
             }
         }
-        {
+        if update_session {
             let mut sessions = self.sessions.write().await;
             if let Some(meta) = sessions.get_mut(session_id) {
                 meta.status = SessionStatus::Idle;
@@ -343,14 +715,19 @@ impl WebSessionManager {
 
     /// Mark a task as failed.
     pub async fn fail_task(&self, task_id: &str, session_id: &str) {
+        let mut update_session = true;
         {
             let mut tasks = self.tasks.write().await;
             if let Some(meta) = tasks.get_mut(task_id) {
-                meta.status = TaskStatus::Failed;
-                meta.finished_at = Some(Utc::now());
+                if meta.status == TaskStatus::Cancelled {
+                    update_session = false;
+                } else {
+                    meta.status = TaskStatus::Failed;
+                    meta.finished_at = Some(Utc::now());
+                }
             }
         }
-        {
+        if update_session {
             let mut sessions = self.sessions.write().await;
             if let Some(meta) = sessions.get_mut(session_id) {
                 meta.status = SessionStatus::Error;
@@ -372,6 +749,13 @@ impl WebSessionManager {
                 meta.finished_at = Some(Utc::now());
             }
         }
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some(meta) = sessions.get_mut(session_id) {
+                meta.status = SessionStatus::Idle;
+                meta.last_activity_at = Utc::now();
+            }
+        }
         self.running_tasks.write().await.remove(task_id).is_some()
     }
 
@@ -385,6 +769,79 @@ impl WebSessionManager {
         self.tasks.read().await.get(task_id).cloned()
     }
 
+    /// Hydrate `AgentMemory` from durable storage for an existing web session.
+    ///
+    /// When a web session is re-created (e.g. after a backend restart), the
+    /// runtime `AgentSession` starts with an empty memory. This method loads
+    /// the previously persisted memory snapshot from durable storage and
+    /// restores volatile execution metadata (such as `last_task`) that is
+    /// derivable from the loaded messages.
+    ///
+    /// Storage key: `users/{user_id}/topics/{context_key}/flows/{flow_id}/memory.json`
+    ///
+    /// If the load fails, the session continues with empty memory and a
+    /// warning is logged. A production setup with `OXIDE_WEB_REQUIRE_DURABLE_STORAGE=true`
+    /// should fail at startup (in `build_r2_backed_app_state`) before reaching
+    /// this point if the storage backend is unavailable.
+    async fn hydrate_agent_memory(
+        &self,
+        session: &mut AgentSession,
+        user_id: i64,
+        web_session_id: &str,
+        context_key: &str,
+        agent_flow_id: &str,
+    ) {
+        tracing::debug!(
+            user_id,
+            web_session_id,
+            context_key,
+            agent_flow_id,
+            "hydrating web agent session from durable storage"
+        );
+
+        match self
+            .storage
+            .load_agent_memory_for_flow(user_id, context_key.to_string(), agent_flow_id.to_string())
+            .await
+        {
+            Ok(Some(memory)) => {
+                let message_count = memory.get_messages().len();
+                tracing::info!(
+                    user_id,
+                    web_session_id,
+                    context_key,
+                    agent_flow_id,
+                    message_count,
+                    "web agent memory hydrated from durable storage"
+                );
+
+                session.memory = memory;
+                session.restore_last_task_from_memory();
+            }
+
+            Ok(None) => {
+                tracing::debug!(
+                    user_id,
+                    web_session_id,
+                    context_key,
+                    agent_flow_id,
+                    "no persisted web agent memory found; starting with empty memory"
+                );
+            }
+
+            Err(error) => {
+                tracing::warn!(
+                    user_id,
+                    web_session_id,
+                    context_key,
+                    agent_flow_id,
+                    ?error,
+                    "failed to load persisted web agent memory; continuing with empty memory"
+                );
+            }
+        }
+    }
+
     /// Resolve session_id string to `SessionId`.
     async fn resolve_session_id(&self, session_id: &str) -> Option<SessionId> {
         let sessions = self.sessions.read().await;
@@ -392,12 +849,6 @@ impl WebSessionManager {
         // Re-derive the SessionId using the same hash as create_session.
         let sid = derive_web_session_id(meta.user_id, session_id);
         Some(sid)
-    }
-
-    /// Access the underlying session registry (for execute_agent_task).
-    #[must_use]
-    pub fn registry(&self) -> &SessionRegistry {
-        &self.registry
     }
 }
 
@@ -413,8 +864,8 @@ fn derive_web_session_id(user_id: i64, session_id: &str) -> SessionId {
     SessionId::from(h.finish() as i64)
 }
 
-/// In-memory checkpoint that delegates to `InMemoryStorage`.
-struct InMemoryFlowCheckpoint {
+/// Agent memory checkpoint that delegates to the configured storage provider.
+struct StorageFlowCheckpoint {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     context_key: String,
@@ -449,7 +900,7 @@ async fn inject_topic_agents_md_for_session(
 }
 
 #[async_trait::async_trait]
-impl oxide_agent_core::agent::AgentMemoryCheckpoint for InMemoryFlowCheckpoint {
+impl oxide_agent_core::agent::AgentMemoryCheckpoint for StorageFlowCheckpoint {
     async fn persist(&self, memory: &AgentMemory) -> Result<(), anyhow::Error> {
         self.storage
             .save_agent_memory_for_flow(
@@ -466,7 +917,40 @@ impl oxide_agent_core::agent::AgentMemoryCheckpoint for InMemoryFlowCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::in_memory_storage::InMemoryStorage;
+    use oxide_agent_core::agent::compaction::AgentMessageKind;
     use oxide_agent_core::storage::UpsertTopicAgentsMdOptions;
+
+    /// Helper: build a `WebSessionManager` backed by an explicit storage provider.
+    fn make_manager_with_storage(storage: Arc<dyn StorageProvider>) -> WebSessionManager {
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings::default());
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        WebSessionManager::new_with_storage(registry, llm, settings, storage)
+    }
+
+    /// Helper: resolve a session_id string to its `AgentExecutor` read handle.
+    ///
+    /// Returns the `Arc<RwLock<AgentExecutor>>` from the registry so the
+    /// caller can `.read().await` on it without lifetime issues.
+    async fn resolve_executor_arc(
+        manager: &WebSessionManager,
+        session_id: &str,
+    ) -> Arc<tokio::sync::RwLock<oxide_agent_core::agent::AgentExecutor>> {
+        let sid = manager
+            .resolve_session_id(session_id)
+            .await
+            .expect("session id must resolve");
+        manager
+            .session_registry()
+            .get(&sid)
+            .await
+            .expect("executor must exist")
+    }
+
+    // -----------------------------------------------------------------------
+    // Existing test
+    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn create_session_bootstraps_topic_agents_md_into_memory() {
@@ -505,5 +989,311 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content.contains("Bootstrap instructions")));
+    }
+
+    #[tokio::test]
+    async fn web_session_uses_context_scoped_sandbox_scope() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage);
+        let context_key = "web-session-scope-test".to_string();
+
+        manager
+            .create_session_with_id(
+                91,
+                "scope-test".to_string(),
+                context_key.clone(),
+                "main".to_string(),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "scope-test").await;
+        let executor = executor_arc.read().await;
+
+        assert_eq!(
+            executor.session().sandbox_scope().namespace(),
+            context_key,
+            "web sessions should use a per-session sandbox namespace"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_session_applies_model_route_override_from_selection() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![
+                ModelInfo {
+                    id: "opencode-go/deepseek-v4-flash".to_string(),
+                    provider: "opencode_go".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                },
+                ModelInfo {
+                    id: "mistral-large".to_string(),
+                    provider: "mistral".to_string(),
+                    max_output_tokens: 16_000,
+                    context_window_tokens: 128_000,
+                    weight: 1,
+                },
+            ]),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
+
+        manager
+            .create_session_with_model_selection(
+                91,
+                "model-selection-test".to_string(),
+                "web-session-model-selection-test".to_string(),
+                "main".to_string(),
+                WebSessionRuntimeOptions {
+                    model_selection: Some(ModelSelection {
+                        qualified_id: "opencode-go/kimi-k2.6".to_string(),
+                    }),
+                    ..WebSessionRuntimeOptions::default()
+                },
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "model-selection-test").await;
+        let executor = executor_arc.read().await;
+        let routes = executor
+            .model_routes_override()
+            .expect("model route override should be set");
+
+        assert_eq!(
+            routes.len(),
+            1,
+            "web model selection must not add fallback routes"
+        );
+        assert_eq!(routes[0].id, "opencode-go/kimi-k2.6");
+        assert_eq!(routes[0].provider, "opencode-go");
+        assert_eq!(
+            routes[0].max_output_tokens,
+            DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS
+        );
+        assert!(routes
+            .iter()
+            .all(|route| route.id != "opencode-go/deepseek-v4-flash"));
+        assert!(routes.iter().all(|route| route.provider != "mistral"));
+    }
+
+    #[tokio::test]
+    async fn web_session_applies_opencode_zen_model_route_override_from_selection() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let registry = SessionRegistry::new();
+        let settings = Arc::new(AgentSettings {
+            agent_model_routes: Some(vec![
+                ModelInfo {
+                    id: "opencode-zen/deepseek-v4-flash-free".to_string(),
+                    provider: "opencode_zen".to_string(),
+                    max_output_tokens: 16_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                },
+                ModelInfo {
+                    id: "opencode-go/deepseek-v4-flash".to_string(),
+                    provider: "opencode_go".to_string(),
+                    max_output_tokens: 32_000,
+                    context_window_tokens: 200_000,
+                    weight: 1,
+                },
+            ]),
+            ..AgentSettings::default()
+        });
+        let llm = Arc::new(LlmClient::new(settings.as_ref()));
+        let manager = WebSessionManager::new_with_storage(registry, llm, settings, storage);
+
+        manager
+            .create_session_with_model_selection(
+                91,
+                "zen-model-selection-test".to_string(),
+                "web-session-zen-selection-test".to_string(),
+                "main".to_string(),
+                WebSessionRuntimeOptions {
+                    model_selection: Some(ModelSelection {
+                        qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
+                    }),
+                    ..WebSessionRuntimeOptions::default()
+                },
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "zen-model-selection-test").await;
+        let executor = executor_arc.read().await;
+        let routes = executor
+            .model_routes_override()
+            .expect("model route override should be set");
+
+        assert_eq!(
+            routes.len(),
+            1,
+            "web model selection must not add fallback routes"
+        );
+        assert_eq!(routes[0].id, "opencode-zen/deepseek-v4-flash-free");
+        assert_eq!(routes[0].provider, "opencode-zen");
+        assert!(routes
+            .iter()
+            .all(|route| route.id != "opencode-go/deepseek-v4-flash"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: memory hydration after manager restart
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn web_session_hydrates_agent_memory_after_manager_restart() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+
+        let user_id = 42i64;
+        let context_key = "web-session-abc123".to_string();
+        let agent_flow_id = "main".to_string();
+        let session_id = "abc123".to_string();
+
+        // --- Phase 1: simulate first session run ---------------------------
+        {
+            let manager_1 = make_manager_with_storage(storage.clone());
+            manager_1
+                .create_session_with_id(
+                    user_id,
+                    session_id.clone(),
+                    context_key.clone(),
+                    agent_flow_id.clone(),
+                )
+                .await;
+
+            // Persist a memory snapshot that contains a user task.
+            let mut memory = AgentMemory::new(usize::MAX);
+            memory.add_message(AgentMessage::user_task("Проверь работу песочницы"));
+            storage
+                .save_agent_memory_for_flow(
+                    user_id,
+                    context_key.clone(),
+                    agent_flow_id.clone(),
+                    &memory,
+                )
+                .await
+                .expect("memory should be saved");
+        }
+        // manager_1 dropped — simulates backend restart.
+
+        // --- Phase 2: re-create session from the same storage ---------------
+        {
+            let manager_2 = make_manager_with_storage(storage.clone());
+            manager_2
+                .create_session_with_id(
+                    user_id,
+                    session_id.clone(),
+                    context_key.clone(),
+                    agent_flow_id.clone(),
+                )
+                .await;
+
+            let executor_arc = resolve_executor_arc(&manager_2, &session_id).await;
+            let executor = executor_arc.read().await;
+            let messages = executor.session().memory.get_messages();
+
+            let has_user_task = messages.iter().any(|msg| {
+                msg.kind == AgentMessageKind::UserTask
+                    && msg.content.contains("Проверь работу песочницы")
+            });
+            assert!(
+                has_user_task,
+                "web session should hydrate AgentMemory from durable storage after restart"
+            );
+
+            // Verify restore_last_task_from_memory was effective.
+            assert_eq!(
+                executor.session().last_task.as_deref(),
+                Some("Проверь работу песочницы"),
+                "restore_last_task_from_memory should recover the last user task"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: no duplicate AGENTS.md after hydration
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn web_session_hydration_does_not_duplicate_topic_agents_md() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+
+        let user_id = 55i64;
+        let context_key = "web-session-dup-test".to_string();
+        let agent_flow_id = "main".to_string();
+        let session_id = "dup-test".to_string();
+
+        // Persist memory that already contains a pinned AGENTS.md message.
+        {
+            let mut memory = AgentMemory::new(usize::MAX);
+            memory.add_message(AgentMessage::topic_agents_md("# Topic Instructions"));
+            storage
+                .save_agent_memory_for_flow(
+                    user_id,
+                    context_key.clone(),
+                    agent_flow_id.clone(),
+                    &memory,
+                )
+                .await
+                .expect("memory should be saved");
+        }
+
+        let manager = make_manager_with_storage(storage.clone());
+        manager
+            .create_session_with_id(
+                user_id,
+                session_id.clone(),
+                context_key.clone(),
+                agent_flow_id.clone(),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, &session_id).await;
+        let executor = executor_arc.read().await;
+        let topic_md_count = executor
+            .session()
+            .memory
+            .get_messages()
+            .iter()
+            .filter(|msg| msg.kind == AgentMessageKind::TopicAgentsMd)
+            .count();
+
+        assert_eq!(
+            topic_md_count, 1,
+            "AGENTS.md should not be duplicated after hydration; found {topic_md_count}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // No memory in storage -> empty session with no panic
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn web_session_starts_empty_when_no_persisted_memory() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+
+        let manager = make_manager_with_storage(storage);
+        manager
+            .create_session_with_id(
+                10,
+                "fresh-session".to_string(),
+                "fresh-ctx".to_string(),
+                "main".to_string(),
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, "fresh-session").await;
+        let executor = executor_arc.read().await;
+        assert!(
+            executor.session().memory.get_messages().is_empty(),
+            "session should start with empty memory when nothing is persisted"
+        );
+        assert!(
+            executor.session().last_task.is_none(),
+            "last_task should be None when memory is empty"
+        );
     }
 }

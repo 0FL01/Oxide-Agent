@@ -6,8 +6,8 @@ use super::{
         build_topic_binding_record, build_topic_context_record, build_topic_infra_config_record,
     },
     keys::{
-        agent_profile_key, audit_events_key, private_secret_key, topic_agents_md_key,
-        topic_binding_key, topic_context_key, topic_infra_config_key,
+        agent_profile_key, agent_profiles_prefix, audit_events_key, private_secret_key,
+        topic_agents_md_key, topic_binding_key, topic_context_key, topic_infra_config_key,
     },
     r2::R2Storage,
     utils::{
@@ -32,6 +32,21 @@ impl R2Storage {
         agent_id: String,
     ) -> Result<Option<AgentProfileRecord>, StorageError> {
         self.load_json(&agent_profile_key(user_id, &agent_id)).await
+    }
+
+    pub(super) async fn list_agent_profiles_inner(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<AgentProfileRecord>, StorageError> {
+        let mut records = self
+            .list_json_under_prefix::<AgentProfileRecord>(&agent_profiles_prefix(user_id))
+            .await?;
+        records.sort_by(|left, right| {
+            left.agent_id
+                .cmp(&right.agent_id)
+                .then_with(|| left.updated_at.cmp(&right.updated_at))
+        });
+        Ok(records)
     }
 
     pub(super) async fn upsert_agent_profile_inner(

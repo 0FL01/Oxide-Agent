@@ -144,7 +144,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, stack_logs, search, browser, reminder"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, stack_logs, search, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -163,7 +163,7 @@ impl ManagerControlPlaneProvider {
                         "tools": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, stack_logs, search, browser, reminder"
+                            "description": "Tool names or provider aliases like ytdlp, ssh, sandbox, stack_logs, search, reminder"
                         },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
@@ -235,7 +235,9 @@ impl ManagerControlPlaneProvider {
     fn push_configured_search_tool_groups(groups: &mut Vec<TopicAgentToolGroup>) {
         #[cfg(not(any(
             feature = "tool-tavily",
+            feature = "tool-duckduckgo",
             feature = "tool-searxng",
+            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md"
         )))]
         let _ = groups;
@@ -246,6 +248,15 @@ impl ManagerControlPlaneProvider {
                 provider: "tavily",
                 aliases: &["search", "tavily"],
                 tools: TOPIC_AGENT_TAVILY_TOOLS,
+            });
+        }
+
+        #[cfg(feature = "tool-duckduckgo")]
+        if crate::config::is_duckduckgo_enabled() {
+            groups.push(TopicAgentToolGroup {
+                provider: "duckduckgo",
+                aliases: &["search", "duckduckgo", "ddg", "news"],
+                tools: TOPIC_AGENT_DUCKDUCKGO_TOOLS,
             });
         }
 
@@ -264,21 +275,13 @@ impl ManagerControlPlaneProvider {
             aliases: &["search", "webfetch", "web_markdown"],
             tools: TOPIC_AGENT_WEBFETCH_TOOLS,
         });
-    }
 
-    fn configured_browser_tool_groups() -> Vec<TopicAgentToolGroup> {
-        // NOTE: Browser Use requires a quality vision-capable agent model at a reasonable
-        // price-per-token. Re-enable by setting `BROWSER_USE_URL`. See `docs/browser-use.md`.
-        #[cfg(feature = "tool-browser-use")]
-        if crate::config::is_browser_use_enabled() {
-            return vec![TopicAgentToolGroup {
-                provider: "browser_use",
-                aliases: &["browser", "browser_use"],
-                tools: TOPIC_AGENT_BROWSER_USE_TOOLS,
-            }];
-        }
-
-        Vec::new()
+        #[cfg(feature = "tool-crawl4ai-markdown")]
+        groups.push(TopicAgentToolGroup {
+            provider: "crawl4ai",
+            aliases: &["search", "crawl4ai", "browser_markdown"],
+            tools: TOPIC_AGENT_CRAWL4AI_TOOLS,
+        });
     }
 
     pub(super) async fn topic_agent_tool_catalog(
@@ -332,7 +335,6 @@ impl ManagerControlPlaneProvider {
         ];
 
         groups.extend(Self::configured_search_tool_groups());
-        groups.extend(Self::configured_browser_tool_groups());
 
         #[cfg(feature = "integration-ssh-mcp")]
         {
@@ -1496,94 +1498,6 @@ mod tests {
         assert!(catalog.tool_names.contains("describe_video_file"));
     }
 
-    #[cfg(feature = "tool-browser-use")]
-    #[tokio::test]
-    async fn topic_agent_tool_catalog_includes_browser_use_tools_when_enabled() {
-        let _guard = crate::config::test_env_async_mutex().lock().await;
-        std::env::set_var("BROWSER_USE_ENABLED", "true");
-        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-
-        let mut mock = crate::storage::MockStorageProvider::new();
-        mock.expect_get_topic_infra_config()
-            .returning(|_, _| Ok(None));
-
-        let provider = ManagerControlPlaneProvider::new(Arc::new(mock), 77);
-        let catalog = provider
-            .topic_agent_tool_catalog("topic-a")
-            .await
-            .expect("catalog should build");
-
-        let browser_group = catalog
-            .groups
-            .iter()
-            .find(|group| group.provider == "browser_use")
-            .expect("browser_use group should be present");
-
-        assert_eq!(browser_group.aliases, &["browser", "browser_use"]);
-        assert_eq!(
-            browser_group.tools,
-            &[
-                "browser_use_run_task",
-                "browser_use_get_session",
-                "browser_use_close_session",
-                "browser_use_extract_content",
-                "browser_use_screenshot"
-            ]
-        );
-        assert!(catalog.tool_names.contains("browser_use_run_task"));
-        assert!(catalog.tool_names.contains("browser_use_get_session"));
-        assert!(catalog.tool_names.contains("browser_use_close_session"));
-        assert!(catalog.tool_names.contains("browser_use_extract_content"));
-        assert!(catalog.tool_names.contains("browser_use_screenshot"));
-
-        std::env::remove_var("BROWSER_USE_ENABLED");
-        std::env::remove_var("BROWSER_USE_URL");
-    }
-
-    #[test]
-    fn browser_alias_expands_browser_use_group() {
-        let catalog = TopicAgentToolCatalog {
-            groups: vec![TopicAgentToolGroup {
-                provider: "browser_use",
-                aliases: &["browser", "browser_use"],
-                tools: &[
-                    "browser_use_run_task",
-                    "browser_use_get_session",
-                    "browser_use_close_session",
-                    "browser_use_extract_content",
-                    "browser_use_screenshot",
-                ],
-            }],
-            tool_names: [
-                "browser_use_run_task",
-                "browser_use_get_session",
-                "browser_use_close_session",
-                "browser_use_extract_content",
-                "browser_use_screenshot",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        };
-
-        let expanded = ManagerControlPlaneProvider::expand_topic_agent_tools(
-            &catalog,
-            vec!["browser".to_string()],
-        )
-        .expect("browser alias should expand the browser-use provider group");
-
-        assert_eq!(
-            expanded,
-            vec![
-                "browser_use_close_session".to_string(),
-                "browser_use_extract_content".to_string(),
-                "browser_use_get_session".to_string(),
-                "browser_use_run_task".to_string(),
-                "browser_use_screenshot".to_string(),
-            ]
-        );
-    }
-
     #[test]
     fn search_alias_expands_all_matching_search_groups() {
         let catalog = TopicAgentToolCatalog {
@@ -1594,9 +1508,9 @@ mod tests {
                     tools: &["web_search", "web_extract"],
                 },
                 TopicAgentToolGroup {
-                    provider: "searxng",
-                    aliases: &["search", "searxng"],
-                    tools: &["searxng_search"],
+                    provider: "duckduckgo",
+                    aliases: &["search", "duckduckgo", "ddg", "news"],
+                    tools: &["duckduckgo_search", "duckduckgo_news"],
                 },
                 TopicAgentToolGroup {
                     provider: "webfetch_md",
@@ -1607,7 +1521,8 @@ mod tests {
             tool_names: [
                 "web_search",
                 "web_extract",
-                "searxng_search",
+                "duckduckgo_search",
+                "duckduckgo_news",
                 "web_markdown",
             ]
             .into_iter()
@@ -1624,7 +1539,8 @@ mod tests {
         assert_eq!(
             expanded,
             vec![
-                "searxng_search".to_string(),
+                "duckduckgo_news".to_string(),
+                "duckduckgo_search".to_string(),
                 "web_extract".to_string(),
                 "web_markdown".to_string(),
                 "web_search".to_string(),

@@ -72,3 +72,35 @@ pub use traits::{
     SandboxEditReadGuard, SandboxExec, SandboxFileEdit, SandboxFileListing, SandboxFileOps,
     SandboxLifecycle,
 };
+
+/// Run startup checks for explicitly selected sandbox backends.
+///
+/// This is intentionally fail-fast only for explicit `SANDBOX_BACKEND=bwrap` so
+/// profiles without sandbox tools can still start when no sandbox backend is
+/// configured.
+pub async fn preflight_sandbox_backend() -> anyhow::Result<()> {
+    let Some(backend) = std::env::var_os("SANDBOX_BACKEND") else {
+        return Ok(());
+    };
+    if !backend
+        .to_string_lossy()
+        .trim()
+        .eq_ignore_ascii_case("bwrap")
+    {
+        return Ok(());
+    }
+    preflight_bwrap_backend().await
+}
+
+#[cfg(feature = "sandbox-backend-bwrap")]
+async fn preflight_bwrap_backend() -> anyhow::Result<()> {
+    bwrap::preflight_from_env()?;
+    bwrap::bootstrap_image_from_env().await
+}
+
+#[cfg(not(feature = "sandbox-backend-bwrap"))]
+async fn preflight_bwrap_backend() -> anyhow::Result<()> {
+    anyhow::bail!(
+        "SANDBOX_BACKEND=bwrap was selected, but this binary was not compiled with sandbox-backend-bwrap. Build with --features sandbox-backend-bwrap or choose another sandbox backend with SANDBOX_BACKEND=docker|broker."
+    )
+}

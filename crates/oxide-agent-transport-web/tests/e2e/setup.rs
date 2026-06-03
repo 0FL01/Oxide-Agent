@@ -1,6 +1,6 @@
 //! Test infrastructure setup: AppState factory functions and task execution helpers.
 
-use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
+use oxide_agent_core::config::{AgentSettings, ModelInfo, ModuleRuntimeConfig};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::{SandboxManager, SandboxScope};
 use oxide_agent_runtime::SessionRegistry;
@@ -30,20 +30,34 @@ pub fn async_sub_agent_spawn_responses() -> Vec<oxide_agent_core::llm::ChatRespo
                 ]
             }),
         ),
-        super::helpers::unstructured_text_response("sub-agent spawned"),
-        super::helpers::unstructured_text_response("delegation complete"),
+        super::helpers::structured_final_answer_response("sub-agent spawned"),
+        super::helpers::structured_final_answer_response("delegation complete"),
     ]
 }
 
 /// Set up AppState with a custom ZAI LLM provider.
-/// Uses one SequencedZaiProvider for both the main-agent ("main-model") and
-/// sub-agent ("glm-4.7") model ids.
+/// Uses one SequencedZaiProvider for both main-agent and sub-agent model ids.
 pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvider>) -> AppState {
+    let model_id = "opencode-go/deepseek-v4-flash".to_string();
     let agent_settings = Arc::new(AgentSettings {
-        agent_model_id: Some("main-model".to_string()),
-        agent_model_provider: Some("zai".to_string()),
-        sub_agent_model_id: Some("glm-4.7".to_string()),
-        sub_agent_model_provider: Some("zai".to_string()),
+        agent_model_id: Some(model_id.clone()),
+        agent_model_provider: Some("opencode_go".to_string()),
+        agent_model_routes: Some(vec![ModelInfo {
+            id: model_id.clone(),
+            provider: "opencode_go".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        }]),
+        sub_agent_model_id: Some(model_id.clone()),
+        sub_agent_model_provider: Some("opencode_go".to_string()),
+        sub_agent_model_routes: Some(vec![ModelInfo {
+            id: model_id,
+            provider: "opencode_go".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        }]),
         agent_timeout_secs: Some(5),
         sub_agent_timeout_secs: Some(5),
         ..AgentSettings::default()
@@ -51,13 +65,17 @@ pub fn setup_web_test_with_custom_providers(zai_provider: Arc<SequencedZaiProvid
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("zai".to_string(), zai_provider);
+        llm.register_provider("opencode_go".to_string(), zai_provider.clone());
+        llm.register_provider("opencode-go".to_string(), zai_provider.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), zai_provider);
         Arc::new(llm)
     };
 
     let registry = SessionRegistry::new();
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
-    AppState::new(Arc::new(session_manager))
+    let mut state = AppState::new(Arc::new(session_manager));
+    state.auto_title_enabled = false;
+    state
 }
 
 /// Set up AppState with a structured-output-capable main-agent route.
@@ -66,20 +84,31 @@ pub fn setup_web_test_with_structured_main_provider(
 ) -> AppState {
     let agent_settings = Arc::new(AgentSettings {
         agent_model_id: Some("google/gemini-2.0-flash".to_string()),
-        agent_model_provider: Some("openrouter".to_string()),
+        agent_model_provider: Some("opencode_go".to_string()),
+        agent_model_routes: Some(vec![ModelInfo {
+            id: "google/gemini-2.0-flash".to_string(),
+            provider: "opencode_go".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        }]),
         agent_timeout_secs: Some(5),
         ..AgentSettings::default()
     });
 
     let llm = {
         let mut llm = LlmClient::new(&agent_settings);
-        llm.register_provider("openrouter".to_string(), provider);
+        llm.register_provider("opencode_go".to_string(), provider.clone());
+        llm.register_provider("opencode-go".to_string(), provider.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), provider);
         Arc::new(llm)
     };
 
     let registry = SessionRegistry::new();
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
-    AppState::new(Arc::new(session_manager))
+    let mut state = AppState::new(Arc::new(session_manager));
+    state.auto_title_enabled = false;
+    state
 }
 
 /// Set up test infrastructure with the default ScriptedLlmProvider.
@@ -91,8 +120,15 @@ pub async fn setup_test() -> AppState {
     )]));
 
     let agent_settings = Arc::new(AgentSettings {
-        agent_model_id: Some("test-model".to_string()),
-        agent_model_provider: Some("scripted".to_string()),
+        agent_model_id: Some("opencode-go/deepseek-v4-flash".to_string()),
+        agent_model_provider: Some("opencode_go".to_string()),
+        agent_model_routes: Some(vec![ModelInfo {
+            id: "opencode-go/deepseek-v4-flash".to_string(),
+            provider: "opencode_go".to_string(),
+            max_output_tokens: 32_000,
+            context_window_tokens: 200_000,
+            weight: 1,
+        }]),
         agent_timeout_secs: Some(5),
         ..AgentSettings::default()
     });
@@ -100,13 +136,17 @@ pub async fn setup_test() -> AppState {
     let llm = LlmClient::new(&agent_settings);
     let llm = {
         let mut llm = llm;
-        llm.register_provider("scripted".to_string(), scripted);
+        llm.register_provider("opencode_go".to_string(), scripted.clone());
+        llm.register_provider("opencode-go".to_string(), scripted.clone());
+        llm.register_provider("llm-provider/opencode-go".to_string(), scripted);
         Arc::new(llm)
     };
 
     let registry = SessionRegistry::new();
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
-    AppState::new(Arc::new(session_manager))
+    let mut state = AppState::new(Arc::new(session_manager));
+    state.auto_title_enabled = false;
+    state
 }
 
 /// ZAI API base URL used by live E2E tests.

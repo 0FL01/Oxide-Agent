@@ -348,6 +348,9 @@ impl ManagerControlPlaneProvider {
         let deleted_agent_memory = self
             .clear_forum_topic_agent_memory(&context_key, &mut errors)
             .await;
+        let deleted_wiki_context = self
+            .delete_forum_topic_wiki_context(&context_key, &mut errors)
+            .await;
         let deleted_topic_context = self
             .delete_forum_topic_context_record(&context_key, &mut errors)
             .await;
@@ -369,6 +372,7 @@ impl ManagerControlPlaneProvider {
         let cleanup = json!({
             "context_key": context_key,
             "deleted_agent_memory": deleted_agent_memory,
+            "deleted_wiki_context": deleted_wiki_context,
             "deleted_topic_context": deleted_topic_context,
             "deleted_topic_agents_md": deleted_topic_agents_md,
             "deleted_topic_infra": deleted_topic_infra,
@@ -407,6 +411,26 @@ impl ManagerControlPlaneProvider {
             Err(err) => {
                 errors.push(format!(
                     "failed to clear agent memory for {context_key}: {err}"
+                ));
+                false
+            }
+        }
+    }
+
+    async fn delete_forum_topic_wiki_context(
+        &self,
+        context_key: &str,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        match self
+            .storage
+            .delete_wiki_context(self.user_id, context_key.to_string())
+            .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                errors.push(format!(
+                    "failed to delete wiki context for {context_key}: {err}"
                 ));
                 false
             }

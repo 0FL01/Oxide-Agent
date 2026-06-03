@@ -1,6 +1,6 @@
 # Build artifacts
 target/
-Cargo.lock
+.oxide/
 
 # Git
 .git/

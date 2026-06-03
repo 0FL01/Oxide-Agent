@@ -196,7 +196,7 @@ pub struct CompactionPolicy {
     pub compact_threshold_percent: u8,
     /// Percent of the window treated as an over-limit safety cap.
     pub over_limit_threshold_percent: u8,
-    /// Reserved buffer kept free beyond the response budget.
+    /// Reserved buffer kept free beyond the input request.
     pub hard_reserve_tokens: usize,
 }
 
@@ -242,7 +242,7 @@ pub struct CompactionRequest<'a> {
     pub tools: &'a [ToolDefinition],
     /// Active model name for the main agent request.
     pub model_name: &'a str,
-    /// Configured response token budget for the active model.
+    /// Configured response token cap for the active model. This is not pre-reserved from input.
     pub model_max_output_tokens: u32,
     /// Whether the current execution is a sub-agent.
     pub is_sub_agent: bool,
@@ -323,13 +323,13 @@ pub struct BudgetEstimate {
     pub tool_schema_tokens: usize,
     /// Estimated token count of the active hot memory.
     pub hot_memory: HotMemoryBudget,
-    /// Configured response token reserve for the active model.
+    /// Output tokens pre-reserved from the input window. Kept for API compatibility; currently zero.
     pub reserved_output_tokens: usize,
     /// Additional hard safety buffer kept free.
     pub hard_reserve_tokens: usize,
     /// Estimated input-side request size before model completion tokens.
     pub total_input_tokens: usize,
-    /// Estimated full request size including completion reserve and hard reserve.
+    /// Estimated input-side request size including the hard reserve.
     pub projected_total_tokens: usize,
     /// Remaining headroom in the configured context window.
     pub headroom_tokens: usize,

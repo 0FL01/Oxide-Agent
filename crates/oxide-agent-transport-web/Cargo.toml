@@ -16,6 +16,7 @@ too_many_arguments = "forbid"
 [dependencies]
 oxide-agent-core = { path = "../oxide-agent-core" }
 oxide-agent-runtime = { path = "../oxide-agent-runtime" }
+oxide-agent-web-contracts = { path = "../oxide-agent-web-contracts" }
 tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1"
 async-stream = "0.3"
@@ -24,26 +25,41 @@ futures-util = "0.3"
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+dotenvy = "0.15"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "multipart"] }
 tower = "0.4"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+argon2 = "0.5.3"
+sha2 = "0.10.9"
+base64 = "0.22.1"
 
 [features]
 default = []
-profile-lite = ["oxide-agent-core/profile-lite"]
-socket_e2e = []
+profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2"]
+profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2"]
+profile-web-embedded-opencode-local = [
+    "oxide-agent-core/profile-web-embedded-opencode-local",
+    "storage-s3-r2",
+]
+storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
+socket_e2e = ["oxide-agent-core/llm-opencode-go"]
+delegation_e2e = ["oxide-agent-core/tool-delegation"]
+compression_e2e = ["oxide-agent-core/tool-compression"]
 
 [dev-dependencies]
 tokio-test = "0.4"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13.4", features = ["json", "stream"] }
 bytes = "1"
-dotenvy = "0.15"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [[test]]
 name = "e2e"
 path = "tests/e2e/mod.rs"
+
+[[bin]]
+name = "oxide-agent-web-console"
+path = "src/bin/oxide-agent-web-console.rs"

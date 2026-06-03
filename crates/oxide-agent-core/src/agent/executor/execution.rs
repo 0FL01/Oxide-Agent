@@ -346,7 +346,10 @@ impl AgentExecutor {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> PreparedExecution {
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-        let model_routes = self.settings.get_configured_agent_model_routes();
+        let model_routes = self
+            .model_routes_override
+            .clone()
+            .unwrap_or_else(|| self.settings.get_configured_agent_model_routes());
         let model = model_routes
             .first()
             .cloned()
@@ -370,7 +373,8 @@ impl AgentExecutor {
             todos_arc,
             tool_runtime_registry,
             tools,
-            system_prompt,
+            system_prompt: system_prompt.base,
+            date_suffix: system_prompt.date_suffix,
             messages,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),

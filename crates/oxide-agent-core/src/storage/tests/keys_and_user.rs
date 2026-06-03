@@ -195,3 +195,21 @@ fn wiki_context_raw_key_uses_month_partition() {
         "prod/wiki/v1/contexts/ctx-12345678/raw/2026-05/run-abc.md"
     );
 }
+
+#[test]
+fn wiki_context_prefix_covers_all_context_objects() {
+    let prefix = wiki_context_prefix("", "telegram-topic-a13f9c2b");
+    assert_eq!(prefix, "wiki/v1/contexts/telegram-topic-a13f9c2b/");
+}
+
+#[test]
+fn wiki_context_prefix_includes_storage_prefix() {
+    let prefix = wiki_context_prefix("prod", "telegram-topic-a13f9c2b");
+    assert_eq!(prefix, "prod/wiki/v1/contexts/telegram-topic-a13f9c2b/");
+}
+
+#[test]
+fn wiki_context_prefix_trims_slashes() {
+    let prefix = wiki_context_prefix("/staging/", "ctx-123");
+    assert_eq!(prefix, "staging/wiki/v1/contexts/ctx-123/");
+}

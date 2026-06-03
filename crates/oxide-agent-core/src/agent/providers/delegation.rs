@@ -40,8 +40,10 @@ use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-#[cfg(feature = "tool-browser-use")]
-use crate::agent::tool_runtime::BrowserUseToolModule;
+#[cfg(feature = "tool-crawl4ai-markdown")]
+use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
+#[cfg(feature = "tool-duckduckgo")]
+use crate::agent::tool_runtime::DuckDuckGoToolModule;
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::agent::tool_runtime::SandboxExecToolModule;
 #[cfg(feature = "tool-sandbox-fileops")]
@@ -53,12 +55,13 @@ use crate::agent::tool_runtime::TavilyToolModule;
 #[cfg(feature = "tool-todos")]
 use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
-    feature = "tool-browser-use",
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
+    feature = "tool-duckduckgo",
     feature = "tool-searxng",
     feature = "tool-tavily",
     feature = "tool-todos",
+    feature = "tool-crawl4ai-markdown",
     feature = "tool-webfetch-md",
     feature = "tool-ytdlp"
 ))]
@@ -145,18 +148,12 @@ pub struct DelegationProvider {
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
             feature = "tool-ytdlp",
-            feature = "tool-browser-use"
         )),
         allow(dead_code)
     )]
     sandbox_scope: SandboxScope,
     settings: Arc<crate::config::AgentSettings>,
-    browser_use_profile_scope: Option<String>,
     topic_agents_md_context: Option<TopicAgentsMdContext>,
-    /// Semaphore to limit concurrent Browser Use requests per sub-agent.
-    /// Used via Arc::clone() in build_sub_agent_tool_runtime_executors().
-    #[allow(dead_code)]
-    browser_use_semaphore: Arc<Semaphore>,
     jobs: Arc<SubAgentJobStore>,
 }
 
@@ -173,6 +170,7 @@ struct PreparedSubAgentExecution {
     tool_runtime_registry: Arc<RuntimeToolRegistry>,
     tools: Vec<ToolDefinition>,
     system_prompt: String,
+    date_suffix: String,
     todos_arc: Arc<Mutex<TodoList>>,
     messages: Vec<Message>,
     sub_session: EphemeralSession,
@@ -523,23 +521,9 @@ impl DelegationProvider {
             llm_client,
             sandbox_scope: sandbox_scope.into(),
             settings,
-            browser_use_profile_scope: None,
             topic_agents_md_context: None,
-            browser_use_semaphore: Arc::new(Semaphore::new(
-                crate::config::get_browser_use_max_concurrent(),
-            )),
             jobs: Arc::new(SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS)),
         }
-    }
-
-    /// Inherit a topic/context profile scope for Browser Use sub-agent reuse.
-    #[must_use]
-    pub fn with_browser_use_profile_scope(mut self, profile_scope: impl Into<String>) -> Self {
-        let profile_scope = profile_scope.into();
-        if !profile_scope.trim().is_empty() {
-            self.browser_use_profile_scope = Some(profile_scope);
-        }
-        self
     }
 
     /// Inherit topic-scoped `AGENTS.md` context for sub-agent prompt composition.
@@ -680,12 +664,12 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             self.build_sub_agent_tool_module_context(todos_arc, memory_scope, progress_tx);
 
         #[cfg(not(any(
-            feature = "tool-browser-use",
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
-            feature = "tool-searxng",
+            feature = "tool-duckduckgo",
             feature = "tool-tavily",
             feature = "tool-todos",
+            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-ytdlp"
         )))]
@@ -706,14 +690,17 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(feature = "tool-webfetch-md")]
         self.push_sub_agent_tool_module(&mut executors, &WebFetchMdToolModule, &module_ctx);
 
+        #[cfg(feature = "tool-crawl4ai-markdown")]
+        self.push_sub_agent_tool_module(&mut executors, &Crawl4AiMarkdownToolModule, &module_ctx);
+
         #[cfg(feature = "tool-tavily")]
         self.push_sub_agent_tool_module(&mut executors, &TavilyToolModule, &module_ctx);
 
+        #[cfg(feature = "tool-duckduckgo")]
+        self.push_sub_agent_tool_module(&mut executors, &DuckDuckGoToolModule, &module_ctx);
+
         #[cfg(feature = "tool-searxng")]
         self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
-
-        #[cfg(feature = "tool-browser-use")]
-        self.push_sub_agent_tool_module(&mut executors, &BrowserUseToolModule, &module_ctx);
 
         self.warn_for_uncompiled_sub_agent_tool_modules();
 
@@ -738,8 +725,6 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             sandbox_runtime,
             llm_client: Arc::clone(&self.llm_client),
             settings: Arc::clone(&self.settings),
-            browser_use_profile_scope: self.browser_use_profile_scope.clone(),
-            browser_use_semaphore: Some(Arc::clone(&self.browser_use_semaphore)),
             #[cfg(feature = "tool-agents-md")]
             agents_md_context: None,
             #[cfg(feature = "manager-control-plane")]
@@ -757,12 +742,12 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     }
 
     #[cfg(any(
-        feature = "tool-browser-use",
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
-        feature = "tool-searxng",
+        feature = "tool-duckduckgo",
         feature = "tool-tavily",
         feature = "tool-todos",
+        feature = "tool-crawl4ai-markdown",
         feature = "tool-webfetch-md",
         feature = "tool-ytdlp"
     ))]
@@ -788,14 +773,22 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             warn!("Tavily enabled but feature not compiled in");
         }
 
+        #[cfg(not(feature = "tool-duckduckgo"))]
+        if std::env::var("DUCKDUCKGO_ENABLED")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+        {
+            warn!("DuckDuckGo enabled but feature not compiled in");
+        }
+
         #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             warn!("SearXNG enabled but feature not compiled in");
-        }
-
-        #[cfg(not(feature = "tool-browser-use"))]
-        if crate::config::is_browser_use_enabled() {
-            warn!("Browser Use enabled but feature not compiled in");
         }
     }
 
@@ -1024,7 +1017,8 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             task,
             tool_runtime_registry,
             tools,
-            system_prompt,
+            system_prompt: system_prompt.base,
+            date_suffix: system_prompt.date_suffix,
             todos_arc,
             messages: AgentRunner::convert_memory_to_messages(sub_session.memory().get_messages()),
             sub_session,
@@ -1042,6 +1036,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             AgentRunnerContextBase {
                 task: prepared.task.as_str(),
                 system_prompt: &prepared.system_prompt,
+                date_suffix: &prepared.date_suffix,
                 tools: &prepared.tools,
                 progress_tx: prepared.progress_tx.as_ref(),
                 todos_arc: &prepared.todos_arc,
@@ -1408,6 +1403,10 @@ fn should_forward_sub_agent_progress_event(event: &AgentEvent) -> bool {
             | AgentEvent::TokenSnapshotUpdated { .. }
             | AgentEvent::FileToSend { .. }
             | AgentEvent::FileToSendWithConfirmation { .. }
+            | AgentEvent::Finished
+            | AgentEvent::Cancelling { .. }
+            | AgentEvent::Cancelled
+            | AgentEvent::Error(_)
             | AgentEvent::LoopDetected { .. }
     )
 }
@@ -1795,7 +1794,7 @@ mod tests {
     }
 
     #[test]
-    fn sub_agent_progress_filter_drops_token_snapshots() {
+    fn sub_agent_progress_filter_drops_agent_scoped_events() {
         assert!(!should_forward_sub_agent_progress_event(
             &AgentEvent::Thinking {
                 snapshot: sample_snapshot(64_000),
@@ -1819,8 +1818,23 @@ mod tests {
                 iteration: 3,
             }
         ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Cancelling {
+                tool_name: "execute_command".to_string(),
+            }
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Cancelled
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Error("LLM call failed".to_string())
+        ));
+        assert!(!should_forward_sub_agent_progress_event(
+            &AgentEvent::Finished
+        ));
         assert!(should_forward_sub_agent_progress_event(
             &AgentEvent::ToolCall {
+                id: "tool-1".to_string(),
                 name: "execute_command".to_string(),
                 input: "{\"command\":\"pwd\"}".to_string(),
                 command_preview: Some("pwd".to_string()),
@@ -1842,6 +1856,7 @@ mod tests {
             .expect("thinking send");
         sub_tx
             .send(AgentEvent::ToolCall {
+                id: "tool-1".to_string(),
                 name: "execute_command".to_string(),
                 input: "{\"command\":\"pwd\"}".to_string(),
                 command_preview: Some("pwd".to_string()),
@@ -1881,6 +1896,40 @@ mod tests {
             })
             .await
             .expect("loop send");
+
+        drop(sub_tx);
+        if let Some(task) = relay_task {
+            task.await.expect("relay task join");
+        }
+        drop(parent_tx);
+
+        assert!(parent_rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn sub_agent_progress_relay_drops_terminal_status_events() {
+        let (parent_tx, mut parent_rx) = mpsc::channel(8);
+        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let sub_tx = sub_tx.expect("relay tx");
+
+        sub_tx
+            .send(AgentEvent::Cancelling {
+                tool_name: "execute_command".to_string(),
+            })
+            .await
+            .expect("cancelling send");
+        sub_tx
+            .send(AgentEvent::Cancelled)
+            .await
+            .expect("cancelled send");
+        sub_tx
+            .send(AgentEvent::Error("LLM call failed".to_string()))
+            .await
+            .expect("error send");
+        sub_tx
+            .send(AgentEvent::Finished)
+            .await
+            .expect("finished send");
 
         drop(sub_tx);
         if let Some(task) = relay_task {
@@ -2014,36 +2063,6 @@ mod tests {
             .contains("Failed to load topic AGENTS.md for sub-agent bootstrap"));
     }
 
-    #[cfg(feature = "tool-browser-use")]
-    #[test]
-    fn build_sub_agent_tool_runtime_executors_registers_browser_use_when_enabled() {
-        let _guard = crate::config::test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::set_var("BROWSER_USE_URL", "http://browser-use:8000");
-        std::env::set_var("BROWSER_USE_ENABLED", "true");
-
-        let settings = Arc::new(AgentSettings::default());
-        let provider =
-            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
-        let todos = Arc::new(tokio::sync::Mutex::new(TodoList::new()));
-        let executors =
-            provider.build_sub_agent_tool_runtime_executors(todos, test_memory_scope(), None);
-        let tools: HashSet<String> = executors
-            .iter()
-            .map(|executor| executor.name().into_inner())
-            .collect();
-
-        assert!(tools.contains("browser_use_run_task"));
-        assert!(tools.contains("browser_use_get_session"));
-        assert!(tools.contains("browser_use_close_session"));
-        assert!(tools.contains("browser_use_extract_content"));
-        assert!(tools.contains("browser_use_screenshot"));
-
-        std::env::remove_var("BROWSER_USE_ENABLED");
-        std::env::remove_var("BROWSER_USE_URL");
-    }
-
     #[test]
     fn build_sub_agent_tool_runtime_executors_do_not_expose_compress() {
         let settings = Arc::new(AgentSettings::default());
@@ -2146,11 +2165,11 @@ mod tests {
             system_prompt_tokens: 500,
             tool_schema_tokens: 600,
             total_input_tokens: 2_900,
-            reserved_output_tokens: 64_000,
+            reserved_output_tokens: 0,
             hard_reserve_tokens: 8_192,
-            projected_total_tokens: 75_092,
+            projected_total_tokens: 11_092,
             context_window_tokens,
-            headroom_tokens: context_window_tokens.saturating_sub(75_092),
+            headroom_tokens: context_window_tokens.saturating_sub(11_092),
             budget_state: BudgetState::Warning,
             last_api_usage: None,
         }

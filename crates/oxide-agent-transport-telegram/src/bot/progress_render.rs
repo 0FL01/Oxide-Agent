@@ -233,8 +233,8 @@ fn format_snapshot_summary(snapshot: &oxide_agent_core::agent::progress::TokenSn
 
 fn format_budget_breakdown(snapshot: &oxide_agent_core::agent::progress::TokenSnapshot) -> String {
     format!(
-        "📤 {} + 🛡️ {} = 📊 {} | 🟢 {} free",
-        oxide_agent_core::utils::format_tokens(snapshot.reserved_output_tokens),
+        "input {} + reserve {} = projected {} | {} free",
+        oxide_agent_core::utils::format_tokens(snapshot.total_input_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.hard_reserve_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.projected_total_tokens),
         oxide_agent_core::utils::format_tokens(snapshot.headroom_tokens),
@@ -288,16 +288,17 @@ mod tests {
             system_prompt_tokens: 1_200,
             tool_schema_tokens: 1_100,
             total_input_tokens: 8_000,
-            reserved_output_tokens: 8_000,
+            reserved_output_tokens: 0,
             hard_reserve_tokens: 8_192,
-            projected_total_tokens: 24_192,
+            projected_total_tokens: 16_192,
             context_window_tokens: 200_000,
-            headroom_tokens: 175_808,
+            headroom_tokens: 183_808,
             budget_state: BudgetState::Healthy,
             last_api_usage: Some(TokenUsage {
                 prompt_tokens: 15_200,
                 completion_tokens: 800,
                 total_tokens: 16_000,
+                ..TokenUsage::default()
             }),
         }
     }
@@ -324,7 +325,7 @@ mod tests {
 
         assert!(output.contains("Iteration 1/5"));
         assert!(output.contains("flow 5.7k | prompt 1.2k | tools 1.1k"));
-        assert!(output.contains("📤 8k + 🛡️ 8.2k = 📊 24k | 🟢 176k free"));
+        assert!(output.contains("input 8k + reserve 8.2k = projected 16k | 184k free"));
         assert!(output.contains("Budget: healthy"));
         assert!(!output.contains("Last API usage:"));
     }
@@ -334,26 +335,31 @@ mod tests {
         let mut state = ProgressState::new(100);
 
         state.update(AgentEvent::ToolCall {
+            id: "tool-1".to_string(),
             name: "web_search".to_string(),
             input: "q1".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
+            id: "tool-1".to_string(),
             name: "web_search".to_string(),
             output: "result1".to_string(),
             success: true,
         });
         state.update(AgentEvent::ToolCall {
+            id: "tool-2".to_string(),
             name: "web_search".to_string(),
             input: "q2".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
+            id: "tool-2".to_string(),
             name: "web_search".to_string(),
             output: "result2".to_string(),
             success: true,
         });
         state.update(AgentEvent::ToolCall {
+            id: "tool-3".to_string(),
             name: "execute_command".to_string(),
             input: "{}".to_string(),
             command_preview: Some("ls -la".to_string()),
@@ -397,11 +403,13 @@ mod tests {
         let mut state = ProgressState::new(100);
 
         state.update(AgentEvent::ToolCall {
+            id: "tool-1".to_string(),
             name: "text_to_speech_en_file".to_string(),
             input: "{}".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
+            id: "tool-1".to_string(),
             name: "text_to_speech_en_file".to_string(),
             output: "Tool execution error: boom".to_string(),
             success: false,
@@ -433,6 +441,7 @@ mod tests {
         let mut state = ProgressState::new(10);
 
         state.update(AgentEvent::ToolCall {
+            id: "tool-1".to_string(),
             name: "ssh_sudo_exec".to_string(),
             input: "{}".to_string(),
             command_preview: None,

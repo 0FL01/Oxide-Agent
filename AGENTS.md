@@ -1,8 +1,8 @@
 # Oxide Agent
 
-Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It can work with text, voice, images, documents, topic-scoped memory, sandbox tasks, and a manager control plane.
+Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It handles text, voice, images, documents, topic-scoped memory, sandbox tasks, a web console, and a manager control plane.
 
-Stack: Rust 1.94, `teloxide`, AWS SDK for Cloudflare R2, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
+Stack: Rust 1.94, `teloxide`, AWS SDK for Cloudflare R2, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
 
 ## Branch
 
@@ -10,178 +10,152 @@ Default branch: `dev`.
 
 ## Scale and decision principles
 
-- This project is for personal use and sharing with at most 2-3 people; target load is up to 5 RPS.
-- Over-engineering is forbidden: do not add enterprise/distributed complexity, sharding, HA, extra queues, multi-layer abstractions, or heavy observability without a proven need.
-- Prefer the simplest maintainable solution for this scale; optimize only after a real bottleneck.
+- Personal use, up to 2-3 people; target load up to 5 RPS.
+- Over-engineering is forbidden: no sharding, HA, extra queues, multi-layer abstractions, or heavy observability without proven need.
+- Prefer the simplest maintainable solution; optimize only after a real bottleneck.
 
-## External Services
+## Implementation bias
 
-### browser_use_bridge (disabled)
-- Browser Use is disabled until a cost-effective high-quality vision-agent model is available.
-- Code remains in `services/browser_use_bridge/`; enable it with `BROWSER_USE_URL` and see `docs/browser-use.md`.
-- Keep scope isolation, `navigation_only` guardrails, and runtime liveness/reconnect behavior when touching the bridge.
+- Smallest working change that preserves current architecture.
+- Boring, explicit, locally understandable code over generic frameworks.
+- No new crates, services, queues, caches, storage backends, protocols, or abstraction layers unless clearly required.
+- Add abstraction only after real duplication or multiple call sites exist.
+- Document known limitations instead of building generalized designs for hypothetical needs.
 
 ## Workspace Overview
 
 ### Main crates
-- `crates/oxide-agent-core` - agent domain: execution loop, hooks, compaction, storage facade, LLM providers, sandbox facade, wiki memory (store, cache, context, planner, patch), reminder/SSH/manager providers.
-- `crates/oxide-agent-runtime` - session runtime orchestration and transport-agnostic progress runtime.
-- `crates/oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
-- `crates/oxide-agent-transport-web` - E2E test web transport: HTTP API (axum), in-memory storage, scripted LLM provider, SSE streaming, latency milestone tracking.
-- `crates/oxide-agent-sandboxd` - broker daemon for the Docker sandbox backend in the default Compose deployment; keeps access to Docker and listens on a Unix socket.
-- `crates/oxide-agent-telegram-bot` - Telegram bot binary.
+- `oxide-agent-core` - agent domain: execution, hooks, compaction, storage facade, LLM providers, sandbox, wiki memory, reminder/SSH/manager providers.
+- `oxide-agent-runtime` - session runtime orchestration and transport-agnostic progress.
+- `oxide-agent-transport-telegram` - Telegram transport: handlers, routing, views, progress, topic/thread integration.
+- `oxide-agent-transport-web` - Web console backend and E2E test transport: HTTP API (axum), scripted LLM, SSE streaming.
+- `oxide-agent-web-contracts` - Shared web API types: auth, config, events, sessions, tasks.
+- `oxide-agent-web-ui` - Leptos web console frontend: components, SSE streaming, markdown rendering, dark theme.
+- `oxide-agent-sandboxd` - Docker sandbox broker daemon; Unix socket, Docker access.
+- `oxide-agent-telegram-bot` - Telegram bot binary.
 
-### Where code usually lives
-- `crates/oxide-agent-core/src/agent/` - executor (slices: config, execution, registry, compaction, policy_hooks, types), runner, hooks, loop detection, compaction, wiki memory (store, cache, context, planner, patch), providers.
-- `crates/oxide-agent-core/src/storage/` - storage facade, R2 backend, control-plane records, reminder persistence.
+## Where To Look
+
+- `crates/oxide-agent-core/src/agent/` - executor, runner, hooks, compaction, wiki memory, providers, prompt composition.
+- `crates/oxide-agent-core/src/storage/` - storage facade, R2 backend, domain records (control-plane, reminders, flows).
 - `crates/oxide-agent-core/src/llm/providers/` - LLM provider implementations.
+- `crates/oxide-agent-core/src/sandbox/` - sandbox facade; backends: direct Docker, broker, Bubblewrap (`bwrap/`).
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
-- `crates/oxide-agent-transport-telegram/src/bot/views/agent.rs` - Agent Mode UI.
-- `crates/oxide-agent-transport-web/src/` - web transport: HTTP server, session manager, scripted LLM, event log/SSE.
-- `docs/` - detailed documentation for rollout, hooks, integrations, and blueprints.
-- Legacy skills/embeddings RAG has been removed; deterministic context comes from topic `AGENTS.md`, wiki memory, runtime injections, enabled tools, and profile instructions.
+- `crates/oxide-agent-transport-web/src/` - web console server (split into `auth_helpers`, `converters`, `sse`, `static_assets`, `task_executor`, `types`).
+- `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client, styles.
+- `crates/oxide-agent-core/src/capabilities/` - compiled module and capability manifests.
+- `crates/oxide-agent-core/src/agent/tool_runtime/` - typed tool registration and execution.
+- `docs/` - detailed documentation for hooks, integrations, sandbox, wiki memory, and TTS.
 
 ## Architectural invariants
 
 - `oxide-agent-core` and `oxide-agent-runtime` do not depend on transport crates; transport crates depend on core/runtime.
 - `teloxide` is used only in `oxide-agent-transport-telegram` and binaries that include it.
-- Build and runtime composition are capability-module based. Canonical module and capability manifests live in `crates/oxide-agent-core/src/capabilities/`; typed tool registration lives in `crates/oxide-agent-core/src/agent/tool_runtime/`.
-- Cargo `default` features are intentionally empty. Use profile features such as `profile-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, and `profile-full`.
+- Build and runtime composition are capability-module based. Manifests in `crates/oxide-agent-core/src/capabilities/`; tool registration in `tool_runtime/`.
+- Cargo `default` features are intentionally empty. Use profile features: `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, `profile-full`.
 - Keep explicit `mod.rs` files and predictable public exports.
 - Use `thiserror` for library crates, `anyhow` for app/binary crates.
-- Agent Mode and manager/topic functions are designed to be topic-aware and thread-aware.
-- Context-scoped storage is mandatory for transport contexts; legacy fallback is allowed only for DM compatibility.
-- `Topic AGENTS.md` is stored separately in storage, pinned into flow memory during bootstrap, live-synced after `agents_md_update`, and inherited by sub-agents during delegation; `skills/AGENT.md` is no longer the default source of the system prompt.
-- Sandbox backends are explicit: direct Docker (`SANDBOX_BACKEND=docker`), Docker broker (`SANDBOX_BACKEND=broker`), or bare-host Bubblewrap (`SANDBOX_BACKEND=bwrap`). Default Docker Compose stays on broker; bwrap is a host profile/backend and must not require Docker daemon, Docker socket, `sandboxd`, or `bollard`.
-- Manager CRUD goes through the `manager_control_plane` provider with an audit trail and RBAC at the Telegram transport level (`manager_allowed_users`).
-- Wiki memory lives entirely in `crates/oxide-agent-core/src/agent/wiki_memory/`; no separate memory crate exists.
-- `storage-s3-r2` / `storage/r2` is the only production durable storage module. Local filesystem use is transient workspace/cache/staging only.
-- Direct Google Gemini provider code must stay absent. Gemini-family model IDs are valid only through OpenRouter routes.
+- Topic-aware and thread-aware by default for agent mode and manager functions.
+- Context-scoped storage is mandatory for transport contexts; legacy fallback only for DM compatibility.
+- Topic-scoped `AGENTS.md` is stored separately, pinned during flow bootstrap, live-synced after `agents_md_update`, inherited by sub-agents.
+- Sandbox backends are explicit: direct Docker (`SANDBOX_BACKEND=docker`), broker (`SANDBOX_BACKEND=broker`), or Bubblewrap (`SANDBOX_BACKEND=bwrap`). Default Compose stays on broker; bwrap must not require Docker.
+- Manager CRUD goes through `manager_control_plane` provider with audit trail and RBAC (`manager_allowed_users`).
+- `storage-s3-r2` is the only production durable storage. Local filesystem is transient only.
+- Direct Google Gemini provider code must stay absent. Gemini models are valid only through OpenRouter.
 
-## Key subsystems
+## Key Subsystems
 
-### Agent execution model
-- Runner lives in `crates/oxide-agent-core/src/agent/runner/`; executor slices live under `agent/executor/`.
-- Sessions handle lifecycle, cancellation, hot memory, and transport-independent progress.
-- Tool calls can run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
-- Compaction protects recent tool context, prunes only before the summary boundary, and coalesces identical checkpoints.
+### Agent execution
+- Runner in `agent/runner/`; executor slices in `agent/executor/`.
+- Runner modules: `execution.rs`, `llm_calls.rs`, `model_routes.rs`, `response_dispatch.rs`, `runtime_compaction.rs`, `token_snapshots.rs`, `hooks.rs`, `loop_detection.rs`, `tools.rs`.
+- Tool calls run in parallel; preserve history repair and `tool_call_id` integrity before LLM calls.
+- Compaction is runner-integrated with typed message classes, budget estimator, hot-memory classifier, externalized large tool payloads, and LLM summarization sidecar. Legacy staged pipeline (classifier/prune/rebuild/summarizer) has been removed.
 
-### Wiki memory (replaces persistent memory)
-- All wiki memory lives in `crates/oxide-agent-core/src/agent/wiki_memory/` — no separate crate.
-- Storage is S3/R2 object storage (same as all other durable state); no Postgres dependency.
-- Wiki pages are deterministic Markdown objects: `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`.
-- Prompt assembly loads wiki context via `load_wiki_text` from the storage facade.
-- Background writer (`planner.rs`) optionally uses an LLM to extract structured memory from conversation.
-- Main tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
+### Wiki memory
+- Lives in `agent/wiki_memory/` -- no separate crate. Storage: S3/R2 object storage.
+- Pages are deterministic Markdown: `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`.
+- Background planner (`planner.rs`) optionally uses LLM to extract structured memory.
+- Tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
 
 ### Hooks and sub-agents
-- Hooks live in `agent/hooks/`; `completion_check` and `tool_access_policy` are always active. Details: `docs/hooks/`.
-- Loop detection has content, tool-sequence, and LLM layers; avoid bypassing it in runner changes.
-- Sub-agents use isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, and cannot recurse, send files, mutate topics/control-plane state, use reminders, `stack_logs`, or `recreate_sandbox`.
-- Do not reintroduce embedding-selected skills; add deterministic profile-selected prompt modules only if a future feature explicitly requires them.
+- Hooks in `agent/hooks/`. Always active: `completion_check`, `tool_access_policy`, `hot_context_health`, `search_budget`, `timeout_report`. Memory hooks (`episodic_extract`, `retrieval_advisor`) activate when wiki memory writer is enabled. Sub-agent safety hook enforces delegation restrictions. Details: `docs/hooks/`.
+- Loop detection has content, tool-sequence, and LLM layers; do not bypass in runner changes.
+- Sub-agents: isolated `EphemeralSession`s, inherit topic-scoped `AGENTS.md`, cannot recurse/send files/mutate topics/control-plane/use reminders/`stack_logs`/`recreate_sandbox`.
+- Do not reintroduce embedding-selected skills.
+
+### Prompt cache hit
+- **Static prefix + dynamic suffix** — все динамические блоки (date/time, wiki context) строго в конце system prompt. Стабильные блоки (fallback, workflow, structured output, topic AGENTS.md) в начале формируют cacheable prefix.
+- **Assembly order**: `[fallback + profile + workflow_guidance + structured_output] + [wiki_context] + [date_context]`. Дата и wiki — всегда в конце.
+- **Fold system messages** (`history.rs`): stable (`[TOPIC_AGENTS_MD]`, `[OXIDE_COMPACTED_SUMMARY_V1]`) идут перед `date_suffix` в cacheable prefix; volatile (retry notes, temporal context, infra status) — после `date_suffix`.
+- **Tool schemas**: в prompt только compact sorted tool-name list (`~98 bytes`); полные JSON schemas — исключительно через native `tools[]` payload.
+- **Compacted summary**: в prompt-visible текст только `generation` + `wiki_memory_lookup_available`; `created_at`, provider, route, token counts — только в логах.
+- **Budget guard**: `compress` tool blocked при <85% context utilization, предотвращая premature compaction и сброс кэша.
+- **Cache telemetry**: `TokenUsage` содержит `cached_tokens`, `cache_creation_tokens`, метод `cache_hit_rate()`. Парсится у всех 9 production providers.
+- Детали: `docs/tips/cache-hit.md` — полный анализ, provider-specific механизмы, production validation, smoke test.
 
 ### Topic- and flow-scoped state
-- Per-transport contexts live in `UserConfig.contexts` through `UserContextConfig`.
-- Agent memory uses context-scoped storage APIs: `save_agent_memory_for_context`, `load_agent_memory_for_context`, `clear_agent_memory_for_context`.
-- Chat history is isolated via `scoped_chat_storage_id` in the form `"{context_key}/{chat_uuid}"`.
-- Topic-scoped flows support attach/detach UX and are stored under the `users/{user_id}/topics/{context_key}/flows/{flow_id}/` prefix.
-- `forum_topic_list` is available for memory-independent topic discovery, but blocked for sub-agents.
-- Topic-scoped `AGENTS.md` is a separate storage record, pinned during flow bootstrap, live-synced after `agents_md_update`, and inherited by sub-agents.
+- Contexts in `UserConfig.contexts` via `UserContextConfig`. Memory uses context-scoped APIs.
+- Chat history isolated via `scoped_chat_storage_id`.
+- Flows support attach/detach UX; `forum_topic_list` available for topic discovery (blocked for sub-agents).
 
-### Control plane and operational tools
-- Manager control plane lives in `agent/providers/manager_control_plane/`; it owns CRUD for topics, bindings, contexts, AGENTS.md, infra, sandboxes, profiles, controls, audit trail, and rollback.
-- Stack logs tools read Docker Compose logs, require `topic_infra`, and are blocked for sub-agents.
-- Reminders live in `agent/providers/reminder.rs` plus storage records; the in-memory scheduler wakes the original topic/flow.
-- SSH approval flow is currently disabled; native upstream SSH file tools are used directly.
+### Control plane and operations
+- Manager control plane in `agent/providers/manager_control_plane/`; CRUD for topics, bindings, contexts, AGENTS.md, infra, sandboxes, profiles, controls, audit trail, rollback.
+- Stack logs: Docker Compose log access, requires `topic_infra`, blocked for sub-agents.
+- Reminders: `agent/providers/reminder.rs` + storage; in-memory scheduler wakes the original topic/flow.
+- SSH: native upstream tools used directly; approval flow disabled.
 
 ### Sandbox and SSH
-- Sandbox facade: `crates/oxide-agent-core/src/sandbox/manager.rs`; backends are direct Docker, Docker broker via `sandbox/broker.rs`, and Bubblewrap via `sandbox/bwrap.rs`.
-- `SandboxScope` provides stable sandbox identity for persistent sandbox reuse.
+- Facade: `sandbox/manager.rs`; backends: direct Docker, broker (`broker.rs`), Bubblewrap (`bwrap/` -- 13 modules).
+- `SandboxScope` provides stable identity for persistent sandbox reuse.
 - SSH tools: `exec`, `sudo_exec`, `ssh_read_file`, `ssh_apply_file_edit`, `ssh_send_file_to_user`, `check_process`.
-- Secret refs support `env:KEY` and `storage:PATH`; secrets must not reach prompts or memory.
+- Secret refs: `env:KEY`, `storage:PATH`; secrets must not reach prompts or memory.
 
 ### Storage and LLM
-- Storage facade and R2 backend are under `crates/oxide-agent-core/src/storage/`; use context-scoped APIs for transport state.
-- LLM providers live in `crates/oxide-agent-core/src/llm/providers/`; shared orchestration is in `llm/client.rs`, `llm/capabilities.rs`, `llm/support/`, and `llm/types.rs`.
-- Route failover uses weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route and emit `ProviderFailoverActivated`.
-- ChatGPT uses OAuth/Codex Responses streaming and must fail over for structured-output/json-mode routes.
+- Storage facade and R2 backend in `storage/`; context-scoped APIs for transport state.
+- LLM providers in `llm/providers/`; shared orchestration: `llm/client.rs`, `llm/capabilities.rs`, `llm/support/` (backoff, HTTP pooling, OpenAI compat), `llm/types.rs`.
+- Route failover: weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route.
+- ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
 
 ### Tool providers
-- sandbox, todos, tavily, searxng (self-hosted), webfetch_md, jira-mcp, mattermost-mcp (disabled by default), filehoster, delegation, manager control plane, SSH MCP, yt-dlp, reminders, agents_md, **wiki memory** (list, read, delete), TTS (Kokoro EN + Silero RU), browser-use bridge (disabled), **stack_logs** (Docker Compose logs; disabled by default for topic agents, blocked for sub-agents).
-- Extend in `agent/providers/`; keep the transport-agnostic contract.
-
-## Telegram transport
-
-- `crates/oxide-agent-transport-telegram` - handlers, routing, views, progress rendering, topic/thread integration, resilient messaging.
-- `bot/agent_handlers/` - lifecycle, controls, callbacks, input, task runner, session, reminders.
-- `context.rs`, `topic_route.rs`, `thread.rs`, `session_registry.rs` - context, topic, and thread isolation.
-- Rate-limit and provider-failover states are rendered in the UI.
-
-## Web transport (E2E tests)
-
-- `crates/oxide-agent-transport-web` — isolated transport for E2E testing without a dependency on real LLM/Telegram APIs.
-- HTTP API (axum): sessions CRUD, task execution, SSE streaming (`/tasks/:id/stream`), timeline, health.
-- Scripted LLM provider: `ScriptedResponse::Text` and `ScriptedResponse::ToolCalls` for deterministic responses.
-- Latency milestones: `session_ready_ms`, `first_thinking_ms`, `final_response_ms`.
+- Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, crawl4ai-markdown, searxng, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
 
 ## Configuration
 
-- Layered config: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + environment variables.
-- Config files are optional (`required(false)`).
-- Provider secrets/config are module-owned under `modules.<module-id>` with env fallbacks, for example `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `CHATGPT_AUTH_PATH`, `ZAI_API_KEY`, `MINIMAX_API_KEY`.
-- Key runtime items: SearXNG (`SEARXNG_URL`), model routes (`AGENT_MODEL_ROUTES__N__*`, `SUB_AGENT_MODEL_ROUTES__N__*`), `AGENT_MODEL_TEMPERATURE`, `COMPACTION_PROTECTED_TOOL_WINDOW_TOKENS`, sandbox backend (`SANDBOX_BACKEND`, plus `BWRAP_*` for Bubblewrap), Jira MCP (`JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`), wiki memory writer (`WIKI_MEMORY_WRITER_ENABLED`, model config).
-- Telegram transport config: `ATTACH_DETACH_ENABLED` (default true).
+- Layered: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + env vars. Config files optional (`required(false)`).
+- Provider secrets in `modules.<module-id>` with env fallbacks.
+- Key runtime: DuckDuckGo, model routes, temperature, compaction budget, sandbox backend (`SANDBOX_BACKEND`, `BWRAP_*`), Jira MCP, wiki memory writer.
+- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Profile overlays in `docker/`.
 
-## Development practice
+## Development Practices
 
-### Modular architecture references
-- `profiles/*.toml` - runtime/profile defaults that must stay aligned with compiled capability manifests.
-- `crates/oxide-agent-core/src/capabilities/` - compiled module and capability manifests.
-- `crates/oxide-agent-core/src/agent/tool_runtime/` - typed tool registration and execution.
-- `scripts/check-*.sh` - profile, capability, dependency, Docker/Compose, and runtime-surface guards.
+### Build
+- `cargo check` for quick verification; `cargo build` only for final binary.
+- Embedded: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
+- Full: `cargo build --release --no-default-features --features profile-full`.
+- Bwrap: `cargo check --workspace --no-default-features --features profile-host-bwrap`.
+- Other profiles: `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-web-embedded-opencode-local`.
+- Capability output (swap `<PROFILE>` and `<profile-name>`):
+  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- capabilities --compiled --json`
+  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- capabilities --enabled --json`
+  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- config schema --compiled --json`
+  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features <PROFILE> -- config example --profile <profile-name> --json`
+- Dependencies: `cargo add`, `cargo remove`, `cargo update`. Metadata: `workspace info`, `cargo info`.
 
-### Build and dependencies
-- Use `cargo check` for quick verification; use `cargo build` only when you need the final binary.
-- Minimal embedded profile: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
-- Full profile: `cargo build --release --no-default-features --features profile-full`.
-- Bare-host Bubblewrap profile: `cargo check --workspace --no-default-features --features profile-host-bwrap`.
-- Other profile checks: `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`.
-- Capability output:
-  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- capabilities --compiled --json`
-  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- capabilities --enabled --json`
-  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- config schema --compiled --json`
-  - `cargo run -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-lite -- config example --profile lite --json`
-- Use `cargo add`, `cargo remove`, `cargo update` for dependencies.
-- Use `workspace info` and `cargo info` for workspace metadata.
-
-### Formatting and lint
-- Run `cargo clippy` before finishing a task.
-- Run `cargo fmt` before committing.
+### Format and lint
+- `cargo clippy` before finishing. `cargo fmt` before committing.
 
 ### Testing
-- Test helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`).
-- Main categories: hermetic tests, integration tests, snapshot tests (`insta`), property/fuzz tests (`proptest`).
-- E2E tests: `crates/oxide-agent-transport-web/tests/e2e.rs` — 6 E2E tests (session lifecycle, task execution, SSE streaming, latency milestones).
-- Useful references: `tests/hermetic_agent.rs`, `tests/snapshot_prompts.rs`, `tests/proptest_recovery.rs`.
-- Modular checks:
-  - `scripts/check-runtime-env-surface.sh`
-  - `scripts/check-binary-feature-gates.sh`
-  - `scripts/check-cargo-tree-deny.sh <feature-or-profile>`
-  - `scripts/check-compiled-capabilities.sh <profile>`
-  - `scripts/check-registry-snapshots.sh <profile>`
-  - `scripts/check-compose-profile.sh <profile>`
-  - `scripts/check-sandbox-image-variants.sh`
-  - `scripts/check-profile-size-budget.sh <profile> <binary|metrics|image>`
+- Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`).
+- Categories: hermetic, integration, snapshot (`insta`), property/fuzz (`proptest`).
+- E2E: `crates/oxide-agent-transport-web/tests/e2e.rs`.
+- The legacy modular shell guard layer was removed; use focused `cargo check`, `cargo test`, and Docker build checks for touched areas.
+
+### Bwrap rootfs
+- `scripts/build-bwrap-rootfs-debian.sh`, `build-bwrap-rootfs-host-smoke.sh`, `import-bwrap-rootfs-tar.sh`, `smoke-bwrap.sh`.
 
 ### Commit style
-- Use full commit messages, not short one-line commits.
-- Format:
-  - `<type>(<scope>): <description>`
-  - blank line
-  - indented body with `Changes:` and 2-4 concrete bullets
+- `<type>(<scope>): <description>` + blank line + indented `Changes:` with 2-4 bullets.
 - Types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`.
-
-Example:
 
 ```text
 feat(sources): add bybit proof of reserves source
@@ -194,13 +168,18 @@ feat(sources): add bybit proof of reserves source
 
 ## Where to find details
 
+- `docs/tips/cache-hit.md` - prompt cache hit analysis: architecture, assembly order, telemetry, production validation.
 - `docs/hooks/` - hook lifecycle and managed hook behavior.
-- `docs/browser-use.md` - disabled browser-use bridge details.
-- `README.md` / `README-ru.md` - product overview and user-facing setup notes.
+- `docs/wiki-memory.md` - wiki memory system: storage, planner, context assembly.
+- `docs/bwrap-sandbox.md` - Bubblewrap sandbox backend: setup, rootfs, execution.
+- `docs/silero-tts-api.md` - Silero TTS integration for Russian voice.
+- `docs/context-window-tracking.md` - token budget and context window management.
+- `docs/stack-logs-stage0.md` - stack logs tool: Docker Compose log access.
+- `README.md` - product overview and user-facing setup notes.
 - `config/` and `.env.example` - runtime configuration examples.
 
 ## System extension
 
-- Add a new transport as `crates/oxide-agent-transport-<name>`; keep SDK and handlers inside the transport crate.
+- New transport: `crates/oxide-agent-transport-<name>`; SDK and handlers inside the transport crate.
 - Runtime/core must not depend on a specific transport SDK.
-- Add a separate `oxide-agent-<name>-bot` binary if needed to run the transport.
+- Separate `oxide-agent-<name>-bot` binary if needed.

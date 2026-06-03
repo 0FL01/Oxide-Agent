@@ -1,5 +1,6 @@
 #![cfg(any(
     feature = "profile-embedded-opencode-local",
+    feature = "profile-web-embedded-opencode-local",
     feature = "profile-lite",
     feature = "profile-search-only",
     feature = "profile-no-sandbox",
@@ -239,19 +240,6 @@ fn assert_tool_availability_contract(
         &compiled_module_ids,
         &enabled_module_ids,
         &tool_names,
-        "tool/browser-use",
-        &[
-            "browser_use_run_task",
-            "browser_use_get_session",
-            "browser_use_close_session",
-            "browser_use_extract_content",
-            "browser_use_screenshot",
-        ],
-    );
-    assert_tools_absent_when_module_unavailable(
-        &compiled_module_ids,
-        &enabled_module_ids,
-        &tool_names,
         "tool/media-audio",
         &["transcribe_audio_file"],
     );
@@ -326,24 +314,40 @@ fn assert_tool_availability_contract(
     );
 
     match profile {
-        "profile-embedded-opencode-local" => {
+        "profile-embedded-opencode-local" | "profile-web-embedded-opencode-local" => {
             assert!(
                 enabled_module_ids.contains("sandbox-backend/bwrap"),
                 "embedded-opencode-local profile must enable the bwrap sandbox backend"
             );
-            assert!(
-                enabled_module_ids.contains("sandbox-backend/docker-direct"),
-                "embedded-opencode-local profile must enable the direct Docker sandbox backend"
-            );
+            if profile == "profile-web-embedded-opencode-local" {
+                assert!(
+                    enabled_module_ids.contains("transport/web"),
+                    "web embedded profile must enable the web transport"
+                );
+                assert!(
+                    !enabled_module_ids.contains("transport/telegram"),
+                    "web embedded profile must not enable the Telegram transport"
+                );
+                assert!(
+                    enabled_module_ids.contains("sandbox-backend/sandboxd-client"),
+                    "web embedded profile must enable the sandboxd client backend"
+                );
+            } else {
+                assert!(
+                    enabled_module_ids.contains("transport/telegram"),
+                    "embedded-opencode-local profile must enable the Telegram transport"
+                );
+                assert!(
+                    enabled_module_ids.contains("sandbox-backend/docker-direct"),
+                    "embedded-opencode-local profile must enable the direct Docker sandbox backend"
+                );
+            }
             assert_present_capabilities(
                 &enabled_capability_ids,
                 &[
                     "sandbox-backend/bwrap/exec",
                     "sandbox-backend/bwrap/fileops",
                     "sandbox-backend/bwrap/lifecycle",
-                    "sandbox-backend/docker-direct/exec",
-                    "sandbox-backend/docker-direct/fileops",
-                    "sandbox-backend/docker-direct/lifecycle",
                     "tool/compression",
                     "tool/delegation",
                     "tool/file-delivery",
@@ -359,6 +363,27 @@ fn assert_tool_availability_contract(
                 ],
                 profile,
             );
+            if profile == "profile-web-embedded-opencode-local" {
+                assert_present_capabilities(
+                    &enabled_capability_ids,
+                    &[
+                        "sandbox-backend/sandboxd-client/exec",
+                        "sandbox-backend/sandboxd-client/fileops",
+                        "sandbox-backend/sandboxd-client/lifecycle",
+                    ],
+                    profile,
+                );
+            } else {
+                assert_present_capabilities(
+                    &enabled_capability_ids,
+                    &[
+                        "sandbox-backend/docker-direct/exec",
+                        "sandbox-backend/docker-direct/fileops",
+                        "sandbox-backend/docker-direct/lifecycle",
+                    ],
+                    profile,
+                );
+            }
             assert_present_tools(
                 &tool_names,
                 &[
@@ -380,14 +405,12 @@ fn assert_tool_availability_contract(
                 ],
                 profile,
             );
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
         }
         "profile-lite" => {
             assert_absent_tools(&tool_names, &["execute_command"], profile);
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
@@ -403,7 +426,6 @@ fn assert_tool_availability_contract(
                 profile,
             );
             assert_present_tools(&tool_names, &["web_markdown"], profile);
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
@@ -428,7 +450,6 @@ fn assert_tool_availability_contract(
                 profile,
             );
             assert_absent_tools(&tool_names, &["execute_command"], profile);
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert!(
                 enabled_module_ids
                     .iter()
@@ -474,7 +495,6 @@ fn assert_tool_availability_contract(
                 ],
                 profile,
             );
-            assert_absent_tool_prefix(&tool_names, "browser_use_", profile);
             assert_absent_tool_prefix(&tool_names, "jira_", profile);
             assert_absent_tool_prefix(&tool_names, "mattermost_", profile);
             assert_absent_tool_prefix(&tool_names, "ssh_", profile);
@@ -551,7 +571,14 @@ fn allowed_provider_names_for_enabled_modules(
                 allowed.extend(["llm-provider/openai-chatgpt", "chatgpt", "openai-chatgpt"]);
             }
             "llm-provider/opencode-go" => {
-                allowed.extend(["llm-provider/opencode-go", "opencode-go", "opencode_go"]);
+                allowed.extend([
+                    "llm-provider/opencode-go",
+                    "opencode-go",
+                    "opencode_go",
+                    "llm-provider/opencode-zen",
+                    "opencode-zen",
+                    "opencode_zen",
+                ]);
             }
             "llm-provider/openrouter" => {
                 allowed.extend(["llm-provider/openrouter", "openrouter"]);
@@ -622,6 +649,7 @@ fn assert_absent_tool_prefix(tool_names: &BTreeSet<&str>, prefix: &str, context:
 
 fn compiled_profile_label() -> &'static str {
     let active_profile_count = cfg!(feature = "profile-embedded-opencode-local") as usize
+        + cfg!(feature = "profile-web-embedded-opencode-local") as usize
         + cfg!(feature = "profile-lite") as usize
         + cfg!(feature = "profile-search-only") as usize
         + cfg!(feature = "profile-no-sandbox") as usize
@@ -635,6 +663,8 @@ fn compiled_profile_label() -> &'static str {
 
     if cfg!(feature = "profile-embedded-opencode-local") {
         "profile-embedded-opencode-local"
+    } else if cfg!(feature = "profile-web-embedded-opencode-local") {
+        "profile-web-embedded-opencode-local"
     } else if cfg!(feature = "profile-lite") {
         "profile-lite"
     } else if cfg!(feature = "profile-search-only") {

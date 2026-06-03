@@ -104,18 +104,15 @@ impl Default for ToolRuntimeConfig {
 }
 
 /// Whether a model route is supported by the v1 typed tool runtime.
+///
+/// OpenCode Go and Zen routes are accepted because both provider profiles use the same
+/// chat-like tool-call bridge inside the core provider implementation.
 #[must_use]
 pub fn v1_tool_runtime_enabled_for_model(model: &ModelInfo) -> bool {
-    let provider = normalize_tool_runtime_route_part(&model.provider);
-    if provider != "opencode-go" {
-        return false;
-    }
-
-    let model_id = model
-        .id
-        .rsplit_once('/')
-        .map_or(model.id.as_str(), |(_, tail)| tail);
-    normalize_tool_runtime_route_part(model_id) == "deepseek-v4-flash"
+    matches!(
+        normalize_tool_runtime_route_part(&model.provider).as_str(),
+        "opencode-go" | "opencode-zen"
+    )
 }
 
 fn normalize_tool_runtime_route_part(value: &str) -> String {

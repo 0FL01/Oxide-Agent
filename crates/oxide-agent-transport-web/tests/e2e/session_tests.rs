@@ -8,9 +8,9 @@ use std::time::Duration;
 use oxide_agent_core::agent::SessionId;
 
 use super::helpers::{
-    create_session_http_with_user, create_task_http_with_body, fetch_task_events,
-    structured_awaiting_user_input_response, structured_final_answer_response,
-    unstructured_text_response, wait_for_task_status, wait_for_zai_calls,
+    create_session_http_with_user, create_task_http_expect_conflict, create_task_http_with_body,
+    session_user_id, structured_awaiting_user_input_response, structured_final_answer_response,
+    wait_for_task_status, wait_for_zai_calls, with_session_auth,
 };
 use super::providers::{RecordedToolRequest, SequencedZaiProvider};
 use super::setup::{
@@ -179,8 +179,8 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
                     }]
                 }),
             ),
-            unstructured_text_response("updated answer with clarified GPT-5.4-mini scope"),
-            unstructured_text_response("updated answer with clarified GPT-5.4-mini scope"),
+            structured_final_answer_response("updated answer with clarified GPT-5.4-mini scope"),
+            structured_final_answer_response("updated answer with clarified GPT-5.4-mini scope"),
         ])
         .with_blocked_calls([1]),
     );
@@ -191,6 +191,7 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
     let user_id = 20260409;
 
     let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+    let user_id = session_user_id(&base_url, &session_id);
     let task_id = create_task_http_with_body(
         &client,
         &base_url,
@@ -233,11 +234,11 @@ async fn e2e_runtime_context_appended_on_next_iteration() {
 
 #[tokio::test]
 #[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
-async fn e2e_web_followup_while_running_becomes_separate_task() {
+async fn e2e_web_followup_while_running_returns_session_busy() {
     let zai_provider = Arc::new(
         SequencedZaiProvider::new(vec![
-            unstructured_text_response("first answer"),
-            unstructured_text_response("second answer"),
+            structured_final_answer_response("first answer"),
+            structured_final_answer_response("second answer"),
         ])
         .with_blocked_calls([1]),
     );
@@ -253,16 +254,16 @@ async fn e2e_web_followup_while_running_becomes_separate_task() {
 
     wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
 
-    let task2_id = create_task_http_with_body(
+    let conflict = create_task_http_expect_conflict(
         &client,
         &base_url,
         &session_id,
         "Follow-up clarification while the first task is still running",
     )
     .await;
-    assert_ne!(
-        task1_id, task2_id,
-        "web transport currently creates a separate task"
+    assert_eq!(
+        conflict["error"]["code"], "session_busy",
+        "running task should block a second top-level task"
     );
 
     zai_provider.release_call(1);
@@ -274,6 +275,69 @@ async fn e2e_web_followup_while_running_becomes_separate_task() {
         Duration::from_secs(2),
     )
     .await;
+    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+
+    let requests = zai_provider.request_log().await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "expected only the original top-level request"
+    );
+    assert!(request_contains(&requests[0], "Initial prompt"));
+
+    server.abort();
+}
+
+#[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_web_cancel_releases_executor_for_next_task() {
+    let zai_provider = Arc::new(
+        SequencedZaiProvider::new(vec![
+            structured_final_answer_response("cancelled response should be dropped"),
+            structured_final_answer_response("second answer"),
+        ])
+        .with_blocked_calls([1]),
+    );
+    let app_state = setup_web_test_with_custom_providers(zai_provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260412;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+    let task1_id = create_task_http_with_body(&client, &base_url, &session_id, "Long prompt").await;
+
+    wait_for_zai_calls(&zai_provider, 1, Duration::from_secs(2)).await;
+
+    let cancel_status = with_session_auth(
+        client.post(format!(
+            "{base_url}/api/v1/sessions/{session_id}/tasks/{task1_id}/cancel"
+        )),
+        &base_url,
+        &session_id,
+        true,
+    )
+    .send()
+    .await
+    .expect("failed to cancel task")
+    .status();
+    assert!(
+        cancel_status.is_success(),
+        "cancel should succeed, got {cancel_status}"
+    );
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task1_id,
+        oxide_agent_transport_web::session::TaskStatus::Cancelled,
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let task2_id =
+        create_task_http_with_body(&client, &base_url, &session_id, "Continue with corrections")
+            .await;
+    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
     wait_for_task_status(
         session_manager.as_ref(),
         &task2_id,
@@ -281,28 +345,76 @@ async fn e2e_web_followup_while_running_becomes_separate_task() {
         Duration::from_secs(2),
     )
     .await;
-    wait_for_zai_calls(&zai_provider, 2, Duration::from_secs(2)).await;
 
-    let requests = zai_provider.request_log().await;
-    assert_eq!(
-        requests.len(),
-        2,
-        "expected two separate top-level requests"
-    );
-    assert!(request_contains(&requests[0], "Initial prompt"));
-    assert!(request_contains(
-        &requests[1],
-        "Follow-up clarification while the first task is still running"
-    ));
+    server.abort();
+}
 
-    let task1_events = fetch_task_events(&client, &base_url, &session_id, &task1_id).await;
-    let task1_event_names: Vec<&str> = task1_events
-        .iter()
-        .filter_map(|event| event["event_name"].as_str())
-        .collect();
+#[tokio::test]
+#[cfg_attr(not(feature = "socket_e2e"), ignore = "requires local TCP listener")]
+async fn e2e_web_edit_version_should_clear_previous_context() {
+    let provider = Arc::new(SequencedZaiProvider::new(vec![
+        structured_final_answer_response("branch one done"),
+        structured_final_answer_response("branch two done"),
+    ]));
+    let app_state = setup_web_test_with_custom_providers(provider.clone());
+    let session_manager = app_state.session_manager();
+    let (server, base_url) = super::helpers::spawn_test_server(app_state).await;
+    let client = reqwest::Client::new();
+    let user_id = 20260413;
+
+    let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+    let first_prompt = "BRANCH_ONE_MARKER keep this out of the edited branch";
+    let task_id = create_task_http_with_body(&client, &base_url, &session_id, first_prompt).await;
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_for_zai_calls(&provider, 1, Duration::from_secs(2)).await;
+
+    let edit_response = with_session_auth(
+        client.post(format!(
+            "{base_url}/api/v1/sessions/{session_id}/tasks/{task_id}/versions"
+        )),
+        &base_url,
+        &session_id,
+        true,
+    )
+    .json(&serde_json::json!({
+        "input_markdown": "BRANCH_TWO_MARKER should start isolated",
+        "attachments": [],
+    }))
+    .send()
+    .await
+    .expect("failed to create edited task version");
+    assert!(edit_response.status().is_success());
+    let edit_body: serde_json::Value = edit_response
+        .json()
+        .await
+        .expect("failed to decode edited task response");
+    let branch_task_id = edit_body["task"]["task_id"]
+        .as_str()
+        .expect("edited task id missing")
+        .to_string();
+
+    wait_for_task_status(
+        session_manager.as_ref(),
+        &branch_task_id,
+        oxide_agent_transport_web::session::TaskStatus::Completed,
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_for_zai_calls(&provider, 2, Duration::from_secs(2)).await;
+
+    let requests = provider.request_log().await;
+    assert_eq!(requests.len(), 2);
+    assert!(request_contains(&requests[0], first_prompt));
     assert!(
-        !task1_event_names.iter().any(|event| event.contains("continuation")),
-        "web transport should expose the current gap: follow-up becomes a separate task, not a continuation"
+        !request_contains(&requests[1], first_prompt),
+        "edited branch should start from a cleared context, but the old prompt leaked into the second request"
     );
 
     server.abort();
@@ -322,6 +434,7 @@ async fn e2e_resume_after_user_input_reuses_saved_task() {
     let user_id = 20260411;
 
     let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+    let user_id = session_user_id(&base_url, &session_id);
     let task_id =
         create_task_http_with_body(&client, &base_url, &session_id, "Investigate Codex limits")
             .await;

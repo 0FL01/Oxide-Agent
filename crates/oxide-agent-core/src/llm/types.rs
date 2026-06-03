@@ -505,6 +505,28 @@ pub struct TokenUsage {
     pub completion_tokens: u32,
     /// Total tokens used
     pub total_tokens: u32,
+    /// Tokens served from provider prompt cache (cache hit).
+    ///
+    /// Maps to `prompt_tokens_details.cached_tokens` (OpenAI/DeepSeek),
+    /// `cache_read_input_tokens` (Anthropic), or `prompt_tokens_details.cached_tokens` (ZAI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u32>,
+    /// Tokens written to provider prompt cache (cache write/creation).
+    ///
+    /// Maps to `cache_creation_input_tokens` (Anthropic). `None` for providers
+    /// that do not report cache creation counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u32>,
+}
+
+impl TokenUsage {
+    /// Cache hit rate as a ratio (0.0..=1.0). Returns `None` if `cached_tokens` is absent.
+    #[must_use]
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        self.cached_tokens
+            .filter(|&_| self.prompt_tokens > 0)
+            .map(|cached| cached as f64 / self.prompt_tokens as f64)
+    }
 }
 
 /// Chat response that may include tool calls
@@ -539,4 +561,84 @@ pub struct ChatWithToolsRequest<'a> {
     pub temperature: Option<f32>,
     /// Whether structured JSON mode is required.
     pub json_mode: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TokenUsage;
+
+    #[test]
+    fn token_usage_deserializes_old_format_without_cache_fields() {
+        let json = r#"{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}"#;
+        let usage: TokenUsage = serde_json::from_str(json).expect("old format should deserialize");
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
+        assert_eq!(usage.cached_tokens, None);
+        assert_eq!(usage.cache_creation_tokens, None);
+    }
+
+    #[test]
+    fn token_usage_round_trips_with_cache_fields() {
+        let usage = TokenUsage {
+            prompt_tokens: 3840,
+            completion_tokens: 512,
+            total_tokens: 4352,
+            cached_tokens: Some(2560),
+            cache_creation_tokens: Some(128),
+            ..TokenUsage::default()
+        };
+        let json = serde_json::to_string(&usage).expect("serialize");
+        assert!(json.contains("\"cached_tokens\":2560"));
+        assert!(json.contains("\"cache_creation_tokens\":128"));
+
+        let back: TokenUsage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, usage);
+    }
+
+    #[test]
+    fn token_usage_skips_none_cache_fields_in_serialization() {
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cached_tokens: None,
+            cache_creation_tokens: None,
+        };
+        let json = serde_json::to_string(&usage).expect("serialize");
+        assert!(!json.contains("cached_tokens"));
+        assert!(!json.contains("cache_creation_tokens"));
+    }
+
+    #[test]
+    fn cache_hit_rate_returns_none_when_no_cached_tokens() {
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            ..TokenUsage::default()
+        };
+        assert_eq!(usage.cache_hit_rate(), None);
+    }
+
+    #[test]
+    fn cache_hit_rate_computes_ratio() {
+        let usage = TokenUsage {
+            prompt_tokens: 4000,
+            completion_tokens: 500,
+            total_tokens: 4500,
+            cached_tokens: Some(3000),
+            ..TokenUsage::default()
+        };
+        let rate = usage.cache_hit_rate().expect("should return Some");
+        assert!((rate - 0.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn cache_hit_rate_zero_prompt_tokens_returns_none() {
+        let usage = TokenUsage {
+            prompt_tokens: 0,
+            cached_tokens: Some(0),
+            ..TokenUsage::default()
+        };
+        assert_eq!(usage.cache_hit_rate(), None);
+    }
 }

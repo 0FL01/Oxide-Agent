@@ -41,8 +41,8 @@ use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use super::file_delivery::{
-    deliver_file_via_progress, format_generic_delivery_report, FileDeliveryRequest,
-    FileDeliveryStatus, CHAT_DELIVERY_MAX_FILE_SIZE_BYTES,
+    chat_delivery_max_file_size_bytes, deliver_file_via_progress, format_generic_delivery_report,
+    FileDeliveryRequest, FileDeliveryStatus,
 };
 
 const TOOL_SSH_EXEC: &str = "ssh_exec";
@@ -1120,7 +1120,7 @@ impl SshMcpProvider {
             ToolDefinition {
                 name: TOOL_SSH_SEND_FILE_TO_USER.to_string(),
                 description:
-                    "Transfer a remote file from the topic infra target and send it to the user via the chat transport"
+                    "Transfer a remote file from the topic infra target and send it to the user via the chat transport. Returns structured JSON status; some transports also include file_id and download_url. When download_url is present, reuse that exact link in the final answer so the user can download the delivered file directly."
                         .to_string(),
                 parameters: json!({
                     "type": "object",
@@ -1896,10 +1896,12 @@ async fn ssh_delivery_result(
             false,
         ));
     }
-    if metadata.len() > CHAT_DELIVERY_MAX_FILE_SIZE_BYTES {
-        let report =
-            "ERROR: File too large for chat delivery (>50 MB). Please use another transfer/upload path."
-                .to_string();
+    let max_delivery_size_bytes = chat_delivery_max_file_size_bytes();
+    if metadata.len() > max_delivery_size_bytes {
+        let report = format!(
+            "ERROR: File too large for chat delivery (>{:.2} MB). Please use another transfer/upload path.",
+            max_delivery_size_bytes as f64 / 1024.0 / 1024.0
+        );
         return Ok((
             json!({
                 "ok": false,
@@ -1907,6 +1909,7 @@ async fn ssh_delivery_result(
                 "source_path": source_path,
                 "size_bytes": metadata.len(),
                 "delivery_status": "too_large",
+                "max_size_bytes": max_delivery_size_bytes,
             }),
             report,
             false,
@@ -1932,6 +1935,7 @@ async fn ssh_delivery_result(
     let ok = matches!(report.status, FileDeliveryStatus::Delivered);
     let status = match &report.status {
         FileDeliveryStatus::Delivered => "delivered",
+        FileDeliveryStatus::TooLarge { .. } => "too_large",
         FileDeliveryStatus::DeliveryFailed(_) => "delivery_failed",
         FileDeliveryStatus::ConfirmationChannelClosed => "confirmation_channel_closed",
         FileDeliveryStatus::TimedOut => "timed_out",
@@ -1946,6 +1950,8 @@ async fn ssh_delivery_result(
             "source_path": report.source_path,
             "size_bytes": report.size_bytes,
             "delivery_status": status,
+            "file_id": report.receipt.as_ref().and_then(|receipt| receipt.file_id.clone()),
+            "download_url": report.receipt.as_ref().and_then(|receipt| receipt.download_url.clone()),
         }),
         report_text,
         ok,

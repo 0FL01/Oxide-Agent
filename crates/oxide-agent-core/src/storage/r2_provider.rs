@@ -10,6 +10,7 @@ use super::{
 use crate::agent::memory::AgentMemory;
 use async_trait::async_trait;
 use tracing::{error, info};
+use uuid::Uuid;
 
 #[async_trait]
 impl StorageProvider for R2Storage {
@@ -194,6 +195,16 @@ impl StorageProvider for R2Storage {
         with_storage_reason("delete_wiki_text", self.delete_object(&storage_key)).await
     }
 
+    async fn delete_wiki_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<(), StorageError> {
+        let context_id = crate::agent::wiki_memory::scope::wiki_context_id(user_id, &context_key);
+        let prefix = super::keys::wiki_context_prefix("", &context_id);
+        with_storage_reason("delete_wiki_context", self.delete_prefix(&prefix)).await
+    }
+
     /// Clear all context for a user.
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
         self.clear_agent_memory(user_id).await?;
@@ -202,17 +213,46 @@ impl StorageProvider for R2Storage {
 
     /// Check connection to R2 storage
     async fn check_connection(&self) -> Result<(), String> {
-        match self.client.list_buckets().send().await {
-            Ok(_) => {
-                info!("Successfully connected to R2 storage.");
-                Ok(())
-            }
-            Err(e) => {
-                let err_msg = format!("R2 connectivity test failed: {e:#?}");
-                error!("{}", err_msg);
-                Err(err_msg)
-            }
+        if let Err(error) = self.client.head_bucket().bucket(&self.bucket).send().await {
+            let err_msg = format!(
+                "R2 connectivity test failed for bucket '{}' during HeadBucket: {error:#?}",
+                self.bucket
+            );
+            error!("{}", err_msg);
+            return Err(err_msg);
         }
+
+        let probe_key = format!(
+            "__oxide_agent_healthchecks/connection-check/{}.txt",
+            Uuid::new_v4()
+        );
+
+        if let Err(error) = self
+            .save_text(&probe_key, "oxide-agent connection probe")
+            .await
+        {
+            let err_msg = format!(
+                "R2 connectivity test failed for bucket '{}' during write probe '{}': {}",
+                self.bucket, probe_key, error
+            );
+            error!("{}", err_msg);
+            return Err(err_msg);
+        }
+
+        if let Err(error) = self.delete_object(&probe_key).await {
+            let err_msg = format!(
+                "R2 connectivity test failed for bucket '{}' during cleanup of probe '{}': {}",
+                self.bucket, probe_key, error
+            );
+            error!("{}", err_msg);
+            return Err(err_msg);
+        }
+
+        info!(
+            bucket = %self.bucket,
+            "Successfully connected to R2 storage with bucket-scoped validation."
+        );
+        Ok(())
     }
 
     async fn get_agent_profile(
@@ -223,6 +263,17 @@ impl StorageProvider for R2Storage {
         with_storage_reason(
             "get_agent_profile",
             self.get_agent_profile_inner(user_id, agent_id),
+        )
+        .await
+    }
+
+    async fn list_agent_profiles(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<AgentProfileRecord>, StorageError> {
+        with_storage_reason(
+            "list_agent_profiles",
+            self.list_agent_profiles_inner(user_id),
         )
         .await
     }

@@ -934,7 +934,8 @@ mod tests {
         feature = "tool-sandbox-exec",
         any(
             feature = "sandbox-backend-docker-direct",
-            feature = "sandbox-backend-sandboxd-client"
+            feature = "sandbox-backend-sandboxd-client",
+            feature = "sandbox-backend-bwrap"
         )
     ))]
     #[test]
@@ -954,19 +955,22 @@ mod tests {
             .map(|capability| capability.as_str())
             .collect();
 
-        assert_eq!(
-            requirement_options,
-            [
-                "sandbox-backend/docker-direct/exec",
-                "sandbox-backend/sandboxd-client/exec"
-            ]
-        );
+        let mut expected = Vec::new();
+        #[cfg(feature = "sandbox-backend-docker-direct")]
+        expected.push("sandbox-backend/docker-direct/exec");
+        #[cfg(feature = "sandbox-backend-sandboxd-client")]
+        expected.push("sandbox-backend/sandboxd-client/exec");
+        #[cfg(feature = "sandbox-backend-bwrap")]
+        expected.push("sandbox-backend/bwrap/exec");
+
+        assert_eq!(requirement_options, expected);
     }
 
     #[cfg(all(
         feature = "tool-sandbox-exec",
         feature = "sandbox-backend-docker-direct",
-        feature = "sandbox-backend-sandboxd-client"
+        feature = "sandbox-backend-sandboxd-client",
+        feature = "sandbox-backend-bwrap"
     ))]
     #[test]
     fn enabled_sandbox_exec_fails_without_enabled_exec_backend() {
@@ -976,17 +980,30 @@ mod tests {
         manifest
             .enabled_manifest_from_configured_modules([
                 ("sandbox-backend/docker-direct", false),
+                ("sandbox-backend/bwrap", false),
                 ("sandbox-daemon/sandboxd", false),
             ])
             .expect("sandboxd-client exec backend should satisfy sandbox exec");
         manifest
-            .enabled_manifest_from_configured_modules([("sandbox-backend/sandboxd-client", false)])
+            .enabled_manifest_from_configured_modules([
+                ("sandbox-backend/sandboxd-client", false),
+                ("sandbox-backend/bwrap", false),
+            ])
             .expect("docker-direct exec backend should satisfy sandbox exec");
+        manifest
+            .enabled_manifest_from_configured_modules([
+                ("sandbox-backend/docker-direct", false),
+                ("sandbox-backend/sandboxd-client", false),
+                ("sandbox-daemon/sandboxd", false),
+                ("tool/stack-logs", false),
+            ])
+            .expect("bwrap exec backend should satisfy sandbox exec");
 
         let error = manifest
             .enabled_manifest_from_configured_modules([
                 ("sandbox-backend/docker-direct", false),
                 ("sandbox-backend/sandboxd-client", false),
+                ("sandbox-backend/bwrap", false),
                 ("sandbox-daemon/sandboxd", false),
                 ("tool/sandbox-fileops", false),
                 ("tool/sandbox-recreate", false),
@@ -1002,6 +1019,7 @@ mod tests {
                 capabilities: vec![
                     CapabilityId::new("sandbox-backend/docker-direct/exec"),
                     CapabilityId::new("sandbox-backend/sandboxd-client/exec"),
+                    CapabilityId::new("sandbox-backend/bwrap/exec"),
                 ],
             }
         );
@@ -1011,7 +1029,8 @@ mod tests {
         feature = "tool-ytdlp",
         any(
             feature = "sandbox-backend-docker-direct",
-            feature = "sandbox-backend-sandboxd-client"
+            feature = "sandbox-backend-sandboxd-client",
+            feature = "sandbox-backend-bwrap"
         )
     ))]
     #[test]
@@ -1031,15 +1050,24 @@ mod tests {
             .map(|capability| capability.as_str())
             .collect();
 
-        assert_eq!(
-            requirement_options,
-            BTreeSet::from([
-                "sandbox-backend/docker-direct/exec",
-                "sandbox-backend/docker-direct/fileops",
-                "sandbox-backend/sandboxd-client/exec",
-                "sandbox-backend/sandboxd-client/fileops",
-            ])
-        );
+        let mut expected = BTreeSet::new();
+        #[cfg(feature = "sandbox-backend-docker-direct")]
+        {
+            expected.insert("sandbox-backend/docker-direct/exec");
+            expected.insert("sandbox-backend/docker-direct/fileops");
+        }
+        #[cfg(feature = "sandbox-backend-sandboxd-client")]
+        {
+            expected.insert("sandbox-backend/sandboxd-client/exec");
+            expected.insert("sandbox-backend/sandboxd-client/fileops");
+        }
+        #[cfg(feature = "sandbox-backend-bwrap")]
+        {
+            expected.insert("sandbox-backend/bwrap/exec");
+            expected.insert("sandbox-backend/bwrap/fileops");
+        }
+
+        assert_eq!(requirement_options, expected);
     }
 
     #[test]

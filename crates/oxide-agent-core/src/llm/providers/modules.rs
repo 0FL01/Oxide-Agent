@@ -209,6 +209,8 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
     modules.push(Box::new(super::nvidia::NvidiaProviderModule));
     #[cfg(feature = "llm-opencode-go")]
     modules.push(Box::new(super::opencode_go::OpenCodeGoProviderModule));
+    #[cfg(feature = "llm-opencode-go")]
+    modules.push(Box::new(super::opencode_go::OpenCodeZenProviderModule));
     #[cfg(feature = "llm-openrouter")]
     modules.push(Box::new(super::openrouter::OpenRouterProviderModule));
 
@@ -299,13 +301,17 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_api_key = std::env::var("OPENCODE_GO_API_KEY").ok();
+        let previous_primary_api_key = std::env::var("OPENCODE_API_KEY").ok();
+        let previous_zen_api_key = std::env::var("OPENCODE_ZEN_API_KEY").ok();
         std::env::remove_var("OPENCODE_GO_API_KEY");
+        std::env::remove_var("OPENCODE_API_KEY");
+        std::env::remove_var("OPENCODE_ZEN_API_KEY");
 
         let settings = AgentSettings::default();
 
         assert_eq!(
             provider_missing_route_config_message("opencode_go", &settings),
-            Some("Critical: OPENCODE_GO_API_KEY is required for configured OpenCode Go routes")
+            Some("Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes")
         );
 
         let settings = settings_with_provider_key("llm-provider/opencode-go", "test-opencode-key");
@@ -317,6 +323,12 @@ mod tests {
 
         if let Some(api_key) = previous_api_key {
             std::env::set_var("OPENCODE_GO_API_KEY", api_key);
+        }
+        if let Some(api_key) = previous_primary_api_key {
+            std::env::set_var("OPENCODE_API_KEY", api_key);
+        }
+        if let Some(api_key) = previous_zen_api_key {
+            std::env::set_var("OPENCODE_ZEN_API_KEY", api_key);
         }
     }
 
@@ -335,7 +347,53 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn opencode_go_module_owns_model_specific_structured_output() {
+    fn opencode_zen_module_registers_provider_id_and_aliases() {
+        let settings = settings_with_provider_key("llm-provider/opencode-zen", "test-opencode-key");
+
+        let providers = build_configured_providers(&settings);
+
+        assert!(providers.contains_key("llm-provider/opencode-zen"));
+        assert!(providers.contains_key("opencode-zen"));
+        assert!(providers.contains_key("opencode_zen"));
+        assert_eq!(
+            provider_module_id("opencode_zen"),
+            Some("llm-provider/opencode-zen")
+        );
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn opencode_zen_module_accepts_go_key_env_alias() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_go_key = std::env::var("OPENCODE_GO_API_KEY").ok();
+        let previous_primary_key = std::env::var("OPENCODE_API_KEY").ok();
+        let previous_zen_key = std::env::var("OPENCODE_ZEN_API_KEY").ok();
+        std::env::set_var("OPENCODE_GO_API_KEY", "test-opencode-go-key");
+        std::env::remove_var("OPENCODE_API_KEY");
+        std::env::remove_var("OPENCODE_ZEN_API_KEY");
+
+        let providers = build_configured_providers(&AgentSettings::default());
+
+        assert!(providers.contains_key("opencode-zen"));
+
+        if let Some(api_key) = previous_go_key {
+            std::env::set_var("OPENCODE_GO_API_KEY", api_key);
+        } else {
+            std::env::remove_var("OPENCODE_GO_API_KEY");
+        }
+        if let Some(api_key) = previous_primary_key {
+            std::env::set_var("OPENCODE_API_KEY", api_key);
+        }
+        if let Some(api_key) = previous_zen_key {
+            std::env::set_var("OPENCODE_ZEN_API_KEY", api_key);
+        }
+    }
+
+    #[cfg(feature = "llm-opencode-go")]
+    #[test]
+    fn opencode_go_module_all_models_support_structured_output() {
         let route = crate::config::ModelInfo {
             id: "opencode-go/deepseek-v4-flash".to_string(),
             provider: "llm-provider/opencode-go".to_string(),

@@ -258,8 +258,8 @@ fn delegation_sub_agent_tools_use_tool_modules_not_provider_constructors() {
         "YtdlpProvider::",
         "WebFetchMdProvider::new",
         "TavilyProvider::new",
+        "DuckDuckGoProvider::new",
         "SearxngProvider::new",
-        "BrowserUseProvider::",
     ];
     let offenders = forbidden_provider_paths
         .iter()
@@ -284,7 +284,6 @@ fn deprecated_config_compatibility_surfaces_are_removed() {
     let config = fs::read_to_string(manifest_dir.join("src/config.rs")).expect("read config");
     let forbidden_config_patterns = [
         "#[serde(alias",
-        "browser_use_model_max_tokens",
         "agent_model_max_tokens",
         "sub_agent_max_tokens",
         "wiki_memory_writer_model_max_tokens",
@@ -315,14 +314,10 @@ fn deprecated_config_compatibility_surfaces_are_removed() {
 
     let env_example = fs::read_to_string(workspace_root.join(".env.example"))
         .expect("read workspace .env.example");
-    for forbidden in [
-        "OXIDE_CODEX_STYLE_COMPACTION",
-        "BROWSER_USE_BRIDGE_LLM_PROVIDER",
-        "BROWSER_USE_BRIDGE_LLM_MODEL",
-    ] {
+    for forbidden in ["OXIDE_CODEX_STYLE_COMPACTION"] {
         assert!(
             !env_example.contains(forbidden),
-            ".env.example must not document removed temporary migration switches or sidecar LLM fallbacks: {forbidden}"
+            ".env.example must not document removed temporary migration switches: {forbidden}"
         );
     }
 
@@ -361,7 +356,7 @@ fn stale_compatibility_labels_are_removed_from_current_surfaces() {
         "crates/oxide-agent-core/src/storage/tests/keys_and_user.rs",
         "crates/oxide-agent-transport-telegram/src/bot/context.rs",
         "crates/oxide-agent-transport-web/src/in_memory_storage.rs",
-        "crates/oxide-agent-transport-web/src/server.rs",
+        "crates/oxide-agent-transport-web/src/server/mod.rs",
     ];
     let forbidden_patterns = [
         "chat_with_tools_once",

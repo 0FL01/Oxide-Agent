@@ -70,6 +70,7 @@ impl AgentExecutor {
             runner,
             session,
             settings,
+            model_routes_override: None,
             agents_md: None,
             manager_control_plane: None,
             topic_infra: None,
@@ -113,6 +114,23 @@ impl AgentExecutor {
             *policy = execution_profile.hook_policy().clone();
         }
         self.execution_profile = execution_profile;
+    }
+
+    /// Override the agent model failover routes for this executor.
+    ///
+    /// An empty route list clears the override and restores global settings.
+    pub fn set_model_routes_override(&mut self, routes: Vec<ModelInfo>) {
+        self.model_routes_override = if routes.is_empty() {
+            None
+        } else {
+            Some(routes)
+        };
+    }
+
+    /// Return the currently configured per-executor model route override.
+    #[must_use]
+    pub fn model_routes_override(&self) -> Option<&[ModelInfo]> {
+        self.model_routes_override.as_deref()
     }
 
     /// Attach topic-scoped AGENTS.md tooling.

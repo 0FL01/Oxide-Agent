@@ -2,12 +2,13 @@
 
 use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use super::AgentRunner;
-use crate::agent::compaction::CompactionTrigger;
+use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
 use crate::agent::identity::SessionId;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
+use crate::agent::tool_failure_summary::summarize_tool_failure_content;
 use crate::agent::tool_runtime::{
     v1_tool_runtime_enabled_for_model, ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata,
     ToolBatchId, ToolCallRuntime, ToolHistoryError, ToolHistoryWriter, ToolOutput,
@@ -181,7 +182,7 @@ impl AgentRunner {
             .ok_or_else(|| anyhow::anyhow!("typed tool runtime requires an active model route"))?;
         if !v1_tool_runtime_enabled_for_model(&route) {
             return Err(anyhow::anyhow!(
-                "typed tool runtime v1 only supports opencode-go/deepseek-v4-flash; active route is {}/{}",
+                "typed tool runtime v1 requires an opencode-go or opencode-zen route; active route is {}/{}",
                 route.provider,
                 route.id
             ));
@@ -262,6 +263,7 @@ if any of it is needed for the user, include it explicitly in a later final_answ
         };
         let _ = tx
             .send(AgentEvent::ToolCall {
+                id: tool_call.invocation_id().into_inner(),
                 name: sanitized_name,
                 input: sanitized_args,
                 command_preview,
@@ -314,6 +316,7 @@ if any of it is needed for the user, include it explicitly in a later final_answ
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::ToolResult {
+                    id: output.invocation_id.as_str().to_string(),
                     name: sanitize_xml_tags(&tool_name),
                     output: content.clone(),
                     success: output.success,
@@ -323,27 +326,47 @@ if any of it is needed for the user, include it explicitly in a later final_answ
 
         self.apply_after_tool_hooks(ctx, state, &tool_name, &content);
         if output.success && tool_name == TOOL_COMPRESS {
-            state.request_manual_compaction();
+            let memory = ctx.agent.memory();
+            let threshold = memory.max_tokens() / 100
+                * CompactionPolicy::default().compact_threshold_percent as usize;
+            if memory.token_count() >= threshold {
+                state.request_manual_compaction();
+            }
         }
 
         let correlation = ToolCallCorrelation::new(output.invocation_id.clone())
             .with_provider_tool_call_id(output.tool_call_id.as_str())
             .with_protocol(ToolProtocol::ChatLike)
             .with_transport(ToolTransport::ClientRoundTrip);
+        let failure_summary = summarize_tool_failure_content(&tool_name, &content);
+        let memory_content = failure_summary
+            .as_ref()
+            .map(|summary| summary.content.as_str())
+            .unwrap_or(content.as_str());
         ctx.messages.push(Message::tool_with_correlation(
             output.invocation_id.as_str(),
             correlation.clone(),
             &tool_name,
-            &content,
+            memory_content,
         ));
-        ctx.agent
-            .memory_mut()
-            .add_message(AgentMessage::tool_with_correlation(
+        let memory_message = if let Some(summary) = failure_summary {
+            AgentMessage::pruned_tool_with_correlation(
+                output.invocation_id.as_str(),
+                correlation,
+                &tool_name,
+                summary.content,
+                summary.pruned_artifact,
+                None,
+            )
+        } else {
+            AgentMessage::tool_with_correlation(
                 output.invocation_id.as_str(),
                 correlation,
                 &tool_name,
                 &content,
-            ));
+            )
+        };
+        ctx.agent.memory_mut().add_message(memory_message);
     }
 
     fn extract_command_preview(arguments: &str) -> Option<String> {
@@ -377,6 +400,7 @@ mod tests {
     use std::time::Duration;
 
     struct StaticRuntimeExecutor;
+    struct DeadEndFailureRuntimeExecutor;
     struct ParallelRuntimeExecutor {
         active: Arc<AtomicUsize>,
         max_seen: Arc<AtomicUsize>,
@@ -405,6 +429,41 @@ mod tests {
                 "runtime-ok",
                 "",
             ))
+        }
+    }
+
+    #[async_trait]
+    impl ToolExecutor for DeadEndFailureRuntimeExecutor {
+        fn name(&self) -> ToolName {
+            ToolName::from("web_markdown")
+        }
+
+        fn spec(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "web_markdown".to_string(),
+                description: "fetch markdown".to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<ToolOutput, ToolRuntimeError> {
+            let mut output = OutputNormalizer::new(ToolRuntimeConfig::default()).failure(
+                &invocation,
+                "web_markdown blocked by anti-bot protection at platform.kimi.ai; this lightweight fetcher cannot solve JS/CAPTCHA/PoW challenges. Do not retry this host in this task; use another source.",
+            );
+            output.structured_payload = Some(json!({
+                "provider": "web_markdown",
+                "kind": "fetch",
+                "error_kind": "anti_bot",
+                "host": "platform.kimi.ai",
+                "url": "https://platform.kimi.ai/pricing/limits",
+                "retryable": false,
+                "provider_unavailable": true
+            }));
+            Ok(output)
         }
     }
 
@@ -468,6 +527,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "read through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -559,6 +619,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "read through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -617,6 +678,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_runtime_path_prunes_dead_end_tool_failure_in_memory() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(DeadEndFailureRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "fetch blocked page through runtime",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-dead-end-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-web-1",
+            ToolCallFunction {
+                name: "web_markdown".to_string(),
+                arguments: r#"{"url":"https://platform.kimi.ai/pricing/limits"}"#.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-web-1")
+                .with_provider_tool_call_id("call-web-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::StructuredControlEnvelope,
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 2);
+        let tool_result = &memory[1];
+        assert_eq!(tool_result.kind, AgentMessageKind::ToolResult);
+        assert_eq!(tool_result.tool_call_id.as_deref(), Some("invoke-web-1"));
+        assert_eq!(
+            tool_result
+                .tool_call_correlation
+                .as_ref()
+                .map(ToolCallCorrelation::wire_tool_call_id),
+            Some("call-web-1")
+        );
+        assert!(tool_result.is_pruned());
+        assert!(tool_result.content.contains("\"dead_end\":true"));
+        assert!(tool_result.content.contains("\"dead_end_scope\":\"host\""));
+        assert!(!tool_result.content.contains("bytes_captured"));
+        assert_eq!(ctx.messages[1].content, tool_result.content);
+    }
+
+    #[tokio::test]
     async fn typed_runtime_compress_output_requests_manual_compaction() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
@@ -637,12 +789,17 @@ mod tests {
         let tools = runtime_registry.specs();
         let runtime_registry = Arc::new(runtime_registry);
 
-        let mut session = EphemeralSession::new(2048);
+        let mut session = EphemeralSession::new(30);
+        // Fill memory above the 85% compaction threshold (30 * 85% = 25 tokens).
+        session.memory_mut().add_message(AgentMessage::user_task(
+            "padding task to push token count above the eighty-five percent compaction threshold of the thirty token max window for the compress budget guard test",
+        ));
         let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
         let mut messages = Vec::new();
         let mut ctx = AgentRunnerContext {
             task: "compress through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -694,9 +851,95 @@ mod tests {
         assert!(result.is_none());
         assert!(state.force_manual_compaction);
         let memory = ctx.agent.memory().get_messages();
-        assert_eq!(memory.len(), 2);
-        assert_eq!(memory[1].tool_name.as_deref(), Some(TOOL_COMPRESS));
-        assert!(memory[1].content.contains("scheduled"));
+        // 1 padding user_task + 1 compress tool result = 2 (user_task was added in setup).
+        assert!(memory.len() >= 2);
+        let compress_result = memory
+            .iter()
+            .find(|m| m.tool_name.as_deref() == Some(TOOL_COMPRESS));
+        assert!(compress_result.is_some());
+        assert!(compress_result.unwrap().content.contains("scheduled"));
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_compress_skips_when_below_budget_threshold() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        let compress_executor = Arc::new(CompressionProvider::new())
+            .tool_runtime_executors()
+            .into_iter()
+            .next()
+            .expect("compress executor registered");
+        runtime_registry
+            .register(compress_executor)
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        // Large context window, no messages — well below the 85% threshold.
+        let mut session = EphemeralSession::new(10000);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "compress below threshold",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "compress-guard-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-compress-1",
+            ToolCallFunction {
+                name: TOOL_COMPRESS.to_string(),
+                arguments: "{}".to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-compress-1")
+                .with_provider_tool_call_id("call-compress-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::StructuredControlEnvelope,
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        // Budget guard should have prevented compaction.
+        assert!(!state.force_manual_compaction);
     }
 
     #[tokio::test]
@@ -726,6 +969,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "read several files through runtime",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -824,6 +1068,7 @@ mod tests {
         let mut ctx = AgentRunnerContext {
             task: "unsupported typed runtime route",
             system_prompt: "system prompt",
+            date_suffix: "",
             tools: &tools,
             tool_runtime_registry: Some(runtime_registry),
             progress_tx: None,
@@ -871,7 +1116,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("typed tool runtime v1 only supports opencode-go/deepseek-v4-flash"));
+            .contains("typed tool runtime v1 requires an opencode-go or opencode-zen route"));
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
             "unsupported route must not write partial assistant/tool history"

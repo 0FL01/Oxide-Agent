@@ -3,12 +3,14 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{SandboxRuntime, TodoList};
 #[cfg(test)]
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
-#[cfg(feature = "tool-browser-use")]
-use crate::agent::tool_runtime::BrowserUseToolModule;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
+#[cfg(feature = "tool-crawl4ai-markdown")]
+use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-delegation")]
 use crate::agent::tool_runtime::DelegationToolModule;
+#[cfg(feature = "tool-duckduckgo")]
+use crate::agent::tool_runtime::DuckDuckGoToolModule;
 #[cfg(feature = "tool-file-delivery")]
 use crate::agent::tool_runtime::FileDeliveryToolModule;
 #[cfg(feature = "integration-mcp-jira")]
@@ -54,7 +56,6 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "integration-mcp-jira",
     feature = "integration-mcp-mattermost",
     feature = "tool-agents-md",
-    feature = "tool-browser-use",
     feature = "tool-compression",
     feature = "tool-delegation",
     feature = "tool-file-delivery",
@@ -62,12 +63,14 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-media-image",
     feature = "tool-media-video",
     feature = "tool-reminder",
+    feature = "tool-duckduckgo",
     feature = "tool-searxng",
     feature = "tool-stack-logs",
     feature = "tool-tavily",
     feature = "tool-todos",
     feature = "tool-tts-kokoro",
     feature = "tool-tts-silero",
+    feature = "tool-crawl4ai-markdown",
     feature = "tool-webfetch-md",
     feature = "tool-wiki-memory",
     feature = "tool-ytdlp",
@@ -129,7 +132,6 @@ impl AgentExecutor {
             feature = "integration-mcp-jira",
             feature = "integration-mcp-mattermost",
             feature = "tool-agents-md",
-            feature = "tool-browser-use",
             feature = "tool-compression",
             feature = "tool-delegation",
             feature = "tool-file-delivery",
@@ -137,12 +139,14 @@ impl AgentExecutor {
             feature = "tool-media-image",
             feature = "tool-media-video",
             feature = "tool-reminder",
+            feature = "tool-duckduckgo",
             feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
             feature = "tool-todos",
             feature = "tool-tts-kokoro",
             feature = "tool-tts-silero",
+            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-wiki-memory",
             feature = "tool-ytdlp"
@@ -157,8 +161,6 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &ManagerControlPlaneToolModule, ctx);
         #[cfg(feature = "integration-mcp-mattermost")]
         self.register_tool_runtime_module(registry, &MattermostMcpToolModule, ctx);
-        #[cfg(feature = "tool-browser-use")]
-        self.register_tool_runtime_module(registry, &BrowserUseToolModule, ctx);
         #[cfg(feature = "tool-compression")]
         self.register_tool_runtime_module(registry, &CompressionToolModule, ctx);
         #[cfg(feature = "tool-delegation")]
@@ -173,6 +175,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &MediaVideoToolModule, ctx);
         #[cfg(feature = "tool-reminder")]
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
+        #[cfg(feature = "tool-duckduckgo")]
+        self.register_tool_runtime_module(registry, &DuckDuckGoToolModule, ctx);
         #[cfg(feature = "tool-searxng")]
         self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
         #[cfg(feature = "integration-ssh-mcp")]
@@ -187,6 +191,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &KokoroTtsToolModule, ctx);
         #[cfg(feature = "tool-tts-silero")]
         self.register_tool_runtime_module(registry, &SileroTtsToolModule, ctx);
+        #[cfg(feature = "tool-crawl4ai-markdown")]
+        self.register_tool_runtime_module(registry, &Crawl4AiMarkdownToolModule, ctx);
         #[cfg(feature = "tool-webfetch-md")]
         self.register_tool_runtime_module(registry, &WebFetchMdToolModule, ctx);
         #[cfg(feature = "tool-wiki-memory")]
@@ -210,7 +216,6 @@ impl AgentExecutor {
         feature = "integration-mcp-jira",
         feature = "integration-mcp-mattermost",
         feature = "tool-agents-md",
-        feature = "tool-browser-use",
         feature = "tool-compression",
         feature = "tool-delegation",
         feature = "tool-file-delivery",
@@ -218,12 +223,13 @@ impl AgentExecutor {
         feature = "tool-media-image",
         feature = "tool-media-video",
         feature = "tool-reminder",
-        feature = "tool-searxng",
+        feature = "tool-duckduckgo",
         feature = "tool-stack-logs",
         feature = "tool-tavily",
         feature = "tool-todos",
         feature = "tool-tts-kokoro",
         feature = "tool-tts-silero",
+        feature = "tool-crawl4ai-markdown",
         feature = "tool-webfetch-md",
         feature = "tool-wiki-memory",
         feature = "tool-ytdlp"
@@ -256,19 +262,20 @@ impl AgentExecutor {
             feature = "integration-mcp-jira",
             feature = "integration-mcp-mattermost",
             feature = "tool-agents-md",
-            feature = "tool-browser-use",
             feature = "tool-compression",
             feature = "tool-file-delivery",
             feature = "tool-media-audio",
             feature = "tool-media-image",
             feature = "tool-media-video",
             feature = "tool-reminder",
+            feature = "tool-duckduckgo",
             feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
             feature = "tool-todos",
             feature = "tool-tts-kokoro",
             feature = "tool-tts-silero",
+            feature = "tool-crawl4ai-markdown",
             feature = "tool-webfetch-md",
             feature = "tool-wiki-memory",
             feature = "tool-ytdlp"
@@ -317,8 +324,6 @@ impl AgentExecutor {
             sandbox_runtime: self.build_sandbox_runtime(sandbox_scope, progress_tx),
             llm_client: self.runner.llm_client(),
             settings: Arc::clone(&self.settings),
-            browser_use_profile_scope: self.browser_use_profile_scope(),
-            browser_use_semaphore: None,
             #[cfg(feature = "tool-agents-md")]
             agents_md_context: self.agents_md.as_ref().map(|context| {
                 AgentsMdModuleContext::new(
@@ -366,43 +371,5 @@ impl AgentExecutor {
             SandboxRuntime::new(sandbox_scope)
         };
         Arc::new(runtime)
-    }
-
-    #[cfg(feature = "tool-browser-use")]
-    pub(super) fn browser_use_profile_scope(&self) -> Option<String> {
-        self.reminder_context
-            .as_ref()
-            .map(|context| context.context_key.clone())
-            .or_else(|| {
-                self.agents_md
-                    .as_ref()
-                    .map(|context| context.topic_id.clone())
-            })
-            .or_else(|| {
-                self.topic_infra
-                    .as_ref()
-                    .map(|context| context.topic_id.clone())
-            })
-            .map(|scope| scope.trim().to_string())
-            .filter(|scope| !scope.is_empty())
-    }
-
-    #[cfg(not(feature = "tool-browser-use"))]
-    pub(super) fn browser_use_profile_scope(&self) -> Option<String> {
-        self.reminder_context
-            .as_ref()
-            .map(|context| context.context_key.clone())
-            .or_else(|| {
-                self.agents_md
-                    .as_ref()
-                    .map(|context| context.topic_id.clone())
-            })
-            .or_else(|| {
-                self.topic_infra
-                    .as_ref()
-                    .map(|context| context.topic_id.clone())
-            })
-            .map(|scope| scope.trim().to_string())
-            .filter(|scope| !scope.is_empty())
     }
 }

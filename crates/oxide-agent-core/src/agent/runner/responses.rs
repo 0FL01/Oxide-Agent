@@ -271,7 +271,16 @@ async fn sync_todos_from_arc(memory: &mut AgentMemory, todos_arc: &Arc<Mutex<Tod
 
 #[cfg(test)]
 mod tests {
-    use super::should_salvage_structured_output_failure;
+    use super::*;
+    use crate::agent::compaction::AgentMessageKind;
+    use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::hooks::CompletionCheckHook;
+    use crate::agent::providers::{TodoItem, TodoList};
+    use crate::agent::runner::test_support::{build_llm_client, single_final_response_provider};
+    use crate::agent::runner::types::{FinalResponseInput, RunState};
+    use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     #[test]
     fn salvage_detector_accepts_plain_final_prose() {
@@ -290,5 +299,67 @@ mod tests {
         ));
         assert!(!should_salvage_structured_output_failure("tool_call:"));
         assert!(!should_salvage_structured_output_failure("short answer"));
+    }
+
+    #[tokio::test]
+    async fn forced_final_response_is_saved_as_undelivered_draft() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        runner.register_hook(Box::new(CompletionCheckHook::new()));
+
+        let mut session = EphemeralSession::new(2048);
+        let mut todos = TodoList::new();
+        todos.items.push(TodoItem::new("finish work"));
+        session.memory_mut().todos = todos.clone();
+        let todos_arc = Arc::new(Mutex::new(todos));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "forced-final-draft",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
+        };
+        let mut state = RunState::new();
+        let draft = "Full report generated before todos were complete.";
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: draft.to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("forced final response should continue");
+
+        assert!(result.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert!(
+            !memory.iter().any(|message| {
+                message.resolved_kind() == AgentMessageKind::AssistantResponse
+                    && message.content.contains(draft)
+            }),
+            "forced final response must not be stored as delivered assistant prose"
+        );
+        let draft_message = memory
+            .iter()
+            .find(|message| message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft)
+            .expect("undelivered draft should be recorded");
+        assert!(draft_message.content.contains("not delivered to the user"));
+        assert!(draft_message.content.contains(draft));
     }
 }

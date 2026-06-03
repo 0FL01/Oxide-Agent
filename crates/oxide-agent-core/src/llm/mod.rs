@@ -16,7 +16,7 @@ pub(crate) use capabilities::{
 };
 pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
 pub(crate) use client::InternalTextPurpose;
-pub use client::LlmClient;
+pub use client::{DiscoveredLlmModel, LlmClient};
 pub use error::LlmError;
 pub use provider::LlmProvider;
 #[cfg(test)]

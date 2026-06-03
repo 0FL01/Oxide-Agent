@@ -349,6 +349,10 @@ impl SileroTtsProvider {
                         estimate_duration(&request.text)
                     ))
                 }
+                FileDeliveryStatus::TooLarge { limit_bytes } => Ok(format!(
+                    "Russian voice message is too large for chat delivery ({:.2} MB limit). Increase OXIDE_CHAT_DELIVERY_MAX_FILE_SIZE_BYTES or use a smaller output.",
+                    limit_bytes as f64 / 1024.0 / 1024.0
+                )),
                 FileDeliveryStatus::DeliveryFailed(error) => {
                     error!(error = %error, "Russian voice message delivery failed");
                     Ok(format!("Russian voice message delivery failed: {error}"))

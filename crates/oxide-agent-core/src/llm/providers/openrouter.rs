@@ -439,6 +439,12 @@ impl LlmProvider for OpenRouterProvider {
                 prompt_tokens: u.get("prompt_tokens")?.as_u64()? as u32,
                 completion_tokens: u.get("completion_tokens")?.as_u64()? as u32,
                 total_tokens: u.get("total_tokens")?.as_u64()? as u32,
+                cached_tokens: u
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32),
+                cache_creation_tokens: None,
             })
         });
 

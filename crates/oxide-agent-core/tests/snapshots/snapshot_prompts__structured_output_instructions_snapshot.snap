@@ -46,12 +46,12 @@ Rules:
     "name": "test_tool",
     "description": "A test tool",
     "parameters": {
+      "type": "object",
       "properties": {
         "arg1": {
           "type": "string"
         }
-      },
-      "type": "object"
+      }
     }
   }
 ]

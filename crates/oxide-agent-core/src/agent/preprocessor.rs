@@ -9,9 +9,28 @@ use crate::sandbox::{ExecResult, SandboxExec, SandboxFileOps, SandboxScope};
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;
+use uuid::Uuid;
 
 /// Upload limit: 1 GB per session
 const UPLOAD_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Sandbox-local staged upload metadata.
+///
+/// Files under `/workspace/uploads` are ephemeral and are lost when the
+/// sandbox is destroyed or recreated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedDocument {
+    /// Absolute sandbox path where the uploaded file was written.
+    pub sandbox_path: String,
+    /// Original file name reported by the transport.
+    pub file_name: String,
+    /// Best-effort MIME type reported by the transport.
+    pub mime_type: Option<String>,
+    /// Optional user caption that accompanied the file upload.
+    pub caption: Option<String>,
+    /// Raw uploaded file size in bytes.
+    pub size_bytes: u64,
+}
 
 /// Preprocessor for converting multimodal inputs to text
 pub struct Preprocessor {
@@ -232,7 +251,81 @@ impl Preprocessor {
         caption: Option<String>,
     ) -> Result<String> {
         let upload_path = format!("/workspace/uploads/{}", Self::sanitize_filename(&file_name));
+        let staged = self
+            .stage_document_with_path(bytes, file_name, mime_type, caption, upload_path)
+            .await?;
 
+        Ok(Self::render_staged_document_markdown(&staged))
+    }
+
+    /// Stage a document inside the current sandbox and return structured metadata.
+    ///
+    /// The staged path lives only inside the current sandbox scope and is lost if
+    /// that sandbox is destroyed or recreated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file upload fails or the sandbox upload quota is exceeded.
+    pub async fn stage_document_upload(
+        &self,
+        bytes: Vec<u8>,
+        file_name: String,
+        mime_type: Option<String>,
+        caption: Option<String>,
+    ) -> Result<StagedDocument> {
+        let upload_path = Self::unique_upload_path(&file_name);
+        self.stage_document_with_path(bytes, file_name, mime_type, caption, upload_path)
+            .await
+    }
+
+    /// Render a staged document into the user-facing Markdown block injected
+    /// into the agent input.
+    #[must_use]
+    pub fn render_staged_document_markdown(document: &StagedDocument) -> String {
+        let size_str = Self::format_file_size(document.size_bytes as usize);
+        let hint = Self::get_file_type_hint(&document.file_name);
+
+        let mut parts = vec![
+            "📎 **User uploaded a file:**".to_string(),
+            format!("   Path: `{}`", document.sandbox_path),
+            format!("   Size: {}", size_str),
+        ];
+
+        if let Some(mime_type) = &document.mime_type {
+            parts.push(format!("   Type: {mime_type}"));
+        }
+
+        parts.push(String::new());
+        parts.push(hint);
+
+        parts.push(String::new());
+        if let Some(caption) = &document.caption {
+            parts.push(format!("**Message:** {caption}"));
+        } else {
+            parts.push("_User did not leave a comment._".to_string());
+        }
+
+        parts.join("\n")
+    }
+
+    /// Render multiple staged documents into concatenated Markdown blocks.
+    #[must_use]
+    pub fn render_staged_documents_markdown(documents: &[StagedDocument]) -> String {
+        documents
+            .iter()
+            .map(Self::render_staged_document_markdown)
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    async fn stage_document_with_path(
+        &self,
+        bytes: Vec<u8>,
+        file_name: String,
+        mime_type: Option<String>,
+        caption: Option<String>,
+        upload_path: String,
+    ) -> Result<StagedDocument> {
         // Check upload limit
         let current_size = self.current_uploads_size().await.unwrap_or(0);
         let new_size = current_size + bytes.len() as u64;
@@ -248,30 +341,13 @@ impl Preprocessor {
             .write_file(&upload_path, &bytes)
             .await?;
 
-        let size_str = Self::format_file_size(bytes.len());
-        let hint = Self::get_file_type_hint(&file_name);
-
-        let mut parts = vec![
-            "📎 **User uploaded a file:**".to_string(),
-            format!("   Path: `{}`", upload_path),
-            format!("   Size: {}", size_str),
-        ];
-
-        if let Some(mime_type) = &mime_type {
-            parts.push(format!("   Type: {mime_type}"));
-        }
-
-        parts.push(String::new());
-        parts.push(hint);
-
-        parts.push(String::new());
-        if let Some(caption) = caption {
-            parts.push(format!("**Message:** {caption}"));
-        } else {
-            parts.push("_User did not leave a comment._".to_string());
-        }
-
-        Ok(parts.join("\n"))
+        Ok(StagedDocument {
+            sandbox_path: upload_path,
+            file_name,
+            mime_type,
+            caption,
+            size_bytes: bytes.len() as u64,
+        })
     }
 
     async fn current_uploads_size(&self) -> Result<u64> {
@@ -305,6 +381,12 @@ impl Preprocessor {
                 _ => c,
             })
             .collect()
+    }
+
+    #[must_use]
+    fn unique_upload_path(file_name: &str) -> String {
+        let sanitized = Self::sanitize_filename(file_name);
+        format!("/workspace/uploads/{}-{sanitized}", Uuid::new_v4().simple())
     }
 
     /// Format file size in human-readable format
@@ -737,6 +819,44 @@ mod tests {
         assert!(processed.contains("Size: 3 B"));
         assert!(processed.contains("Type: text/plain"));
         assert!(processed.contains("**Message:** caption"));
+    }
+
+    #[tokio::test]
+    async fn stage_document_upload_returns_unique_sandbox_metadata() {
+        let settings = AgentSettings::default();
+        let llm = Arc::new(crate::llm::LlmClient::new(&settings));
+        let fileops = Arc::new(RecordingSandboxFileOps::default());
+        let exec = Arc::new(RecordingSandboxExec::new("12\t/workspace/uploads\n"));
+        let sandbox_fileops: Arc<dyn SandboxFileOps> =
+            Arc::<RecordingSandboxFileOps>::clone(&fileops);
+        let sandbox_exec: Arc<dyn SandboxExec> = Arc::<RecordingSandboxExec>::clone(&exec);
+        let preprocessor = Preprocessor::with_sandbox_backends(llm, sandbox_fileops, sandbox_exec);
+
+        let staged = preprocessor
+            .stage_document_upload(
+                b"abc".to_vec(),
+                "../my file.txt".to_string(),
+                Some("text/plain".to_string()),
+                None,
+            )
+            .await
+            .expect("document staging should succeed");
+
+        assert!(
+            staged.sandbox_path.starts_with("/workspace/uploads/"),
+            "unexpected sandbox path: {}",
+            staged.sandbox_path
+        );
+        assert!(
+            staged.sandbox_path.ends_with("-my_file.txt"),
+            "unexpected sandbox path: {}",
+            staged.sandbox_path
+        );
+        assert_eq!(staged.file_name, "../my file.txt");
+        assert_eq!(staged.mime_type.as_deref(), Some("text/plain"));
+        assert_eq!(staged.size_bytes, 3);
+        assert_eq!(fileops.writes().len(), 1);
+        assert_eq!(fileops.writes()[0].0, staged.sandbox_path);
     }
 
     #[cfg(feature = "llm-openrouter")]

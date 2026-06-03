@@ -1,6 +1,7 @@
 use dotenvy::dotenv;
 use oxide_agent_core::capabilities::{compiled_capability_manifest, compiled_profile_name};
 use oxide_agent_core::config::{load_module_runtime_settings, AgentSettings};
+use oxide_agent_core::sandbox::preflight_sandbox_backend;
 use oxide_agent_transport_telegram::config::{BotSettings, TelegramSettings};
 use oxide_agent_transport_telegram::runner::run_bot;
 use regex::Regex;
@@ -182,6 +183,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging(patterns);
 
     info!("Starting Oxide Agent TG Bot...");
+
+    if let Err(error) = preflight_sandbox_backend().await {
+        error!("Sandbox preflight failed: {}", error);
+        std::process::exit(1);
+    }
 
     // Load settings
     let settings = init_settings();

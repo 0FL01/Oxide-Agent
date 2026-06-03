@@ -4,6 +4,8 @@ members = [
     "crates/oxide-agent-runtime",
     "crates/oxide-agent-transport-telegram",
     "crates/oxide-agent-transport-web",
+    "crates/oxide-agent-web-contracts",
+    "crates/oxide-agent-web-ui",
     "crates/oxide-agent-telegram-bot",
     "crates/oxide-agent-sandboxd",
 ]

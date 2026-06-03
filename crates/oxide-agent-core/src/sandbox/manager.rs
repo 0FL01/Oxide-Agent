@@ -2969,7 +2969,7 @@ mod tests {
 
         let filtered = DockerSandboxManager::stack_log_source_from_summary(
             &summary,
-            &BTreeSet::from(["browser_use".to_string()]),
+            &BTreeSet::from(["searxng".to_string()]),
             false,
         );
         assert!(

@@ -8,8 +8,9 @@ use oxide_agent_transport_web::session::{TaskStatus, WebSessionManager};
 use serde_json::Value;
 
 use crate::helpers::{
-    create_session_http_with_user, create_task_http_with_body, fetch_task_events,
-    fetch_task_progress, spawn_test_server,
+    create_session_http_with_user, create_task_http_with_body, delete_session_http,
+    fetch_task_events, fetch_task_progress, fetch_task_timeline, session_user_id,
+    spawn_test_server,
 };
 use crate::setup::{cleanup_web_sandbox, setup_live_zai_test};
 
@@ -104,13 +105,14 @@ async fn e2e_zai_heavy_sandbox_audit_logs_baselines() {
     let client = reqwest::Client::new();
     let overall_start = Instant::now();
     for attempt in 1..=MAX_ATTEMPTS {
-        let user_id = unique_test_user_id();
+        let requested_user_id = unique_test_user_id();
         eprintln!(
-            "[LIVE-ZAI] Attempt {attempt}/{MAX_ATTEMPTS}: starting heavy sandbox audit with user_id={user_id}"
+            "[LIVE-ZAI] Attempt {attempt}/{MAX_ATTEMPTS}: starting heavy sandbox audit with requested_user_id={requested_user_id}"
         );
 
         let create_session_start = Instant::now();
-        let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+        let session_id = create_session_http_with_user(&client, &base_url, requested_user_id).await;
+        let user_id = session_user_id(&base_url, &session_id);
         eprintln!(
             "[LIVE-ZAI] Session created in {}ms: {}",
             create_session_start.elapsed().as_millis(),
@@ -207,10 +209,11 @@ async fn e2e_zai_seeded_initial_anchor_missing_after_healthy_cleanup() {
     let client = reqwest::Client::new();
 
     for attempt in 1..=LIVE_ANCHOR_MAX_ATTEMPTS {
-        let user_id = unique_test_user_id();
-        let anchor = format!("ANCHOR_CTX_{user_id:x}_7f4c2b9d1e6a3c8f");
-        let anchor_tail = format!("{user_id:x}_7f4c2b9d1e6a3c8f");
-        let session_id = create_session_http_with_user(&client, &base_url, user_id).await;
+        let requested_user_id = unique_test_user_id();
+        let anchor = format!("ANCHOR_CTX_{requested_user_id:x}_7f4c2b9d1e6a3c8f");
+        let anchor_tail = format!("{requested_user_id:x}_7f4c2b9d1e6a3c8f");
+        let session_id = create_session_http_with_user(&client, &base_url, requested_user_id).await;
+        let user_id = session_user_id(&base_url, &session_id);
         let old_payload = format!("{}{}", "x".repeat(1_400), anchor);
 
         seed_history(
@@ -310,16 +313,7 @@ async fn run_live_audit_scenario(
         .await
         .expect("failed to decode task progress");
     let events = fetch_task_events(client, base_url, session_id, task_id).await;
-    let timeline = client
-        .get(format!(
-            "{base_url}/sessions/{session_id}/tasks/{task_id}/timeline"
-        ))
-        .send()
-        .await
-        .expect("failed to fetch task timeline")
-        .json()
-        .await
-        .expect("failed to decode task timeline");
+    let timeline = fetch_task_timeline(client, base_url, session_id, task_id).await;
 
     LiveAuditArtifacts {
         terminal_status,
@@ -336,13 +330,7 @@ async fn cleanup_live_attempt(
     session_id: &str,
     user_id: i64,
 ) {
-    let delete_status = client
-        .delete(format!("{base_url}/sessions/{session_id}"))
-        .send()
-        .await
-        .expect("failed to delete live test session")
-        .status();
-    eprintln!("[LIVE-ZAI] Session delete status: {delete_status}");
+    delete_session_http(client, base_url, session_id).await;
 
     match cleanup_web_sandbox(user_id).await {
         Ok(removed) => eprintln!("[LIVE-ZAI] Sandbox cleanup removed_container={removed}"),

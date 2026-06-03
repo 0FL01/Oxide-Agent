@@ -123,6 +123,7 @@ mod progress_integration_tests {
 
         // Simulate sanitized tool call event (XML tags already removed in executor)
         state.update(AgentEvent::ToolCall {
+            id: "tool-1".to_string(),
             name: "todos".to_string(), // Already sanitized!
             input: "[{\"description\": \"test\"}]".to_string(),
             command_preview: None,
@@ -143,6 +144,7 @@ mod progress_integration_tests {
 
         // Test with complex but sanitized input
         state.update(AgentEvent::ToolCall {
+            id: "tool-1".to_string(),
             name: "web_search".to_string(),
             input: "query: \"test query\"".to_string(),
             command_preview: None,
@@ -159,6 +161,7 @@ mod progress_integration_tests {
 
         // Test execute_command with command preview
         state.update(AgentEvent::ToolCall {
+            id: "tool-1".to_string(),
             name: "execute_command".to_string(),
             input: r#"{"command": "pip install pandas"}"#.to_string(),
             command_preview: Some("pip install pandas".to_string()),
@@ -177,28 +180,33 @@ mod progress_integration_tests {
 
         // Add multiple completed steps
         state.update(AgentEvent::ToolCall {
+            id: "tool-1".to_string(),
             name: "web_search".to_string(),
             input: "q1".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
+            id: "tool-1".to_string(),
             name: "web_search".to_string(),
             output: "result1".to_string(),
             success: true,
         });
 
         state.update(AgentEvent::ToolCall {
+            id: "tool-2".to_string(),
             name: "web_search".to_string(),
             input: "q2".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
+            id: "tool-2".to_string(),
             name: "web_search".to_string(),
             output: "result2".to_string(),
             success: true,
         });
 
         state.update(AgentEvent::ToolCall {
+            id: "tool-3".to_string(),
             name: "execute_command".to_string(),
             input: "{}".to_string(),
             command_preview: Some("ls -la".to_string()),
