@@ -1813,9 +1813,14 @@ fn ToolCard(call: Option<PersistedTaskEvent>, result: Option<PersistedTaskEvent>
         "execute_command" => {
             view! { <ShellToolCard call=call result=result output=output_json /> }.into_any()
         }
-        "web_search" | "tavily_search" | "duckduckgo_search" | "duckduckgo_news" => {
-            view! { <SearchToolCard call=call result=result output=output_json /> }.into_any()
+        "web_search" | "tavily_search" | "duckduckgo_search" | "duckduckgo_news" => view! {
+            <SearchToolCard label="Web search" preview_query_first=false call=call result=result output=output_json />
         }
+        .into_any(),
+        "brave_search" => view! {
+            <SearchToolCard label="Brave Search" preview_query_first=true call=call result=result output=output_json />
+        }
+        .into_any(),
         "crawl4ai_markdown" => {
             view! { <CrawlToolCard call=call result=result output=output_json /> }.into_any()
         }
@@ -1958,6 +1963,8 @@ fn ShellToolCard(
 
 #[component]
 fn SearchToolCard(
+    label: &'static str,
+    preview_query_first: bool,
     call: Option<PersistedTaskEvent>,
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
@@ -2001,6 +2008,7 @@ fn SearchToolCard(
                                 url: item.get("url")?.as_str()?.to_string(),
                                 snippet: item
                                     .get("snippet")
+                                    .or_else(|| item.get("description"))
                                     .or_else(|| item.get("content"))
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
@@ -2036,18 +2044,30 @@ fn SearchToolCard(
 
     let default_open = is_running || !success;
 
-    // Compact preview: first result snippet or query
     let preview_snippet = search_results
         .first()
         .filter(|sr| !sr.snippet.is_empty())
         .map(|sr| sr.snippet.clone());
-    let preview_text =
-        preview_snippet.or_else(|| (!success).then(|| result_summary.clone()).flatten());
+    // For Brave Search, query is the compact preview (stable, like Crawl's URL host).
+    let preview_text = if success && preview_query_first {
+        query.clone().or_else(|| preview_snippet.clone())
+    } else if success {
+        preview_snippet.or_else(|| {
+            query.clone().or_else(|| {
+                search_results
+                    .first()
+                    .filter(|sr| !sr.title.is_empty())
+                    .map(|sr| sr.title.clone())
+            })
+        })
+    } else {
+        result_summary.clone().or(query.clone())
+    };
 
     view! {
         <div class="tool-card-header">
             <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">"Web search"</span>
+            <span class="tool-name">{label}</span>
             {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
             {result_count.map(|n| view! {
                 <span class="tool-meta">{format!("{n} results")}</span>
@@ -2107,10 +2127,16 @@ fn SearchToolCard(
 
 /// Extract hostname (with port) from a URL string for compact preview.
 fn host_from_url_str(raw: &str) -> Option<String> {
-    let s = raw.strip_prefix("https://").or(raw.strip_prefix("http://"))?;
+    let s = raw
+        .strip_prefix("https://")
+        .or(raw.strip_prefix("http://"))?;
     let host = s.split('?').next().unwrap_or(s);
     let host = host.split('/').next().unwrap_or(host);
-    if host.is_empty() { None } else { Some(host.to_string()) }
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 /// Human-readable byte/char count (e.g. "5.0K chars").
