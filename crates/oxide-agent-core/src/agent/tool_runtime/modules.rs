@@ -26,6 +26,8 @@ use tokio::sync::{mpsc::Sender, Mutex};
 use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::providers::AgentsMdProvider;
+#[cfg(feature = "tool-brave-search")]
+use crate::agent::providers::BraveSearchProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::providers::CompressionProvider;
 #[cfg(feature = "tool-crawl4ai-markdown")]
@@ -821,6 +823,40 @@ impl DuckDuckGoToolModule {
 impl ToolModule for DuckDuckGoToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/duckduckgo")
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
+    }
+}
+
+/// Capability module for Brave Search API web search.
+#[cfg(feature = "tool-brave-search")]
+pub struct BraveSearchToolModule;
+
+#[cfg(feature = "tool-brave-search")]
+impl BraveSearchToolModule {
+    fn provider(&self) -> Option<BraveSearchProvider> {
+        if !crate::config::is_brave_search_enabled() {
+            return None;
+        }
+
+        match BraveSearchProvider::new_from_config() {
+            Ok(provider) => Some(provider),
+            Err(error) => {
+                tracing::warn!(error = %error, "Brave Search provider initialization failed");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(feature = "tool-brave-search")]
+impl ToolModule for BraveSearchToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/brave-search")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {

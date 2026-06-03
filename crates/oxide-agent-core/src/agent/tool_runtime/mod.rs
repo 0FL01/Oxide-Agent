@@ -30,6 +30,8 @@ pub use invocation::{
 pub use modules::AgentsMdModuleContext;
 #[cfg(feature = "tool-agents-md")]
 pub use modules::AgentsMdToolModule;
+#[cfg(feature = "tool-brave-search")]
+pub use modules::BraveSearchToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]

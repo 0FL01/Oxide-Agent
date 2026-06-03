@@ -835,6 +835,62 @@ fn typed_runtime_registry_skips_disabled_searxng_module() {
     std::env::remove_var("SEARXNG_URL");
 }
 
+#[cfg(feature = "tool-brave-search")]
+#[test]
+fn typed_runtime_registry_skips_disabled_brave_search_module() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("BRAVE_SEARCH_API_KEY", "dummy-key");
+    std::env::set_var("BRAVE_SEARCH_ENABLED", "true");
+
+    let settings = Arc::new(AgentSettings {
+        modules: std::collections::BTreeMap::from([(
+            "tool/brave-search".to_string(),
+            ModuleRuntimeConfig::disabled(),
+        )]),
+        ..AgentSettings::default()
+    });
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let session = AgentSession::new(9_i64.into());
+    let executor = AgentExecutor::new(llm, session, settings);
+
+    let registry =
+        executor.build_tool_runtime_registry(Arc::new(Mutex::new(TodoList::new())), None);
+    let tool_names = registry
+        .tool_names()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(!tool_names.contains("brave_search"));
+    #[cfg(feature = "tool-todos")]
+    assert!(tool_names.contains("write_todos"));
+
+    std::env::remove_var("BRAVE_SEARCH_ENABLED");
+    std::env::remove_var("BRAVE_SEARCH_API_KEY");
+}
+
+#[cfg(feature = "tool-brave-search")]
+#[test]
+fn current_tool_definitions_include_brave_search_when_key_is_configured() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::set_var("BRAVE_SEARCH_API_KEY", "dummy-key");
+    std::env::set_var("BRAVE_SEARCH_ENABLED", "true");
+
+    let tool_names = build_executor()
+        .current_tool_definitions()
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(tool_names.contains("brave_search"));
+
+    std::env::remove_var("BRAVE_SEARCH_ENABLED");
+    std::env::remove_var("BRAVE_SEARCH_API_KEY");
+}
+
 #[cfg(all(feature = "tool-tavily", feature = "tool-duckduckgo"))]
 #[test]
 fn typed_runtime_registry_registers_search_modules_once() {

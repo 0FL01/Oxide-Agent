@@ -40,6 +40,8 @@ use tokio::time::{timeout, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+#[cfg(feature = "tool-brave-search")]
+use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]
 use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-duckduckgo")]
@@ -57,6 +59,7 @@ use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
+    feature = "tool-brave-search",
     feature = "tool-duckduckgo",
     feature = "tool-searxng",
     feature = "tool-tavily",
@@ -666,7 +669,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(not(any(
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
+            feature = "tool-brave-search",
             feature = "tool-duckduckgo",
+            feature = "tool-searxng",
             feature = "tool-tavily",
             feature = "tool-todos",
             feature = "tool-crawl4ai-markdown",
@@ -698,6 +703,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
         #[cfg(feature = "tool-duckduckgo")]
         self.push_sub_agent_tool_module(&mut executors, &DuckDuckGoToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-brave-search")]
+        self.push_sub_agent_tool_module(&mut executors, &BraveSearchToolModule, &module_ctx);
 
         #[cfg(feature = "tool-searxng")]
         self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
@@ -744,7 +752,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     #[cfg(any(
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
+        feature = "tool-brave-search",
         feature = "tool-duckduckgo",
+        feature = "tool-searxng",
         feature = "tool-tavily",
         feature = "tool-todos",
         feature = "tool-crawl4ai-markdown",
@@ -784,6 +794,11 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             })
         {
             warn!("DuckDuckGo enabled but feature not compiled in");
+        }
+
+        #[cfg(not(feature = "tool-brave-search"))]
+        if crate::config::is_brave_search_enabled() {
+            warn!("Brave Search enabled but feature not compiled in");
         }
 
         #[cfg(not(feature = "tool-searxng"))]

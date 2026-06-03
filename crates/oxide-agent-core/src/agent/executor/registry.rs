@@ -3,6 +3,8 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{SandboxRuntime, TodoList};
 #[cfg(test)]
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
+#[cfg(feature = "tool-brave-search")]
+use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(feature = "tool-compression")]
 use crate::agent::tool_runtime::CompressionToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]
@@ -64,6 +66,7 @@ use crate::agent::tool_runtime::TodosToolModule;
     feature = "tool-media-video",
     feature = "tool-reminder",
     feature = "tool-duckduckgo",
+    feature = "tool-brave-search",
     feature = "tool-searxng",
     feature = "tool-stack-logs",
     feature = "tool-tavily",
@@ -140,6 +143,7 @@ impl AgentExecutor {
             feature = "tool-media-video",
             feature = "tool-reminder",
             feature = "tool-duckduckgo",
+            feature = "tool-brave-search",
             feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
@@ -177,6 +181,8 @@ impl AgentExecutor {
         self.register_tool_runtime_module(registry, &ReminderToolModule, ctx);
         #[cfg(feature = "tool-duckduckgo")]
         self.register_tool_runtime_module(registry, &DuckDuckGoToolModule, ctx);
+        #[cfg(feature = "tool-brave-search")]
+        self.register_tool_runtime_module(registry, &BraveSearchToolModule, ctx);
         #[cfg(feature = "tool-searxng")]
         self.register_tool_runtime_module(registry, &SearxngToolModule, ctx);
         #[cfg(feature = "integration-ssh-mcp")]
@@ -224,6 +230,8 @@ impl AgentExecutor {
         feature = "tool-media-video",
         feature = "tool-reminder",
         feature = "tool-duckduckgo",
+        feature = "tool-brave-search",
+        feature = "tool-searxng",
         feature = "tool-stack-logs",
         feature = "tool-tavily",
         feature = "tool-todos",
@@ -269,6 +277,7 @@ impl AgentExecutor {
             feature = "tool-media-video",
             feature = "tool-reminder",
             feature = "tool-duckduckgo",
+            feature = "tool-brave-search",
             feature = "tool-searxng",
             feature = "tool-stack-logs",
             feature = "tool-tavily",
