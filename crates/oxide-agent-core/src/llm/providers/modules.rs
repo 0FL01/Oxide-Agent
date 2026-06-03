@@ -393,7 +393,7 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn opencode_go_module_all_models_support_structured_output() {
+    fn opencode_go_module_all_models_use_native_tools_without_structured_output() {
         let route = crate::config::ModelInfo {
             id: "opencode-go/deepseek-v4-flash".to_string(),
             provider: "llm-provider/opencode-go".to_string(),
@@ -405,7 +405,8 @@ mod tests {
         let capabilities =
             provider_capabilities_for_model(&route).expect("provider id should resolve");
 
-        assert!(capabilities.supports_structured_output);
+        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
     }
 
     #[cfg(feature = "llm-zai")]

@@ -168,7 +168,10 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<Option<AgentRunResult>> {
-        if let Ok(parsed) = parse_structured_output(&raw_output, ctx.tools) {
+        if let Some(parsed) = should_parse_unstructured_structured_output_fallback(&raw_output)
+            .then(|| parse_structured_output(&raw_output, ctx.tools))
+            .and_then(Result::ok)
+        {
             warn!(
                 model = %ctx.config.model_name,
                 provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
@@ -317,6 +320,11 @@ impl AgentRunner {
     }
 }
 
+fn should_parse_unstructured_structured_output_fallback(raw: &str) -> bool {
+    let trimmed = raw.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with("```")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,6 +387,19 @@ mod tests {
             .expect("assistant response should be saved");
         assert_eq!(last_message.content, "Tools: `read_file`, `write_file`");
         assert!(!last_message.content.contains("\"final_answer\""));
+    }
+
+    #[test]
+    fn unstructured_fallback_only_tries_json_like_candidates() {
+        assert!(should_parse_unstructured_structured_output_fallback(
+            r#"{"thought":"done","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#
+        ));
+        assert!(should_parse_unstructured_structured_output_fallback(
+            "```json\n{}\n```"
+        ));
+        assert!(!should_parse_unstructured_structured_output_fallback(
+            "# Обзор: Gemma 4 12B\n\nОбычный markdown-ответ модели."
+        ));
     }
 
     #[tokio::test]

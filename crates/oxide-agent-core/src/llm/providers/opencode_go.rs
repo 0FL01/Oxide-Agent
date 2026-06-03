@@ -1109,8 +1109,8 @@ fn anthropic_extra_headers(api_key: &str) -> Vec<(&str, &str)> {
     ]
 }
 
-fn should_use_native_json_mode(json_mode: bool, _has_tools: bool) -> bool {
-    json_mode
+fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
+    json_mode && !has_tools
 }
 
 fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
@@ -1506,6 +1506,23 @@ mod tests {
         assert_eq!(body["response_format"]["type"], json!("json_object"));
         assert!(body.get("tools").is_none());
         assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn json_mode_with_tools_does_not_set_response_format() {
+        let tools = vec![read_file_tool()];
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &tools,
+            "deepseek-v4-flash",
+            32000,
+            None,
+            true,
+        );
+
+        assert!(body.get("response_format").is_none());
+        assert_eq!(body["tools"][0]["function"]["name"], json!("read_file"));
     }
 
     #[test]
