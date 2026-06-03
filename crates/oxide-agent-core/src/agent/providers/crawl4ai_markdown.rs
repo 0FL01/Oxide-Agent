@@ -743,15 +743,31 @@ async fn parse_final_url(result: &Value) -> Result<Option<Url>> {
 }
 
 fn select_markdown(result: &Value) -> Result<MarkdownSelection> {
-    let markdown = result
-        .get("markdown")
-        .ok_or_else(|| anyhow!("crawl4ai response parse error: missing markdown"))?;
+    if let Some(markdown) = result.get("markdown") {
+        if let Some(selection) = select_crawl4ai_markdown(markdown)? {
+            return Ok(selection);
+        }
+    }
 
-    if let Some(text) = markdown.as_str().filter(|text| !text.trim().is_empty()) {
-        return Ok(MarkdownSelection {
+    if let Some(html) = result.get("html").and_then(Value::as_str) {
+        let converted = html_to_markdown(html)?;
+        if !converted.trim().is_empty() {
+            return Ok(MarkdownSelection {
+                kind: "html_fallback",
+                text: converted,
+            });
+        }
+    }
+
+    bail!("crawl4ai response parse error: empty markdown and html fallback")
+}
+
+fn select_crawl4ai_markdown(markdown: &Value) -> Result<Option<MarkdownSelection>> {
+    if let Some(text) = markdown.as_str() {
+        return Ok((!text.trim().is_empty()).then(|| MarkdownSelection {
             kind: "raw_markdown",
             text: text.to_string(),
-        });
+        }));
     }
 
     let object = markdown
@@ -764,15 +780,26 @@ fn select_markdown(result: &Value) -> Result<MarkdownSelection> {
     ] {
         if let Some(text) = object.get(field).and_then(Value::as_str) {
             if !text.trim().is_empty() {
-                return Ok(MarkdownSelection {
+                return Ok(Some(MarkdownSelection {
                     kind,
                     text: text.to_string(),
-                });
+                }));
             }
         }
     }
 
-    bail!("crawl4ai response parse error: empty markdown")
+    Ok(None)
+}
+
+fn html_to_markdown(html: &str) -> Result<String> {
+    htmd::HtmlToMarkdown::builder()
+        .skip_tags(vec![
+            "script", "style", "noscript", "iframe", "object", "embed", "meta", "link", "nav",
+            "footer", "aside", "form", "button", "svg", "canvas",
+        ])
+        .build()
+        .convert(html)
+        .map_err(|error| anyhow!("crawl4ai html fallback conversion failed: {error}"))
 }
 
 fn crawl4ai_failure_payload(
@@ -1409,6 +1436,21 @@ mod tests {
         let selected = select_markdown(&object_result).expect("object markdown");
         assert_eq!(selected.kind, "markdown_with_citations");
         assert_eq!(selected.text, "# Cited");
+    }
+
+    #[test]
+    fn falls_back_to_html_when_markdown_is_empty() {
+        let result = json!({
+            "markdown": {"raw_markdown": "", "markdown_with_citations": "", "fit_markdown": ""},
+            "html": "<html><head><title>Ignored</title></head><body><main><h1>Gemma Guide</h1><p>Article body.</p><script>ignore()</script></main></body></html>"
+        });
+
+        let selected = select_markdown(&result).expect("html fallback markdown");
+
+        assert_eq!(selected.kind, "html_fallback");
+        assert!(selected.text.contains("Gemma Guide"));
+        assert!(selected.text.contains("Article body"));
+        assert!(!selected.text.contains("ignore()"));
     }
 
     #[test]
