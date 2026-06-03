@@ -441,6 +441,13 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
     );
     push_module!(
         modules,
+        "tool-brave-search",
+        "tool/brave-search",
+        Search,
+        ["tool/brave-search"]
+    );
+    push_module!(
+        modules,
         "tool-searxng",
         "tool/searxng",
         Search,

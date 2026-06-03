@@ -59,6 +59,24 @@ pub struct AgentSettings {
     pub tavily_api_key: Option<String>,
     /// Enable Tavily tool provider registration.
     pub tavily_enabled: Option<bool>,
+    /// Brave Search API key.
+    pub brave_search_api_key: Option<String>,
+    /// Enable Brave Search tool provider registration.
+    pub brave_search_enabled: Option<bool>,
+    /// Brave Search request timeout (seconds).
+    pub brave_search_timeout_secs: Option<u64>,
+    /// Default Brave Search country targeting.
+    pub brave_search_country: Option<String>,
+    /// Default Brave Search language targeting.
+    pub brave_search_lang: Option<String>,
+    /// Default Brave Search UI language.
+    pub brave_search_ui_lang: Option<String>,
+    /// Default Brave Search safe-search setting.
+    pub brave_search_safesearch: Option<String>,
+    /// Process-wide Brave Search max concurrent operations.
+    pub brave_search_max_concurrent: Option<usize>,
+    /// Process-wide Brave Search minimum delay between operations.
+    pub brave_search_min_delay_ms: Option<u64>,
     /// Enable DuckDuckGo tool provider registration.
     pub duckduckgo_enabled: Option<bool>,
     /// DuckDuckGo request timeout (seconds).
@@ -755,6 +773,19 @@ impl AgentSettings {
 
         if self.tavily_enabled.is_none() {
             self.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
+        }
+
+        if self.brave_search_api_key.is_none() {
+            if let Ok(val) = std::env::var("BRAVE_SEARCH_API_KEY") {
+                let val = val.trim();
+                if !val.is_empty() {
+                    self.brave_search_api_key = Some(val.to_string());
+                }
+            }
+        }
+
+        if self.brave_search_enabled.is_none() {
+            self.brave_search_enabled = parse_optional_env_bool("BRAVE_SEARCH_ENABLED");
         }
 
         if self.duckduckgo_enabled.is_none() {
@@ -1894,6 +1925,110 @@ mod tests {
         env::remove_var("DUCKDUCKGO_ENABLED");
     }
 
+    fn clear_brave_search_env() {
+        for key in [
+            "BRAVE_SEARCH_API_KEY",
+            "BRAVE_SEARCH_ENABLED",
+            "BRAVE_SEARCH_TIMEOUT_SECS",
+            "BRAVE_SEARCH_COUNTRY",
+            "BRAVE_SEARCH_LANG",
+            "BRAVE_SEARCH_UI_LANG",
+            "BRAVE_SEARCH_SAFESEARCH",
+            "BRAVE_SEARCH_MAX_CONCURRENT",
+            "BRAVE_SEARCH_MIN_DELAY_MS",
+        ] {
+            env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn brave_search_enabled_defaults_to_key_presence() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_brave_search_env();
+
+        assert!(!is_brave_search_enabled());
+
+        env::set_var("BRAVE_SEARCH_API_KEY", "brave-key");
+        assert!(is_brave_search_enabled());
+
+        clear_brave_search_env();
+    }
+
+    #[test]
+    fn brave_search_enabled_flag_overrides_key_presence() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_brave_search_env();
+
+        env::set_var("BRAVE_SEARCH_API_KEY", "brave-key");
+        env::set_var("BRAVE_SEARCH_ENABLED", "false");
+        assert!(!is_brave_search_enabled());
+
+        env::remove_var("BRAVE_SEARCH_API_KEY");
+        env::set_var("BRAVE_SEARCH_ENABLED", "true");
+        assert!(is_brave_search_enabled());
+        assert_eq!(get_brave_search_api_key(), None);
+
+        clear_brave_search_env();
+    }
+
+    #[test]
+    fn brave_search_config_uses_defaults_when_env_missing() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_brave_search_env();
+
+        assert_eq!(
+            get_brave_search_timeout(),
+            BRAVE_SEARCH_DEFAULT_TIMEOUT_SECS
+        );
+        assert_eq!(get_brave_search_country(), BRAVE_SEARCH_DEFAULT_COUNTRY);
+        assert_eq!(get_brave_search_lang(), BRAVE_SEARCH_DEFAULT_LANG);
+        assert_eq!(get_brave_search_ui_lang(), BRAVE_SEARCH_DEFAULT_UI_LANG);
+        assert_eq!(
+            get_brave_search_safesearch(),
+            BRAVE_SEARCH_DEFAULT_SAFESEARCH
+        );
+        assert_eq!(
+            get_brave_search_max_concurrent(),
+            BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT
+        );
+        assert_eq!(
+            get_brave_search_min_delay_ms(),
+            BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS
+        );
+    }
+
+    #[test]
+    fn brave_search_config_parses_non_empty_env_values() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_brave_search_env();
+
+        env::set_var("BRAVE_SEARCH_TIMEOUT_SECS", "7");
+        env::set_var("BRAVE_SEARCH_COUNTRY", "DE");
+        env::set_var("BRAVE_SEARCH_LANG", "de");
+        env::set_var("BRAVE_SEARCH_UI_LANG", "de-DE");
+        env::set_var("BRAVE_SEARCH_SAFESEARCH", "strict");
+        env::set_var("BRAVE_SEARCH_MAX_CONCURRENT", "2");
+        env::set_var("BRAVE_SEARCH_MIN_DELAY_MS", "500");
+
+        assert_eq!(get_brave_search_timeout(), 7);
+        assert_eq!(get_brave_search_country(), "DE");
+        assert_eq!(get_brave_search_lang(), "de");
+        assert_eq!(get_brave_search_ui_lang(), "de-DE");
+        assert_eq!(get_brave_search_safesearch(), "strict");
+        assert_eq!(get_brave_search_max_concurrent(), 2);
+        assert_eq!(get_brave_search_min_delay_ms(), 500);
+
+        clear_brave_search_env();
+    }
+
     #[test]
     fn duckduckgo_rate_limit_config_uses_defaults_when_env_missing() {
         let _guard = test_env_mutex()
@@ -2230,6 +2365,21 @@ pub const TRANSPORT_API_INITIAL_BACKOFF_MS: u64 = 500;
 pub const TRANSPORT_API_MAX_BACKOFF_MS: u64 = 4000;
 
 // Public search provider HTTP client configuration
+/// Default timeout for Brave Search requests (seconds).
+pub const BRAVE_SEARCH_DEFAULT_TIMEOUT_SECS: u64 = 10;
+/// Default Brave Search country targeting.
+pub const BRAVE_SEARCH_DEFAULT_COUNTRY: &str = "US";
+/// Default Brave Search language targeting.
+pub const BRAVE_SEARCH_DEFAULT_LANG: &str = "en";
+/// Default Brave Search UI language.
+pub const BRAVE_SEARCH_DEFAULT_UI_LANG: &str = "en-US";
+/// Default Brave Search safe-search setting.
+pub const BRAVE_SEARCH_DEFAULT_SAFESEARCH: &str = "moderate";
+/// Default process-wide Brave Search max concurrent operations.
+pub const BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT: usize = 1;
+/// Default process-wide Brave Search minimum delay between operations.
+pub const BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS: u64 = 1_000;
+
 /// Default timeout for DuckDuckGo requests (seconds).
 pub const DUCKDUCKGO_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Default DuckDuckGo region.
@@ -2297,6 +2447,91 @@ pub struct DuckDuckGoBackoffConfig {
 #[must_use]
 pub fn get_duckduckgo_timeout() -> u64 {
     parse_env_u64("DUCKDUCKGO_TIMEOUT_SECS").unwrap_or(DUCKDUCKGO_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get Brave Search API key from env.
+///
+/// Environment variable: `BRAVE_SEARCH_API_KEY`
+#[must_use]
+pub fn get_brave_search_api_key() -> Option<String> {
+    std::env::var("BRAVE_SEARCH_API_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Get Brave Search timeout from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_TIMEOUT_SECS`
+#[must_use]
+pub fn get_brave_search_timeout() -> u64 {
+    parse_env_u64("BRAVE_SEARCH_TIMEOUT_SECS").unwrap_or(BRAVE_SEARCH_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get Brave Search default country from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_COUNTRY`
+#[must_use]
+pub fn get_brave_search_country() -> String {
+    std::env::var("BRAVE_SEARCH_COUNTRY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| BRAVE_SEARCH_DEFAULT_COUNTRY.to_string())
+}
+
+/// Get Brave Search default search language from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_LANG`
+#[must_use]
+pub fn get_brave_search_lang() -> String {
+    std::env::var("BRAVE_SEARCH_LANG")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| BRAVE_SEARCH_DEFAULT_LANG.to_string())
+}
+
+/// Get Brave Search default UI language from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_UI_LANG`
+#[must_use]
+pub fn get_brave_search_ui_lang() -> String {
+    std::env::var("BRAVE_SEARCH_UI_LANG")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| BRAVE_SEARCH_DEFAULT_UI_LANG.to_string())
+}
+
+/// Get Brave Search safe-search setting from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_SAFESEARCH`
+#[must_use]
+pub fn get_brave_search_safesearch() -> String {
+    std::env::var("BRAVE_SEARCH_SAFESEARCH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| BRAVE_SEARCH_DEFAULT_SAFESEARCH.to_string())
+}
+
+/// Get Brave Search process-wide max concurrent operations from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_MAX_CONCURRENT`
+#[must_use]
+pub fn get_brave_search_max_concurrent() -> usize {
+    parse_env_usize("BRAVE_SEARCH_MAX_CONCURRENT")
+        .filter(|value| *value > 0)
+        .unwrap_or(BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT)
+}
+
+/// Get Brave Search process-wide minimum delay from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_MIN_DELAY_MS`
+#[must_use]
+pub fn get_brave_search_min_delay_ms() -> u64 {
+    parse_env_u64("BRAVE_SEARCH_MIN_DELAY_MS").unwrap_or(BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS)
 }
 
 /// Get DuckDuckGo default region from env or default.
@@ -2478,6 +2713,16 @@ pub fn is_tavily_enabled() -> bool {
             .ok()
             .is_some_and(|value| !value.trim().is_empty())
     })
+}
+
+/// Determine whether Brave Search tools should be registered.
+///
+/// `BRAVE_SEARCH_ENABLED=false` disables registration. Without an explicit flag,
+/// registration is enabled only when `BRAVE_SEARCH_API_KEY` is non-empty.
+#[must_use]
+pub fn is_brave_search_enabled() -> bool {
+    parse_optional_env_bool("BRAVE_SEARCH_ENABLED")
+        .unwrap_or_else(|| get_brave_search_api_key().is_some())
 }
 
 /// Determine whether DuckDuckGo tools should be registered.

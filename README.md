@@ -310,6 +310,8 @@ MINIMAX_API_KEY=...
 
 # Web Search Providers (can be enabled together)
 TAVILY_API_KEY=...
+# BRAVE_SEARCH_API_KEY=...
+# BRAVE_SEARCH_ENABLED=true
 DUCKDUCKGO_ENABLED=true
 DUCKDUCKGO_MIN_DELAY_MS=2500
 DUCKDUCKGO_JITTER_MS=1500
@@ -876,7 +878,7 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | `profile-embedded-opencode-local` | Telegram + local OpenCode, bwrap | transport-telegram, storage-s3-r2, llm-opencode-go, bwrap |
 | `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-s3-r2, llm-opencode-go, bwrap |
 | `profile-lite` | Minimal Telegram bot | transport-telegram, storage-s3-r2, llm-opencode-go, todos, webfetch, reminders |
-| `profile-search-only` | Search-only agent | transport-telegram, web/tavily/duckduckgo/searxng search tools |
+| `profile-search-only` | Search-only agent | transport-telegram, web/tavily/duckduckgo/brave-search/searxng capability features |
 | `profile-no-sandbox` | Telegram without sandbox | transport-telegram, storage-s3-r2, llm-opencode-go, wiki memory |
 | `profile-media-enabled` | Media processing only | transport-telegram, media audio/image/video, file delivery |
 | `profile-host-bwrap` | Host-level bwrap, no Docker | transport-telegram, llm-opencode-go + openrouter, bwrap |
