@@ -129,7 +129,10 @@ fn classify_failure(tool_name: &str, content: &str) -> Option<FailureSignal> {
 }
 
 fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<FailureSignal> {
-    let payload = value.get("structured_payload").unwrap_or(&Value::Null);
+    let payload = value
+        .get("structured_payload")
+        .filter(|payload| payload.is_object())
+        .unwrap_or(value);
     let effective_tool_name = value
         .get("tool_name")
         .and_then(Value::as_str)
@@ -143,6 +146,18 @@ fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<Failure
         return Some(duckduckgo_dead_end(
             effective_tool_name,
             error_kind.unwrap_or("blocked"),
+            string_field(payload, "query"),
+        ));
+    }
+
+    if is_brave_search(provider, effective_tool_name)
+        && matches!(
+            error_kind,
+            Some("rate_limited" | "auth" | "missing_api_key" | "server" | "network" | "timeout")
+        )
+    {
+        return Some(brave_search_dead_end(
+            error_kind.unwrap_or("provider_unavailable"),
             string_field(payload, "query"),
         ));
     }
@@ -235,6 +250,21 @@ fn duckduckgo_dead_end(tool_name: &str, error_kind: &str, query: Option<&str>) -
     }
 }
 
+fn brave_search_dead_end(error_kind: &str, query: Option<&str>) -> FailureSignal {
+    let query = query.map(trim_for_prompt);
+    let summary = query.as_ref().map_or_else(
+        || format!("Brave Search {error_kind}"),
+        |query| format!("Brave Search {error_kind} query: {query}"),
+    );
+    FailureSignal {
+        failure_kind: error_kind.to_string(),
+        dead_end_scope: "provider",
+        target: "brave_search".to_string(),
+        summary,
+        guidance: "Do not retry brave_search in this task; use searxng_search or synthesize from existing results.".to_string(),
+    }
+}
+
 fn web_markdown_host_dead_end(host: Option<&str>, url: Option<&str>) -> FailureSignal {
     let target = host
         .map(str::to_string)
@@ -284,6 +314,10 @@ fn is_web_markdown(provider: Option<&str>, tool_name: &str) -> bool {
 
 fn is_duckduckgo(provider: Option<&str>, tool_name: &str) -> bool {
     provider == Some("duckduckgo") || matches!(tool_name, "duckduckgo_search" | "duckduckgo_news")
+}
+
+fn is_brave_search(provider: Option<&str>, tool_name: &str) -> bool {
+    provider == Some("brave_search") || tool_name == "brave_search"
 }
 
 fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -388,6 +422,38 @@ mod tests {
             .as_str()
             .expect("guidance")
             .contains("Do not retry duckduckgo_search"));
+    }
+
+    #[test]
+    fn summarizes_brave_rate_limit_as_provider_dead_end() {
+        let raw = serde_json::to_string(&json!({
+            "provider": "brave_search",
+            "kind": "search",
+            "query": "rust async runtime comparison",
+            "error_kind": "rate_limited",
+            "error": "Brave Search is temporarily rate-limited",
+            "provider_unavailable": true,
+            "retryable": false,
+            "fallback": "searxng_search",
+            "results": []
+        }))
+        .expect("raw json");
+
+        let summary = summarize_tool_failure_content("brave_search", &raw)
+            .expect("rate-limited Brave failure should be summarized");
+        let value = parsed_summary(&summary.content);
+
+        assert_eq!(value["dead_end_scope"], "provider");
+        assert_eq!(value["failure_kind"], "rate_limited");
+        assert_eq!(value["target"], "brave_search");
+        assert!(value["summary"]
+            .as_str()
+            .expect("summary")
+            .contains("Brave Search rate_limited query: rust async runtime comparison"));
+        assert!(value["guidance"]
+            .as_str()
+            .expect("guidance")
+            .contains("Do not retry brave_search in this task; use searxng_search"));
     }
 
     #[test]
