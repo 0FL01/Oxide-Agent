@@ -618,11 +618,21 @@ Unified session-level compaction with a single path through `CompactionControlle
 3. **Replace Atomically** - Builds one `[OXIDE_COMPACTED_SUMMARY_V1]` handoff, preserves pinned state and safe recent tool context, validates tool-call integrity, and replaces hot memory in one step.
 
 ### Prompt Cache Optimization
-Static prefix + dynamic suffix assembly maximizes cache hit rate across all providers:
+Static prefix + dynamic suffix assembly maximizes provider-side prompt cache hit rate.
+
+**Architecture:**
 - **Assembly order:** `[fallback + profile + workflow_guidance + structured_output]` (stable) + `[wiki_context]` + `[date_context]` (dynamic)
-- **Tool schemas:** Only compact sorted tool-name list in prompt text; full JSON schemas via native `tools[]` payload
+- **Tool schemas:** Compact sorted tool-name list in prompt text (2673->98 bytes, 27x reduction); full JSON schemas via native `tools[]` payload
 - **Budget guard:** `compress` tool blocked at <85% context utilization to prevent premature compaction and cache reset
-- **Cache telemetry:** `TokenUsage` includes `cached_tokens` and `cache_creation_tokens`, parsed for all production providers
+- **Cache telemetry:** `TokenUsage` includes `cached_tokens` and `cache_creation_tokens`, parsed for all 9 production providers
+
+**Validated on OpenCode Go (`deepseek-v4-flash`):**
+- Peak cache hit rate: **99.7%** after warmup (14 iterations, no compaction)
+- Overall hit rate: **89.5%** across full task
+- Estimated cost: **6.4x reduction** vs pre-optimization baseline ($0.014 vs $0.090 for same task)
+- Premature compaction prevention (budget guard): cache hit preserved vs 93%->3.3% drop without guard
+
+Cache telemetry parsers are deployed for all providers; live validation confirmed on OpenCode Go. Other providers return cache tokens when their upstream routes support it.
 
 Details: `docs/tips/cache-hit.md`
 
