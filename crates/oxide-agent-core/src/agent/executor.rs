@@ -22,6 +22,72 @@ use crate::agent::wiki_memory::WikiStore;
 use crate::config::ModelInfo;
 use std::sync::{Arc, RwLock};
 
+/// Per-run effort preset for agent execution budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentExecutionEffort {
+    /// Use configured/default runtime budgets.
+    #[default]
+    Standard,
+    /// Allow more continuation/iteration/time budget for deeper research.
+    Extended,
+    /// Highest built-in budget for long-running, tool-heavy work.
+    Heavy,
+}
+
+/// Optional per-run execution controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AgentExecutionOptions {
+    /// Effort preset applied to runner budgets.
+    pub effort: AgentExecutionEffort,
+}
+
+impl AgentExecutionOptions {
+    /// Create options for a specific effort preset.
+    #[must_use]
+    pub const fn with_effort(effort: AgentExecutionEffort) -> Self {
+        Self { effort }
+    }
+
+    pub(crate) const fn min_max_iterations(self) -> Option<usize> {
+        match self.effort {
+            AgentExecutionEffort::Standard => None,
+            AgentExecutionEffort::Extended => Some(400),
+            AgentExecutionEffort::Heavy => Some(512),
+        }
+    }
+
+    pub(crate) const fn min_continuation_limit(self) -> Option<usize> {
+        match self.effort {
+            AgentExecutionEffort::Standard => None,
+            AgentExecutionEffort::Extended => Some(50),
+            AgentExecutionEffort::Heavy => Some(150),
+        }
+    }
+
+    pub(crate) const fn min_timeout_secs(self) -> Option<u64> {
+        match self.effort {
+            AgentExecutionEffort::Standard => None,
+            AgentExecutionEffort::Extended => Some(90 * 60),
+            AgentExecutionEffort::Heavy => Some(180 * 60),
+        }
+    }
+
+    pub(crate) const fn min_search_limit(self) -> Option<usize> {
+        match self.effort {
+            AgentExecutionEffort::Standard => None,
+            AgentExecutionEffort::Extended => Some(30),
+            AgentExecutionEffort::Heavy => Some(80),
+        }
+    }
+
+    pub(crate) const fn reasoning_effort(self) -> Option<&'static str> {
+        match self.effort {
+            AgentExecutionEffort::Standard => None,
+            AgentExecutionEffort::Extended | AgentExecutionEffort::Heavy => Some("high"),
+        }
+    }
+}
+
 /// Agent executor that runs tasks iteratively
 pub struct AgentExecutor {
     runner: AgentRunner,

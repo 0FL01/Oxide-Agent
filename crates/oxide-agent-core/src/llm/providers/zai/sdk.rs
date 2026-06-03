@@ -125,6 +125,7 @@ impl ZaiProvider {
             max_tokens,
             temperature,
             json_mode,
+            reasoning_effort: _,
         } = request;
         let messages = convert_to_text_messages(system_prompt, history, None);
         let converted_tools = convert_tools(tools);

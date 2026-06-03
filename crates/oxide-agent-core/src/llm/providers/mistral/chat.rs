@@ -50,6 +50,7 @@ pub fn build_tool_chat_body(
     model_id: &str,
     max_tokens: u32,
     temperature: Option<f32>,
+    reasoning_effort: Option<&str>,
     id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
     let messages = prepare_structured_messages(system_prompt, history, id_mapper);
@@ -87,7 +88,7 @@ pub fn build_tool_chat_body(
     }
 
     if is_reasoning_model(model_id) {
-        body["reasoning_effort"] = json!(MISTRAL_REASONING_EFFORT);
+        body["reasoning_effort"] = json!(reasoning_effort.unwrap_or(MISTRAL_REASONING_EFFORT));
     }
 
     body
@@ -191,6 +192,7 @@ pub async fn chat_with_tools(
         model_id,
         max_tokens,
         temperature,
+        reasoning_effort,
         json_mode: _,
     } = request;
 
@@ -204,6 +206,7 @@ pub async fn chat_with_tools(
             model_id,
             max_tokens,
             temperature,
+            reasoning_effort,
             &mut mapper,
         )
     };

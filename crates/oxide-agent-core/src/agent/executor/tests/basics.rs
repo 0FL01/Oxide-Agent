@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::{AgentExecutionEffort, AgentExecutionOptions};
 
 #[derive(Default)]
 struct InMemoryWikiBackend {
@@ -122,7 +123,9 @@ async fn prepare_execution_uses_executor_model_routes_override() {
     ];
     executor.set_model_routes_override(override_routes.clone());
 
-    let prepared = executor.prepare_execution("use selected model", None).await;
+    let prepared = executor
+        .prepare_execution("use selected model", None, AgentExecutionOptions::default())
+        .await;
 
     assert_eq!(prepared.runner_config.model_name, "override-primary");
     assert_eq!(
@@ -131,6 +134,28 @@ async fn prepare_execution_uses_executor_model_routes_override() {
     );
     assert_eq!(prepared.runner_config.model_max_output_tokens, 2_000);
     assert_eq!(prepared.runner_config.model_routes, override_routes);
+}
+
+#[tokio::test]
+async fn prepare_execution_heavy_effort_raises_runner_budgets() {
+    let mut executor = build_executor();
+
+    let prepared = executor
+        .prepare_execution(
+            "research deeply",
+            None,
+            AgentExecutionOptions::with_effort(AgentExecutionEffort::Heavy),
+        )
+        .await;
+
+    assert!(prepared.runner_config.max_iterations >= 512);
+    assert!(prepared.runner_config.continuation_limit >= 150);
+    assert!(prepared.runner_config.timeout_secs >= 180 * 60);
+    assert!(prepared
+        .system_prompt
+        .contains("2-4 independent research branches"));
+    assert!(prepared.system_prompt.contains("wait_sub_agents"));
+    assert!(prepared.system_prompt.contains("Before final answer"));
 }
 
 #[cfg(feature = "tool-wiki-memory")]
@@ -646,11 +671,11 @@ fn hard_timeout_uses_configured_duration_and_message() {
     let executor = build_executor_with_timeout(36_000);
 
     assert_eq!(
-        executor.agent_timeout_duration(),
+        executor.agent_timeout_duration(AgentExecutionOptions::default()),
         std::time::Duration::from_secs(36_000)
     );
     assert_eq!(
-        executor.agent_timeout_error_message(),
+        executor.agent_timeout_error_message(AgentExecutionOptions::default()),
         "Task exceeded timeout limit (600 minutes)"
     );
 }

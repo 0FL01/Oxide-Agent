@@ -6,7 +6,7 @@ use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{navigate, spawn_ui};
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
-    AgentProfileSelection, AgentProfileView, CreateSessionRequest, CreateTaskRequest,
+    AgentEffort, AgentProfileSelection, AgentProfileView, CreateSessionRequest, CreateTaskRequest,
     CreateTaskVersionRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest,
     SessionDetail, SessionSummary, SseConnectionState, TaskAttachment, TaskDetail, TaskEventKind,
     TaskStatus, TaskSummary, UpdateSessionProfileRequest, UserMessageEventPayload,
@@ -65,6 +65,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
     let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
     let (profiles_loaded, set_profiles_loaded) = signal(false);
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_DEFAULT.to_string());
+    let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
 
     Effect::new(move |_| {
         if profiles_loaded.get() {
@@ -88,6 +89,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
         set_loading.set(true);
         set_error.set(None);
         let agent_profile_selection = agent_profile_selection_from_value(&selected_profile.get());
+        let effort = selected_effort.get();
         spawn_ui(async move {
             let client = auth.client();
             // 1. Create session
@@ -131,6 +133,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                     &CreateTaskRequest {
                         input_markdown: text,
                         attachments,
+                        effort: Some(effort),
                     },
                 )
                 .await
@@ -241,6 +244,13 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                         set_selected_profile.set(event_target_value(&ev));
                                     })
                                 />
+                                <AgentEffortSelect
+                                    selected_effort=selected_effort
+                                    disabled=Signal::derive(move || loading.get())
+                                    on_change=Callback::new(move |ev| {
+                                        set_selected_effort.set(agent_effort_from_value(&event_target_value(&ev)));
+                                    })
+                                />
                                 <label class="button secondary composer-attach-button">
                                     <input
                                         class="composer-file-input"
@@ -301,6 +311,7 @@ fn SessionWorkspace(
     let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
     let (profiles_loaded, set_profiles_loaded) = signal(false);
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_NONE.to_string());
+    let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
 
     let (drawer_open, set_drawer_open) = signal(false);
 
@@ -455,6 +466,7 @@ fn SessionWorkspace(
         set_events.set(Vec::new());
         set_progress.set(None);
         let session_id = session_id_for_submit.clone();
+        let effort = selected_effort.get();
         spawn_ui(async move {
             let client = auth.client();
             let attachments = if files.is_empty() {
@@ -484,6 +496,7 @@ fn SessionWorkspace(
                         &ResumeTaskRequest {
                             input_markdown: text,
                             attachments,
+                            effort: Some(effort),
                         },
                     )
                     .await
@@ -494,6 +507,7 @@ fn SessionWorkspace(
                         &CreateTaskRequest {
                             input_markdown: text,
                             attachments,
+                            effort: Some(effort),
                         },
                     )
                     .await
@@ -738,6 +752,13 @@ fn SessionWorkspace(
                                     disabled=Signal::derive(move || loading.get() || is_running() || is_waiting())
                                     include_default=false
                                     on_change=Callback::new(update_profile)
+                                />
+                                <AgentEffortSelect
+                                    selected_effort=selected_effort
+                                    disabled=Signal::derive(move || loading.get() || is_running())
+                                    on_change=Callback::new(move |ev| {
+                                        set_selected_effort.set(agent_effort_from_value(&event_target_value(&ev)));
+                                    })
                                 />
                                 <label class="button secondary composer-attach-button">
                                     <input
@@ -1587,6 +1608,44 @@ fn AgentProfileSelect(
                 }
             />
         </select>
+    }
+}
+
+#[component]
+fn AgentEffortSelect(
+    selected_effort: ReadSignal<AgentEffort>,
+    disabled: Signal<bool>,
+    on_change: Callback<leptos::ev::Event>,
+) -> impl IntoView {
+    view! {
+        <select
+            class="composer-effort-select"
+            title="Effort controls agent loop depth and research budget"
+            aria-label="Agent effort"
+            prop:value=move || agent_effort_value(selected_effort.get())
+            disabled=move || disabled.get()
+            on:change=move |ev| on_change.run(ev)
+        >
+            <option value="standard">"Standard"</option>
+            <option value="extended">"Extended"</option>
+            <option value="heavy">"Heavy"</option>
+        </select>
+    }
+}
+
+fn agent_effort_value(effort: AgentEffort) -> &'static str {
+    match effort {
+        AgentEffort::Standard => "standard",
+        AgentEffort::Extended => "extended",
+        AgentEffort::Heavy => "heavy",
+    }
+}
+
+fn agent_effort_from_value(value: &str) -> AgentEffort {
+    match value {
+        "extended" => AgentEffort::Extended,
+        "heavy" => AgentEffort::Heavy,
+        _ => AgentEffort::Standard,
     }
 }
 
@@ -2976,6 +3035,7 @@ fn TaskInputEditForm(
             let request = CreateTaskVersionRequest {
                 input_markdown: draft.get(),
                 attachments: attachments.clone(),
+                effort: None,
             };
             let session_id = session_id.clone();
             let task_id = task_id.clone();

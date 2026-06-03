@@ -2,7 +2,7 @@ use super::types::{
     ExecutionRequest, ExecutionTransition, PreparedExecution, ResolvedExecutionRequest,
     RunnerContextServices,
 };
-use super::{AgentExecutionOutcome, AgentExecutor};
+use super::{AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor};
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
@@ -18,7 +18,9 @@ use crate::agent::wiki_memory::{
     WikiPatchPlanner, WikiPatchSet, WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache,
     WikiStore,
 };
-use crate::config::{get_agent_max_iterations, ModelInfo};
+use crate::config::{
+    get_agent_continuation_limit, get_agent_max_iterations, get_agent_search_limit, ModelInfo,
+};
 use crate::llm::{InternalTextPurpose, LlmClient};
 use anyhow::{anyhow, Result};
 use serde::Deserialize;
@@ -190,6 +192,7 @@ impl AgentExecutor {
         let ResolvedExecutionRequest {
             task,
             append_user_message,
+            options,
         } = request;
         let task_id = self.prime_session_for_execution(&task, append_user_message);
         info!(
@@ -200,10 +203,12 @@ impl AgentExecutor {
             "Starting agent task"
         );
 
-        let mut prepared = self.prepare_execution(&task, progress_tx.as_ref()).await;
+        let mut prepared = self
+            .prepare_execution(&task, progress_tx.as_ref(), options)
+            .await;
         Self::emit_milestone(progress_tx.as_ref(), "prepare_execution_done").await;
 
-        let timeout_duration = self.agent_timeout_duration();
+        let timeout_duration = self.agent_timeout_duration(options);
 
         let mut ctx = prepared.build_runner_context(
             &task,
@@ -291,11 +296,12 @@ impl AgentExecutor {
         request: ExecutionRequest,
     ) -> Result<ResolvedExecutionRequest> {
         match request {
-            ExecutionRequest::NewTask { task } => Ok(ResolvedExecutionRequest {
+            ExecutionRequest::NewTask { task, options } => Ok(ResolvedExecutionRequest {
                 task,
                 append_user_message: true,
+                options,
             }),
-            ExecutionRequest::ResumeUserInput { content } => {
+            ExecutionRequest::ResumeUserInput { content, options } => {
                 let task = self.saved_task("no saved task to resume")?;
                 if !self.resume_with_user_input(content) {
                     return Err(anyhow!("session is not waiting for user input"));
@@ -304,6 +310,7 @@ impl AgentExecutor {
                 Ok(ResolvedExecutionRequest {
                     task,
                     append_user_message: false,
+                    options,
                 })
             }
             ExecutionRequest::ContinueRuntimeContext => {
@@ -315,6 +322,7 @@ impl AgentExecutor {
                 Ok(ResolvedExecutionRequest {
                     task,
                     append_user_message: false,
+                    options: AgentExecutionOptions::default(),
                 })
             }
         }
@@ -327,7 +335,7 @@ impl AgentExecutor {
     ) -> Result<AgentExecutionOutcome> {
         let request = self.resolve_execution_request(request).await?;
         let task_for_wiki_update = request.task.clone();
-        let timeout_error_message = self.agent_timeout_error_message();
+        let timeout_error_message = self.agent_timeout_error_message(request.options);
         let transition = self.run_execution(request, progress_tx).await?;
         let outcome =
             self.apply_execution_transition(transition, timeout_error_message.as_str())?;
@@ -344,6 +352,7 @@ impl AgentExecutor {
         &mut self,
         task: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
     ) -> PreparedExecution {
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
         let model_routes = self
@@ -359,16 +368,37 @@ impl AgentExecutor {
         let tools = tool_runtime_registry.specs();
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
         let wiki_context = self.render_wiki_context_for_task(task).await;
+        let prompt_instructions =
+            effort_prompt_instructions(self.execution_profile.prompt_instructions(), options);
         let system_prompt = create_agent_system_prompt(
             task,
             &tools,
             structured_output,
             &mut self.session,
-            self.execution_profile.prompt_instructions(),
+            prompt_instructions.as_deref(),
             wiki_context.as_deref(),
         )
         .await;
         let messages = AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
+        let max_iterations = options
+            .min_max_iterations()
+            .map_or_else(get_agent_max_iterations, |minimum| {
+                get_agent_max_iterations().max(minimum)
+            });
+        let continuation_limit = options
+            .min_continuation_limit()
+            .map_or_else(get_agent_continuation_limit, |minimum| {
+                get_agent_continuation_limit().max(minimum)
+            });
+        let timeout_secs = options.min_timeout_secs().map_or_else(
+            || self.settings.get_agent_timeout_secs(),
+            |minimum| self.settings.get_agent_timeout_secs().max(minimum),
+        );
+        let search_limit = options
+            .min_search_limit()
+            .map_or_else(get_agent_search_limit, |minimum| {
+                get_agent_search_limit().max(minimum)
+            });
         PreparedExecution {
             todos_arc,
             tool_runtime_registry,
@@ -378,14 +408,16 @@ impl AgentExecutor {
             messages,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),
-                get_agent_max_iterations(),
-                crate::config::AGENT_CONTINUATION_LIMIT,
-                self.settings.get_agent_timeout_secs(),
+                max_iterations,
+                continuation_limit,
+                timeout_secs,
                 model.max_output_tokens,
             )
             .with_model_provider(model.provider.clone())
             .with_temperature(self.settings.get_configured_agent_temperature())
-            .with_model_routes(model_routes),
+            .with_model_routes(model_routes)
+            .with_search_limit(search_limit)
+            .with_reasoning_effort(options.reasoning_effort()),
         }
     }
 
@@ -678,9 +710,26 @@ impl AgentExecutor {
         task: &str,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
+        self.execute_with_options(task, progress_tx, AgentExecutionOptions::default())
+            .await
+    }
+
+    /// Execute a task with per-run execution options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LLM call fails, tool execution fails, or the iteration/timeout limits are exceeded.
+    #[tracing::instrument(skip(self, progress_tx, task), fields(session_id = %self.session.session_id, effort = ?options.effort))]
+    pub async fn execute_with_options(
+        &mut self,
+        task: &str,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
+    ) -> Result<AgentExecutionOutcome> {
         self.run_execution_request(
             ExecutionRequest::NewTask {
                 task: task.to_string(),
+                options,
             },
             progress_tx,
         )
@@ -704,8 +753,26 @@ impl AgentExecutor {
         content: String,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        self.run_execution_request(ExecutionRequest::ResumeUserInput { content }, progress_tx)
-            .await
+        self.resume_after_user_input_with_options(
+            content,
+            progress_tx,
+            AgentExecutionOptions::default(),
+        )
+        .await
+    }
+
+    /// Resume a paused task with per-run execution options.
+    pub async fn resume_after_user_input_with_options(
+        &mut self,
+        content: String,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
+    ) -> Result<AgentExecutionOutcome> {
+        self.run_execution_request(
+            ExecutionRequest::ResumeUserInput { content, options },
+            progress_tx,
+        )
+        .await
     }
 
     /// Continue the saved task after queuing additional runtime context.
@@ -716,6 +783,38 @@ impl AgentExecutor {
         self.run_execution_request(ExecutionRequest::ContinueRuntimeContext, progress_tx)
             .await
     }
+}
+
+fn effort_prompt_instructions(
+    base: Option<&str>,
+    options: AgentExecutionOptions,
+) -> Option<String> {
+    let effort_guidance = match options.effort {
+        AgentExecutionEffort::Standard => return base.map(str::to_string),
+        AgentExecutionEffort::Extended => Some(
+            "[EFFORT: Extended]\nFor web research tasks, use multiple targeted searches, read selected primary sources, cross-check important claims, and state blockers instead of stopping early.",
+        ),
+        AgentExecutionEffort::Heavy => Some(
+            concat!(
+                "[EFFORT: Heavy]\n",
+                "For current factual, comparative, market, technical, legal, scientific, product, API, benchmark, or best/latest/top/current research tasks:\n",
+                "- Create a source plan before final synthesis.\n",
+                "- If `spawn_sub_agents` is available, start by delegating 2-4 independent research branches before final synthesis unless the task is clearly simple or strictly sequential.\n",
+                "- Recommended branches: primary/official sources; recent independent secondary sources; contradictory evidence, criticism, and limitations; technical docs, benchmarks, repos, or changelogs when relevant.\n",
+                "- Give each sub-agent a narrow task and an explicit tools whitelist using only available tools, for example `web_search`, `web_extract`, `searxng_search`, `web_markdown`, or `crawl4ai_markdown`.\n",
+                "- Use `wait_sub_agents` before relying on delegated findings. Treat sub-agent output as leads, not final truth; cross-check important claims in the parent synthesis.\n",
+                "- Use search plus extraction rather than snippets only, prioritize primary sources, and continue until evidence is sufficient or blockers are explicit.\n",
+                "Before final answer, verify internally: current sources were used; selected URLs were read; primary sources and contradictions were checked; independent branches were delegated when useful and available; if not delegated, the task was simple/sequential or delegation was unavailable."
+            ),
+        ),
+    }?;
+
+    Some(
+        match base.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(base) => format!("{base}\n\n{effort_guidance}"),
+            None => effort_guidance.to_string(),
+        },
+    )
 }
 
 fn build_wiki_memory_writer_transcript(

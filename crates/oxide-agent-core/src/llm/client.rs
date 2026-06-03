@@ -456,6 +456,7 @@ impl LlmClient {
         model_name: &str,
         temperature: Option<f32>,
         json_mode: bool,
+        reasoning_effort: Option<&str>,
     ) -> Result<ChatResponse, LlmError> {
         let model_info = self.get_model_info(model_name)?;
 
@@ -467,6 +468,7 @@ impl LlmClient {
             &model_info,
             temperature,
             json_mode,
+            reasoning_effort,
         )
         .await
     }
@@ -482,6 +484,7 @@ impl LlmClient {
         model_info: &crate::config::ModelInfo,
         temperature: Option<f32>,
         json_mode: bool,
+        reasoning_effort: Option<&str>,
     ) -> Result<ChatResponse, LlmError> {
         let provider = self.get_provider(&model_info.provider)?;
         let capabilities = Self::provider_capabilities_for_model(model_info);
@@ -517,6 +520,7 @@ impl LlmClient {
             max_tokens: Self::soft_cap_output_tokens(model_info.max_output_tokens),
             temperature,
             json_mode,
+            reasoning_effort,
         };
         provider.chat_with_tools(request).await
     }
@@ -605,6 +609,7 @@ impl LlmClient {
                 max_tokens: Self::soft_cap_output_tokens(model_info.max_output_tokens),
                 temperature: None,
                 json_mode,
+                reasoning_effort: None,
             };
             let result = provider.chat_with_tools(request).await;
             let duration = start.elapsed();
@@ -1218,6 +1223,7 @@ mod tests {
                 &model,
                 Some(0.17),
                 false,
+                None,
             )
             .await
             .expect("request should succeed");

@@ -137,6 +137,7 @@ impl AgentRunner {
                     &ctx.config.model_name,
                     ctx.config.temperature,
                     json_mode,
+                    ctx.config.reasoning_effort.as_deref(),
                 )
                 .await;
 
@@ -271,6 +272,7 @@ impl AgentRunner {
                         &request_route,
                         ctx.config.temperature,
                         json_mode,
+                        ctx.config.reasoning_effort.as_deref(),
                     )
                     .await;
 

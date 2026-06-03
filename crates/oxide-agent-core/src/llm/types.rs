@@ -561,6 +561,8 @@ pub struct ChatWithToolsRequest<'a> {
     pub temperature: Option<f32>,
     /// Whether structured JSON mode is required.
     pub json_mode: bool,
+    /// Optional provider reasoning effort override.
+    pub reasoning_effort: Option<&'a str>,
 }
 
 #[cfg(test)]

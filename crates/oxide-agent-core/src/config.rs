@@ -2220,6 +2220,15 @@ pub fn get_agent_search_limit() -> usize {
         .unwrap_or(AGENT_SEARCH_LIMIT)
 }
 
+/// Get forced continuation limit from env or default.
+#[must_use]
+pub fn get_agent_continuation_limit() -> usize {
+    std::env::var("AGENT_CONTINUATION_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(AGENT_CONTINUATION_LIMIT)
+}
+
 /// Get agent max iterations from env or default.
 #[must_use]
 pub fn get_agent_max_iterations() -> usize {

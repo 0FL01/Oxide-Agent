@@ -1,4 +1,4 @@
-use super::AgentExecutor;
+use super::{AgentExecutionOptions, AgentExecutor};
 use crate::agent::compaction::{
     wiki_memory_lookup_available, CompactRequestContext, CompactRunOutcome, CompactionBackend,
     CompactionPhase, CompactionReason,
@@ -96,12 +96,19 @@ impl AgentExecutor {
         self.session.cancellation_token.is_cancelled()
     }
 
-    pub(super) fn agent_timeout_duration(&self) -> Duration {
-        Duration::from_secs(self.settings.get_agent_timeout_secs())
+    pub(super) fn agent_timeout_secs(&self, options: AgentExecutionOptions) -> u64 {
+        options.min_timeout_secs().map_or_else(
+            || self.settings.get_agent_timeout_secs(),
+            |minimum| self.settings.get_agent_timeout_secs().max(minimum),
+        )
     }
 
-    pub(super) fn agent_timeout_error_message(&self) -> String {
-        let limit_mins = self.settings.get_agent_timeout_secs() / 60;
+    pub(super) fn agent_timeout_duration(&self, options: AgentExecutionOptions) -> Duration {
+        Duration::from_secs(self.agent_timeout_secs(options))
+    }
+
+    pub(super) fn agent_timeout_error_message(&self, options: AgentExecutionOptions) -> String {
+        let limit_mins = self.agent_timeout_secs(options) / 60;
         format!("Task exceeded timeout limit ({limit_mins} minutes)")
     }
 

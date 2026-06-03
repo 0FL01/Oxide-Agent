@@ -22,7 +22,8 @@ use crate::agent::tool_runtime::{
     ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::{
-    get_agent_search_limit, get_sub_agent_max_iterations, AgentSettings, AGENT_CONTINUATION_LIMIT,
+    get_agent_continuation_limit, get_agent_search_limit, get_sub_agent_max_iterations,
+    AgentSettings,
 };
 use crate::llm::{Message, ToolDefinition};
 use crate::sandbox::SandboxScope;
@@ -968,7 +969,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         AgentRunnerConfig::new(
             model.id.clone(),
             get_sub_agent_max_iterations(),
-            AGENT_CONTINUATION_LIMIT,
+            get_agent_continuation_limit(),
             self.settings.get_sub_agent_timeout_secs(),
             model.max_output_tokens,
         )

@@ -142,6 +142,7 @@ Keep it under 6 words.";
             &model,
             None,
             false,
+            None,
         )
         .await
         .map_err(|e| e.to_string())?;

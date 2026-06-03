@@ -63,7 +63,9 @@ pub use compaction::{
     HotMemoryBudget, LocalLlmSummary,
 };
 pub use context::{AgentContext, EphemeralSession};
-pub use executor::{AgentExecutionOutcome, AgentExecutor};
+pub use executor::{
+    AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor,
+};
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
 pub use identity::SessionId;
 pub use input_intent::{

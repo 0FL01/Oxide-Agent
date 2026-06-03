@@ -24,6 +24,7 @@ impl AgentRunner {
         .with_available_tools(ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
+        .with_search_limit(ctx.config.search_limit)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -56,6 +57,7 @@ impl AgentRunner {
         .with_available_tools(ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
+        .with_search_limit(ctx.config.search_limit)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -90,6 +92,7 @@ impl AgentRunner {
         .with_available_tools(ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
+        .with_search_limit(ctx.config.search_limit)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -124,6 +127,7 @@ impl AgentRunner {
         .with_available_tools(ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
+        .with_search_limit(ctx.config.search_limit)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),
@@ -154,6 +158,7 @@ impl AgentRunner {
         .with_available_tools(ctx.tools)
         .with_memory_scope(ctx.memory_scope.as_ref())
         .with_memory_behavior(ctx.memory_behavior.as_deref())
+        .with_search_limit(ctx.config.search_limit)
         .with_tokens(
             ctx.agent.memory().token_count(),
             ctx.agent.memory().max_tokens(),

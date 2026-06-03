@@ -404,6 +404,7 @@ impl LlmProvider for NvidiaProvider {
             max_tokens,
             temperature,
             json_mode,
+            reasoning_effort: _,
         } = request;
 
         let model_capabilities = model_capabilities(model_id);

@@ -12,6 +12,8 @@ use anyhow::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use super::AgentExecutionOptions;
+
 #[derive(Clone)]
 #[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
 pub(super) struct AgentsMdContext {
@@ -90,14 +92,21 @@ impl PreparedExecution {
 }
 
 pub(super) enum ExecutionRequest {
-    NewTask { task: String },
-    ResumeUserInput { content: String },
+    NewTask {
+        task: String,
+        options: AgentExecutionOptions,
+    },
+    ResumeUserInput {
+        content: String,
+        options: AgentExecutionOptions,
+    },
     ContinueRuntimeContext,
 }
 
 pub(super) struct ResolvedExecutionRequest {
     pub(super) task: String,
     pub(super) append_user_message: bool,
+    pub(super) options: AgentExecutionOptions,
 }
 
 pub(super) enum ExecutionTransition {

@@ -2588,6 +2588,23 @@ textarea {
   font-size: 12px;
 }
 
+.composer-effort-select {
+  width: 112px;
+  min-height: 32px;
+  padding: 0 26px 0 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  color: var(--fg-muted);
+  background: transparent;
+  border-color: var(--border-subtle);
+}
+
+.composer-effort-select:hover,
+.composer-effort-select:focus {
+  color: var(--fg);
+  background: var(--bg-panel-soft);
+}
+
 .composer-actions.btn-hidden .btn-primary {
   /* button stays visible but dimmed via :disabled */
   opacity: 1;

@@ -530,6 +530,7 @@ impl LlmProvider for OpenCodeGoProvider {
             max_tokens,
             temperature,
             json_mode,
+            reasoning_effort,
         } = request;
         let protocol = self.resolve_model_protocol(model_id).await;
         let (request_kind, api_base, body, extra_headers): (&str, &str, Value, Vec<(&str, &str)>) =
@@ -545,6 +546,7 @@ impl LlmProvider for OpenCodeGoProvider {
                         max_tokens,
                         temperature,
                         json_mode,
+                        reasoning_effort,
                     ),
                     Vec::new(),
                 ),
@@ -808,6 +810,7 @@ fn build_tool_chat_body(
     max_tokens: u32,
     temperature: Option<f32>,
     json_mode: bool,
+    reasoning_effort: Option<&str>,
 ) -> Value {
     let messages = prepare_structured_messages(system_prompt, history);
     let openai_tools = prepare_tools_json(tools);
@@ -832,7 +835,7 @@ fn build_tool_chat_body(
     }
 
     if is_reasoning_model(model_id) {
-        body["reasoning_effort"] = json!(OPENCODE_GO_REASONING_EFFORT);
+        body["reasoning_effort"] = json!(reasoning_effort.unwrap_or(OPENCODE_GO_REASONING_EFFORT));
     }
 
     body
@@ -1446,7 +1449,8 @@ mod tests {
     #[test]
     fn reasoning_effort_in_openai_tool_body() {
         let tools = vec![read_file_tool()];
-        let body = build_tool_chat_body("system", &[], &tools, "mimo-v2.5", 32000, None, false);
+        let body =
+            build_tool_chat_body("system", &[], &tools, "mimo-v2.5", 32000, None, false, None);
         assert_eq!(body["reasoning_effort"], json!("high"));
     }
 
@@ -1489,6 +1493,7 @@ mod tests {
             32000,
             Some(0.2),
             false,
+            None,
         );
 
         assert_eq!(body["tools"][0]["type"], json!("function"));
@@ -1501,7 +1506,16 @@ mod tests {
 
     #[test]
     fn json_mode_without_tools_sets_response_format() {
-        let body = build_tool_chat_body("system", &[], &[], "deepseek-v4-flash", 32000, None, true);
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "deepseek-v4-flash",
+            32000,
+            None,
+            true,
+            None,
+        );
 
         assert_eq!(body["response_format"]["type"], json!("json_object"));
         assert!(body.get("tools").is_none());
@@ -1519,6 +1533,7 @@ mod tests {
             32000,
             None,
             true,
+            None,
         );
 
         assert!(body.get("response_format").is_none());

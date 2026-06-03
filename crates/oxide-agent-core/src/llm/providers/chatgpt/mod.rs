@@ -191,8 +191,16 @@ impl LlmProvider for ChatGptProvider {
         let (instructions, mut input) = prepare_responses_request(system_prompt, history);
         input.push(user_input_item(user_message));
 
-        let body =
-            build_chat_request_body(&instructions, input, &[], model_id, max_tokens, None, false);
+        let body = build_chat_request_body(
+            &instructions,
+            input,
+            &[],
+            model_id,
+            max_tokens,
+            None,
+            false,
+            None,
+        );
         let response = self.chat_request(body).await?;
 
         response
@@ -235,6 +243,7 @@ impl LlmProvider for ChatGptProvider {
             max_tokens,
             temperature,
             json_mode,
+            reasoning_effort,
         } = request;
 
         let (instructions, input) = prepare_responses_request(system_prompt, messages);
@@ -246,6 +255,7 @@ impl LlmProvider for ChatGptProvider {
             max_tokens,
             temperature,
             json_mode,
+            reasoning_effort,
         );
         let response = self.chat_request(body).await?;
 
@@ -277,6 +287,7 @@ fn build_chat_request_body(
     max_tokens: u32,
     temperature: Option<f32>,
     json_mode: bool,
+    reasoning_effort: Option<&str>,
 ) -> Value {
     let input = if json_mode && tools.is_empty() {
         ensure_json_input_marker(input)
@@ -318,7 +329,7 @@ fn build_chat_request_body(
     }
 
     if model_id.starts_with("gpt-5") {
-        body["reasoning"] = json!({ "effort": "medium" });
+        body["reasoning"] = json!({ "effort": reasoning_effort.unwrap_or("medium") });
         body["truncation"] = json!("auto");
     }
 
@@ -803,6 +814,7 @@ mod tests {
             10,
             None,
             true,
+            None,
         );
 
         assert!(body["instructions"]
@@ -829,6 +841,7 @@ mod tests {
             10,
             None,
             true,
+            None,
         );
 
         assert_eq!(body["instructions"], json!("Return JSON only."));
@@ -850,6 +863,7 @@ mod tests {
             10,
             None,
             true,
+            None,
         );
 
         assert_eq!(body["input"].as_array().map(Vec::len), Some(1));

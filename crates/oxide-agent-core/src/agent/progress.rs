@@ -701,7 +701,7 @@ impl ProgressState {
             description: format!(
                 "🔄 Continuation ({}/{}): {}",
                 count,
-                crate::config::AGENT_CONTINUATION_LIMIT,
+                crate::config::get_agent_continuation_limit(),
                 crate::utils::truncate_str(reason, 50)
             ),
             status: StepStatus::InProgress,

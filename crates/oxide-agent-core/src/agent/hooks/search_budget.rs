@@ -124,7 +124,7 @@ impl Hook for SearchBudgetHook {
         "search_budget"
     }
 
-    fn handle(&self, event: &HookEvent, _context: &HookContext) -> HookResult {
+    fn handle(&self, event: &HookEvent, context: &HookContext) -> HookResult {
         match event {
             HookEvent::BeforeTool {
                 tool_name,
@@ -173,12 +173,13 @@ impl Hook for SearchBudgetHook {
                 }
 
                 if self.is_search_tool(tool_name) {
+                    let limit = context.search_limit.unwrap_or(self.limit).max(self.limit);
                     let current = self.count.fetch_add(1, Ordering::SeqCst) + 1;
-                    if current > self.limit {
+                    if current > limit {
                         return HookResult::Block {
                             reason: format!(
                                 "Search budget exceeded ({}/{}). Please synthesize findings from existing data instead of searching more.",
-                                current, self.limit
+                                current, limit
                             ),
                         };
                     }

@@ -1574,7 +1574,10 @@ async fn api_create_task(
         state.clone(),
         session_id,
         running_task,
-        task_executor::TaskRunRequest::Execute(execution_input),
+        task_executor::TaskRunRequest::Execute {
+            input: execution_input,
+            effort: request.effort,
+        },
         Some(persistence),
     )
     .await;
@@ -1847,7 +1850,10 @@ async fn api_create_task_version(
         state.clone(),
         session_id,
         running_task,
-        task_executor::TaskRunRequest::Execute(execution_input),
+        task_executor::TaskRunRequest::Execute {
+            input: execution_input,
+            effort: request.effort,
+        },
         Some(persistence),
     )
     .await;
@@ -1953,7 +1959,10 @@ async fn api_resume_task(
         state.clone(),
         session_id,
         running_task,
-        task_executor::TaskRunRequest::ResumeUserInput(execution_input),
+        task_executor::TaskRunRequest::ResumeUserInput {
+            input: execution_input,
+            effort: request.effort,
+        },
         Some(persistence),
     )
     .await;
@@ -3936,6 +3945,7 @@ mod tests {
             axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Edited prompt".to_string(),
                 attachments: Vec::new(),
+                effort: None,
             }),
         )
         .await
@@ -4003,6 +4013,7 @@ mod tests {
             axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Should fail".to_string(),
                 attachments: Vec::new(),
+                effort: None,
             }),
         )
         .await;
@@ -4017,6 +4028,7 @@ mod tests {
             axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Should also fail".to_string(),
                 attachments: Vec::new(),
+                effort: None,
             }),
         )
         .await;
@@ -4151,6 +4163,7 @@ mod tests {
             axum::Json(ApiCreateTaskVersionRequest {
                 input_markdown: "Edited prompt".to_string(),
                 attachments: Vec::new(),
+                effort: None,
             }),
         )
         .await
@@ -4690,6 +4703,7 @@ mod tests {
             axum::Json(ApiCreateTaskRequest {
                 input_markdown: "Summarize this".to_string(),
                 attachments: Vec::new(),
+                effort: None,
             }),
         )
         .await
@@ -4776,6 +4790,7 @@ mod tests {
             axum::Json(ApiCreateTaskRequest {
                 input_markdown: "Second task".to_string(),
                 attachments: Vec::new(),
+                effort: None,
             }),
         )
         .await;
@@ -4800,6 +4815,7 @@ mod tests {
             axum::Json(ApiCreateTaskRequest {
                 input_markdown: "Third task".to_string(),
                 attachments: Vec::new(),
+                effort: None,
             }),
         )
         .await;
@@ -4869,6 +4885,7 @@ mod tests {
             axum::Json(ApiCreateTaskRequest {
                 input_markdown: "Investigate Codex limits".to_string(),
                 attachments: Vec::new(),
+                effort: None,
             }),
         )
         .await
@@ -4904,6 +4921,7 @@ mod tests {
             axum::Json(ApiResumeTaskRequest {
                 input_markdown: "Scope is GPT-5.4-mini".to_string(),
                 attachments: resume_attachments.clone(),
+                effort: None,
             }),
         )
         .await

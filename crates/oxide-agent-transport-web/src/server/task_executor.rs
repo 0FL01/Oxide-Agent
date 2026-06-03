@@ -10,8 +10,12 @@ use super::{
 use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
 use crate::web_transport::{collect_events, BrowserEventScope};
-use oxide_agent_core::agent::{AgentExecutionOutcome, PendingUserInput};
-use oxide_agent_web_contracts::{PersistedTaskEvent, TaskStatus as ApiTaskStatus, WebTaskRecord};
+use oxide_agent_core::agent::{
+    AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, PendingUserInput,
+};
+use oxide_agent_web_contracts::{
+    AgentEffort as WebAgentEffort, PersistedTaskEvent, TaskStatus as ApiTaskStatus, WebTaskRecord,
+};
 use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -47,8 +51,26 @@ struct ExecutorTaskCtx {
 }
 
 pub(crate) enum TaskRunRequest {
-    Execute(String),
-    ResumeUserInput(String),
+    Execute {
+        input: String,
+        effort: Option<WebAgentEffort>,
+    },
+    ResumeUserInput {
+        input: String,
+        effort: Option<WebAgentEffort>,
+    },
+}
+
+fn execution_options_from_effort(effort: Option<WebAgentEffort>) -> AgentExecutionOptions {
+    let Some(effort) = effort else {
+        return AgentExecutionOptions::default();
+    };
+    let effort = match effort {
+        WebAgentEffort::Standard => AgentExecutionEffort::Standard,
+        WebAgentEffort::Extended => AgentExecutionEffort::Extended,
+        WebAgentEffort::Heavy => AgentExecutionEffort::Heavy,
+    };
+    AgentExecutionOptions::with_effort(effort)
 }
 
 pub(crate) async fn spawn_registered_task(
@@ -323,9 +345,20 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
             let executor_lock_acquired_ms = Some(agent_started_at.elapsed().as_millis() as i64);
             record_executor_lock_acquired(&timeline_map, &task_id, executor_lock_acquired_ms).await;
             match run_request {
-                TaskRunRequest::Execute(task_text) => executor.execute(&task_text, Some(tx)).await,
-                TaskRunRequest::ResumeUserInput(input) => {
-                    executor.resume_after_user_input(input, Some(tx)).await
+                TaskRunRequest::Execute {
+                    input: task_text,
+                    effort,
+                } => {
+                    let options = execution_options_from_effort(effort);
+                    executor
+                        .execute_with_options(&task_text, Some(tx), options)
+                        .await
+                }
+                TaskRunRequest::ResumeUserInput { input, effort } => {
+                    let options = execution_options_from_effort(effort);
+                    executor
+                        .resume_after_user_input_with_options(input, Some(tx), options)
+                        .await
                 }
             }
         };

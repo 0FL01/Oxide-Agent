@@ -109,6 +109,8 @@ pub struct HookContext<'a> {
     pub memory_scope: Option<&'a AgentMemoryScope>,
     /// Task-local Stage-14 memory behavior runtime.
     pub memory_behavior: Option<&'a MemoryBehaviorRuntime>,
+    /// Search tool call budget for the current execution.
+    pub search_limit: Option<usize>,
 }
 
 impl<'a> HookContext<'a> {
@@ -133,6 +135,7 @@ impl<'a> HookContext<'a> {
             available_tools: &[],
             memory_scope: None,
             memory_behavior: None,
+            search_limit: None,
         }
     }
 
@@ -172,6 +175,13 @@ impl<'a> HookContext<'a> {
         memory_behavior: Option<&'a MemoryBehaviorRuntime>,
     ) -> Self {
         self.memory_behavior = memory_behavior;
+        self
+    }
+
+    /// Add the execution search budget to the hook context.
+    #[must_use]
+    pub const fn with_search_limit(mut self, search_limit: usize) -> Self {
+        self.search_limit = Some(search_limit);
         self
     }
 

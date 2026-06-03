@@ -8,7 +8,8 @@ use crate::agent::providers::TodoList;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
-    get_agent_max_iterations, get_agent_model, ModelInfo, AGENT_CONTINUATION_LIMIT,
+    get_agent_continuation_limit, get_agent_max_iterations, get_agent_model,
+    get_agent_search_limit, ModelInfo,
 };
 use crate::llm::{Message, ToolDefinition};
 use anyhow::Error;
@@ -36,6 +37,10 @@ pub struct AgentRunnerConfig {
     pub model_provider: Option<String>,
     /// Optional weighted fallback routes for this execution.
     pub model_routes: Vec<ModelInfo>,
+    /// Search tool call budget for this execution.
+    pub search_limit: usize,
+    /// Optional provider reasoning effort override.
+    pub reasoning_effort: Option<String>,
 }
 
 impl AgentRunnerConfig {
@@ -58,6 +63,8 @@ impl AgentRunnerConfig {
             temperature: None,
             model_provider: None,
             model_routes: Vec::new(),
+            search_limit: get_agent_search_limit(),
+            reasoning_effort: None,
         }
     }
 
@@ -88,6 +95,20 @@ impl AgentRunnerConfig {
         self.model_routes = model_routes;
         self
     }
+
+    /// Set search tool call budget for this execution.
+    #[must_use]
+    pub const fn with_search_limit(mut self, search_limit: usize) -> Self {
+        self.search_limit = search_limit;
+        self
+    }
+
+    /// Set optional provider reasoning effort override.
+    #[must_use]
+    pub fn with_reasoning_effort(mut self, reasoning_effort: Option<&str>) -> Self {
+        self.reasoning_effort = reasoning_effort.map(str::to_string);
+        self
+    }
 }
 
 impl Default for AgentRunnerConfig {
@@ -95,7 +116,7 @@ impl Default for AgentRunnerConfig {
         Self::new(
             get_agent_model(),
             get_agent_max_iterations(),
-            AGENT_CONTINUATION_LIMIT,
+            get_agent_continuation_limit(),
             crate::config::AGENT_TIMEOUT_SECS,
             0,
         )
