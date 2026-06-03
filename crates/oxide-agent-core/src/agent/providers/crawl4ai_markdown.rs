@@ -118,7 +118,13 @@ impl Crawl4AiMarkdownProvider {
     fn tool_definition() -> ToolDefinition {
         ToolDefinition {
             name: TOOL_CRAWL4AI_MARKDOWN.to_string(),
-            description: "Open one http/https URL with the configured Crawl4AI REST service and return bounded Markdown. Use for pages that need browser rendering, JavaScript, overlay/consent handling, or when web_markdown fails. Browser-level optimizations are enabled by default: images blocked (text_mode), background features disabled (light_mode), ad/tracker domains blocked (avoid_ads). This tool does not crawl multiple pages, execute JavaScript, run hooks, use LLM extraction, or return screenshots/PDFs.".to_string(),
+            description: concat!(
+                "Open one http/https URL with the configured Crawl4AI REST service and return bounded Markdown. ",
+                "Use after selecting specific URLs from brave_search or searxng_search. Do not crawl every search result. ",
+                "Use for pages that need browser rendering, JavaScript, overlay/consent handling, or when web_markdown fails. ",
+                "Browser-level optimizations are enabled by default: images blocked (text_mode), background features disabled (light_mode), ad/tracker domains blocked (avoid_ads). ",
+                "This tool does not crawl multiple pages, execute JavaScript, run hooks, use LLM extraction, or return screenshots/PDFs."
+            ).to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -1045,6 +1051,9 @@ mod tests {
             jitter_min_ms: 0,
             jitter_max_ms: 0,
             max_retries: 0,
+            text_mode: true,
+            light_mode: true,
+            avoid_ads: true,
         }
     }
 
@@ -1144,6 +1153,12 @@ mod tests {
         assert!(spec
             .description
             .contains("configured Crawl4AI REST service"));
+        assert!(spec
+            .description
+            .contains("Use after selecting specific URLs from brave_search or searxng_search"));
+        assert!(spec
+            .description
+            .contains("Do not crawl every search result"));
         assert_eq!(spec.parameters["required"], json!(["url"]));
         assert_eq!(spec.parameters["additionalProperties"], json!(false));
         assert!(spec.parameters["properties"].get("headers").is_none());
@@ -1408,6 +1423,9 @@ mod tests {
             jitter_min_ms: DEFAULT_JITTER_MIN_MS,
             jitter_max_ms: DEFAULT_JITTER_MAX_MS,
             max_retries: DEFAULT_MAX_RETRIES,
+            text_mode: true,
+            light_mode: true,
+            avoid_ads: true,
         };
         let args = Crawl4AiMarkdownArgs {
             url: "https://example.com".to_string(),

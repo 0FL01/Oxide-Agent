@@ -450,7 +450,7 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 - **Brave Search Provider** (`tool-brave-search`) - registered Brave Web Search API URL discovery tool with fallback-aware payloads and summaries
 - **Tavily Provider** (`tool-tavily`) - web search and data extraction
 - **SearXNG Provider** (`tool-searxng`) - self-hosted search aggregator with engine rotation
-- **Crawl4AI Provider** (`tool-crawl4ai-markdown`) - browser-rendered Markdown extraction
+- **Crawl4AI Provider** (`tool-crawl4ai-markdown`) - browser-rendered Markdown extraction for selected search result URLs
 - **WebFetch Markdown Provider** (`tool-webfetch-md`) - single-URL HTTP fetch with HTML-to-Markdown conversion and context-bomb limits
 
 ### Sandbox
