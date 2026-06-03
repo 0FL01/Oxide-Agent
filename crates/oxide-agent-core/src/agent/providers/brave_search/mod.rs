@@ -11,4 +11,4 @@ mod format;
 mod provider;
 mod types;
 
-pub use provider::BraveSearchProvider;
+pub use provider::{BraveSearchProvider, BraveSearchProviderConfig};
