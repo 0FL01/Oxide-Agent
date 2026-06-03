@@ -447,7 +447,7 @@ Use `AGENT_MODEL_ROUTES__N__*` for main-agent failover and `SUB_AGENT_MODEL_ROUT
 
 ### Web Search and Extraction
 - **DuckDuckGo Provider** (`tool-duckduckgo`) - public web/news URL discovery, no API key required
-- **Brave Search Provider** (`tool-brave-search`) - Brave Web Search API URL discovery client with structured payloads
+- **Brave Search Provider** (`tool-brave-search`) - Brave Web Search API URL discovery tool with structured payloads
 - **Tavily Provider** (`tool-tavily`) - web search and data extraction
 - **SearXNG Provider** (`tool-searxng`) - self-hosted search aggregator with engine rotation
 - **Crawl4AI Provider** (`tool-crawl4ai-markdown`) - browser-rendered Markdown extraction
