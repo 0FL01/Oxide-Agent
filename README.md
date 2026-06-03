@@ -917,6 +917,6 @@ cargo build --release --no-default-features --features profile-full
 
 ## License
 
-The project is distributed under the **GNU Affero General Public License v3 (AGPL-3.0)**. Details in the [LICENSE](https://github.com/0FL01/oxide-agent/blob/main/LICENSE) file.
+The project is distributed under the **MIT License**. Details in the [LICENSE](https://github.com/0FL01/oxide-agent/blob/main/LICENSE) file.
 
 Copyright (C) 2026 @0FL01

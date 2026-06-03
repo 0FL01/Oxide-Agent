@@ -2,7 +2,7 @@
 name = "oxide-agent-core"
 version = "0.1.0"
 edition = "2021"
-license = "AGPL-3.0-only"
+license = "MIT"
 authors = ["@0FL01"]
 
 [lints.rust]
