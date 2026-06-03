@@ -19,6 +19,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+use tracing::debug;
 use url::Host;
 
 const TOOL_CRAWL4AI_MARKDOWN: &str = "crawl4ai_markdown";
@@ -35,6 +36,7 @@ const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_WAIT_FOR_CHARS: usize = 256;
 const ERROR_MESSAGE_MAX_CHARS: usize = 1_000;
 const RESPONSE_TAIL_MAX_CHARS: usize = 2_000;
+const LOG_BODY_HEAD_MAX_CHARS: usize = 500;
 
 /// Native provider for browser-rendered Markdown through Crawl4AI REST.
 pub struct Crawl4AiMarkdownProvider {
@@ -53,6 +55,9 @@ struct Crawl4AiMarkdownConfig {
     jitter_min_ms: u64,
     jitter_max_ms: u64,
     max_retries: usize,
+    text_mode: bool,
+    light_mode: bool,
+    avoid_ads: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -113,7 +118,7 @@ impl Crawl4AiMarkdownProvider {
     fn tool_definition() -> ToolDefinition {
         ToolDefinition {
             name: TOOL_CRAWL4AI_MARKDOWN.to_string(),
-            description: "Open one http/https URL with the configured Crawl4AI REST service and return bounded Markdown. Use for pages that need browser rendering, JavaScript, overlay/consent handling, or when web_markdown fails. This tool does not crawl multiple pages, execute JavaScript, run hooks, use LLM extraction, or return screenshots/PDFs.".to_string(),
+            description: "Open one http/https URL with the configured Crawl4AI REST service and return bounded Markdown. Use for pages that need browser rendering, JavaScript, overlay/consent handling, or when web_markdown fails. Browser-level optimizations are enabled by default: images blocked (text_mode), background features disabled (light_mode), ad/tracker domains blocked (avoid_ads). This tool does not crawl multiple pages, execute JavaScript, run hooks, use LLM extraction, or return screenshots/PDFs.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -192,6 +197,12 @@ impl Crawl4AiMarkdownProvider {
                 return Err(error);
             }
             attempt += 1;
+            debug!(
+                attempt,
+                max_retries = self.config.max_retries,
+                error_kind = crawl4ai_error_kind(&error),
+                "crawl4ai_markdown: retry"
+            );
             self.sleep_jitter(cancellation_token).await?;
         }
     }
@@ -209,6 +220,13 @@ impl Crawl4AiMarkdownProvider {
         ensure_not_cancelled(cancellation_token)?;
 
         let request = self.crawl_request_payload(target_url, wait_for, timeout_secs, args.fresh);
+        debug!(
+            url = %target_url,
+            timeout = timeout_secs,
+            fresh = args.fresh,
+            wait_for = ?wait_for,
+            "crawl4ai_markdown: POST /crawl"
+        );
         let response = self
             .apply_auth(
                 self.client
@@ -223,6 +241,12 @@ impl Crawl4AiMarkdownProvider {
 
         let status = response.status();
         let body = read_limited_body(response, cancellation_token).await?;
+        debug!(
+            status = status.as_u16(),
+            body_len = body.len(),
+            body_head = %String::from_utf8_lossy(&body[..body.len().min(LOG_BODY_HEAD_MAX_CHARS)]),
+            "crawl4ai_markdown: response"
+        );
         if !status.is_success() {
             return Err(crawl4ai_http_status_error(status.as_u16(), &body));
         }
@@ -248,6 +272,7 @@ impl Crawl4AiMarkdownProvider {
                 response.status()
             );
         }
+        debug!("crawl4ai_markdown: health ok");
         Ok(())
     }
 
@@ -281,7 +306,10 @@ impl Crawl4AiMarkdownProvider {
                     "browser_type": "chromium",
                     "headless": true,
                     "java_script_enabled": true,
-                    "enable_stealth": true
+                    "enable_stealth": true,
+                    "text_mode": self.config.text_mode,
+                    "light_mode": self.config.light_mode,
+                    "avoid_ads": self.config.avoid_ads
                 }
             },
             "crawler_config": {
@@ -401,6 +429,9 @@ impl Crawl4AiMarkdownConfig {
             jitter_min_ms,
             jitter_max_ms,
             max_retries: env_usize("OXIDE_CRAWL4AI_MAX_RETRIES", DEFAULT_MAX_RETRIES),
+            text_mode: env_bool("OXIDE_CRAWL4AI_TEXT_MODE", true),
+            light_mode: env_bool("OXIDE_CRAWL4AI_LIGHT_MODE", true),
+            avoid_ads: env_bool("OXIDE_CRAWL4AI_AVOID_ADS", true),
         }
     }
 }
@@ -891,6 +922,12 @@ fn env_u64(name: &str, default: u64) -> u64 {
 fn env_usize(name: &str, default: usize) -> usize {
     env_non_empty(name)
         .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    env_non_empty(name)
+        .map(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(default)
 }
 

@@ -1863,7 +1863,15 @@ fn ShellToolCard(
             .unwrap_or_else(|| "failed".to_string())
     };
 
-    let duration_ms = output.as_ref().and_then(|v| field_i64(v, "duration_ms"));
+    let duration_ms = output
+        .as_ref()
+        .and_then(|v| field_i64(v, "duration_ms"))
+        .or_else(|| {
+            result
+                .as_ref()
+                .and_then(|e| e.payload.get("duration_ms"))
+                .and_then(|v| v.as_i64())
+        });
     let exit_code = output.as_ref().and_then(|v| field_i64(v, "exit_code"));
     let command = command_from_events(call.as_ref(), output.as_ref());
     let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
@@ -1958,7 +1966,15 @@ fn SearchToolCard(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let duration_ms = output.as_ref().and_then(|v| field_i64(v, "duration_ms"));
+    let duration_ms = output
+        .as_ref()
+        .and_then(|v| field_i64(v, "duration_ms"))
+        .or_else(|| {
+            result
+                .as_ref()
+                .and_then(|e| e.payload.get("duration_ms"))
+                .and_then(|v| v.as_i64())
+        });
     let query = call
         .as_ref()
         .and_then(|e| payload_str_event(e, "input_preview"));
@@ -2100,7 +2116,15 @@ fn GenericToolCard(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let duration_ms = output.as_ref().and_then(|v| field_i64(v, "duration_ms"));
+    let duration_ms = output
+        .as_ref()
+        .and_then(|v| field_i64(v, "duration_ms"))
+        .or_else(|| {
+            result
+                .as_ref()
+                .and_then(|e| e.payload.get("duration_ms"))
+                .and_then(|v| v.as_i64())
+        });
     let exit_code = output.as_ref().and_then(|v| field_i64(v, "exit_code"));
     let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
     let stderr = output.as_ref().and_then(|v| stream_text(v, "stderr"));
@@ -2623,6 +2647,28 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
                     other => host
                         .map(|host| format!("{other} at {host}"))
                         .unwrap_or_else(|| other.to_string()),
+                })
+            }
+            Some("crawl4ai_markdown") => {
+                let host = payload.get("host").and_then(Value::as_str);
+                let status_code = payload.get("status_code").and_then(Value::as_i64);
+
+                Some(match error_kind {
+                    "crawl4ai_http_status" => status_code
+                        .map(|code| format!("http_status {code}"))
+                        .unwrap_or_else(|| "http_status".to_string()),
+                    "crawl4ai_unavailable" => "crawl4ai unavailable".to_string(),
+                    "crawl4ai_auth_failed" => "auth_failed".to_string(),
+                    "timeout" => host
+                        .map(|host| format!("timeout at {host}"))
+                        .unwrap_or_else(|| "timeout".to_string()),
+                    "dns_failed" => host
+                        .map(|host| format!("dns_failed at {host}"))
+                        .unwrap_or_else(|| "dns_failed".to_string()),
+                    "network" => host
+                        .map(|host| format!("network at {host}"))
+                        .unwrap_or_else(|| "network".to_string()),
+                    other => other.to_string(),
                 })
             }
             Some("duckduckgo") => Some(match error_kind {

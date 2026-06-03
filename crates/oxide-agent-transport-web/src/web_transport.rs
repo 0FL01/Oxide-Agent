@@ -685,6 +685,13 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
             let (output_preview, truncated, redacted) =
                 preview_event_text(output, EVENT_PREVIEW_MAX_CHARS);
             let result_summary = tool_result_summary(name, *success, output);
+            // Extract duration_ms from the full ToolOutput JSON before truncation,
+            // so the UI can display timing even when the preview is too large to parse.
+            let duration_ms: Option<i64> = serde_json::from_str::<Value>(output)
+                .ok()
+                .as_ref()
+                .and_then(|v| v.get("duration_ms"))
+                .and_then(|v| v.as_i64());
             (
                 TaskEventKind::ToolResult,
                 truncate_summary(result_summary.as_deref().unwrap_or(name)),
@@ -693,6 +700,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
                     "name": name,
                     "success": success,
                     "result_summary": result_summary,
+                    "duration_ms": duration_ms,
                     "output_preview": output_preview,
                 }),
                 redacted,
@@ -1100,6 +1108,29 @@ fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String
                 other => host
                     .map(|host| format!("{other} at {host}"))
                     .unwrap_or_else(|| other.to_string()),
+            })
+        }
+        ("crawl4ai_markdown", Some("crawl4ai_markdown")) => {
+            let error_kind = payload.get("error_kind").and_then(Value::as_str)?;
+            let host = payload.get("host").and_then(Value::as_str);
+            let status_code = payload.get("status_code").and_then(Value::as_u64);
+
+            Some(match error_kind {
+                "crawl4ai_http_status" => status_code
+                    .map(|code| format!("http_status {code}"))
+                    .unwrap_or_else(|| "http_status".to_string()),
+                "crawl4ai_unavailable" => "crawl4ai unavailable".to_string(),
+                "crawl4ai_auth_failed" => "auth_failed".to_string(),
+                "timeout" => host
+                    .map(|host| format!("timeout at {host}"))
+                    .unwrap_or_else(|| "timeout".to_string()),
+                "dns_failed" => host
+                    .map(|host| format!("dns_failed at {host}"))
+                    .unwrap_or_else(|| "dns_failed".to_string()),
+                "network" => host
+                    .map(|host| format!("network at {host}"))
+                    .unwrap_or_else(|| "network".to_string()),
+                other => other.to_string(),
             })
         }
         ("duckduckgo_search" | "duckduckgo_news", Some("duckduckgo")) => {
