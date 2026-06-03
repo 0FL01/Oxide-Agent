@@ -29,6 +29,9 @@ const OPENCODE_GO_MAX_COOLDOWN_SECS: u64 = 60;
 const OPENCODE_GO_SUCCESS_STREAK_TO_INCREASE: usize = 3;
 const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
 
+/// Reasoning effort sent for models that support thinking/CoT parameters.
+const OPENCODE_GO_REASONING_EFFORT: &str = "high";
+
 #[derive(Debug, Clone, Copy)]
 struct OpenCodeProviderProfile {
     provider_id: &'static str,
@@ -633,6 +636,15 @@ fn normalize_model_id_for_prefix<'a>(model_id: &'a str, model_prefix: &str) -> &
     trimmed.strip_prefix(&prefix).unwrap_or(trimmed)
 }
 
+/// Check if the model supports reasoning/thinking effort parameters.
+///
+/// Matches DeepSeek V4 family and MiMo V2 family.
+/// Model ID is normalized (prefix stripped) before matching.
+fn is_reasoning_model(model_id: &str) -> bool {
+    let lower = normalize_model_id(model_id).to_ascii_lowercase();
+    lower.starts_with("deepseek-v4") || lower.starts_with("mimo-v2")
+}
+
 fn derive_messages_api_base(api_base: &str) -> String {
     let trimmed = api_base.trim().trim_end_matches('/');
     if trimmed.ends_with("/messages") {
@@ -748,13 +760,19 @@ fn build_chat_completion_body(
         "content": user_message,
     }));
 
-    json!({
+    let mut body = json!({
         "model": normalize_model_id(model_id),
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": OPENCODE_GO_CHAT_TEMPERATURE,
         "stream": false,
-    })
+    });
+
+    if is_reasoning_model(model_id) {
+        body["reasoning_effort"] = json!(OPENCODE_GO_REASONING_EFFORT);
+    }
+
+    body
 }
 
 fn build_anthropic_completion_body(
@@ -775,6 +793,9 @@ fn build_anthropic_completion_body(
     });
     if let Some(system) = anthropic_system_prompt(system_prompt, history) {
         body["system"] = json!(system);
+    }
+    if is_reasoning_model(model_id) {
+        body["thinking"] = json!({ "type": "enabled" });
     }
     body
 }
@@ -810,6 +831,10 @@ fn build_tool_chat_body(
         body["response_format"] = json!({ "type": "json_object" });
     }
 
+    if is_reasoning_model(model_id) {
+        body["reasoning_effort"] = json!(OPENCODE_GO_REASONING_EFFORT);
+    }
+
     body
 }
 
@@ -840,6 +865,9 @@ fn build_anthropic_messages_body(
     if has_tools {
         body["tools"] = json!(anthropic_tools);
         body["tool_choice"] = json!({ "type": "auto" });
+    }
+    if is_reasoning_model(model_id) {
+        body["thinking"] = json!({ "type": "enabled" });
     }
 
     body
@@ -1329,12 +1357,12 @@ fn parse_anthropic_usage(value: &Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_anthropic_messages_body, build_chat_completion_body, build_tool_chat_body,
-        derive_messages_api_base, normalize_model_id, opencode_go_should_throttle,
-        parse_anthropic_messages_response, parse_anthropic_usage, parse_chat_response,
-        parse_tool_calls, parse_usage, prepare_anthropic_messages, prepare_structured_messages,
-        prepare_tools_json, unsupported_protocol_error, OpenCodeGoAdaptiveThrottle,
-        OpenCodeProviderProfile,
+        build_anthropic_completion_body, build_anthropic_messages_body, build_chat_completion_body,
+        build_tool_chat_body, derive_messages_api_base, is_reasoning_model, normalize_model_id,
+        opencode_go_should_throttle, parse_anthropic_messages_response, parse_anthropic_usage,
+        parse_chat_response, parse_tool_calls, parse_usage, prepare_anthropic_messages,
+        prepare_structured_messages, prepare_tools_json, unsupported_protocol_error,
+        OpenCodeGoAdaptiveThrottle, OpenCodeProviderProfile,
     };
     use crate::llm::{
         LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
@@ -1390,6 +1418,67 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_model_detection() {
+        // DeepSeek V4 family
+        assert!(is_reasoning_model("deepseek-v4-flash"));
+        assert!(is_reasoning_model("deepseek-v4-pro"));
+        assert!(is_reasoning_model("opencode-go/deepseek-v4-flash"));
+        assert!(is_reasoning_model(" DEEPSEEK-V4-FLASH "));
+
+        // MiMo V2 family
+        assert!(is_reasoning_model("mimo-v2.5"));
+        assert!(is_reasoning_model("mimo-v2.5-pro"));
+        assert!(is_reasoning_model("opencode-go/mimo-v2.5-pro"));
+
+        // Non-reasoning models
+        assert!(!is_reasoning_model("deepseek-v3"));
+        assert!(!is_reasoning_model("deepseek-chat"));
+        assert!(!is_reasoning_model("gpt-4o"));
+        assert!(!is_reasoning_model("qwen3-235b-a22b"));
+    }
+
+    #[test]
+    fn reasoning_effort_in_openai_text_body() {
+        let body = build_chat_completion_body("system", &[], "hello", "deepseek-v4-flash", 32000);
+        assert_eq!(body["reasoning_effort"], json!("high"));
+    }
+
+    #[test]
+    fn reasoning_effort_in_openai_tool_body() {
+        let tools = vec![read_file_tool()];
+        let body = build_tool_chat_body("system", &[], &tools, "mimo-v2.5", 32000, None, false);
+        assert_eq!(body["reasoning_effort"], json!("high"));
+    }
+
+    #[test]
+    fn thinking_enabled_in_anthropic_text_body() {
+        let body =
+            build_anthropic_completion_body("system", &[], "hello", "deepseek-v4-flash", 32000);
+        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+    }
+
+    #[test]
+    fn thinking_enabled_in_anthropic_tool_body() {
+        let tools = vec![read_file_tool()];
+        let body = build_anthropic_messages_body(
+            "system",
+            &[],
+            &tools,
+            "mimo-v2.5-pro",
+            32000,
+            None,
+            false,
+        );
+        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+    }
+
+    #[test]
+    fn no_reasoning_params_for_non_reasoning_models() {
+        let body = build_chat_completion_body("system", &[], "hello", "gpt-4o", 32000);
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
     fn tool_request_body_includes_function_names() {
         let tools = vec![read_file_tool()];
         let body = build_tool_chat_body(
@@ -1399,13 +1488,14 @@ mod tests {
             "deepseek-v4-flash",
             32000,
             Some(0.2),
-            true,
+            false,
         );
 
         assert_eq!(body["tools"][0]["type"], json!("function"));
         assert_eq!(body["tools"][0]["function"]["name"], json!("read_file"));
         assert_eq!(body["tool_choice"], json!("auto"));
         assert_eq!(body["parallel_tool_calls"], json!(true));
+        assert_eq!(body["reasoning_effort"], json!("high"));
         assert!(body.get("response_format").is_none());
     }
 
