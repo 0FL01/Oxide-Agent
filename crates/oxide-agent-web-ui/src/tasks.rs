@@ -1816,6 +1816,9 @@ fn ToolCard(call: Option<PersistedTaskEvent>, result: Option<PersistedTaskEvent>
         "web_search" | "tavily_search" | "duckduckgo_search" | "duckduckgo_news" => {
             view! { <SearchToolCard call=call result=result output=output_json /> }.into_any()
         }
+        "crawl4ai_markdown" => {
+            view! { <CrawlToolCard call=call result=result output=output_json /> }.into_any()
+        }
         _ => {
             view! { <GenericToolCard name=tool_name call=call result=result output=output_json /> }
                 .into_any()
@@ -2090,6 +2093,168 @@ fn SearchToolCard(
             } else {
                 ().into_any()
             }}
+            {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
+                <details class="tool-raw-details">
+                    <summary>"Raw"</summary>
+                    <pre class="tool-raw-json">{raw.to_string()}</pre>
+                </details>
+            })}
+        </details>
+    }
+}
+
+// ── Crawl Tool Card (crawl4ai_markdown) ───────────────────────────────────
+
+/// Extract hostname (with port) from a URL string for compact preview.
+fn host_from_url_str(raw: &str) -> Option<String> {
+    let s = raw.strip_prefix("https://").or(raw.strip_prefix("http://"))?;
+    let host = s.split('?').next().unwrap_or(s);
+    let host = host.split('/').next().unwrap_or(host);
+    if host.is_empty() { None } else { Some(host.to_string()) }
+}
+
+/// Human-readable byte/char count (e.g. "5.0K chars").
+fn chars_label(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M chars", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}K chars", count as f64 / 1_000.0)
+    } else {
+        format!("{count} chars")
+    }
+}
+
+#[component]
+fn CrawlToolCard(
+    call: Option<PersistedTaskEvent>,
+    result: Option<PersistedTaskEvent>,
+    output: Option<Value>,
+) -> impl IntoView {
+    let is_running = result.is_none();
+    let success = result
+        .as_ref()
+        .and_then(|e| e.payload.get("success"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let duration_ms = output
+        .as_ref()
+        .and_then(|v| field_i64(v, "duration_ms"))
+        .or_else(|| {
+            result
+                .as_ref()
+                .and_then(|e| e.payload.get("duration_ms"))
+                .and_then(|v| v.as_i64())
+        });
+
+    let result_summary = result
+        .as_ref()
+        .and_then(|event| tool_result_summary(event, output.as_ref()));
+
+    // Parse the inner JSON from stdout.text (crawl4ai success payload).
+    let stdout_text = output.as_ref().and_then(|v| stream_text(v, "stdout"));
+    let crawl: Option<Value> = stdout_text
+        .as_ref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let url: Option<String> = crawl.as_ref().and_then(|v| {
+        v.get("final_url")
+            .or_else(|| v.get("url"))
+            .and_then(Value::as_str)
+            .map(String::from)
+    });
+    let markdown: Option<String> = crawl
+        .as_ref()
+        .and_then(|v| v.get("markdown").and_then(Value::as_str).map(String::from));
+    let chars = crawl
+        .as_ref()
+        .and_then(|v| v.get("chars").and_then(Value::as_u64));
+    let truncated = crawl
+        .as_ref()
+        .and_then(|v| v.get("truncated").and_then(Value::as_bool))
+        .unwrap_or(false);
+
+    // Fallback: try to extract URL from the ToolCall input_preview.
+    let url = url.or_else(|| {
+        call.as_ref()
+            .and_then(|e| payload_str_event(e, "input_preview"))
+            .and_then(|input| serde_json::from_str::<Value>(&input).ok())
+            .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
+    });
+
+    let preview_host = url.as_ref().and_then(|u| host_from_url_str(u));
+
+    let icon = if is_running {
+        "\u{23f3}"
+    } else if success {
+        "\u{2713}"
+    } else {
+        "\u{2717}"
+    };
+
+    let duration_label = duration_ms.map(|ms| {
+        if ms >= 1000 {
+            format!("{:.1}s", ms as f64 / 1000.0)
+        } else {
+            format!("{ms}ms")
+        }
+    });
+
+    let chars_display = chars.map(chars_label);
+    let default_open = is_running || !success;
+
+    // Preview line: hostname or error summary
+    let preview_text = if !success {
+        result_summary.clone()
+    } else {
+        preview_host.clone()
+    };
+
+    view! {
+        <div class="tool-card-header">
+            <span class="tool-status-icon">{icon}</span>
+            <span class="tool-name">"Crawl"</span>
+            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
+            {chars_display.map(|c| view! { <span class="tool-meta">{c}</span> })}
+            {truncated.then(|| view! { <span class="tool-meta">"truncated"</span> })}
+            {(!success).then(|| result_summary.clone().map(|summary| view! {
+                <span class="tool-meta danger">{summary}</span>
+            })).flatten()}
+        </div>
+        {preview_text.map(|text| view! {
+            <div class="tool-preview">{text}</div>
+        })}
+        <details class="tool-card-body" open=default_open>
+            <summary class="tool-card-expand">"details"</summary>
+            {url.clone().map(|u| view! {
+                <div class="search-result-url" style="margin: 6px 0">{u}</div>
+            })}
+            {if let Some(md) = markdown.filter(|m| !m.is_empty()) {
+                view! {
+                    <div class="tool-stream">
+                        <div class="tool-stream-content">
+                            <MarkdownContent markdown=md.to_string() />
+                        </div>
+                    </div>
+                }.into_any()
+            } else if !is_running {
+                view! {
+                    <div class="tool-stream">
+                        <pre class="tool-stream-pre">"No content"</pre>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+            // If stdout was not parseable as crawl JSON, show raw stdout as fallback.
+            {crawl.is_none()
+                .then(|| stdout_text.clone())
+                .flatten()
+                .map(|text| view! {
+                    <div class="tool-stream">
+                        <div class="tool-stream-label">"output"</div>
+                        <pre class="tool-stream-pre">{text}</pre>
+                    </div>
+                })}
             {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
                 <details class="tool-raw-details">
                     <summary>"Raw"</summary>
