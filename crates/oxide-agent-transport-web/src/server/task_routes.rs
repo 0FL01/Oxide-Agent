@@ -8,6 +8,7 @@ use axum::{
     response::Response,
     Json,
 };
+use oxide_agent_core::agent::{AgentMessageAttachment, AgentUserInput};
 use oxide_agent_web_contracts::{
     CancelTaskResponse as ApiCancelTaskResponse, CreateTaskRequest as ApiCreateTaskRequest,
     CreateTaskResponse as ApiCreateTaskResponse,
@@ -113,6 +114,36 @@ pub(crate) fn build_task_execution_input(
     sections.push(attachment_lines.join("\n"));
 
     sections.join("\n\n")
+}
+
+pub(crate) fn build_task_agent_user_input(
+    input_markdown: &str,
+    attachments: &[TaskAttachment],
+) -> AgentUserInput {
+    AgentUserInput::new(build_task_execution_input(input_markdown, attachments))
+        .with_attachments(web_image_attachment_refs(attachments))
+}
+
+fn web_image_attachment_refs(attachments: &[TaskAttachment]) -> Vec<AgentMessageAttachment> {
+    attachments
+        .iter()
+        .filter(|attachment| is_image_attachment(attachment))
+        .map(|attachment| {
+            AgentMessageAttachment::image(
+                attachment.file_name.clone(),
+                attachment.mime_type.clone(),
+                attachment.size_bytes,
+                attachment.sandbox_path.clone(),
+            )
+        })
+        .collect()
+}
+
+fn is_image_attachment(attachment: &TaskAttachment) -> bool {
+    attachment
+        .mime_type
+        .as_deref()
+        .is_some_and(|mime_type| mime_type.trim().to_ascii_lowercase().starts_with("image/"))
 }
 
 fn persisted_user_message_event(
@@ -301,13 +332,13 @@ pub(crate) async fn api_create_task(
     let attachments = validate_task_attachments(&request.attachments)?;
     let input_markdown =
         validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
-    let execution_input = build_task_execution_input(&input_markdown, &attachments);
+    let execution_input = build_task_agent_user_input(&input_markdown, &attachments);
     reject_active_task(&state, user.user_id, &session_id).await?;
 
     ensure_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
         .session_manager
-        .register_task(&session_id, execution_input.clone())
+        .register_task(&session_id, execution_input.text_projection().to_string())
         .await
     else {
         return Err(api_error(
@@ -537,7 +568,7 @@ pub(crate) async fn api_create_task_version(
     let attachments = validate_task_attachments(&request.attachments)?;
     let input_markdown =
         validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
-    let execution_input = build_task_execution_input(&input_markdown, &attachments);
+    let execution_input = build_task_agent_user_input(&input_markdown, &attachments);
     let parent_task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
     if !parent_task.status.is_terminal() {
         return Err(api_error(
@@ -593,7 +624,7 @@ pub(crate) async fn api_create_task_version(
     recreate_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
         .session_manager
-        .register_task(&session_id, execution_input.clone())
+        .register_task(&session_id, execution_input.text_projection().to_string())
         .await
     else {
         return Err(api_error(
@@ -682,7 +713,7 @@ pub(crate) async fn api_resume_task(
     let attachments = validate_task_attachments(&request.attachments)?;
     let input_markdown =
         validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
-    let execution_input = build_task_execution_input(&input_markdown, &attachments);
+    let execution_input = build_task_agent_user_input(&input_markdown, &attachments);
     let session = load_owned_session(&state, user.user_id, &session_id).await?;
     let mut task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
     if task.status != ApiTaskStatus::WaitingForUserInput {
@@ -705,7 +736,11 @@ pub(crate) async fn api_resume_task(
     ensure_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
         .session_manager
-        .register_existing_task(&session_id, &task_id, execution_input.clone())
+        .register_existing_task(
+            &session_id,
+            &task_id,
+            execution_input.text_projection().to_string(),
+        )
         .await
     else {
         return Err(api_error(

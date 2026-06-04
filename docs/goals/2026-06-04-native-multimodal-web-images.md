@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-04-native-multimodal-web-images.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after RECON: native vision for compatible selected models, `describe_image_file` fallback for text-only models, and blast-radius-safe `Message` content-parts design.
 Goal doc owner: Codex
-Last updated: 2026-06-04 23:36 +0300
+Last updated: 2026-06-04 23:44 +0300
 
 ## Objective
 
@@ -67,7 +67,7 @@ Out of scope:
   - Acceptance: New/resume task input can include attachment refs; persisted memory stores only safe metadata and sandbox paths; before each provider request, eligible image refs are resolved from the session sandbox into transient provider content parts.
   - Evidence required: unit/integration tests showing refs persist, bytes are not serialized, and missing sandbox files degrade to text-only instead of failing the whole task.
   - Status: in_progress
-  - Evidence collected: Checkpoint 3 added `AgentUserInput` for attachment-aware new/resume turns, while preserving existing text-only wrappers. User task and runtime-context memory entries now persist safe attachment refs only. Native sandbox-byte resolution remains pending for checkpoint 5.
+  - Evidence collected: Checkpoint 3 added `AgentUserInput` for attachment-aware new/resume turns, while preserving existing text-only wrappers. Checkpoint 4 wires web image `TaskAttachment` metadata into those inputs while keeping the text projection with visible sandbox paths. Native sandbox-byte resolution remains pending for checkpoint 5.
 
 - G4: OpenCode Go selected vision models receive native image parts in agent chat
   - Source: User example: MiMo v2.5 supports images.
@@ -87,8 +87,8 @@ Out of scope:
   - Source: Existing web transport architecture.
   - Acceptance: Existing upload endpoint, task DTOs, persisted user-message events, SSE, task lifecycle, and version/edit flows keep working for text-only and non-image attachments.
   - Evidence required: focused web transport checks and existing e2e tests when touched.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 4 keeps `TaskAttachment` DTOs, upload staging, persisted user-message events, previews, and visible `build_task_execution_input()` path text unchanged; only runtime execution input now carries image refs for core memory.
 
 - Q1: Tool-call history integrity is preserved
   - Source: `AGENTS.md` invariant: preserve history repair and `tool_call_id` integrity before LLM calls.
@@ -102,7 +102,7 @@ Out of scope:
   - Acceptance: Raw image bytes/base64 are transient only; token accounting and compaction use text projection plus bounded placeholders; R2 memory snapshots do not include raw media payloads.
   - Evidence required: serialization test and diff review.
   - Status: pending
-  - Evidence collected: Checkpoint 2 stores only file metadata and sandbox paths in `AgentMessage`; `Message` native parts are skipped by serde; token counting remains based on `content` text projection. Checkpoint 3 carries only `AgentMessageAttachment` refs through executor inputs and runtime context.
+  - Evidence collected: Checkpoint 2 stores only file metadata and sandbox paths in `AgentMessage`; `Message` native parts are skipped by serde; token counting remains based on `content` text projection. Checkpoints 3-4 carry only `AgentMessageAttachment` refs through executor inputs, runtime context, and web task execution.
 
 - N1: No broad provider rollout in the first implementation
   - Source: Over-engineering guardrail.
@@ -116,7 +116,7 @@ Out of scope:
   - Must preserve: No new crates/services/storage backends; Gemini remains OpenRouter-only.
   - Evidence required: `Cargo.toml` diff review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: No `Cargo.toml` changes in checkpoints 1-4.
 
 ## Implementation Plan
 
@@ -214,6 +214,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local agent::executor::tests::resume`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-runtime`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
   - Audit IDs updated: G3 in progress; Q1, Q2 evidence extended; G5 fallback path preserved structurally.
   - Next: Checkpoint 4, wire validated web `TaskAttachment` refs into the attachment-aware core execution input while keeping visible sandbox path text.
+
+- 2026-06-04 23:44 +0300: Checkpoint 4 completed.
+  - Changed: Web task create, resume, and version flows now build `AgentUserInput` from validated attachments; image attachments become safe core refs, while all attachments remain visible in the existing text projection and persisted web events.
+  - Evidence: The new web helper maps only `image/*` attachments to `AgentMessageAttachment::Image`, keeps non-image attachments text-only, and preserves sandbox path text for fallback/tool use.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local build_task_agent_user_input_preserves_text_and_maps_image_refs`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
+  - Audit IDs updated: G3 evidence extended; G6 in progress; Q2 evidence extended; G5 fallback text path preserved.
+  - Next: Checkpoint 5, resolve image refs from the session sandbox into transient provider content parts only for image-capable selected routes, with text-only and missing-file degradation.
 
 ## Risks and Blockers
 

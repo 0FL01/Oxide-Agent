@@ -11,7 +11,8 @@ use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
 use crate::web_transport::{collect_events, BrowserEventScope};
 use oxide_agent_core::agent::{
-    AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, PendingUserInput,
+    AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentUserInput,
+    PendingUserInput,
 };
 use oxide_agent_web_contracts::{
     AgentEffort as WebAgentEffort, PersistedTaskEvent, TaskStatus as ApiTaskStatus, WebTaskRecord,
@@ -52,11 +53,11 @@ struct ExecutorTaskCtx {
 
 pub(crate) enum TaskRunRequest {
     Execute {
-        input: String,
+        input: AgentUserInput,
         effort: Option<WebAgentEffort>,
     },
     ResumeUserInput {
-        input: String,
+        input: AgentUserInput,
         effort: Option<WebAgentEffort>,
     },
 }
@@ -351,13 +352,13 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
                 } => {
                     let options = execution_options_from_effort(effort);
                     executor
-                        .execute_with_options(&task_text, Some(tx), options)
+                        .execute_user_input_with_options(task_text, Some(tx), options)
                         .await
                 }
                 TaskRunRequest::ResumeUserInput { input, effort } => {
                     let options = execution_options_from_effort(effort);
                     executor
-                        .resume_after_user_input_with_options(input, Some(tx), options)
+                        .resume_user_input_with_options(input, Some(tx), options)
                         .await
                 }
             }

@@ -2968,6 +2968,44 @@ fn build_task_execution_input_embeds_attachment_paths() {
     assert!(execution_input.contains("sandbox-local"));
 }
 
+#[test]
+fn build_task_agent_user_input_preserves_text_and_maps_image_refs() {
+    let attachments = vec![
+        TaskAttachment {
+            file_name: "screenshot.jpg".to_string(),
+            mime_type: Some("image/jpeg".to_string()),
+            size_bytes: 42,
+            sandbox_path: "/workspace/uploads/demo-screenshot.jpg".to_string(),
+        },
+        TaskAttachment {
+            file_name: "report.pdf".to_string(),
+            mime_type: Some("application/pdf".to_string()),
+            size_bytes: 84,
+            sandbox_path: "/workspace/uploads/demo-report.pdf".to_string(),
+        },
+    ];
+
+    let input = super::build_task_agent_user_input("Analyze these", &attachments);
+
+    assert!(input.text_projection().contains("Analyze these"));
+    assert!(input
+        .text_projection()
+        .contains("/workspace/uploads/demo-screenshot.jpg"));
+    assert!(input
+        .text_projection()
+        .contains("/workspace/uploads/demo-report.pdf"));
+    assert_eq!(input.attachments.len(), 1);
+    assert_eq!(
+        input.attachments[0].kind,
+        oxide_agent_core::agent::AgentMessageAttachmentKind::Image
+    );
+    assert_eq!(input.attachments[0].file_name, "screenshot.jpg");
+    assert_eq!(
+        input.attachments[0].sandbox_path,
+        "/workspace/uploads/demo-screenshot.jpg"
+    );
+}
+
 fn task_record(
     user_id: i64,
     session_id: &str,

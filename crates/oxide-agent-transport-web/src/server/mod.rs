@@ -60,7 +60,9 @@ pub(crate) use task_routes::{
     api_get_task, api_get_task_events, api_get_task_progress, api_list_tasks, api_resume_task,
 };
 #[cfg(test)]
-pub(crate) use task_routes::{build_task_execution_input, task_preview_source};
+pub(crate) use task_routes::{
+    build_task_agent_user_input, build_task_execution_input, task_preview_source,
+};
 pub use types::*;
 
 use axum::{extract::State, http::StatusCode, Json};
