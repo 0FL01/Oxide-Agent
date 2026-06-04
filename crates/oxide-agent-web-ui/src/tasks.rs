@@ -239,7 +239,6 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                             set_attachments=set_pending_files
                         />
                         <div class="composer-footer">
-                            <span class="composer-hint">"Ctrl+Enter to send"</span>
                             <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get())>
                                 <AgentProfileSelect
                                     profiles=profiles
@@ -756,9 +755,6 @@ fn SessionWorkspace(
                             set_attachments=set_pending_files
                         />
                         <div class="composer-footer">
-                            <span class="composer-hint">
-                                {move || composer_hint(is_running(), is_waiting())}
-                            </span>
                             <div class="composer-actions" class:btn-hidden=move || !can_submit_input(&input.get(), &pending_files.get()) && !is_waiting()>
                                 <AgentProfileSelect
                                     profiles=profiles
@@ -969,16 +965,6 @@ fn ActivityDrawer(
                 }}
             </div>
         </aside>
-    }
-}
-
-fn composer_hint(is_running: bool, is_waiting: bool) -> &'static str {
-    if is_running {
-        "Ctrl+Enter to stop"
-    } else if is_waiting {
-        "Ctrl+Enter to resume"
-    } else {
-        "Ctrl+Enter to send"
     }
 }
 

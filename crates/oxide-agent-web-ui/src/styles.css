@@ -2569,12 +2569,6 @@ textarea {
   gap: 12px;
 }
 
-.composer-hint {
-  font-size: 11px;
-  color: var(--faint);
-  font-family: var(--font-mono);
-}
-
 .composer-actions {
   display: flex;
   gap: 8px;
