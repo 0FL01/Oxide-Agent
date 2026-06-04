@@ -2307,7 +2307,7 @@ mod tests {
         ResumeTaskRequest as ApiResumeTaskRequest, UserInputKind as ApiUserInputKind,
         UserMessageEventPayload,
     };
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
     use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
 
@@ -2602,9 +2602,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_register_failures_are_rate_limited() {
-        let _lock = web_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = web_env_mutex().lock().await;
         let _guard = EnvGuard::capture(&["OXIDE_WEB_REGISTRATION_ENABLED"]);
         std::env::set_var("OXIDE_WEB_REGISTRATION_ENABLED", "false");
 
@@ -2642,9 +2640,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_register_starts_browser_auth_session() {
-        let _lock = web_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = web_env_mutex().lock().await;
         let _guard = EnvGuard::capture(&["OXIDE_WEB_REGISTRATION_ENABLED"]);
         std::env::set_var("OXIDE_WEB_REGISTRATION_ENABLED", "true");
 
@@ -2722,9 +2718,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_list_model_routes_returns_empty_models_when_discovery_is_unavailable() {
-        let _lock = web_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = web_env_mutex().lock().await;
         let _guard = EnvGuard::capture(&[
             "OPENCODE_API_KEY",
             "OPENCODE_ZEN_API_KEY",
@@ -3096,11 +3090,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn startup_guard_requires_explicit_in_memory_for_web_enabled_mode() {
-        let _lock = web_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    #[tokio::test]
+    async fn startup_guard_requires_explicit_in_memory_for_web_enabled_mode() {
+        let _lock = web_env_mutex().lock().await;
         let _guard = EnvGuard::capture(&[
             "RUN_MODE",
             "OXIDE_WEB_ENABLED",
@@ -3122,11 +3114,9 @@ mod tests {
         assert!(state.validate_web_store_for_startup().is_ok());
     }
 
-    #[test]
-    fn static_assets_startup_requires_index_when_configured() {
-        let _lock = web_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    #[tokio::test]
+    async fn static_assets_startup_requires_index_when_configured() {
+        let _lock = web_env_mutex().lock().await;
         let _guard = EnvGuard::capture(&["OXIDE_WEB_ALLOW_IN_MEMORY_STORE"]);
         std::env::set_var("OXIDE_WEB_ALLOW_IN_MEMORY_STORE", "true");
 
@@ -3231,9 +3221,7 @@ mod tests {
     #[cfg(feature = "storage-s3-r2")]
     #[tokio::test]
     async fn r2_backed_app_state_builder_requires_r2_config() {
-        let _lock = web_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = web_env_mutex().lock().await;
         let _guard = EnvGuard::capture(&[
             "OXIDE_R2_ENDPOINT_URL",
             "OXIDE_R2_ENDPOINT",
@@ -5050,9 +5038,9 @@ mod tests {
             .expect("sse request")
     }
 
-    fn web_env_mutex() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn web_env_mutex() -> &'static AsyncMutex<()> {
+        static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| AsyncMutex::new(()))
     }
 
     struct EnvGuard {

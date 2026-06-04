@@ -938,7 +938,7 @@ async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
-    assert_tool_payload_compacted_or_removed(&messages, "old-call", "OLD_ARTIFACT_MARKER");
+    assert_tool_payload_compacted_or_removed(messages, "old-call", "OLD_ARTIFACT_MARKER");
 
     server.abort();
 }
@@ -1062,7 +1062,7 @@ async fn e2e_compaction_runtime_preserves_sub_agent_wait_results_while_cleaning_
         assert!(!sub_agent_tool.is_externalized());
         assert!(!sub_agent_tool.is_pruned());
     }
-    assert_tool_payload_compacted_or_removed(&messages, "web-old", "WEB_MARKER");
+    assert_tool_payload_compacted_or_removed(messages, "web-old", "WEB_MARKER");
 
     server.abort();
 }
@@ -1259,7 +1259,7 @@ async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    assert_tool_payload_compacted_or_removed(&messages, "old-call", "CRITICAL_DECISION_TOKEN");
+    assert_tool_payload_compacted_or_removed(messages, "old-call", "CRITICAL_DECISION_TOKEN");
 
     server.abort();
 }
@@ -1363,7 +1363,7 @@ async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summa
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
-    assert_tool_payload_compacted_or_removed(&messages, "old-large", "OLD_TOOL_MARKER");
+    assert_tool_payload_compacted_or_removed(messages, "old-large", "OLD_TOOL_MARKER");
 
     server.abort();
 }
@@ -1451,7 +1451,7 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
         .find(|message| message.tool_call_id.as_deref() == Some("after-summary-1"));
 
     assert_tool_payload_compacted_or_removed(
-        &messages,
+        messages,
         "old-before-summary",
         "BEFORE_SUMMARY_MARKER",
     );

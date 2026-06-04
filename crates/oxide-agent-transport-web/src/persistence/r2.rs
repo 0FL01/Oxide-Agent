@@ -990,13 +990,16 @@ mod tests {
         let store = ObjectStoreWebUiStore::new(InMemoryObjectStore::default());
         let now = Utc::now();
 
-        store.save_user(user_record(7, "alice", now)).await.unwrap();
-        assert_eq!(store.users_count().await.unwrap(), 1);
+        store
+            .save_user(user_record(7, "alice", now))
+            .await
+            .expect("save initial user");
+        assert_eq!(store.users_count().await.expect("count users"), 1);
         assert_eq!(
             store
                 .load_login_index("alice")
                 .await
-                .unwrap()
+                .expect("load login index")
                 .map(|index| index.user_id),
             Some(7)
         );
@@ -1005,27 +1008,27 @@ mod tests {
         store
             .save_auth_session(auth_session(7, "keep", now))
             .await
-            .unwrap();
+            .expect("save kept auth session");
         store
             .save_auth_session(auth_session(7, "revoke", now))
             .await
-            .unwrap();
+            .expect("save revoked auth session");
         assert_eq!(
             store
                 .revoke_auth_sessions_for_user_except(7, "keep", now + Duration::seconds(1))
                 .await
-                .unwrap(),
+                .expect("revoke other auth sessions"),
             1
         );
         assert!(store
             .load_auth_session("revoke")
             .await
-            .unwrap()
+            .expect("load revoked auth session")
             .and_then(|session| session.revoked_at)
             .is_some());
 
         let session = session_record(7, "session-1", now);
-        store.save_session(session).await.unwrap();
+        store.save_session(session).await.expect("save session");
         store
             .save_task(task_record(
                 7,
@@ -1035,7 +1038,7 @@ mod tests {
                 now,
             ))
             .await
-            .unwrap();
+            .expect("save completed task");
         store
             .append_task_events(
                 7,
@@ -1048,7 +1051,7 @@ mod tests {
                 ],
             )
             .await
-            .unwrap();
+            .expect("append task events");
         store
             .save_task_file(
                 WebTaskFileRecord {
@@ -1066,12 +1069,12 @@ mod tests {
                 b"hello".to_vec(),
             )
             .await
-            .unwrap();
+            .expect("save task file");
 
         let response = store
             .list_task_events(7, "session-1", "task-1", 1, 1)
             .await
-            .unwrap();
+            .expect("list task events");
         assert_eq!(response.events.len(), 1);
         assert_eq!(response.events[0].seq, 2);
         assert_eq!(response.last_seq, 2);
@@ -1079,23 +1082,30 @@ mod tests {
         let stored_file = store
             .load_task_file(7, "session-1", "task-1", "file-1")
             .await
-            .unwrap()
+            .expect("load task file")
             .expect("task file should exist");
         assert_eq!(stored_file.record.file_name, "report.txt");
         assert_eq!(stored_file.content, b"hello");
 
-        assert!(store.delete_session(7, "session-1").await.unwrap());
-        assert!(store.list_tasks(7, "session-1").await.unwrap().is_empty());
+        assert!(store
+            .delete_session(7, "session-1")
+            .await
+            .expect("delete session"));
+        assert!(store
+            .list_tasks(7, "session-1")
+            .await
+            .expect("list deleted session tasks")
+            .is_empty());
         assert!(store
             .list_task_events(7, "session-1", "task-1", 0, 10)
             .await
-            .unwrap()
+            .expect("list deleted task events")
             .events
             .is_empty());
         assert!(store
             .load_task_file(7, "session-1", "task-1", "file-1")
             .await
-            .unwrap()
+            .expect("load deleted task file")
             .is_none());
     }
 
@@ -1106,7 +1116,10 @@ mod tests {
         let reconcile_at = now + Duration::seconds(5);
         let mut session = session_record(7, "session-1", now);
         session.active_task_id = Some("running".to_string());
-        store.save_session(session).await.unwrap();
+        store
+            .save_session(session)
+            .await
+            .expect("save running session");
         store
             .save_task(task_record(
                 7,
@@ -1116,7 +1129,7 @@ mod tests {
                 now,
             ))
             .await
-            .unwrap();
+            .expect("save running task");
         store
             .save_task(task_record(
                 7,
@@ -1126,22 +1139,22 @@ mod tests {
                 now,
             ))
             .await
-            .unwrap();
+            .expect("save completed task");
         store
             .save_task(task_record(8, "foreign", "queued", TaskStatus::Queued, now))
             .await
-            .unwrap();
+            .expect("save foreign queued task");
 
         let interrupted = store
             .mark_unfinished_tasks_interrupted("backend restarted", reconcile_at)
             .await
-            .unwrap();
+            .expect("mark unfinished tasks interrupted");
         assert_eq!(interrupted.len(), 2);
         assert_eq!(
             store
                 .load_task(7, "session-1", "running")
                 .await
-                .unwrap()
+                .expect("load interrupted running task")
                 .map(|task| task.status),
             Some(TaskStatus::Interrupted)
         );
@@ -1149,7 +1162,7 @@ mod tests {
             store
                 .load_session(7, "session-1")
                 .await
-                .unwrap()
+                .expect("load reconciled session")
                 .and_then(|session| session.active_task_id),
             None
         );
@@ -1157,7 +1170,7 @@ mod tests {
             store
                 .load_task(7, "session-1", "done")
                 .await
-                .unwrap()
+                .expect("load completed task")
                 .map(|task| task.status),
             Some(TaskStatus::Completed)
         );
@@ -1344,7 +1357,10 @@ mod tests {
             .context_keys
             .push("web-session-s-wiki-branch-1".to_string());
         session.context_key = "web-session-s-wiki-branch-1".to_string();
-        store.save_session(session).await.unwrap();
+        store
+            .save_session(session)
+            .await
+            .expect("save wiki session");
 
         // Insert wiki objects under the expected context prefix.
         let context_key = "web-session-s-wiki";
@@ -1365,22 +1381,22 @@ mod tests {
             .object_store
             .save_json(&page_key, &"page content")
             .await
-            .unwrap();
+            .expect("save wiki page object");
         store
             .object_store
             .save_json(&inbox_key, &"inbox content")
             .await
-            .unwrap();
+            .expect("save wiki inbox object");
         store
             .object_store
             .save_json(&overview_key, &"overview content")
             .await
-            .unwrap();
+            .expect("save wiki overview object");
         store
             .object_store
             .save_json(&branch_page_key, &"branch content")
             .await
-            .unwrap();
+            .expect("save branch wiki page object");
 
         // Insert a wiki object for a different session -- must survive.
         let foreign_context_id =
@@ -1392,16 +1408,19 @@ mod tests {
             .object_store
             .save_json(&foreign_key, &"foreign content")
             .await
-            .unwrap();
+            .expect("save foreign wiki object");
 
-        assert!(store.delete_session(7, "s-wiki").await.unwrap());
+        assert!(store
+            .delete_session(7, "s-wiki")
+            .await
+            .expect("delete wiki session"));
 
         // Wiki objects for the deleted session must be gone.
         let remaining: Vec<String> = store
             .object_store
             .list_keys_under_prefix(&wiki_prefix)
             .await
-            .unwrap();
+            .expect("list deleted session wiki keys");
         assert!(
             remaining.is_empty(),
             "wiki objects for deleted session should be removed, got: {remaining:?}"
@@ -1410,7 +1429,7 @@ mod tests {
             .object_store
             .list_keys_under_prefix(&branch_wiki_prefix)
             .await
-            .unwrap();
+            .expect("list deleted branch wiki keys");
         assert!(
             branch_remaining.is_empty(),
             "wiki objects for deleted branch should be removed, got: {branch_remaining:?}"
@@ -1421,13 +1440,16 @@ mod tests {
             .object_store
             .list_keys_under_prefix(&foreign_prefix)
             .await
-            .unwrap();
+            .expect("list foreign wiki keys");
         assert_eq!(foreign_remaining, vec![foreign_key]);
     }
 
     #[tokio::test]
     async fn delete_session_returns_false_when_missing() {
         let store = ObjectStoreWebUiStore::new(InMemoryObjectStore::default());
-        assert!(!store.delete_session(999, "nonexistent").await.unwrap());
+        assert!(!store
+            .delete_session(999, "nonexistent")
+            .await
+            .expect("delete missing session"));
     }
 }
