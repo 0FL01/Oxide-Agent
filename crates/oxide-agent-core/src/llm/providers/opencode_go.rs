@@ -1117,11 +1117,18 @@ fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
 }
 
 fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
+    if let Some(error) = extract_opencode_error_response(&response) {
+        return Err(LlmError::ApiError(error));
+    }
+
     let choice = response
         .get("choices")
         .and_then(|choices| choices.get(0))
         .ok_or_else(|| {
-            LlmError::ApiError("Missing choices[0] in OpenCode Go response".to_string())
+            LlmError::ApiError(format!(
+                "Missing choices[0] in OpenCode Go response{}",
+                response_shape_suffix(&response)
+            ))
         })?;
     let message = choice
         .get("message")
@@ -1165,6 +1172,10 @@ fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
 }
 
 fn parse_anthropic_messages_response(response: Value) -> Result<ChatResponse, LlmError> {
+    if let Some(error) = extract_opencode_error_response(&response) {
+        return Err(LlmError::ApiError(error));
+    }
+
     let blocks = response
         .get("content")
         .and_then(Value::as_array)
@@ -1255,6 +1266,62 @@ fn parse_anthropic_messages_response(response: Value) -> Result<ChatResponse, Ll
         reasoning_content,
         usage: response.get("usage").and_then(parse_anthropic_usage),
     })
+}
+
+fn extract_opencode_error_response(response: &Value) -> Option<String> {
+    if let Some(error) = response.get("error") {
+        if let Some(message) = non_empty_str(error.get("message")) {
+            return Some(format_opencode_error_message(error, message));
+        }
+        if let Some(message) = non_empty_str(Some(error)) {
+            return Some(format!("OpenCode Go returned error response: {message}"));
+        }
+    }
+
+    non_empty_str(response.get("message"))
+        .or_else(|| non_empty_str(response.get("detail")))
+        .map(|message| format!("OpenCode Go returned error response: {message}"))
+}
+
+fn format_opencode_error_message(error: &Value, message: &str) -> String {
+    let label = non_empty_str(error.get("code")).or_else(|| non_empty_str(error.get("type")));
+    match label {
+        Some(label) => format!("OpenCode Go returned error response ({label}): {message}"),
+        None => format!("OpenCode Go returned error response: {message}"),
+    }
+}
+
+fn non_empty_str(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn response_shape_suffix(response: &Value) -> String {
+    let Some(object) = response.as_object() else {
+        return format!("; response_type={}", value_type_name(response));
+    };
+    if object.is_empty() {
+        return "; top_level_keys=[]".to_string();
+    }
+    let keys = object
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("; top_level_keys=[{keys}]")
+}
+
+fn value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn map_anthropic_stop_reason(stop_reason: &str) -> String {
@@ -1742,6 +1809,43 @@ mod tests {
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.finish_reason, "tool_calls");
         assert_eq!(response.usage.expect("usage").total_tokens, 15);
+    }
+
+    #[test]
+    fn mimo_v25_error_envelope_is_not_masked_as_missing_choices() {
+        let body = build_tool_chat_body(
+            "system",
+            &[Message::user("Use tools if needed")],
+            &[read_file_tool()],
+            "opencode-go/mimo-v2.5",
+            32000,
+            None,
+            false,
+            None,
+        );
+
+        assert_eq!(body["model"], json!("mimo-v2.5"));
+        assert_eq!(body["stream"], json!(false));
+        assert_eq!(body["reasoning_effort"], json!("high"));
+
+        let error = parse_chat_response(json!({
+            "error": {
+                "message": "reasoning_effort is not supported for this model",
+                "type": "invalid_request_error"
+            }
+        }))
+        .expect_err("provider error envelope should not parse as a successful chat response");
+
+        assert!(
+            error
+                .to_string()
+                .contains("reasoning_effort is not supported for this model"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !error.to_string().contains("Missing choices[0]"),
+            "provider error envelope was masked as a response-shape error: {error}"
+        );
     }
 
     #[test]
