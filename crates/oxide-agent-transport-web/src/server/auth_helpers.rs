@@ -1,7 +1,6 @@
 //! Authentication, CSRF protection, rate limiting, and cookie helpers.
 
 use super::{api_error, AppState, AUTH_COOKIE_NAME, CSRF_HEADER_NAME};
-pub(crate) use crate::auth::AUTH_SESSION_TTL_SECS;
 use crate::auth::{current_user_for_token, AuthError};
 use axum::{
     http::{

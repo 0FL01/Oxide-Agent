@@ -5,7 +5,7 @@ Status: active
 Codex goal: Implement this document until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals.
 Source spec: User request and recon of `crates/oxide-agent-transport-web/src/server/mod.rs`
 Goal doc owner: Codex
-Last updated: 2026-06-04 20:04 +0300
+Last updated: 2026-06-04 20:21 +0300
 
 ## Objective
 
@@ -29,11 +29,11 @@ Out of scope:
 ## Repository Context
 
 - `crates/oxide-agent-transport-web/src/lib.rs:47` exposes `pub mod server`; `crates/oxide-agent-transport-web/src/lib.rs:53` re-exports `pub use server::*`.
-- `crates/oxide-agent-transport-web/src/server/mod.rs` contains production handlers/helpers and re-exports `build_router`/`serve`; tests live in `server/tests.rs`, and router/server shell lives in `server/router.rs`.
+- `crates/oxide-agent-transport-web/src/server/mod.rs` contains remaining session/task handlers/helpers and re-exports split server slices; tests, router shell, auth, settings, model routes, and agent profiles live in focused `server/*.rs` modules.
 - `crates/oxide-agent-transport-web/src/server/mod.rs:30` re-exports `types::*`; public `build_router` and `serve` must remain reachable from the crate root.
 - Tests import many private handlers via `super::{...}` from the inline module, so handler moves require either import updates or `pub(crate)` re-exports.
 - UI path coupling exists in `crates/oxide-agent-web-ui/src/api.rs` and `crates/oxide-agent-web-ui/src/sse.rs`; paths must not change during this refactor.
-- Existing server submodules are `auth_helpers`, `auto_title`, `converters`, `sse`, `static_assets`, `task_executor`, and `types`.
+- Existing server submodules include `auth_helpers`, `auth_routes`, `auto_title`, `converters`, `model_routes`, `agent_profiles`, `settings_routes`, `router`, `sse`, `static_assets`, `task_executor`, and `types`.
 
 ## Completion Audit
 
@@ -55,8 +55,8 @@ Out of scope:
   - Source: Recon plan checkpoint 4.
   - Acceptance: auth, settings, model-route, and agent-profile handlers/helpers are moved into focused modules with stable route behavior and direct tests still compiling.
   - Evidence required: focused diff review and server tests for default/profile-lite configurations.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Added `auth_routes.rs`, `settings_routes.rs`, `model_routes.rs`, and `agent_profiles.rs`; `server/mod.rs` keeps `pub(crate)` re-exports for router/tests and is down to 1343 lines. Default/profile-lite server tests passed.
 
 - G4: Complex session/task slices are extracted after simpler slices
   - Source: Recon plan checkpoint 5.
@@ -77,21 +77,21 @@ Out of scope:
   - Acceptance: Existing consumers of `serve`, `build_router`, `AppState`, and `build_r2_backed_app_state` still compile.
   - Evidence required: `cargo check -p oxide-agent-transport-web --no-default-features` and `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 preserved crate-root `build_router`/`serve` exports and passed default/profile-lite `cargo check`.
+  - Evidence collected: Checkpoints 2-3 preserved crate-root `build_router`/`serve` exports and passed default/profile-lite `cargo check`.
 
 - Q2: Route, auth, CSRF, SSE, and task semantics remain unchanged during mechanical extraction
   - Source: User guardrails and recon blast-radius.
   - Acceptance: No route path edits, no DTO edits, no auth/cookie/CSRF behavior edits, no SSE stream/replay edits, and no task lifecycle behavior edits are made in mechanical checkpoints.
   - Evidence required: diff review plus server/e2e tests.
   - Status: in_progress
-  - Evidence collected: Checkpoints 1-2 did not edit route paths, DTOs, auth/cookie/CSRF logic, SSE logic, or task lifecycle code; only test/router module locations changed.
+  - Evidence collected: Checkpoints 1-3 did not edit route paths, DTOs, auth/cookie/CSRF behavior, SSE behavior, or task lifecycle code; only module locations/imports changed.
 
 - N1: No over-engineering or new dependencies
   - Source: `AGENTS.md` implementation bias.
   - Must preserve: No new crates, services, storage backends, queues, middleware frameworks, or broad abstractions are introduced for this refactor.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
   - Status: in_progress
-  - Evidence collected: No `Cargo.toml` changes and no new dependencies/services were introduced in checkpoints 1-2.
+  - Evidence collected: No `Cargo.toml` changes and no new dependencies/services were introduced in checkpoints 1-3.
 
 ## Implementation Plan
 
@@ -163,6 +163,12 @@ Out of scope:
   - Commands: `cargo check -p oxide-agent-transport-web --no-default-features`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`; `cargo test -p oxide-agent-transport-web --no-default-features server::tests` (33 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite server::tests` (38 passed); `cargo test -p oxide-agent-transport-web --no-default-features --test e2e` (6 passed / 24 ignored); `cargo clippy -p oxide-agent-transport-web --no-default-features --tests`; `git diff --check`.
   - Audit IDs updated: G2 verified; Q1, Q2, N1 have checkpoint evidence.
   - Next: Extract simple route slices: auth, settings, model routes, and agent profiles.
+
+- 2026-06-04 20:21 +0300: Checkpoint 3 completed.
+  - Changed: Extracted auth, settings, model-route, and agent-profile routes/helpers into focused modules; kept `pub(crate)` re-exports for router/tests; removed stale auth/model/profile imports from `mod.rs`.
+  - Commands: `cargo check -p oxide-agent-transport-web --no-default-features`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`; `cargo test -p oxide-agent-transport-web --no-default-features server::tests` (33 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite server::tests` (38 passed); `cargo test -p oxide-agent-transport-web --no-default-features --test e2e` (6 passed / 24 ignored); `cargo clippy -p oxide-agent-transport-web --no-default-features --tests`; `git diff --check`.
+  - Audit IDs updated: G3 verified; Q1, Q2, N1 have checkpoint evidence.
+  - Next: Extract complex session/task route slices.
 
 ## Risks and Blockers
 
