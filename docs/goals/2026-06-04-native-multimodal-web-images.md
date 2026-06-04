@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-04-native-multimodal-web-images.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after RECON: native vision for compatible selected models, `describe_image_file` fallback for text-only models, and blast-radius-safe `Message` content-parts design.
 Goal doc owner: Codex
-Last updated: 2026-06-05 00:10 +0300
+Last updated: 2026-06-05 00:29 +0300
 
 ## Objective
 
@@ -88,7 +88,7 @@ Out of scope:
   - Acceptance: Existing upload endpoint, task DTOs, persisted user-message events, SSE, task lifecycle, and version/edit flows keep working for text-only and non-image attachments.
   - Evidence required: focused web transport checks and existing e2e tests when touched.
   - Status: in_progress
-  - Evidence collected: Checkpoint 4 keeps `TaskAttachment` DTOs, upload staging, persisted user-message events, previews, and visible `build_task_execution_input()` path text unchanged; only runtime execution input now carries image refs for core memory.
+  - Evidence collected: Checkpoint 4 keeps `TaskAttachment` DTOs, upload staging, persisted user-message events, previews, and visible `build_task_execution_input()` path text unchanged; only runtime execution input now carries image refs for core memory. Checkpoint 7 manual testing confirmed fresh web image uploads reach native vision; an edit/version bug was found where the branch sandbox lacked the original upload. The web version flow now best-effort copies attachments from the source session sandbox into the branch sandbox before recreating runtime execution.
 
 - Q1: Tool-call history integrity is preserved
   - Source: `AGENTS.md` invariant: preserve history repair and `tool_call_id` integrity before LLM calls.
@@ -235,6 +235,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --lib --no-default-features --features llm-opencode-go tool_chat_body_serializes_user_image_parts_for_image_models_only`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go opencode_go --lib`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --lib`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
   - Audit IDs updated: G4 verified; G5 verified; Q1 verified; N1 verified; N2 verified.
   - Next: Checkpoint 7, run end-to-end/final verification and update docs/completion audit.
+
+- 2026-06-05 00:29 +0300: Checkpoint 7 manual verification bugfix.
+  - Changed: Web task-version creation now copies existing attachments from the source web-session sandbox into the new branch sandbox on a best-effort basis before runtime recreation, preserving native image resolution after editing an already sent message.
+  - Evidence: User manual run confirmed fresh image upload with `opencode-go/mimo-v2.5` works natively without `describe_image_file`; failing edited-message logs showed native image resolution using the branch scope and `File not found` for the original upload path. The fix targets that branch-sandbox mismatch.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local api_create_task_version_and_cancel_task_are_auth_scoped_and_status_checked`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local build_task_agent_user_input_preserves_text_and_maps_image_refs`; `cargo fmt --check`; `git diff --check`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`.
+  - Audit IDs updated: G6 evidence extended; G3/G4 manual evidence strengthened.
+  - Next: Re-run manual edit/version image test, then close final Completion Audit if clean.
 
 ## Risks and Blockers
 

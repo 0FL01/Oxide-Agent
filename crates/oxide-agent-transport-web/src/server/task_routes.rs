@@ -8,7 +8,9 @@ use axum::{
     response::Response,
     Json,
 };
+use oxide_agent_core::agent::providers::sandbox::SandboxRuntime;
 use oxide_agent_core::agent::{AgentMessageAttachment, AgentUserInput};
+use oxide_agent_core::sandbox::SandboxFileOps;
 use oxide_agent_web_contracts::{
     CancelTaskResponse as ApiCancelTaskResponse, CreateTaskRequest as ApiCreateTaskRequest,
     CreateTaskResponse as ApiCreateTaskResponse,
@@ -144,6 +146,52 @@ fn is_image_attachment(attachment: &TaskAttachment) -> bool {
         .mime_type
         .as_deref()
         .is_some_and(|mime_type| mime_type.trim().to_ascii_lowercase().starts_with("image/"))
+}
+
+async fn best_effort_copy_attachments_between_web_sandboxes(
+    user_id: i64,
+    source_context_key: &str,
+    target_context_key: &str,
+    attachments: &[TaskAttachment],
+) {
+    if attachments.is_empty() || source_context_key == target_context_key {
+        return;
+    }
+
+    let source = SandboxRuntime::new(crate::session::web_session_sandbox_scope(
+        user_id,
+        source_context_key,
+    ));
+    let target = SandboxRuntime::new(crate::session::web_session_sandbox_scope(
+        user_id,
+        target_context_key,
+    ));
+
+    for attachment in attachments {
+        let bytes = match source.read_file(&attachment.sandbox_path).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(
+                    source_context_key,
+                    target_context_key,
+                    path = attachment.sandbox_path.as_str(),
+                    error = %error,
+                    "Could not copy task-version attachment from source sandbox; continuing with text fallback"
+                );
+                continue;
+            }
+        };
+
+        if let Err(error) = target.write_file(&attachment.sandbox_path, &bytes).await {
+            tracing::warn!(
+                source_context_key,
+                target_context_key,
+                path = attachment.sandbox_path.as_str(),
+                error = %error,
+                "Could not copy task-version attachment into branch sandbox; continuing with text fallback"
+            );
+        }
+    }
 }
 
 fn persisted_user_message_event(
@@ -602,6 +650,7 @@ pub(crate) async fn api_create_task_version(
     }
 
     let now = chrono::Utc::now();
+    let source_context_key = session.context_key.clone();
     let branch_context_key = web_task_version_context_key(&session_id);
     if session.context_keys.is_empty() {
         session.context_keys.push(session.context_key.clone());
@@ -619,6 +668,13 @@ pub(crate) async fn api_create_task_version(
         ))
         .await
         .map_err(|error| backend_unavailable_response(error.to_string()))?;
+    best_effort_copy_attachments_between_web_sandboxes(
+        user.user_id,
+        &source_context_key,
+        &session.context_key,
+        &attachments,
+    )
+    .await;
     save_session_record(&state, session.clone()).await?;
 
     recreate_runtime_session(&state, user.user_id, &session).await;
