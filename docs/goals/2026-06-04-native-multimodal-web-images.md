@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-04-native-multimodal-web-images.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after RECON: native vision for compatible selected models, `describe_image_file` fallback for text-only models, and blast-radius-safe `Message` content-parts design.
 Goal doc owner: Codex
-Last updated: 2026-06-05 00:29 +0300
+Last updated: 2026-06-05 00:44 +0300
 
 ## Objective
 
@@ -88,7 +88,7 @@ Out of scope:
   - Acceptance: Existing upload endpoint, task DTOs, persisted user-message events, SSE, task lifecycle, and version/edit flows keep working for text-only and non-image attachments.
   - Evidence required: focused web transport checks and existing e2e tests when touched.
   - Status: in_progress
-  - Evidence collected: Checkpoint 4 keeps `TaskAttachment` DTOs, upload staging, persisted user-message events, previews, and visible `build_task_execution_input()` path text unchanged; only runtime execution input now carries image refs for core memory. Checkpoint 7 manual testing confirmed fresh web image uploads reach native vision; an edit/version bug was found where the branch sandbox lacked the original upload. The web version flow now best-effort copies attachments from the source session sandbox into the branch sandbox before recreating runtime execution.
+  - Evidence collected: Checkpoint 4 keeps `TaskAttachment` DTOs, upload staging, persisted user-message events, previews, and visible `build_task_execution_input()` path text unchanged; only runtime execution input now carries image refs for core memory. Checkpoint 7 manual testing confirmed fresh web image uploads reach native vision; an edit/version bug was found where the branch sandbox lacked the original upload. The web version flow now best-effort copies attachments from the source session sandbox into the branch sandbox before recreating runtime execution. Clipboard screenshots now enter the same pending attachment/upload path as file-picker and drag-and-drop images.
 
 - Q1: Tool-call history integrity is preserved
   - Source: `AGENTS.md` invariant: preserve history repair and `tool_call_id` integrity before LLM calls.
@@ -116,7 +116,7 @@ Out of scope:
   - Must preserve: No new crates/services/storage backends; Gemini remains OpenRouter-only.
   - Evidence required: `Cargo.toml` diff review.
   - Status: verified
-  - Evidence collected: No `Cargo.toml` changes in checkpoints 1-6; no direct Gemini provider code was added.
+  - Evidence collected: No new crates/services/storage backends were added. The web UI enabled the existing `web-sys` `ClipboardEvent` feature to receive paste events; no direct Gemini provider code was added.
 
 ## Implementation Plan
 
@@ -242,6 +242,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local api_create_task_version_and_cancel_task_are_auth_scoped_and_status_checked`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local build_task_agent_user_input_preserves_text_and_maps_image_refs`; `cargo fmt --check`; `git diff --check`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`.
   - Audit IDs updated: G6 evidence extended; G3/G4 manual evidence strengthened.
   - Next: Re-run manual edit/version image test, then close final Completion Audit if clean.
+
+- 2026-06-05 00:41 +0300: Clipboard screenshot UX support.
+  - Changed: Web chat composers now accept pasted clipboard image files via `Ctrl+V` and append them to the existing pending attachment list before upload.
+  - Evidence: Paste handling reuses the existing pending attachment/upload flow; non-image clipboard files are ignored by a MIME/extension filter.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-web-ui`; `cargo check -p oxide-agent-web-ui`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`.
+  - Audit IDs updated: G6 evidence extended; N2 evidence updated for existing `web-sys` feature usage.
+  - Next: Commit this UX support, then continue final manual verification.
 
 ## Risks and Blockers
 

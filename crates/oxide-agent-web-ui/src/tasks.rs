@@ -218,6 +218,14 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                 let h = (scroll as f64).min(max);
                                 el.style().set_property("height", &format!("{h}px")).ok();
                             }
+                            on:paste=move |ev| {
+                                append_pasted_image_files(
+                                    &ev,
+                                    next_pending_file_id,
+                                    set_next_pending_file_id,
+                                    set_pending_files,
+                                );
+                            }
                             on:keydown=move |ev| {
                                 if ev.ctrl_key() && ev.key() == "Enter" {
                                     ev.prevent_default();
@@ -733,6 +741,14 @@ fn SessionWorkspace(
                                 let max = 208.0_f64;
                                 let h = (scroll as f64).min(max);
                                 el.style().set_property("height", &format!("{h}px")).ok();
+                            }
+                            on:paste=move |ev| {
+                                append_pasted_image_files(
+                                    &ev,
+                                    next_pending_file_id,
+                                    set_next_pending_file_id,
+                                    set_pending_files,
+                                );
                             }
                             on:keydown=move |ev| {
                                 if ev.ctrl_key() && ev.key() == "Enter" {
@@ -3154,6 +3170,20 @@ fn append_pending_browser_files(
     set_attachments.update(|items| items.extend(new_files));
 }
 
+fn append_pasted_image_files(
+    ev: &leptos::ev::ClipboardEvent,
+    next_id: ReadSignal<usize>,
+    set_next_id: WriteSignal<usize>,
+    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
+) {
+    append_pending_browser_files(
+        next_id,
+        set_next_id,
+        set_attachments,
+        browser_image_files_from_clipboard_event(ev),
+    );
+}
+
 fn into_pending_attachment_files(
     files: Vec<web_sys::File>,
     start_id: usize,
@@ -3199,10 +3229,39 @@ fn browser_files_from_drag_event(ev: &leptos::ev::DragEvent) -> Vec<web_sys::Fil
         .unwrap_or_default()
 }
 
+fn browser_image_files_from_clipboard_event(ev: &leptos::ev::ClipboardEvent) -> Vec<web_sys::File> {
+    ev.clipboard_data()
+        .and_then(|transfer| transfer.files())
+        .map(browser_image_files_from_file_list)
+        .unwrap_or_default()
+}
+
 fn browser_files_from_file_list(file_list: web_sys::FileList) -> Vec<web_sys::File> {
     (0..file_list.length())
         .filter_map(|index| file_list.item(index))
         .collect()
+}
+
+fn browser_image_files_from_file_list(file_list: web_sys::FileList) -> Vec<web_sys::File> {
+    browser_files_from_file_list(file_list)
+        .into_iter()
+        .filter(|file| is_image_file_metadata(&file.type_(), &file.name()))
+        .collect()
+}
+
+fn is_image_file_metadata(mime_type: &str, file_name: &str) -> bool {
+    let mime_type = mime_type.trim().to_ascii_lowercase();
+    if mime_type.starts_with("image/") {
+        return true;
+    }
+
+    let file_name = file_name.trim().to_ascii_lowercase();
+    [
+        ".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".svg", ".tif",
+        ".tiff", ".webp",
+    ]
+    .iter()
+    .any(|extension| file_name.ends_with(extension))
 }
 
 fn format_attachment_meta(size_bytes: u64, mime_type: String) -> String {
