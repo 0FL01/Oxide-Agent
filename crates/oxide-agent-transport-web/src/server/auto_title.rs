@@ -1,16 +1,15 @@
-//! Async LLM-powered session title generation.
+//! LLM-powered session title generation.
 //!
-//! On the first task of a new session a background worker is spawned to
-//! generate a short, meaningful title through the same LLM model that the
-//! agent uses.  The HTTP response returns immediately with a
-//! `markdown_preview()` fallback; the generated title is persisted only
-//! if the user has not manually renamed the session.
+//! On the first task of a new session the web transport generates a short,
+//! meaningful title through the same LLM model family that the agent uses.
+//! The generated title is persisted only if the user has not manually renamed
+//! the session.
 
 use crate::server::types::{AppState, MAX_SESSION_TITLE_CHARS};
 use chrono::Utc;
 use oxide_agent_core::config::ModelInfo;
 use oxide_agent_core::llm::Message;
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
@@ -25,24 +24,7 @@ pub(crate) struct AutoTitleRequest {
     pub(crate) fallback_preview: String,
 }
 
-/// Fire-and-forget: spawn an async LLM title generation task.
-pub(crate) fn spawn_auto_title(state: AppState, request: AutoTitleRequest) {
-    tokio::spawn(async move {
-        let session_id = request.session_id.clone();
-        info!(session_id = %session_id, "auto title generation started");
-        if let Err(error) = generate_and_save_auto_title(state, request).await {
-            warn!(session_id = %session_id, error = %error, "auto title generation failed");
-        } else {
-            info!(session_id = %session_id, "auto title generation finished");
-        }
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Internal
-// ---------------------------------------------------------------------------
-
-async fn generate_and_save_auto_title(
+pub(crate) async fn generate_and_save_auto_title(
     state: AppState,
     request: AutoTitleRequest,
 ) -> Result<(), String> {
@@ -57,21 +39,40 @@ async fn generate_and_save_auto_title(
     };
 
     if !session.may_auto_title(&request.fallback_preview) {
-        info!(session_id = %request.session_id, "auto title skipped because session title is not replaceable");
+        info!(
+            session_id = %request.session_id,
+            current_title_chars = session.title.chars().count(),
+            fallback_preview_chars = request.fallback_preview.chars().count(),
+            manually_renamed = session.manually_renamed,
+            "auto title skipped because session title is not replaceable"
+        );
         return Ok(());
     }
 
     let model = inherited_title_model(&state);
+    info!(
+        session_id = %request.session_id,
+        provider = %model.provider,
+        model = %model.id,
+        input_chars = request.first_user_message.chars().count(),
+        fallback_preview_chars = request.fallback_preview.chars().count(),
+        "auto title generation started"
+    );
     let raw_title = generate_title(
         state.session_manager.llm_client(),
         model,
         &request.first_user_message,
+        &request.session_id,
     )
     .await?;
 
     let title = sanitize_auto_title(&raw_title);
     if title.is_empty() {
-        info!(session_id = %request.session_id, "auto title skipped because generated title is empty");
+        warn!(
+            session_id = %request.session_id,
+            raw_title_chars = raw_title.chars().count(),
+            "auto title skipped because generated title is empty"
+        );
         return Ok(());
     }
 
@@ -88,10 +89,18 @@ async fn generate_and_save_auto_title(
     };
 
     if !session.may_auto_title(&request.fallback_preview) {
-        info!(session_id = %request.session_id, "auto title skipped because session title changed during generation");
+        info!(
+            session_id = %request.session_id,
+            current_title_chars = session.title.chars().count(),
+            generated_title_chars = title.chars().count(),
+            fallback_preview_chars = request.fallback_preview.chars().count(),
+            manually_renamed = session.manually_renamed,
+            "auto title skipped because session title changed during generation"
+        );
         return Ok(());
     }
 
+    let saved_title_chars = title.chars().count();
     session.title = title;
     session.updated_at = Utc::now();
 
@@ -101,7 +110,7 @@ async fn generate_and_save_auto_title(
         .await
         .map_err(|e| e.to_string())?;
 
-    info!(session_id = %request.session_id, "auto title saved");
+    info!(session_id = %request.session_id, title_chars = saved_title_chars, "auto title saved");
 
     Ok(())
 }
@@ -120,19 +129,35 @@ async fn generate_title(
     llm: Arc<oxide_agent_core::llm::LlmClient>,
     mut model: ModelInfo,
     first_user_message: &str,
+    session_id: &str,
 ) -> Result<String, String> {
-    model.max_output_tokens = model.max_output_tokens.clamp(16, 64);
+    // Reasoning-capable routes can spend the first ~64 tokens entirely on
+    // reasoning and return `finish_reason=length` with empty content. Keep the
+    // title call small, but leave enough room for both reasoning and answer.
+    model.max_output_tokens = model.max_output_tokens.clamp(256, 512);
 
     let system = "\
-You generate short chat titles.
+You generate short chat titles from the user's first message.
+Summarize the topic; do not copy the first words of the question.
 Return only the title.
 No quotes.
 No markdown.
+No trailing period.
 Use the same language as the user.
-Keep it under 6 words.";
+Prefer a noun phrase, 2-5 words.
+For URLs, omit the raw URL and use the site or product name when obvious.
+
+Examples:
+Авторизация для сервисов
+Запуск модели на Fedora
+Effort в веб-версии GPT
+Политика данных CrofAI";
 
     let user = format!("Create a concise title for this new chat:\n\n{first_user_message}");
 
+    let provider = model.provider.clone();
+    let model_id = model.id.clone();
+    let started_at = Instant::now();
     let response = llm
         .chat_with_tools_single_attempt_for_model_info(
             system,
@@ -142,12 +167,40 @@ Keep it under 6 words.";
             &model,
             None,
             false,
-            None,
+            Some("low"),
         )
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(response.content.unwrap_or_default())
+    let content = response.content.unwrap_or_default();
+    let reasoning_chars = response
+        .reasoning_content
+        .as_deref()
+        .map(str::chars)
+        .map(Iterator::count)
+        .unwrap_or(0);
+    let tool_names = response
+        .tool_calls
+        .iter()
+        .map(|tool_call| tool_call.function.name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let usage_total_tokens = response.usage.as_ref().map(|usage| usage.total_tokens);
+    info!(
+        session_id = %session_id,
+        provider = %provider,
+        model = %model_id,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        finish_reason = %response.finish_reason,
+        content_chars = content.chars().count(),
+        reasoning_chars,
+        tool_calls = response.tool_calls.len(),
+        tool_names = %tool_names,
+        usage_total_tokens,
+        "auto title LLM response received"
+    );
+
+    Ok(content)
 }
 
 fn sanitize_auto_title(raw: &str) -> String {

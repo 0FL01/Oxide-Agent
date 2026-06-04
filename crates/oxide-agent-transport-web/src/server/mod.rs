@@ -88,6 +88,7 @@ const MAX_MODEL_SELECTION_CHARS: usize = 128;
 const MAX_AGENT_PROFILE_ID_CHARS: usize = 64;
 const MAX_AGENT_PROFILE_NAME_CHARS: usize = 80;
 const MAX_AGENT_PROFILE_PROMPT_CHARS: usize = 32_000;
+const AUTO_TITLE_SYNC_TIMEOUT_SECS: u64 = 5;
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
@@ -1544,7 +1545,8 @@ async fn api_create_task(
     session.active_task_id = Some(task_id.clone());
     session.last_task_status = Some(ApiTaskStatus::Running);
     session.last_preview = Some(preview.clone());
-    if should_auto_title && session.title == WEB_SESSION_DEFAULT_TITLE {
+    if should_auto_title && !state.auto_title_enabled && session.title == WEB_SESSION_DEFAULT_TITLE
+    {
         session.title = preview.clone();
     }
     session.updated_at = now;
@@ -1555,15 +1557,26 @@ async fn api_create_task(
         .map_err(store_error_response)?;
 
     if should_auto_title && state.auto_title_enabled {
-        auto_title::spawn_auto_title(
-            state.clone(),
-            auto_title::AutoTitleRequest {
-                user_id: user.user_id,
-                session_id: session_id.clone(),
-                first_user_message: preview_source,
-                fallback_preview: preview,
-            },
-        );
+        let auto_title_request = auto_title::AutoTitleRequest {
+            user_id: user.user_id,
+            session_id: session_id.clone(),
+            first_user_message: preview_source,
+            fallback_preview: preview,
+        };
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(AUTO_TITLE_SYNC_TIMEOUT_SECS),
+            auto_title::generate_and_save_auto_title(state.clone(), auto_title_request),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(session_id = %session_id, error = %error, "auto title generation failed before task start");
+            }
+            Err(_) => {
+                tracing::warn!(session_id = %session_id, "auto title generation timed out before task start");
+            }
+        }
     }
 
     let persistence = task_executor::WebTaskPersistence {
@@ -4830,6 +4843,161 @@ mod tests {
                 .and_then(|details| details.get("task_id").and_then(serde_json::Value::as_str)),
             Some("active-waiting")
         );
+    }
+
+    #[cfg(feature = "profile-lite")]
+    #[tokio::test]
+    async fn api_create_task_generates_auto_title_before_runtime_start() {
+        let (mut state, _) = test_app_state_with_responses(vec![
+            ScriptedResponse::ToolCalls {
+                tool_calls: Vec::new(),
+                final_text: Some("Авторизация для сервисов".to_string()),
+            },
+            ScriptedResponse::Text("ok".to_string()),
+        ]);
+        state.auto_title_enabled = true;
+        let now = chrono::Utc::now();
+        let user = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(created_session) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create session");
+        let session_id = created_session.session.session_id;
+
+        let axum::Json(created_task) = api_create_task(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::extract::Path(session_id.clone()),
+            axum::Json(ApiCreateTaskRequest {
+                input_markdown:
+                    "Какие способы авторизации лучше использовать для внутреннего сервиса?"
+                        .to_string(),
+                attachments: Vec::new(),
+                effort: None,
+            }),
+        )
+        .await
+        .expect("create task");
+
+        let session_record = state
+            .web_store
+            .load_session(user.user_id, &session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        assert_eq!(session_record.title, "Авторизация для сервисов");
+
+        let completed = wait_for_task_status(
+            &state,
+            user.user_id,
+            &session_id,
+            &created_task.task.task_id,
+            ApiTaskStatus::Completed,
+        )
+        .await;
+        assert_eq!(completed.final_response_markdown.as_deref(), Some("ok"));
+    }
+
+    #[cfg(feature = "profile-lite")]
+    #[tokio::test]
+    async fn api_create_task_does_not_store_preview_as_title_when_auto_title_is_empty() {
+        let (mut state, _) = test_app_state_with_responses(vec![
+            ScriptedResponse::ToolCalls {
+                tool_calls: Vec::new(),
+                final_text: Some("   ".to_string()),
+            },
+            ScriptedResponse::Text("ok".to_string()),
+        ]);
+        state.auto_title_enabled = true;
+        let now = chrono::Utc::now();
+        let user = register_user(
+            state.web_store.as_ref(),
+            RegisterRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            true,
+            now,
+        )
+        .await
+        .expect("register user");
+        let (_, auth_session, token) = login_user(
+            state.web_store.as_ref(),
+            LoginRequest {
+                login: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+            now,
+        )
+        .await
+        .expect("login user");
+
+        let axum::Json(created_session) = api_create_session(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+        )
+        .await
+        .expect("create session");
+        let session_id = created_session.session.session_id;
+
+        let axum::Json(created_task) = api_create_task(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::extract::Path(session_id.clone()),
+            axum::Json(ApiCreateTaskRequest {
+                input_markdown: "Какая политика данных у https://crof.ai/ при инференсе моделей?"
+                    .to_string(),
+                attachments: Vec::new(),
+                effort: None,
+            }),
+        )
+        .await
+        .expect("create task");
+
+        let session_record = state
+            .web_store
+            .load_session(user.user_id, &session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        assert_eq!(session_record.title, "New session");
+        assert_ne!(
+            session_record.title,
+            "Какая политика данных у https://crof.ai/ при инференсе моделей?"
+        );
+
+        let completed = wait_for_task_status(
+            &state,
+            user.user_id,
+            &session_id,
+            &created_task.task.task_id,
+            ApiTaskStatus::Completed,
+        )
+        .await;
+        assert_eq!(completed.final_response_markdown.as_deref(), Some("ok"));
     }
 
     #[cfg(feature = "profile-lite")]

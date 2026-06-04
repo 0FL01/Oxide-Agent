@@ -192,9 +192,6 @@ fn SessionItem(
                 <span class=format!("session-status-dot {}", status_class)></span>
                 <span class="session-copy">
                     <span class="session-id">{display_session_title(&session)}</span>
-                    <span class="session-preview">
-                        {display_session_preview(&session)}
-                    </span>
                 </span>
             </a>
             <button
@@ -213,31 +210,13 @@ fn SessionItem(
 fn display_session_title(session: &SessionSummary) -> String {
     let trimmed = session.title.trim();
     if trimmed.is_empty() || trimmed == "New session" || looks_like_timestamp_title(trimmed) {
-        return session
-            .last_preview
-            .as_deref()
-            .filter(|preview| meaningful_preview(preview))
-            .map(concise_title)
-            .unwrap_or_else(|| "New chat".to_string());
+        return "New chat".to_string();
     }
     concise_title(&session.title)
 }
 
-fn display_session_preview(session: &SessionSummary) -> String {
-    session
-        .last_preview
-        .as_deref()
-        .filter(|preview| meaningful_preview(preview))
-        .map(concise_preview)
-        .unwrap_or_else(|| "No messages yet".to_string())
-}
-
 fn concise_title(value: &str) -> String {
     concise_text(value, 32)
-}
-
-fn concise_preview(value: &str) -> String {
-    concise_text(value, 44)
 }
 
 fn concise_text(value: &str, max_chars: usize) -> String {
