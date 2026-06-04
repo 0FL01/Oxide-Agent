@@ -52,9 +52,7 @@ async fn poll_task_detail_until_paused_or_terminal(config: TaskStreamConfig) {
                 | Some(TaskStatus::Cancelled)
                 | Some(TaskStatus::Interrupted)
         ) {
-            set_state_if_current(&config, SseConnectionState::TerminalClosed);
-            clear_streaming_task_if_current(&config);
-            poll_session_summary_after_terminal(&config).await;
+            finish_terminal_stream(&config).await;
             return;
         }
     }
@@ -69,8 +67,7 @@ async fn run_task_stream(config: TaskStreamConfig) {
             return;
         }
         if backfill_missed_events(&config, &mut last_seq).await {
-            set_state_if_current(&config, SseConnectionState::TerminalClosed);
-            clear_streaming_task_if_current(&config);
+            finish_terminal_stream(&config).await;
             return;
         }
 
@@ -102,9 +99,7 @@ async fn run_task_stream(config: TaskStreamConfig) {
         };
 
         if process_stream_messages(&config, streams, &mut last_seq).await {
-            set_state_if_current(&config, SseConnectionState::TerminalClosed);
-            clear_streaming_task_if_current(&config);
-            poll_session_summary_after_terminal(&config).await;
+            finish_terminal_stream(&config).await;
             return;
         }
 
@@ -484,10 +479,14 @@ async fn poll_session_summary_after_terminal(config: &TaskStreamConfig) {
         if !stream_is_current(config) {
             return;
         }
-        if refresh_task_detail(config).await.is_none() {
-            refresh_session_summary(config).await;
-        }
+        refresh_session_summary(config).await;
     }
+}
+
+async fn finish_terminal_stream(config: &TaskStreamConfig) {
+    set_state_if_current(config, SseConnectionState::TerminalClosed);
+    poll_session_summary_after_terminal(config).await;
+    clear_streaming_task_if_current(config);
 }
 
 fn stream_is_current(config: &TaskStreamConfig) -> bool {

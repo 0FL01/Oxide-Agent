@@ -33,7 +33,7 @@ use super::{
     WEB_TASK_SCHEMA_VERSION,
 };
 
-const AUTO_TITLE_SYNC_TIMEOUT_SECS: u64 = 5;
+const AUTO_TITLE_SYNC_TIMEOUT_SECS: u64 = 10;
 
 pub(crate) async fn abort_task_handle(state: &AppState, task_id: &str) {
     let handle = {
@@ -374,18 +374,25 @@ pub(crate) async fn api_create_task(
             first_user_message: preview_source,
             fallback_preview: preview,
         };
+        let mut auto_title_task = tokio::spawn(auto_title::generate_and_save_auto_title(
+            state.clone(),
+            auto_title_request,
+        ));
         match tokio::time::timeout(
             std::time::Duration::from_secs(AUTO_TITLE_SYNC_TIMEOUT_SECS),
-            auto_title::generate_and_save_auto_title(state.clone(), auto_title_request),
+            &mut auto_title_task,
         )
         .await
         {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => {
                 tracing::warn!(session_id = %session_id, error = %error, "auto title generation failed before task start");
             }
+            Ok(Err(error)) => {
+                tracing::warn!(session_id = %session_id, error = %error, "auto title generation task failed before task start");
+            }
             Err(_) => {
-                tracing::warn!(session_id = %session_id, "auto title generation timed out before task start");
+                tracing::warn!(session_id = %session_id, "auto title generation timed out before task start; continuing in background");
             }
         }
     }

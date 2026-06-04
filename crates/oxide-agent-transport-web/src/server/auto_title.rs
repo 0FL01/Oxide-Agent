@@ -125,6 +125,14 @@ fn inherited_title_model(state: &AppState) -> ModelInfo {
         .unwrap_or_else(|| settings.get_configured_agent_model())
 }
 
+fn title_reasoning_effort(model: &ModelInfo) -> Option<&'static str> {
+    if model.provider.contains("opencode-go") || model.provider.contains("opencode-zen") {
+        Some("none")
+    } else {
+        Some("low")
+    }
+}
+
 async fn generate_title(
     llm: Arc<oxide_agent_core::llm::LlmClient>,
     mut model: ModelInfo,
@@ -167,7 +175,7 @@ Effort в веб-версии GPT
             &model,
             None,
             false,
-            Some("low"),
+            title_reasoning_effort(&model),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -276,5 +284,29 @@ mod tests {
             sanitize_auto_title("My title\nThis is extra noise"),
             "My title"
         );
+    }
+
+    #[test]
+    fn opencode_title_calls_disable_reasoning() {
+        let model = ModelInfo {
+            id: "deepseek-v4-flash".to_string(),
+            max_output_tokens: 1000,
+            context_window_tokens: 0,
+            provider: "llm-provider/opencode-go".to_string(),
+            weight: 1,
+        };
+        assert_eq!(title_reasoning_effort(&model), Some("none"));
+    }
+
+    #[test]
+    fn non_opencode_title_calls_keep_low_reasoning() {
+        let model = ModelInfo {
+            id: "mistral-small-2603".to_string(),
+            max_output_tokens: 1000,
+            context_window_tokens: 0,
+            provider: "mistral".to_string(),
+            weight: 1,
+        };
+        assert_eq!(title_reasoning_effort(&model), Some("low"));
     }
 }

@@ -232,11 +232,6 @@ fn concise_text(value: &str, max_chars: usize) -> String {
     out
 }
 
-fn meaningful_preview(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.chars().count() > 4 && !matches!(trimmed, "U C" | "UC")
-}
-
 fn looks_like_timestamp_title(value: &str) -> bool {
     let value = value.trim();
     let bytes = value.as_bytes();

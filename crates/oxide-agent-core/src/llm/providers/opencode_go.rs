@@ -561,6 +561,7 @@ impl LlmProvider for OpenCodeGoProvider {
                         max_tokens,
                         temperature,
                         json_mode,
+                        reasoning_effort,
                     ),
                     anthropic_extra_headers(&self.api_key),
                 ),
@@ -645,6 +646,15 @@ fn normalize_model_id_for_prefix<'a>(model_id: &'a str, model_prefix: &str) -> &
 fn is_reasoning_model(model_id: &str) -> bool {
     let lower = normalize_model_id(model_id).to_ascii_lowercase();
     lower.starts_with("deepseek-v4") || lower.starts_with("mimo-v2")
+}
+
+fn disables_reasoning(reasoning_effort: Option<&str>) -> bool {
+    reasoning_effort
+        .map(str::trim)
+        .map(|effort| {
+            effort.eq_ignore_ascii_case("none") || effort.eq_ignore_ascii_case("disabled")
+        })
+        .unwrap_or(false)
 }
 
 fn derive_messages_api_base(api_base: &str) -> String {
@@ -834,7 +844,7 @@ fn build_tool_chat_body(
         body["response_format"] = json!({ "type": "json_object" });
     }
 
-    if is_reasoning_model(model_id) {
+    if is_reasoning_model(model_id) && !disables_reasoning(reasoning_effort) {
         body["reasoning_effort"] = json!(reasoning_effort.unwrap_or(OPENCODE_GO_REASONING_EFFORT));
     }
 
@@ -849,6 +859,7 @@ fn build_anthropic_messages_body(
     max_tokens: u32,
     temperature: Option<f32>,
     _json_mode: bool,
+    reasoning_effort: Option<&str>,
 ) -> Value {
     let messages = prepare_anthropic_messages(history);
     let anthropic_tools = prepare_anthropic_tools_json(tools);
@@ -869,7 +880,7 @@ fn build_anthropic_messages_body(
         body["tools"] = json!(anthropic_tools);
         body["tool_choice"] = json!({ "type": "auto" });
     }
-    if is_reasoning_model(model_id) {
+    if is_reasoning_model(model_id) && !disables_reasoning(reasoning_effort) {
         body["thinking"] = json!({ "type": "enabled" });
     }
 
@@ -1522,6 +1533,21 @@ mod tests {
     }
 
     #[test]
+    fn disabled_reasoning_omits_openai_reasoning_effort() {
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "deepseek-v4-flash",
+            32000,
+            None,
+            false,
+            Some("none"),
+        );
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
     fn thinking_enabled_in_anthropic_text_body() {
         let body =
             build_anthropic_completion_body("system", &[], "hello", "deepseek-v4-flash", 32000);
@@ -1539,8 +1565,24 @@ mod tests {
             32000,
             None,
             false,
+            None,
         );
         assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+    }
+
+    #[test]
+    fn disabled_reasoning_omits_anthropic_thinking() {
+        let body = build_anthropic_messages_body(
+            "system",
+            &[],
+            &[],
+            "mimo-v2.5-pro",
+            32000,
+            None,
+            false,
+            Some("disabled"),
+        );
+        assert!(body.get("thinking").is_none());
     }
 
     #[test]
@@ -1679,6 +1721,7 @@ mod tests {
             32000,
             Some(0.2),
             true,
+            None,
         );
 
         assert_eq!(body["model"], json!("minimax-m2.7"));
