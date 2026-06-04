@@ -65,6 +65,7 @@ pub use compaction::{
 pub use context::{AgentContext, EphemeralSession};
 pub use executor::{
     AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor,
+    AgentUserInput,
 };
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
 pub use identity::SessionId;

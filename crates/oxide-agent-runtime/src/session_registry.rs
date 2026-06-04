@@ -112,7 +112,7 @@ impl SessionRegistry {
     pub async fn enqueue_runtime_context(&self, id: &SessionId, content: String) -> bool {
         let inboxes = self.runtime_context_inboxes.read().await;
         if let Some(inbox) = inboxes.get(id) {
-            inbox.push(RuntimeContextInjection { content });
+            inbox.push(RuntimeContextInjection::text(content));
             return true;
         }
 

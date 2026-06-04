@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-04-native-multimodal-web-images.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after RECON: native vision for compatible selected models, `describe_image_file` fallback for text-only models, and blast-radius-safe `Message` content-parts design.
 Goal doc owner: Codex
-Last updated: 2026-06-04 23:26 +0300
+Last updated: 2026-06-04 23:36 +0300
 
 ## Objective
 
@@ -66,8 +66,8 @@ Out of scope:
   - Source: Web attachment flow RECON.
   - Acceptance: New/resume task input can include attachment refs; persisted memory stores only safe metadata and sandbox paths; before each provider request, eligible image refs are resolved from the session sandbox into transient provider content parts.
   - Evidence required: unit/integration tests showing refs persist, bytes are not serialized, and missing sandbox files degrade to text-only instead of failing the whole task.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 3 added `AgentUserInput` for attachment-aware new/resume turns, while preserving existing text-only wrappers. User task and runtime-context memory entries now persist safe attachment refs only. Native sandbox-byte resolution remains pending for checkpoint 5.
 
 - G4: OpenCode Go selected vision models receive native image parts in agent chat
   - Source: User example: MiMo v2.5 supports images.
@@ -95,14 +95,14 @@ Out of scope:
   - Acceptance: Media parts are never attached to assistant tool-call messages or tool-result messages; `ToolResultEncoder` stays string-based; strict tool history repair still passes.
   - Evidence required: focused diff review and existing tool-history tests for touched areas.
   - Status: pending
-  - Evidence collected: Checkpoint 2 helpers attach native parts/refs only to user messages; assistant/tool helper paths remain string-only and `ToolResultEncoder` was not changed.
+  - Evidence collected: Checkpoint 2 helpers attach native parts/refs only to user messages; assistant/tool helper paths remain string-only and `ToolResultEncoder` was not changed. Checkpoint 3 keeps attachment-aware input limited to user task/runtime-context messages.
 
 - Q2: No raw media bloat in memory, compaction, or storage
   - Source: RECON blast-radius and storage constraints.
   - Acceptance: Raw image bytes/base64 are transient only; token accounting and compaction use text projection plus bounded placeholders; R2 memory snapshots do not include raw media payloads.
   - Evidence required: serialization test and diff review.
   - Status: pending
-  - Evidence collected: Checkpoint 2 stores only file metadata and sandbox paths in `AgentMessage`; `Message` native parts are skipped by serde; token counting remains based on `content` text projection.
+  - Evidence collected: Checkpoint 2 stores only file metadata and sandbox paths in `AgentMessage`; `Message` native parts are skipped by serde; token counting remains based on `content` text projection. Checkpoint 3 carries only `AgentMessageAttachment` refs through executor inputs and runtime context.
 
 - N1: No broad provider rollout in the first implementation
   - Source: Over-engineering guardrail.
@@ -207,6 +207,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local content_parts`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local attachment_refs`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
   - Audit IDs updated: G2 verified; Q1, Q2 evidence added for this checkpoint; N2 preserved.
   - Next: Checkpoint 3, introduce attachment-aware execution input while keeping existing `execute_with_options(&str, ...)` wrappers.
+
+- 2026-06-04 23:36 +0300: Checkpoint 3 completed.
+  - Changed: Added `AgentUserInput`, attachment-aware execute/resume paths, runtime-context attachment refs, and focused executor tests for new task and resume flows.
+  - Evidence: Existing text APIs remain wrappers; user task/runtime-context entries persist only safe attachment refs; no provider-native raw bytes are introduced in memory.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local agent::executor::tests::resume`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-runtime`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
+  - Audit IDs updated: G3 in progress; Q1, Q2 evidence extended; G5 fallback path preserved structurally.
+  - Next: Checkpoint 4, wire validated web `TaskAttachment` refs into the attachment-aware core execution input while keeping visible sandbox path text.
 
 ## Risks and Blockers
 

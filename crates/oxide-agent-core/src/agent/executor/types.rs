@@ -12,7 +12,7 @@ use anyhow::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::AgentExecutionOptions;
+use super::{AgentExecutionOptions, AgentUserInput};
 
 #[derive(Clone)]
 #[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
@@ -93,11 +93,11 @@ impl PreparedExecution {
 
 pub(super) enum ExecutionRequest {
     NewTask {
-        task: String,
+        input: AgentUserInput,
         options: AgentExecutionOptions,
     },
     ResumeUserInput {
-        content: String,
+        input: AgentUserInput,
         options: AgentExecutionOptions,
     },
     ContinueRuntimeContext,
@@ -105,7 +105,7 @@ pub(super) enum ExecutionRequest {
 
 pub(super) struct ResolvedExecutionRequest {
     pub(super) task: String,
-    pub(super) append_user_message: bool,
+    pub(super) user_input: Option<AgentUserInput>,
     pub(super) options: AgentExecutionOptions,
 }
 

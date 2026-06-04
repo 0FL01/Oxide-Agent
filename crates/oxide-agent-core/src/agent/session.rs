@@ -5,7 +5,7 @@
 
 use super::compaction::CompactionScope;
 use super::identity::SessionId;
-use super::memory::AgentMemory;
+use super::memory::{AgentMemory, AgentMessageAttachment};
 use super::memory_behavior::MemoryBehaviorRuntime;
 // use super::providers::TodoList;
 use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
@@ -28,6 +28,27 @@ use tracing::{debug, info, warn};
 pub struct RuntimeContextInjection {
     /// User-visible text payload to append on the next safe iteration boundary.
     pub content: String,
+    /// Safe attachment refs associated with this runtime user turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AgentMessageAttachment>,
+}
+
+impl RuntimeContextInjection {
+    /// Create text-only runtime context.
+    #[must_use]
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    /// Attach safe refs without changing the text projection.
+    #[must_use]
+    pub fn with_attachments(mut self, attachments: Vec<AgentMessageAttachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
 }
 
 /// Type of user input required before the task can continue.

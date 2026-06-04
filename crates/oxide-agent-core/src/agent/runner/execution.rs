@@ -206,9 +206,9 @@ impl AgentRunner {
         for injection in pending_context {
             ctx.messages
                 .push(crate::llm::Message::user(&injection.content));
-            ctx.agent
-                .memory_mut()
-                .add_message(AgentMessage::runtime_context(injection.content));
+            let message = AgentMessage::runtime_context(injection.content)
+                .with_user_attachments(injection.attachments);
+            ctx.agent.memory_mut().add_message(message);
         }
     }
 

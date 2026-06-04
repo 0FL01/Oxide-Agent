@@ -6,7 +6,7 @@ mod registry;
 mod resume;
 
 pub(super) use super::policy_hooks::PolicyControlledHook;
-pub(super) use super::AgentExecutor;
+pub(super) use super::{AgentExecutor, AgentUserInput};
 pub(super) use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
 pub(super) use crate::agent::profile::HookAccessPolicy;
 pub(super) use crate::agent::providers::TodoList;

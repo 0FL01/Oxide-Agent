@@ -14,6 +14,7 @@ mod types;
 
 use self::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use crate::agent::compaction::CompactionController;
+use crate::agent::memory::AgentMessageAttachment;
 use crate::agent::profile::{AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy};
 use crate::agent::providers::ReminderContext;
 use crate::agent::runner::AgentRunner;
@@ -85,6 +86,42 @@ impl AgentExecutionOptions {
             AgentExecutionEffort::Standard => None,
             AgentExecutionEffort::Extended | AgentExecutionEffort::Heavy => Some("high"),
         }
+    }
+}
+
+/// User input for one agent execution turn.
+///
+/// `content` remains the stable text projection. Attachments are safe refs only;
+/// raw bytes are resolved later and never stored in hot memory.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentUserInput {
+    /// Stable text projection used by prompts, compaction, and text-only routes.
+    pub content: String,
+    /// Safe attachment refs associated with this user turn.
+    pub attachments: Vec<AgentMessageAttachment>,
+}
+
+impl AgentUserInput {
+    /// Create text-only user input.
+    #[must_use]
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    /// Attach safe refs without changing the text projection.
+    #[must_use]
+    pub fn with_attachments(mut self, attachments: Vec<AgentMessageAttachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    /// Return the stable text projection.
+    #[must_use]
+    pub fn text_projection(&self) -> &str {
+        &self.content
     }
 }
 

@@ -2,7 +2,10 @@ use super::types::{
     ExecutionRequest, ExecutionTransition, PreparedExecution, ResolvedExecutionRequest,
     RunnerContextServices,
 };
-use super::{AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor};
+use super::{
+    AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor,
+    AgentUserInput,
+};
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
@@ -165,8 +168,13 @@ impl AgentExecutor {
 
     /// Queue additional user context for the next safe iteration boundary.
     pub fn enqueue_runtime_context(&self, content: String) {
+        self.enqueue_runtime_user_input(AgentUserInput::new(content));
+    }
+
+    /// Queue additional user input, including safe attachment refs, for the next safe boundary.
+    pub fn enqueue_runtime_user_input(&self, input: AgentUserInput) {
         self.session
-            .push_runtime_context(RuntimeContextInjection { content });
+            .push_runtime_context(runtime_context_from_user_input(input));
     }
 
     /// Resume a paused task that is waiting for explicit user input.
@@ -175,12 +183,18 @@ impl AgentExecutor {
     /// provided content was queued for the next execution attempt.
     #[must_use]
     pub fn resume_with_user_input(&mut self, content: String) -> bool {
+        self.resume_with_agent_user_input(AgentUserInput::new(content))
+    }
+
+    /// Resume a paused task with structured user input and safe attachment refs.
+    #[must_use]
+    pub fn resume_with_agent_user_input(&mut self, input: AgentUserInput) -> bool {
         if self.session.pending_user_input().is_none() {
             return false;
         }
 
         self.session.clear_pending_user_input();
-        self.enqueue_runtime_context(content);
+        self.enqueue_runtime_user_input(input);
         true
     }
 
@@ -191,10 +205,10 @@ impl AgentExecutor {
     ) -> Result<ExecutionTransition> {
         let ResolvedExecutionRequest {
             task,
-            append_user_message,
+            user_input,
             options,
         } = request;
-        let task_id = self.prime_session_for_execution(&task, append_user_message);
+        let task_id = self.prime_session_for_execution(&task, user_input.as_ref());
         info!(
             task = %task,
             task_id = %task_id,
@@ -261,16 +275,21 @@ impl AgentExecutor {
         }
     }
 
-    fn prime_session_for_execution(&mut self, task: &str, append_user_message: bool) -> String {
-        if append_user_message {
+    fn prime_session_for_execution(
+        &mut self,
+        task: &str,
+        user_input: Option<&AgentUserInput>,
+    ) -> String {
+        if user_input.is_some() {
             self.session.reset_memory_behavior_runtime();
             self.session.clear_todos();
         }
         self.session.start_task();
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
-        if append_user_message {
+        if let Some(user_input) = user_input {
             self.session.remember_task(task);
-            let user_message = AgentMessage::user_task(task);
+            let user_message = AgentMessage::user_task(user_input.text_projection())
+                .with_user_attachments(user_input.attachments.clone());
             if let Some(context) = self
                 .session
                 .memory
@@ -296,20 +315,23 @@ impl AgentExecutor {
         request: ExecutionRequest,
     ) -> Result<ResolvedExecutionRequest> {
         match request {
-            ExecutionRequest::NewTask { task, options } => Ok(ResolvedExecutionRequest {
-                task,
-                append_user_message: true,
-                options,
-            }),
-            ExecutionRequest::ResumeUserInput { content, options } => {
+            ExecutionRequest::NewTask { input, options } => {
+                let task = input.content.clone();
+                Ok(ResolvedExecutionRequest {
+                    task,
+                    user_input: Some(input),
+                    options,
+                })
+            }
+            ExecutionRequest::ResumeUserInput { input, options } => {
                 let task = self.saved_task("no saved task to resume")?;
-                if !self.resume_with_user_input(content) {
+                if !self.resume_with_agent_user_input(input) {
                     return Err(anyhow!("session is not waiting for user input"));
                 }
 
                 Ok(ResolvedExecutionRequest {
                     task,
-                    append_user_message: false,
+                    user_input: None,
                     options,
                 })
             }
@@ -321,7 +343,7 @@ impl AgentExecutor {
 
                 Ok(ResolvedExecutionRequest {
                     task,
-                    append_user_message: false,
+                    user_input: None,
                     options: AgentExecutionOptions::default(),
                 })
             }
@@ -726,14 +748,24 @@ impl AgentExecutor {
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
         options: AgentExecutionOptions,
     ) -> Result<AgentExecutionOutcome> {
-        self.run_execution_request(
-            ExecutionRequest::NewTask {
-                task: task.to_string(),
-                options,
-            },
-            progress_tx,
-        )
-        .await
+        self.execute_user_input_with_options(AgentUserInput::new(task), progress_tx, options)
+            .await
+    }
+
+    /// Execute attachment-aware user input with per-run execution options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LLM call fails, tool execution fails, or the iteration/timeout limits are exceeded.
+    #[tracing::instrument(skip(self, progress_tx, input), fields(session_id = %self.session.session_id, effort = ?options.effort))]
+    pub async fn execute_user_input_with_options(
+        &mut self,
+        input: AgentUserInput,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
+    ) -> Result<AgentExecutionOutcome> {
+        self.run_execution_request(ExecutionRequest::NewTask { input, options }, progress_tx)
+            .await
     }
 
     /// Deterministically resume a paused SSH tool call after operator approval.
@@ -768,8 +800,19 @@ impl AgentExecutor {
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
         options: AgentExecutionOptions,
     ) -> Result<AgentExecutionOutcome> {
+        self.resume_user_input_with_options(AgentUserInput::new(content), progress_tx, options)
+            .await
+    }
+
+    /// Resume a paused task with attachment-aware user input and per-run execution options.
+    pub async fn resume_user_input_with_options(
+        &mut self,
+        input: AgentUserInput,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
+    ) -> Result<AgentExecutionOutcome> {
         self.run_execution_request(
-            ExecutionRequest::ResumeUserInput { content, options },
+            ExecutionRequest::ResumeUserInput { input, options },
             progress_tx,
         )
         .await
@@ -815,6 +858,10 @@ fn effort_prompt_instructions(
             None => effort_guidance.to_string(),
         },
     )
+}
+
+fn runtime_context_from_user_input(input: AgentUserInput) -> RuntimeContextInjection {
+    RuntimeContextInjection::text(input.content).with_attachments(input.attachments)
 }
 
 fn build_wiki_memory_writer_transcript(
