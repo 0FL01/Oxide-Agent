@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-04-native-multimodal-web-images.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after RECON: native vision for compatible selected models, `describe_image_file` fallback for text-only models, and blast-radius-safe `Message` content-parts design.
 Goal doc owner: Codex
-Last updated: 2026-06-04 23:44 +0300
+Last updated: 2026-06-04 23:55 +0300
 
 ## Objective
 
@@ -66,22 +66,22 @@ Out of scope:
   - Source: Web attachment flow RECON.
   - Acceptance: New/resume task input can include attachment refs; persisted memory stores only safe metadata and sandbox paths; before each provider request, eligible image refs are resolved from the session sandbox into transient provider content parts.
   - Evidence required: unit/integration tests showing refs persist, bytes are not serialized, and missing sandbox files degrade to text-only instead of failing the whole task.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 3 added `AgentUserInput` for attachment-aware new/resume turns, while preserving existing text-only wrappers. Checkpoint 4 wires web image `TaskAttachment` metadata into those inputs while keeping the text projection with visible sandbox paths. Native sandbox-byte resolution remains pending for checkpoint 5.
+  - Status: verified
+  - Evidence collected: Checkpoint 3 added `AgentUserInput` for attachment-aware new/resume turns, while preserving existing text-only wrappers. Checkpoint 4 wires web image `TaskAttachment` metadata into those inputs while keeping the text projection with visible sandbox paths. Checkpoint 5 resolves eligible user image refs from the session sandbox into transient `MessageContentPart::Image` only for approved native routes; missing files degrade to text-only without failing the task.
 
 - G4: OpenCode Go selected vision models receive native image parts in agent chat
   - Source: User example: MiMo v2.5 supports images.
   - Acceptance: For image-capable OpenCode Go OpenAI Chat Completions routes, user image parts serialize as `content: [{type:text}, {type:image_url,...}]` in normal `chat_with_tools` requests, not only in `analyze_image`.
   - Evidence required: provider request-body unit test covering image-capable route and text-only route.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 5 now prepares transient native image parts before LLM requests for image-capable OpenCode Go routes. Provider request serialization into OpenAI Chat Completions content arrays remains checkpoint 6.
 
 - G5: Text-only selected models keep the `describe_image_file` fallback path
   - Source: User asked whether the image-description tool remains for blind models.
   - Acceptance: Text-only routes receive the existing text projection with sandbox paths; `describe_image_file` remains registered/usable and still uses configured `MEDIA_MODEL` for image understanding.
   - Evidence required: diff review plus a focused test or fixture proving image refs are stripped/degraded for text-only routes while attachment path text remains.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 5 leaves text-only routes on the existing text projection and skips sandbox reads/native parts when the selected route is not approved for native images. `describe_image_file` remains untouched.
 
 - G6: Web task/create/resume/version behavior remains compatible
   - Source: Existing web transport architecture.
@@ -94,29 +94,29 @@ Out of scope:
   - Source: `AGENTS.md` invariant: preserve history repair and `tool_call_id` integrity before LLM calls.
   - Acceptance: Media parts are never attached to assistant tool-call messages or tool-result messages; `ToolResultEncoder` stays string-based; strict tool history repair still passes.
   - Evidence required: focused diff review and existing tool-history tests for touched areas.
-  - Status: pending
-  - Evidence collected: Checkpoint 2 helpers attach native parts/refs only to user messages; assistant/tool helper paths remain string-only and `ToolResultEncoder` was not changed. Checkpoint 3 keeps attachment-aware input limited to user task/runtime-context messages.
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 helpers attach native parts/refs only to user messages; assistant/tool helper paths remain string-only and `ToolResultEncoder` was not changed. Checkpoint 3 keeps attachment-aware input limited to user task/runtime-context messages. Checkpoint 5 includes a focused test proving even a malformed tool-message attachment ref does not create native content parts or sandbox reads.
 
 - Q2: No raw media bloat in memory, compaction, or storage
   - Source: RECON blast-radius and storage constraints.
   - Acceptance: Raw image bytes/base64 are transient only; token accounting and compaction use text projection plus bounded placeholders; R2 memory snapshots do not include raw media payloads.
   - Evidence required: serialization test and diff review.
-  - Status: pending
-  - Evidence collected: Checkpoint 2 stores only file metadata and sandbox paths in `AgentMessage`; `Message` native parts are skipped by serde; token counting remains based on `content` text projection. Checkpoints 3-4 carry only `AgentMessageAttachment` refs through executor inputs, runtime context, and web task execution.
+  - Status: verified
+  - Evidence collected: Checkpoint 2 stores only file metadata and sandbox paths in `AgentMessage`; `Message` native parts are skipped by serde; token counting remains based on `content` text projection. Checkpoints 3-4 carry only `AgentMessageAttachment` refs through executor inputs, runtime context, and web task execution. Checkpoint 5 resolves raw bytes only into transient pre-request `Message.content_parts`; missing/unsupported cases preserve text-only behavior.
 
 - N1: No broad provider rollout in the first implementation
   - Source: Over-engineering guardrail.
   - Must preserve: Native provider serialization starts with OpenCode Go; other providers degrade to text-only unless explicitly added in a later checkpoint.
   - Evidence required: diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 5 restricts native image part resolution to OpenCode Go routes that pass the media capability policy; other providers remain text-only for this rollout.
 
 - N2: No new dependencies or direct Gemini provider
   - Source: `AGENTS.md` architecture invariants.
   - Must preserve: No new crates/services/storage backends; Gemini remains OpenRouter-only.
   - Evidence required: `Cargo.toml` diff review.
   - Status: pending
-  - Evidence collected: No `Cargo.toml` changes in checkpoints 1-4.
+  - Evidence collected: No `Cargo.toml` changes in checkpoints 1-5.
 
 ## Implementation Plan
 
@@ -221,6 +221,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local build_task_agent_user_input_preserves_text_and_maps_image_refs`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
   - Audit IDs updated: G3 evidence extended; G6 in progress; Q2 evidence extended; G5 fallback text path preserved.
   - Next: Checkpoint 5, resolve image refs from the session sandbox into transient provider content parts only for image-capable selected routes, with text-only and missing-file degradation.
+
+- 2026-06-04 23:55 +0300: Checkpoint 5 completed.
+  - Changed: Runner LLM attempts now refresh messages for the selected route, resolve eligible persisted user image refs from the session sandbox into transient `MessageContentPart::Image`, and leave unsupported/missing cases on the text projection.
+  - Evidence: Native image refs are resolved only for approved OpenCode Go image-capable routes; unknown/text-only routes do not read files; missing sandbox files degrade to text-only; tool messages never receive native media parts.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local native_image_parts`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local text_only_route_degrades_without_reading_image_refs`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local missing_image_ref_degrades_to_text_only`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
+  - Audit IDs updated: G3 verified; G4 in progress; G5 evidence added; Q1 evidence extended; Q2 verified; N1 evidence added; N2 preserved.
+  - Next: Checkpoint 6, serialize `MessageContentPart::Image` in OpenCode Go normal agent chat requests while preserving tool call/result wire format.
 
 ## Risks and Blockers
 

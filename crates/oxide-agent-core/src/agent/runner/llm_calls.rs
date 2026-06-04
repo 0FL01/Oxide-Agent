@@ -5,10 +5,15 @@ use super::AgentRunner;
 use crate::agent::compaction::{
     estimate_request_budget, CompactionPolicy, CompactionRequest, CompactionTrigger,
 };
+use crate::agent::memory::{AgentMessage, AgentMessageAttachment, AgentMessageAttachmentKind};
 use crate::agent::progress::AgentEvent;
+use crate::agent::providers::SandboxRuntime;
 use crate::agent::recovery::repair_agent_message_history_for_provider;
 use crate::config::{ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
-use crate::llm::{ChatResponse, LlmClient, LlmError, ProviderCapabilities};
+use crate::llm::{
+    ChatResponse, LlmClient, LlmError, Message, MessageContentPart, ProviderCapabilities,
+};
+use crate::sandbox::SandboxFileOps;
 use anyhow::{anyhow, Result};
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -30,7 +35,174 @@ struct LlmAttemptMetadata<'a> {
     max_retries: usize,
 }
 
+const MAX_NATIVE_IMAGE_PART_BYTES: u64 = 20 * 1024 * 1024;
+
+#[async_trait::async_trait]
+trait NativeImageFileReader: Send + Sync {
+    async fn read_native_image_file(&self, path: &str) -> Result<Vec<u8>>;
+}
+
+#[async_trait::async_trait]
+impl<T> NativeImageFileReader for T
+where
+    T: SandboxFileOps + ?Sized,
+{
+    async fn read_native_image_file(&self, path: &str) -> Result<Vec<u8>> {
+        self.read_file(path).await
+    }
+}
+
 impl AgentRunner {
+    async fn refresh_messages_for_route(ctx: &mut AgentRunnerContext<'_>, route: &ModelInfo) {
+        Self::refresh_messages_from_memory(ctx);
+        Self::attach_native_image_parts_for_route(ctx, route).await;
+    }
+
+    async fn attach_native_image_parts_for_route(
+        ctx: &mut AgentRunnerContext<'_>,
+        route: &ModelInfo,
+    ) {
+        if !Self::route_supports_native_image_parts(route) {
+            return;
+        }
+
+        let memory_messages = ctx.agent.memory().get_messages().to_vec();
+        if !Self::has_image_attachment_refs(&memory_messages) {
+            return;
+        }
+
+        let Some(sandbox_scope) = ctx.agent.sandbox_scope().cloned() else {
+            warn!(
+                provider = route.provider.as_str(),
+                model = route.id.as_str(),
+                "Skipping native image attachment resolution because the agent context has no sandbox scope"
+            );
+            return;
+        };
+
+        let sandbox_fileops = SandboxRuntime::new(sandbox_scope);
+        Self::attach_native_image_parts_from_refs(
+            ctx.messages,
+            &memory_messages,
+            &sandbox_fileops,
+            route,
+        )
+        .await;
+    }
+
+    fn route_supports_native_image_parts(route: &ModelInfo) -> bool {
+        if !Self::is_opencode_go_provider_name(&route.provider) {
+            return false;
+        }
+        crate::llm::provider_media_capabilities_for_model(route).supports_image_understanding
+    }
+
+    fn has_image_attachment_refs(memory_messages: &[AgentMessage]) -> bool {
+        memory_messages.iter().any(|message| {
+            message
+                .user_attachments()
+                .iter()
+                .any(|attachment| attachment.kind == AgentMessageAttachmentKind::Image)
+        })
+    }
+
+    async fn attach_native_image_parts_from_refs(
+        messages: &mut [Message],
+        memory_messages: &[AgentMessage],
+        image_reader: &dyn NativeImageFileReader,
+        route: &ModelInfo,
+    ) {
+        for (message, memory_message) in messages.iter_mut().zip(memory_messages) {
+            if message.role != "user" {
+                continue;
+            }
+
+            let mut content_parts = Vec::new();
+            for attachment in memory_message.user_attachments() {
+                if attachment.kind != AgentMessageAttachmentKind::Image {
+                    continue;
+                }
+
+                let Some(mime_type) = Self::native_image_mime_type(attachment) else {
+                    warn!(
+                        provider = route.provider.as_str(),
+                        model = route.id.as_str(),
+                        file_name = attachment.file_name.as_str(),
+                        mime_type = attachment.mime_type.as_deref().unwrap_or(""),
+                        "Skipping native image attachment with non-image MIME type"
+                    );
+                    continue;
+                };
+
+                if attachment.size_bytes > MAX_NATIVE_IMAGE_PART_BYTES {
+                    warn!(
+                        provider = route.provider.as_str(),
+                        model = route.id.as_str(),
+                        file_name = attachment.file_name.as_str(),
+                        size_bytes = attachment.size_bytes,
+                        max_bytes = MAX_NATIVE_IMAGE_PART_BYTES,
+                        "Skipping oversized native image attachment"
+                    );
+                    continue;
+                }
+
+                match image_reader
+                    .read_native_image_file(&attachment.sandbox_path)
+                    .await
+                {
+                    Ok(bytes) if bytes.is_empty() => {
+                        warn!(
+                            provider = route.provider.as_str(),
+                            model = route.id.as_str(),
+                            path = attachment.sandbox_path.as_str(),
+                            "Skipping empty native image attachment"
+                        );
+                    }
+                    Ok(bytes) => {
+                        let byte_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                        if byte_len > MAX_NATIVE_IMAGE_PART_BYTES {
+                            warn!(
+                                provider = route.provider.as_str(),
+                                model = route.id.as_str(),
+                                path = attachment.sandbox_path.as_str(),
+                                size_bytes = byte_len,
+                                max_bytes = MAX_NATIVE_IMAGE_PART_BYTES,
+                                "Skipping oversized native image attachment after read"
+                            );
+                            continue;
+                        }
+                        content_parts.push(MessageContentPart::image(mime_type, bytes));
+                    }
+                    Err(error) => {
+                        warn!(
+                            provider = route.provider.as_str(),
+                            model = route.id.as_str(),
+                            path = attachment.sandbox_path.as_str(),
+                            error = %error,
+                            "Skipping native image attachment because sandbox file could not be read"
+                        );
+                    }
+                }
+            }
+
+            if !content_parts.is_empty() {
+                message.content_parts.extend(content_parts);
+            }
+        }
+    }
+
+    fn native_image_mime_type(attachment: &AgentMessageAttachment) -> Option<String> {
+        let Some(mime_type) = attachment.mime_type.as_deref().map(str::trim) else {
+            return Some("image/jpeg".to_string());
+        };
+        if mime_type.is_empty() {
+            return Some("image/jpeg".to_string());
+        }
+        mime_type
+            .starts_with("image/")
+            .then(|| mime_type.to_string())
+    }
+
     pub(super) async fn call_llm_with_tools(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
@@ -117,7 +289,7 @@ impl AgentRunner {
         let mut attempt = 1usize;
         loop {
             let attempt_max_retries = max_retries.max(attempt);
-            Self::refresh_messages_from_memory(ctx);
+            Self::refresh_messages_for_route(ctx, &model_info).await;
             Self::log_llm_route_attempt_started(
                 ctx,
                 state,
@@ -251,7 +423,7 @@ impl AgentRunner {
             let mut attempt = 1usize;
             loop {
                 let attempt_max_retries = max_retries.max(attempt);
-                Self::refresh_messages_from_memory(ctx);
+                Self::refresh_messages_for_route(ctx, &route).await;
                 Self::log_llm_route_attempt_started(
                     ctx,
                     state,
@@ -795,8 +967,157 @@ mod tests {
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
     use crate::config::{AgentSettings, ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
     use crate::llm::{LlmError, MockLlmProvider, ToolCall, ToolCallFunction};
-    use std::sync::Arc;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
+
+    #[derive(Default)]
+    struct FakeImageFileOps {
+        files: StdMutex<HashMap<String, Vec<u8>>>,
+        reads: StdMutex<Vec<String>>,
+    }
+
+    impl FakeImageFileOps {
+        fn with_file(path: &str, bytes: &[u8]) -> Self {
+            let mut files = HashMap::new();
+            files.insert(path.to_string(), bytes.to_vec());
+            Self {
+                files: StdMutex::new(files),
+                reads: StdMutex::new(Vec::new()),
+            }
+        }
+
+        fn read_count(&self) -> usize {
+            self.reads.lock().expect("reads lock").len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl NativeImageFileReader for FakeImageFileOps {
+        async fn read_native_image_file(&self, path: &str) -> Result<Vec<u8>> {
+            self.reads
+                .lock()
+                .expect("reads lock")
+                .push(path.to_string());
+            self.files
+                .lock()
+                .expect("files lock")
+                .get(path)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing file: {path}"))
+        }
+    }
+
+    fn test_route(provider: &str, id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            max_output_tokens: 256,
+            context_window_tokens: 128_000,
+            weight: 1,
+        }
+    }
+
+    fn image_message(path: &str) -> AgentMessage {
+        AgentMessage::user_task("What is shown in the image?").with_user_attachments(vec![
+            crate::agent::memory::AgentMessageAttachment::image(
+                "screenshot.jpg",
+                Some("image/jpeg".to_string()),
+                3,
+                path,
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn native_image_parts_resolve_from_user_attachment_refs() {
+        let memory_messages = vec![image_message("/workspace/uploads/shot.jpg")];
+        let mut messages = AgentRunner::convert_memory_to_messages(&memory_messages);
+        let fileops = FakeImageFileOps::with_file("/workspace/uploads/shot.jpg", b"jpg");
+        let route = test_route("opencode-go", "mimo-v2.5");
+
+        AgentRunner::attach_native_image_parts_from_refs(
+            &mut messages,
+            &memory_messages,
+            &fileops,
+            &route,
+        )
+        .await;
+
+        assert_eq!(fileops.read_count(), 1);
+        assert_eq!(messages[0].text_projection(), "What is shown in the image?");
+        assert_eq!(messages[0].content_parts.len(), 1);
+        assert!(matches!(
+            &messages[0].content_parts[0],
+            MessageContentPart::Image { mime_type, bytes }
+                if mime_type == "image/jpeg" && bytes == b"jpg"
+        ));
+    }
+
+    #[tokio::test]
+    async fn text_only_route_degrades_without_reading_image_refs() {
+        let memory_messages = vec![image_message("/workspace/uploads/shot.jpg")];
+        let mut messages = AgentRunner::convert_memory_to_messages(&memory_messages);
+        let fileops = FakeImageFileOps::with_file("/workspace/uploads/shot.jpg", b"jpg");
+        let route = test_route("unknown-text-provider", "text-only");
+
+        assert!(!AgentRunner::route_supports_native_image_parts(&route));
+        if AgentRunner::route_supports_native_image_parts(&route) {
+            AgentRunner::attach_native_image_parts_from_refs(
+                &mut messages,
+                &memory_messages,
+                &fileops,
+                &route,
+            )
+            .await;
+        }
+
+        assert_eq!(fileops.read_count(), 0);
+        assert!(messages[0].content_parts.is_empty());
+        assert_eq!(messages[0].text_projection(), "What is shown in the image?");
+    }
+
+    #[tokio::test]
+    async fn missing_image_ref_degrades_to_text_only() {
+        let memory_messages = vec![image_message("/workspace/uploads/missing.jpg")];
+        let mut messages = AgentRunner::convert_memory_to_messages(&memory_messages);
+        let fileops = FakeImageFileOps::default();
+        let route = test_route("opencode-go", "mimo-v2.5");
+
+        AgentRunner::attach_native_image_parts_from_refs(
+            &mut messages,
+            &memory_messages,
+            &fileops,
+            &route,
+        )
+        .await;
+
+        assert_eq!(fileops.read_count(), 1);
+        assert!(messages[0].content_parts.is_empty());
+        assert_eq!(messages[0].text_projection(), "What is shown in the image?");
+    }
+
+    #[tokio::test]
+    async fn native_image_parts_ignore_tool_messages() {
+        let mut tool_message = AgentMessage::tool("call-1", "describe_image_file", "result");
+        tool_message.attachments = image_message("/workspace/uploads/shot.jpg").attachments;
+        let memory_messages = vec![tool_message];
+        let mut messages = AgentRunner::convert_memory_to_messages(&memory_messages);
+        let fileops = FakeImageFileOps::with_file("/workspace/uploads/shot.jpg", b"jpg");
+        let route = test_route("opencode-go", "mimo-v2.5");
+
+        AgentRunner::attach_native_image_parts_from_refs(
+            &mut messages,
+            &memory_messages,
+            &fileops,
+            &route,
+        )
+        .await;
+
+        assert_eq!(fileops.read_count(), 0);
+        assert!(messages[0].content_parts.is_empty());
+        assert_eq!(messages[0].role, "tool");
+    }
 
     #[test]
     fn unbounded_retry_is_limited_to_opencode_go_retryable_errors() {
