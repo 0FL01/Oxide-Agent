@@ -10,7 +10,7 @@ use oxide_agent_web_contracts::{
 
 use crate::auth::{
     bootstrap_user, change_password, create_auth_session_for_user, current_user_for_token,
-    login_user, logout_session, register_user, AUTH_SESSION_TTL_SECS,
+    login_user, logout_session, register_user, AuthError, AUTH_SESSION_TTL_SECS,
 };
 use crate::persistence::WebUiStore;
 
@@ -34,16 +34,7 @@ pub(crate) async fn api_register(
         chrono::Utc::now(),
     )
     .await;
-    let user = match result {
-        Ok(user) => {
-            clear_auth_rate_limit(&state, &rate_limit_key).await;
-            user
-        }
-        Err(error) => {
-            record_auth_failure(&state, rate_limit_key).await;
-            return Err(auth_error_response(error));
-        }
-    };
+    let user = rate_limited_auth_result(&state, rate_limit_key, result).await?;
     auth_session_response(state.web_store.as_ref(), user, chrono::Utc::now()).await
 }
 
@@ -62,16 +53,7 @@ pub(crate) async fn api_bootstrap(
         chrono::Utc::now(),
     )
     .await;
-    let user = match result {
-        Ok(user) => {
-            clear_auth_rate_limit(&state, &rate_limit_key).await;
-            user
-        }
-        Err(error) => {
-            record_auth_failure(&state, rate_limit_key).await;
-            return Err(auth_error_response(error));
-        }
-    };
+    let user = rate_limited_auth_result(&state, rate_limit_key, result).await?;
     auth_session_response(state.web_store.as_ref(), user, chrono::Utc::now()).await
 }
 
@@ -83,26 +65,43 @@ pub(crate) async fn api_login(
     let rate_limit_key = auth_rate_limit_key(&headers, &request.login);
     reject_auth_rate_limited(&state, &rate_limit_key).await?;
     let result = login_user(state.web_store.as_ref(), request, chrono::Utc::now()).await;
-    let (user, auth_session, raw_session_token) = match result {
-        Ok(result) => {
-            clear_auth_rate_limit(&state, &rate_limit_key).await;
-            result
+    let (user, auth_session, raw_session_token) =
+        rate_limited_auth_result(&state, rate_limit_key, result).await?;
+    auth_session_response_with_token(user, auth_session.csrf_token, &raw_session_token)
+}
+
+async fn rate_limited_auth_result<T>(
+    state: &AppState,
+    rate_limit_key: String,
+    result: Result<T, AuthError>,
+) -> Result<T, (StatusCode, Json<ErrorEnvelope>)> {
+    match result {
+        Ok(value) => {
+            clear_auth_rate_limit(state, &rate_limit_key).await;
+            Ok(value)
         }
         Err(error) => {
-            record_auth_failure(&state, rate_limit_key).await;
-            return Err(auth_error_response(error));
+            record_auth_failure(state, rate_limit_key).await;
+            Err(auth_error_response(error))
         }
-    };
+    }
+}
+
+fn auth_session_response_with_token(
+    user: CurrentUser,
+    csrf_token: String,
+    raw_session_token: &str,
+) -> Result<(HeaderMap, Json<AuthUserResponse>), (StatusCode, Json<ErrorEnvelope>)> {
     let mut headers = HeaderMap::new();
     headers.insert(
         SET_COOKIE,
-        auth_cookie_header(&raw_session_token, AUTH_SESSION_TTL_SECS)?,
+        auth_cookie_header(raw_session_token, AUTH_SESSION_TTL_SECS)?,
     );
     Ok((
         headers,
         Json(AuthUserResponse {
             user,
-            csrf_token: Some(auth_session.csrf_token),
+            csrf_token: Some(csrf_token),
         }),
     ))
 }
@@ -115,18 +114,7 @@ async fn auth_session_response(
     let (auth_session, raw_session_token) = create_auth_session_for_user(store, user.user_id, now)
         .await
         .map_err(auth_error_response)?;
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        SET_COOKIE,
-        auth_cookie_header(&raw_session_token, AUTH_SESSION_TTL_SECS)?,
-    );
-    Ok((
-        headers,
-        Json(AuthUserResponse {
-            user,
-            csrf_token: Some(auth_session.csrf_token),
-        }),
-    ))
+    auth_session_response_with_token(user, auth_session.csrf_token, &raw_session_token)
 }
 
 pub(crate) async fn api_me(

@@ -20,8 +20,9 @@ use oxide_agent_web_contracts::{
 };
 use serde::Deserialize;
 
-use crate::session::WebSessionRuntimeOptions;
+use crate::session::{RunningTask, WebSessionRuntimeOptions};
 
+use super::task_executor::{self, TaskRunRequest, WebTaskPersistence};
 use super::{
     api_error, authenticated_user, authenticated_user_with_csrf, auto_title,
     backend_unavailable_response, default_session_model_selection,
@@ -169,6 +170,108 @@ fn validate_task_attachments(
     Ok(attachments.to_vec())
 }
 
+struct RunningWebTaskRecordInput {
+    task_id: String,
+    session_id: String,
+    user_id: i64,
+    input_markdown: String,
+    attachments: Vec<TaskAttachment>,
+    version_group_id: String,
+    version_index: u32,
+    parent_task_id: Option<String>,
+    input_edited_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+}
+
+fn new_running_web_task_record(input: RunningWebTaskRecordInput) -> WebTaskRecord {
+    WebTaskRecord {
+        schema_version: WEB_TASK_SCHEMA_VERSION,
+        task_id: input.task_id,
+        session_id: input.session_id,
+        user_id: input.user_id,
+        version_group_id: input.version_group_id,
+        version_index: input.version_index,
+        parent_task_id: input.parent_task_id,
+        status: ApiTaskStatus::Running,
+        input_markdown: input.input_markdown,
+        attachments: input.attachments,
+        input_edited_at: input.input_edited_at,
+        final_response_markdown: None,
+        error_message: None,
+        pending_user_input: None,
+        last_progress: None,
+        last_event_seq: 0,
+        created_at: input.now,
+        started_at: Some(input.now),
+        updated_at: input.now,
+        finished_at: None,
+    }
+}
+
+async fn save_session_record(
+    state: &AppState,
+    session: WebSessionRecord,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    state
+        .web_store
+        .save_session(session)
+        .await
+        .map_err(store_error_response)
+}
+
+async fn save_session_task_update(
+    state: &AppState,
+    mut session: WebSessionRecord,
+    now: chrono::DateTime<chrono::Utc>,
+    active_task_id: String,
+    status: ApiTaskStatus,
+    preview: String,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    session.active_task_id = Some(active_task_id);
+    session.last_task_status = Some(status);
+    session.last_preview = Some(preview);
+    session.updated_at = now;
+    save_session_record(state, session).await
+}
+
+async fn save_cancelled_session_task_status(
+    state: &AppState,
+    mut session: WebSessionRecord,
+    task_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
+    if session.active_task_id.as_deref() == Some(task_id) {
+        session.active_task_id = None;
+    }
+    session.last_task_status = Some(ApiTaskStatus::Cancelled);
+    session.updated_at = now;
+    save_session_record(state, session).await
+}
+
+async fn spawn_persisted_registered_task(
+    state: &AppState,
+    user_id: i64,
+    session_id: String,
+    task_id: String,
+    running_task: RunningTask,
+    run_request: TaskRunRequest,
+) {
+    let persistence = WebTaskPersistence {
+        web_store: state.web_store.clone(),
+        user_id,
+        session_id: session_id.clone(),
+        task_id,
+    };
+    task_executor::spawn_registered_task(
+        state.clone(),
+        session_id,
+        running_task,
+        run_request,
+        Some(persistence),
+    )
+    .await;
+}
+
 pub(crate) async fn api_list_tasks(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -228,28 +331,18 @@ pub(crate) async fn api_create_task(
         .map_err(store_error_response)?
         .is_empty();
 
-    let task_record = WebTaskRecord {
-        schema_version: WEB_TASK_SCHEMA_VERSION,
+    let task_record = new_running_web_task_record(RunningWebTaskRecordInput {
         task_id: task_id.clone(),
         session_id: session_id.clone(),
         user_id: user.user_id,
+        input_markdown: input_markdown.clone(),
+        attachments: attachments.clone(),
         version_group_id: task_id.clone(),
         version_index: 1,
         parent_task_id: None,
-        status: ApiTaskStatus::Running,
-        input_markdown: input_markdown.clone(),
-        attachments: attachments.clone(),
         input_edited_at: None,
-        final_response_markdown: None,
-        error_message: None,
-        pending_user_input: None,
-        last_progress: None,
-        last_event_seq: 0,
-        created_at: now,
-        started_at: Some(now),
-        updated_at: now,
-        finished_at: None,
-    };
+        now,
+    });
     state
         .web_store
         .save_task(task_record.clone())
@@ -260,19 +353,19 @@ pub(crate) async fn api_create_task(
     let preview = markdown_preview(&preview_source);
     let should_auto_title = is_first_task && !session.manually_renamed;
 
-    session.active_task_id = Some(task_id.clone());
-    session.last_task_status = Some(ApiTaskStatus::Running);
-    session.last_preview = Some(preview.clone());
     if should_auto_title && !state.auto_title_enabled && session.title == WEB_SESSION_DEFAULT_TITLE
     {
         session.title = preview.clone();
     }
-    session.updated_at = now;
-    state
-        .web_store
-        .save_session(session)
-        .await
-        .map_err(store_error_response)?;
+    save_session_task_update(
+        &state,
+        session,
+        now,
+        task_id.clone(),
+        ApiTaskStatus::Running,
+        preview.clone(),
+    )
+    .await?;
 
     if should_auto_title && state.auto_title_enabled {
         let auto_title_request = auto_title::AutoTitleRequest {
@@ -297,21 +390,16 @@ pub(crate) async fn api_create_task(
         }
     }
 
-    let persistence = super::task_executor::WebTaskPersistence {
-        web_store: state.web_store.clone(),
-        user_id: user.user_id,
-        session_id: session_id.clone(),
-        task_id: task_id.clone(),
-    };
-    super::task_executor::spawn_registered_task(
-        state.clone(),
+    spawn_persisted_registered_task(
+        &state,
+        user.user_id,
         session_id,
+        task_id,
         running_task,
-        super::task_executor::TaskRunRequest::Execute {
+        TaskRunRequest::Execute {
             input: execution_input,
             effort: request.effort,
         },
-        Some(persistence),
     )
     .await;
 
@@ -493,11 +581,7 @@ pub(crate) async fn api_create_task_version(
         ))
         .await
         .map_err(|error| backend_unavailable_response(error.to_string()))?;
-    state
-        .web_store
-        .save_session(session.clone())
-        .await
-        .map_err(store_error_response)?;
+    save_session_record(&state, session.clone()).await?;
 
     recreate_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
@@ -522,28 +606,18 @@ pub(crate) async fn api_create_task_version(
         .unwrap_or(parent_task.effective_version_index())
         + 1;
     let version_task_id = running_task.task_id.clone();
-    let task = WebTaskRecord {
-        schema_version: WEB_TASK_SCHEMA_VERSION,
+    let task = new_running_web_task_record(RunningWebTaskRecordInput {
         task_id: version_task_id.clone(),
         session_id: session_id.clone(),
         user_id: user.user_id,
+        input_markdown: input_markdown.clone(),
+        attachments: attachments.clone(),
         version_group_id,
         version_index,
         parent_task_id: Some(parent_task.task_id.clone()),
-        status: ApiTaskStatus::Running,
-        input_markdown: input_markdown.clone(),
-        attachments: attachments.clone(),
         input_edited_at: Some(now),
-        final_response_markdown: None,
-        error_message: None,
-        pending_user_input: None,
-        last_progress: None,
-        last_event_seq: 0,
-        created_at: now,
-        started_at: Some(now),
-        updated_at: now,
-        finished_at: None,
-    };
+        now,
+    });
     state
         .web_store
         .save_task(task.clone())
@@ -553,9 +627,6 @@ pub(crate) async fn api_create_task_version(
     let preview_source = task_preview_source(&input_markdown, &attachments);
     let preview = markdown_preview(&preview_source);
     let old_preview = session.last_preview.clone();
-    session.active_task_id = Some(version_task_id.clone());
-    session.last_task_status = Some(ApiTaskStatus::Running);
-    session.last_preview = Some(preview.clone());
     // Only update title from preview when it is still the default or the
     // previous fallback preview.  An LLM-generated auto-title must not be
     // overwritten by an edit.
@@ -564,30 +635,28 @@ pub(crate) async fn api_create_task_version(
         && (session.title == WEB_SESSION_DEFAULT_TITLE
             || session.title == old_preview.as_deref().unwrap_or(""));
     if title_is_still_fallback {
-        session.title = preview;
+        session.title = preview.clone();
     }
-    session.updated_at = now;
-    state
-        .web_store
-        .save_session(session)
-        .await
-        .map_err(store_error_response)?;
+    save_session_task_update(
+        &state,
+        session,
+        now,
+        version_task_id.clone(),
+        ApiTaskStatus::Running,
+        preview,
+    )
+    .await?;
 
-    let persistence = super::task_executor::WebTaskPersistence {
-        web_store: state.web_store.clone(),
-        user_id: user.user_id,
-        session_id: session_id.clone(),
-        task_id: version_task_id,
-    };
-    super::task_executor::spawn_registered_task(
-        state.clone(),
+    spawn_persisted_registered_task(
+        &state,
+        user.user_id,
         session_id,
+        version_task_id,
         running_task,
-        super::task_executor::TaskRunRequest::Execute {
+        TaskRunRequest::Execute {
             input: execution_input,
             effort: request.effort,
         },
-        Some(persistence),
     )
     .await;
 
@@ -668,35 +737,27 @@ pub(crate) async fn api_resume_task(
         .await
         .map_err(store_error_response)?;
 
-    let mut session = session;
-    session.active_task_id = Some(task_id.clone());
-    session.last_task_status = Some(ApiTaskStatus::Running);
-    session.last_preview = Some(markdown_preview(&task_preview_source(
-        &input_markdown,
-        &attachments,
-    )));
-    session.updated_at = now;
-    state
-        .web_store
-        .save_session(session)
-        .await
-        .map_err(store_error_response)?;
+    let preview = markdown_preview(&task_preview_source(&input_markdown, &attachments));
+    save_session_task_update(
+        &state,
+        session,
+        now,
+        task_id.clone(),
+        ApiTaskStatus::Running,
+        preview,
+    )
+    .await?;
 
-    let persistence = super::task_executor::WebTaskPersistence {
-        web_store: state.web_store.clone(),
-        user_id: user.user_id,
-        session_id: session_id.clone(),
-        task_id: task_id.clone(),
-    };
-    super::task_executor::spawn_registered_task(
-        state.clone(),
+    spawn_persisted_registered_task(
+        &state,
+        user.user_id,
         session_id,
+        task_id.clone(),
         running_task,
-        super::task_executor::TaskRunRequest::ResumeUserInput {
+        TaskRunRequest::ResumeUserInput {
             input: execution_input,
             effort: request.effort,
         },
-        Some(persistence),
     )
     .await;
 
@@ -731,17 +792,8 @@ pub(crate) async fn api_cancel_task(
         .await
         .map_err(store_error_response)?;
 
-    let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
-    if session.active_task_id.as_deref() == Some(task_id.as_str()) {
-        session.active_task_id = None;
-    }
-    session.last_task_status = Some(ApiTaskStatus::Cancelled);
-    session.updated_at = now;
-    state
-        .web_store
-        .save_session(session)
-        .await
-        .map_err(store_error_response)?;
+    let session = load_owned_session(&state, user.user_id, &session_id).await?;
+    save_cancelled_session_task_status(&state, session, &task_id, now).await?;
 
     state
         .session_manager

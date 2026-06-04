@@ -1,11 +1,11 @@
 # Goal: Web Server Slice Refactor
 
 Date started: 2026-06-04
-Status: active
+Status: complete
 Codex goal: Implement this document until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals.
 Source spec: User request and recon of `crates/oxide-agent-transport-web/src/server/mod.rs`
 Goal doc owner: Codex
-Last updated: 2026-06-04 20:34 +0300
+Last updated: 2026-06-04 20:53 +0300
 
 ## Objective
 
@@ -69,29 +69,29 @@ Out of scope:
   - Source: Recon duplication findings.
   - Acceptance: `api_login` uses the shared auth-session response path; task launch persistence/spawn boilerplate and session-save/status patterns are reduced with small local helpers; no premature generic framework is introduced.
   - Evidence required: focused diff review and the same server/e2e validation used for affected routes.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-transport-web/src/server/auth_routes.rs` now uses shared rate-limit result handling and shared auth-session cookie/CSRF response construction for register/bootstrap/login. `crates/oxide-agent-transport-web/src/server/task_routes.rs` now uses local helpers for running task record construction, session save/status updates, cancelled session status, and persisted runtime task spawning. Default/profile-lite checks, default/profile-lite server tests, e2e, clippy, and `git diff --check` passed.
 
 - Q1: Public API compatibility is preserved
   - Source: Blast-radius analysis.
   - Acceptance: Existing consumers of `serve`, `build_router`, `AppState`, and `build_r2_backed_app_state` still compile.
   - Evidence required: `cargo check -p oxide-agent-transport-web --no-default-features` and `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`.
-  - Status: in_progress
-  - Evidence collected: Checkpoints 2-4 preserved crate-root `build_router`/`serve` exports and passed default/profile-lite `cargo check`.
+  - Status: verified
+  - Evidence collected: Checkpoints 2-5 preserved crate-root `build_router`/`serve` exports and passed default/profile-lite `cargo check`.
 
 - Q2: Route, auth, CSRF, SSE, and task semantics remain unchanged during mechanical extraction
   - Source: User guardrails and recon blast-radius.
   - Acceptance: No route path edits, no DTO edits, no auth/cookie/CSRF behavior edits, no SSE stream/replay edits, and no task lifecycle behavior edits are made in mechanical checkpoints.
   - Evidence required: diff review plus server/e2e tests.
-  - Status: in_progress
-  - Evidence collected: Checkpoints 1-4 did not edit route paths, DTOs, auth/cookie/CSRF behavior, SSE behavior, or task lifecycle code; only module locations/imports changed. Default e2e passed after checkpoint 4.
+  - Status: verified
+  - Evidence collected: Checkpoints 1-4 did not edit route paths, DTOs, auth/cookie/CSRF behavior, SSE behavior, or task lifecycle code; checkpoint 5 only consolidated equivalent helper paths. Default e2e passed after checkpoint 5.
 
 - N1: No over-engineering or new dependencies
   - Source: `AGENTS.md` implementation bias.
   - Must preserve: No new crates, services, storage backends, queues, middleware frameworks, or broad abstractions are introduced for this refactor.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
-  - Status: in_progress
-  - Evidence collected: No `Cargo.toml` changes and no new dependencies/services were introduced in checkpoints 1-4.
+  - Status: verified
+  - Evidence collected: No `Cargo.toml` changes and no new dependencies/services were introduced in checkpoints 1-5.
 
 ## Implementation Plan
 
@@ -141,6 +141,7 @@ Out of scope:
 - 2026-06-04: Use `docs/goals/2026-06-04-web-server-slice-refactor.md` because the repo already stores durable goal docs under `docs/goals/`.
 - 2026-06-04: First implementation step is a mechanical test move to reduce `server/mod.rs` by the largest low-risk block before production handler slicing.
 - 2026-06-04: Deduplication waits until mechanical slices pass, to avoid mixing behavior refactors with file moves.
+- 2026-06-04: Checkpoint 5 used only local helpers in existing route modules; no new shared framework was introduced for two or three call sites.
 
 ## Progress Log
 
@@ -176,6 +177,12 @@ Out of scope:
   - Audit IDs updated: G4 verified; Q1, Q2, N1 have checkpoint evidence.
   - Next: Deduplicate confirmed repeated logic in the now-sliced modules.
 
+- 2026-06-04 20:53 +0300: Checkpoint 5 completed.
+  - Changed: Deduplicated auth success/rate-limit response handling in `auth_routes.rs`; added small local task helpers in `task_routes.rs` for running task records, session save/status updates, cancellation status persistence, and persisted runtime task spawning.
+  - Commands: `cargo fmt -p oxide-agent-transport-web`; `cargo check -p oxide-agent-transport-web --no-default-features`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`; `cargo test -p oxide-agent-transport-web --no-default-features server::tests` (33 passed); `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite server::tests` (38 passed); `cargo test -p oxide-agent-transport-web --no-default-features --test e2e` (6 passed / 24 ignored); `cargo clippy -p oxide-agent-transport-web --no-default-features --tests`; `git diff --check`.
+  - Audit IDs updated: G5, Q1, Q2, and N1 verified.
+  - Next: No planned implementation checkpoint remains; keep only follow-up review/optional cleanup if requested.
+
 ## Risks and Blockers
 
 - Direct test imports from `super::{...}` may break when handlers move.
@@ -192,11 +199,9 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: G1-G5, Q1-Q2, and N1 are verified.
+- Commands run: `cargo fmt -p oxide-agent-transport-web`; `cargo check -p oxide-agent-transport-web --no-default-features`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-lite`; `cargo test -p oxide-agent-transport-web --no-default-features server::tests`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-lite server::tests`; `cargo test -p oxide-agent-transport-web --no-default-features --test e2e`; `cargo clippy -p oxide-agent-transport-web --no-default-features --tests`; `git diff --check`.
+- Artifacts inspected: `crates/oxide-agent-transport-web/src/server/mod.rs`, focused server route modules under `crates/oxide-agent-transport-web/src/server/`, crate-root public exports, and this goal document.
+- Remaining gaps: none for the stated goal.
+- User-accepted exceptions: none.
+- Final status: complete.
