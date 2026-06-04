@@ -2,10 +2,10 @@ use crate::api::ApiClient;
 use crate::utils::{navigate, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    AgentProfileView, BootstrapRequest, ChangePasswordRequest, CreateAgentProfileRequest,
-    CurrentUser, LoginRequest, ModelRouteProtocolView, ModelRouteSourceView, ModelRouteView,
-    ModelSelection, RegisterRequest, UpdateAgentProfileRequest, UpdateUserSettingsRequest,
-    UserRole,
+    AgentEffort, AgentProfileView, BootstrapRequest, ChangePasswordRequest,
+    CreateAgentProfileRequest, CurrentUser, LoginRequest, ModelRouteProtocolView,
+    ModelRouteSourceView, ModelRouteView, ModelSelection, RegisterRequest,
+    UpdateAgentProfileRequest, UpdateUserSettingsRequest, UserRole,
 };
 
 const DEFAULT_PROFILE_NONE: &str = "__none__";
@@ -328,6 +328,7 @@ fn ModelSettingsPanel() -> impl IntoView {
     let (provider_default_model, set_provider_default_model) = signal(None::<String>);
     let (saved_default_model, set_saved_default_model) = signal(None::<String>);
     let (saved_default_profile, set_saved_default_profile) = signal(None::<String>);
+    let (saved_default_effort, set_saved_default_effort) = signal(None::<AgentEffort>);
     let (selected_model, set_selected_model) = signal(String::new());
     let (loaded, set_loaded) = signal(false);
     let (loading, set_loading) = signal(false);
@@ -350,6 +351,7 @@ fn ModelSettingsPanel() -> impl IntoView {
                         .default_model_selection
                         .map(|selection| selection.qualified_id);
                     set_saved_default_profile.set(settings.default_agent_profile_id);
+                    set_saved_default_effort.set(settings.default_effort);
                     let selected = saved_default
                         .clone()
                         .or_else(|| model_routes.default_model_id.clone())
@@ -418,6 +420,7 @@ fn ModelSettingsPanel() -> impl IntoView {
                 qualified_id: selected_model.get(),
             }),
             default_agent_profile_id: saved_default_profile.get(),
+            default_effort: saved_default_effort.get(),
         };
 
         spawn_ui(async move {
@@ -431,6 +434,7 @@ fn ModelSettingsPanel() -> impl IntoView {
                     }
                     set_saved_default_model.set(saved_default);
                     set_saved_default_profile.set(settings.default_agent_profile_id);
+                    set_saved_default_effort.set(settings.default_effort);
                     set_message.set(Some(
                         "Web default saved. New sessions use it before .env fallback.".to_string(),
                     ));
@@ -542,6 +546,7 @@ fn AgentProfilesPanel() -> impl IntoView {
     let auth = use_auth();
     let (profiles, set_profiles) = signal(Vec::<AgentProfileView>::new());
     let (default_model_selection, set_default_model_selection) = signal(None::<ModelSelection>);
+    let (default_effort, set_default_effort) = signal(None::<AgentEffort>);
     let (selected_default_profile, set_selected_default_profile) =
         signal(DEFAULT_PROFILE_NONE.to_string());
     let (editing_profile_id, set_editing_profile_id) = signal(None::<String>);
@@ -564,6 +569,7 @@ fn AgentProfilesPanel() -> impl IntoView {
             match (settings_result, profiles_result) {
                 (Ok(settings), Ok(response)) => {
                     set_default_model_selection.set(settings.default_model_selection);
+                    set_default_effort.set(settings.default_effort);
                     set_selected_default_profile.set(
                         settings
                             .default_agent_profile_id
@@ -641,11 +647,13 @@ fn AgentProfilesPanel() -> impl IntoView {
         let request = UpdateUserSettingsRequest {
             default_model_selection: default_model_selection.get(),
             default_agent_profile_id: default_profile_value_to_id(&selected_default_profile.get()),
+            default_effort: default_effort.get(),
         };
         spawn_ui(async move {
             match auth.client().update_settings(&request).await {
                 Ok(settings) => {
                     set_default_model_selection.set(settings.default_model_selection);
+                    set_default_effort.set(settings.default_effort);
                     set_selected_default_profile.set(
                         settings
                             .default_agent_profile_id

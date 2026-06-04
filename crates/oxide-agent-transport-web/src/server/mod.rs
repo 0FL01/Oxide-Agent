@@ -152,6 +152,7 @@ async fn api_update_settings(
         true,
     )
     .await?;
+    record.default_effort = request.default_effort;
     record.updated_at = chrono::Utc::now();
     state
         .web_store
@@ -250,6 +251,7 @@ fn user_settings_response_from_record(record: &WebUserRecord) -> UserSettingsRes
     UserSettingsResponse {
         default_model_selection: record.default_model_selection.clone(),
         default_agent_profile_id: record.default_agent_profile_id.clone(),
+        default_effort: record.default_effort,
     }
 }
 
@@ -2292,17 +2294,18 @@ mod tests {
     use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
     use oxide_agent_runtime::SessionRegistry;
     use oxide_agent_web_contracts::{
-        AgentProfileSelection, CreateAgentProfileRequest,
+        AgentEffort, AgentProfileSelection, CreateAgentProfileRequest,
         CreateSessionRequest as ApiCreateSessionRequest,
         CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
         ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
         TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest,
-        UpdateUserSettingsRequest, UserMessageEventPayload, WebTaskRecord,
+        UpdateUserSettingsRequest, WebTaskRecord,
     };
     #[cfg(feature = "profile-lite")]
     use oxide_agent_web_contracts::{
         CreateTaskRequest as ApiCreateTaskRequest, PendingUserInputView,
         ResumeTaskRequest as ApiResumeTaskRequest, UserInputKind as ApiUserInputKind,
+        UserMessageEventPayload,
     };
     use tokio::sync::mpsc;
 
@@ -2817,6 +2820,7 @@ mod tests {
         .await
         .expect("settings response");
         assert_eq!(initial.default_model_selection, None);
+        assert_eq!(initial.default_effort, None);
 
         let selected = ModelSelection {
             qualified_id: "kimi-k2.6".to_string(),
@@ -2827,6 +2831,7 @@ mod tests {
             axum::Json(UpdateUserSettingsRequest {
                 default_model_selection: Some(selected),
                 default_agent_profile_id: None,
+                default_effort: Some(AgentEffort::Heavy),
             }),
         )
         .await
@@ -2837,6 +2842,7 @@ mod tests {
                 qualified_id: "opencode-go/kimi-k2.6".to_string(),
             })
         );
+        assert_eq!(updated.default_effort, Some(AgentEffort::Heavy));
         let stored = state
             .web_store
             .load_user(user.user_id)
@@ -2847,6 +2853,7 @@ mod tests {
             stored.default_model_selection,
             updated.default_model_selection
         );
+        assert_eq!(stored.default_effort, updated.default_effort);
 
         let axum::Json(updated_zen) = api_update_settings(
             axum::extract::State(state.clone()),
@@ -2856,6 +2863,7 @@ mod tests {
                     qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
                 }),
                 default_agent_profile_id: None,
+                default_effort: None,
             }),
         )
         .await
@@ -2875,6 +2883,7 @@ mod tests {
                     qualified_id: "other-provider/model".to_string(),
                 }),
                 default_agent_profile_id: None,
+                default_effort: None,
             }),
         )
         .await
@@ -2936,6 +2945,7 @@ mod tests {
                     qualified_id: "opencode-go/kimi-k2.6".to_string(),
                 }),
                 default_agent_profile_id: None,
+                default_effort: None,
             }),
         )
         .await
@@ -3029,6 +3039,7 @@ mod tests {
             axum::Json(UpdateUserSettingsRequest {
                 default_model_selection: None,
                 default_agent_profile_id: Some(created_profile.profile.agent_id.clone()),
+                default_effort: None,
             }),
         )
         .await

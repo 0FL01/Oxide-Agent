@@ -308,6 +308,7 @@ async fn create_user(
         status: WebUserStatus::Active,
         default_model_selection: None,
         default_agent_profile_id: None,
+        default_effort: None,
         created_at: now,
         updated_at: now,
         last_login_at: None,

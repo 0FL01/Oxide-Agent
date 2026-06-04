@@ -1,4 +1,4 @@
-use crate::auth::use_auth;
+use crate::auth::{use_auth, AuthContext};
 use crate::components::ErrorBanner;
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
@@ -9,7 +9,8 @@ use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileSelection, AgentProfileView, CreateSessionRequest, CreateTaskRequest,
     CreateTaskVersionRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest,
     SessionDetail, SessionSummary, SseConnectionState, TaskAttachment, TaskDetail, TaskEventKind,
-    TaskStatus, TaskSummary, UpdateSessionProfileRequest, UserMessageEventPayload,
+    TaskStatus, TaskSummary, UpdateSessionProfileRequest, UpdateUserSettingsRequest,
+    UserMessageEventPayload, UserSettingsResponse,
 };
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};
@@ -66,6 +67,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
     let (profiles_loaded, set_profiles_loaded) = signal(false);
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_DEFAULT.to_string());
     let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
+    let (effort_touched, set_effort_touched) = signal(false);
 
     Effect::new(move |_| {
         if profiles_loaded.get() {
@@ -73,7 +75,11 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
         }
         set_profiles_loaded.set(true);
         spawn_ui(async move {
-            if let Ok(response) = auth.client().list_agent_profiles().await {
+            let client = auth.client();
+            if let Ok(settings) = client.settings().await {
+                apply_loaded_default_effort(settings, effort_touched, set_selected_effort);
+            }
+            if let Ok(response) = client.list_agent_profiles().await {
                 set_profiles.set(response.profiles);
             }
         });
@@ -248,7 +254,10 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                     selected_effort=selected_effort
                                     disabled=Signal::derive(move || loading.get())
                                     on_change=Callback::new(move |ev| {
-                                        set_selected_effort.set(agent_effort_from_value(&event_target_value(&ev)));
+                                        let effort = agent_effort_from_value(&event_target_value(&ev));
+                                        set_effort_touched.set(true);
+                                        set_selected_effort.set(effort);
+                                        persist_default_effort(auth, effort, set_error);
                                     })
                                 />
                                 <label class="button secondary composer-attach-button">
@@ -312,6 +321,7 @@ fn SessionWorkspace(
     let (profiles_loaded, set_profiles_loaded) = signal(false);
     let (selected_profile, set_selected_profile) = signal(PROFILE_VALUE_NONE.to_string());
     let (selected_effort, set_selected_effort) = signal(AgentEffort::Standard);
+    let (effort_touched, set_effort_touched) = signal(false);
 
     let (drawer_open, set_drawer_open) = signal(false);
 
@@ -321,7 +331,11 @@ fn SessionWorkspace(
         }
         set_profiles_loaded.set(true);
         spawn_ui(async move {
-            if let Ok(response) = auth.client().list_agent_profiles().await {
+            let client = auth.client();
+            if let Ok(settings) = client.settings().await {
+                apply_loaded_default_effort(settings, effort_touched, set_selected_effort);
+            }
+            if let Ok(response) = client.list_agent_profiles().await {
                 set_profiles.set(response.profiles);
             }
         });
@@ -757,7 +771,10 @@ fn SessionWorkspace(
                                     selected_effort=selected_effort
                                     disabled=Signal::derive(move || loading.get() || is_running())
                                     on_change=Callback::new(move |ev| {
-                                        set_selected_effort.set(agent_effort_from_value(&event_target_value(&ev)));
+                                        let effort = agent_effort_from_value(&event_target_value(&ev));
+                                        set_effort_touched.set(true);
+                                        set_selected_effort.set(effort);
+                                        persist_default_effort(auth, effort, set_error);
                                     })
                                 />
                                 <label class="button secondary composer-attach-button">
@@ -1647,6 +1664,41 @@ fn agent_effort_from_value(value: &str) -> AgentEffort {
         "heavy" => AgentEffort::Heavy,
         _ => AgentEffort::Standard,
     }
+}
+
+fn apply_loaded_default_effort(
+    settings: UserSettingsResponse,
+    effort_touched: ReadSignal<bool>,
+    set_selected_effort: WriteSignal<AgentEffort>,
+) {
+    if !effort_touched.get() {
+        set_selected_effort.set(settings.default_effort.unwrap_or(AgentEffort::Standard));
+    }
+}
+
+fn persist_default_effort(
+    auth: AuthContext,
+    effort: AgentEffort,
+    set_error: WriteSignal<Option<String>>,
+) {
+    spawn_ui(async move {
+        let client = auth.client();
+        let settings = match client.settings().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                set_error.set(Some(error.to_string()));
+                return;
+            }
+        };
+        let request = UpdateUserSettingsRequest {
+            default_model_selection: settings.default_model_selection,
+            default_agent_profile_id: settings.default_agent_profile_id,
+            default_effort: Some(effort),
+        };
+        if let Err(error) = client.update_settings(&request).await {
+            set_error.set(Some(error.to_string()));
+        }
+    });
 }
 
 fn selected_profile_missing_option(

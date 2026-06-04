@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::AgentEffort;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PublicConfigResponse {
@@ -21,6 +23,8 @@ pub struct UserSettingsResponse {
     pub default_model_selection: Option<ModelSelection>,
     #[serde(default)]
     pub default_agent_profile_id: Option<String>,
+    #[serde(default)]
+    pub default_effort: Option<AgentEffort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +34,8 @@ pub struct UpdateUserSettingsRequest {
     pub default_model_selection: Option<ModelSelection>,
     #[serde(default)]
     pub default_agent_profile_id: Option<String>,
+    #[serde(default)]
+    pub default_effort: Option<AgentEffort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +130,7 @@ mod tests {
                 qualified_id: "opencode-zen/deepseek-v4-flash-free".to_string(),
             }),
             default_agent_profile_id: None,
+            default_effort: None,
         };
 
         let value = serde_json::to_value(request).expect("settings request serializes");

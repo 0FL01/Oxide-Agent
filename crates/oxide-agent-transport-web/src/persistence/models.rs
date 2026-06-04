@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use oxide_agent_core::agent::progress::FileDeliveryKind;
 use oxide_agent_web_contracts::{
-    ModelSelection, PersistedTaskEvent, UserRole, WebSessionRecord, WebTaskRecord,
+    AgentEffort, ModelSelection, PersistedTaskEvent, UserRole, WebSessionRecord, WebTaskRecord,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,8 @@ pub struct WebUserRecord {
     pub default_model_selection: Option<ModelSelection>,
     #[serde(default)]
     pub default_agent_profile_id: Option<String>,
+    #[serde(default)]
+    pub default_effort: Option<AgentEffort>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_login_at: Option<DateTime<Utc>>,
