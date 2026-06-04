@@ -4,8 +4,8 @@ use crate::llm::providers::protocol_profiles::{
 };
 use crate::llm::support::http::{create_http_client, send_json_request};
 use crate::llm::{
-    ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage, ToolCall,
-    ToolDefinition,
+    ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, MessageContentPart,
+    TokenUsage, ToolCall, ToolDefinition,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -828,7 +828,11 @@ fn build_chat_completion_body(
     model_id: &str,
     max_tokens: u32,
 ) -> Value {
-    let mut messages = prepare_structured_messages(system_prompt, history);
+    let mut messages = prepare_structured_messages(
+        system_prompt,
+        history,
+        discovery::supports_image_input_for_model_id(model_id),
+    );
     messages.push(json!({
         "role": "user",
         "content": user_message,
@@ -883,11 +887,21 @@ fn build_image_analysis_body(
 }
 
 fn image_data_url(image_bytes: &[u8]) -> String {
-    format!(
-        "data:{};base64,{}",
-        infer_image_mime_type(image_bytes),
-        BASE64.encode(image_bytes)
-    )
+    image_data_url_with_mime(image_bytes, infer_image_mime_type(image_bytes))
+}
+
+fn image_data_url_with_mime(image_bytes: &[u8], mime_type: &str) -> String {
+    let mime_type = normalized_image_mime_type(mime_type, image_bytes);
+    format!("data:{mime_type};base64,{}", BASE64.encode(image_bytes))
+}
+
+fn normalized_image_mime_type(mime_type: &str, image_bytes: &[u8]) -> String {
+    let trimmed = mime_type.trim();
+    if trimmed.starts_with("image/") {
+        trimmed.to_string()
+    } else {
+        infer_image_mime_type(image_bytes).to_string()
+    }
 }
 
 fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
@@ -941,7 +955,11 @@ fn build_tool_chat_body(
     json_mode: bool,
     reasoning_effort: Option<&str>,
 ) -> Value {
-    let messages = prepare_structured_messages(system_prompt, history);
+    let messages = prepare_structured_messages(
+        system_prompt,
+        history,
+        discovery::supports_image_input_for_model_id(model_id),
+    );
     let openai_tools = prepare_tools_json(tools);
     let has_tools = !openai_tools.is_empty();
 
@@ -1006,7 +1024,11 @@ fn build_anthropic_messages_body(
     body
 }
 
-fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<Value> {
+fn prepare_structured_messages(
+    system_prompt: &str,
+    history: &[Message],
+    allow_native_image_parts: bool,
+) -> Vec<Value> {
     let mut messages = Vec::with_capacity(history.len() + 1);
 
     if !system_prompt.trim().is_empty() {
@@ -1081,13 +1103,47 @@ fn prepare_structured_messages(system_prompt: &str, history: &[Message]) -> Vec<
             _ => {
                 messages.push(json!({
                     "role": "user",
-                    "content": msg.content,
+                    "content": openai_user_message_content(msg, allow_native_image_parts),
                 }));
             }
         }
     }
 
     messages
+}
+
+fn openai_user_message_content(message: &Message, allow_native_image_parts: bool) -> Value {
+    if !allow_native_image_parts || message.content_parts.is_empty() {
+        return json!(message.content);
+    }
+
+    let mut parts = Vec::new();
+    if !message.content.is_empty() {
+        parts.push(json!({
+            "type": "text",
+            "text": message.content,
+        }));
+    }
+
+    for part in &message.content_parts {
+        match part {
+            MessageContentPart::Image { mime_type, bytes } if !bytes.is_empty() => {
+                parts.push(json!({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url_with_mime(bytes, mime_type),
+                    },
+                }));
+            }
+            MessageContentPart::Image { .. } => {}
+        }
+    }
+
+    if parts.is_empty() {
+        json!(message.content)
+    } else {
+        json!(parts)
+    }
 }
 
 fn anthropic_system_prompt(system_prompt: &str, history: &[Message]) -> Option<String> {
@@ -1565,7 +1621,8 @@ mod tests {
         OpenCodeGoAdaptiveThrottle, OpenCodeProviderProfile,
     };
     use crate::llm::{
-        LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition,
+        LlmError, Message, MessageContentPart, ToolCall, ToolCallCorrelation, ToolCallFunction,
+        ToolDefinition,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -1796,7 +1853,7 @@ mod tests {
             ),
         ];
 
-        let messages = prepare_structured_messages("system", &history);
+        let messages = prepare_structured_messages("system", &history, false);
 
         assert_eq!(messages[1]["tool_calls"][0]["id"], json!("call-opencode-1"));
         assert_eq!(
@@ -1804,6 +1861,82 @@ mod tests {
             json!("provider thinking trace")
         );
         assert_eq!(messages[2]["tool_call_id"], json!("call-opencode-1"));
+    }
+
+    #[test]
+    fn tool_chat_body_serializes_user_image_parts_for_image_models_only() {
+        let user = Message::user("What is written here?").with_user_content_parts(vec![
+            MessageContentPart::image("image/png", b"png".to_vec()),
+        ]);
+        let tool_call = ToolCall::new(
+            "invoke-opencode-1",
+            ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-opencode-1")
+                .with_provider_tool_call_id("call-opencode-1"),
+        );
+        let mut tool_result = Message::tool_with_correlation(
+            "invoke-opencode-1",
+            ToolCallCorrelation::new("invoke-opencode-1")
+                .with_provider_tool_call_id("call-opencode-1"),
+            "read_file",
+            "contents",
+        );
+        tool_result
+            .content_parts
+            .push(MessageContentPart::image("image/png", b"ignored".to_vec()));
+        let history = vec![
+            user,
+            Message::assistant_with_tools("Calling tools", vec![tool_call]),
+            tool_result,
+        ];
+
+        let vision_body = build_tool_chat_body(
+            "system",
+            &history,
+            &[read_file_tool()],
+            "mimo-v2.5",
+            32000,
+            None,
+            false,
+            None,
+        );
+        let user_content = vision_body["messages"][1]["content"]
+            .as_array()
+            .expect("vision user content should be an array");
+        assert_eq!(user_content[0]["type"], json!("text"));
+        assert_eq!(user_content[0]["text"], json!("What is written here?"));
+        assert_eq!(user_content[1]["type"], json!("image_url"));
+        assert_eq!(
+            user_content[1]["image_url"]["url"],
+            json!("data:image/png;base64,cG5n")
+        );
+        assert_eq!(
+            vision_body["messages"][2]["content"],
+            json!("Calling tools")
+        );
+        assert_eq!(vision_body["messages"][3]["content"], json!("contents"));
+        assert!(vision_body["messages"][3]["content"].is_string());
+
+        let text_only_body = build_tool_chat_body(
+            "system",
+            &history,
+            &[read_file_tool()],
+            "mimo-v2.5-pro",
+            32000,
+            None,
+            false,
+            None,
+        );
+        assert_eq!(
+            text_only_body["messages"][1]["content"],
+            json!("What is written here?")
+        );
     }
 
     #[test]

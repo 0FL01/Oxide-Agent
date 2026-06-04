@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-04-native-multimodal-web-images.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after RECON: native vision for compatible selected models, `describe_image_file` fallback for text-only models, and blast-radius-safe `Message` content-parts design.
 Goal doc owner: Codex
-Last updated: 2026-06-04 23:55 +0300
+Last updated: 2026-06-05 00:10 +0300
 
 ## Objective
 
@@ -73,15 +73,15 @@ Out of scope:
   - Source: User example: MiMo v2.5 supports images.
   - Acceptance: For image-capable OpenCode Go OpenAI Chat Completions routes, user image parts serialize as `content: [{type:text}, {type:image_url,...}]` in normal `chat_with_tools` requests, not only in `analyze_image`.
   - Evidence required: provider request-body unit test covering image-capable route and text-only route.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 5 now prepares transient native image parts before LLM requests for image-capable OpenCode Go routes. Provider request serialization into OpenAI Chat Completions content arrays remains checkpoint 6.
+  - Status: verified
+  - Evidence collected: Checkpoint 5 now prepares transient native image parts before LLM requests for image-capable OpenCode Go routes. Checkpoint 6 serializes user `MessageContentPart::Image` values as OpenAI Chat Completions `image_url` content arrays for image-capable OpenCode Go models, while text-only MiMo Pro routes serialize the text projection.
 
 - G5: Text-only selected models keep the `describe_image_file` fallback path
   - Source: User asked whether the image-description tool remains for blind models.
   - Acceptance: Text-only routes receive the existing text projection with sandbox paths; `describe_image_file` remains registered/usable and still uses configured `MEDIA_MODEL` for image understanding.
   - Evidence required: diff review plus a focused test or fixture proving image refs are stripped/degraded for text-only routes while attachment path text remains.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 5 leaves text-only routes on the existing text projection and skips sandbox reads/native parts when the selected route is not approved for native images. `describe_image_file` remains untouched.
+  - Status: verified
+  - Evidence collected: Checkpoint 5 leaves text-only routes on the existing text projection and skips sandbox reads/native parts when the selected route is not approved for native images. Checkpoint 6 keeps text-only OpenCode Go request bodies string-based even if a malformed native part is present. `describe_image_file` remains untouched.
 
 - G6: Web task/create/resume/version behavior remains compatible
   - Source: Existing web transport architecture.
@@ -94,8 +94,8 @@ Out of scope:
   - Source: `AGENTS.md` invariant: preserve history repair and `tool_call_id` integrity before LLM calls.
   - Acceptance: Media parts are never attached to assistant tool-call messages or tool-result messages; `ToolResultEncoder` stays string-based; strict tool history repair still passes.
   - Evidence required: focused diff review and existing tool-history tests for touched areas.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 2 helpers attach native parts/refs only to user messages; assistant/tool helper paths remain string-only and `ToolResultEncoder` was not changed. Checkpoint 3 keeps attachment-aware input limited to user task/runtime-context messages. Checkpoint 5 includes a focused test proving even a malformed tool-message attachment ref does not create native content parts or sandbox reads.
+  - Status: verified
+  - Evidence collected: Checkpoint 2 helpers attach native parts/refs only to user messages; assistant/tool helper paths remain string-only and `ToolResultEncoder` was not changed. Checkpoint 3 keeps attachment-aware input limited to user task/runtime-context messages. Checkpoint 5 includes a focused test proving even a malformed tool-message attachment ref does not create native content parts or sandbox reads. Checkpoint 6 verifies OpenCode Go tool-result content stays a string when user image parts are serialized.
 
 - Q2: No raw media bloat in memory, compaction, or storage
   - Source: RECON blast-radius and storage constraints.
@@ -108,15 +108,15 @@ Out of scope:
   - Source: Over-engineering guardrail.
   - Must preserve: Native provider serialization starts with OpenCode Go; other providers degrade to text-only unless explicitly added in a later checkpoint.
   - Evidence required: diff review.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 5 restricts native image part resolution to OpenCode Go routes that pass the media capability policy; other providers remain text-only for this rollout.
+  - Status: verified
+  - Evidence collected: Checkpoint 5 restricts native image part resolution to OpenCode Go routes that pass the media capability policy; other providers remain text-only for this rollout. Checkpoint 6 changes only the OpenCode Go provider serializer.
 
 - N2: No new dependencies or direct Gemini provider
   - Source: `AGENTS.md` architecture invariants.
   - Must preserve: No new crates/services/storage backends; Gemini remains OpenRouter-only.
   - Evidence required: `Cargo.toml` diff review.
-  - Status: pending
-  - Evidence collected: No `Cargo.toml` changes in checkpoints 1-5.
+  - Status: verified
+  - Evidence collected: No `Cargo.toml` changes in checkpoints 1-6; no direct Gemini provider code was added.
 
 ## Implementation Plan
 
@@ -228,6 +228,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local native_image_parts`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local text_only_route_degrades_without_reading_image_refs`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local missing_image_ref_degrades_to_text_only`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
   - Audit IDs updated: G3 verified; G4 in progress; G5 evidence added; Q1 evidence extended; Q2 verified; N1 evidence added; N2 preserved.
   - Next: Checkpoint 6, serialize `MessageContentPart::Image` in OpenCode Go normal agent chat requests while preserving tool call/result wire format.
+
+- 2026-06-05 00:10 +0300: Checkpoint 6 completed.
+  - Changed: OpenCode Go normal OpenAI Chat Completions builders now serialize user native image parts as `content: [{type:text}, {type:image_url,...}]` only for image-capable model IDs; text-only model IDs keep string content. Assistant/tool messages remain string/tool-call shaped.
+  - Evidence: Focused provider test covers image-capable MiMo v2.5 request shape, text-only MiMo Pro degradation, and tool-result string preservation.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --lib --no-default-features --features llm-opencode-go tool_chat_body_serializes_user_image_parts_for_image_models_only`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go opencode_go --lib`; `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --lib`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
+  - Audit IDs updated: G4 verified; G5 verified; Q1 verified; N1 verified; N2 verified.
+  - Next: Checkpoint 7, run end-to-end/final verification and update docs/completion audit.
 
 ## Risks and Blockers
 
