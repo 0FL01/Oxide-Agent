@@ -42,6 +42,8 @@ pub struct DiscoveredLlmModel {
     pub display_name: String,
     /// Provider protocol label for routing diagnostics.
     pub protocol: String,
+    /// Whether the discovered model advertises image input support.
+    pub supports_image_input: bool,
     /// Discovery source label: `network`, `cache`, or `fallback`.
     pub source: String,
     /// Timestamp associated with the discovered model list.
@@ -57,6 +59,7 @@ impl From<providers::opencode_go::discovery::DiscoveredOpenCodeGoModel> for Disc
             qualified_id: model.qualified_id,
             display_name: model.display_name,
             protocol: model.protocol.as_str().to_string(),
+            supports_image_input: model.supports_image_input,
             source: match model.source {
                 providers::opencode_go::discovery::DiscoverySource::Network => "network",
                 providers::opencode_go::discovery::DiscoverySource::Cache => "cache",

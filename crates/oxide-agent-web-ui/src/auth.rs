@@ -455,6 +455,11 @@ fn ModelSettingsPanel() -> impl IntoView {
             .map(|route| model_route_protocol_label(route.protocol).to_string())
             .unwrap_or_else(|| "unknown".to_string())
     };
+    let selected_image_input = move || {
+        selected_route(routes, selected_model)
+            .map(|route| model_route_image_support_label(route.supports_image_input).to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    };
     let selected_status = move || {
         if !provider_available.get() {
             return "provider unavailable".to_string();
@@ -497,7 +502,7 @@ fn ModelSettingsPanel() -> impl IntoView {
                         children=move |route| {
                             let value = route.qualified_id.clone();
                             view! {
-                                <option value=value.clone() disabled=!route.runnable>{value.clone()}</option>
+                                <option value=value.clone() disabled=!route.runnable>{model_route_option_label(&route)}</option>
                             }
                         }
                     />
@@ -508,6 +513,8 @@ fn ModelSettingsPanel() -> impl IntoView {
                 <dd>{selected_source}</dd>
                 <dt>"Protocol"</dt>
                 <dd>{selected_protocol}</dd>
+                <dt>"Image input"</dt>
+                <dd>{selected_image_input}</dd>
                 <dt>"Status"</dt>
                 <dd>{selected_status}</dd>
                 <dt>"Saved web default"</dt>
@@ -870,6 +877,22 @@ fn selected_route_is_runnable(
     selected_model: ReadSignal<String>,
 ) -> bool {
     selected_route(routes, selected_model).is_some_and(|route| route.runnable)
+}
+
+fn model_route_option_label(route: &ModelRouteView) -> String {
+    if route.supports_image_input {
+        format!("{} · image", route.qualified_id)
+    } else {
+        route.qualified_id.clone()
+    }
+}
+
+const fn model_route_image_support_label(supports_image_input: bool) -> &'static str {
+    if supports_image_input {
+        "supported"
+    } else {
+        "text only"
+    }
 }
 
 fn selected_unavailable_option(

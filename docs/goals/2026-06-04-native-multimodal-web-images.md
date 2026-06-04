@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-04-native-multimodal-web-images.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after RECON: native vision for compatible selected models, `describe_image_file` fallback for text-only models, and blast-radius-safe `Message` content-parts design.
 Goal doc owner: Codex
-Last updated: 2026-06-04 23:05 +0300
+Last updated: 2026-06-04 23:14 +0300
 
 ## Objective
 
@@ -52,8 +52,8 @@ Out of scope:
   - Source: User requirement: auto fetch confirmation that selected model supports photo input.
   - Acceptance: OpenCode discovery image capability is carried through `DiscoveredLlmModel` and `ModelRouteView`; web model route response exposes a boolean such as `supports_image_input`; existing clients remain serde-compatible.
   - Evidence required: diff review plus `cargo check -p oxide-agent-web-contracts` and `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `supports_image_input` now flows through core discovery metadata, web API DTOs, and the model settings UI. Verified by `cargo check -p oxide-agent-web-contracts`, `cargo test -p oxide-agent-web-contracts`, `cargo check -p oxide-agent-web-ui`, and `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local` on 2026-06-04.
 
 - G2: Core message model supports native image context additively
   - Source: Blast-radius decision from RECON.
@@ -193,6 +193,13 @@ Out of scope:
   - Commands: `git status --short`; `git log --oneline -5`; diff review of current OpenCode Go vision changes; `git diff --check`; `cargo fmt --check`; `cargo test -p oxide-agent-core --no-default-features --features llm-opencode-go opencode_go --lib` (65 passed); `cargo clippy -p oxide-agent-core --no-default-features --features llm-opencode-go --lib`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`.
   - Audit IDs updated: none.
   - Next: Checkpoint 1, surface image capability through web model-route contracts/API/UI.
+
+- 2026-06-04 23:14 +0300: Checkpoint 1 completed.
+  - Changed: Added `supports_image_input` to shared discovered model metadata and `ModelRouteView`; mapped it in web model routes; showed image support in the web model selector option label and metadata row.
+  - Evidence: G1 verified. Existing route payloads without the new field deserialize with `supports_image_input = false`; no Cargo dependency changes were made.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-contracts`; `cargo test -p oxide-agent-web-contracts`; `cargo check -p oxide-agent-web-ui`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
+  - Audit IDs updated: G1 verified; N2 preserved for this checkpoint.
+  - Next: Checkpoint 2, add additive core media refs and text projection helpers without replacing `Message.content`.
 
 ## Risks and Blockers
 

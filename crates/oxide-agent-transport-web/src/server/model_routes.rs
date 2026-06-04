@@ -68,6 +68,7 @@ fn model_route_view_from_discovered(model: DiscoveredLlmModel) -> ModelRouteView
         qualified_id: model.qualified_id,
         display_name: model.display_name,
         protocol,
+        supports_image_input: model.supports_image_input,
         source: model_route_source_view(&model.source),
         fetched_at: model.fetched_at,
         runnable: protocol != ModelRouteProtocolView::Unknown,
