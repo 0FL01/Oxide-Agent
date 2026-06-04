@@ -42,9 +42,7 @@ services:
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
       - SANDBOX_BACKEND=broker
       - SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock
-      - DUCKDUCKGO_ENABLED=true
-      - DUCKDUCKGO_MIN_DELAY_MS=2500
-      - DUCKDUCKGO_JITTER_MS=1500
+      - DUCKDUCKGO_ENABLED=false
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY:-}
       - BRAVE_SEARCH_ENABLED=${BRAVE_SEARCH_ENABLED:-}
       - BRAVE_SEARCH_TIMEOUT_SECS=${BRAVE_SEARCH_TIMEOUT_SECS:-10}
@@ -54,9 +52,11 @@ services:
       - BRAVE_SEARCH_SAFESEARCH=${BRAVE_SEARCH_SAFESEARCH:-moderate}
       - BRAVE_SEARCH_MAX_CONCURRENT=${BRAVE_SEARCH_MAX_CONCURRENT:-1}
       - BRAVE_SEARCH_MIN_DELAY_MS=${BRAVE_SEARCH_MIN_DELAY_MS:-1000}
-      - SEARXNG_ENABLED=true
-      - SEARXNG_URL=http://127.0.0.1:8081
-      - OXIDE_CRAWL4AI_BASE_URL=http://127.0.0.1:11235
+      - SEARXNG_ENABLED=${SEARXNG_ENABLED:-true}
+      - SEARXNG_URL=${SEARXNG_URL:-}
+      - SEARXNG_BEARER_TOKEN=${SEARXNG_BEARER_TOKEN:-}
+      - OXIDE_CRAWL4AI_BASE_URL=${OXIDE_CRAWL4AI_BASE_URL:-}
+      - OXIDE_CRAWL4AI_API_TOKEN=${OXIDE_CRAWL4AI_API_TOKEN:-}
       - TZ=Europe/Moscow
       - RUST_LOG=oxide_agent_core=info,oxide_agent_core::agent::providers::crawl4ai_markdown=debug,oxide_agent_transport_web=info,oxide_agent_runtime=info,zai_rs=warn,hyper=warn,h2=error,reqwest=warn,tokio=warn,tower=warn,async_openai=warn
       - DEBUG_MODE=false
@@ -66,10 +66,6 @@ services:
     network_mode: host
     depends_on:
       sandboxd:
-        condition: service_healthy
-      searxng:
-        condition: service_healthy
-      crawl4ai:
         condition: service_healthy
     logging:
       driver: json-file
@@ -103,52 +99,6 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
-    logging:
-      driver: json-file
-      options:
-        max-size: "1m"
-        max-file: "3"
-
-  searxng:
-    image: searxng/searxng:2026.5.31-300695de5
-    container_name: searxng
-    restart: unless-stopped
-    environment:
-      - TZ=Europe/Moscow
-      - SEARXNG_BASE_URL=http://127.0.0.1:8081/
-      - GRANIAN_HOST=0.0.0.0
-      - GRANIAN_PORT=8080
-    ports:
-      - "127.0.0.1:8081:8080"
-    volumes:
-      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "1m"
-        max-file: "3"
-
-  crawl4ai:
-    image: unclecode/crawl4ai:0.8.7
-    container_name: crawl4ai
-    restart: unless-stopped
-    shm_size: "3g"
-    environment:
-      - TZ=Europe/Moscow
-    ports:
-      - "127.0.0.1:11235:11235"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:11235/health || wget -qO- http://localhost:11235/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 30s
     logging:
       driver: json-file
       options:

@@ -123,25 +123,17 @@ The bot supports **8 providers** for Agent Mode with tool calling:
 
 ## Installation and Launch
 
-<details>
-<summary>Installation Instructions (Docker and Source)</summary>
+Deployment guide: [`docs/deploy.md`](docs/deploy.md).
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/0FL01/oxide-agent.git
-    cd oxide-agent
-    ```
+Quick Docker start:
 
-2.  **Configure environment variables:**
-    Create `.env` based on `.env.example`.
-
-3.  **Build and run the bot:**
-    ```bash
-    docker-compose up --build -d
-    ```
-
-**Note:** The default Docker Compose configuration uses `SANDBOX_BACKEND=broker` which requires the `oxide-agent-sandboxd` container. To use direct Docker access, set `SANDBOX_BACKEND=docker`. For bare-host Bubblewrap mode, build `profile-host-bwrap` and follow `docs/bwrap-sandbox.md`.
-</details>
+```bash
+git clone https://github.com/0FL01/oxide-agent.git
+cd oxide-agent
+cp .env.example .env
+$EDITOR .env
+docker compose up --build -d
+```
 
 <details>
 <summary>Alpine 3.23 deployment from the release binary (embedded profile)</summary>
@@ -318,6 +310,7 @@ DUCKDUCKGO_MIN_DELAY_MS=2500
 DUCKDUCKGO_JITTER_MS=1500
 # SEARXNG_ENABLED=true
 # SEARXNG_URL=http://127.0.0.1:8081
+# SEARXNG_BEARER_TOKEN=...
 # SearXNG — fallback/self-hosted aggregator.
 
 # Crawl4AI (browser-rendered Markdown)
@@ -698,49 +691,7 @@ Enhanced reminder scheduling with pause/resume/retry support.
 
 ## Deployment
 
-<details>
-<summary>Docker Architecture</summary>
-
-### Services
-
-The default Docker Compose deployment uses the broker backend. Bare-host Bubblewrap mode is documented separately in `docs/bwrap-sandbox.md` and is not enabled by this Compose file.
-
-1. **sandbox_image**
-    - Builds the selected sandbox image variant, with full/dev using `sandbox/Dockerfile.dev`
-    - One-shot build service used during `docker compose up --build`
-
-2. **oxide_agent** (main bot)
-   - Builds from `docker/Dockerfile.app` with the full profile by default
-   - Network mode: `host`
-   - Mounts: `./config:/app/config`, `sandboxd-run:/run/sandboxd`
-   - Environment: `SANDBOX_BACKEND=broker`, `SANDBOXD_SOCKET=/run/sandboxd/sandboxd.sock`
-
-3. **sandboxd** (broker daemon)
-   - Uses the same full-profile `docker/Dockerfile.app` image
-   - Command: `./oxide-agent-sandboxd`
-   - Runs as user 0 (privileged for Docker access)
-   - Mounts: `/var/run/docker.sock:/var/run/docker.sock` (only sandboxd has Docker access)
-   - Socket: `/run/sandboxd/sandboxd.sock`
-
-### Sandbox Broker Protocol
-- Unix socket communication with binary serialization (bincode)
-- Frame format: `[u64 length][payload]`
-- Operations: List, Inspect, Create, Delete, Exec, Read/Write files, Upload/Download, Cleanup
-
-### Docker Profile Overlays
-Profile-specific Compose overlays in `docker/`:
-- `compose.full.yml` - Full production profile
-- `compose.embedded-opencode-local.yml` - Embedded + local OpenCode
-- `compose.dev.yml` - Development overlay
-- `compose.media.yml` - Media processing profile
-- `compose.search.yml` - Search-only profile
-
-### CI/CD Pipeline
-- **Test job:** `cargo check`, `cargo clippy`, `cargo test`, `cargo fmt`
-- **Validate credentials:** Integration tests with real API keys
-- **Deploy job:** SSH deployment to production server, dynamic docker-compose generation
-- **Docker workflow:** Multi-platform builds with Docker Buildx, pushes to Docker Hub
-</details>
+See [`docs/deploy.md`](docs/deploy.md) for Docker, external services, sandbox, and operations notes.
 
 ## Usage
 

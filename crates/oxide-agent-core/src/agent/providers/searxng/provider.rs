@@ -6,7 +6,7 @@ use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
 };
-use crate::config::{get_searxng_rotation_engines, get_searxng_timeout};
+use crate::config::{get_searxng_bearer_token, get_searxng_rotation_engines, get_searxng_timeout};
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -30,8 +30,22 @@ impl SearxngProvider {
 
     /// Create a provider with an explicit HTTP timeout.
     pub fn new_with_timeout(base_url: &str, timeout: Duration) -> Result<Self> {
+        Self::new_with_timeout_and_bearer_token(base_url, timeout, get_searxng_bearer_token())
+    }
+
+    /// Create a provider with an explicit HTTP timeout and optional Bearer token.
+    pub fn new_with_timeout_and_bearer_token(
+        base_url: &str,
+        timeout: Duration,
+        bearer_token: Option<String>,
+    ) -> Result<Self> {
         Ok(Self {
-            client: SearxngClient::new(base_url, timeout, get_searxng_rotation_engines())?,
+            client: SearxngClient::new(
+                base_url,
+                timeout,
+                get_searxng_rotation_engines(),
+                bearer_token,
+            )?,
         })
     }
 

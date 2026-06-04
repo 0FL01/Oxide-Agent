@@ -109,6 +109,8 @@ pub struct AgentSettings {
     pub searxng_enabled: Option<bool>,
     /// SearXNG request timeout (seconds).
     pub searxng_timeout_secs: Option<u64>,
+    /// Optional SearXNG Bearer token for protected deployments.
+    pub searxng_bearer_token: Option<String>,
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
 
@@ -820,6 +822,15 @@ impl AgentSettings {
 
         if self.searxng_enabled.is_none() {
             self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
+        }
+
+        if self.searxng_bearer_token.is_none() {
+            if let Ok(val) = std::env::var("SEARXNG_BEARER_TOKEN") {
+                let val = val.trim();
+                if !val.is_empty() {
+                    self.searxng_bearer_token = Some(val.to_string());
+                }
+            }
         }
     }
 
@@ -2062,6 +2073,24 @@ mod tests {
     }
 
     #[test]
+    fn searxng_bearer_token_uses_only_non_empty_env() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::remove_var("SEARXNG_BEARER_TOKEN");
+
+        assert_eq!(get_searxng_bearer_token(), None);
+
+        env::set_var("SEARXNG_BEARER_TOKEN", "  ");
+        assert_eq!(get_searxng_bearer_token(), None);
+
+        env::set_var("SEARXNG_BEARER_TOKEN", " test-token ");
+        assert_eq!(get_searxng_bearer_token(), Some("test-token".to_string()));
+
+        env::remove_var("SEARXNG_BEARER_TOKEN");
+    }
+
+    #[test]
     fn searxng_rotation_engines_use_defaults_when_env_missing() {
         let _guard = test_env_mutex()
             .lock()
@@ -2615,6 +2644,17 @@ pub fn get_duckduckgo_backoff_config() -> DuckDuckGoBackoffConfig {
 #[must_use]
 pub fn get_searxng_url() -> Option<String> {
     std::env::var("SEARXNG_URL").ok().filter(|s| !s.is_empty())
+}
+
+/// Get optional SearXNG Bearer token from env.
+///
+/// Environment variable: `SEARXNG_BEARER_TOKEN`
+#[must_use]
+pub fn get_searxng_bearer_token() -> Option<String> {
+    std::env::var("SEARXNG_BEARER_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Determine whether SearXNG tools should be registered.
