@@ -8,6 +8,7 @@ use crate::llm::{
     ToolDefinition,
 };
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use discovery::{
     ModelProtocol, OpenCodeGoDiscoveryConfig, OpenCodeGoModelCatalog, OPENCODE_GO_PROVIDER_ID,
     OPENCODE_ZEN_PROVIDER_ID,
@@ -28,6 +29,7 @@ const OPENCODE_GO_COOLDOWN_STEP_SECS: u64 = 5;
 const OPENCODE_GO_MAX_COOLDOWN_SECS: u64 = 60;
 const OPENCODE_GO_SUCCESS_STREAK_TO_INCREASE: usize = 3;
 const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
+const OPENCODE_GO_IMAGE_ANALYSIS_MAX_TOKENS: u32 = 4000;
 
 /// Reasoning effort sent for models that support thinking/CoT parameters.
 const OPENCODE_GO_REASONING_EFFORT: &str = "high";
@@ -507,15 +509,75 @@ impl LlmProvider for OpenCodeGoProvider {
 
     async fn analyze_image(
         &self,
-        _image_bytes: Vec<u8>,
-        _text_prompt: &str,
-        _system_prompt: &str,
-        _model_id: &str,
+        image_bytes: Vec<u8>,
+        text_prompt: &str,
+        system_prompt: &str,
+        model_id: &str,
     ) -> Result<String, LlmError> {
-        Err(LlmError::Unknown(format!(
-            "Image analysis not supported by {}",
-            self.profile.display_name
-        )))
+        if !discovery::supports_image_input_for_model_id(model_id) {
+            return Err(LlmError::ApiError(format!(
+                "{} model '{}' is not approved for image input",
+                self.profile.display_name,
+                normalize_model_id_for_prefix(model_id, self.profile.model_prefix)
+            )));
+        }
+
+        let protocol = self.resolve_model_protocol(model_id).await;
+        let (request_kind, api_base, body, extra_headers): (&str, &str, Value, Vec<(&str, &str)>) =
+            match protocol {
+                ModelProtocol::OpenAiChatCompletions => (
+                    "image_analysis",
+                    &self.api_base,
+                    build_image_analysis_body(&image_bytes, text_prompt, system_prompt, model_id),
+                    Vec::new(),
+                ),
+                ModelProtocol::AnthropicMessages => {
+                    return Err(LlmError::ApiError(format!(
+                        "{} image analysis requires OpenAI Chat Completions protocol for model '{}'",
+                        self.profile.display_name,
+                        normalize_model_id_for_prefix(model_id, self.profile.model_prefix)
+                    )));
+                }
+                ModelProtocol::Unknown => {
+                    return Err(unsupported_protocol_error(model_id, self.profile))
+                }
+            };
+
+        let _permit = self.throttle.acquire(model_id).await;
+        log_request_summary(OpenCodeRequestLog {
+            profile: self.profile,
+            request_kind,
+            api_base,
+            model_id,
+            max_tokens: OPENCODE_GO_IMAGE_ANALYSIS_MAX_TOKENS,
+            temperature: OPENCODE_GO_CHAT_TEMPERATURE,
+            json_mode: false,
+            body: &body,
+        });
+
+        let auth = format!("Bearer {}", self.api_key);
+        let result = async {
+            let response = send_json_request(
+                &self.http_client,
+                api_base,
+                &body,
+                Some(&auth),
+                &extra_headers,
+            )
+            .await?;
+            let parsed = parse_chat_response(response)?;
+            log_response_summary(self.profile, request_kind, model_id, &parsed);
+
+            parsed.content.ok_or_else(|| {
+                LlmError::ApiError(format!(
+                    "{} returned no text content for image analysis",
+                    self.profile.display_name
+                ))
+            })
+        }
+        .await;
+        self.throttle.record_result(&result);
+        result
     }
 
     async fn chat_with_tools<'a>(
@@ -785,6 +847,63 @@ fn build_chat_completion_body(
     }
 
     body
+}
+
+fn build_image_analysis_body(
+    image_bytes: &[u8],
+    text_prompt: &str,
+    system_prompt: &str,
+    model_id: &str,
+) -> Value {
+    let mut body = json!({
+        "model": normalize_model_id(model_id),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": text_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_data_url(image_bytes)}
+                    }
+                ]
+            }
+        ],
+        "max_tokens": OPENCODE_GO_IMAGE_ANALYSIS_MAX_TOKENS,
+        "temperature": OPENCODE_GO_CHAT_TEMPERATURE,
+        "stream": false,
+    });
+
+    if is_reasoning_model(model_id) {
+        body["reasoning_effort"] = json!(OPENCODE_GO_REASONING_EFFORT);
+    }
+
+    body
+}
+
+fn image_data_url(image_bytes: &[u8]) -> String {
+    format!(
+        "data:{};base64,{}",
+        infer_image_mime_type(image_bytes),
+        BASE64.encode(image_bytes)
+    )
+}
+
+fn infer_image_mime_type(image_bytes: &[u8]) -> &'static str {
+    if image_bytes.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1A, b'\n']) {
+        return "image/png";
+    }
+    if image_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return "image/jpeg";
+    }
+    if image_bytes.starts_with(b"GIF87a") || image_bytes.starts_with(b"GIF89a") {
+        return "image/gif";
+    }
+    if image_bytes.starts_with(b"RIFF") && image_bytes.get(8..12) == Some(b"WEBP") {
+        return "image/webp";
+    }
+    "image/jpeg"
 }
 
 fn build_anthropic_completion_body(
