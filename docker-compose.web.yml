@@ -138,7 +138,7 @@ services:
     image: unclecode/crawl4ai:0.8.7
     container_name: crawl4ai
     restart: unless-stopped
-    shm_size: "1g"
+    shm_size: "3g"
     environment:
       - TZ=Europe/Moscow
     ports:
