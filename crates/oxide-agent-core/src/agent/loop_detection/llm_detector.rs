@@ -279,6 +279,7 @@ impl LlmLoopDetector {
         Message {
             role: role.to_string(),
             content: message.content.clone(),
+            content_parts: Vec::new(),
             reasoning_content: message.reasoning.clone(),
             tool_call_id: message.tool_call_id.clone(),
             tool_call_correlation: message.resolved_tool_call_correlation(),

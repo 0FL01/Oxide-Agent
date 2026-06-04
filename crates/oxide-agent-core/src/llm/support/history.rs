@@ -491,6 +491,7 @@ mod tests {
             Message {
                 role: "assistant".to_string(),
                 content: "calling tools".to_string(),
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_call_id: None,
                 tool_call_correlation: None,
@@ -501,6 +502,7 @@ mod tests {
             Message {
                 role: "tool".to_string(),
                 content: "result".to_string(),
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_call_id: Some("provider-b".to_string()),
                 tool_call_correlation: Some(correlation),
@@ -526,6 +528,7 @@ mod tests {
         let messages = vec![Message {
             role: "assistant".to_string(),
             content: "calling tools".to_string(),
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -555,6 +558,7 @@ mod tests {
             Message {
                 role: "assistant".to_string(),
                 content: "calling tools".to_string(),
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_call_id: None,
                 tool_call_correlation: None,
@@ -565,6 +569,7 @@ mod tests {
             Message {
                 role: "tool".to_string(),
                 content: "result".to_string(),
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_call_id: Some("invoke-1".to_string()),
                 tool_call_correlation: Some(tool_result_correlation),

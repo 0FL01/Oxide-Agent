@@ -111,6 +111,7 @@ impl AgentRunner {
                 Message {
                     role: role.to_string(),
                     content: msg.content.clone(),
+                    content_parts: Vec::new(),
                     reasoning_content: msg.reasoning.clone(),
                     tool_call_id: msg.tool_call_id.clone(),
                     tool_call_correlation: msg.resolved_tool_call_correlation(),

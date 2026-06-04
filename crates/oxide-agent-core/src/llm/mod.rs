@@ -31,9 +31,9 @@ pub use provider::MockLlmProvider;
 ))]
 pub use support::http;
 pub use types::{
-    ChatResponse, ChatWithToolsRequest, InvocationId, Message, ProviderItemId, ProviderToolCallId,
-    TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition, ToolProtocol,
-    ToolTransport,
+    ChatResponse, ChatWithToolsRequest, InvocationId, Message, MessageContentPart, ProviderItemId,
+    ProviderToolCallId, TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction,
+    ToolDefinition, ToolProtocol, ToolTransport,
 };
 
 #[cfg(test)]

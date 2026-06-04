@@ -73,7 +73,10 @@ pub use input_intent::{
     AgentInputSessionStatus,
 };
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
-pub use memory::{AgentMemory, ExternalizedPayload, PrunedArtifact};
+pub use memory::{
+    AgentMemory, AgentMessageAttachment, AgentMessageAttachmentKind, ExternalizedPayload,
+    PrunedArtifact,
+};
 pub use memory_behavior::{
     MemoryBehaviorRuntime, ToolDerivedMemoryDraft, ToolDerivedMemoryKind, TopicMemoryPolicy,
 };

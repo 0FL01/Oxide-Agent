@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-04-native-multimodal-web-images.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after RECON: native vision for compatible selected models, `describe_image_file` fallback for text-only models, and blast-radius-safe `Message` content-parts design.
 Goal doc owner: Codex
-Last updated: 2026-06-04 23:14 +0300
+Last updated: 2026-06-04 23:26 +0300
 
 ## Objective
 
@@ -32,7 +32,7 @@ Out of scope:
 
 ## Missing Inputs
 
-- None required for checkpoint 1.
+- None required.
 
 ## Repository Context
 
@@ -59,8 +59,8 @@ Out of scope:
   - Source: Blast-radius decision from RECON.
   - Acceptance: `content: String` remains the canonical text projection; new content-part or attachment-ref metadata is optional, serde-defaulted, and limited to user image context. Old memory JSON deserializes without migration.
   - Evidence required: focused unit tests for old JSON deserialization and text-only message behavior.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `Message.content` and `AgentMessage.content` remain string text projections; additive user-only media refs/content parts were added with serde-safe defaults and transient `Message` parts skipped from serialization. Verified by focused core tests on 2026-06-04.
 
 - G3: Executor and runner can carry web image refs without raw-byte persistence
   - Source: Web attachment flow RECON.
@@ -95,14 +95,14 @@ Out of scope:
   - Acceptance: Media parts are never attached to assistant tool-call messages or tool-result messages; `ToolResultEncoder` stays string-based; strict tool history repair still passes.
   - Evidence required: focused diff review and existing tool-history tests for touched areas.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Checkpoint 2 helpers attach native parts/refs only to user messages; assistant/tool helper paths remain string-only and `ToolResultEncoder` was not changed.
 
 - Q2: No raw media bloat in memory, compaction, or storage
   - Source: RECON blast-radius and storage constraints.
   - Acceptance: Raw image bytes/base64 are transient only; token accounting and compaction use text projection plus bounded placeholders; R2 memory snapshots do not include raw media payloads.
   - Evidence required: serialization test and diff review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Checkpoint 2 stores only file metadata and sandbox paths in `AgentMessage`; `Message` native parts are skipped by serde; token counting remains based on `content` text projection.
 
 - N1: No broad provider rollout in the first implementation
   - Source: Over-engineering guardrail.
@@ -200,6 +200,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-contracts`; `cargo test -p oxide-agent-web-contracts`; `cargo check -p oxide-agent-web-ui`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
   - Audit IDs updated: G1 verified; N2 preserved for this checkpoint.
   - Next: Checkpoint 2, add additive core media refs and text projection helpers without replacing `Message.content`.
+
+- 2026-06-04 23:26 +0300: Checkpoint 2 completed.
+  - Changed: Added user-only `AgentMessageAttachment` refs, transient `MessageContentPart` image parts, text projection helpers, and text-only degradation helpers without replacing string content.
+  - Evidence: G2 verified. Attachment refs serialize without raw bytes/base64 fields, old memory JSON without attachment refs deserializes, native parts are skipped from `Message` serialization, and attachment refs do not affect token counts.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local content_parts`; `cargo test -p oxide-agent-core --lib --no-default-features --features profile-web-embedded-opencode-local attachment_refs`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --bin oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --check`; `git diff --check`.
+  - Audit IDs updated: G2 verified; Q1, Q2 evidence added for this checkpoint; N2 preserved.
+  - Next: Checkpoint 3, introduce attachment-aware execution input while keeping existing `execute_with_options(&str, ...)` wrappers.
 
 ## Risks and Blockers
 

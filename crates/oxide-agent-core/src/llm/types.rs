@@ -2,6 +2,33 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Transient non-text content attached to a user message for provider-native
+/// multimodal requests.
+///
+/// The canonical `Message.content` string remains the stable text projection
+/// used by history, compaction, cache ordering, and text-only provider fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageContentPart {
+    /// Image bytes resolved shortly before an LLM request.
+    Image {
+        /// Image MIME type, for example `image/jpeg`.
+        mime_type: String,
+        /// Raw image bytes. These are transient and must not be persisted.
+        bytes: Vec<u8>,
+    },
+}
+
+impl MessageContentPart {
+    /// Create an image content part from transient bytes.
+    #[must_use]
+    pub fn image(mime_type: impl Into<String>, bytes: Vec<u8>) -> Self {
+        Self::Image {
+            mime_type: mime_type.into(),
+            bytes,
+        }
+    }
+}
+
 /// A message in an LLM conversation
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
@@ -9,6 +36,9 @@ pub struct Message {
     pub role: String,
     /// Text content of the message
     pub content: String,
+    /// Transient provider-native non-text parts for user messages.
+    #[serde(skip)]
+    pub content_parts: Vec<MessageContentPart>,
     /// Optional reasoning/thinking content required by some thinking-mode chat providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
@@ -36,6 +66,7 @@ impl Message {
         Self {
             role: "user".to_string(),
             content: content.to_string(),
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -51,6 +82,7 @@ impl Message {
         Self {
             role: "assistant".to_string(),
             content: content.to_string(),
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -78,6 +110,7 @@ impl Message {
         Self {
             role: "assistant".to_string(),
             content: content.to_string(),
+            content_parts: Vec::new(),
             reasoning_content,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -109,6 +142,7 @@ impl Message {
         Self {
             role: "tool".to_string(),
             content: content.to_string(),
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_call_id: Some(tool_call_id.to_string()),
             tool_call_correlation: Some(tool_call_correlation),
@@ -124,6 +158,7 @@ impl Message {
         Self {
             role: "system".to_string(),
             content: content.to_string(),
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
@@ -152,6 +187,44 @@ impl Message {
             Some(correlations) if correlations.len() == derived.len() => Some(correlations.clone()),
             _ => Some(derived),
         }
+    }
+
+    /// Return the stable text projection used by text-only providers and memory logic.
+    #[must_use]
+    pub fn text_projection(&self) -> &str {
+        &self.content
+    }
+
+    /// Attach provider-native content parts to a user message.
+    ///
+    /// Non-user messages deliberately remain text-only to preserve tool-call history
+    /// invariants across strict providers.
+    #[must_use]
+    pub fn with_user_content_parts(mut self, content_parts: Vec<MessageContentPart>) -> Self {
+        if self.role == "user" {
+            self.content_parts = content_parts;
+        }
+        self
+    }
+
+    /// Return `true` when this message carries transient provider-native parts.
+    #[must_use]
+    pub fn has_content_parts(&self) -> bool {
+        !self.content_parts.is_empty()
+    }
+
+    /// Clone the message with native parts stripped, preserving the text projection.
+    #[must_use]
+    pub fn to_text_only(&self) -> Self {
+        let mut message = self.clone();
+        message.content_parts.clear();
+        message
+    }
+
+    /// Clone a message slice with native parts stripped for text-only providers.
+    #[must_use]
+    pub fn to_text_only_messages(messages: &[Self]) -> Vec<Self> {
+        messages.iter().map(Self::to_text_only).collect()
     }
 }
 
@@ -567,7 +640,34 @@ pub struct ChatWithToolsRequest<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::TokenUsage;
+    use super::{Message, MessageContentPart, TokenUsage};
+
+    #[test]
+    fn content_parts_are_transient_and_text_only_degradation_preserves_text() {
+        let message = Message::user("What is shown?")
+            .with_user_content_parts(vec![MessageContentPart::image("image/png", vec![1, 2, 3])]);
+
+        assert_eq!(message.text_projection(), "What is shown?");
+        assert!(message.has_content_parts());
+
+        let serialized = serde_json::to_value(&message).expect("message serializes");
+        assert_eq!(serialized["content"], "What is shown?");
+        assert!(serialized.get("content_parts").is_none());
+
+        let text_only = message.to_text_only();
+        assert_eq!(text_only.text_projection(), "What is shown?");
+        assert!(!text_only.has_content_parts());
+    }
+
+    #[test]
+    fn content_parts_are_limited_to_user_messages() {
+        let message = Message::assistant("Tool call coming").with_user_content_parts(vec![
+            MessageContentPart::image("image/jpeg", vec![0xFF, 0xD8]),
+        ]);
+
+        assert_eq!(message.text_projection(), "Tool call coming");
+        assert!(!message.has_content_parts());
+    }
 
     #[test]
     fn token_usage_deserializes_old_format_without_cache_fields() {
