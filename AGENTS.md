@@ -124,7 +124,7 @@ Default branch: `dev`.
 - Layered: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + env vars. Config files optional (`required(false)`).
 - Provider secrets in `modules.<module-id>` with env fallbacks.
 - Key runtime: DuckDuckGo, model routes, temperature, compaction budget, sandbox backend (`SANDBOX_BACKEND`, `BWRAP_*`), Jira MCP, wiki memory writer.
-- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Profile overlays in `docker/`.
+- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local SearXNG/Crawl4AI overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Profile overlays in `docker/`.
 
 ## Development Practices
 
@@ -175,6 +175,7 @@ feat(sources): add bybit proof of reserves source
 - `docs/silero-tts-api.md` - Silero TTS integration for Russian voice.
 - `docs/context-window-tracking.md` - token budget and context window management.
 - `docs/stack-logs-stage0.md` - stack logs tool: Docker Compose log access.
+- `docs/deploy.md` - concise deploy guide, optional external services, local service overlays, operations.
 - `README.md` - product overview and user-facing setup notes.
 - `config/` and `.env.example` - runtime configuration examples.
 
