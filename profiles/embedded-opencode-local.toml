@@ -4,6 +4,7 @@ cargo_features = ["profile-embedded-opencode-local"]
 [modules]
 "transport/telegram" = { enabled = true }
 "storage/r2" = { enabled = true }
+"storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "sandbox-backend/bwrap" = { enabled = true }
 "sandbox-backend/docker-direct" = { enabled = true }

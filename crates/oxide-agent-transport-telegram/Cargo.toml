@@ -29,17 +29,19 @@ serde_json = "1.0"
 
 [features]
 default = []
-profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2"]
+profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2", "storage-sqlx"]
 profile-embedded-opencode-local = [
     "oxide-agent-core/profile-embedded-opencode-local",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
-profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2"]
-profile-search-only = ["oxide-agent-core/profile-search-only", "storage-s3-r2"]
-profile-no-sandbox = ["oxide-agent-core/profile-no-sandbox", "storage-s3-r2"]
-profile-media-enabled = ["oxide-agent-core/profile-media-enabled", "storage-s3-r2"]
-profile-host-bwrap = ["oxide-agent-core/profile-host-bwrap", "storage-s3-r2"]
+profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2", "storage-sqlx"]
+profile-search-only = ["oxide-agent-core/profile-search-only", "storage-s3-r2", "storage-sqlx"]
+profile-no-sandbox = ["oxide-agent-core/profile-no-sandbox", "storage-s3-r2", "storage-sqlx"]
+profile-media-enabled = ["oxide-agent-core/profile-media-enabled", "storage-s3-r2", "storage-sqlx"]
+profile-host-bwrap = ["oxide-agent-core/profile-host-bwrap", "storage-s3-r2", "storage-sqlx"]
 storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
+storage-sqlx = ["oxide-agent-core/storage-sqlx"]
 
 [dev-dependencies]
 lazy-regex = "3.5.1"

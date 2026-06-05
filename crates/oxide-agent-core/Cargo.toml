@@ -67,6 +67,8 @@ fastrand = "2.3.0"
 htmd = { version = "0.5.4", optional = true }
 url = "2.5.7"
 fs2 = { version = "0.4.3", optional = true }
+sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "json", "uuid", "migrate"], optional = true }
+sqlx-postgres = { version = "0.8.6", default-features = false, features = ["chrono", "json", "uuid", "migrate"], optional = true }
 
 [package.metadata.cargo-machete]
 ignored = ["serde_bytes"]
@@ -81,6 +83,7 @@ profile-full = [
     "transport-telegram",
     "transport-web",
     "storage-s3-r2",
+    "storage-sqlx",
     "llm-chatgpt",
     "llm-mistral",
     "llm-minimax",
@@ -121,6 +124,7 @@ profile-full = [
 profile-embedded-opencode-local = [
     "transport-telegram",
     "storage-s3-r2",
+    "storage-sqlx",
     "llm-opencode-go",
     "tool-todos",
     "tool-compression",
@@ -146,6 +150,7 @@ profile-embedded-opencode-local = [
 profile-web-embedded-opencode-local = [
     "transport-web",
     "storage-s3-r2",
+    "storage-sqlx",
     "llm-opencode-go",
     "tool-todos",
     "tool-compression",
@@ -170,6 +175,7 @@ profile-web-embedded-opencode-local = [
 profile-lite = [
     "transport-telegram",
     "storage-s3-r2",
+    "storage-sqlx",
     "llm-opencode-go",
     "tool-todos",
     "tool-webfetch-md",
@@ -178,6 +184,7 @@ profile-lite = [
 profile-search-only = [
     "transport-telegram",
     "storage-s3-r2",
+    "storage-sqlx",
     "llm-opencode-go",
     "tool-webfetch-md",
     "tool-tavily",
@@ -188,6 +195,7 @@ profile-search-only = [
 profile-no-sandbox = [
     "transport-telegram",
     "storage-s3-r2",
+    "storage-sqlx",
     "llm-opencode-go",
     "tool-todos",
     "tool-webfetch-md",
@@ -197,6 +205,7 @@ profile-no-sandbox = [
 profile-media-enabled = [
     "transport-telegram",
     "storage-s3-r2",
+    "storage-sqlx",
     "llm-opencode-go",
     "tool-media-audio",
     "tool-media-image",
@@ -206,6 +215,7 @@ profile-media-enabled = [
 profile-host-bwrap = [
     "transport-telegram",
     "storage-s3-r2",
+    "storage-sqlx",
     "llm-opencode-go",
     "llm-openrouter",
     "tool-todos",
@@ -242,6 +252,7 @@ storage-s3-r2 = [
     "dep:aws-credential-types",
     "dep:aws-types",
 ]
+storage-sqlx = ["dep:sqlx-core", "dep:sqlx-postgres"]
 storage-local-fs = []
 
 # LLM providers

@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-05-r2-to-postgres-storage.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/PRD-r2-to-pg.md`
 Goal doc owner: Codex
-Last updated: 2026-06-05 17:19 +03
+Last updated: 2026-06-05 18:34 +03
 
 ## Objective
 
@@ -89,8 +89,8 @@ Out of scope:
   - Requirement: Add SQLx/Postgres dependency/config, shared `PgPool`, DB health check, migration strategy, `storage/sqlx` capability/profile entries, and local Postgres CI/test strategy.
   - Acceptance: SQLx foundation builds, connects to Postgres, verifies health/migrations, appears in capability/profile outputs, and introduces no SQLite dependency.
   - Evidence required: Focused Cargo/profile diffs, migration files, capability command output, `cargo check` for affected profiles, DB health test, and CI Postgres evidence.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 1 added direct `sqlx-core` + `sqlx-postgres` optional dependencies, `storage-sqlx` feature/profile wiring, `storage/sqlx` capability/config schema, `SqlxStorageConfig`, shared `PgPool` foundation, health query, runtime migration runner, CI Postgres service/smoke step, `.env.example`/deploy/README DB notes, and `migrations/0001_storage_health.sql`. Validation: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`; snapshot tests for all profile/all-features modular registry manifests; Postgres smoke `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_storage_connects_and_runs_migrations_when_test_url_is_set -- --nocapture`; SQLite guard found only the pre-existing sandbox hint `crates/oxide-agent-core/src/agent/preprocessor.rs:432`; `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package; `git diff --check` passed.
 
 - G3: Web persistence uses SQLx/Postgres for durable web state
   - Source: `docs/prd/PRD-r2-to-pg.md:2014`
@@ -138,7 +138,7 @@ Out of scope:
   - Acceptance: `.env.example`, README/current docs, deploy docs, CI/deployment env, and health checks use DB vars; docs state old R2 data is intentionally ignored; no current setup path requires object-storage credentials.
   - Evidence required: Docs/env diff review, local setup smoke or documented command sequence, Supabase compatibility checklist, and CI workflow review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 1 added initial DB vars to `.env.example`, deploy docs, README, and CI Postgres service/smoke strategy; full fresh local/Supabase docs remain pending until SQL-backed runtime paths replace R2 in later phases.
 
 - G9: SQL backend is hardened for production-like use
   - Source: `docs/prd/PRD-r2-to-pg.md:2250`
@@ -160,7 +160,7 @@ Out of scope:
   - Acceptance: No SQLite backend, Supabase Storage bucket, new queue/cache/service, sharding, HA, or broad framework abstraction is added.
   - Evidence required: Cargo diffs, compose/deploy diffs, dependency review, and implementation diff review.
   - Status: pending
-  - Evidence collected: Phase 0 changed only the goal document; no dependency, service, queue/cache, SQLite, Supabase Storage, sharding, HA, or abstraction was added. Re-run after implementation phases.
+  - Evidence collected: Phase 0 changed only the goal document; Phase 1 added only Postgres SQLx foundation dependencies/config, one shared pool, one migration stream, a CI Postgres service, and a smoke test. No SQLite backend, Supabase Storage bucket, Redis/queue/cache, sharding, HA, or extra storage service was added.
 
 - Q3: Data model uses typed columns for queryable fields and JSONB only where justified
   - Source: `docs/prd/PRD-r2-to-pg.md:1230`, `docs/prd/PRD-r2-to-pg.md:2544`
@@ -188,14 +188,14 @@ Out of scope:
   - Acceptance: Relevant `cargo fmt`, `cargo check`, `cargo clippy`, and `cargo test` commands pass for touched crates/profiles at each checkpoint.
   - Evidence required: Command output summaries recorded in Progress Log and Final Verification.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 1 validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`; modular registry snapshot tests passed for `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, `profile-full`, `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, and `all-features`.
 
 - V2: SQL integration and migration validation pass against clean Postgres
   - Source: `docs/prd/PRD-r2-to-pg.md:1206`, `docs/prd/PRD-r2-to-pg.md:2345`
   - Acceptance: Migrations apply to empty Postgres; SQL storage and web persistence contract tests pass without R2 env vars.
   - Evidence required: Postgres test DB command output, migration output, SQL integration test output, CI evidence.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 1 smoke passed against a temporary clean `postgres:16` container on port `55432`: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_storage_connects_and_runs_migrations_when_test_url_is_set -- --nocapture`. The smoke creates a shared pool, runs `migrations/0001_storage_health.sql`, and executes the SQL health query. Full SQL storage/web contract tests remain pending for later porting phases.
 
 - V3: Static dependency/reference guards prove R2/AWS runtime removal
   - Source: `docs/prd/PRD-r2-to-pg.md:2232`, `docs/prd/PRD-r2-to-pg.md:2639`
@@ -223,7 +223,7 @@ Out of scope:
   - Must preserve: No SQLite dependency, feature, migration, tests, docs, or acceptance criteria.
   - Evidence required: Cargo/dependency grep and docs diff review.
   - Status: pending
-  - Evidence collected: Phase 0 search `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example` found only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`, a sandbox/database hint; no SQLite dependency, feature, migration, or storage plan was added. Re-run after implementation phases.
+  - Evidence collected: Phase 0 search `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example` found only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`, a sandbox/database hint. Phase 1 intentionally avoided the top-level `sqlx` crate after it pulled SQLite dependencies; direct `sqlx-core` + `sqlx-postgres` left `Cargo.lock` without `sqlx-sqlite`, `libsqlite3-sys`, or `rusqlite`. Re-run after later implementation phases.
 
 - N3: R2 is not retained as a fallback or feature flag after removal
   - Source: `docs/prd/PRD-r2-to-pg.md:35`, `docs/prd/PRD-r2-to-pg.md:1183`
@@ -280,6 +280,35 @@ Status: complete for implementation planning. This map is not authorization to d
 | `web/users/{user_id}/task_events/{session_id}/{task_id}/chunk-{chunk_no}.json` (`crates/oxide-agent-transport-web/src/persistence/r2.rs:807`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:823`) | `web_task_events` | Append-only rows with unique `(user_id, session_id, task_id, seq)`; no SQL chunk table needed. |
 | `web/users/{user_id}/task_files/{session_id}/{task_id}/{file_id}.json/.bin` (`crates/oxide-agent-transport-web/src/persistence/r2.rs:811`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:835`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:843`) | `web_task_files`, `web_task_file_blobs` or `web_task_files.content BYTEA` | Enforce configurable max size before Phase 2 completion (B1). |
 | R2 health/probe keys | none; DB health/migration check | Replace object write/head/list probes with SQL health query and migration status. |
+
+## Phase 1 SQLx/Postgres Foundation Evidence
+
+Status: complete for foundation. This phase intentionally keeps R2 as the default primary backend while SQLx/Postgres is staged in; broad business storage methods return an explicit unsupported error until entity-porting phases implement them.
+
+### Added foundation artifacts
+
+- Cargo/features: direct optional `sqlx-core` and `sqlx-postgres` dependencies plus `storage-sqlx` feature/profile forwarding; the top-level `sqlx` crate is intentionally not used because it introduced SQLite lockfile entries during exploration.
+- Runtime foundation: `SqlxStorageConfig`, `SqlxStorage`, shared `PgPool`, `SELECT 1` health check, runtime migration runner from a configurable path, and `BuiltStorageBackend.sqlx` sidecar handle during R2/SQLx coexistence.
+- Capability/profile registry: compiled module `storage/sqlx` with DB URL, pool, timeout, migration flag, and migrations-dir config properties; all profile TOMLs enable `storage/sqlx` alongside `storage/r2` for Phase 1 coexistence.
+- Migration stream: `migrations/0001_storage_health.sql` creates the foundation marker table only; business tables remain for Phases 2-5.
+- CI/docs/env: CI has a Postgres service and SQLx smoke step; `.env.example`, deploy docs, and README include initial DB variables and the fresh-storage/no-R2-import note.
+
+### Validation evidence
+
+- `cargo fmt --all -- --check`
+- `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`
+- `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`
+- `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`
+- `cargo check --workspace --no-default-features --features profile-host-bwrap`
+- `cargo check --workspace --no-default-features --features profile-full`
+- `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`
+- `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`
+- `INSTA_UPDATE=always cargo test -p oxide-agent-core --test modular_registry_snapshots ...` for `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, `profile-full`, `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, and `--all-features`
+- `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_storage_connects_and_runs_migrations_when_test_url_is_set -- --nocapture`
+- `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlx-sqlite|libsqlite3-sys|rusqlite|sqlx::sqlite|Sqlite|sqlite' Cargo.toml Cargo.lock crates config .github .env.example docs/deploy.md README.md migrations` matched only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`.
+- `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package.
+- `rg -n --hidden --glob '!target/**' --glob '!.git/**' -e 'query!|migrate!' crates/oxide-agent-core/src/storage migrations` returned no matches.
+- `git diff --check`
 
 ## Implementation Plan
 
@@ -347,6 +376,8 @@ Status: complete for implementation planning. This map is not authorization to d
 - 2026-06-05: Keep one top-level migration stream by default because core and web tables share the same database and may need foreign keys/order guarantees.
 - 2026-06-05: Preserve `StorageProvider` and `WebUiStore` as seams unless implementation evidence shows a simpler local change is required.
 - 2026-06-05: Phase 0 classifies source PRDs, implemented PRDs, and older completed goals as historical/allowed R2 references; current setup docs, profiles, env examples, CI, Cargo features, and runtime code remain planned replacement/deletion targets.
+- 2026-06-05: Phase 1 uses direct `sqlx-core` + `sqlx-postgres` dependencies instead of the top-level `sqlx` crate because the top-level crate pulled `sqlx-sqlite`/`libsqlite3-sys` into `Cargo.lock`, violating the no-SQLite constraint.
+- 2026-06-05: During Phase 1 coexistence, R2 remains primary when `storage/r2` is enabled; `storage/sqlx` can build a sidecar pool when configured or become primary only when R2 is disabled. This avoids a broken SQL primary before Phases 2-5 port business methods.
 
 ## Progress Log
 
@@ -363,6 +394,13 @@ Status: complete for implementation planning. This map is not authorization to d
   - Commands: `rg -l --hidden --glob '!target/**' --glob '!.git/**' -e 'R2|Cloudflare|S3|AWS|storage-s3-r2|storage/r2|OXIDE_R2|aws-sdk|aws_'`; `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example`; `rg -n --hidden --glob '!target/**' --glob '!.git/**' -e 'StorageProvider|WebUiStore|build_primary_storage|R2WebUiStore|InMemoryWebUiStore|durable storage|persistence' crates docs README.md .env.example .github profiles`; `git diff --check` passed.
   - Audit IDs updated: G1 verified; Q1, Q2, N1, and N2 have Phase 0 evidence but remain pending until implementation/final static guards re-run.
   - Next: Phase 1 — SQLx/Postgres foundation.
+
+- 2026-06-05 18:34 +03: Phase 1 SQLx/Postgres foundation completed.
+  - Changed: Added SQLx/Postgres feature/dependency/profile/capability wiring, shared `PgPool` foundation, DB health check, runtime migration runner, foundation migration, CI Postgres smoke step, initial DB env/docs, and capability snapshots.
+  - Evidence: Foundation builds in SQLx-only and production-like profiles, modular registry snapshots include `storage/sqlx`, clean Postgres smoke connected and ran `0001_storage_health.sql`, and static SQLite/dependency guards found no SQLite dependency.
+  - Commands: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`; modular registry snapshot tests for every profile/all-features; SQLx/Postgres smoke test; SQLite/dependency guard `rg`; `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite`; `git diff --check`.
+  - Audit IDs updated: G2 verified; G8, Q2, V1, V2, and N2 received Phase 1 evidence but remain pending for later phases/final audit.
+  - Next: Phase 2 — web persistence on SQLx.
 
 ## Risks and Blockers
 

@@ -18,6 +18,7 @@ cargo_features = ["profile-full"]
 "sandbox-backend/sandboxd-client" = { enabled = true }
 "sandbox-daemon/sandboxd" = { enabled = true }
 "storage/r2" = { enabled = true }
+"storage/sqlx" = { enabled = true }
 "tool/agents-md" = { enabled = true }
 "tool/compression" = { enabled = true }
 "tool/delegation" = { enabled = true }

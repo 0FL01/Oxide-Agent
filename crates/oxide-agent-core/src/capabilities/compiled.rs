@@ -208,6 +208,33 @@ const OPENROUTER_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
             .with_env("OPENROUTER_API_KEY")
             .secret(),
     ];
+#[allow(dead_code)]
+const SQLX_STORAGE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string(
+        "database_url",
+        "Postgres connection URL. Also accepts DATABASE_URL as a runtime fallback.",
+    )
+    .with_env("OXIDE_DATABASE_URL")
+    .secret(),
+    ModuleConfigProperty::string("max_connections", "Maximum Postgres pool connections.")
+        .with_env("OXIDE_DATABASE_MAX_CONNECTIONS")
+        .with_default("5"),
+    ModuleConfigProperty::string(
+        "connect_timeout_secs",
+        "Postgres pool connection/acquire timeout in seconds.",
+    )
+    .with_env("OXIDE_DATABASE_CONNECT_TIMEOUT_SECS")
+    .with_default("10"),
+    ModuleConfigProperty::string(
+        "migrate_on_startup",
+        "Run SQLx migrations during storage startup when set to true.",
+    )
+    .with_env("OXIDE_DATABASE_MIGRATE_ON_STARTUP")
+    .with_default("false"),
+    ModuleConfigProperty::string("migrations_dir", "Runtime path to SQLx migration files.")
+        .with_env("OXIDE_DATABASE_MIGRATIONS_DIR")
+        .with_default("migrations"),
+];
 
 /// Returns the deterministic list of modules compiled into this build.
 #[must_use]
@@ -302,6 +329,14 @@ fn push_transport_and_storage_modules(modules: &mut Vec<Box<dyn CapabilityModule
         "storage/r2",
         StorageBackend,
         ["storage/r2"]
+    );
+    push_module_with_config!(
+        modules,
+        "storage-sqlx",
+        "storage/sqlx",
+        StorageBackend,
+        ["storage/sqlx"],
+        SQLX_STORAGE_CONFIG_PROPERTIES
     );
 }
 
@@ -649,9 +684,9 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "storage-s3-r2")]
+    #[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
     #[test]
-    fn compiled_manifest_exposes_only_r2_as_durable_storage_backend() {
+    fn compiled_manifest_exposes_compiled_durable_storage_backends() {
         let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
         let storage_backend_ids: Vec<_> = manifest
             .modules()
@@ -659,11 +694,16 @@ mod tests {
             .filter(|module| module.kind() == CapabilityKind::StorageBackend)
             .map(|module| module.id().as_str())
             .collect();
+        #[cfg(all(feature = "storage-s3-r2", feature = "storage-sqlx"))]
+        let expected = vec!["storage/r2", "storage/sqlx"];
+        #[cfg(all(feature = "storage-s3-r2", not(feature = "storage-sqlx")))]
+        let expected = vec!["storage/r2"];
+        #[cfg(all(not(feature = "storage-s3-r2"), feature = "storage-sqlx"))]
+        let expected = vec!["storage/sqlx"];
 
         assert_eq!(
-            storage_backend_ids,
-            ["storage/r2"],
-            "S3/R2 must stay the single production durable storage backend"
+            storage_backend_ids, expected,
+            "compiled durable storage backend modules must match active storage features"
         );
     }
 

@@ -16,6 +16,7 @@ This guide covers the supported deployment entrypoints only. Use `.env.example` 
 
 - Docker Engine + Compose for Docker deployments.
 - Cloudflare R2/S3-compatible storage for durable production state.
+- PostgreSQL 15+ or Supabase Postgres for the SQLx durable-storage foundation while the R2-to-Postgres migration is staged.
 - One transport credential: `TELEGRAM_TOKEN` or web bootstrap/login config.
 - At least one LLM route, for example `OPENCODE_GO_API_KEY` + `AGENT_MODEL_*`.
 
@@ -65,9 +66,12 @@ docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.ym
 | Telegram | `TELEGRAM_TOKEN`, `TELEGRAM_ALLOWED_USERS` |
 | Web | `OXIDE_WEB_BOOTSTRAP_TOKEN` for first admin registration when enabled |
 | Storage | `OXIDE_R2_ACCESS_KEY_ID`, `OXIDE_R2_SECRET_ACCESS_KEY`, `OXIDE_R2_ENDPOINT_URL`, `OXIDE_R2_BUCKET_NAME`, `OXIDE_R2_REGION` |
+| Postgres foundation | `OXIDE_DATABASE_URL` or `DATABASE_URL`; optional `OXIDE_DATABASE_MAX_CONNECTIONS`, `OXIDE_DATABASE_CONNECT_TIMEOUT_SECS`, `OXIDE_DATABASE_MIGRATE_ON_STARTUP`, `OXIDE_DATABASE_MIGRATIONS_DIR` |
 | LLM | Provider key, `AGENT_MODEL_ID`, `AGENT_MODEL_PROVIDER`, `SUB_AGENT_MODEL_ID`, `SUB_AGENT_MODEL_PROVIDER` |
 
 The complete variable list lives in `.env.example`.
+
+The SQLx/Postgres backend is being staged in as a fresh-storage replacement for R2. Old R2 objects are intentionally not imported, read, or dual-written. Keep `OXIDE_DATABASE_MIGRATE_ON_STARTUP=false` for production/Supabase unless deployment explicitly runs migrations at startup.
 
 ## Optional external services
 

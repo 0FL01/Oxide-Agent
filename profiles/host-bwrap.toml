@@ -4,6 +4,7 @@ cargo_features = ["profile-host-bwrap"]
 [modules]
 "transport/telegram" = { enabled = true }
 "storage/r2" = { enabled = true }
+"storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "llm-provider/openrouter" = { enabled = true }
 "sandbox-backend/bwrap" = { enabled = true }

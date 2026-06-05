@@ -6,7 +6,11 @@ use async_trait::async_trait;
 
 use crate::config::AgentSettings;
 
-use super::{R2StorageConfig, StorageError, StorageProvider};
+#[cfg(feature = "storage-s3-r2")]
+use super::R2StorageConfig;
+#[cfg(feature = "storage-sqlx")]
+use super::{SqlxStorage, SqlxStorageConfig, SQLX_STORAGE_MODULE_ID};
+use super::{StorageError, StorageProvider};
 
 /// Built storage services exposed by the selected storage backend module.
 pub struct BuiltStorageBackend {
@@ -14,6 +18,9 @@ pub struct BuiltStorageBackend {
     pub module_id: &'static str,
     /// Primary storage provider consumed by runtime and transport code.
     pub provider: Arc<dyn StorageProvider>,
+    /// Optional shared Postgres handle used while the SQL backend is staged in.
+    #[cfg(feature = "storage-sqlx")]
+    pub sqlx: Option<Arc<SqlxStorage>>,
 }
 
 /// Storage backend module descriptor and factory.
@@ -28,13 +35,26 @@ pub trait StorageBackendModule: Send + Sync {
 
 /// Builds the configured primary storage backend.
 ///
-/// S3/R2 is currently the only durable storage backend accepted by the target
-/// architecture, so this factory fails if `storage/r2` is disabled at runtime.
-#[cfg(feature = "storage-s3-r2")]
+/// During the staged R2-to-Postgres migration, R2 remains the primary backend
+/// when enabled; SQLx can be selected by disabling `storage/r2` and enabling
+/// `storage/sqlx`.
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 pub async fn build_primary_storage(
     settings: &AgentSettings,
 ) -> Result<BuiltStorageBackend, StorageError> {
-    R2StorageModule.build(settings).await
+    #[cfg(feature = "storage-s3-r2")]
+    if settings.is_module_enabled("storage/r2") {
+        return R2StorageModule.build(settings).await;
+    }
+
+    #[cfg(feature = "storage-sqlx")]
+    if settings.is_module_enabled(SQLX_STORAGE_MODULE_ID) {
+        return SqlxStorageModule.build(settings).await;
+    }
+
+    Err(StorageError::Config(
+        "no durable storage backend module is enabled".to_string(),
+    ))
 }
 
 #[cfg(feature = "storage-s3-r2")]
@@ -50,7 +70,7 @@ impl StorageBackendModule for R2StorageModule {
     async fn build(&self, settings: &AgentSettings) -> Result<BuiltStorageBackend, StorageError> {
         if !settings.is_module_enabled(self.module_id()) {
             return Err(StorageError::Config(format!(
-                "{} is required because S3/R2 is the only durable storage backend",
+                "{} is disabled and no earlier storage backend selected it",
                 self.module_id()
             )));
         }
@@ -59,12 +79,61 @@ impl StorageBackendModule for R2StorageModule {
         let storage = Arc::new(super::R2Storage::new(&config).await?);
         let provider_storage = Arc::clone(&storage);
         let provider: Arc<dyn StorageProvider> = provider_storage;
+        #[cfg(feature = "storage-sqlx")]
+        let sqlx = maybe_build_sqlx_foundation(settings).await?;
 
         Ok(BuiltStorageBackend {
             module_id: self.module_id(),
             provider,
+            #[cfg(feature = "storage-sqlx")]
+            sqlx,
         })
     }
+}
+
+#[cfg(feature = "storage-sqlx")]
+struct SqlxStorageModule;
+
+#[cfg(feature = "storage-sqlx")]
+#[async_trait]
+impl StorageBackendModule for SqlxStorageModule {
+    fn module_id(&self) -> &'static str {
+        SQLX_STORAGE_MODULE_ID
+    }
+
+    async fn build(&self, settings: &AgentSettings) -> Result<BuiltStorageBackend, StorageError> {
+        if !settings.is_module_enabled(self.module_id()) {
+            return Err(StorageError::Config(format!(
+                "{} is disabled and cannot be selected as primary storage",
+                self.module_id()
+            )));
+        }
+
+        let config = SqlxStorageConfig::from_agent_settings(settings)?;
+        let storage = Arc::new(SqlxStorage::connect(config).await?);
+        let provider_storage = Arc::clone(&storage);
+        let provider: Arc<dyn StorageProvider> = provider_storage;
+
+        Ok(BuiltStorageBackend {
+            module_id: self.module_id(),
+            provider,
+            sqlx: Some(storage),
+        })
+    }
+}
+
+#[cfg(all(feature = "storage-s3-r2", feature = "storage-sqlx"))]
+async fn maybe_build_sqlx_foundation(
+    settings: &AgentSettings,
+) -> Result<Option<Arc<SqlxStorage>>, StorageError> {
+    if !settings.is_module_enabled(SQLX_STORAGE_MODULE_ID)
+        || !SqlxStorageConfig::is_configured(settings)
+    {
+        return Ok(None);
+    }
+
+    let config = SqlxStorageConfig::from_agent_settings(settings)?;
+    SqlxStorage::connect(config).await.map(Arc::new).map(Some)
 }
 
 #[cfg(test)]
@@ -93,10 +162,21 @@ mod tests {
         };
 
         assert!(
-            error.to_string().contains(
-                "storage/r2 is required because S3/R2 is the only durable storage backend"
-            ),
+            error
+                .to_string()
+                .contains("no durable storage backend module is enabled")
+                || error
+                    .to_string()
+                    .contains("modules.storage/sqlx.database_url or OXIDE_DATABASE_URL is missing"),
             "unexpected storage error: {error}"
         );
+    }
+
+    #[cfg(feature = "storage-sqlx")]
+    #[test]
+    fn sqlx_storage_module_uses_compiled_manifest_id() {
+        use super::{SqlxStorageModule, StorageBackendModule};
+
+        assert_eq!(SqlxStorageModule.module_id(), "storage/sqlx");
     }
 }

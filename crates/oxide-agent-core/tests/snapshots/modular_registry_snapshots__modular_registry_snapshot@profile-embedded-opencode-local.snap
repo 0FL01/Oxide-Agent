@@ -11,6 +11,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/opencode-go"
       },
       {
+        "id": "llm-provider/opencode-zen",
+        "module": "llm-provider/opencode-zen"
+      },
+      {
         "id": "sandbox-backend/bwrap",
         "module": "sandbox-backend/bwrap"
       },
@@ -51,8 +55,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "storage/r2"
       },
       {
+        "id": "storage/sqlx",
+        "module": "storage/sqlx"
+      },
+      {
         "id": "tool/agents-md",
         "module": "tool/agents-md"
+      },
+      {
+        "id": "tool/brave-search",
+        "module": "tool/brave-search"
       },
       {
         "id": "tool/compression",
@@ -61,6 +73,14 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/delegation",
         "module": "tool/delegation"
+      },
+      {
+        "id": "tool/duckduckgo-news",
+        "module": "tool/duckduckgo"
+      },
+      {
+        "id": "tool/duckduckgo-search",
+        "module": "tool/duckduckgo"
       },
       {
         "id": "tool/file-delivery",
@@ -97,6 +117,10 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       {
         "id": "tool/sandbox-recreate",
         "module": "tool/sandbox-recreate"
+      },
+      {
+        "id": "tool/searxng-search",
+        "module": "tool/searxng"
       },
       {
         "id": "tool/tavily-extract",
@@ -137,10 +161,34 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           },
           {
             "default_value": null,
-            "description": "OpenCode Go API key.",
-            "env": "OPENCODE_GO_API_KEY",
+            "description": "OpenCode Go API key. Also accepts OPENCODE_ZEN_API_KEY and legacy OPENCODE_GO_API_KEY.",
+            "env": "OPENCODE_API_KEY",
             "name": "api_key",
             "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/messages",
+            "description": "OpenCode Go Anthropic Messages endpoint.",
+            "env": "OPENCODE_GO_MESSAGES_API_BASE",
+            "name": "messages_api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "1800",
+            "description": "OpenCode Go model discovery cache TTL.",
+            "env": "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+            "name": "model_cache_ttl_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/go/v1/models",
+            "description": "OpenCode Go model discovery endpoint.",
+            "env": "OPENCODE_GO_MODELS_URL",
+            "name": "models_url",
+            "secret": false,
             "value_kind": "string"
           }
         ],
@@ -149,6 +197,58 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "llm-provider",
         "provides": [
           "llm-provider/opencode-go"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "llm-opencode-go",
+        "config_properties": [
+          {
+            "default_value": "https://opencode.ai/zen/v1/chat/completions",
+            "description": "OpenCode Zen Chat Completions endpoint.",
+            "env": "OPENCODE_ZEN_API_BASE",
+            "name": "api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "OpenCode Zen API key. Also accepts OPENCODE_API_KEY and OPENCODE_GO_API_KEY.",
+            "env": "OPENCODE_ZEN_API_KEY",
+            "name": "api_key",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/v1/messages",
+            "description": "OpenCode Zen Anthropic Messages endpoint.",
+            "env": "OPENCODE_ZEN_MESSAGES_API_BASE",
+            "name": "messages_api_base",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "1800",
+            "description": "OpenCode Zen model discovery cache TTL.",
+            "env": "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
+            "name": "model_cache_ttl_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "https://opencode.ai/zen/v1/models",
+            "description": "OpenCode Zen free model discovery endpoint.",
+            "env": "OPENCODE_ZEN_MODELS_URL",
+            "name": "models_url",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "llm-provider/opencode-zen",
+        "kind": "llm-provider",
+        "provides": [
+          "llm-provider/opencode-zen"
         ],
         "requires": []
       },
@@ -193,6 +293,58 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
+        "cargo_feature": "storage-sqlx",
+        "config_properties": [
+          {
+            "default_value": "10",
+            "description": "Postgres pool connection/acquire timeout in seconds.",
+            "env": "OXIDE_DATABASE_CONNECT_TIMEOUT_SECS",
+            "name": "connect_timeout_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Postgres connection URL. Also accepts DATABASE_URL as a runtime fallback.",
+            "env": "OXIDE_DATABASE_URL",
+            "name": "database_url",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "5",
+            "description": "Maximum Postgres pool connections.",
+            "env": "OXIDE_DATABASE_MAX_CONNECTIONS",
+            "name": "max_connections",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "false",
+            "description": "Run SQLx migrations during storage startup when set to true.",
+            "env": "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
+            "name": "migrate_on_startup",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "migrations",
+            "description": "Runtime path to SQLx migration files.",
+            "env": "OXIDE_DATABASE_MIGRATIONS_DIR",
+            "name": "migrations_dir",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
+        "conflicts": [],
+        "id": "storage/sqlx",
+        "kind": "storage-backend",
+        "provides": [
+          "storage/sqlx"
+        ],
+        "requires": []
+      },
+      {
         "cargo_feature": "tool-agents-md",
         "config_properties": [],
         "conflicts": [],
@@ -200,6 +352,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "tool",
         "provides": [
           "tool/agents-md"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-brave-search",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/brave-search",
+        "kind": "search",
+        "provides": [
+          "tool/brave-search"
         ],
         "requires": []
       },
@@ -222,6 +385,18 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "kind": "tool",
         "provides": [
           "tool/delegation"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-duckduckgo",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/duckduckgo",
+        "kind": "search",
+        "provides": [
+          "tool/duckduckgo-news",
+          "tool/duckduckgo-search"
         ],
         "requires": []
       },
@@ -342,6 +517,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         ]
       },
       {
+        "cargo_feature": "tool-searxng",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/searxng",
+        "kind": "search",
+        "provides": [
+          "tool/searxng-search"
+        ],
+        "requires": []
+      },
+      {
         "cargo_feature": "tool-tavily",
         "config_properties": [],
         "conflicts": [],
@@ -402,6 +588,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
   "enabled_manifest_default_config": {
     "capabilities": [
       "llm-provider/opencode-go",
+      "llm-provider/opencode-zen",
       "sandbox-backend/bwrap",
       "sandbox-backend/bwrap/exec",
       "sandbox-backend/bwrap/fileops",
@@ -412,9 +599,13 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/docker-direct/fileops",
       "sandbox-backend/docker-direct/lifecycle",
       "storage/r2",
+      "storage/sqlx",
       "tool/agents-md",
+      "tool/brave-search",
       "tool/compression",
       "tool/delegation",
+      "tool/duckduckgo-news",
+      "tool/duckduckgo-search",
       "tool/file-delivery",
       "tool/media-audio-transcription",
       "tool/media-image-description",
@@ -424,6 +615,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-fileops",
       "tool/sandbox-list-files",
       "tool/sandbox-recreate",
+      "tool/searxng-search",
       "tool/tavily-extract",
       "tool/tavily-search",
       "tool/todos",
@@ -433,12 +625,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     ],
     "modules": [
       "llm-provider/opencode-go",
+      "llm-provider/opencode-zen",
       "sandbox-backend/bwrap",
       "sandbox-backend/docker-direct",
       "storage/r2",
+      "storage/sqlx",
       "tool/agents-md",
+      "tool/brave-search",
       "tool/compression",
       "tool/delegation",
+      "tool/duckduckgo",
       "tool/file-delivery",
       "tool/media-audio",
       "tool/media-image",
@@ -447,6 +643,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/sandbox-exec",
       "tool/sandbox-fileops",
       "tool/sandbox-recreate",
+      "tool/searxng",
       "tool/tavily",
       "tool/todos",
       "tool/webfetch-md",
@@ -460,6 +657,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "compress",
     "describe_image_file",
     "describe_video_file",
+    "duckduckgo_news",
+    "duckduckgo_search",
     "execute_command",
     "list_files",
     "read_file",
@@ -474,14 +673,18 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "write_todos"
   ],
   "registered_llm_provider_ids_dummy_config": [
-    "llm-provider/opencode-go"
+    "llm-provider/opencode-go",
+    "llm-provider/opencode-zen"
   ],
   "registered_llm_provider_aliases_dummy_config": [
     "opencode-go",
-    "opencode_go"
+    "opencode-zen",
+    "opencode_go",
+    "opencode_zen"
   ],
   "storage_backend_module_ids": [
-    "storage/r2"
+    "storage/r2",
+    "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
     "sandbox-backend/bwrap",
@@ -494,7 +697,23 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "cargo_feature": "llm-opencode-go",
       "config_env": [
         "OPENCODE_GO_API_BASE",
-        "OPENCODE_GO_API_KEY"
+        "OPENCODE_API_KEY",
+        "OPENCODE_GO_MESSAGES_API_BASE",
+        "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
+        "OPENCODE_GO_MODELS_URL"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "llm-provider/opencode-zen",
+      "kind": "llm-provider",
+      "cargo_feature": "llm-opencode-go",
+      "config_env": [
+        "OPENCODE_ZEN_API_BASE",
+        "OPENCODE_ZEN_API_KEY",
+        "OPENCODE_ZEN_MESSAGES_API_BASE",
+        "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
+        "OPENCODE_ZEN_MODELS_URL"
       ],
       "requires_capabilities": []
     },
@@ -516,6 +735,40 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "storage/r2",
       "kind": "storage-backend",
       "cargo_feature": "storage-s3-r2",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "storage/sqlx",
+      "kind": "storage-backend",
+      "cargo_feature": "storage-sqlx",
+      "config_env": [
+        "OXIDE_DATABASE_CONNECT_TIMEOUT_SECS",
+        "OXIDE_DATABASE_URL",
+        "OXIDE_DATABASE_MAX_CONNECTIONS",
+        "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
+        "OXIDE_DATABASE_MIGRATIONS_DIR"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/brave-search",
+      "kind": "search",
+      "cargo_feature": "tool-brave-search",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/duckduckgo",
+      "kind": "search",
+      "cargo_feature": "tool-duckduckgo",
+      "config_env": [],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/searxng",
+      "kind": "search",
+      "cargo_feature": "tool-searxng",
       "config_env": [],
       "requires_capabilities": []
     },

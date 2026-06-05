@@ -10,6 +10,20 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: oxide_agent
+          POSTGRES_PASSWORD: oxide_agent
+          POSTGRES_DB: oxide_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       TELEGRAM_TOKEN: dummy_token
       ALLOWED_USERS: 123456789
@@ -19,6 +33,7 @@ jobs:
       OXIDE_R2_ACCESS_KEY_ID: dummy
       OXIDE_R2_SECRET_ACCESS_KEY: dummy
       OXIDE_R2_BUCKET_NAME: dummy
+      OXIDE_DATABASE_TEST_URL: postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent_test
       ZAI_API_KEY: dummy
       LOOP_DETECTION_ENABLED: "true"
       LOOP_TOOL_CALL_THRESHOLD: "5"
@@ -65,6 +80,9 @@ jobs:
 
       - name: Run cargo check/clippy/test
         run: cargo check --workspace --all-targets && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace
+
+      - name: Run SQLx/Postgres foundation smoke
+        run: cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_storage_connects_and_runs_migrations_when_test_url_is_set
 
       - name: Run cargo fmt check
         run: cargo fmt --all -- --check

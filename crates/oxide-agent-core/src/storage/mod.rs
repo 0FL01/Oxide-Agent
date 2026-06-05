@@ -1,6 +1,6 @@
 //! Storage layer for user, agent, topic, and control-plane data.
 //!
-//! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
+//! Provides persistent storage implementations for durable runtime state.
 
 #[cfg(any(feature = "storage-s3-r2", test))]
 mod builders;
@@ -8,7 +8,7 @@ mod control_plane;
 mod error;
 mod flows;
 mod keys;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 mod modules;
 mod provider;
 #[cfg(feature = "storage-s3-r2")]
@@ -30,6 +30,10 @@ mod r2_user;
 mod reminder;
 #[cfg(any(feature = "storage-s3-r2", test))]
 mod schema;
+#[cfg(feature = "storage-sqlx")]
+mod sqlx;
+#[cfg(feature = "storage-sqlx")]
+mod sqlx_config;
 #[cfg(any(feature = "storage-s3-r2", test))]
 mod telemetry;
 mod user;
@@ -60,7 +64,7 @@ pub use keys::{
     wiki_context_inbox_key, wiki_context_key, wiki_context_page_key, wiki_context_prefix,
     wiki_context_raw_key, wiki_global_key,
 };
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 pub use modules::{build_primary_storage, BuiltStorageBackend, StorageBackendModule};
 #[cfg(test)]
 pub use provider::MockStorageProvider;
@@ -74,6 +78,10 @@ pub use reminder::{
     parse_reminder_timezone, resolve_reminder_local_datetime, CreateReminderJobOptions,
     ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
 };
+#[cfg(feature = "storage-sqlx")]
+pub use sqlx::SqlxStorage;
+#[cfg(feature = "storage-sqlx")]
+pub use sqlx_config::{SqlxStorageConfig, SQLX_STORAGE_MODULE_ID};
 pub use user::{UserConfig, UserContextConfig};
 
 #[cfg(test)]

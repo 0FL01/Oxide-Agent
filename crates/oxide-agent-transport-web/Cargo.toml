@@ -40,13 +40,15 @@ base64 = "0.22.1"
 
 [features]
 default = []
-profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2"]
-profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2"]
+profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2", "storage-sqlx"]
+profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2", "storage-sqlx"]
 profile-web-embedded-opencode-local = [
     "oxide-agent-core/profile-web-embedded-opencode-local",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
 storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
+storage-sqlx = ["oxide-agent-core/storage-sqlx"]
 socket_e2e = ["oxide-agent-core/llm-opencode-go"]
 delegation_e2e = ["oxide-agent-core/tool-delegation"]
 compression_e2e = ["oxide-agent-core/tool-compression"]

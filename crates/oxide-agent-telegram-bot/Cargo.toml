@@ -31,41 +31,52 @@ storage-s3-r2 = [
     "oxide-agent-core/storage-s3-r2",
     "oxide-agent-transport-telegram/storage-s3-r2",
 ]
+storage-sqlx = [
+    "oxide-agent-core/storage-sqlx",
+    "oxide-agent-transport-telegram/storage-sqlx",
+]
 profile-full = [
     "transport-telegram",
     "oxide-agent-core/profile-full",
     "llm-chatgpt",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
 profile-embedded-opencode-local = [
     "transport-telegram",
     "oxide-agent-core/profile-embedded-opencode-local",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
 profile-lite = [
     "transport-telegram",
     "oxide-agent-core/profile-lite",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
 profile-search-only = [
     "transport-telegram",
     "oxide-agent-core/profile-search-only",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
 profile-no-sandbox = [
     "transport-telegram",
     "oxide-agent-core/profile-no-sandbox",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
 profile-media-enabled = [
     "transport-telegram",
     "oxide-agent-core/profile-media-enabled",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
 profile-host-bwrap = [
     "transport-telegram",
     "oxide-agent-core/profile-host-bwrap",
     "storage-s3-r2",
+    "storage-sqlx",
 ]
 
 [dev-dependencies]

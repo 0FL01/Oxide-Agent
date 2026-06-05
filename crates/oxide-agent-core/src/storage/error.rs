@@ -15,9 +15,18 @@ pub enum StorageError {
     /// Standard I/O error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// SQL database connectivity or query error.
+    #[error("Database error: {0}")]
+    Database(String),
+    /// SQL migration discovery or execution error.
+    #[error("Database migration error: {0}")]
+    DatabaseMigration(String),
     /// Configuration error (missing credentials, etc.).
     #[error("Configuration error: {0}")]
     Config(String),
+    /// Storage operation is not implemented by the selected backend yet.
+    #[error("Unsupported storage operation: {0}")]
+    Unsupported(String),
     /// Invalid storage input.
     #[error("Invalid input: {0}")]
     InvalidInput(String),
