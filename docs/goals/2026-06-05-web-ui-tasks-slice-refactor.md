@@ -58,7 +58,7 @@ Out of scope:
   - Acceptance: Create session -> upload attachments -> create task -> navigate remains intact; existing-session upload -> resume/create remains intact; cancel updates active task/stream/session summary; edit version creates a task version and starts streaming the new task.
   - Evidence required: focused diff review plus `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 2 moved stream wiring to `crates/oxide-agent-web-ui/src/tasks/streaming.rs` while preserving `set_streaming_task_id` before `spawn_task_stream`; existing submit/resume/cancel/edit stream call sites still compile under wasm.
+  - Evidence collected: 2026-06-05 checkpoint 2 moved stream wiring to `crates/oxide-agent-web-ui/src/tasks/streaming.rs` while preserving `set_streaming_task_id` before `spawn_task_stream`; existing submit/resume/cancel/edit stream call sites still compile under wasm. Checkpoint 3 moved edit-version UI to `crates/oxide-agent-web-ui/src/tasks/task_card.rs` with the same create-version response handling, selected-version update, drawer close, and `start_task_stream` call.
 
 - G3: Composer/profile/effort/attachment behavior remains unchanged
   - Source: Recon of composer state, file paste/drag/drop/upload helpers, profile sentinels, and effort persistence.
@@ -72,7 +72,7 @@ Out of scope:
   - Acceptance: Activity timeline filters/grouping, tool call/result pairing, specialized tool-card branches, reasoning/todos/context cards, delivered-file linkification/previews, and CSS class names remain compatible.
   - Evidence required: focused diff review by slice, `cargo test -p oxide-agent-web-ui`, and wasm `cargo check`.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 3 moved task card, user/resume message rendering, inline edit form, delivered-file message/list/event preview rendering, and delivered-file linkification into focused task modules; activity drawer and tool-card slices remain pending for checkpoint 4.
 
 - G5: Pure helper/testable logic is isolated before high-volume UI moves
   - Source: Recon recommendation to avoid mixing behavior changes with large Leptos view moves.
@@ -86,28 +86,28 @@ Out of scope:
   - Acceptance: No backend/core/runtime/contracts/provider behavior changes; only web-ui task split files and this goal document change, except necessary import adjustments.
   - Evidence required: `git diff --name-only` and `git diff --stat` review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document. Checkpoint 2 changed only web-ui task split files and this goal document.
+  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document. Checkpoint 2 changed only web-ui task split files and this goal document. Checkpoint 3 changed only web-ui task split files and this goal document.
 
 - Q2: No over-engineering or new dependencies
   - Source: AGENTS implementation bias and recon conclusion.
   - Acceptance: No `Cargo.toml` changes; no new crates/frameworks; no broad generic component registry/builder; modules stay boring and local.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and made no `Cargo.toml` changes.
+  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and made no `Cargo.toml` changes. Checkpoint 3 added no dependencies and made no `Cargo.toml` changes.
 
 - V1: Web UI validation passes for meaningful checkpoints
   - Source: Repo validation practice for web UI and wasm-only compilation of `tasks.rs`.
   - Acceptance: Relevant validation commands pass after each meaningful checkpoint, or exact blockers are recorded with the smallest external action needed.
   - Evidence required: `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, and `git diff --check` before final completion.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`.
+  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 3 passed the same checkpoint 2 command set.
 
 - N1: No hidden visual redesign
   - Source: Refactor request is about slicing/maintainability, not UI changes.
   - Must preserve: Existing visible strings, task/card/composer/activity CSS classes, collapsed/expanded defaults, preview priorities, and specialized parser behavior unless explicitly approved later.
   - Evidence required: diff review and behavior checklist in progress log.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed. Checkpoint 2 was a mechanical stream/composer move; no CSS files changed and visible strings/classes stayed in moved code.
+  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed. Checkpoint 2 was a mechanical stream/composer move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 3 was a mechanical task-card/delivered-file move; no CSS files changed and visible strings/classes stayed in moved code.
 
 ## Implementation Plan
 
@@ -183,6 +183,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
   - Audit IDs updated: G3 verified; G2, Q1, Q2, V1, N1 evidence collected.
   - Next: Checkpoint 3 — extract delivered-file, task-card, and edit-form slices.
+
+- 2026-06-05: Checkpoint 3 completed.
+  - Changed: Added `crates/oxide-agent-web-ui/src/tasks/task_card.rs`; expanded `crates/oxide-agent-web-ui/src/tasks/delivered_files.rs` with delivered-file message/list/event preview rendering; `tasks.rs` dropped from 3,549 to 2,988 lines.
+  - Evidence: Edit-version flow still creates a task version, updates selected version state, closes the drawer, and starts streaming the new task; delivered-file linkification and preview CSS/classes were moved mechanically.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
+  - Audit IDs updated: G2, G4, Q1, Q2, V1, N1 evidence collected.
+  - Next: Checkpoint 4 — extract activity and tool-card slices.
 
 ## Risks and Blockers
 
