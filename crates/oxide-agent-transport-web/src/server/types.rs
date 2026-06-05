@@ -8,12 +8,12 @@ use async_trait::async_trait;
 use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
 #[cfg(feature = "storage-s3-r2")]
-use oxide_agent_core::{
-    config::AgentSettings,
-    llm::LlmClient,
-    storage::{R2Storage, R2StorageConfig, StorageProvider},
-};
-#[cfg(feature = "storage-s3-r2")]
+use oxide_agent_core::storage::{R2Storage, R2StorageConfig};
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
+use oxide_agent_core::{config::AgentSettings, llm::LlmClient, storage::StorageProvider};
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use oxide_agent_runtime::SessionRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap as StdHashMap;
@@ -51,6 +51,7 @@ pub(crate) const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
 pub enum WebStoreKind {
     InMemory,
     R2,
+    Sqlx,
     Custom,
 }
 
@@ -164,7 +165,7 @@ impl fmt::Display for WebStartupError {
         match self {
             Self::InMemoryStoreNotAllowed => write!(
                 f,
-                "in-memory web UI store is not allowed for this startup mode; configure R2 storage or set OXIDE_WEB_ALLOW_IN_MEMORY_STORE=true for explicit dev/test use"
+                "in-memory web UI store is not allowed for this startup mode; configure SQLx/Postgres storage or set OXIDE_WEB_ALLOW_IN_MEMORY_STORE=true for explicit dev/test use"
             ),
             Self::StoreUnavailable(message) => {
                 write!(f, "web UI store is unavailable during startup: {message}")
@@ -246,6 +247,18 @@ impl AppState {
             session_manager,
             Arc::new(crate::persistence::R2WebUiStore::new(r2_storage)),
             WebStoreKind::R2,
+        )
+    }
+
+    #[cfg(feature = "storage-sqlx")]
+    pub fn new_with_sqlx_web_store(
+        session_manager: Arc<WebSessionManager>,
+        sqlx_storage: Arc<SqlxStorage>,
+    ) -> Self {
+        Self::new_with_web_store_kind(
+            session_manager,
+            Arc::new(crate::persistence::SqlxWebUiStore::new(sqlx_storage)),
+            WebStoreKind::Sqlx,
         )
     }
 
@@ -435,6 +448,33 @@ pub async fn build_r2_backed_app_state(
     let session_manager =
         WebSessionManager::new_with_storage(registry, llm, agent_settings, storage_provider);
     let state = AppState::new_with_r2_web_store(Arc::new(session_manager), r2_storage);
+    state.validate_web_store_for_startup()?;
+    state.reconcile_unfinished_tasks_on_startup().await?;
+    Ok(state)
+}
+
+// ---------------------------------------------------------------------------
+// SQLx-backed app state builder
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "storage-sqlx")]
+pub async fn build_sqlx_backed_app_state(
+    registry: SessionRegistry,
+    llm: Arc<LlmClient>,
+    agent_settings: Arc<AgentSettings>,
+) -> Result<AppState, WebStartupError> {
+    let sqlx_config = SqlxStorageConfig::from_agent_settings(agent_settings.as_ref())
+        .map_err(|error| WebStartupError::StoreUnavailable(error.to_string()))?;
+    let sqlx_storage = Arc::new(
+        SqlxStorage::connect(sqlx_config)
+            .await
+            .map_err(|error| WebStartupError::StoreUnavailable(error.to_string()))?,
+    );
+    let provider_storage = Arc::clone(&sqlx_storage);
+    let storage_provider: Arc<dyn StorageProvider> = provider_storage;
+    let session_manager =
+        WebSessionManager::new_with_storage(registry, llm, agent_settings, storage_provider);
+    let state = AppState::new_with_sqlx_web_store(Arc::new(session_manager), sqlx_storage);
     state.validate_web_store_for_startup()?;
     state.reconcile_unfinished_tasks_on_startup().await?;
     Ok(state)

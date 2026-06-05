@@ -37,6 +37,8 @@ chrono = { version = "0.4", features = ["serde"] }
 argon2 = "0.5.3"
 sha2 = "0.10.9"
 base64 = "0.22.1"
+sqlx-postgres = { version = "0.8.6", default-features = false, features = ["chrono", "json", "uuid", "migrate"], optional = true }
+sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "json", "uuid", "migrate"], optional = true }
 
 [features]
 default = []
@@ -48,7 +50,11 @@ profile-web-embedded-opencode-local = [
     "storage-sqlx",
 ]
 storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
-storage-sqlx = ["oxide-agent-core/storage-sqlx"]
+storage-sqlx = [
+    "oxide-agent-core/storage-sqlx",
+    "dep:sqlx-core",
+    "dep:sqlx-postgres",
+]
 socket_e2e = ["oxide-agent-core/llm-opencode-go"]
 delegation_e2e = ["oxide-agent-core/tool-delegation"]
 compression_e2e = ["oxide-agent-core/tool-compression"]

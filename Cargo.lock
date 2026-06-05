@@ -4084,6 +4084,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlx-core",
+ "sqlx-postgres",
  "tokio",
  "tokio-stream",
  "tokio-test",

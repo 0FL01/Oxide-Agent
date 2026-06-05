@@ -34,6 +34,8 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
 
+#[cfg(feature = "storage-sqlx")]
+use super::WebStoreKind;
 use super::{
     api_cancel_task, api_create_agent_profile, api_create_session, api_create_session_with_request,
     api_create_task_version, api_delete_session, api_get_session, api_get_settings,
@@ -1103,6 +1105,63 @@ async fn r2_backed_app_state_builder_requires_r2_config() {
         error.to_string().contains("OXIDE_R2_ENDPOINT"),
         "unexpected startup error: {error}"
     );
+}
+
+#[cfg(feature = "storage-sqlx")]
+#[tokio::test]
+async fn sqlx_backed_app_state_builder_requires_database_config() {
+    let _lock = web_env_mutex().lock().await;
+    let _guard = EnvGuard::capture(&["OXIDE_DATABASE_URL", "DATABASE_URL"]);
+    std::env::remove_var("OXIDE_DATABASE_URL");
+    std::env::remove_var("DATABASE_URL");
+
+    let settings = Arc::new(AgentSettings::default());
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let Err(error) =
+        super::build_sqlx_backed_app_state(SessionRegistry::new(), llm, settings).await
+    else {
+        panic!("missing database config should fail before startup");
+    };
+    assert!(
+        error.to_string().contains("OXIDE_DATABASE_URL"),
+        "unexpected startup error: {error}"
+    );
+}
+
+#[cfg(feature = "storage-sqlx")]
+#[tokio::test]
+async fn sqlx_backed_app_state_uses_sqlx_store_when_database_configured() {
+    let Some(database_url) = std::env::var("OXIDE_DATABASE_TEST_URL").ok() else {
+        eprintln!("skipping SQLx startup smoke: OXIDE_DATABASE_TEST_URL is not set");
+        return;
+    };
+
+    let _lock = web_env_mutex().lock().await;
+    let _guard = EnvGuard::capture(&[
+        "OXIDE_DATABASE_URL",
+        "DATABASE_URL",
+        "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
+        "OXIDE_DATABASE_MIGRATIONS_DIR",
+        "OXIDE_WEB_REQUIRE_STATIC_ASSETS",
+    ]);
+    std::env::set_var("OXIDE_DATABASE_URL", database_url);
+    std::env::remove_var("DATABASE_URL");
+    std::env::set_var("OXIDE_DATABASE_MIGRATE_ON_STARTUP", "true");
+    std::env::set_var(
+        "OXIDE_DATABASE_MIGRATIONS_DIR",
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("migrations"),
+    );
+    std::env::remove_var("OXIDE_WEB_REQUIRE_STATIC_ASSETS");
+
+    let settings = Arc::new(AgentSettings::default());
+    let llm = Arc::new(LlmClient::new(settings.as_ref()));
+    let state = super::build_sqlx_backed_app_state(SessionRegistry::new(), llm, settings)
+        .await
+        .expect("SQLx-backed app state should build from database config");
+
+    assert_eq!(state.web_store_kind(), WebStoreKind::Sqlx);
 }
 
 #[tokio::test]
