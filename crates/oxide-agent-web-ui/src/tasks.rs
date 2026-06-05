@@ -2534,12 +2534,20 @@ fn CrawlToolCard(
         .unwrap_or(false);
 
     // Fallback: try to extract URL from the ToolCall input_preview.
-    let url = url.or_else(|| {
-        call.as_ref()
-            .and_then(|e| payload_str_event(e, "input_preview"))
-            .and_then(|input| serde_json::from_str::<Value>(&input).ok())
-            .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
-    });
+    let failure_payload = output.as_ref().and_then(|v| v.get("structured_payload"));
+    let url = url
+        .or_else(|| {
+            failure_payload
+                .and_then(|payload| payload.get("url"))
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
+        .or_else(|| {
+            call.as_ref()
+                .and_then(|e| payload_str_event(e, "input_preview"))
+                .and_then(|input| serde_json::from_str::<Value>(&input).ok())
+                .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
+        });
 
     let preview_host = url.as_ref().and_then(|u| host_from_url_str(u));
 
@@ -2560,11 +2568,52 @@ fn CrawlToolCard(
     });
 
     let chars_display = chars.map(chars_label);
-    let default_open = is_running || !success;
+    let default_open = is_running;
+    let failure_error_kind = (!success)
+        .then(|| {
+            failure_payload
+                .and_then(|payload| payload.get("error_kind"))
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
+        .flatten();
+    let failure_label = (!success)
+        .then(|| {
+            result_summary
+                .clone()
+                .or_else(|| failure_error_kind.clone())
+        })
+        .flatten();
+    let failure_status_code = (!success)
+        .then(|| {
+            failure_payload
+                .and_then(|payload| payload.get("status_code"))
+                .and_then(Value::as_i64)
+        })
+        .flatten();
+    let failure_message = (!success)
+        .then(|| {
+            failure_payload
+                .and_then(|payload| payload.get("message"))
+                .and_then(Value::as_str)
+                .map(String::from)
+                .or_else(|| output.as_ref().and_then(|v| field_str(v, "error_message")))
+        })
+        .flatten();
+    let failure_response_tail = (!success)
+        .then(|| {
+            failure_payload
+                .and_then(|payload| payload.get("response_tail"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|tail| !tail.is_empty())
+                .map(String::from)
+        })
+        .flatten();
 
     // Preview line: hostname or error summary
     let preview_text = if !success {
-        result_summary.clone()
+        preview_host.clone().or_else(|| failure_label.clone())
     } else {
         preview_host.clone()
     };
@@ -2576,9 +2625,9 @@ fn CrawlToolCard(
             {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
             {chars_display.map(|c| view! { <span class="tool-meta">{c}</span> })}
             {truncated.then(|| view! { <span class="tool-meta">"truncated"</span> })}
-            {(!success).then(|| result_summary.clone().map(|summary| view! {
+            {failure_label.clone().map(|summary| view! {
                 <span class="tool-meta danger">{summary}</span>
-            })).flatten()}
+            })}
         </div>
         {preview_text.map(|text| view! {
             <div class="tool-preview">{text}</div>
@@ -2586,7 +2635,34 @@ fn CrawlToolCard(
         <details class="tool-card-body" open=default_open>
             <summary class="tool-card-expand">"details"</summary>
             {url.clone().map(|u| view! {
-                <div class="search-result-url" style="margin: 6px 0">{u}</div>
+                <div class="tool-query">
+                    <span class="tool-label">"URL"</span>
+                    <code>{u}</code>
+                </div>
+            })}
+            {failure_label.clone().map(|label| view! {
+                <div class="tool-query">
+                    <span class="tool-label">"Error"</span>
+                    <code>{label}</code>
+                </div>
+            })}
+            {failure_status_code.map(|code| view! {
+                <div class="tool-query">
+                    <span class="tool-label">"Status"</span>
+                    <code>{code.to_string()}</code>
+                </div>
+            })}
+            {failure_message.map(|message| view! {
+                <div class="tool-stream">
+                    <div class="tool-stream-label">"message"</div>
+                    <pre class="tool-stream-pre">{message}</pre>
+                </div>
+            })}
+            {failure_response_tail.map(|tail| view! {
+                <div class="tool-stream">
+                    <div class="tool-stream-label">"response tail"</div>
+                    <pre class="tool-stream-pre">{tail}</pre>
+                </div>
             })}
             {if let Some(md) = markdown.filter(|m| !m.is_empty()) {
                 view! {
@@ -2596,7 +2672,7 @@ fn CrawlToolCard(
                         </div>
                     </div>
                 }.into_any()
-            } else if !is_running {
+            } else if success && !is_running {
                 view! {
                     <div class="tool-stream">
                         <pre class="tool-stream-pre">"No content"</pre>
@@ -2606,7 +2682,9 @@ fn CrawlToolCard(
                 ().into_any()
             }}
             // If stdout was not parseable as crawl JSON, show raw stdout as fallback.
-            {crawl.is_none()
+            {success
+                .then_some(crawl.is_none())
+                .unwrap_or(false)
                 .then(|| stdout_text.clone())
                 .flatten()
                 .map(|text| view! {
