@@ -1,18 +1,32 @@
 //! SQLx/Postgres storage foundation.
 //!
-//! Phase 1 wires the shared Postgres pool, connectivity check, and migration
-//! runner. Business storage methods intentionally remain unsupported until the
-//! later porting phases replace R2 object operations with SQL entities.
+//! Provides the shared Postgres pool, migration runner, and SQL-backed core
+//! durable state used by the transport-agnostic [`StorageProvider`].
 
 use async_trait::async_trait;
-use sqlx_core::migrate::Migrator;
-use sqlx_core::query::query;
-use sqlx_postgres::{PgPool, PgPoolOptions, Postgres};
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use sqlx_core::{
+    decode::Decode, error::Error as SqlxError, migrate::Migrator, query::query, row::Row,
+    transaction::Transaction, types::Type,
+};
+use sqlx_postgres::{PgPool, PgPoolOptions, PgRow, Postgres};
+use std::collections::HashMap;
 
 use super::{
-    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError,
-    StorageProvider, TopicBindingRecord, UpsertAgentProfileOptions, UpsertTopicBindingOptions,
-    UserConfig,
+    builders::{
+        build_agent_flow_record, build_agent_profile_record, build_topic_agents_md_record,
+        build_topic_binding_record, build_topic_context_record, build_topic_infra_config_record,
+    },
+    control_plane::normalize_topic_prompt_payload,
+    utils::current_timestamp_unix_secs,
+    validate_topic_agents_md_content, validate_topic_context_content, AgentFlowRecord,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError, StorageProvider,
+    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
+    TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
+    UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
 };
 use crate::agent::memory::AgentMemory;
 
@@ -104,6 +118,88 @@ impl SqlxStorage {
             .await
             .map_err(|error| StorageError::DatabaseMigration(error.to_string()))
     }
+
+    async fn save_agent_memory_scope(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        flow_id: &str,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+        let memory = serde_json::to_value(memory)?;
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO agent_memory_snapshots (
+                user_id, context_key, flow_id, memory, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, 1, $5, $5)
+            ON CONFLICT (user_id, context_key, flow_id) DO UPDATE
+            SET memory = EXCLUDED.memory,
+                schema_version = EXCLUDED.schema_version,
+                updated_at = EXCLUDED.updated_at
+            WHERE agent_memory_snapshots.memory IS DISTINCT FROM EXCLUDED.memory
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(flow_id)
+        .bind(memory)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)
+    }
+
+    async fn load_agent_memory_scope(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        flow_id: &str,
+    ) -> Result<Option<AgentMemory>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT memory
+            FROM agent_memory_snapshots
+            WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(flow_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| from_json(row_value::<Value>(&row, "memory")?, "agent memory"))
+            .transpose()
+    }
+
+    async fn clear_agent_memory_scope(
+        &self,
+        user_id: i64,
+        context_key: &str,
+        flow_id: &str,
+    ) -> Result<(), StorageError> {
+        query::<Postgres>(
+            r#"
+            DELETE FROM agent_memory_snapshots
+            WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(flow_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
 }
 
 fn unsupported<T>(operation: &str) -> Result<T, StorageError> {
@@ -114,62 +210,387 @@ fn unsupported<T>(operation: &str) -> Result<T, StorageError> {
 
 #[async_trait]
 impl StorageProvider for SqlxStorage {
-    async fn get_user_config(&self, _user_id: i64) -> Result<UserConfig, StorageError> {
-        unsupported("get_user_config")
+    async fn get_user_config(&self, user_id: i64) -> Result<UserConfig, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT state
+            FROM user_configs
+            WHERE user_id = $1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+        let state = row
+            .map(|row| row_value::<Option<String>>(&row, "state"))
+            .transpose()?
+            .flatten();
+
+        let rows = query::<Postgres>(
+            r#"
+            SELECT context_key, state, current_agent_flow_id, chat_id, thread_id,
+                   forum_topic_name, forum_topic_icon_color,
+                   forum_topic_icon_custom_emoji_id, forum_topic_closed
+            FROM user_contexts
+            WHERE user_id = $1
+            ORDER BY context_key ASC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        let mut contexts = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let context_key = row_value(&row, "context_key")?;
+            contexts.insert(context_key, row_to_user_context(&row)?);
+        }
+
+        Ok(UserConfig { state, contexts })
     }
 
     async fn update_user_config(
         &self,
-        _user_id: i64,
-        _config: UserConfig,
+        user_id: i64,
+        config: UserConfig,
     ) -> Result<(), StorageError> {
-        unsupported("update_user_config")
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO user_configs (user_id, state, schema_version, created_at, updated_at)
+            VALUES ($1, $2, 1, $3, $3)
+            ON CONFLICT (user_id) DO UPDATE
+            SET state = EXCLUDED.state,
+                schema_version = EXCLUDED.schema_version,
+                version = user_configs.version + 1,
+                updated_at = EXCLUDED.updated_at
+            WHERE user_configs.state IS DISTINCT FROM EXCLUDED.state
+            "#,
+        )
+        .bind(user_id)
+        .bind(config.state)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        let mut contexts = config.contexts.into_iter().collect::<Vec<_>>();
+        contexts.sort_by(|left, right| left.0.cmp(&right.0));
+        let context_keys = contexts
+            .iter()
+            .map(|(context_key, _)| context_key.clone())
+            .collect::<Vec<_>>();
+
+        query::<Postgres>(
+            r#"
+            DELETE FROM user_contexts
+            WHERE user_id = $1 AND context_key <> ALL($2::text[])
+            "#,
+        )
+        .bind(user_id)
+        .bind(&context_keys)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        for (context_key, context) in contexts {
+            let forum_topic_icon_color = context.forum_topic_icon_color.map(i64::from);
+            query::<Postgres>(
+                r#"
+                INSERT INTO user_contexts (
+                    user_id, context_key, state, current_agent_flow_id, chat_id, thread_id,
+                    forum_topic_name, forum_topic_icon_color,
+                    forum_topic_icon_custom_emoji_id, forum_topic_closed,
+                    schema_version, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, $11, $11)
+                ON CONFLICT (user_id, context_key) DO UPDATE
+                SET state = EXCLUDED.state,
+                    current_agent_flow_id = EXCLUDED.current_agent_flow_id,
+                    chat_id = EXCLUDED.chat_id,
+                    thread_id = EXCLUDED.thread_id,
+                    forum_topic_name = EXCLUDED.forum_topic_name,
+                    forum_topic_icon_color = EXCLUDED.forum_topic_icon_color,
+                    forum_topic_icon_custom_emoji_id = EXCLUDED.forum_topic_icon_custom_emoji_id,
+                    forum_topic_closed = EXCLUDED.forum_topic_closed,
+                    schema_version = EXCLUDED.schema_version,
+                    version = user_contexts.version + 1,
+                    updated_at = EXCLUDED.updated_at
+                WHERE user_contexts.state IS DISTINCT FROM EXCLUDED.state
+                   OR user_contexts.current_agent_flow_id IS DISTINCT FROM EXCLUDED.current_agent_flow_id
+                   OR user_contexts.chat_id IS DISTINCT FROM EXCLUDED.chat_id
+                   OR user_contexts.thread_id IS DISTINCT FROM EXCLUDED.thread_id
+                   OR user_contexts.forum_topic_name IS DISTINCT FROM EXCLUDED.forum_topic_name
+                   OR user_contexts.forum_topic_icon_color IS DISTINCT FROM EXCLUDED.forum_topic_icon_color
+                   OR user_contexts.forum_topic_icon_custom_emoji_id IS DISTINCT FROM EXCLUDED.forum_topic_icon_custom_emoji_id
+                   OR user_contexts.forum_topic_closed IS DISTINCT FROM EXCLUDED.forum_topic_closed
+                "#,
+            )
+            .bind(user_id)
+            .bind(context_key)
+            .bind(context.state)
+            .bind(context.current_agent_flow_id)
+            .bind(context.chat_id)
+            .bind(context.thread_id)
+            .bind(context.forum_topic_name)
+            .bind(forum_topic_icon_color)
+            .bind(context.forum_topic_icon_custom_emoji_id)
+            .bind(context.forum_topic_closed)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        }
+
+        tx.commit().await.map_err(db_error)
     }
 
-    async fn update_user_state(&self, _user_id: i64, _state: String) -> Result<(), StorageError> {
-        unsupported("update_user_state")
+    async fn update_user_state(&self, user_id: i64, state: String) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO user_configs (user_id, state, schema_version, created_at, updated_at)
+            VALUES ($1, $2, 1, $3, $3)
+            ON CONFLICT (user_id) DO UPDATE
+            SET state = EXCLUDED.state,
+                schema_version = EXCLUDED.schema_version,
+                version = user_configs.version + 1,
+                updated_at = EXCLUDED.updated_at
+            WHERE user_configs.state IS DISTINCT FROM EXCLUDED.state
+            "#,
+        )
+        .bind(user_id)
+        .bind(state)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)
     }
 
-    async fn get_user_state(&self, _user_id: i64) -> Result<Option<String>, StorageError> {
-        unsupported("get_user_state")
+    async fn get_user_state(&self, user_id: i64) -> Result<Option<String>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT state
+            FROM user_configs
+            WHERE user_id = $1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_value::<Option<String>>(&row, "state"))
+            .transpose()
+            .map(Option::flatten)
     }
 
     async fn save_agent_memory(
         &self,
-        _user_id: i64,
-        _memory: &AgentMemory,
+        user_id: i64,
+        memory: &AgentMemory,
     ) -> Result<(), StorageError> {
-        unsupported("save_agent_memory")
+        self.save_agent_memory_scope(user_id, "", "", memory).await
     }
 
-    async fn load_agent_memory(&self, _user_id: i64) -> Result<Option<AgentMemory>, StorageError> {
-        unsupported("load_agent_memory")
+    async fn save_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError> {
+        self.save_agent_memory_scope(user_id, &context_key, "", memory)
+            .await
     }
 
-    async fn clear_agent_memory(&self, _user_id: i64) -> Result<(), StorageError> {
-        unsupported("clear_agent_memory")
+    async fn load_agent_memory(&self, user_id: i64) -> Result<Option<AgentMemory>, StorageError> {
+        self.load_agent_memory_scope(user_id, "", "").await
+    }
+
+    async fn load_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<Option<AgentMemory>, StorageError> {
+        self.load_agent_memory_scope(user_id, &context_key, "")
+            .await
+    }
+
+    async fn clear_agent_memory(&self, user_id: i64) -> Result<(), StorageError> {
+        self.clear_agent_memory_scope(user_id, "", "").await
+    }
+
+    async fn clear_agent_memory_for_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        query::<Postgres>(
+            r#"
+            DELETE FROM agent_memory_snapshots
+            WHERE user_id = $1 AND context_key = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(&context_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        query::<Postgres>(
+            r#"
+            DELETE FROM agent_flows
+            WHERE user_id = $1 AND context_key = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)
+    }
+
+    async fn save_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+        memory: &AgentMemory,
+    ) -> Result<(), StorageError> {
+        self.save_agent_memory_scope(user_id, &context_key, &flow_id, memory)
+            .await
+    }
+
+    async fn load_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<Option<AgentMemory>, StorageError> {
+        self.load_agent_memory_scope(user_id, &context_key, &flow_id)
+            .await
+    }
+
+    async fn clear_agent_memory_for_flow(
+        &self,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        query::<Postgres>(
+            r#"
+            DELETE FROM agent_memory_snapshots
+            WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(&context_key)
+        .bind(&flow_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        query::<Postgres>(
+            r#"
+            DELETE FROM agent_flows
+            WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(flow_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)
     }
 
     async fn get_agent_flow_record(
         &self,
-        _user_id: i64,
-        _context_key: String,
-        _flow_id: String,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
     ) -> Result<Option<AgentFlowRecord>, StorageError> {
-        unsupported("get_agent_flow_record")
+        let row = query::<Postgres>(
+            r#"
+            SELECT user_id, context_key, flow_id, schema_version, created_at, updated_at
+            FROM agent_flows
+            WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(flow_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_to_agent_flow(&row)).transpose()
     }
 
     async fn upsert_agent_flow_record(
         &self,
-        _user_id: i64,
-        _context_key: String,
-        _flow_id: String,
+        user_id: i64,
+        context_key: String,
+        flow_id: String,
     ) -> Result<AgentFlowRecord, StorageError> {
-        unsupported("upsert_agent_flow_record")
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        advisory_xact_lock(
+            &mut tx,
+            &format!("agent_flow:{user_id}:{context_key}:{flow_id}"),
+        )
+        .await?;
+        let existing =
+            get_agent_flow_record_for_update(&mut tx, user_id, &context_key, &flow_id).await?;
+        let now = current_timestamp_unix_secs();
+        let record = build_agent_flow_record(user_id, context_key, flow_id, existing, now);
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO agent_flows (
+                user_id, context_key, flow_id, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (user_id, context_key, flow_id) DO UPDATE
+            SET schema_version = EXCLUDED.schema_version,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.context_key)
+        .bind(&record.flow_id)
+        .bind(u32_to_i32(
+            record.schema_version,
+            "agent flow schema_version",
+        )?)
+        .bind(record.created_at)
+        .bind(record.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(record)
     }
 
-    async fn clear_all_context(&self, _user_id: i64) -> Result<(), StorageError> {
-        unsupported("clear_all_context")
+    async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
+        self.clear_agent_memory(user_id).await
     }
 
     async fn check_connection(&self) -> Result<(), String> {
@@ -180,48 +601,591 @@ impl StorageProvider for SqlxStorage {
 
     async fn get_agent_profile(
         &self,
-        _user_id: i64,
-        _agent_id: String,
+        user_id: i64,
+        agent_id: String,
     ) -> Result<Option<AgentProfileRecord>, StorageError> {
-        unsupported("get_agent_profile")
+        let row = query::<Postgres>(
+            r#"
+            SELECT user_id, agent_id, profile, version, schema_version, created_at, updated_at
+            FROM agent_profiles
+            WHERE user_id = $1 AND agent_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(agent_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_to_agent_profile(&row)).transpose()
+    }
+
+    async fn list_agent_profiles(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<AgentProfileRecord>, StorageError> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT user_id, agent_id, profile, version, schema_version, created_at, updated_at
+            FROM agent_profiles
+            WHERE user_id = $1
+            ORDER BY agent_id ASC, updated_at ASC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.iter().map(row_to_agent_profile).collect()
     }
 
     async fn upsert_agent_profile(
         &self,
-        _options: UpsertAgentProfileOptions,
+        options: UpsertAgentProfileOptions,
     ) -> Result<AgentProfileRecord, StorageError> {
-        unsupported("upsert_agent_profile")
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, options.user_id).await?;
+        advisory_xact_lock(
+            &mut tx,
+            &format!("agent_profile:{}:{}", options.user_id, options.agent_id),
+        )
+        .await?;
+        let existing =
+            get_agent_profile_for_update(&mut tx, options.user_id, &options.agent_id).await?;
+        let now = current_timestamp_unix_secs();
+        let record = build_agent_profile_record(options, existing, now);
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO agent_profiles (
+                user_id, agent_id, profile, version, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (user_id, agent_id) DO UPDATE
+            SET profile = EXCLUDED.profile,
+                version = EXCLUDED.version,
+                schema_version = EXCLUDED.schema_version,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.agent_id)
+        .bind(&record.profile)
+        .bind(u64_to_i64(record.version, "agent profile version")?)
+        .bind(u32_to_i32(
+            record.schema_version,
+            "agent profile schema_version",
+        )?)
+        .bind(record.created_at)
+        .bind(record.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(record)
     }
 
     async fn delete_agent_profile(
         &self,
-        _user_id: i64,
-        _agent_id: String,
+        user_id: i64,
+        agent_id: String,
     ) -> Result<(), StorageError> {
-        unsupported("delete_agent_profile")
+        query::<Postgres>(
+            r#"
+            DELETE FROM agent_profiles
+            WHERE user_id = $1 AND agent_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(agent_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn get_topic_context(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicContextRecord>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT user_id, topic_id, context, version, schema_version, created_at, updated_at
+            FROM topic_contexts
+            WHERE user_id = $1 AND topic_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(topic_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_to_topic_context(&row)).transpose()
+    }
+
+    async fn upsert_topic_context(
+        &self,
+        options: UpsertTopicContextOptions,
+    ) -> Result<TopicContextRecord, StorageError> {
+        let context = validate_topic_context_content(&options.context)?;
+        let options = UpsertTopicContextOptions { context, ..options };
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, options.user_id).await?;
+        advisory_xact_lock(
+            &mut tx,
+            &format!("topic_prompt:{}:{}", options.user_id, options.topic_id),
+        )
+        .await?;
+        ensure_topic_prompt_not_duplicated_in_tx(
+            &mut tx,
+            options.user_id,
+            &options.topic_id,
+            TopicPromptStoreKind::Context,
+            &options.context,
+        )
+        .await?;
+        let existing =
+            get_topic_context_for_update(&mut tx, options.user_id, &options.topic_id).await?;
+        let now = current_timestamp_unix_secs();
+        let record = build_topic_context_record(options, existing, now);
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO topic_contexts (
+                user_id, topic_id, context, version, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (user_id, topic_id) DO UPDATE
+            SET context = EXCLUDED.context,
+                version = EXCLUDED.version,
+                schema_version = EXCLUDED.schema_version,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.topic_id)
+        .bind(&record.context)
+        .bind(u64_to_i64(record.version, "topic context version")?)
+        .bind(u32_to_i32(
+            record.schema_version,
+            "topic context schema_version",
+        )?)
+        .bind(record.created_at)
+        .bind(record.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(record)
+    }
+
+    async fn delete_topic_context(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        query::<Postgres>(
+            r#"
+            DELETE FROM topic_contexts
+            WHERE user_id = $1 AND topic_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(topic_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn get_topic_agents_md(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicAgentsMdRecord>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT user_id, topic_id, agents_md, version, schema_version, created_at, updated_at
+            FROM topic_agents_md
+            WHERE user_id = $1 AND topic_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(topic_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_to_topic_agents_md(&row)).transpose()
+    }
+
+    async fn upsert_topic_agents_md(
+        &self,
+        options: UpsertTopicAgentsMdOptions,
+    ) -> Result<TopicAgentsMdRecord, StorageError> {
+        let agents_md = validate_topic_agents_md_content(&options.agents_md)?;
+        let options = UpsertTopicAgentsMdOptions {
+            agents_md,
+            ..options
+        };
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, options.user_id).await?;
+        advisory_xact_lock(
+            &mut tx,
+            &format!("topic_prompt:{}:{}", options.user_id, options.topic_id),
+        )
+        .await?;
+        ensure_topic_prompt_not_duplicated_in_tx(
+            &mut tx,
+            options.user_id,
+            &options.topic_id,
+            TopicPromptStoreKind::AgentsMd,
+            &options.agents_md,
+        )
+        .await?;
+        let existing =
+            get_topic_agents_md_for_update(&mut tx, options.user_id, &options.topic_id).await?;
+        let now = current_timestamp_unix_secs();
+        let record = build_topic_agents_md_record(options, existing, now);
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO topic_agents_md (
+                user_id, topic_id, agents_md, version, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (user_id, topic_id) DO UPDATE
+            SET agents_md = EXCLUDED.agents_md,
+                version = EXCLUDED.version,
+                schema_version = EXCLUDED.schema_version,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.topic_id)
+        .bind(&record.agents_md)
+        .bind(u64_to_i64(record.version, "topic AGENTS.md version")?)
+        .bind(u32_to_i32(
+            record.schema_version,
+            "topic AGENTS.md schema_version",
+        )?)
+        .bind(record.created_at)
+        .bind(record.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(record)
+    }
+
+    async fn delete_topic_agents_md(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        query::<Postgres>(
+            r#"
+            DELETE FROM topic_agents_md
+            WHERE user_id = $1 AND topic_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(topic_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn get_topic_infra_config(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<Option<TopicInfraConfigRecord>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT user_id, topic_id, target_name, host, port, remote_user, auth_mode,
+                   secret_ref, sudo_secret_ref, environment, tags, allowed_tool_modes,
+                   approval_required_modes, version, schema_version, created_at, updated_at
+            FROM topic_infra_configs
+            WHERE user_id = $1 AND topic_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(topic_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_to_topic_infra_config(&row)).transpose()
+    }
+
+    async fn upsert_topic_infra_config(
+        &self,
+        options: UpsertTopicInfraConfigOptions,
+    ) -> Result<TopicInfraConfigRecord, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, options.user_id).await?;
+        advisory_xact_lock(
+            &mut tx,
+            &format!("topic_infra:{}:{}", options.user_id, options.topic_id),
+        )
+        .await?;
+        let existing =
+            get_topic_infra_config_for_update(&mut tx, options.user_id, &options.topic_id).await?;
+        let now = current_timestamp_unix_secs();
+        let record = build_topic_infra_config_record(options, existing, now);
+        let auth_mode = enum_to_sql(&record.auth_mode, "topic infra auth mode")?;
+        let allowed_tool_modes =
+            enum_vec_to_sql(&record.allowed_tool_modes, "topic infra tool mode")?;
+        let approval_required_modes =
+            enum_vec_to_sql(&record.approval_required_modes, "topic infra tool mode")?;
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO topic_infra_configs (
+                user_id, topic_id, target_name, host, port, remote_user, auth_mode,
+                secret_ref, sudo_secret_ref, environment, tags, allowed_tool_modes,
+                approval_required_modes, version, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ON CONFLICT (user_id, topic_id) DO UPDATE
+            SET target_name = EXCLUDED.target_name,
+                host = EXCLUDED.host,
+                port = EXCLUDED.port,
+                remote_user = EXCLUDED.remote_user,
+                auth_mode = EXCLUDED.auth_mode,
+                secret_ref = EXCLUDED.secret_ref,
+                sudo_secret_ref = EXCLUDED.sudo_secret_ref,
+                environment = EXCLUDED.environment,
+                tags = EXCLUDED.tags,
+                allowed_tool_modes = EXCLUDED.allowed_tool_modes,
+                approval_required_modes = EXCLUDED.approval_required_modes,
+                version = EXCLUDED.version,
+                schema_version = EXCLUDED.schema_version,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.topic_id)
+        .bind(&record.target_name)
+        .bind(&record.host)
+        .bind(u16_to_i32(record.port))
+        .bind(&record.remote_user)
+        .bind(auth_mode)
+        .bind(&record.secret_ref)
+        .bind(&record.sudo_secret_ref)
+        .bind(&record.environment)
+        .bind(&record.tags)
+        .bind(&allowed_tool_modes)
+        .bind(&approval_required_modes)
+        .bind(u64_to_i64(record.version, "topic infra version")?)
+        .bind(u32_to_i32(
+            record.schema_version,
+            "topic infra schema_version",
+        )?)
+        .bind(record.created_at)
+        .bind(record.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(record)
+    }
+
+    async fn delete_topic_infra_config(
+        &self,
+        user_id: i64,
+        topic_id: String,
+    ) -> Result<(), StorageError> {
+        query::<Postgres>(
+            r#"
+            DELETE FROM topic_infra_configs
+            WHERE user_id = $1 AND topic_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(topic_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn get_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+    ) -> Result<Option<String>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT secret_value
+            FROM private_secrets
+            WHERE user_id = $1 AND secret_ref = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(secret_ref)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_value::<String>(&row, "secret_value"))
+            .transpose()
+    }
+
+    async fn put_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+        value: String,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, user_id).await?;
+        let now = current_timestamp_unix_secs();
+        query::<Postgres>(
+            r#"
+            INSERT INTO private_secrets (user_id, secret_ref, secret_value, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $4)
+            ON CONFLICT (user_id, secret_ref) DO UPDATE
+            SET secret_value = EXCLUDED.secret_value,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(secret_ref)
+        .bind(value)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)
+    }
+
+    async fn delete_secret_value(
+        &self,
+        user_id: i64,
+        secret_ref: String,
+    ) -> Result<(), StorageError> {
+        query::<Postgres>(
+            r#"
+            DELETE FROM private_secrets
+            WHERE user_id = $1 AND secret_ref = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(secret_ref)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
     }
 
     async fn get_topic_binding(
         &self,
-        _user_id: i64,
-        _topic_id: String,
+        user_id: i64,
+        topic_id: String,
     ) -> Result<Option<TopicBindingRecord>, StorageError> {
-        unsupported("get_topic_binding")
+        let row = query::<Postgres>(
+            r#"
+            SELECT user_id, topic_id, agent_id, binding_kind, chat_id, thread_id,
+                   expires_at, last_activity_at, version, schema_version, created_at, updated_at
+            FROM topic_bindings
+            WHERE user_id = $1 AND topic_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(topic_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_to_topic_binding(&row)).transpose()
     }
 
     async fn upsert_topic_binding(
         &self,
-        _options: UpsertTopicBindingOptions,
+        options: UpsertTopicBindingOptions,
     ) -> Result<TopicBindingRecord, StorageError> {
-        unsupported("upsert_topic_binding")
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, options.user_id).await?;
+        advisory_xact_lock(
+            &mut tx,
+            &format!("topic_binding:{}:{}", options.user_id, options.topic_id),
+        )
+        .await?;
+        let existing =
+            get_topic_binding_for_update(&mut tx, options.user_id, &options.topic_id).await?;
+        let now = current_timestamp_unix_secs();
+        let record = build_topic_binding_record(options, existing, now);
+        let binding_kind = enum_to_sql(&record.binding_kind, "topic binding kind")?;
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO topic_bindings (
+                user_id, topic_id, agent_id, binding_kind, chat_id, thread_id,
+                expires_at, last_activity_at, version, schema_version, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (user_id, topic_id) DO UPDATE
+            SET agent_id = EXCLUDED.agent_id,
+                binding_kind = EXCLUDED.binding_kind,
+                chat_id = EXCLUDED.chat_id,
+                thread_id = EXCLUDED.thread_id,
+                expires_at = EXCLUDED.expires_at,
+                last_activity_at = EXCLUDED.last_activity_at,
+                version = EXCLUDED.version,
+                schema_version = EXCLUDED.schema_version,
+                updated_at = EXCLUDED.updated_at
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.topic_id)
+        .bind(&record.agent_id)
+        .bind(binding_kind)
+        .bind(record.chat_id)
+        .bind(record.thread_id)
+        .bind(record.expires_at)
+        .bind(record.last_activity_at)
+        .bind(u64_to_i64(record.version, "topic binding version")?)
+        .bind(u32_to_i32(
+            record.schema_version,
+            "topic binding schema_version",
+        )?)
+        .bind(record.created_at)
+        .bind(record.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(record)
     }
 
     async fn delete_topic_binding(
         &self,
-        _user_id: i64,
-        _topic_id: String,
+        user_id: i64,
+        topic_id: String,
     ) -> Result<(), StorageError> {
-        unsupported("delete_topic_binding")
+        query::<Postgres>(
+            r#"
+            DELETE FROM topic_bindings
+            WHERE user_id = $1 AND topic_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(topic_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
     }
 
     async fn append_audit_event(
@@ -249,18 +1213,833 @@ impl StorageProvider for SqlxStorage {
     }
 }
 
+fn db_error(error: SqlxError) -> StorageError {
+    StorageError::Database(error.to_string())
+}
+
+async fn ensure_user_row_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+) -> Result<(), StorageError> {
+    query::<Postgres>(
+        r#"
+        INSERT INTO users (user_id)
+        VALUES ($1)
+        ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()
+        "#,
+    )
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn advisory_xact_lock(
+    tx: &mut Transaction<'_, Postgres>,
+    key: &str,
+) -> Result<(), StorageError> {
+    query::<Postgres>("SELECT pg_advisory_xact_lock($1)")
+        .bind(advisory_lock_key(key))
+        .execute(&mut **tx)
+        .await
+        .map_err(db_error)?;
+    Ok(())
+}
+
+fn advisory_lock_key(key: &str) -> i64 {
+    let digest = Sha256::digest(key.as_bytes());
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    i64::from_be_bytes(bytes)
+}
+
+fn row_value<T>(row: &PgRow, column: &str) -> Result<T, StorageError>
+where
+    for<'r> T: Decode<'r, Postgres> + Type<Postgres>,
+{
+    row.try_get(column).map_err(db_error)
+}
+
+fn from_json<T>(value: Value, _name: &str) -> Result<T, StorageError>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(value).map_err(StorageError::Json)
+}
+
+fn enum_to_sql<T>(value: &T, name: &str) -> Result<String, StorageError>
+where
+    T: Serialize,
+{
+    match serde_json::to_value(value)? {
+        Value::String(value) => Ok(value),
+        other => Err(StorageError::InvalidInput(format!(
+            "{name} must serialize to a string, got {other}"
+        ))),
+    }
+}
+
+fn enum_from_sql<T>(value: &str, name: &str) -> Result<T, StorageError>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_value(Value::String(value.to_string())).map_err(|error| {
+        StorageError::InvalidInput(format!("invalid {name} value `{value}`: {error}"))
+    })
+}
+
+fn enum_vec_to_sql<T>(values: &[T], name: &str) -> Result<Vec<String>, StorageError>
+where
+    T: Serialize,
+{
+    values
+        .iter()
+        .map(|value| enum_to_sql(value, name))
+        .collect()
+}
+
+fn enum_vec_from_sql<T>(values: Vec<String>, name: &str) -> Result<Vec<T>, StorageError>
+where
+    T: DeserializeOwned,
+{
+    values
+        .iter()
+        .map(|value| enum_from_sql(value, name))
+        .collect()
+}
+
+fn u32_to_i32(value: u32, field: &str) -> Result<i32, StorageError> {
+    i32::try_from(value)
+        .map_err(|_| StorageError::InvalidInput(format!("{field} value {value} exceeds i32 range")))
+}
+
+fn i32_to_u32(value: i32, field: &str) -> Result<u32, StorageError> {
+    u32::try_from(value).map_err(|_| {
+        StorageError::Database(format!(
+            "{field} value {value} cannot be represented as u32"
+        ))
+    })
+}
+
+fn u64_to_i64(value: u64, field: &str) -> Result<i64, StorageError> {
+    i64::try_from(value)
+        .map_err(|_| StorageError::InvalidInput(format!("{field} value {value} exceeds i64 range")))
+}
+
+fn i64_to_u64(value: i64, field: &str) -> Result<u64, StorageError> {
+    u64::try_from(value).map_err(|_| {
+        StorageError::Database(format!(
+            "{field} value {value} cannot be represented as u64"
+        ))
+    })
+}
+
+fn i64_to_u32(value: i64, field: &str) -> Result<u32, StorageError> {
+    u32::try_from(value).map_err(|_| {
+        StorageError::Database(format!(
+            "{field} value {value} cannot be represented as u32"
+        ))
+    })
+}
+
+fn u16_to_i32(value: u16) -> i32 {
+    i32::from(value)
+}
+
+fn i32_to_u16(value: i32, field: &str) -> Result<u16, StorageError> {
+    u16::try_from(value).map_err(|_| {
+        StorageError::Database(format!(
+            "{field} value {value} cannot be represented as u16"
+        ))
+    })
+}
+
+fn row_to_user_context(row: &PgRow) -> Result<UserContextConfig, StorageError> {
+    let forum_topic_icon_color = row_value::<Option<i64>>(row, "forum_topic_icon_color")?
+        .map(|value| i64_to_u32(value, "forum_topic_icon_color"))
+        .transpose()?;
+
+    Ok(UserContextConfig {
+        state: row_value(row, "state")?,
+        current_agent_flow_id: row_value(row, "current_agent_flow_id")?,
+        chat_id: row_value(row, "chat_id")?,
+        thread_id: row_value(row, "thread_id")?,
+        forum_topic_name: row_value(row, "forum_topic_name")?,
+        forum_topic_icon_color,
+        forum_topic_icon_custom_emoji_id: row_value(row, "forum_topic_icon_custom_emoji_id")?,
+        forum_topic_closed: row_value(row, "forum_topic_closed")?,
+    })
+}
+
+fn row_to_agent_flow(row: &PgRow) -> Result<AgentFlowRecord, StorageError> {
+    Ok(AgentFlowRecord {
+        schema_version: i32_to_u32(
+            row_value(row, "schema_version")?,
+            "agent flow schema_version",
+        )?,
+        user_id: row_value(row, "user_id")?,
+        context_key: row_value(row, "context_key")?,
+        flow_id: row_value(row, "flow_id")?,
+        created_at: row_value(row, "created_at")?,
+        updated_at: row_value(row, "updated_at")?,
+    })
+}
+
+fn row_to_agent_profile(row: &PgRow) -> Result<AgentProfileRecord, StorageError> {
+    Ok(AgentProfileRecord {
+        schema_version: i32_to_u32(
+            row_value(row, "schema_version")?,
+            "agent profile schema_version",
+        )?,
+        version: i64_to_u64(row_value(row, "version")?, "agent profile version")?,
+        user_id: row_value(row, "user_id")?,
+        agent_id: row_value(row, "agent_id")?,
+        profile: row_value(row, "profile")?,
+        created_at: row_value(row, "created_at")?,
+        updated_at: row_value(row, "updated_at")?,
+    })
+}
+
+fn row_to_topic_context(row: &PgRow) -> Result<TopicContextRecord, StorageError> {
+    Ok(TopicContextRecord {
+        schema_version: i32_to_u32(
+            row_value(row, "schema_version")?,
+            "topic context schema_version",
+        )?,
+        version: i64_to_u64(row_value(row, "version")?, "topic context version")?,
+        user_id: row_value(row, "user_id")?,
+        topic_id: row_value(row, "topic_id")?,
+        context: row_value(row, "context")?,
+        created_at: row_value(row, "created_at")?,
+        updated_at: row_value(row, "updated_at")?,
+    })
+}
+
+fn row_to_topic_agents_md(row: &PgRow) -> Result<TopicAgentsMdRecord, StorageError> {
+    Ok(TopicAgentsMdRecord {
+        schema_version: i32_to_u32(
+            row_value(row, "schema_version")?,
+            "topic AGENTS.md schema_version",
+        )?,
+        version: i64_to_u64(row_value(row, "version")?, "topic AGENTS.md version")?,
+        user_id: row_value(row, "user_id")?,
+        topic_id: row_value(row, "topic_id")?,
+        agents_md: row_value(row, "agents_md")?,
+        created_at: row_value(row, "created_at")?,
+        updated_at: row_value(row, "updated_at")?,
+    })
+}
+
+fn row_to_topic_infra_config(row: &PgRow) -> Result<TopicInfraConfigRecord, StorageError> {
+    let auth_mode = enum_from_sql::<TopicInfraAuthMode>(
+        &row_value::<String>(row, "auth_mode")?,
+        "topic infra auth mode",
+    )?;
+    let allowed_tool_modes = enum_vec_from_sql::<TopicInfraToolMode>(
+        row_value(row, "allowed_tool_modes")?,
+        "topic infra tool mode",
+    )?;
+    let approval_required_modes = enum_vec_from_sql::<TopicInfraToolMode>(
+        row_value(row, "approval_required_modes")?,
+        "topic infra tool mode",
+    )?;
+
+    Ok(TopicInfraConfigRecord {
+        schema_version: i32_to_u32(
+            row_value(row, "schema_version")?,
+            "topic infra schema_version",
+        )?,
+        version: i64_to_u64(row_value(row, "version")?, "topic infra version")?,
+        user_id: row_value(row, "user_id")?,
+        topic_id: row_value(row, "topic_id")?,
+        target_name: row_value(row, "target_name")?,
+        host: row_value(row, "host")?,
+        port: i32_to_u16(row_value(row, "port")?, "topic infra port")?,
+        remote_user: row_value(row, "remote_user")?,
+        auth_mode,
+        secret_ref: row_value(row, "secret_ref")?,
+        sudo_secret_ref: row_value(row, "sudo_secret_ref")?,
+        environment: row_value(row, "environment")?,
+        tags: row_value(row, "tags")?,
+        allowed_tool_modes,
+        approval_required_modes,
+        created_at: row_value(row, "created_at")?,
+        updated_at: row_value(row, "updated_at")?,
+    })
+}
+
+fn row_to_topic_binding(row: &PgRow) -> Result<TopicBindingRecord, StorageError> {
+    let binding_kind = enum_from_sql::<TopicBindingKind>(
+        &row_value::<String>(row, "binding_kind")?,
+        "topic binding kind",
+    )?;
+
+    Ok(TopicBindingRecord {
+        schema_version: i32_to_u32(
+            row_value(row, "schema_version")?,
+            "topic binding schema_version",
+        )?,
+        version: i64_to_u64(row_value(row, "version")?, "topic binding version")?,
+        user_id: row_value(row, "user_id")?,
+        topic_id: row_value(row, "topic_id")?,
+        agent_id: row_value(row, "agent_id")?,
+        binding_kind,
+        chat_id: row_value(row, "chat_id")?,
+        thread_id: row_value(row, "thread_id")?,
+        expires_at: row_value(row, "expires_at")?,
+        last_activity_at: row_value(row, "last_activity_at")?,
+        created_at: row_value(row, "created_at")?,
+        updated_at: row_value(row, "updated_at")?,
+    })
+}
+
+async fn get_agent_flow_record_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+    context_key: &str,
+    flow_id: &str,
+) -> Result<Option<AgentFlowRecord>, StorageError> {
+    let row = query::<Postgres>(
+        r#"
+        SELECT user_id, context_key, flow_id, schema_version, created_at, updated_at
+        FROM agent_flows
+        WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
+        FOR UPDATE
+        "#,
+    )
+    .bind(user_id)
+    .bind(context_key)
+    .bind(flow_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+
+    row.map(|row| row_to_agent_flow(&row)).transpose()
+}
+
+async fn get_agent_profile_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+    agent_id: &str,
+) -> Result<Option<AgentProfileRecord>, StorageError> {
+    let row = query::<Postgres>(
+        r#"
+        SELECT user_id, agent_id, profile, version, schema_version, created_at, updated_at
+        FROM agent_profiles
+        WHERE user_id = $1 AND agent_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(user_id)
+    .bind(agent_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+
+    row.map(|row| row_to_agent_profile(&row)).transpose()
+}
+
+async fn get_topic_context_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+    topic_id: &str,
+) -> Result<Option<TopicContextRecord>, StorageError> {
+    let row = query::<Postgres>(
+        r#"
+        SELECT user_id, topic_id, context, version, schema_version, created_at, updated_at
+        FROM topic_contexts
+        WHERE user_id = $1 AND topic_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(user_id)
+    .bind(topic_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+
+    row.map(|row| row_to_topic_context(&row)).transpose()
+}
+
+async fn get_topic_agents_md_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+    topic_id: &str,
+) -> Result<Option<TopicAgentsMdRecord>, StorageError> {
+    let row = query::<Postgres>(
+        r#"
+        SELECT user_id, topic_id, agents_md, version, schema_version, created_at, updated_at
+        FROM topic_agents_md
+        WHERE user_id = $1 AND topic_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(user_id)
+    .bind(topic_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+
+    row.map(|row| row_to_topic_agents_md(&row)).transpose()
+}
+
+async fn get_topic_infra_config_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+    topic_id: &str,
+) -> Result<Option<TopicInfraConfigRecord>, StorageError> {
+    let row = query::<Postgres>(
+        r#"
+        SELECT user_id, topic_id, target_name, host, port, remote_user, auth_mode,
+               secret_ref, sudo_secret_ref, environment, tags, allowed_tool_modes,
+               approval_required_modes, version, schema_version, created_at, updated_at
+        FROM topic_infra_configs
+        WHERE user_id = $1 AND topic_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(user_id)
+    .bind(topic_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+
+    row.map(|row| row_to_topic_infra_config(&row)).transpose()
+}
+
+async fn get_topic_binding_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+    topic_id: &str,
+) -> Result<Option<TopicBindingRecord>, StorageError> {
+    let row = query::<Postgres>(
+        r#"
+        SELECT user_id, topic_id, agent_id, binding_kind, chat_id, thread_id,
+               expires_at, last_activity_at, version, schema_version, created_at, updated_at
+        FROM topic_bindings
+        WHERE user_id = $1 AND topic_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(user_id)
+    .bind(topic_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+
+    row.map(|row| row_to_topic_binding(&row)).transpose()
+}
+
+#[derive(Clone, Copy)]
+enum TopicPromptStoreKind {
+    Context,
+    AgentsMd,
+}
+
+impl TopicPromptStoreKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Context => "topic_context",
+            Self::AgentsMd => "topic_agents_md",
+        }
+    }
+}
+
+async fn ensure_topic_prompt_not_duplicated_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+    topic_id: &str,
+    attempted_kind: TopicPromptStoreKind,
+    candidate: &str,
+) -> Result<(), StorageError> {
+    let normalized_candidate = normalize_topic_prompt_payload(candidate);
+    let (existing_kind, row) = match attempted_kind {
+        TopicPromptStoreKind::Context => {
+            let row = query::<Postgres>(
+                r#"
+                SELECT agents_md AS content
+                FROM topic_agents_md
+                WHERE user_id = $1 AND topic_id = $2
+                FOR UPDATE
+                "#,
+            )
+            .bind(user_id)
+            .bind(topic_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db_error)?;
+            (TopicPromptStoreKind::AgentsMd, row)
+        }
+        TopicPromptStoreKind::AgentsMd => {
+            let row = query::<Postgres>(
+                r#"
+                SELECT context AS content
+                FROM topic_contexts
+                WHERE user_id = $1 AND topic_id = $2
+                FOR UPDATE
+                "#,
+            )
+            .bind(user_id)
+            .bind(topic_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db_error)?;
+            (TopicPromptStoreKind::Context, row)
+        }
+    };
+
+    let existing_content = row
+        .map(|row| row_value::<String>(&row, "content"))
+        .transpose()?;
+    if let Some(existing_content) = existing_content {
+        if normalize_topic_prompt_payload(&existing_content) == normalized_candidate {
+            return Err(StorageError::DuplicateTopicPromptContent {
+                topic_id: topic_id.to_string(),
+                existing_kind: existing_kind.as_str().to_string(),
+                attempted_kind: attempted_kind.as_str().to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use serde_json::json;
+    use sqlx_core::query::query;
+    use sqlx_postgres::Postgres;
+
+    use super::row_value;
     use super::{SqlxStorage, SqlxStorageConfig};
+    use crate::agent::memory::AgentMemory;
+    use crate::storage::{
+        OptionalMetadataPatch, StorageError, StorageProvider, TopicBindingKind, TopicInfraAuthMode,
+        TopicInfraToolMode, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
+        UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
+        UserConfig, UserContextConfig,
+    };
+
+    static USER_COUNTER: AtomicI64 = AtomicI64::new(1);
 
     #[tokio::test]
     async fn sqlx_storage_connects_and_runs_migrations_when_test_url_is_set() {
-        let Ok(database_url) = std::env::var("OXIDE_DATABASE_TEST_URL") else {
-            eprintln!("OXIDE_DATABASE_TEST_URL not set; skipping SQLx/Postgres smoke test");
+        let Some(storage) = sqlx_test_storage().await else {
             return;
+        };
+
+        storage
+            .check_database_connection()
+            .await
+            .expect("SQLx storage health query should pass after migrations");
+    }
+
+    #[tokio::test]
+    async fn sqlx_user_config_roundtrips_without_rewriting_unchanged_contexts() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let user_id = unique_user_id();
+
+        let initial = storage
+            .get_user_config(user_id)
+            .await
+            .expect("missing user config should load defaults");
+        assert!(initial.state.is_none());
+        assert!(initial.contexts.is_empty());
+
+        let mut config = UserConfig {
+            state: Some("global-state".to_string()),
+            ..UserConfig::default()
+        };
+        config.contexts.insert(
+            "telegram:100:200".to_string(),
+            UserContextConfig {
+                state: Some("topic-state".to_string()),
+                current_agent_flow_id: Some("flow-1".to_string()),
+                chat_id: Some(100),
+                thread_id: Some(200),
+                forum_topic_name: Some("Ops".to_string()),
+                forum_topic_icon_color: Some(0x6FB9F0),
+                forum_topic_icon_custom_emoji_id: Some("emoji".to_string()),
+                forum_topic_closed: true,
+            },
+        );
+
+        storage
+            .update_user_config(user_id, config)
+            .await
+            .expect("user config should be stored in SQL rows");
+
+        let loaded = storage
+            .get_user_config(user_id)
+            .await
+            .expect("stored user config should load");
+        assert_eq!(loaded.state.as_deref(), Some("global-state"));
+        let context = loaded
+            .contexts
+            .get("telegram:100:200")
+            .expect("context row should be reconstructed");
+        assert_eq!(context.state.as_deref(), Some("topic-state"));
+        assert_eq!(context.current_agent_flow_id.as_deref(), Some("flow-1"));
+        assert_eq!(context.chat_id, Some(100));
+        assert_eq!(context.thread_id, Some(200));
+        assert_eq!(context.forum_topic_name.as_deref(), Some("Ops"));
+        assert_eq!(context.forum_topic_icon_color, Some(0x6FB9F0));
+        assert_eq!(
+            context.forum_topic_icon_custom_emoji_id.as_deref(),
+            Some("emoji")
+        );
+        assert!(context.forum_topic_closed);
+
+        let version_before = user_context_version(&storage, user_id, "telegram:100:200").await;
+        storage
+            .update_user_state(user_id, "global-state-2".to_string())
+            .await
+            .expect("global state update should not rewrite context rows");
+        let version_after = user_context_version(&storage, user_id, "telegram:100:200").await;
+        assert_eq!(version_before, version_after);
+
+        let state = storage
+            .get_user_state(user_id)
+            .await
+            .expect("user state should load");
+        assert_eq!(state.as_deref(), Some("global-state-2"));
+    }
+
+    #[tokio::test]
+    async fn sqlx_agent_memory_and_flow_records_are_scoped() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let user_id = unique_user_id();
+        let global_memory = AgentMemory::new(1024);
+        let context_memory = AgentMemory::new(2048);
+        let flow_memory = AgentMemory::new(4096);
+
+        storage
+            .save_agent_memory(user_id, &global_memory)
+            .await
+            .expect("global memory should save");
+        storage
+            .save_agent_memory_for_context(user_id, "ctx-a".to_string(), &context_memory)
+            .await
+            .expect("context memory should save");
+        storage
+            .save_agent_memory_for_flow(
+                user_id,
+                "ctx-a".to_string(),
+                "flow-a".to_string(),
+                &flow_memory,
+            )
+            .await
+            .expect("flow memory should save");
+
+        assert_memory_eq(
+            &global_memory,
+            &storage
+                .load_agent_memory(user_id)
+                .await
+                .expect("global memory should load")
+                .expect("global memory should exist"),
+        );
+        assert_memory_eq(
+            &context_memory,
+            &storage
+                .load_agent_memory_for_context(user_id, "ctx-a".to_string())
+                .await
+                .expect("context memory should load")
+                .expect("context memory should exist"),
+        );
+        assert_memory_eq(
+            &flow_memory,
+            &storage
+                .load_agent_memory_for_flow(user_id, "ctx-a".to_string(), "flow-a".to_string())
+                .await
+                .expect("flow memory should load")
+                .expect("flow memory should exist"),
+        );
+
+        let first_flow = storage
+            .upsert_agent_flow_record(user_id, "ctx-a".to_string(), "flow-a".to_string())
+            .await
+            .expect("flow metadata should upsert");
+        let second_flow = storage
+            .upsert_agent_flow_record(user_id, "ctx-a".to_string(), "flow-a".to_string())
+            .await
+            .expect("flow metadata should update");
+        assert_eq!(first_flow.created_at, second_flow.created_at);
+        assert_eq!(second_flow.context_key, "ctx-a");
+        assert_eq!(second_flow.flow_id, "flow-a");
+
+        storage
+            .clear_agent_memory_for_flow(user_id, "ctx-a".to_string(), "flow-a".to_string())
+            .await
+            .expect("flow clear should delete memory and metadata");
+        assert!(storage
+            .load_agent_memory_for_flow(user_id, "ctx-a".to_string(), "flow-a".to_string())
+            .await
+            .expect("flow memory lookup should succeed")
+            .is_none());
+        assert!(storage
+            .get_agent_flow_record(user_id, "ctx-a".to_string(), "flow-a".to_string())
+            .await
+            .expect("flow record lookup should succeed")
+            .is_none());
+
+        storage
+            .clear_agent_memory_for_context(user_id, "ctx-a".to_string())
+            .await
+            .expect("context clear should delete context memory");
+        assert!(storage
+            .load_agent_memory_for_context(user_id, "ctx-a".to_string())
+            .await
+            .expect("context memory lookup should succeed")
+            .is_none());
+        assert!(storage
+            .load_agent_memory(user_id)
+            .await
+            .expect("global memory lookup should succeed")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn sqlx_control_plane_records_and_secrets_roundtrip() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let user_id = unique_user_id();
+
+        let profile = storage
+            .upsert_agent_profile(UpsertAgentProfileOptions {
+                user_id,
+                agent_id: "ops".to_string(),
+                profile: json!({"model": "test-a"}),
+            })
+            .await
+            .expect("agent profile should upsert");
+        let updated_profile = storage
+            .upsert_agent_profile(UpsertAgentProfileOptions {
+                user_id,
+                agent_id: "ops".to_string(),
+                profile: json!({"model": "test-b"}),
+            })
+            .await
+            .expect("agent profile should update");
+        assert_eq!(profile.version + 1, updated_profile.version);
+        assert_eq!(updated_profile.profile, json!({"model": "test-b"}));
+        assert_eq!(storage.list_agent_profiles(user_id).await.unwrap().len(), 1);
+
+        let context = storage
+            .upsert_topic_context(UpsertTopicContextOptions {
+                user_id,
+                topic_id: "topic-a".to_string(),
+                context: "short operational note".to_string(),
+            })
+            .await
+            .expect("topic context should upsert");
+        assert_eq!(context.context, "short operational note");
+
+        let duplicate = storage
+            .upsert_topic_agents_md(UpsertTopicAgentsMdOptions {
+                user_id,
+                topic_id: "topic-a".to_string(),
+                agents_md: "short operational note".to_string(),
+            })
+            .await
+            .expect_err("duplicate prompt content across stores should be rejected");
+        assert!(matches!(
+            duplicate,
+            StorageError::DuplicateTopicPromptContent { .. }
+        ));
+
+        let agents_md = storage
+            .upsert_topic_agents_md(UpsertTopicAgentsMdOptions {
+                user_id,
+                topic_id: "topic-a".to_string(),
+                agents_md: "# Topic AGENTS\nKeep it short.".to_string(),
+            })
+            .await
+            .expect("topic AGENTS.md should upsert");
+        assert!(agents_md.agents_md.starts_with("# Topic AGENTS"));
+
+        let infra = storage
+            .upsert_topic_infra_config(UpsertTopicInfraConfigOptions {
+                user_id,
+                topic_id: "topic-a".to_string(),
+                target_name: "host-a".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 22,
+                remote_user: "oxide".to_string(),
+                auth_mode: TopicInfraAuthMode::PrivateKey,
+                secret_ref: Some("storage:ssh/key".to_string()),
+                sudo_secret_ref: Some("storage:ssh/sudo".to_string()),
+                environment: Some("test".to_string()),
+                tags: vec!["local".to_string()],
+                allowed_tool_modes: vec![TopicInfraToolMode::Exec, TopicInfraToolMode::ReadFile],
+                approval_required_modes: vec![TopicInfraToolMode::SudoExec],
+            })
+            .await
+            .expect("topic infra should upsert");
+        let loaded_infra = storage
+            .get_topic_infra_config(user_id, "topic-a".to_string())
+            .await
+            .expect("topic infra should load")
+            .expect("topic infra should exist");
+        assert_eq!(loaded_infra.version, infra.version);
+        assert_eq!(loaded_infra.auth_mode, TopicInfraAuthMode::PrivateKey);
+        assert_eq!(loaded_infra.allowed_tool_modes, infra.allowed_tool_modes);
+
+        storage
+            .put_secret_value(user_id, "storage:ssh/key".to_string(), "secret".to_string())
+            .await
+            .expect("secret should save");
+        assert_eq!(
+            storage
+                .get_secret_value(user_id, "storage:ssh/key".to_string())
+                .await
+                .expect("secret should load")
+                .as_deref(),
+            Some("secret")
+        );
+        storage
+            .delete_secret_value(user_id, "storage:ssh/key".to_string())
+            .await
+            .expect("secret should delete");
+        assert!(storage
+            .get_secret_value(user_id, "storage:ssh/key".to_string())
+            .await
+            .expect("secret lookup should succeed")
+            .is_none());
+
+        let binding = storage
+            .upsert_topic_binding(UpsertTopicBindingOptions {
+                user_id,
+                topic_id: "topic-a".to_string(),
+                agent_id: "ops".to_string(),
+                binding_kind: Some(TopicBindingKind::Runtime),
+                chat_id: OptionalMetadataPatch::Set(10),
+                thread_id: OptionalMetadataPatch::Set(20),
+                expires_at: OptionalMetadataPatch::Set(123_456),
+                last_activity_at: Some(123_000),
+            })
+            .await
+            .expect("topic binding should upsert");
+        assert_eq!(binding.binding_kind, TopicBindingKind::Runtime);
+        assert_eq!(binding.chat_id, Some(10));
+        assert_eq!(binding.thread_id, Some(20));
+        assert_eq!(binding.expires_at, Some(123_456));
+    }
+
+    async fn sqlx_test_storage() -> Option<SqlxStorage> {
+        let Ok(database_url) = std::env::var("OXIDE_DATABASE_TEST_URL") else {
+            eprintln!("OXIDE_DATABASE_TEST_URL not set; skipping SQLx/Postgres test");
+            return None;
         };
 
         let migrations_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -274,13 +2053,43 @@ mod tests {
             migrations_dir,
         };
 
-        let storage = SqlxStorage::connect(config)
-            .await
-            .expect("SQLx storage should connect and run foundation migrations");
+        Some(
+            SqlxStorage::connect(config)
+                .await
+                .expect("SQLx storage should connect and run migrations"),
+        )
+    }
 
-        storage
-            .check_database_connection()
-            .await
-            .expect("SQLx storage health query should pass after migrations");
+    fn unique_user_id() -> i64 {
+        let micros = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_micros() as i64;
+        1_000_000_000_000
+            + (micros % 1_000_000_000_000)
+            + USER_COUNTER.fetch_add(1, Ordering::Relaxed)
+    }
+
+    async fn user_context_version(storage: &SqlxStorage, user_id: i64, context_key: &str) -> i64 {
+        let row = query::<Postgres>(
+            r#"
+            SELECT version
+            FROM user_contexts
+            WHERE user_id = $1 AND context_key = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .fetch_one(storage.pool())
+        .await
+        .expect("context row should exist");
+        row_value(&row, "version").expect("context version should decode")
+    }
+
+    fn assert_memory_eq(expected: &AgentMemory, actual: &AgentMemory) {
+        assert_eq!(
+            serde_json::to_value(expected).expect("expected memory should serialize"),
+            serde_json::to_value(actual).expect("actual memory should serialize")
+        );
     }
 }

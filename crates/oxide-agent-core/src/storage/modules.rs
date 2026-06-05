@@ -35,13 +35,19 @@ pub trait StorageBackendModule: Send + Sync {
 
 /// Builds the configured primary storage backend.
 ///
-/// During the staged R2-to-Postgres migration, R2 remains the primary backend
-/// when enabled; SQLx can be selected by disabling `storage/r2` and enabling
-/// `storage/sqlx`.
+/// During the staged R2-to-Postgres migration, SQLx/Postgres is preferred when
+/// it is enabled and configured; R2 remains only as a transitional fallback.
 #[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 pub async fn build_primary_storage(
     settings: &AgentSettings,
 ) -> Result<BuiltStorageBackend, StorageError> {
+    #[cfg(feature = "storage-sqlx")]
+    if settings.is_module_enabled(SQLX_STORAGE_MODULE_ID)
+        && SqlxStorageConfig::is_configured(settings)
+    {
+        return SqlxStorageModule.build(settings).await;
+    }
+
     #[cfg(feature = "storage-s3-r2")]
     if settings.is_module_enabled("storage/r2") {
         return R2StorageModule.build(settings).await;

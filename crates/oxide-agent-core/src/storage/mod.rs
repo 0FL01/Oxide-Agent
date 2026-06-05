@@ -2,7 +2,7 @@
 //!
 //! Provides persistent storage implementations for durable runtime state.
 
-#[cfg(any(feature = "storage-s3-r2", test))]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx", test))]
 mod builders;
 mod control_plane;
 mod error;
@@ -28,7 +28,7 @@ mod r2_reminder;
 #[cfg(feature = "storage-s3-r2")]
 mod r2_user;
 mod reminder;
-#[cfg(any(feature = "storage-s3-r2", test))]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx", test))]
 mod schema;
 #[cfg(feature = "storage-sqlx")]
 mod sqlx;
@@ -37,7 +37,7 @@ mod sqlx_config;
 #[cfg(any(feature = "storage-s3-r2", test))]
 mod telemetry;
 mod user;
-#[cfg(any(feature = "storage-s3-r2", test))]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx", test))]
 mod utils;
 
 #[cfg(test)]

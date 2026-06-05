@@ -218,6 +218,7 @@ pub(crate) fn build_agent_flow_record(
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn build_audit_event_record(
     options: AppendAuditEventOptions,
     current_version: Option<u64>,
@@ -238,6 +239,7 @@ pub(crate) fn build_audit_event_record(
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn build_reminder_job_record(
     options: CreateReminderJobOptions,
     reminder_id: String,
@@ -270,6 +272,7 @@ pub(crate) fn build_reminder_job_record(
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn with_next_reminder_version(record: &ReminderJobRecord) -> u64 {
     next_record_version(Some(record.version))
 }

@@ -1,41 +1,43 @@
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use crate::bot;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use crate::bot::handlers::Command;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use crate::bot::state::State;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use crate::bot::UnauthorizedCache;
 use crate::config::BotSettings;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use crate::config::{
     get_unauthorized_cache_max_size, get_unauthorized_cache_ttl, get_unauthorized_cooldown,
 };
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use teloxide::dispatching::dialogue::InMemStorage;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use teloxide::dispatching::UpdateHandler;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use teloxide::prelude::*;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use teloxide::types::{CallbackQuery, Message, User};
 use tracing::error;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 use tracing::info;
 
 /// Run the Telegram transport runtime.
 pub async fn run_bot(settings: Arc<BotSettings>) {
-    #[cfg(not(feature = "storage-s3-r2"))]
+    #[cfg(not(any(feature = "storage-s3-r2", feature = "storage-sqlx")))]
     {
         let _ = settings;
-        error!("Telegram transport requires the storage-s3-r2 feature because R2 is the only durable storage backend");
+        error!(
+            "Telegram transport requires a durable storage feature (storage-s3-r2 or storage-sqlx)"
+        );
         std::process::exit(1);
     }
 
-    #[cfg(feature = "storage-s3-r2")]
+    #[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
     {
         let storage_services = init_storage(&settings).await;
         let storage = Arc::clone(&storage_services.provider);
@@ -70,7 +72,7 @@ pub async fn run_bot(settings: Arc<BotSettings>) {
     }
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn init_storage(settings: &BotSettings) -> storage::BuiltStorageBackend {
     match storage::build_primary_storage(settings.agent.as_ref()).await {
         Ok(services) => {
@@ -95,12 +97,12 @@ async fn init_storage(settings: &BotSettings) -> storage::BuiltStorageBackend {
     }
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 fn init_bot_state() -> Arc<InMemStorage<State>> {
     InMemStorage::<State>::new()
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
     let cooldown = get_unauthorized_cooldown();
     let ttl = get_unauthorized_cache_ttl();
@@ -114,7 +116,7 @@ fn init_unauthorized_cache() -> Arc<UnauthorizedCache> {
     Arc::new(UnauthorizedCache::new(cooldown, ttl, max_size))
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
     dptree::entry()
         .branch(
@@ -182,17 +184,17 @@ fn setup_handler() -> UpdateHandler<teloxide::RequestError> {
         )
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 fn access_control_user(message: &Message) -> Option<&User> {
     message.from.as_ref().filter(|user| !user.is_bot)
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 fn access_control_user_id(message: &Message) -> Option<i64> {
     access_control_user(message).map(|user| user.id.0.cast_signed())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_unauthorized(
     bot: Bot,
     msg: Message,
@@ -223,7 +225,7 @@ async fn handle_unauthorized(
     respond(())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_command(
     bot: Bot,
     msg: Message,
@@ -249,7 +251,7 @@ async fn handle_command(
     respond(())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_start_text(
     bot: Bot,
     msg: Message,
@@ -268,7 +270,7 @@ async fn handle_start_text(
     respond(())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_start_voice(
     bot: Bot,
     msg: Message,
@@ -287,7 +289,7 @@ async fn handle_start_voice(
     respond(())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_start_photo(
     bot: Bot,
     msg: Message,
@@ -302,7 +304,7 @@ async fn handle_start_photo(
     respond(())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_start_video(
     bot: Bot,
     msg: Message,
@@ -317,7 +319,7 @@ async fn handle_start_video(
     respond(())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_start_document(
     bot: Bot,
     msg: Message,
@@ -333,7 +335,7 @@ async fn handle_start_document(
     respond(())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_agent_message(
     bot: Bot,
     msg: Message,
@@ -352,7 +354,7 @@ async fn handle_agent_message(
     respond(())
 }
 
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_callback(
     bot: Bot,
     q: CallbackQuery,
@@ -402,7 +404,7 @@ async fn handle_callback(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
 async fn handle_agent_confirmation(
     bot: Bot,
     msg: Message,
