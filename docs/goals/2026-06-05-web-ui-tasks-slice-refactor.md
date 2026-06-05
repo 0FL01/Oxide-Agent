@@ -1,7 +1,7 @@
 # Goal: Web UI Tasks Slice Refactor
 
 Date started: 2026-06-05
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-05-web-ui-tasks-slice-refactor.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request and recon of `crates/oxide-agent-web-ui/src/tasks.rs` at 4,291 lines.
 Goal doc owner: Codex
@@ -50,15 +50,15 @@ Out of scope:
   - Source: User request to plan/refactor the 4,291-line `tasks.rs`.
   - Acceptance: `crates/oxide-agent-web-ui/src/tasks.rs` exposes `pub fn TaskConsole` or re-exports it from a focused module, declares focused child modules, and no longer contains the bulk of workspace/card/tool/helper implementation.
   - Evidence required: final `wc -l crates/oxide-agent-web-ui/src/tasks.rs`, file-list review, and wasm `cargo check`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 5 reduced `crates/oxide-agent-web-ui/src/tasks.rs` to a 13-line module hub that declares focused child modules and re-exports `workspace::TaskConsole`; `WelcomeView`, `SessionWorkspace`, and `ComposerNotice` now live in `crates/oxide-agent-web-ui/src/tasks/workspace.rs`. Wasm check, clippy, native tests, wasm test build, release `trunk build`, and diff checks passed.
 
 - G2: Mechanical slices preserve workspace and task lifecycle behavior
   - Source: Recon of create-session/upload/create-task flow, existing-session submit/resume/cancel flow, and edit-version flow.
   - Acceptance: Create session -> upload attachments -> create task -> navigate remains intact; existing-session upload -> resume/create remains intact; cancel updates active task/stream/session summary; edit version creates a task version and starts streaming the new task.
   - Evidence required: focused diff review plus `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`.
-  - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 2 moved stream wiring to `crates/oxide-agent-web-ui/src/tasks/streaming.rs` while preserving `set_streaming_task_id` before `spawn_task_stream`; existing submit/resume/cancel/edit stream call sites still compile under wasm. Checkpoint 3 moved edit-version UI to `crates/oxide-agent-web-ui/src/tasks/task_card.rs` with the same create-version response handling, selected-version update, drawer close, and `start_task_stream` call.
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 2 moved stream wiring to `crates/oxide-agent-web-ui/src/tasks/streaming.rs` while preserving `set_streaming_task_id` before `spawn_task_stream`; existing submit/resume/cancel/edit stream call sites still compile under wasm. Checkpoint 3 moved edit-version UI to `crates/oxide-agent-web-ui/src/tasks/task_card.rs` with the same create-version response handling, selected-version update, drawer close, and `start_task_stream` call. Checkpoint 5 mechanically moved `WelcomeView`, `SessionWorkspace`, and `ComposerNotice` to `crates/oxide-agent-web-ui/src/tasks/workspace.rs`; create-session/upload/create-task, existing-session upload/resume-or-create, cancel, and profile update call order stayed unchanged and validation passed.
 
 - G3: Composer/profile/effort/attachment behavior remains unchanged
   - Source: Recon of composer state, file paste/drag/drop/upload helpers, profile sentinels, and effort persistence.
@@ -85,29 +85,29 @@ Out of scope:
   - Source: User requested refactor of `tasks.rs`; AGENTS guardrails require smallest maintainable change.
   - Acceptance: No backend/core/runtime/contracts/provider behavior changes; only web-ui task split files and this goal document change, except necessary import adjustments.
   - Evidence required: `git diff --name-only` and `git diff --stat` review.
-  - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document. Checkpoint 2 changed only web-ui task split files and this goal document. Checkpoint 3 changed only web-ui task split files and this goal document. Checkpoint 4 changed only web-ui task split files and this goal document.
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document. Checkpoint 2 changed only web-ui task split files and this goal document. Checkpoint 3 changed only web-ui task split files and this goal document. Checkpoint 4 changed only web-ui task split files and this goal document. Checkpoint 5 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, `crates/oxide-agent-web-ui/src/tasks/workspace.rs`, and this goal document.
 
 - Q2: No over-engineering or new dependencies
   - Source: AGENTS implementation bias and recon conclusion.
   - Acceptance: No `Cargo.toml` changes; no new crates/frameworks; no broad generic component registry/builder; modules stay boring and local.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
-  - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and made no `Cargo.toml` changes. Checkpoint 3 added no dependencies and made no `Cargo.toml` changes. Checkpoint 4 added no dependencies and made no `Cargo.toml` changes.
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and made no `Cargo.toml` changes. Checkpoint 3 added no dependencies and made no `Cargo.toml` changes. Checkpoint 4 added no dependencies and made no `Cargo.toml` changes. Checkpoint 5 added no dependencies and kept the facade/workspace split local.
 
 - V1: Web UI validation passes for meaningful checkpoints
   - Source: Repo validation practice for web UI and wasm-only compilation of `tasks.rs`.
   - Acceptance: Relevant validation commands pass after each meaningful checkpoint, or exact blockers are recorded with the smallest external action needed.
   - Evidence required: `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, and `git diff --check` before final completion.
-  - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 3 passed the same checkpoint 2 command set. Checkpoint 4 passed the same checkpoint 2 command set.
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 3 passed the same checkpoint 2 command set. Checkpoint 4 passed the same checkpoint 2 command set. Checkpoint 5 passed the same checkpoint 2 command set plus `env -u NO_COLOR trunk build --release`.
 
 - N1: No hidden visual redesign
   - Source: Refactor request is about slicing/maintainability, not UI changes.
   - Must preserve: Existing visible strings, task/card/composer/activity CSS classes, collapsed/expanded defaults, preview priorities, and specialized parser behavior unless explicitly approved later.
   - Evidence required: diff review and behavior checklist in progress log.
-  - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed. Checkpoint 2 was a mechanical stream/composer move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 3 was a mechanical task-card/delivered-file move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 4 was a mechanical activity/tool-card move; no CSS files changed and visible strings/classes stayed in moved code.
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed. Checkpoint 2 was a mechanical stream/composer move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 3 was a mechanical task-card/delivered-file move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 4 was a mechanical activity/tool-card move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 5 was a mechanical workspace/facade move; no CSS files changed and visible strings/classes stayed in moved code.
 
 ## Implementation Plan
 
@@ -198,6 +198,13 @@ Out of scope:
   - Audit IDs updated: G4 verified; Q1, Q2, V1, N1 evidence collected.
   - Next: Checkpoint 5 — extract workspace facade and final audit.
 
+- 2026-06-05: Checkpoint 5 completed.
+  - Changed: Added `crates/oxide-agent-web-ui/src/tasks/workspace.rs` for `WelcomeView`, `SessionWorkspace`, and `ComposerNotice`; reduced `crates/oxide-agent-web-ui/src/tasks.rs` to a 13-line module hub/re-export.
+  - Evidence: `crate::tasks::TaskConsole` remains available through `pub use workspace::TaskConsole`; workspace create/submit/resume/cancel/profile flows were moved mechanically; task split file list and line counts reviewed.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `env -u NO_COLOR trunk build --release`; `git diff --check`.
+  - Audit IDs updated: G1, G2, Q1, Q2, V1, N1 verified; Completion Audit complete.
+  - Next: Commit final checkpoint.
+
 ## Risks and Blockers
 
 - Leptos view type friction during component moves.
@@ -220,11 +227,9 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: G1-G5, Q1-Q2, V1, and N1 are verified.
+- Commands run: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `env -u NO_COLOR trunk build --release`; `git diff --check`.
+- Artifacts inspected: `wc -l crates/oxide-agent-web-ui/src/tasks.rs crates/oxide-agent-web-ui/src/tasks/*.rs`; `grep TaskConsole` across web-ui sources; task split file list; current diff name/stat review.
+- Remaining gaps: none.
+- User-accepted exceptions: none.
+- Final status: complete; ready for final checkpoint commit.
