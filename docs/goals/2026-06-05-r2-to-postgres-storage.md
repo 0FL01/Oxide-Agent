@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-05-r2-to-postgres-storage.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/PRD-r2-to-pg.md`
 Goal doc owner: Codex
-Last updated: 2026-06-05 22:16 +03
+Last updated: 2026-06-05 22:43 +03
 
 ## Objective
 
@@ -113,8 +113,8 @@ Out of scope:
   - Requirement: Replace R2 reminder jobs and audit JSON-array rewrites with SQL queue rows and append-only audit rows.
   - Acceptance: Reminder claim uses transaction-safe Postgres row locks/leases; concurrent claimers cannot double-claim; audit append allocates stable per-user versions transactionally; audit pagination is indexed and stable.
   - Evidence required: Reminder CRUD/status tests, concurrent claim tests, lease expiry tests, audit append/page tests, query/index review.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 4 added `migrations/0004_reminders_audit.sql`, SQL-backed reminder job CRUD/list/due-claim/status transitions, transaction-safe lease claiming, append-only audit rows, transactional per-user audit version allocation, indexed audit pagination, and DB-backed tests for reminder status roundtrips, single-winner concurrent claims, lease expiry reclaim, and audit append/page behavior.
 
 - G6: Wiki memory uses SQLx/Postgres rows, not object keys
   - Source: `docs/prd/PRD-r2-to-pg.md:2156`
@@ -153,35 +153,35 @@ Out of scope:
   - Acceptance: No importer, backfill, R2 reader, R2 fallback, dual-write, or old object scan tooling is implemented.
   - Evidence required: Diff review, static grep guard output, and docs stating old R2 data is ignored.
   - Status: pending
-  - Evidence collected: Phase 0 changed only the goal document and explicitly preserves no migration/import/backfill/dual-write/R2 fallback; Phase 3 added direct SQL tables and SQL-backed core methods without importer, backfill, R2 reader, R2 object scan, or dual-write code. Re-run static guard and docs review after implementation phases.
+  - Evidence collected: Phase 0 changed only the goal document and explicitly preserves no migration/import/backfill/dual-write/R2 fallback; Phase 3 added direct SQL tables and SQL-backed core methods without importer, backfill, R2 reader, R2 object scan, or dual-write code. Phase 4 added fresh SQL reminder/audit tables and direct SQLx methods only, with no R2 reader/importer/dual-write path. Re-run static guard and docs review after implementation phases.
 
 - Q2: Keep the solution simple and storage-focused
   - Source: `AGENTS.md`, `docs/prd/PRD-r2-to-pg.md:1021`
   - Acceptance: No SQLite backend, Supabase Storage bucket, new queue/cache/service, sharding, HA, or broad framework abstraction is added.
   - Evidence required: Cargo diffs, compose/deploy diffs, dependency review, and implementation diff review.
   - Status: pending
-  - Evidence collected: Phase 0 changed only the goal document; Phase 1 added only Postgres SQLx foundation dependencies/config, one shared pool, one migration stream, a CI Postgres service, and a smoke test. Phase 3 reused the same SQLx/Postgres pool and storage facade with direct queries; no SQLite backend, Supabase Storage bucket, Redis/queue/cache, sharding, HA, or extra storage service was added.
+  - Evidence collected: Phase 0 changed only the goal document; Phase 1 added only Postgres SQLx foundation dependencies/config, one shared pool, one migration stream, a CI Postgres service, and a smoke test. Phase 3 reused the same SQLx/Postgres pool and storage facade with direct queries. Phase 4 kept reminders as ordinary Postgres rows with status/lease columns and audit as append-only rows; no SQLite backend, Supabase Storage bucket, Redis/queue/cache, sharding, HA, or extra storage service was added.
 
 - Q3: Data model uses typed columns for queryable fields and JSONB only where justified
   - Source: `docs/prd/PRD-r2-to-pg.md:1230`, `docs/prd/PRD-r2-to-pg.md:2544`
   - Acceptance: Identifiers, ownership/scope, status, timestamps, versions, pagination keys, and due-claim fields are typed/indexed columns; JSONB remains limited to flexible payloads/snapshots.
   - Evidence required: Migration review, query/index review, and tests proving indexed list/page/due queries.
   - Status: pending
-  - Evidence collected: Phase 2 web migration uses typed identifiers, ownership, auth/login/session/task status, timestamps, version/order keys, event seq, file size/content type, and indexes for auth/session/task/event/file queries; JSONB is limited to model selections, attachment/event/progress payloads, task-file metadata, and flexible final session snapshots. Phase 3 core migration uses typed user/context/flow/profile/topic/binding/secret ownership, versions, timestamps, enum text columns, arrays, and indexes; JSONB is limited to agent memory snapshots and agent profile payloads. Reminder/audit/wiki models remain pending.
+  - Evidence collected: Phase 2 web migration uses typed identifiers, ownership, auth/login/session/task status, timestamps, version/order keys, event seq, file size/content type, and indexes for auth/session/task/event/file queries; JSONB is limited to model selections, attachment/event/progress payloads, task-file metadata, and flexible final session snapshots. Phase 3 core migration uses typed user/context/flow/profile/topic/binding/secret ownership, versions, timestamps, enum text columns, arrays, and indexes; JSONB is limited to agent memory snapshots and agent profile payloads. Phase 4 reminder/audit migration uses typed reminder status/schedule/thread kind, due/lease/run/version columns, per-user audit versions, and audit page indexes; JSONB is limited to audit payloads. Wiki model remains pending.
 
 - Q4: Append-only/high-volume paths avoid object-style rewrites and hot-row churn
   - Source: `docs/prd/PRD-r2-to-pg.md:23`, `docs/prd/PRD-r2-to-pg.md:715`, `docs/prd/PRD-r2-to-pg.md:2560`
   - Acceptance: Task events and audit are append-only rows; progress uses separate coalesced/debounced latest snapshot; large event batches do not rewrite chunks or full task blobs.
   - Evidence required: Event/audit/progress tests, performance smoke, and focused diff review.
   - Status: pending
-  - Evidence collected: Phase 2 task events are append-only SQL rows with duplicate seq conflict-ignore, paged by indexed `(user_id, session_id, task_id, seq)` order; latest progress is stored in separate `web_task_progress` rows instead of rewriting event chunks. Audit remains pending for Phase 4.
+  - Evidence collected: Phase 2 task events are append-only SQL rows with duplicate seq conflict-ignore, paged by indexed `(user_id, session_id, task_id, seq)` order; latest progress is stored in separate `web_task_progress` rows instead of rewriting event chunks. Phase 4 audit events are append-only SQL rows keyed by `(user_id, version)` and paged by indexed descending version order instead of rewriting a per-user JSON array.
 
 - Q5: SQL concurrency semantics replace ETags deliberately
   - Source: `docs/prd/PRD-r2-to-pg.md:167`, `docs/prd/PRD-r2-to-pg.md:2523`
   - Acceptance: Multi-record updates, reminders, audit version allocation, duplicate guards, and mutable records have explicit transactions, row locks, version checks, or documented last-write-wins behavior.
   - Evidence required: Concurrency tests, transaction-boundary notes, and conflict/error tests.
   - Status: pending
-  - Evidence collected: Phase 3 core upserts use transactions with `SELECT ... FOR UPDATE`, transaction-scoped advisory locks for mutable record families and cross-table topic prompt duplicate guards, version columns built through existing storage builders, and SQL tests for version increments plus duplicate prompt conflicts. Reminder/audit concurrency remains pending for Phase 4.
+  - Evidence collected: Phase 3 core upserts use transactions with `SELECT ... FOR UPDATE`, transaction-scoped advisory locks for mutable record families and cross-table topic prompt duplicate guards, version columns built through existing storage builders, and SQL tests for version increments plus duplicate prompt conflicts. Phase 4 reminder mutations use row-locking updates/`SELECT ... FOR UPDATE`, explicit lease predicates, version increments, a single-winner concurrent claim test, and lease-expiry reclaim coverage; audit append locks `audit_stream_versions` with `FOR UPDATE` and allocates per-user versions transactionally.
 
 - V1: Core Rust validation passes for affected profiles
   - Source: `AGENTS.md`
@@ -190,12 +190,16 @@ Out of scope:
   - Status: pending
   - Evidence collected: Phase 1 validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`; modular registry snapshot tests passed for `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, `profile-full`, `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, and `all-features`. Phase 2 web validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web --no-default-features --features storage-sqlx`; `cargo clippy -p oxide-agent-transport-web --no-default-features --features storage-sqlx -- -D warnings`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; SQLx-focused and full web library tests with `storage-sqlx`. Phase 3 core/Telegram validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx -- -D warnings`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`.
 
+  - Phase 4 validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx -- -D warnings`; profile checks for embedded Telegram and web; focused SQLx DB-backed core tests with 10 passed.
+
 - V2: SQL integration and migration validation pass against clean Postgres
   - Source: `docs/prd/PRD-r2-to-pg.md:1206`, `docs/prd/PRD-r2-to-pg.md:2345`
   - Acceptance: Migrations apply to empty Postgres; SQL storage and web persistence contract tests pass without R2 env vars.
   - Evidence required: Postgres test DB command output, migration output, SQL integration test output, CI evidence.
   - Status: pending
-  - Evidence collected: Phase 1 smoke passed against a temporary clean `postgres:16` container on port `55432`: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_storage_connects_and_runs_migrations_when_test_url_is_set -- --nocapture`. The smoke creates a shared pool, runs `migrations/0001_storage_health.sql`, and executes the SQL health query. Phase 2 applied `migrations/0002_web_persistence.sql` through the SQLx-backed app-state startup smoke and passed web SQL contract tests against a clean temporary Postgres container: `cargo test -p oxide-agent-transport-web --no-default-features --features storage-sqlx sqlx_ -- --nocapture` and `cargo test -p oxide-agent-transport-web --no-default-features --features storage-sqlx --lib` with `OXIDE_DATABASE_TEST_URL` set. Phase 3 applied `migrations/0003_core_storage.sql` against a clean temporary `postgres:16` container and passed focused SQLx core contract tests: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture`. Reminder/audit/wiki SQL contract tests remain pending for later phases.
+  - Evidence collected: Phase 1 smoke passed against a temporary clean `postgres:16` container on port `55432`: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_storage_connects_and_runs_migrations_when_test_url_is_set -- --nocapture`. The smoke creates a shared pool, runs `migrations/0001_storage_health.sql`, and executes the SQL health query. Phase 2 applied `migrations/0002_web_persistence.sql` through the SQLx-backed app-state startup smoke and passed web SQL contract tests against a clean temporary Postgres container: `cargo test -p oxide-agent-transport-web --no-default-features --features storage-sqlx sqlx_ -- --nocapture` and `cargo test -p oxide-agent-transport-web --no-default-features --features storage-sqlx --lib` with `OXIDE_DATABASE_TEST_URL` set. Phase 3 applied `migrations/0003_core_storage.sql` against a clean temporary `postgres:16` container and passed focused SQLx core contract tests: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture`. Wiki SQL contract tests remain pending for Phase 5.
+
+  - Phase 4 applied `migrations/0004_reminders_audit.sql` to a clean temporary `postgres:16` container and passed focused SQLx core contract tests: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture` with 10 SQLx tests passing, including reminder/audit coverage.
 
 - V3: Static dependency/reference guards prove R2/AWS runtime removal
   - Source: `docs/prd/PRD-r2-to-pg.md:2232`, `docs/prd/PRD-r2-to-pg.md:2639`
@@ -211,19 +215,21 @@ Out of scope:
   - Status: pending
   - Evidence collected: Phase 2 web SQL startup smoke passed with `OXIDE_DATABASE_URL`, `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true`, and `OXIDE_DATABASE_MIGRATIONS_DIR=migrations`, asserting `WebStoreKind::Sqlx`; SQL unfinished-task reconciliation test verifies queued/running web tasks become interrupted and session active task ids are cleared after startup reconciliation. Phase 3 verified SQLx-only Telegram durable startup/build wiring with `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`, and production-like Telegram/web profile checks still build with SQLx selected when configured. Full local web-console restart and Supabase checklist remain pending.
 
+  - Phase 4 rechecked SQLx-only Telegram build/profile paths and DB-backed reminder/audit storage through Postgres. Full local restart and Supabase checklist remain pending.
+
 - N1: Old R2 data migration remains excluded
   - Source: `docs/prd/PRD-r2-to-pg.md:29`
   - Must preserve: No migration, reader, dual-write, importer, backfill, or object-key scan story is added.
   - Evidence required: Diff review and grep guard output.
   - Status: pending
-  - Evidence collected: Phase 0 map records old R2 data as intentionally out of scope and adds no importer, reader, dual-write, backfill, compatibility path, or object-key scan implementation. Phase 3 core SQLx implementation adds fresh SQL rows only and does not read, import, scan, or dual-write old R2 objects. Re-run after implementation phases.
+  - Evidence collected: Phase 0 map records old R2 data as intentionally out of scope and adds no importer, reader, dual-write, backfill, compatibility path, or object-key scan implementation. Phase 3 core SQLx implementation adds fresh SQL rows only and does not read, import, scan, or dual-write old R2 objects. Phase 4 reminder/audit SQLx implementation likewise adds fresh SQL rows and direct SQL mutations only, with no R2 reader/importer/dual-write path. Re-run after implementation phases.
 
 - N2: SQLite remains absent
   - Source: `docs/prd/PRD-r2-to-pg.md:37`, `docs/prd/PRD-r2-to-pg.md:2314`
   - Must preserve: No SQLite dependency, feature, migration, tests, docs, or acceptance criteria.
   - Evidence required: Cargo/dependency grep and docs diff review.
   - Status: pending
-  - Evidence collected: Phase 0 search `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example` found only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`, a sandbox/database hint. Phase 1 intentionally avoided the top-level `sqlx` crate after it pulled SQLite dependencies; direct `sqlx-core` + `sqlx-postgres` left `Cargo.lock` without `sqlx-sqlite`, `libsqlite3-sys`, or `rusqlite`. Phase 2 web SQLx dependency guard again matched only the pre-existing sandbox hint, and `cargo tree -p oxide-agent-transport-web --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package. Phase 3 guard again matched only the pre-existing sandbox hint, and `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package. Re-run after later implementation phases.
+  - Evidence collected: Phase 0 search `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example` found only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`, a sandbox/database hint. Phase 1 intentionally avoided the top-level `sqlx` crate after it pulled SQLite dependencies; direct `sqlx-core` + `sqlx-postgres` left `Cargo.lock` without `sqlx-sqlite`, `libsqlite3-sys`, or `rusqlite`. Phase 2 web SQLx dependency guard again matched only the pre-existing sandbox hint, and `cargo tree -p oxide-agent-transport-web --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package. Phase 3 guard again matched only the pre-existing sandbox hint, and `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package. Phase 4 guard repeated the same result for the SQLx core package after adding reminders/audit. Re-run after later implementation phases.
 
 - N3: R2 is not retained as a fallback or feature flag after removal
   - Source: `docs/prd/PRD-r2-to-pg.md:35`, `docs/prd/PRD-r2-to-pg.md:1183`
@@ -361,6 +367,31 @@ Status: complete for core durable storage. R2 core modules remain in the tree on
 - `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package.
 - `git diff --check`
 
+## Phase 4 Reminders and Audit SQLx Evidence
+
+Status: complete for reminder jobs and manager audit. R2 reminder/audit code remains in the tree only as transitional fallback until physical removal, but SQLx/Postgres now implements reminder queue rows and append-only audit rows through `StorageProvider`.
+
+### Added reminder/audit artifacts
+
+- Migration stream: `migrations/0004_reminders_audit.sql` adds typed Postgres tables and indexes for reminder jobs, per-user audit stream versions, and append-only audit events.
+- Reminder implementation: `SqlxStorage` implements reminder create/get/list/due-claim/status/delete methods with direct SQLx/Postgres queries, status/lease predicates, version increments, `SELECT ... FOR UPDATE` mutations, and an atomic single-winner claim update.
+- Audit implementation: `SqlxStorage` appends audit events by locking `audit_stream_versions`, allocating stable per-user versions transactionally, inserting one `audit_events` row, and serving recent/windowed pages by indexed version order.
+- Tests: SQLx core tests cover reminder CRUD/list/due behavior, active-lease rejection, lease-expiry reclaim, concurrent single-winner claims, status transitions, deletion, per-user audit version allocation, recent audit windows, and descending cursor pages.
+
+### Validation evidence
+
+- `cargo fmt --all -- --check`
+- `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`
+- `cargo check -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx`
+- `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`
+- `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture`
+- `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`
+- `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx -- -D warnings`
+- `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-embedded-opencode-local`
+- `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`
+- `rg -n -i 'sqlx-sqlite|libsqlite3-sys|rusqlite|sqlx::sqlite|Sqlite|sqlite' Cargo.toml Cargo.lock crates config .github .env.example migrations || true` matched only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`.
+- `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package.
+
 ## Implementation Plan
 
 1. Phase 0 — deletion map and SQL entity map
@@ -431,6 +462,7 @@ Status: complete for core durable storage. R2 core modules remain in the tree on
 - 2026-06-05: During Phase 1 coexistence, R2 remains primary when `storage/r2` is enabled; `storage/sqlx` can build a sidecar pool when configured or become primary only when R2 is disabled. This avoids a broken SQL primary before Phases 2-5 port business methods.
 - 2026-06-05: Phase 2 keeps direct `sqlx-core` + `sqlx-postgres` dependencies in the web crate instead of adding the top-level `sqlx` crate, and makes R2 web startup explicit-only while SQLx/Postgres is selected for durable web mode when configured.
 - 2026-06-05: Phase 3 supersedes the Phase 1 primary-storage default: configured `storage/sqlx` is now preferred by `build_primary_storage`, while R2 remains only as a transitional fallback until reminders, audit, wiki, and physical removal phases are complete.
+- 2026-06-05: Phase 4 keeps reminders as ordinary SQL rows with status/lease predicates and audit as append-only rows with per-user stream-version rows; no external queue, cache, or service is introduced.
 
 ## Progress Log
 
@@ -468,6 +500,13 @@ Status: complete for core durable storage. R2 core modules remain in the tree on
   - Commands: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`; `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx -- -D warnings`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; SQLite/dependency guard `rg`; `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite`; `git diff --check`.
   - Audit IDs updated: G4 verified; Q1, Q2, Q3, Q5, V1, V2, V4, N1, and N2 received Phase 3 evidence but remain pending where later phases/final audit still apply.
   - Next: Phase 4 — reminders and audit on SQLx.
+
+- 2026-06-05 22:43 +03: Phase 4 reminders and audit SQLx completed.
+  - Changed: Added SQL reminder/audit migration tables, SQL-backed reminder job CRUD/list/due-claim/status/delete methods, atomic lease claiming, append-only audit event append/list/page methods, and DB-backed reminder/audit tests.
+  - Evidence: SQLx core contract tests passed against a clean temporary `postgres:16` database with 10 SQLx tests; reminder tests cover status roundtrips, active-lease rejection, lease-expiry reclaim, deletion, and concurrent single-winner claims; audit tests cover per-user version allocation, recent windows, and descending cursor pages; SQLite guards found no SQLite package.
+  - Commands: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`; `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx -- -D warnings`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; SQLite/dependency guard `rg`; `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite`.
+  - Audit IDs updated: G5 verified; Q1, Q2, Q3, Q4, Q5, V1, V2, V4, N1, and N2 received Phase 4 evidence but remain pending where later phases/final audit still apply.
+  - Next: Phase 5 — wiki memory on SQLx.
 
 ## Risks and Blockers
 

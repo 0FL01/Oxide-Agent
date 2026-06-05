@@ -13,17 +13,20 @@ use sqlx_core::{
 };
 use sqlx_postgres::{PgPool, PgPoolOptions, PgRow, Postgres};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 use super::{
     builders::{
-        build_agent_flow_record, build_agent_profile_record, build_topic_agents_md_record,
-        build_topic_binding_record, build_topic_context_record, build_topic_infra_config_record,
+        build_agent_flow_record, build_agent_profile_record, build_audit_event_record,
+        build_reminder_job_record, build_topic_agents_md_record, build_topic_binding_record,
+        build_topic_context_record, build_topic_infra_config_record, with_next_reminder_version,
     },
     control_plane::normalize_topic_prompt_payload,
     utils::current_timestamp_unix_secs,
     validate_topic_agents_md_content, validate_topic_context_content, AgentFlowRecord,
-    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError, StorageProvider,
-    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, CreateReminderJobOptions,
+    ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind, StorageError,
+    StorageProvider, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
     TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
     UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
@@ -200,12 +203,6 @@ impl SqlxStorage {
         .map_err(db_error)?;
         Ok(())
     }
-}
-
-fn unsupported<T>(operation: &str) -> Result<T, StorageError> {
-    Err(StorageError::Unsupported(format!(
-        "SQLx storage operation `{operation}` is not implemented until the SQL entity porting phases"
-    )))
 }
 
 #[async_trait]
@@ -1190,26 +1187,474 @@ impl StorageProvider for SqlxStorage {
 
     async fn append_audit_event(
         &self,
-        _options: AppendAuditEventOptions,
+        options: AppendAuditEventOptions,
     ) -> Result<AuditEventRecord, StorageError> {
-        unsupported("append_audit_event")
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, options.user_id).await?;
+        let now = current_timestamp_unix_secs();
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO audit_stream_versions (user_id, next_version, created_at, updated_at)
+            VALUES ($1, 1, $2, $2)
+            ON CONFLICT (user_id) DO NOTHING
+            "#,
+        )
+        .bind(options.user_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        let row = query::<Postgres>(
+            r#"
+            SELECT next_version
+            FROM audit_stream_versions
+            WHERE user_id = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(options.user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let next_version = i64_to_u64(row_value(&row, "next_version")?, "audit next_version")?;
+        let current_version = next_version.checked_sub(1);
+        let record = build_audit_event_record(
+            options,
+            current_version.filter(|version| *version > 0),
+            now,
+            Uuid::new_v4().to_string(),
+        );
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO audit_events (
+                user_id, version, event_id, topic_id, agent_id, action, payload,
+                schema_version, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(u64_to_i64(record.version, "audit version")?)
+        .bind(&record.event_id)
+        .bind(&record.topic_id)
+        .bind(&record.agent_id)
+        .bind(&record.action)
+        .bind(&record.payload)
+        .bind(u32_to_i32(record.schema_version, "audit schema_version")?)
+        .bind(record.created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        query::<Postgres>(
+            r#"
+            UPDATE audit_stream_versions
+            SET next_version = next_version + 1,
+                updated_at = $2
+            WHERE user_id = $1
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        tx.commit().await.map_err(db_error)?;
+        Ok(record)
     }
 
     async fn list_audit_events(
         &self,
-        _user_id: i64,
-        _limit: usize,
+        user_id: i64,
+        limit: usize,
     ) -> Result<Vec<AuditEventRecord>, StorageError> {
-        unsupported("list_audit_events")
+        let rows = query::<Postgres>(
+            r#"
+            SELECT user_id, version, event_id, topic_id, agent_id, action, payload,
+                   schema_version, created_at
+            FROM (
+                SELECT user_id, version, event_id, topic_id, agent_id, action, payload,
+                       schema_version, created_at
+                FROM audit_events
+                WHERE user_id = $1
+                ORDER BY version DESC
+                LIMIT $2
+            ) recent
+            ORDER BY version ASC
+            "#,
+        )
+        .bind(user_id)
+        .bind(usize_to_i64(limit, "audit limit")?)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+        rows.iter().map(row_to_audit_event).collect()
     }
 
     async fn list_audit_events_page(
         &self,
-        _user_id: i64,
-        _before_version: Option<u64>,
-        _limit: usize,
+        user_id: i64,
+        before_version: Option<u64>,
+        limit: usize,
     ) -> Result<Vec<AuditEventRecord>, StorageError> {
-        unsupported("list_audit_events_page")
+        let before_version = before_version
+            .map(|version| u64_to_i64(version, "audit before_version"))
+            .transpose()?;
+        let rows = query::<Postgres>(
+            r#"
+            SELECT user_id, version, event_id, topic_id, agent_id, action, payload,
+                   schema_version, created_at
+            FROM audit_events
+            WHERE user_id = $1
+              AND ($2::BIGINT IS NULL OR version < $2)
+            ORDER BY version DESC
+            LIMIT $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(before_version)
+        .bind(usize_to_i64(limit, "audit page limit")?)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+        rows.iter().map(row_to_audit_event).collect()
+    }
+
+    async fn create_reminder_job(
+        &self,
+        options: CreateReminderJobOptions,
+    ) -> Result<ReminderJobRecord, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        ensure_user_row_in_tx(&mut tx, options.user_id).await?;
+        let now = current_timestamp_unix_secs();
+        let record = build_reminder_job_record(options, Uuid::new_v4().to_string(), now);
+        insert_reminder_job_in_tx(&mut tx, &record).await?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(record)
+    }
+
+    async fn get_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT user_id, reminder_id, context_key, flow_id, chat_id, thread_id,
+                   thread_kind, task_prompt, schedule_kind, status, next_run_at,
+                   interval_secs, cron_expression, timezone, lease_until,
+                   last_run_at, last_error, run_count, version, schema_version,
+                   created_at, updated_at
+            FROM reminder_jobs
+            WHERE user_id = $1 AND reminder_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(reminder_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+        row.map(|row| row_to_reminder_job(&row)).transpose()
+    }
+
+    async fn list_reminder_jobs(
+        &self,
+        user_id: i64,
+        context_key: Option<String>,
+        statuses: Option<Vec<ReminderJobStatus>>,
+        limit: usize,
+    ) -> Result<Vec<ReminderJobRecord>, StorageError> {
+        let status_values = statuses
+            .as_ref()
+            .map(|statuses| enum_vec_to_sql(statuses, "reminder status"))
+            .transpose()?;
+        let rows = query::<Postgres>(
+            r#"
+            SELECT user_id, reminder_id, context_key, flow_id, chat_id, thread_id,
+                   thread_kind, task_prompt, schedule_kind, status, next_run_at,
+                   interval_secs, cron_expression, timezone, lease_until,
+                   last_run_at, last_error, run_count, version, schema_version,
+                   created_at, updated_at
+            FROM reminder_jobs
+            WHERE user_id = $1
+              AND ($2::TEXT IS NULL OR context_key = $2)
+              AND ($3::TEXT[] IS NULL OR status = ANY($3))
+            ORDER BY next_run_at DESC, created_at DESC
+            LIMIT $4
+            "#,
+        )
+        .bind(user_id)
+        .bind(context_key)
+        .bind(status_values)
+        .bind(usize_to_i64(limit, "reminder list limit")?)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+        rows.iter().map(row_to_reminder_job).collect()
+    }
+
+    async fn list_due_reminder_jobs(
+        &self,
+        user_id: i64,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<ReminderJobRecord>, StorageError> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT user_id, reminder_id, context_key, flow_id, chat_id, thread_id,
+                   thread_kind, task_prompt, schedule_kind, status, next_run_at,
+                   interval_secs, cron_expression, timezone, lease_until,
+                   last_run_at, last_error, run_count, version, schema_version,
+                   created_at, updated_at
+            FROM reminder_jobs
+            WHERE user_id = $1
+              AND status = 'scheduled'
+              AND next_run_at <= $2
+              AND (lease_until IS NULL OR lease_until <= $2)
+            ORDER BY next_run_at ASC, created_at ASC
+            LIMIT $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(now)
+        .bind(usize_to_i64(limit, "due reminder list limit")?)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+        rows.iter().map(row_to_reminder_job).collect()
+    }
+
+    async fn claim_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        lease_until: i64,
+        now: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        let mutation_now = current_timestamp_unix_secs();
+        let row = query::<Postgres>(
+            r#"
+            UPDATE reminder_jobs
+            SET lease_until = $3,
+                version = version + 1,
+                updated_at = $4
+            WHERE user_id = $1
+              AND reminder_id = $2
+              AND status = 'scheduled'
+              AND next_run_at <= $5
+              AND (lease_until IS NULL OR lease_until <= $5)
+            RETURNING user_id, reminder_id, context_key, flow_id, chat_id, thread_id,
+                      thread_kind, task_prompt, schedule_kind, status, next_run_at,
+                      interval_secs, cron_expression, timezone, lease_until,
+                      last_run_at, last_error, run_count, version, schema_version,
+                      created_at, updated_at
+            "#,
+        )
+        .bind(user_id)
+        .bind(reminder_id)
+        .bind(lease_until)
+        .bind(mutation_now)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+        row.map(|row| row_to_reminder_job(&row)).transpose()
+    }
+
+    async fn reschedule_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        last_run_at: Option<i64>,
+        last_error: Option<String>,
+        increment_run_count: bool,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        mutate_reminder_job(self, user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Scheduled,
+                next_run_at,
+                lease_until: None,
+                last_run_at: last_run_at.or(record.last_run_at),
+                last_error,
+                run_count: if increment_run_count {
+                    record.run_count.saturating_add(1)
+                } else {
+                    record.run_count
+                },
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn complete_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        completed_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        mutate_reminder_job(self, user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Completed,
+                lease_until: None,
+                last_run_at: Some(completed_at),
+                last_error: None,
+                run_count: record.run_count.saturating_add(1),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn fail_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        failed_at: i64,
+        error: String,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        mutate_reminder_job(self, user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Failed,
+                lease_until: None,
+                last_run_at: Some(failed_at),
+                last_error: Some(error),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn cancel_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        cancelled_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        mutate_reminder_job(self, user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Cancelled,
+                lease_until: None,
+                last_run_at: record.last_run_at.or(Some(cancelled_at)),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn pause_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        paused_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        mutate_reminder_job(self, user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Scheduled {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Paused,
+                lease_until: None,
+                last_run_at: record.last_run_at.or(Some(paused_at)),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn resume_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        resumed_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        mutate_reminder_job(self, user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Paused {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Scheduled,
+                next_run_at,
+                lease_until: None,
+                last_run_at: record.last_run_at.or(Some(resumed_at)),
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn retry_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+        next_run_at: i64,
+        retried_at: i64,
+    ) -> Result<Option<ReminderJobRecord>, StorageError> {
+        mutate_reminder_job(self, user_id, &reminder_id, move |record, mutation_now| {
+            if record.status != ReminderJobStatus::Failed {
+                return None;
+            }
+            Some(ReminderJobRecord {
+                version: with_next_reminder_version(&record),
+                status: ReminderJobStatus::Scheduled,
+                next_run_at,
+                lease_until: None,
+                last_run_at: record.last_run_at.or(Some(retried_at)),
+                last_error: None,
+                updated_at: mutation_now,
+                ..record
+            })
+        })
+        .await
+    }
+
+    async fn delete_reminder_job(
+        &self,
+        user_id: i64,
+        reminder_id: String,
+    ) -> Result<(), StorageError> {
+        query::<Postgres>(
+            r#"
+            DELETE FROM reminder_jobs
+            WHERE user_id = $1 AND reminder_id = $2
+            "#,
+        )
+        .bind(user_id)
+        .bind(reminder_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
     }
 }
 
@@ -1355,6 +1800,11 @@ fn i32_to_u16(value: i32, field: &str) -> Result<u16, StorageError> {
     })
 }
 
+fn usize_to_i64(value: usize, field: &str) -> Result<i64, StorageError> {
+    i64::try_from(value)
+        .map_err(|_| StorageError::InvalidInput(format!("{field} value {value} exceeds i64 range")))
+}
+
 fn row_to_user_context(row: &PgRow) -> Result<UserContextConfig, StorageError> {
     let forum_topic_icon_color = row_value::<Option<i64>>(row, "forum_topic_icon_color")?
         .map(|value| i64_to_u32(value, "forum_topic_icon_color"))
@@ -1492,6 +1942,236 @@ fn row_to_topic_binding(row: &PgRow) -> Result<TopicBindingRecord, StorageError>
         created_at: row_value(row, "created_at")?,
         updated_at: row_value(row, "updated_at")?,
     })
+}
+
+fn row_to_audit_event(row: &PgRow) -> Result<AuditEventRecord, StorageError> {
+    Ok(AuditEventRecord {
+        schema_version: i32_to_u32(row_value(row, "schema_version")?, "audit schema_version")?,
+        version: i64_to_u64(row_value(row, "version")?, "audit version")?,
+        event_id: row_value(row, "event_id")?,
+        user_id: row_value(row, "user_id")?,
+        topic_id: row_value(row, "topic_id")?,
+        agent_id: row_value(row, "agent_id")?,
+        action: row_value(row, "action")?,
+        payload: row_value(row, "payload")?,
+        created_at: row_value(row, "created_at")?,
+    })
+}
+
+fn row_to_reminder_job(row: &PgRow) -> Result<ReminderJobRecord, StorageError> {
+    let thread_kind = enum_from_sql::<ReminderThreadKind>(
+        &row_value::<String>(row, "thread_kind")?,
+        "reminder thread kind",
+    )?;
+    let schedule_kind = enum_from_sql::<ReminderScheduleKind>(
+        &row_value::<String>(row, "schedule_kind")?,
+        "reminder schedule kind",
+    )?;
+    let status = enum_from_sql::<ReminderJobStatus>(
+        &row_value::<String>(row, "status")?,
+        "reminder status",
+    )?;
+    let interval_secs = row_value::<Option<i64>>(row, "interval_secs")?
+        .map(|value| i64_to_u64(value, "reminder interval_secs"))
+        .transpose()?;
+
+    Ok(ReminderJobRecord {
+        schema_version: i32_to_u32(row_value(row, "schema_version")?, "reminder schema_version")?,
+        version: i64_to_u64(row_value(row, "version")?, "reminder version")?,
+        reminder_id: row_value(row, "reminder_id")?,
+        user_id: row_value(row, "user_id")?,
+        context_key: row_value(row, "context_key")?,
+        flow_id: row_value(row, "flow_id")?,
+        chat_id: row_value(row, "chat_id")?,
+        thread_id: row_value(row, "thread_id")?,
+        thread_kind,
+        task_prompt: row_value(row, "task_prompt")?,
+        schedule_kind,
+        status,
+        next_run_at: row_value(row, "next_run_at")?,
+        interval_secs,
+        cron_expression: row_value(row, "cron_expression")?,
+        timezone: row_value(row, "timezone")?,
+        lease_until: row_value(row, "lease_until")?,
+        last_run_at: row_value(row, "last_run_at")?,
+        last_error: row_value(row, "last_error")?,
+        run_count: i64_to_u64(row_value(row, "run_count")?, "reminder run_count")?,
+        created_at: row_value(row, "created_at")?,
+        updated_at: row_value(row, "updated_at")?,
+    })
+}
+
+async fn insert_reminder_job_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &ReminderJobRecord,
+) -> Result<(), StorageError> {
+    query::<Postgres>(
+        r#"
+        INSERT INTO reminder_jobs (
+            user_id, reminder_id, context_key, flow_id, chat_id, thread_id,
+            thread_kind, task_prompt, schedule_kind, status, next_run_at,
+            interval_secs, cron_expression, timezone, lease_until, last_run_at,
+            last_error, run_count, version, schema_version, created_at, updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+            $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+        )
+        "#,
+    )
+    .bind(record.user_id)
+    .bind(&record.reminder_id)
+    .bind(&record.context_key)
+    .bind(&record.flow_id)
+    .bind(record.chat_id)
+    .bind(record.thread_id)
+    .bind(enum_to_sql(&record.thread_kind, "reminder thread kind")?)
+    .bind(&record.task_prompt)
+    .bind(enum_to_sql(
+        &record.schedule_kind,
+        "reminder schedule kind",
+    )?)
+    .bind(enum_to_sql(&record.status, "reminder status")?)
+    .bind(record.next_run_at)
+    .bind(
+        record
+            .interval_secs
+            .map(|value| u64_to_i64(value, "reminder interval_secs"))
+            .transpose()?,
+    )
+    .bind(&record.cron_expression)
+    .bind(&record.timezone)
+    .bind(record.lease_until)
+    .bind(record.last_run_at)
+    .bind(&record.last_error)
+    .bind(u64_to_i64(record.run_count, "reminder run_count")?)
+    .bind(u64_to_i64(record.version, "reminder version")?)
+    .bind(u32_to_i32(
+        record.schema_version,
+        "reminder schema_version",
+    )?)
+    .bind(record.created_at)
+    .bind(record.updated_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn update_reminder_job_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    record: &ReminderJobRecord,
+) -> Result<(), StorageError> {
+    query::<Postgres>(
+        r#"
+        UPDATE reminder_jobs
+        SET context_key = $3,
+            flow_id = $4,
+            chat_id = $5,
+            thread_id = $6,
+            thread_kind = $7,
+            task_prompt = $8,
+            schedule_kind = $9,
+            status = $10,
+            next_run_at = $11,
+            interval_secs = $12,
+            cron_expression = $13,
+            timezone = $14,
+            lease_until = $15,
+            last_run_at = $16,
+            last_error = $17,
+            run_count = $18,
+            version = $19,
+            schema_version = $20,
+            updated_at = $21
+        WHERE user_id = $1 AND reminder_id = $2
+        "#,
+    )
+    .bind(record.user_id)
+    .bind(&record.reminder_id)
+    .bind(&record.context_key)
+    .bind(&record.flow_id)
+    .bind(record.chat_id)
+    .bind(record.thread_id)
+    .bind(enum_to_sql(&record.thread_kind, "reminder thread kind")?)
+    .bind(&record.task_prompt)
+    .bind(enum_to_sql(
+        &record.schedule_kind,
+        "reminder schedule kind",
+    )?)
+    .bind(enum_to_sql(&record.status, "reminder status")?)
+    .bind(record.next_run_at)
+    .bind(
+        record
+            .interval_secs
+            .map(|value| u64_to_i64(value, "reminder interval_secs"))
+            .transpose()?,
+    )
+    .bind(&record.cron_expression)
+    .bind(&record.timezone)
+    .bind(record.lease_until)
+    .bind(record.last_run_at)
+    .bind(&record.last_error)
+    .bind(u64_to_i64(record.run_count, "reminder run_count")?)
+    .bind(u64_to_i64(record.version, "reminder version")?)
+    .bind(u32_to_i32(
+        record.schema_version,
+        "reminder schema_version",
+    )?)
+    .bind(record.updated_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn get_reminder_job_for_update(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+    reminder_id: &str,
+) -> Result<Option<ReminderJobRecord>, StorageError> {
+    let row = query::<Postgres>(
+        r#"
+        SELECT user_id, reminder_id, context_key, flow_id, chat_id, thread_id,
+               thread_kind, task_prompt, schedule_kind, status, next_run_at,
+               interval_secs, cron_expression, timezone, lease_until,
+               last_run_at, last_error, run_count, version, schema_version,
+               created_at, updated_at
+        FROM reminder_jobs
+        WHERE user_id = $1 AND reminder_id = $2
+        FOR UPDATE
+        "#,
+    )
+    .bind(user_id)
+    .bind(reminder_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    row.map(|row| row_to_reminder_job(&row)).transpose()
+}
+
+async fn mutate_reminder_job<F>(
+    storage: &SqlxStorage,
+    user_id: i64,
+    reminder_id: &str,
+    mutate: F,
+) -> Result<Option<ReminderJobRecord>, StorageError>
+where
+    F: FnOnce(ReminderJobRecord, i64) -> Option<ReminderJobRecord> + Send,
+{
+    let mut tx = storage.pool.begin().await.map_err(db_error)?;
+    let Some(record) = get_reminder_job_for_update(&mut tx, user_id, reminder_id).await? else {
+        tx.commit().await.map_err(db_error)?;
+        return Ok(None);
+    };
+    let mutation_now = current_timestamp_unix_secs();
+    let Some(updated) = mutate(record, mutation_now) else {
+        tx.commit().await.map_err(db_error)?;
+        return Ok(None);
+    };
+    update_reminder_job_in_tx(&mut tx, &updated).await?;
+    tx.commit().await.map_err(db_error)?;
+    Ok(Some(updated))
 }
 
 async fn get_agent_flow_record_for_update(
@@ -1719,10 +2399,11 @@ mod tests {
     use super::{SqlxStorage, SqlxStorageConfig};
     use crate::agent::memory::AgentMemory;
     use crate::storage::{
-        OptionalMetadataPatch, StorageError, StorageProvider, TopicBindingKind, TopicInfraAuthMode,
-        TopicInfraToolMode, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
-        UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
-        UserConfig, UserContextConfig,
+        AppendAuditEventOptions, CreateReminderJobOptions, OptionalMetadataPatch,
+        ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind, StorageError, StorageProvider,
+        TopicBindingKind, TopicInfraAuthMode, TopicInfraToolMode, UpsertAgentProfileOptions,
+        UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
+        UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
     };
 
     static USER_COUNTER: AtomicI64 = AtomicI64::new(1);
@@ -2036,7 +2717,275 @@ mod tests {
         assert_eq!(binding.expires_at, Some(123_456));
     }
 
+    #[tokio::test]
+    async fn sqlx_reminder_jobs_claim_and_status_roundtrip() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let user_id = unique_user_id();
+        let reminder = storage
+            .create_reminder_job(CreateReminderJobOptions {
+                user_id,
+                context_key: "ctx-reminders".to_string(),
+                flow_id: "flow-reminders".to_string(),
+                chat_id: 10,
+                thread_id: Some(20),
+                thread_kind: ReminderThreadKind::Forum,
+                task_prompt: "Ping me".to_string(),
+                schedule_kind: ReminderScheduleKind::Interval,
+                next_run_at: 100,
+                interval_secs: Some(60),
+                cron_expression: None,
+                timezone: None,
+            })
+            .await
+            .expect("reminder should be created");
+        assert_eq!(reminder.version, 1);
+        assert_eq!(reminder.status, ReminderJobStatus::Scheduled);
+
+        let loaded = storage
+            .get_reminder_job(user_id, reminder.reminder_id.clone())
+            .await
+            .expect("reminder lookup should succeed")
+            .expect("reminder should exist");
+        assert_eq!(loaded.reminder_id, reminder.reminder_id);
+        assert_eq!(loaded.thread_kind, ReminderThreadKind::Forum);
+        assert_eq!(loaded.interval_secs, Some(60));
+
+        let listed = storage
+            .list_reminder_jobs(
+                user_id,
+                Some("ctx-reminders".to_string()),
+                Some(vec![ReminderJobStatus::Scheduled]),
+                10,
+            )
+            .await
+            .expect("reminder list should load");
+        assert_eq!(listed.len(), 1);
+        let due = storage
+            .list_due_reminder_jobs(user_id, 100, 10)
+            .await
+            .expect("due reminders should load");
+        assert_eq!(due.len(), 1);
+
+        let claimed = storage
+            .claim_reminder_job(user_id, reminder.reminder_id.clone(), 200, 100)
+            .await
+            .expect("claim should execute")
+            .expect("due reminder should be claimed");
+        assert_eq!(claimed.version, reminder.version + 1);
+        assert_eq!(claimed.lease_until, Some(200));
+        assert!(storage
+            .claim_reminder_job(user_id, reminder.reminder_id.clone(), 250, 150)
+            .await
+            .expect("second claim should execute")
+            .is_none());
+
+        let reclaimed = storage
+            .claim_reminder_job(user_id, reminder.reminder_id.clone(), 300, 200)
+            .await
+            .expect("expired lease claim should execute")
+            .expect("expired lease should allow reclaim");
+        assert_eq!(reclaimed.lease_until, Some(300));
+
+        let rescheduled = storage
+            .reschedule_reminder_job(
+                user_id,
+                reminder.reminder_id.clone(),
+                400,
+                Some(200),
+                Some("late".to_string()),
+                true,
+            )
+            .await
+            .expect("reschedule should execute")
+            .expect("scheduled reminder should reschedule");
+        assert_eq!(rescheduled.status, ReminderJobStatus::Scheduled);
+        assert_eq!(rescheduled.next_run_at, 400);
+        assert_eq!(rescheduled.lease_until, None);
+        assert_eq!(rescheduled.run_count, 1);
+        assert_eq!(rescheduled.last_error.as_deref(), Some("late"));
+
+        let paused = storage
+            .pause_reminder_job(user_id, reminder.reminder_id.clone(), 401)
+            .await
+            .expect("pause should execute")
+            .expect("scheduled reminder should pause");
+        assert_eq!(paused.status, ReminderJobStatus::Paused);
+        let resumed = storage
+            .resume_reminder_job(user_id, reminder.reminder_id.clone(), 500, 402)
+            .await
+            .expect("resume should execute")
+            .expect("paused reminder should resume");
+        assert_eq!(resumed.status, ReminderJobStatus::Scheduled);
+        assert_eq!(resumed.next_run_at, 500);
+
+        let failed = storage
+            .fail_reminder_job(
+                user_id,
+                reminder.reminder_id.clone(),
+                501,
+                "boom".to_string(),
+            )
+            .await
+            .expect("fail should execute")
+            .expect("scheduled reminder should fail");
+        assert_eq!(failed.status, ReminderJobStatus::Failed);
+        assert_eq!(failed.last_error.as_deref(), Some("boom"));
+        let retried = storage
+            .retry_reminder_job(user_id, reminder.reminder_id.clone(), 600, 502)
+            .await
+            .expect("retry should execute")
+            .expect("failed reminder should retry");
+        assert_eq!(retried.status, ReminderJobStatus::Scheduled);
+        assert_eq!(retried.last_error, None);
+
+        let cancelled = storage
+            .cancel_reminder_job(user_id, reminder.reminder_id.clone(), 601)
+            .await
+            .expect("cancel should execute")
+            .expect("scheduled reminder should cancel");
+        assert_eq!(cancelled.status, ReminderJobStatus::Cancelled);
+        storage
+            .delete_reminder_job(user_id, reminder.reminder_id.clone())
+            .await
+            .expect("delete should execute");
+        assert!(storage
+            .get_reminder_job(user_id, reminder.reminder_id)
+            .await
+            .expect("lookup after delete should execute")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn sqlx_reminder_claim_is_single_winner() {
+        let Some(storage) = sqlx_test_storage_with_connections(4).await else {
+            return;
+        };
+        let user_id = unique_user_id();
+        let reminder = storage
+            .create_reminder_job(CreateReminderJobOptions {
+                user_id,
+                context_key: "ctx-concurrent".to_string(),
+                flow_id: "flow-concurrent".to_string(),
+                chat_id: 10,
+                thread_id: None,
+                thread_kind: ReminderThreadKind::Dm,
+                task_prompt: "Ping once".to_string(),
+                schedule_kind: ReminderScheduleKind::Once,
+                next_run_at: 100,
+                interval_secs: None,
+                cron_expression: None,
+                timezone: None,
+            })
+            .await
+            .expect("reminder should be created");
+
+        let first_storage = storage.clone();
+        let second_storage = storage.clone();
+        let first_id = reminder.reminder_id.clone();
+        let second_id = reminder.reminder_id.clone();
+        let (first, second) = tokio::join!(
+            first_storage.claim_reminder_job(user_id, first_id, 200, 100),
+            second_storage.claim_reminder_job(user_id, second_id, 200, 100),
+        );
+        let claims = [first, second]
+            .into_iter()
+            .map(|result| result.expect("claim should execute"))
+            .filter(Option::is_some)
+            .count();
+        assert_eq!(claims, 1);
+        assert!(storage
+            .list_due_reminder_jobs(user_id, 150, 10)
+            .await
+            .expect("due list should execute")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn sqlx_audit_events_append_and_page_by_version() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let user_id = unique_user_id();
+
+        let first = storage
+            .append_audit_event(AppendAuditEventOptions {
+                user_id,
+                topic_id: Some("topic-a".to_string()),
+                agent_id: Some("agent-a".to_string()),
+                action: "first".to_string(),
+                payload: json!({"n": 1}),
+            })
+            .await
+            .expect("first audit event should append");
+        let second = storage
+            .append_audit_event(AppendAuditEventOptions {
+                user_id,
+                topic_id: Some("topic-a".to_string()),
+                agent_id: None,
+                action: "second".to_string(),
+                payload: json!({"n": 2}),
+            })
+            .await
+            .expect("second audit event should append");
+        let third = storage
+            .append_audit_event(AppendAuditEventOptions {
+                user_id,
+                topic_id: None,
+                agent_id: None,
+                action: "third".to_string(),
+                payload: json!({"n": 3}),
+            })
+            .await
+            .expect("third audit event should append");
+        assert_eq!([first.version, second.version, third.version], [1, 2, 3]);
+
+        let recent_versions: Vec<u64> = storage
+            .list_audit_events(user_id, 2)
+            .await
+            .expect("recent audit events should load")
+            .iter()
+            .map(|event| event.version)
+            .collect();
+        assert_eq!(recent_versions, vec![2, 3]);
+
+        let first_page_versions: Vec<u64> = storage
+            .list_audit_events_page(user_id, None, 2)
+            .await
+            .expect("audit page should load")
+            .iter()
+            .map(|event| event.version)
+            .collect();
+        let second_page_versions: Vec<u64> = storage
+            .list_audit_events_page(user_id, Some(2), 2)
+            .await
+            .expect("audit cursor page should load")
+            .iter()
+            .map(|event| event.version)
+            .collect();
+        assert_eq!(first_page_versions, vec![3, 2]);
+        assert_eq!(second_page_versions, vec![1]);
+
+        let other_user = unique_user_id();
+        let other = storage
+            .append_audit_event(AppendAuditEventOptions {
+                user_id: other_user,
+                topic_id: None,
+                agent_id: None,
+                action: "other".to_string(),
+                payload: json!({}),
+            })
+            .await
+            .expect("other user audit stream should append");
+        assert_eq!(other.version, 1);
+    }
+
     async fn sqlx_test_storage() -> Option<SqlxStorage> {
+        sqlx_test_storage_with_connections(1).await
+    }
+
+    async fn sqlx_test_storage_with_connections(max_connections: u32) -> Option<SqlxStorage> {
         let Ok(database_url) = std::env::var("OXIDE_DATABASE_TEST_URL") else {
             eprintln!("OXIDE_DATABASE_TEST_URL not set; skipping SQLx/Postgres test");
             return None;
@@ -2047,7 +2996,7 @@ mod tests {
             .join("migrations");
         let config = SqlxStorageConfig {
             database_url,
-            max_connections: 1,
+            max_connections,
             connect_timeout: Duration::from_secs(5),
             migrate_on_startup: true,
             migrations_dir,
