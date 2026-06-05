@@ -12,10 +12,10 @@ use std::collections::HashMap;
 
 use super::activity::{ActivityDrawer, ActivityStatusChip};
 use super::composer::{
-    append_pasted_image_files, append_pending_browser_files, browser_files,
-    browser_files_from_drag_event, browser_files_from_input_event, can_submit_input,
-    persist_default_effort, AgentEffortSelect, AgentProfileSelect, PendingAttachmentFile,
-    PendingAttachmentList,
+    append_pending_browser_files, browser_files, browser_files_from_input_event, can_submit_input,
+    handle_composer_drag, handle_composer_drop, handle_composer_input, handle_composer_paste,
+    persist_default_effort, submit_parent_form_on_ctrl_enter, AgentEffortSelect,
+    AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
 };
 use super::profile::{
     agent_effort_from_value, agent_profile_selection_from_value, apply_loaded_default_effort,
@@ -184,25 +184,21 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                         class="composer-inner"
                         class:drag-active=drag_active
                         on:dragenter=move |ev| {
-                            ev.prevent_default();
-                            set_drag_active.set(true);
+                            handle_composer_drag(&ev, set_drag_active, true);
                         }
                         on:dragover=move |ev| {
-                            ev.prevent_default();
-                            set_drag_active.set(true);
+                            handle_composer_drag(&ev, set_drag_active, true);
                         }
                         on:dragleave=move |ev| {
-                            ev.prevent_default();
-                            set_drag_active.set(false);
+                            handle_composer_drag(&ev, set_drag_active, false);
                         }
                         on:drop=move |ev| {
-                            ev.prevent_default();
-                            set_drag_active.set(false);
-                            append_pending_browser_files(
+                            handle_composer_drop(
+                                &ev,
+                                set_drag_active,
                                 next_pending_file_id,
                                 set_next_pending_file_id,
                                 set_pending_files,
-                                browser_files_from_drag_event(&ev),
                             );
                         }
                     >
@@ -211,20 +207,10 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                             prop:value=input
                             disabled=loading
                             on:input=move |ev| {
-                                set_input.set(event_target_value(&ev));
-                                use wasm_bindgen::JsCast;
-                                let Some(target) = ev.target() else {
-                                    return;
-                                };
-                                let el: web_sys::HtmlElement = target.unchecked_into();
-                                el.style().set_property("height", "auto").ok();
-                                let scroll = el.scroll_height();
-                                let max = 208.0_f64;
-                                let h = (scroll as f64).min(max);
-                                el.style().set_property("height", &format!("{h}px")).ok();
+                                handle_composer_input(&ev, set_input);
                             }
                             on:paste=move |ev| {
-                                append_pasted_image_files(
+                                handle_composer_paste(
                                     &ev,
                                     next_pending_file_id,
                                     set_next_pending_file_id,
@@ -232,19 +218,7 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
                                 );
                             }
                             on:keydown=move |ev| {
-                                if ev.ctrl_key() && ev.key() == "Enter" {
-                                    ev.prevent_default();
-                                    if let Some(target) = ev.target() {
-                                        use wasm_bindgen::JsCast;
-                                        let el: web_sys::HtmlElement = target.unchecked_into();
-                                        if let Ok(Some(form_el)) = el.closest("form") {
-                                            if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
-                                                let btn: web_sys::HtmlElement = btn.unchecked_into();
-                                                btn.click();
-                                            }
-                                        }
-                                    }
-                                }
+                                submit_parent_form_on_ctrl_enter(&ev);
                             }
                         />
                         <PendingAttachmentList
@@ -707,25 +681,21 @@ fn SessionWorkspace(
                         class="composer-inner"
                         class:drag-active=drag_active
                         on:dragenter=move |ev| {
-                            ev.prevent_default();
-                            set_drag_active.set(true);
+                            handle_composer_drag(&ev, set_drag_active, true);
                         }
                         on:dragover=move |ev| {
-                            ev.prevent_default();
-                            set_drag_active.set(true);
+                            handle_composer_drag(&ev, set_drag_active, true);
                         }
                         on:dragleave=move |ev| {
-                            ev.prevent_default();
-                            set_drag_active.set(false);
+                            handle_composer_drag(&ev, set_drag_active, false);
                         }
                         on:drop=move |ev| {
-                            ev.prevent_default();
-                            set_drag_active.set(false);
-                            append_pending_browser_files(
+                            handle_composer_drop(
+                                &ev,
+                                set_drag_active,
                                 next_pending_file_id,
                                 set_next_pending_file_id,
                                 set_pending_files,
-                                browser_files_from_drag_event(&ev),
                             );
                         }
                     >
@@ -734,21 +704,10 @@ fn SessionWorkspace(
                             prop:value=input
                             disabled=is_running
                             on:input=move |ev| {
-                                set_input.set(event_target_value(&ev));
-                                // auto-resize
-                                use wasm_bindgen::JsCast;
-                                let Some(target) = ev.target() else {
-                                    return;
-                                };
-                                let el: web_sys::HtmlElement = target.unchecked_into();
-                                el.style().set_property("height", "auto").ok();
-                                let scroll = el.scroll_height();
-                                let max = 208.0_f64;
-                                let h = (scroll as f64).min(max);
-                                el.style().set_property("height", &format!("{h}px")).ok();
+                                handle_composer_input(&ev, set_input);
                             }
                             on:paste=move |ev| {
-                                append_pasted_image_files(
+                                handle_composer_paste(
                                     &ev,
                                     next_pending_file_id,
                                     set_next_pending_file_id,
@@ -756,19 +715,7 @@ fn SessionWorkspace(
                                 );
                             }
                             on:keydown=move |ev| {
-                                if ev.ctrl_key() && ev.key() == "Enter" {
-                                    ev.prevent_default();
-                                    if let Some(target) = ev.target() {
-                                        use wasm_bindgen::JsCast;
-                                        let el: web_sys::HtmlElement = target.unchecked_into();
-                                        if let Ok(Some(form_el)) = el.closest("form") {
-                                            if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
-                                                let btn: web_sys::HtmlElement = btn.unchecked_into();
-                                                btn.click();
-                                            }
-                                        }
-                                    }
-                                }
+                                submit_parent_form_on_ctrl_enter(&ev);
                             }
                         />
                         <PendingAttachmentList

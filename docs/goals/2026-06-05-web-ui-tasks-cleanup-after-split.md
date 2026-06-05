@@ -59,8 +59,8 @@ Out of scope:
   - Source: User-selected RECON findings for duplicated welcome/session composer handlers.
   - Acceptance: Welcome and session composers reuse small helpers from `composer.rs` or local focused helpers for drag/drop, textarea resize, pasted images, and Ctrl+Enter submit; submit/resume/create/cancel control flow in `workspace.rs` is not rewritten.
   - Evidence required: focused diff review proving lifecycle branches are untouched, wasm `cargo check`, wasm `cargo clippy`, native tests, and release `trunk build`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 2 added focused composer helpers for drag state, drop attachment import, textarea input/resize, pasted image attachments, and Ctrl+Enter form submission; both welcome/session composer call sites now call those helpers while task create/resume/cancel branches stayed untouched. Wasm check, wasm clippy, native tests, wasm test build, release `trunk build`, and diff checks passed.
 
 - G3: Task-card clippy suppressions are removed through small component/props cleanup
   - Source: User-selected RECON findings for `TaskCard` and `TaskInputEditForm` suppressions.
@@ -74,28 +74,28 @@ Out of scope:
   - Acceptance: Create-session/upload/create-task, existing-session upload/resume-or-create, cancel, profile update, edit-version stream startup, `streaming_task_id` stale guard, profile sentinels, and CSS class names are not semantically changed.
   - Evidence required: diff review by checkpoint plus wasm check/clippy.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 touched only pure helper visibility/location and preview truncation; create/submit/resume/cancel/edit-version flow code stayed unchanged and wasm check/clippy passed.
+  - Evidence collected: 2026-06-05 checkpoint 1 touched only pure helper visibility/location and preview truncation; create/submit/resume/cancel/edit-version flow code stayed unchanged and wasm check/clippy passed. Checkpoint 2 touched only composer event handler bodies and preserved submit/resume/create/cancel lifecycle code.
 
 - Q2: Cleanup stays simple and dependency-free
   - Source: Repository implementation bias and user focus on cleanup.
   - Acceptance: No new crates, no new services, no global state manager, no UI framework changes, and no broad abstractions are introduced.
   - Evidence required: `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml`, file list review, and diff review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes.
+  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and kept cleanup to small helper functions.
 
 - V1: Required validation passes
   - Source: Repository validation conventions for wasm-gated web UI.
   - Acceptance: Required commands pass for each checkpoint; release `trunk build` is run for component/CSS-affecting checkpoints and final verification.
   - Evidence required: command output summary recorded in Progress Log and Final Verification.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`.
+  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed the same command set plus `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui`.
 
 - N1: Out-of-scope cleanup remains untouched
   - Source: User focus excludes testability-gap, CSS, and broad redesign work.
   - Must preserve: No CSS cleanup, selector renames, host-testability restructuring, backend changes, or broad workspace/task lifecycle rewrites are included in this goal.
   - Evidence required: file list review and diff review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks/{state,workspace,delivered_files,tool_cards}.rs` and this goal document; no CSS, backend, host-testability, or broad lifecycle changes.
+  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks/{state,workspace,delivered_files,tool_cards}.rs` and this goal document; no CSS, backend, host-testability, or broad lifecycle changes. Checkpoint 2 changed only `composer.rs`, `workspace.rs`, and this goal document.
 
 ## Implementation Plan
 
@@ -152,6 +152,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
   - Audit IDs updated: G1 verified; Q1, Q2, V1, N1 evidence collected.
   - Next: Checkpoint 2 — extract duplicated composer event helpers.
+
+- 2026-06-05: Checkpoint 2 completed.
+  - Changed: Added shared composer helpers for drag/drop, textarea input resize, pasted image attachments, and Ctrl+Enter form submission; replaced duplicated welcome/session handler bodies with helper calls.
+  - Evidence: Focused diff showed create-session, submit/resume, cancel, profile update, and stream startup branches were not rewritten; no dependency/CSS/backend changes.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `env -u NO_COLOR trunk build --release`; `git diff --check`.
+  - Audit IDs updated: G2 verified; Q1, Q2, V1, N1 evidence collected.
+  - Next: Checkpoint 3 — remove task-card clippy suppressions.
 
 ## Risks and Blockers
 

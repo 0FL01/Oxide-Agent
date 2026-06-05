@@ -194,6 +194,81 @@ pub(super) fn can_submit_input(input: &str, attachments: &[PendingAttachmentFile
     !input.trim().is_empty() || !attachments.is_empty()
 }
 
+pub(super) fn handle_composer_drag(
+    ev: &leptos::ev::DragEvent,
+    set_drag_active: WriteSignal<bool>,
+    active: bool,
+) {
+    ev.prevent_default();
+    set_drag_active.set(active);
+}
+
+pub(super) fn handle_composer_drop(
+    ev: &leptos::ev::DragEvent,
+    set_drag_active: WriteSignal<bool>,
+    next_id: ReadSignal<usize>,
+    set_next_id: WriteSignal<usize>,
+    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
+) {
+    ev.prevent_default();
+    set_drag_active.set(false);
+    append_pending_browser_files(
+        next_id,
+        set_next_id,
+        set_attachments,
+        browser_files_from_drag_event(ev),
+    );
+}
+
+pub(super) fn handle_composer_input(ev: &leptos::ev::Event, set_input: WriteSignal<String>) {
+    set_input.set(event_target_value(ev));
+    resize_textarea_from_input_event(ev);
+}
+
+pub(super) fn handle_composer_paste(
+    ev: &leptos::ev::ClipboardEvent,
+    next_id: ReadSignal<usize>,
+    set_next_id: WriteSignal<usize>,
+    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
+) {
+    append_pasted_image_files(ev, next_id, set_next_id, set_attachments);
+}
+
+pub(super) fn submit_parent_form_on_ctrl_enter(ev: &leptos::ev::KeyboardEvent) {
+    if !ev.ctrl_key() || ev.key() != "Enter" {
+        return;
+    }
+    ev.prevent_default();
+
+    let Some(target) = ev.target() else {
+        return;
+    };
+    use wasm_bindgen::JsCast;
+    let el: web_sys::HtmlElement = target.unchecked_into();
+    if let Ok(Some(form_el)) = el.closest("form") {
+        if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
+            let btn: web_sys::HtmlElement = btn.unchecked_into();
+            btn.click();
+        }
+    }
+}
+
+fn resize_textarea_from_input_event(ev: &leptos::ev::Event) {
+    const MAX_TEXTAREA_HEIGHT_PX: f64 = 208.0;
+
+    let Some(target) = ev.target() else {
+        return;
+    };
+    use wasm_bindgen::JsCast;
+    let el: web_sys::HtmlElement = target.unchecked_into();
+    el.style().set_property("height", "auto").ok();
+    let scroll = el.scroll_height();
+    let height = (scroll as f64).min(MAX_TEXTAREA_HEIGHT_PX);
+    el.style()
+        .set_property("height", &format!("{height}px"))
+        .ok();
+}
+
 pub(super) fn append_pending_browser_files(
     next_id: ReadSignal<usize>,
     set_next_id: WriteSignal<usize>,
@@ -209,7 +284,7 @@ pub(super) fn append_pending_browser_files(
     set_attachments.update(|items| items.extend(new_files));
 }
 
-pub(super) fn append_pasted_image_files(
+fn append_pasted_image_files(
     ev: &leptos::ev::ClipboardEvent,
     next_id: ReadSignal<usize>,
     set_next_id: WriteSignal<usize>,
@@ -261,7 +336,7 @@ pub(super) fn browser_files_from_input_event(ev: &leptos::ev::Event) -> Vec<web_
     files
 }
 
-pub(super) fn browser_files_from_drag_event(ev: &leptos::ev::DragEvent) -> Vec<web_sys::File> {
+fn browser_files_from_drag_event(ev: &leptos::ev::DragEvent) -> Vec<web_sys::File> {
     ev.data_transfer()
         .and_then(|transfer| transfer.files())
         .map(browser_files_from_file_list)
