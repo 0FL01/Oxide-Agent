@@ -43,7 +43,7 @@ Out of scope:
 - `DeliveredFileLink` exposes module-wide fields at `crates/oxide-agent-web-ui/src/tasks/delivered_files.rs:8` even though construction and field access stay inside the module.
 - `first_line` truncates with a byte slice at `crates/oxide-agent-web-ui/src/tasks/tool_cards.rs:963`, which is unsafe for non-ASCII text.
 - Composer drag/drop, textarea resize, paste, and Ctrl+Enter handlers are duplicated between welcome and session composers at `crates/oxide-agent-web-ui/src/tasks/workspace.rs:183` and `crates/oxide-agent-web-ui/src/tasks/workspace.rs:704`.
-- `TaskCard` and `TaskInputEditForm` still carry targeted clippy suppressions at `crates/oxide-agent-web-ui/src/tasks/task_card.rs:22` and `crates/oxide-agent-web-ui/src/tasks/task_card.rs:363` after the mechanical split.
+- `TaskCard` and `TaskInputEditForm` carried targeted clippy suppressions after the mechanical split; checkpoint 3 removes them through local component/props cleanup.
 - `crates/oxide-agent-web-ui/src/main.rs:17` keeps web UI modules wasm-gated; wasm `cargo check` remains mandatory.
 
 ## Completion Audit
@@ -66,36 +66,36 @@ Out of scope:
   - Source: User-selected RECON findings for `TaskCard` and `TaskInputEditForm` suppressions.
   - Acceptance: The targeted `#[allow(clippy::too_many_arguments, clippy::too_many_lines)]` on `TaskCard` and `#[allow(clippy::too_many_arguments)]` on `TaskInputEditForm` are removed or narrowed away by small local splits/props grouping; task version navigation, clipboard actions, edit-version creation, drawer close, selected-version update, and stream startup behavior remain unchanged.
   - Evidence required: focused diff review, wasm `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, native tests, and release `trunk build`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 3 removed the targeted `allow(clippy::...)` annotations by introducing local `TaskCardModel`/`TaskCardSignals`, smaller user/resume/assistant message components, and `TaskInputEditTarget`/`TaskInputEditSignals`; version navigation, clipboard actions, edit-version stream startup, selected-version update, drawer close, delivered-file rendering, and CSS classes stayed in the moved code paths. Wasm check, wasm clippy, native tests, wasm test build, release `trunk build`, and diff checks passed.
 
 - Q1: Behavior-critical task flows are preserved
   - Source: Existing web UI task invariants from the completed slice refactor goal.
   - Acceptance: Create-session/upload/create-task, existing-session upload/resume-or-create, cancel, profile update, edit-version stream startup, `streaming_task_id` stale guard, profile sentinels, and CSS class names are not semantically changed.
   - Evidence required: diff review by checkpoint plus wasm check/clippy.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 touched only pure helper visibility/location and preview truncation; create/submit/resume/cancel/edit-version flow code stayed unchanged and wasm check/clippy passed. Checkpoint 2 touched only composer event handler bodies and preserved submit/resume/create/cancel lifecycle code.
+  - Evidence collected: 2026-06-05 checkpoint 1 touched only pure helper visibility/location and preview truncation; create/submit/resume/cancel/edit-version flow code stayed unchanged and wasm check/clippy passed. Checkpoint 2 touched only composer event handler bodies and preserved submit/resume/create/cancel lifecycle code. Checkpoint 3 reshaped only task-card component boundaries and preserved edit-version submission, selected-version update, drawer close, stream startup, copy/version controls, delivered-file rendering, and CSS classes.
 
 - Q2: Cleanup stays simple and dependency-free
   - Source: Repository implementation bias and user focus on cleanup.
   - Acceptance: No new crates, no new services, no global state manager, no UI framework changes, and no broad abstractions are introduced.
   - Evidence required: `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml`, file list review, and diff review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and kept cleanup to small helper functions.
+  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and kept cleanup to small helper functions. Checkpoint 3 added no dependencies and kept cleanup local to task-card props/components.
 
 - V1: Required validation passes
   - Source: Repository validation conventions for wasm-gated web UI.
   - Acceptance: Required commands pass for each checkpoint; release `trunk build` is run for component/CSS-affecting checkpoints and final verification.
   - Evidence required: command output summary recorded in Progress Log and Final Verification.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed the same command set plus `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui`.
+  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed the same command set plus `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui`. Checkpoint 3 passed the same checkpoint 2 command set.
 
 - N1: Out-of-scope cleanup remains untouched
   - Source: User focus excludes testability-gap, CSS, and broad redesign work.
   - Must preserve: No CSS cleanup, selector renames, host-testability restructuring, backend changes, or broad workspace/task lifecycle rewrites are included in this goal.
   - Evidence required: file list review and diff review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks/{state,workspace,delivered_files,tool_cards}.rs` and this goal document; no CSS, backend, host-testability, or broad lifecycle changes. Checkpoint 2 changed only `composer.rs`, `workspace.rs`, and this goal document.
+  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks/{state,workspace,delivered_files,tool_cards}.rs` and this goal document; no CSS, backend, host-testability, or broad lifecycle changes. Checkpoint 2 changed only `composer.rs`, `workspace.rs`, and this goal document. Checkpoint 3 changed only `task_card.rs`, `workspace.rs`, and this goal document.
 
 ## Implementation Plan
 
@@ -160,6 +160,13 @@ Out of scope:
   - Audit IDs updated: G2 verified; Q1, Q2, V1, N1 evidence collected.
   - Next: Checkpoint 3 — remove task-card clippy suppressions.
 
+- 2026-06-05: Checkpoint 3 completed.
+  - Changed: Removed the targeted `TaskCard` and `TaskInputEditForm` clippy suppressions through local prop structs and smaller message/action/edit components.
+  - Evidence: Focused diff preserved version navigation, copy/edit controls, delivered-file rendering, edit submission, selected-version update, drawer close, stream startup, visible strings, and CSS classes; no dependency/CSS/backend changes.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `env -u NO_COLOR trunk build --release`; `git diff --check`.
+  - Audit IDs updated: G3 verified; Q1, Q2, V1, N1 evidence collected.
+  - Next: Checkpoint 4 — final audit and close goal.
+
 ## Risks and Blockers
 
 - Task modules are wasm-gated.
@@ -174,10 +181,10 @@ Out of scope:
   - Mitigation or requested decision: Keep checkpoint 2 limited to event helpers and prove lifecycle branches are untouched by focused diff review.
   - Audit IDs affected: G2, Q1
 
-- Removing task-card clippy suppressions may require several small component boundaries.
+- Removing task-card clippy suppressions required several small component boundaries.
   - Impact: Over-splitting or prop grouping could reduce readability if done too aggressively.
-  - Evidence: Suppressions remain at `crates/oxide-agent-web-ui/src/tasks/task_card.rs:22` and `crates/oxide-agent-web-ui/src/tasks/task_card.rs:363`.
-  - Mitigation or requested decision: Prefer the smallest local split that removes the targeted suppressions while keeping behavior and CSS class contracts unchanged.
+  - Evidence: Checkpoint 3 removed the targeted suppressions and validation passed.
+  - Mitigation or requested decision: Keep later work to final audit; do not broaden into unrelated task-card redesign.
   - Audit IDs affected: G3, Q1, Q2
 
 ## Final Verification

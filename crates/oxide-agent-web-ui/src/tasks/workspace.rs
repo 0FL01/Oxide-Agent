@@ -26,7 +26,7 @@ use super::state::{
     upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{start_task_stream, StreamUiSignals};
-use super::task_card::TaskCard;
+use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
 use super::versions::group_task_versions;
 
 #[component]
@@ -636,28 +636,32 @@ fn SessionWorkspace(
                                     children=move |group| {
                                         view! {
                                             <TaskCard
-                                                session_id=session_id_for_cards.clone()
-                                                versions=group.versions
-                                                events=events
-                                                editable_task_id=latest_editable_task_id.clone()
-                                                selected_versions=selected_versions
-                                                set_selected_versions=set_selected_versions
-                                                drawer_open=drawer_open
-                                                set_drawer_open=set_drawer_open
-                                                stream_signals=StreamUiSignals {
-                                                    set_events,
-                                                    set_session_title,
-                                                    set_progress,
-                                                    set_active_task,
-                                                    set_tasks,
-                                                    set_sse_state,
-                                                    set_error,
-                                                    streaming_task_id,
-                                                    set_streaming_task_id,
-                                                    set_last_terminal_status,
-                                                    set_sessions,
+                                                model=TaskCardModel {
+                                                    session_id: session_id_for_cards.clone(),
+                                                    versions: group.versions,
+                                                    editable_task_id: latest_editable_task_id.clone(),
                                                 }
-                                                set_error=set_error
+                                                signals=TaskCardSignals {
+                                                    events,
+                                                    selected_versions,
+                                                    set_selected_versions,
+                                                    drawer_open,
+                                                    set_drawer_open,
+                                                    stream_signals: StreamUiSignals {
+                                                        set_events,
+                                                        set_session_title,
+                                                        set_progress,
+                                                        set_active_task,
+                                                        set_tasks,
+                                                        set_sse_state,
+                                                        set_error,
+                                                        streaming_task_id,
+                                                        set_streaming_task_id,
+                                                        set_last_terminal_status,
+                                                        set_sessions,
+                                                    },
+                                                    set_error,
+                                                }
                                             />
                                         }
                                     }

@@ -19,20 +19,40 @@ use super::versions::selected_version_index;
 
 // ── Task Card ────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[derive(Clone)]
+pub(super) struct TaskCardModel {
+    pub(super) session_id: String,
+    pub(super) versions: Vec<TaskSummary>,
+    pub(super) editable_task_id: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct TaskCardSignals {
+    pub(super) events: ReadSignal<Vec<PersistedTaskEvent>>,
+    pub(super) selected_versions: ReadSignal<HashMap<String, String>>,
+    pub(super) set_selected_versions: WriteSignal<HashMap<String, String>>,
+    pub(super) drawer_open: ReadSignal<bool>,
+    pub(super) set_drawer_open: WriteSignal<bool>,
+    pub(super) stream_signals: StreamUiSignals,
+    pub(super) set_error: WriteSignal<Option<String>>,
+}
+
 #[component]
-pub(super) fn TaskCard(
-    session_id: String,
-    versions: Vec<TaskSummary>,
-    events: ReadSignal<Vec<PersistedTaskEvent>>,
-    editable_task_id: Option<String>,
-    selected_versions: ReadSignal<HashMap<String, String>>,
-    set_selected_versions: WriteSignal<HashMap<String, String>>,
-    drawer_open: ReadSignal<bool>,
-    set_drawer_open: WriteSignal<bool>,
-    stream_signals: StreamUiSignals,
-    set_error: WriteSignal<Option<String>>,
-) -> impl IntoView {
+pub(super) fn TaskCard(model: TaskCardModel, signals: TaskCardSignals) -> impl IntoView {
+    let TaskCardModel {
+        session_id,
+        versions,
+        editable_task_id,
+    } = model;
+    let TaskCardSignals {
+        events,
+        selected_versions,
+        set_selected_versions,
+        drawer_open,
+        set_drawer_open,
+        stream_signals,
+        set_error,
+    } = signals;
     let version_group_id = versions
         .first()
         .map(|task| task.effective_version_group_id().to_string())
@@ -63,6 +83,23 @@ pub(super) fn TaskCard(
         }
     });
 
+    let edit_signals = TaskInputEditSignals {
+        draft,
+        set_draft,
+        saving,
+        set_saving,
+        set_editing,
+        set_selected_versions,
+        set_drawer_open,
+        stream_signals,
+        set_error,
+    };
+    let version_signals = VersionSwitchSignals {
+        set_editing,
+        set_draft,
+        set_selected_versions,
+    };
+
     view! {
         {move || {
             let task = selected_task.get();
@@ -83,183 +120,317 @@ pub(super) fn TaskCard(
             let input_markdown = task.input_markdown.clone();
             let attachments = task.attachments.clone();
             let final_response_markdown = task.final_response_markdown.clone();
+            let error_message = task.error_message.clone();
+            let pending_user_input = task.pending_user_input.clone();
             let task_events = events.get();
             let resume_messages = resume_user_messages_for_task(&task_events, &task.task_id);
             let delivered_files = delivered_files_for_task(&task_events, &task.task_id);
             let can_select_previous = selected_index > 0;
             let can_select_next = selected_index + 1 < version_count;
-            let version_counter = format!("{}/{}", selected_index + 1, version_count);
             let previous_task = can_select_previous.then(|| versions[selected_index - 1].clone());
             let next_task = can_select_next.then(|| versions[selected_index + 1].clone());
 
             view! {
                 <article class=card_class>
-                    <div class="message user-message-wrap">
-                        <div class="user-message">
-                        {if editing.get() {
-                            let session_id = session_id.clone();
-                            let task_id = task.task_id.clone();
-                            let version_group_id = version_group_id.clone();
-                            view! {
-                                <TaskInputEditForm
-                                    session_id=session_id
-                                    task_id=task_id
-                                    version_group_id=version_group_id
-                                    original_input=original_input
-                                    attachments=attachments.clone()
-                                    draft=draft
-                                    set_draft=set_draft
-                                    saving=saving
-                                    set_saving=set_saving
-                                    set_editing=set_editing
-                                    set_selected_versions=set_selected_versions
-                                    set_drawer_open=set_drawer_open
-                                    stream_signals=stream_signals
-                                    set_error=set_error
-                                />
-                            }.into_any()
-                        } else {
-                            view! {
-                                <UserMessageBody
-                                    input_markdown=input_markdown.clone()
-                                    attachments=attachments.clone()
-                                />
-                            }.into_any()
-                        }}
-                        </div>
-                        <div class="user-message-actions" aria-label="User message actions">
-                            {editable.then(|| view! {
-                                <button
-                                    class="message-action-button"
-                                    type="button"
-                                    title="Edit input"
-                                    aria-label="Edit input"
-                                    on:click=move |_| set_editing.set(true)
-                                >
-                                    "✎"
-                                </button>
-                            })}
-                            <button
-                                class="message-action-button"
-                                type="button"
-                                title="Copy user message"
-                                aria-label="Copy user message"
-                                on:click=move |_| {
-                                    if let Some(window) = web_sys::window() {
-                                        let _ = window.navigator().clipboard().write_text(&input_markdown);
-                                    }
-                                }
-                            >
-                                "⧉"
-                            </button>
-                            {(version_count > 1).then(|| {
-                                let previous_version_group_id = version_group_id.clone();
-                                let next_version_group_id = version_group_id.clone();
-                                view! {
-                                    <div class="message-version-switcher" aria-label="Task version history">
-                                        <button
-                                            class="message-action-button"
-                                            type="button"
-                                            title="Previous version"
-                                            aria-label="Previous version"
-                                            disabled=!can_select_previous
-                                            on:click=move |_| {
-                                                if let Some(previous_task) = previous_task.clone() {
-                                                    set_editing.set(false);
-                                                    set_draft.set(previous_task.input_markdown.clone());
-                                                    set_selected_versions.update(|items| {
-                                                        items.insert(previous_version_group_id.clone(), previous_task.task_id.clone());
-                                                    });
-                                                }
-                                            }
-                                        >
-                                            "‹"
-                                        </button>
-                                        <div class="message-version-counter">{version_counter.clone()}</div>
-                                        <button
-                                            class="message-action-button"
-                                            type="button"
-                                            title="Next version"
-                                            aria-label="Next version"
-                                            disabled=!can_select_next
-                                            on:click=move |_| {
-                                                if let Some(next_task) = next_task.clone() {
-                                                    set_editing.set(false);
-                                                    set_draft.set(next_task.input_markdown.clone());
-                                                    set_selected_versions.update(|items| {
-                                                        items.insert(next_version_group_id.clone(), next_task.task_id.clone());
-                                                    });
-                                                }
-                                            }
-                                        >
-                                            "›"
-                                        </button>
-                                    </div>
-                                }
-                            })}
-                        </div>
-                    </div>
-                    {resume_messages
-                        .into_iter()
-                        .map(|message| {
-                            view! {
-                                <div class="message user-message-wrap">
-                                    <div class="user-message">
-                                        <UserMessageBody
-                                            input_markdown=message.input_markdown
-                                            attachments=message.attachments
-                                        />
-                                    </div>
-                                </div>
-                            }
-                        })
-                        .collect_view()}
+                    <TaskUserMessagePanel
+                        data=UserMessagePanelData {
+                            session_id: session_id.clone(),
+                            task_id: task.task_id.clone(),
+                            version_group_id: version_group_id.clone(),
+                            original_input,
+                            input_markdown,
+                            attachments,
+                            editable,
+                            version_count,
+                            selected_index,
+                            previous_task,
+                            next_task,
+                        }
+                        signals=UserMessagePanelSignals {
+                            editing,
+                            edit_signals,
+                            version_signals,
+                        }
+                    />
+                    <ResumeUserMessages messages=resume_messages />
                     {editable.then(|| view! {
                         <div class="task-action-row">
                             <ThinkingButton label=thought_label open=drawer_open set_open=set_drawer_open />
                         </div>
                     })}
 
-                    {final_response_markdown.map(|answer| {
-                        let raw_answer = answer.clone();
-                        let rendered_answer =
-                            linkify_delivered_files_in_markdown(&answer, &delivered_files);
-                        view! {
-                            <div class="message assistant-message-wrap">
-                                <div class="assistant-message">
-                                    <MarkdownContent markdown=rendered_answer />
-                                </div>
-                                <div class="assistant-message-actions" aria-label="Assistant message actions">
-                                    <button
-                                        class="message-action-button"
-                                        type="button"
-                                        title="Copy final response"
-                                        aria-label="Copy final response"
-                                        on:click=move |_| {
-                                            if let Some(window) = web_sys::window() {
-                                                let _ = window.navigator().clipboard().write_text(&raw_answer);
-                                            }
-                                        }
-                                    >
-                                        "⧉"
-                                    </button>
-                                </div>
-                            </div>
-                        }
+                    {final_response_markdown.map(|answer| view! {
+                        <AssistantMessage answer=answer files=delivered_files.clone() />
                     })}
                     {(!delivered_files.is_empty()).then(|| view! {
                         <DeliveredFilesMessage files=delivered_files.clone() />
                     })}
-                    {task.error_message.map(|error| view! {
+                    {error_message.map(|error| view! {
                         <div class="message error-message">{error}</div>
                     })}
-                    {task.pending_user_input.map(|pending| view! {
+                    {pending_user_input.map(|pending| view! {
                         <div class="message pending-message">{pending.prompt}</div>
                     })}
                 </article>
             }
                 .into_any()
         }}
+    }
+}
+
+#[derive(Clone)]
+struct UserMessagePanelData {
+    session_id: String,
+    task_id: String,
+    version_group_id: String,
+    original_input: String,
+    input_markdown: String,
+    attachments: Vec<TaskAttachment>,
+    editable: bool,
+    version_count: usize,
+    selected_index: usize,
+    previous_task: Option<TaskSummary>,
+    next_task: Option<TaskSummary>,
+}
+
+#[derive(Clone, Copy)]
+struct UserMessagePanelSignals {
+    editing: ReadSignal<bool>,
+    edit_signals: TaskInputEditSignals,
+    version_signals: VersionSwitchSignals,
+}
+
+#[component]
+fn TaskUserMessagePanel(
+    data: UserMessagePanelData,
+    signals: UserMessagePanelSignals,
+) -> impl IntoView {
+    let UserMessagePanelData {
+        session_id,
+        task_id,
+        version_group_id,
+        original_input,
+        input_markdown,
+        attachments,
+        editable,
+        version_count,
+        selected_index,
+        previous_task,
+        next_task,
+    } = data;
+    let edit_target = TaskInputEditTarget {
+        session_id,
+        task_id,
+        version_group_id: version_group_id.clone(),
+        original_input,
+        attachments: attachments.clone(),
+    };
+    let actions_data = UserMessageActionsData {
+        input_markdown: input_markdown.clone(),
+        editable,
+        version_group_id,
+        version_count,
+        selected_index,
+        previous_task,
+        next_task,
+    };
+
+    view! {
+        <div class="message user-message-wrap">
+            <div class="user-message">
+                {move || {
+                    if signals.editing.get() {
+                        view! {
+                            <TaskInputEditForm
+                                target=edit_target.clone()
+                                signals=signals.edit_signals
+                            />
+                        }
+                        .into_any()
+                    } else {
+                        view! {
+                            <UserMessageBody
+                                input_markdown=input_markdown.clone()
+                                attachments=attachments.clone()
+                            />
+                        }
+                        .into_any()
+                    }
+                }}
+            </div>
+            <UserMessageActions data=actions_data signals=signals.version_signals />
+        </div>
+    }
+}
+
+#[derive(Clone)]
+struct UserMessageActionsData {
+    input_markdown: String,
+    editable: bool,
+    version_group_id: String,
+    version_count: usize,
+    selected_index: usize,
+    previous_task: Option<TaskSummary>,
+    next_task: Option<TaskSummary>,
+}
+
+#[derive(Clone, Copy)]
+struct VersionSwitchSignals {
+    set_editing: WriteSignal<bool>,
+    set_draft: WriteSignal<String>,
+    set_selected_versions: WriteSignal<HashMap<String, String>>,
+}
+
+#[component]
+fn UserMessageActions(
+    data: UserMessageActionsData,
+    signals: VersionSwitchSignals,
+) -> impl IntoView {
+    let UserMessageActionsData {
+        input_markdown,
+        editable,
+        version_group_id,
+        version_count,
+        selected_index,
+        previous_task,
+        next_task,
+    } = data;
+    let copy_input = input_markdown.clone();
+    let can_select_previous = previous_task.is_some();
+    let can_select_next = next_task.is_some();
+    let version_counter = format!("{}/{}", selected_index + 1, version_count);
+    let previous_version_group_id = version_group_id.clone();
+    let next_version_group_id = version_group_id.clone();
+
+    view! {
+        <div class="user-message-actions" aria-label="User message actions">
+            {editable.then(|| view! {
+                <button
+                    class="message-action-button"
+                    type="button"
+                    title="Edit input"
+                    aria-label="Edit input"
+                    on:click=move |_| signals.set_editing.set(true)
+                >
+                    "✎"
+                </button>
+            })}
+            <button
+                class="message-action-button"
+                type="button"
+                title="Copy user message"
+                aria-label="Copy user message"
+                on:click=move |_| copy_to_clipboard(&copy_input)
+            >
+                "⧉"
+            </button>
+            {(version_count > 1).then(|| {
+                view! {
+                    <div class="message-version-switcher" aria-label="Task version history">
+                        <button
+                            class="message-action-button"
+                            type="button"
+                            title="Previous version"
+                            aria-label="Previous version"
+                            disabled=!can_select_previous
+                            on:click=move |_| {
+                                select_task_version(
+                                    previous_task.clone(),
+                                    &previous_version_group_id,
+                                    signals,
+                                );
+                            }
+                        >
+                            "‹"
+                        </button>
+                        <div class="message-version-counter">{version_counter.clone()}</div>
+                        <button
+                            class="message-action-button"
+                            type="button"
+                            title="Next version"
+                            aria-label="Next version"
+                            disabled=!can_select_next
+                            on:click=move |_| {
+                                select_task_version(
+                                    next_task.clone(),
+                                    &next_version_group_id,
+                                    signals,
+                                );
+                            }
+                        >
+                            "›"
+                        </button>
+                    </div>
+                }
+            })}
+        </div>
+    }
+}
+
+fn select_task_version(
+    task: Option<TaskSummary>,
+    version_group_id: &str,
+    signals: VersionSwitchSignals,
+) {
+    if let Some(task) = task {
+        signals.set_editing.set(false);
+        signals.set_draft.set(task.input_markdown.clone());
+        signals.set_selected_versions.update(|items| {
+            items.insert(version_group_id.to_string(), task.task_id);
+        });
+    }
+}
+
+#[component]
+fn ResumeUserMessages(messages: Vec<ResumeUserMessage>) -> impl IntoView {
+    messages
+        .into_iter()
+        .map(|message| {
+            view! {
+                <div class="message user-message-wrap">
+                    <div class="user-message">
+                        <UserMessageBody
+                            input_markdown=message.input_markdown
+                            attachments=message.attachments
+                        />
+                    </div>
+                </div>
+            }
+        })
+        .collect_view()
+}
+
+#[component]
+fn AssistantMessage(
+    answer: String,
+    files: Vec<super::delivered_files::DeliveredFileLink>,
+) -> impl IntoView {
+    let raw_answer = answer.clone();
+    let rendered_answer = linkify_delivered_files_in_markdown(&answer, &files);
+
+    view! {
+        <div class="message assistant-message-wrap">
+            <div class="assistant-message">
+                <MarkdownContent markdown=rendered_answer />
+            </div>
+            <div class="assistant-message-actions" aria-label="Assistant message actions">
+                <button
+                    class="message-action-button"
+                    type="button"
+                    title="Copy final response"
+                    aria-label="Copy final response"
+                    on:click=move |_| copy_to_clipboard(&raw_answer)
+                >
+                    "⧉"
+                </button>
+            </div>
+        </div>
+    }
+}
+
+fn copy_to_clipboard(text: &str) {
+    if let Some(window) = web_sys::window() {
+        let _ = window.navigator().clipboard().write_text(text);
     }
 }
 
@@ -360,14 +531,17 @@ fn resume_user_messages_for_task(
 
 // ── Task input edit form ─────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
-#[component]
-fn TaskInputEditForm(
+#[derive(Clone)]
+struct TaskInputEditTarget {
     session_id: String,
     task_id: String,
     version_group_id: String,
     original_input: String,
     attachments: Vec<TaskAttachment>,
+}
+
+#[derive(Clone, Copy)]
+struct TaskInputEditSignals {
     draft: ReadSignal<String>,
     set_draft: WriteSignal<String>,
     saving: ReadSignal<bool>,
@@ -377,7 +551,28 @@ fn TaskInputEditForm(
     set_drawer_open: WriteSignal<bool>,
     stream_signals: StreamUiSignals,
     set_error: WriteSignal<Option<String>>,
-) -> impl IntoView {
+}
+
+#[component]
+fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals) -> impl IntoView {
+    let TaskInputEditTarget {
+        session_id,
+        task_id,
+        version_group_id,
+        original_input,
+        attachments,
+    } = target;
+    let TaskInputEditSignals {
+        draft,
+        set_draft,
+        saving,
+        set_saving,
+        set_editing,
+        set_selected_versions,
+        set_drawer_open,
+        stream_signals,
+        set_error,
+    } = signals;
     let auth = use_auth();
     let submit_edit = {
         let session_id = session_id.clone();
