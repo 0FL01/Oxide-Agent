@@ -1,13 +1,17 @@
 use async_trait::async_trait;
 use axum::http::HeaderMap;
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(feature = "profile-lite")]
+use std::time::Duration;
 use std::time::Instant;
 
 use oxide_agent_core::agent::progress::{FileDeliveryKind, LlmRetryState, ProgressState};
 use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
 use oxide_agent_core::config::{AgentSettings, ModelInfo};
-use oxide_agent_core::llm::LlmClient;
+#[cfg(feature = "profile-lite")]
+use oxide_agent_core::llm::{ChatResponse, ChatWithToolsRequest, LlmError, Message};
+use oxide_agent_core::llm::{LlmClient, LlmProvider};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_web_contracts::{
@@ -24,6 +28,8 @@ use oxide_agent_web_contracts::{
     ResumeTaskRequest as ApiResumeTaskRequest, UserInputKind as ApiUserInputKind,
     UserMessageEventPayload,
 };
+#[cfg(feature = "profile-lite")]
+use tokio::sync::Notify;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
@@ -157,6 +163,137 @@ impl WebSandboxControl for FakeSandboxControl {
             !(sandbox.user_id == Some(user_id) && sandbox.container_name == container_name)
         });
         Ok(before != state.sandboxes.len())
+    }
+}
+
+#[cfg(feature = "profile-lite")]
+struct AutoTitleTestLlmProvider {
+    title_response: String,
+    agent_response: String,
+    block_title: bool,
+    title_started: Arc<Notify>,
+    title_release: Arc<Notify>,
+    title_returned: Arc<Notify>,
+}
+
+#[cfg(feature = "profile-lite")]
+impl AutoTitleTestLlmProvider {
+    fn new(title_response: impl Into<String>, agent_response: impl Into<String>) -> Arc<Self> {
+        Self::with_title_blocking(title_response, agent_response, false)
+    }
+
+    fn blocking_title(
+        title_response: impl Into<String>,
+        agent_response: impl Into<String>,
+    ) -> Arc<Self> {
+        Self::with_title_blocking(title_response, agent_response, true)
+    }
+
+    fn with_title_blocking(
+        title_response: impl Into<String>,
+        agent_response: impl Into<String>,
+        block_title: bool,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            title_response: title_response.into(),
+            agent_response: agent_response.into(),
+            block_title,
+            title_started: Arc::new(Notify::new()),
+            title_release: Arc::new(Notify::new()),
+            title_returned: Arc::new(Notify::new()),
+        })
+    }
+
+    async fn wait_title_started(&self) {
+        self.title_started.notified().await;
+    }
+
+    async fn wait_title_returned(&self) {
+        self.title_returned.notified().await;
+    }
+
+    fn release_title(&self) {
+        self.title_release.notify_one();
+    }
+
+    fn is_auto_title_request(request: &ChatWithToolsRequest<'_>) -> bool {
+        request
+            .system_prompt
+            .contains("You generate short chat titles")
+    }
+
+    fn agent_response(&self) -> ChatResponse {
+        ChatResponse {
+            content: Some(
+                serde_json::json!({
+                    "thought": "Responding to user",
+                    "final_answer": self.agent_response.as_str(),
+                })
+                .to_string(),
+            ),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: None,
+            usage: None,
+        }
+    }
+}
+
+#[cfg(feature = "profile-lite")]
+#[async_trait]
+impl LlmProvider for AutoTitleTestLlmProvider {
+    async fn complete_internal_text(
+        &self,
+        _system_prompt: &str,
+        _history: &[Message],
+        _user_message: &str,
+        _model_id: &str,
+        _max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        Ok(self.agent_response.clone())
+    }
+
+    async fn chat_with_tools<'a>(
+        &self,
+        request: ChatWithToolsRequest<'a>,
+    ) -> Result<ChatResponse, LlmError> {
+        if Self::is_auto_title_request(&request) {
+            self.title_started.notify_one();
+            if self.block_title {
+                self.title_release.notified().await;
+            }
+            self.title_returned.notify_one();
+            return Ok(ChatResponse {
+                content: Some(self.title_response.clone()),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+                usage: None,
+            });
+        }
+
+        Ok(self.agent_response())
+    }
+
+    async fn transcribe_audio(
+        &self,
+        _audio_bytes: Vec<u8>,
+        _mime_type: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown("transcribe not implemented".to_string()))
+    }
+
+    async fn analyze_image(
+        &self,
+        _image_bytes: Vec<u8>,
+        _text_prompt: &str,
+        _system_prompt: &str,
+        _model_id: &str,
+    ) -> Result<String, LlmError> {
+        Err(LlmError::Unknown(
+            "analyze_image not implemented".to_string(),
+        ))
     }
 }
 
@@ -2547,14 +2684,9 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
 
 #[cfg(feature = "profile-lite")]
 #[tokio::test]
-async fn api_create_task_generates_auto_title_before_runtime_start() {
-    let (mut state, _) = test_app_state_with_responses(vec![
-        ScriptedResponse::ToolCalls {
-            tool_calls: Vec::new(),
-            final_text: Some("Авторизация для сервисов".to_string()),
-        },
-        ScriptedResponse::Text("ok".to_string()),
-    ]);
+async fn api_create_task_starts_runtime_without_waiting_for_auto_title() {
+    let llm = AutoTitleTestLlmProvider::blocking_title("Авторизация для сервисов", "ok");
+    let (mut state, _) = test_app_state_with_llm_provider(llm.clone());
     state.auto_title_enabled = true;
     let now = chrono::Utc::now();
     let user = register_user(
@@ -2587,27 +2719,28 @@ async fn api_create_task_generates_auto_title_before_runtime_start() {
     .expect("create session");
     let session_id = created_session.session.session_id;
 
-    let axum::Json(created_task) = api_create_task(
-        axum::extract::State(state.clone()),
-        auth_headers(&token, Some(&auth_session.csrf_token)),
-        axum::extract::Path(session_id.clone()),
-        axum::Json(ApiCreateTaskRequest {
-            input_markdown: "Какие способы авторизации лучше использовать для внутреннего сервиса?"
-                .to_string(),
-            attachments: Vec::new(),
-            effort: None,
-        }),
+    let axum::Json(created_task) = tokio::time::timeout(
+        Duration::from_secs(2),
+        api_create_task(
+            axum::extract::State(state.clone()),
+            auth_headers(&token, Some(&auth_session.csrf_token)),
+            axum::extract::Path(session_id.clone()),
+            axum::Json(ApiCreateTaskRequest {
+                input_markdown:
+                    "Какие способы авторизации лучше использовать для внутреннего сервиса?"
+                        .to_string(),
+                attachments: Vec::new(),
+                effort: None,
+            }),
+        ),
     )
     .await
+    .expect("create task should not wait for auto title")
     .expect("create task");
 
-    let session_record = state
-        .web_store
-        .load_session(user.user_id, &session_id)
+    tokio::time::timeout(Duration::from_secs(2), llm.wait_title_started())
         .await
-        .expect("load session")
-        .expect("session exists");
-    assert_eq!(session_record.title, "Авторизация для сервисов");
+        .expect("auto title should start in background");
 
     let completed = wait_for_task_status(
         &state,
@@ -2618,18 +2751,30 @@ async fn api_create_task_generates_auto_title_before_runtime_start() {
     )
     .await;
     assert_eq!(completed.final_response_markdown.as_deref(), Some("ok"));
+
+    let session_record = state
+        .web_store
+        .load_session(user.user_id, &session_id)
+        .await
+        .expect("load session")
+        .expect("session exists");
+    assert_eq!(session_record.title, "New session");
+
+    llm.release_title();
+    wait_for_session_title(
+        &state,
+        user.user_id,
+        &session_id,
+        "Авторизация для сервисов",
+    )
+    .await;
 }
 
 #[cfg(feature = "profile-lite")]
 #[tokio::test]
 async fn api_create_task_does_not_store_preview_as_title_when_auto_title_is_empty() {
-    let (mut state, _) = test_app_state_with_responses(vec![
-        ScriptedResponse::ToolCalls {
-            tool_calls: Vec::new(),
-            final_text: Some("   ".to_string()),
-        },
-        ScriptedResponse::Text("ok".to_string()),
-    ]);
+    let llm = AutoTitleTestLlmProvider::new("   ", "ok");
+    let (mut state, _) = test_app_state_with_llm_provider(llm.clone());
     state.auto_title_enabled = true;
     let now = chrono::Utc::now();
     let user = register_user(
@@ -2675,6 +2820,10 @@ async fn api_create_task_does_not_store_preview_as_title_when_auto_title_is_empt
     )
     .await
     .expect("create task");
+
+    tokio::time::timeout(Duration::from_secs(2), llm.wait_title_returned())
+        .await
+        .expect("auto title LLM should return");
 
     let session_record = state
         .web_store
@@ -2841,6 +2990,12 @@ fn test_app_state_with_responses(
     responses: Vec<ScriptedResponse>,
 ) -> (AppState, FakeSandboxControl) {
     let scripted = Arc::new(ScriptedLlmProvider::new(responses));
+    test_app_state_with_llm_provider(scripted)
+}
+
+fn test_app_state_with_llm_provider(
+    provider: Arc<dyn LlmProvider>,
+) -> (AppState, FakeSandboxControl) {
     let settings = Arc::new(AgentSettings {
         agent_model_id: Some("opencode-go/deepseek-v4-flash".to_string()),
         agent_model_provider: Some("opencode_go".to_string()),
@@ -2854,9 +3009,9 @@ fn test_app_state_with_responses(
         ..AgentSettings::default()
     });
     let mut llm = LlmClient::new(&settings);
-    llm.register_provider("opencode_go".to_string(), scripted.clone());
-    llm.register_provider("opencode-go".to_string(), scripted.clone());
-    llm.register_provider("llm-provider/opencode-go".to_string(), scripted);
+    llm.register_provider("opencode_go".to_string(), provider.clone());
+    llm.register_provider("opencode-go".to_string(), provider.clone());
+    llm.register_provider("llm-provider/opencode-go".to_string(), provider);
     let session_manager = WebSessionManager::new(SessionRegistry::new(), Arc::new(llm), settings);
     let mut state = AppState::new(Arc::new(session_manager));
     let sandbox_control = FakeSandboxControl::default();
@@ -3085,6 +3240,25 @@ async fn wait_for_task_status(
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("task {task_id} did not reach {status:?}; last state: {last_task:?}");
+}
+
+#[cfg(feature = "profile-lite")]
+async fn wait_for_session_title(state: &AppState, user_id: i64, session_id: &str, expected: &str) {
+    let mut last_title = None;
+    for _ in 0..100 {
+        let session = state
+            .web_store
+            .load_session(user_id, session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        if session.title == expected {
+            return;
+        }
+        last_title = Some(session.title);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("session {session_id} did not reach title {expected:?}; last title: {last_title:?}");
 }
 
 async fn wait_for_persisted_progress(

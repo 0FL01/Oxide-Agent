@@ -22,6 +22,7 @@ use oxide_agent_web_contracts::{
     UserMessageEventPayload, WebSessionRecord, WebTaskRecord,
 };
 use serde::Deserialize;
+use std::time::Duration;
 
 use crate::session::{RunningTask, WebSessionRuntimeOptions};
 
@@ -36,7 +37,7 @@ use super::{
     WEB_TASK_SCHEMA_VERSION,
 };
 
-const AUTO_TITLE_SYNC_TIMEOUT_SECS: u64 = 10;
+const AUTO_TITLE_BACKGROUND_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn abort_task_handle(state: &AppState, task_id: &str) {
     let handle = {
@@ -351,6 +352,26 @@ async fn spawn_persisted_registered_task(
     .await;
 }
 
+fn spawn_background_auto_title(state: AppState, request: auto_title::AutoTitleRequest) {
+    let session_id = request.session_id.clone();
+    tokio::spawn(async move {
+        match tokio::time::timeout(
+            AUTO_TITLE_BACKGROUND_TIMEOUT,
+            auto_title::generate_and_save_auto_title(state, request),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(session_id = %session_id, error = %error, "auto title generation failed in background");
+            }
+            Err(_) => {
+                tracing::warn!(session_id = %session_id, timeout_secs = AUTO_TITLE_BACKGROUND_TIMEOUT.as_secs(), "auto title generation timed out in background");
+            }
+        }
+    });
+}
+
 pub(crate) async fn api_list_tasks(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -446,41 +467,11 @@ pub(crate) async fn api_create_task(
     )
     .await?;
 
-    if should_auto_title && state.auto_title_enabled {
-        let auto_title_request = auto_title::AutoTitleRequest {
-            user_id: user.user_id,
-            session_id: session_id.clone(),
-            first_user_message: preview_source,
-            fallback_preview: preview,
-        };
-        let mut auto_title_task = tokio::spawn(auto_title::generate_and_save_auto_title(
-            state.clone(),
-            auto_title_request,
-        ));
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(AUTO_TITLE_SYNC_TIMEOUT_SECS),
-            &mut auto_title_task,
-        )
-        .await
-        {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(error))) => {
-                tracing::warn!(session_id = %session_id, error = %error, "auto title generation failed before task start");
-            }
-            Ok(Err(error)) => {
-                tracing::warn!(session_id = %session_id, error = %error, "auto title generation task failed before task start");
-            }
-            Err(_) => {
-                tracing::warn!(session_id = %session_id, "auto title generation timed out before task start; continuing in background");
-            }
-        }
-    }
-
     spawn_persisted_registered_task(
         &state,
         user.user_id,
-        session_id,
-        task_id,
+        session_id.clone(),
+        task_id.clone(),
         running_task,
         TaskRunRequest::Execute {
             input: execution_input,
@@ -488,6 +479,18 @@ pub(crate) async fn api_create_task(
         },
     )
     .await;
+
+    if should_auto_title && state.auto_title_enabled {
+        spawn_background_auto_title(
+            state.clone(),
+            auto_title::AutoTitleRequest {
+                user_id: user.user_id,
+                session_id,
+                first_user_message: preview_source,
+                fallback_preview: preview,
+            },
+        );
+    }
 
     Ok(Json(ApiCreateTaskResponse {
         task: task_summary_from_record(task_record),
