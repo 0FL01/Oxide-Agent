@@ -78,36 +78,36 @@ Out of scope:
   - Source: Recon recommendation to avoid mixing behavior changes with large Leptos view moves.
   - Acceptance: Low-risk pure helpers for version grouping/session summary conversion/submit errors/delivered-file linkification/payload parsing are moved or exposed in focused modules before moving large components.
   - Evidence required: checkpoint diff review and native tests where available.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 1 moved helper groups into `crates/oxide-agent-web-ui/src/tasks/{delivered_files,payload,profile,state,versions}.rs`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, and `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run` passed.
 
 - Q1: UI-only blast radius is preserved
   - Source: User requested refactor of `tasks.rs`; AGENTS guardrails require smallest maintainable change.
   - Acceptance: No backend/core/runtime/contracts/provider behavior changes; only web-ui task split files and this goal document change, except necessary import adjustments.
   - Evidence required: `git diff --name-only` and `git diff --stat` review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document.
 
 - Q2: No over-engineering or new dependencies
   - Source: AGENTS implementation bias and recon conclusion.
   - Acceptance: No `Cargo.toml` changes; no new crates/frameworks; no broad generic component registry/builder; modules stay boring and local.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes.
 
 - V1: Web UI validation passes for meaningful checkpoints
   - Source: Repo validation practice for web UI and wasm-only compilation of `tasks.rs`.
   - Acceptance: Relevant validation commands pass after each meaningful checkpoint, or exact blockers are recorded with the smallest external action needed.
   - Evidence required: `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, and `git diff --check` before final completion.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`.
 
 - N1: No hidden visual redesign
   - Source: Refactor request is about slicing/maintainability, not UI changes.
   - Must preserve: Existing visible strings, task/card/composer/activity CSS classes, collapsed/expanded defaults, preview priorities, and specialized parser behavior unless explicitly approved later.
   - Evidence required: diff review and behavior checklist in progress log.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed.
 
 ## Implementation Plan
 
@@ -169,6 +169,13 @@ Out of scope:
   - Commands: `git status --short`; `git log --oneline -5`.
   - Audit IDs updated: none.
   - Next: Checkpoint 1 — extract low-risk pure helpers first.
+
+- 2026-06-05: Checkpoint 1 completed.
+  - Changed: Added focused helper modules for delivered files, payload helpers, profile/effort mapping, task/session state helpers, and version grouping; `tasks.rs` now declares these child modules and dropped from 4,291 to 3,903 lines.
+  - Evidence: Diff review found no backend, contract, CSS, or dependency changes; helper tests were moved with their helper modules.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
+  - Audit IDs updated: G5 verified; Q1, Q2, V1, N1 evidence collected.
+  - Next: Checkpoint 2 — extract streaming and composer slices.
 
 ## Risks and Blockers
 

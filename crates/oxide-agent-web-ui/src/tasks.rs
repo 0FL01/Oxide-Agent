@@ -6,23 +6,44 @@ use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{navigate, spawn_ui};
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
-    AgentEffort, AgentProfileSelection, AgentProfileView, CreateSessionRequest, CreateTaskRequest,
-    CreateTaskVersionRequest, ErrorCode, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest,
-    SessionDetail, SessionSummary, SseConnectionState, TaskAttachment, TaskDetail, TaskEventKind,
-    TaskStatus, TaskSummary, UpdateSessionProfileRequest, UpdateUserSettingsRequest,
-    UserMessageEventPayload, UserSettingsResponse,
+    AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest,
+    CreateTaskVersionRequest, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest,
+    SessionSummary, SseConnectionState, TaskAttachment, TaskDetail, TaskEventKind, TaskStatus,
+    TaskSummary, UpdateSessionProfileRequest, UpdateUserSettingsRequest, UserMessageEventPayload,
 };
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};
+
+mod delivered_files;
+mod payload;
+mod profile;
+mod state;
+mod versions;
+
+use delivered_files::{
+    delivered_file_link, delivered_files_for_task, linkify_delivered_files_in_markdown,
+    DeliveredFileLink,
+};
+use payload::{
+    field_i64, field_str, input_preview_field_str, input_preview_json, parse_output_json,
+    payload_str_event, raw_output_preview, stream_text,
+};
+use profile::{
+    agent_effort_from_value, agent_effort_value, agent_profile_selection_from_value,
+    apply_loaded_default_effort, missing_profile_option_label, profile_value_to_id,
+    PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE,
+};
+use state::{
+    latest_editable_task_id, latest_task, session_detail_to_summary, summary_to_detail,
+    task_submit_error_message, upsert_session_summary, upsert_task_summary,
+};
+use versions::{group_task_versions, selected_version_index};
 
 #[derive(Clone)]
 struct PendingAttachmentFile {
     id: usize,
     file: web_sys::File,
 }
-
-const PROFILE_VALUE_DEFAULT: &str = "__default__";
-const PROFILE_VALUE_NONE: &str = "__none__";
 
 #[component]
 pub fn TaskConsole(
@@ -1158,57 +1179,6 @@ fn start_task_stream(
     });
 }
 
-fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
-    TaskDetail {
-        task_id: task.task_id.clone(),
-        session_id: session_id.to_string(),
-        version_group_id: task.effective_version_group_id().to_string(),
-        version_index: task.effective_version_index(),
-        parent_task_id: task.parent_task_id.clone(),
-        status: task.status,
-        input_markdown: task.input_markdown.clone(),
-        attachments: task.attachments.clone(),
-        input_edited_at: task.input_edited_at,
-        final_response_markdown: task.final_response_markdown.clone(),
-        error_message: task.error_message.clone(),
-        pending_user_input: task.pending_user_input.clone(),
-        last_progress: None,
-        last_event_seq: task.last_event_seq,
-        created_at: task.created_at,
-        started_at: task.started_at,
-        updated_at: task.updated_at,
-        finished_at: task.finished_at,
-    }
-}
-
-fn upsert_session_summary(set_sessions: WriteSignal<Vec<SessionSummary>>, summary: SessionSummary) {
-    set_sessions.update(|items| {
-        if let Some(existing) = items
-            .iter_mut()
-            .find(|item| item.session_id == summary.session_id)
-        {
-            *existing = summary;
-        } else {
-            items.push(summary);
-        }
-        items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    });
-}
-
-fn session_detail_to_summary(session: SessionDetail) -> SessionSummary {
-    SessionSummary {
-        session_id: session.session_id,
-        title: session.title,
-        model_selection: session.model_selection,
-        agent_profile_id: session.agent_profile_id,
-        last_preview: session.last_preview,
-        active_task_id: session.active_task_id,
-        last_task_status: session.last_task_status,
-        created_at: session.created_at,
-        updated_at: session.updated_at,
-    }
-}
-
 // ── Task Card ────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -1550,54 +1520,6 @@ fn resume_user_messages_for_task(
         .collect()
 }
 
-fn delivered_files_for_task(
-    events: &[PersistedTaskEvent],
-    task_id: &str,
-) -> Vec<DeliveredFileLink> {
-    events
-        .iter()
-        .filter(|event| event.task_id == task_id)
-        .filter_map(delivered_file_link)
-        .collect()
-}
-
-fn linkify_delivered_files_in_markdown(markdown: &str, files: &[DeliveredFileLink]) -> String {
-    if files.is_empty() {
-        return markdown.to_string();
-    }
-
-    let mut result = String::new();
-    let mut in_fenced_code_block = false;
-
-    for segment in markdown.split_inclusive('\n') {
-        let trimmed = segment.trim_start();
-        if trimmed.starts_with("```") {
-            in_fenced_code_block = !in_fenced_code_block;
-            result.push_str(segment);
-            continue;
-        }
-
-        if in_fenced_code_block {
-            result.push_str(segment);
-            continue;
-        }
-
-        let mut rewritten = segment.to_string();
-        for file in files {
-            let code_span = format!("`{}`", file.file_name);
-            let markdown_link = format!("[`{}`]({})", file.file_name, file.download_url);
-            rewritten = rewritten.replace(&code_span, &markdown_link);
-        }
-        result.push_str(&rewritten);
-    }
-
-    if !markdown.ends_with('\n') {
-        result.truncate(result.trim_end_matches('\n').len());
-    }
-
-    result
-}
-
 #[component]
 fn AgentProfileSelect(
     profiles: ReadSignal<Vec<AgentProfileView>>,
@@ -1652,32 +1574,6 @@ fn AgentEffortSelect(
     }
 }
 
-fn agent_effort_value(effort: AgentEffort) -> &'static str {
-    match effort {
-        AgentEffort::Standard => "standard",
-        AgentEffort::Extended => "extended",
-        AgentEffort::Heavy => "heavy",
-    }
-}
-
-fn agent_effort_from_value(value: &str) -> AgentEffort {
-    match value {
-        "extended" => AgentEffort::Extended,
-        "heavy" => AgentEffort::Heavy,
-        _ => AgentEffort::Standard,
-    }
-}
-
-fn apply_loaded_default_effort(
-    settings: UserSettingsResponse,
-    effort_touched: ReadSignal<bool>,
-    set_selected_effort: WriteSignal<AgentEffort>,
-) {
-    if !effort_touched.get() {
-        set_selected_effort.set(settings.default_effort.unwrap_or(AgentEffort::Standard));
-    }
-}
-
 fn persist_default_effort(
     auth: AuthContext,
     effort: AgentEffort,
@@ -1712,32 +1608,6 @@ fn selected_profile_missing_option(
     Some(view! {
         <option value=selected.clone()>{label}</option>
     })
-}
-
-fn missing_profile_option_label(profiles: &[AgentProfileView], selected: &str) -> Option<String> {
-    if selected.is_empty()
-        || selected == PROFILE_VALUE_DEFAULT
-        || selected == PROFILE_VALUE_NONE
-        || profiles.iter().any(|profile| profile.agent_id == selected)
-    {
-        return None;
-    }
-    Some(format!("Current profile · {selected}"))
-}
-
-fn agent_profile_selection_from_value(value: &str) -> AgentProfileSelection {
-    match value {
-        PROFILE_VALUE_DEFAULT => AgentProfileSelection::Default,
-        PROFILE_VALUE_NONE => AgentProfileSelection::None,
-        value => AgentProfileSelection::Profile {
-            agent_profile_id: value.to_string(),
-        },
-    }
-}
-
-fn profile_value_to_id(value: &str) -> Option<String> {
-    (value != PROFILE_VALUE_NONE && value != PROFILE_VALUE_DEFAULT && !value.trim().is_empty())
-        .then(|| value.to_string())
 }
 
 #[component]
@@ -3157,50 +3027,11 @@ fn event_body(event: &PersistedTaskEvent) -> Option<String> {
 
 // ── JSON helpers ─────────────────────────────────────────────────────────
 
-/// Extract a string field from an event's payload.
-fn payload_str_event(event: &PersistedTaskEvent, key: &str) -> Option<String> {
-    event
-        .payload
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string)
-}
-
-#[derive(Clone)]
-struct DeliveredFileLink {
-    file_name: String,
-    download_url: String,
-    content_type: String,
-    size_bytes: u64,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DeliveredFilePreviewKind {
     Image,
     Audio,
     Pdf,
-}
-
-fn delivered_file_link(event: &PersistedTaskEvent) -> Option<DeliveredFileLink> {
-    if event.kind != TaskEventKind::FileToSend {
-        return None;
-    }
-    Some(DeliveredFileLink {
-        file_name: payload_str_event(event, "file_name")?,
-        download_url: payload_str_event(event, "download_url")?,
-        content_type: payload_str_event(event, "content_type").unwrap_or_default(),
-        size_bytes: event
-            .payload
-            .get("size_bytes")
-            .and_then(|value| value.as_u64())
-            .or_else(|| {
-                event
-                    .payload
-                    .get("byte_len")
-                    .and_then(|value| value.as_u64())
-            })
-            .unwrap_or(0),
-    })
 }
 
 fn delivered_file_preview(file: &DeliveredFileLink) -> AnyView {
@@ -3276,29 +3107,6 @@ fn first_line(text: &str) -> String {
     }
 }
 
-/// Parse the nested JSON inside `output_preview` for ToolResult events.
-/// The output_preview field contains a JSON string (the ToolOutput encode_model_content).
-fn parse_output_json(event: &PersistedTaskEvent) -> Option<Value> {
-    let raw = event
-        .payload
-        .get("output_preview")
-        .and_then(|v| v.as_str())?;
-    serde_json::from_str::<Value>(raw).ok()
-}
-
-/// Extract a string field from a JSON value.
-fn field_str(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string)
-}
-
-/// Extract an i64 field from a JSON value.
-fn field_i64(value: &Value, key: &str) -> Option<i64> {
-    value.get(key).and_then(|v| v.as_i64())
-}
-
 #[derive(Clone, Copy)]
 struct ToolOutcome {
     is_running: bool,
@@ -3366,10 +3174,6 @@ fn tool_status_icon(is_running: bool, success: bool) -> &'static str {
     }
 }
 
-fn raw_output_preview(result: Option<&PersistedTaskEvent>) -> Option<Value> {
-    result.and_then(|e| e.payload.get("output_preview").cloned())
-}
-
 fn tool_structured_payload(output: Option<&Value>) -> Option<&Value> {
     output.and_then(|v| v.get("structured_payload"))
 }
@@ -3379,16 +3183,6 @@ fn tool_structured_payload_str(output: Option<&Value>, key: &str) -> Option<Stri
         .and_then(|payload| payload.get(key))
         .and_then(Value::as_str)
         .map(String::from)
-}
-
-fn input_preview_json(call: Option<&PersistedTaskEvent>) -> Option<Value> {
-    call.and_then(|event| payload_str_event(event, "input_preview"))
-        .and_then(|input| serde_json::from_str::<Value>(&input).ok())
-}
-
-fn input_preview_field_str(call: Option<&PersistedTaskEvent>, key: &str) -> Option<String> {
-    input_preview_json(call)
-        .and_then(|payload| payload.get(key).and_then(Value::as_str).map(String::from))
 }
 
 fn tool_url_from_structured_or_input(
@@ -3828,36 +3622,6 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
     })
 }
 
-/// Extract text from a stream object (stdout/stderr) in the ToolOutput JSON.
-/// Handles both `text` field and `head`/`tail` for truncated output.
-fn stream_text(output: &Value, stream_name: &str) -> Option<String> {
-    let stream = output.get(stream_name)?;
-
-    if stream
-        .get("binary")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return Some("[binary output hidden]".to_string());
-    }
-
-    if let Some(text) = stream.get("text").and_then(Value::as_str) {
-        if !text.is_empty() {
-            return Some(text.to_string());
-        }
-    }
-
-    let head = stream.get("head").and_then(Value::as_str);
-    let tail = stream.get("tail").and_then(Value::as_str);
-
-    match (head, tail) {
-        (Some(h), Some(t)) => Some(format!("{h}\n...\n{t}")),
-        (Some(h), None) => Some(h.to_string()),
-        (None, Some(t)) => Some(t.to_string()),
-        _ => None,
-    }
-}
-
 /// Extract command string from ToolCall + ToolResult pair.
 fn command_from_events(
     call: Option<&PersistedTaskEvent>,
@@ -4135,157 +3899,5 @@ fn format_file_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{bytes} B")
-    }
-}
-
-fn latest_task(tasks: Vec<TaskSummary>) -> Option<TaskSummary> {
-    tasks.into_iter().max_by_key(|task| task.updated_at)
-}
-
-fn latest_editable_task_id(tasks: &[TaskSummary]) -> Option<String> {
-    tasks
-        .iter()
-        .max_by(|a, b| {
-            a.created_at
-                .cmp(&b.created_at)
-                .then_with(|| a.task_id.cmp(&b.task_id))
-        })
-        .and_then(|task| task.status.is_terminal().then(|| task.task_id.clone()))
-}
-
-fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummary) {
-    if let Some(existing) = items.iter_mut().find(|item| item.task_id == task.task_id) {
-        *existing = task;
-    } else {
-        items.push(task);
-    }
-    items.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.task_id.cmp(&b.task_id))
-    });
-}
-
-#[derive(Clone)]
-struct TaskVersionGroup {
-    version_group_id: String,
-    versions: Vec<TaskSummary>,
-}
-
-fn group_task_versions(tasks: &[TaskSummary]) -> Vec<TaskVersionGroup> {
-    let mut grouped = HashMap::<String, Vec<TaskSummary>>::new();
-    for task in tasks {
-        grouped
-            .entry(task.effective_version_group_id().to_string())
-            .or_default()
-            .push(task.clone());
-    }
-
-    let mut groups = grouped
-        .into_iter()
-        .map(|(version_group_id, mut versions)| {
-            versions.sort_by(|a, b| {
-                a.effective_version_index()
-                    .cmp(&b.effective_version_index())
-                    .then_with(|| a.created_at.cmp(&b.created_at))
-                    .then_with(|| a.task_id.cmp(&b.task_id))
-            });
-            TaskVersionGroup {
-                version_group_id,
-                versions,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    groups.sort_by(|a, b| {
-        first_group_task(&a.versions)
-            .created_at
-            .cmp(&first_group_task(&b.versions).created_at)
-            .then_with(|| a.version_group_id.cmp(&b.version_group_id))
-    });
-    groups
-}
-
-fn first_group_task(versions: &[TaskSummary]) -> &TaskSummary {
-    versions
-        .first()
-        .expect("task version groups must contain at least one task")
-}
-
-fn selected_version_index(versions: &[TaskSummary], selected_task_id: Option<&str>) -> usize {
-    selected_task_id
-        .and_then(|task_id| versions.iter().position(|task| task.task_id == task_id))
-        .unwrap_or_else(|| versions.len().saturating_sub(1))
-}
-
-fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {
-    match error.error_code() {
-        Some(ErrorCode::SessionBusy) => {
-            "This session already has an active task. Stop it or wait for it to finish.".to_string()
-        }
-        Some(ErrorCode::TaskWaitingForUserInput) => {
-            "The active task is waiting for input. Reply in the composer to resume it.".to_string()
-        }
-        _ => error.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        linkify_delivered_files_in_markdown, missing_profile_option_label, DeliveredFileLink,
-        PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE,
-    };
-
-    fn delivered_file(file_name: &str, download_url: &str) -> DeliveredFileLink {
-        DeliveredFileLink {
-            file_name: file_name.to_string(),
-            download_url: download_url.to_string(),
-            content_type: "application/octet-stream".to_string(),
-            size_bytes: 1,
-        }
-    }
-
-    #[test]
-    fn linkifies_delivered_file_code_spans_in_final_markdown() {
-        let markdown = "Done: `duckduckgo.zip`\n\n- File: `duckduckgo.zip`";
-        let rendered = linkify_delivered_files_in_markdown(
-            markdown,
-            &[delivered_file(
-                "duckduckgo.zip",
-                "/api/v1/files/duckduckgo.zip",
-            )],
-        );
-
-        assert!(rendered.contains("[`duckduckgo.zip`](/api/v1/files/duckduckgo.zip)"));
-        assert!(!rendered.contains("- File: `duckduckgo.zip`"));
-    }
-
-    #[test]
-    fn does_not_linkify_inside_fenced_code_blocks() {
-        let markdown = "Before `duckduckgo.zip`\n\n```text\n`duckduckgo.zip`\n```\n";
-        let rendered = linkify_delivered_files_in_markdown(
-            markdown,
-            &[delivered_file(
-                "duckduckgo.zip",
-                "/api/v1/files/duckduckgo.zip",
-            )],
-        );
-
-        assert!(rendered.contains("Before [`duckduckgo.zip`](/api/v1/files/duckduckgo.zip)"));
-        assert!(rendered.contains("```text\n`duckduckgo.zip`\n```"));
-    }
-
-    #[test]
-    fn missing_profile_option_keeps_persisted_selection_visible_before_profiles_load() {
-        assert_eq!(
-            missing_profile_option_label(&[], "sre-agent"),
-            Some("Current profile · sre-agent".to_string())
-        );
-        assert_eq!(missing_profile_option_label(&[], PROFILE_VALUE_NONE), None);
-        assert_eq!(
-            missing_profile_option_label(&[], PROFILE_VALUE_DEFAULT),
-            None
-        );
     }
 }
