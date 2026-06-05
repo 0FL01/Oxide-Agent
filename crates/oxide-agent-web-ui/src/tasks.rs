@@ -2906,24 +2906,27 @@ fn ReasoningEventCard(event: PersistedTaskEvent) -> impl IntoView {
     let show_details = event.truncated || event.redacted || preview != summary;
     let details_summary = summary.clone();
 
+    let mut header_metas = vec![tool_meta("CoT")];
+    if event.truncated {
+        header_metas.push(tool_meta("truncated"));
+    }
+    if event.redacted {
+        header_metas.push(tool_meta_danger("redacted"));
+    }
+
     view! {
         <section class="tool-card agent-event-card reasoning-event-card">
-            <div class="tool-card-header">
-                <span class="tool-status-icon reasoning-status-icon">"∴"</span>
-                <span class="tool-name">"Thinking"</span>
-                <span class="tool-meta">"CoT"</span>
-                {event.truncated.then(|| view! { <span class="tool-meta">"truncated"</span> })}
-                {event.redacted.then(|| view! { <span class="tool-meta danger">"redacted"</span> })}
-            </div>
-            <div class="tool-preview reasoning-preview">{preview}</div>
+            {tool_card_header_with_icon_class(
+                "∴",
+                "tool-status-icon reasoning-status-icon",
+                "Thinking",
+                header_metas,
+            )}
+            {tool_preview_with_class(preview, "tool-preview reasoning-preview")}
             {show_details.then(|| view! {
-                <details class="tool-card-body reasoning-details">
-                    <summary class="tool-card-expand">"details"</summary>
-                    <div class="tool-stream">
-                        <div class="tool-stream-label">"reasoning"</div>
-                        <pre class="tool-stream-pre">{details_summary}</pre>
-                    </div>
-                </details>
+                <ToolDetailsWithClass open=false class="tool-card-body reasoning-details">
+                    {tool_pre_stream(Some("reasoning"), details_summary)}
+                </ToolDetailsWithClass>
             })}
         </section>
     }
@@ -3434,11 +3437,20 @@ fn tool_card_header(
     name: impl Into<String>,
     metas: Vec<ToolHeaderMeta>,
 ) -> AnyView {
+    tool_card_header_with_icon_class(icon, "tool-status-icon", name, metas)
+}
+
+fn tool_card_header_with_icon_class(
+    icon: &'static str,
+    icon_class: &'static str,
+    name: impl Into<String>,
+    metas: Vec<ToolHeaderMeta>,
+) -> AnyView {
     let name = name.into();
 
     view! {
         <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
+            <span class=icon_class>{icon}</span>
             <span class="tool-name">{name}</span>
             {metas.into_iter().map(|meta| {
                 let class = if meta.danger { "tool-meta danger" } else { "tool-meta" };
@@ -3450,13 +3462,26 @@ fn tool_card_header(
 }
 
 fn tool_preview(text: String) -> AnyView {
-    view! { <div class="tool-preview">{text}</div> }.into_any()
+    tool_preview_with_class(text, "tool-preview")
+}
+
+fn tool_preview_with_class(text: String, class: &'static str) -> AnyView {
+    view! { <div class=class>{text}</div> }.into_any()
 }
 
 #[component]
 fn ToolDetails(open: bool, children: Children) -> impl IntoView {
     view! {
-        <details class="tool-card-body" open=open>
+        <ToolDetailsWithClass open=open class="tool-card-body">
+            {children()}
+        </ToolDetailsWithClass>
+    }
+}
+
+#[component]
+fn ToolDetailsWithClass(open: bool, class: &'static str, children: Children) -> impl IntoView {
+    view! {
+        <details class=class open=open>
             <summary class="tool-card-expand">"details"</summary>
             {children()}
         </details>
