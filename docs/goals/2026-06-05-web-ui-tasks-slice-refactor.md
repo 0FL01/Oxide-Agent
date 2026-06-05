@@ -58,14 +58,14 @@ Out of scope:
   - Acceptance: Create session -> upload attachments -> create task -> navigate remains intact; existing-session upload -> resume/create remains intact; cancel updates active task/stream/session summary; edit version creates a task version and starts streaming the new task.
   - Evidence required: focused diff review plus `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 2 moved stream wiring to `crates/oxide-agent-web-ui/src/tasks/streaming.rs` while preserving `set_streaming_task_id` before `spawn_task_stream`; existing submit/resume/cancel/edit stream call sites still compile under wasm.
 
 - G3: Composer/profile/effort/attachment behavior remains unchanged
   - Source: Recon of composer state, file paste/drag/drop/upload helpers, profile sentinels, and effort persistence.
   - Acceptance: Pending attachments, pasted image filtering, drag/drop handling, profile selection mapping, missing-profile fallback option, and default effort load/persist semantics are preserved.
   - Evidence required: diff review, existing native tests for profile fallback/linkification, and wasm `cargo check`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 2 moved pending attachments, browser file helpers, profile/effort selects, persisted attachment list rendering, and default-effort persistence to `crates/oxide-agent-web-ui/src/tasks/composer.rs`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, and `cargo test -p oxide-agent-web-ui` passed.
 
 - G4: Activity drawer, task cards, tool cards, and delivered files remain behavior-preserving
   - Source: Recon of activity grouping, tool result matching, tool card dispatch, delivered-file previews/linkification, and markdown rendering.
@@ -86,28 +86,28 @@ Out of scope:
   - Acceptance: No backend/core/runtime/contracts/provider behavior changes; only web-ui task split files and this goal document change, except necessary import adjustments.
   - Evidence required: `git diff --name-only` and `git diff --stat` review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document.
+  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document. Checkpoint 2 changed only web-ui task split files and this goal document.
 
 - Q2: No over-engineering or new dependencies
   - Source: AGENTS implementation bias and recon conclusion.
   - Acceptance: No `Cargo.toml` changes; no new crates/frameworks; no broad generic component registry/builder; modules stay boring and local.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes.
+  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and made no `Cargo.toml` changes.
 
 - V1: Web UI validation passes for meaningful checkpoints
   - Source: Repo validation practice for web UI and wasm-only compilation of `tasks.rs`.
   - Acceptance: Relevant validation commands pass after each meaningful checkpoint, or exact blockers are recorded with the smallest external action needed.
   - Evidence required: `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, and `git diff --check` before final completion.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`.
+  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`.
 
 - N1: No hidden visual redesign
   - Source: Refactor request is about slicing/maintainability, not UI changes.
   - Must preserve: Existing visible strings, task/card/composer/activity CSS classes, collapsed/expanded defaults, preview priorities, and specialized parser behavior unless explicitly approved later.
   - Evidence required: diff review and behavior checklist in progress log.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed.
+  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed. Checkpoint 2 was a mechanical stream/composer move; no CSS files changed and visible strings/classes stayed in moved code.
 
 ## Implementation Plan
 
@@ -176,6 +176,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
   - Audit IDs updated: G5 verified; Q1, Q2, V1, N1 evidence collected.
   - Next: Checkpoint 2 — extract streaming and composer slices.
+
+- 2026-06-05: Checkpoint 2 completed.
+  - Changed: Added `crates/oxide-agent-web-ui/src/tasks/streaming.rs` for stream signal glue and `crates/oxide-agent-web-ui/src/tasks/composer.rs` for pending attachments, browser file helpers, profile/effort selects, attachment rendering, and default effort persistence; `tasks.rs` dropped from 3,903 to 3,549 lines.
+  - Evidence: Stream stale-guard assignment remains before `spawn_task_stream`; submit/resume/cancel and composer call sites stayed mechanical; no backend, contract, CSS, dependency, or visual-string changes were introduced.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
+  - Audit IDs updated: G3 verified; G2, Q1, Q2, V1, N1 evidence collected.
+  - Next: Checkpoint 3 — extract delivered-file, task-card, and edit-form slices.
 
 ## Risks and Blockers
 

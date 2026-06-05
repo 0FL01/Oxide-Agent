@@ -1,25 +1,32 @@
-use crate::auth::{use_auth, AuthContext};
+use crate::auth::use_auth;
 use crate::components::ErrorBanner;
 use crate::markdown::MarkdownContent;
 use crate::routes::AppRoute;
-use crate::sse::{spawn_task_stream, TaskStreamConfig};
 use crate::utils::{navigate, spawn_ui};
 use leptos::{html, prelude::*};
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest,
     CreateTaskVersionRequest, PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest,
     SessionSummary, SseConnectionState, TaskAttachment, TaskDetail, TaskEventKind, TaskStatus,
-    TaskSummary, UpdateSessionProfileRequest, UpdateUserSettingsRequest, UserMessageEventPayload,
+    TaskSummary, UpdateSessionProfileRequest, UserMessageEventPayload,
 };
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};
 
+mod composer;
 mod delivered_files;
 mod payload;
 mod profile;
 mod state;
+mod streaming;
 mod versions;
 
+use composer::{
+    append_pasted_image_files, append_pending_browser_files, browser_files,
+    browser_files_from_drag_event, browser_files_from_input_event, can_submit_input,
+    format_attachment_meta, persist_default_effort, AgentEffortSelect, AgentProfileSelect,
+    MessageAttachments, PendingAttachmentFile, PendingAttachmentList,
+};
 use delivered_files::{
     delivered_file_link, delivered_files_for_task, linkify_delivered_files_in_markdown,
     DeliveredFileLink,
@@ -29,21 +36,15 @@ use payload::{
     payload_str_event, raw_output_preview, stream_text,
 };
 use profile::{
-    agent_effort_from_value, agent_effort_value, agent_profile_selection_from_value,
-    apply_loaded_default_effort, missing_profile_option_label, profile_value_to_id,
-    PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE,
+    agent_effort_from_value, agent_profile_selection_from_value, apply_loaded_default_effort,
+    profile_value_to_id, PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE,
 };
 use state::{
     latest_editable_task_id, latest_task, session_detail_to_summary, summary_to_detail,
     task_submit_error_message, upsert_session_summary, upsert_task_summary,
 };
+use streaming::{start_task_stream, StreamUiSignals};
 use versions::{group_task_versions, selected_version_index};
-
-#[derive(Clone)]
-struct PendingAttachmentFile {
-    id: usize,
-    file: web_sys::File,
-}
 
 #[component]
 pub fn TaskConsole(
@@ -1139,46 +1140,6 @@ fn format_duration(total_seconds: i64) -> String {
     format!("{seconds}s")
 }
 
-#[derive(Clone, Copy)]
-struct StreamUiSignals {
-    set_events: WriteSignal<Vec<PersistedTaskEvent>>,
-    set_session_title: WriteSignal<String>,
-    set_progress: WriteSignal<Option<ProgressSnapshot>>,
-    set_active_task: WriteSignal<Option<TaskDetail>>,
-    set_tasks: WriteSignal<Vec<TaskSummary>>,
-    set_sse_state: WriteSignal<SseConnectionState>,
-    set_error: WriteSignal<Option<String>>,
-    streaming_task_id: ReadSignal<Option<String>>,
-    set_streaming_task_id: WriteSignal<Option<String>>,
-    set_last_terminal_status: WriteSignal<Option<TaskStatus>>,
-    set_sessions: WriteSignal<Vec<SessionSummary>>,
-}
-
-fn start_task_stream(
-    client: crate::api::ApiClient,
-    session_id: String,
-    task_id: String,
-    signals: StreamUiSignals,
-) {
-    signals.set_streaming_task_id.set(Some(task_id.clone()));
-    spawn_task_stream(TaskStreamConfig {
-        client,
-        session_id,
-        task_id,
-        set_session_title: signals.set_session_title,
-        set_sessions: signals.set_sessions,
-        set_events: signals.set_events,
-        set_progress: signals.set_progress,
-        set_active_task: signals.set_active_task,
-        set_tasks: signals.set_tasks,
-        set_state: signals.set_sse_state,
-        set_error: signals.set_error,
-        streaming_task_id: signals.streaming_task_id,
-        set_streaming_task_id: signals.set_streaming_task_id,
-        set_last_terminal_status: signals.set_last_terminal_status,
-    });
-}
-
 // ── Task Card ────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -1518,181 +1479,6 @@ fn resume_user_messages_for_task(
             attachments: payload.attachments,
         })
         .collect()
-}
-
-#[component]
-fn AgentProfileSelect(
-    profiles: ReadSignal<Vec<AgentProfileView>>,
-    selected_profile: ReadSignal<String>,
-    disabled: Signal<bool>,
-    include_default: bool,
-    on_change: Callback<leptos::ev::Event>,
-) -> impl IntoView {
-    view! {
-        <select
-            class="agent-profile-select"
-            prop:value=selected_profile
-            disabled=move || disabled.get()
-            on:change=move |ev| on_change.run(ev)
-        >
-            {include_default.then(|| view! {
-                <option value=PROFILE_VALUE_DEFAULT>"Default profile"</option>
-            })}
-            {move || selected_profile_missing_option(profiles, selected_profile)}
-            <option value=PROFILE_VALUE_NONE>"No profile"</option>
-            <For
-                each=move || profiles.get()
-                key=|profile| profile.agent_id.clone()
-                children=move |profile| {
-                    let value = profile.agent_id.clone();
-                    view! { <option value=value.clone()>{profile.display_name}</option> }
-                }
-            />
-        </select>
-    }
-}
-
-#[component]
-fn AgentEffortSelect(
-    selected_effort: ReadSignal<AgentEffort>,
-    disabled: Signal<bool>,
-    on_change: Callback<leptos::ev::Event>,
-) -> impl IntoView {
-    view! {
-        <select
-            class="composer-effort-select"
-            title="Effort controls agent loop depth and research budget"
-            aria-label="Agent effort"
-            prop:value=move || agent_effort_value(selected_effort.get())
-            disabled=move || disabled.get()
-            on:change=move |ev| on_change.run(ev)
-        >
-            <option value="standard">"Standard"</option>
-            <option value="extended">"Extended"</option>
-            <option value="heavy">"Heavy"</option>
-        </select>
-    }
-}
-
-fn persist_default_effort(
-    auth: AuthContext,
-    effort: AgentEffort,
-    set_error: WriteSignal<Option<String>>,
-) {
-    spawn_ui(async move {
-        let client = auth.client();
-        let settings = match client.settings().await {
-            Ok(settings) => settings,
-            Err(error) => {
-                set_error.set(Some(error.to_string()));
-                return;
-            }
-        };
-        let request = UpdateUserSettingsRequest {
-            default_model_selection: settings.default_model_selection,
-            default_agent_profile_id: settings.default_agent_profile_id,
-            default_effort: Some(effort),
-        };
-        if let Err(error) = client.update_settings(&request).await {
-            set_error.set(Some(error.to_string()));
-        }
-    });
-}
-
-fn selected_profile_missing_option(
-    profiles: ReadSignal<Vec<AgentProfileView>>,
-    selected_profile: ReadSignal<String>,
-) -> Option<impl IntoView> {
-    let selected = selected_profile.get();
-    let label = missing_profile_option_label(&profiles.get(), &selected)?;
-    Some(view! {
-        <option value=selected.clone()>{label}</option>
-    })
-}
-
-#[component]
-fn PendingAttachmentList(
-    attachments: ReadSignal<Vec<PendingAttachmentFile>>,
-    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
-) -> impl IntoView {
-    view! {
-        {move || {
-            let items = attachments.get();
-            if items.is_empty() {
-                ().into_any()
-            } else {
-                view! {
-                    <ul class="pending-attachments" aria-label="Pending attachments">
-                        {items
-                            .into_iter()
-                            .map(|attachment| {
-                                let attachment_id = attachment.id;
-                                let file_name = attachment.file.name();
-                                let meta = format_attachment_meta(
-                                    attachment.file.size() as u64,
-                                    attachment.file.type_(),
-                                );
-                                view! {
-                                    <li class="pending-attachment-item">
-                                        <div class="pending-attachment-copy">
-                                            <span class="pending-attachment-name">{file_name}</span>
-                                            <span class="pending-attachment-meta">{meta}</span>
-                                        </div>
-                                        <button
-                                            class="message-action-button"
-                                            type="button"
-                                            title="Remove attachment"
-                                            aria-label="Remove attachment"
-                                            on:click=move |_| {
-                                                set_attachments
-                                                    .update(|items| items.retain(|item| item.id != attachment_id));
-                                            }
-                                        >
-                                            "✕"
-                                        </button>
-                                    </li>
-                                }
-                            })
-                            .collect_view()}
-                    </ul>
-                }
-                .into_any()
-            }
-        }}
-    }
-}
-
-#[component]
-fn MessageAttachments(attachments: Vec<TaskAttachment>) -> impl IntoView {
-    if attachments.is_empty() {
-        return ().into_any();
-    }
-
-    view! {
-        <ul class="message-attachments" aria-label="Message attachments">
-            {attachments
-                .into_iter()
-                .map(|attachment| {
-                    let meta = format_attachment_meta(
-                        attachment.size_bytes,
-                        attachment.mime_type.clone().unwrap_or_default(),
-                    );
-                    let sandbox_path = attachment.sandbox_path.clone();
-                    let sandbox_title = sandbox_path.clone();
-                    view! {
-                        <li class="message-attachment-item" title=sandbox_title>
-                            <div class="message-attachment-copy">
-                                <span class="message-attachment-name">{attachment.file_name}</span>
-                                <span class="message-attachment-meta">{meta}</span>
-                            </div>
-                            <code class="message-attachment-path">{sandbox_path}</code>
-                        </li>
-                    }
-                })
-                .collect_view()}
-        </ul>
-    }
-    .into_any()
 }
 
 // ── Activity item model ──────────────────────────────────────────────────
@@ -2325,9 +2111,7 @@ fn CrawlToolCard(
                 ().into_any()
             }}
             // If stdout was not parseable as crawl JSON, show raw stdout as fallback.
-            {success
-                .then_some(crawl.is_none())
-                .unwrap_or(false)
+            {(if success { crawl.is_none() } else { false })
                 .then(|| stdout_text.clone())
                 .flatten()
                 .map(|text| tool_pre_stream(Some("output"), text))}
@@ -3761,143 +3545,5 @@ fn TaskInputEditForm(
                 <button class="secondary" type="button" on:click=cancel_edit>"Cancel"</button>
             </div>
         </form>
-    }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-fn can_submit_input(input: &str, attachments: &[PendingAttachmentFile]) -> bool {
-    !input.trim().is_empty() || !attachments.is_empty()
-}
-
-fn append_pending_browser_files(
-    next_id: ReadSignal<usize>,
-    set_next_id: WriteSignal<usize>,
-    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
-    files: Vec<web_sys::File>,
-) {
-    if files.is_empty() {
-        return;
-    }
-    let start_id = next_id.get_untracked();
-    let new_files = into_pending_attachment_files(files, start_id);
-    set_next_id.set(start_id + new_files.len());
-    set_attachments.update(|items| items.extend(new_files));
-}
-
-fn append_pasted_image_files(
-    ev: &leptos::ev::ClipboardEvent,
-    next_id: ReadSignal<usize>,
-    set_next_id: WriteSignal<usize>,
-    set_attachments: WriteSignal<Vec<PendingAttachmentFile>>,
-) {
-    append_pending_browser_files(
-        next_id,
-        set_next_id,
-        set_attachments,
-        browser_image_files_from_clipboard_event(ev),
-    );
-}
-
-fn into_pending_attachment_files(
-    files: Vec<web_sys::File>,
-    start_id: usize,
-) -> Vec<PendingAttachmentFile> {
-    files
-        .into_iter()
-        .enumerate()
-        .map(|(offset, file)| PendingAttachmentFile {
-            id: start_id + offset,
-            file,
-        })
-        .collect()
-}
-
-fn browser_files(attachments: &[PendingAttachmentFile]) -> Vec<web_sys::File> {
-    attachments
-        .iter()
-        .map(|attachment| attachment.file.clone())
-        .collect()
-}
-
-fn browser_files_from_input_event(ev: &leptos::ev::Event) -> Vec<web_sys::File> {
-    use wasm_bindgen::JsCast;
-
-    let Some(target) = ev.target() else {
-        return Vec::new();
-    };
-    let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
-        return Vec::new();
-    };
-    let files = input
-        .files()
-        .map(browser_files_from_file_list)
-        .unwrap_or_default();
-    input.set_value("");
-    files
-}
-
-fn browser_files_from_drag_event(ev: &leptos::ev::DragEvent) -> Vec<web_sys::File> {
-    ev.data_transfer()
-        .and_then(|transfer| transfer.files())
-        .map(browser_files_from_file_list)
-        .unwrap_or_default()
-}
-
-fn browser_image_files_from_clipboard_event(ev: &leptos::ev::ClipboardEvent) -> Vec<web_sys::File> {
-    ev.clipboard_data()
-        .and_then(|transfer| transfer.files())
-        .map(browser_image_files_from_file_list)
-        .unwrap_or_default()
-}
-
-fn browser_files_from_file_list(file_list: web_sys::FileList) -> Vec<web_sys::File> {
-    (0..file_list.length())
-        .filter_map(|index| file_list.item(index))
-        .collect()
-}
-
-fn browser_image_files_from_file_list(file_list: web_sys::FileList) -> Vec<web_sys::File> {
-    browser_files_from_file_list(file_list)
-        .into_iter()
-        .filter(|file| is_image_file_metadata(&file.type_(), &file.name()))
-        .collect()
-}
-
-fn is_image_file_metadata(mime_type: &str, file_name: &str) -> bool {
-    let mime_type = mime_type.trim().to_ascii_lowercase();
-    if mime_type.starts_with("image/") {
-        return true;
-    }
-
-    let file_name = file_name.trim().to_ascii_lowercase();
-    [
-        ".avif", ".bmp", ".gif", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".svg", ".tif",
-        ".tiff", ".webp",
-    ]
-    .iter()
-    .any(|extension| file_name.ends_with(extension))
-}
-
-fn format_attachment_meta(size_bytes: u64, mime_type: String) -> String {
-    let size = format_file_size(size_bytes);
-    let mime = mime_type.trim();
-    if mime.is_empty() {
-        size
-    } else {
-        format!("{size} • {mime}")
-    }
-}
-
-fn format_file_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-
-    if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{bytes} B")
     }
 }
