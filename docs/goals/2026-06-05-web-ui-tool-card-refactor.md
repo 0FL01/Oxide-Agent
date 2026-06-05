@@ -46,8 +46,8 @@ Out of scope:
   - Source: RECON finding that `is_running`, `success`, duration, and icon extraction are repeated across tool cards.
   - Acceptance: Repeated manual `is_running`/`success`/duration/icon logic is reduced by small helpers or reuse of existing helpers, without changing status class, labels, duration visibility, or failure behavior for any card.
   - Evidence required: focused diff review plus `cargo check -p oxide-agent-web-ui`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 1 added `ToolOutcome`, `tool_duration_label`, `raw_output_preview`, `tool_url_from_structured_or_input`, and `active_count_label` in `crates/oxide-agent-web-ui/src/tasks.rs`; focused diff review confirmed card-specific preview/default-open/parsing remained local; `cargo check -p oxide-agent-web-ui` passed.
 
 - G2: Repeated visual chrome is extracted into simple helpers
   - Source: RECON finding that headers, previews, details wrappers, raw blocks, metadata rows, and stream wrappers are duplicated.
@@ -60,8 +60,8 @@ Out of scope:
   - Source: RECON risk assessment that one generic `ToolCardSpec` would overfit because parsing, preview priority, and `default_open` differ per card.
   - Acceptance: Search result parsing, WebMarkdown parsing, Crawl4AI success/failure parsing, sub-agent parsing, todo parsing, preview priority, and `default_open` rules remain card-specific unless a helper is proven trivial and behavior-preserving.
   - Evidence required: diff review of each specialized card and manual behavior checklist recorded in progress log.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 moved only shared outcome/duration/raw-output/URL-fallback/active-count extraction; specialized parsing, preview priority, and `default_open` branches stayed in each card.
 
 - G4: Tool-card rendering remains compatible with recent web UI polish
   - Source: Recent commits `377255ce`, `79c1919c`, and `acac93d7` added rich tool cards, inline todos, reasoning preview, and compact failed Crawl cards.
@@ -74,29 +74,29 @@ Out of scope:
   - Source: User requested refactor in `crates/oxide-agent-web-ui/src/tasks.rs`; AGENTS over-engineering guardrails require smallest maintainable change.
   - Acceptance: No backend/core/contracts/provider files change; no output formats, tool names, routes, or transport events change.
   - Evidence required: `git diff --stat` and file list review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 implementation changed only `crates/oxide-agent-web-ui/src/tasks.rs`; this goal doc was updated for evidence.
 
 - Q2: No new dependencies or broad abstractions
   - Source: `AGENTS.md` implementation bias and RECON recommendation.
   - Acceptance: No `Cargo.toml` changes; no new crates; no broad card registry/builder/macro framework; helpers stay local and boring.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 added local data helpers only; no `Cargo.toml` changes and no card registry/builder/macro framework.
 
 - V1: Web UI validation passes after each meaningful checkpoint
   - Source: Repo validation practice and prior web UI checks.
   - Acceptance: Required commands pass for the checkpoint scope or a blocker records exact failure output and smallest next action.
   - Evidence required: `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui`, and `env -u NO_COLOR trunk build --release` before final completion.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, and `cargo clippy -p oxide-agent-web-ui`.
 
 - N1: No visual redesign hidden inside refactor
   - Source: User goal is deduplication/refactor, not another UI redesign pass.
   - Must preserve: Existing card text, CSS class names, collapsed/expanded defaults, and specialized previews unless explicitly called out in this document and approved later.
   - Evidence required: diff review and behavior checklist.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 did not change visible strings, CSS classes, or details/default-open expressions; it only replaced repeated data extraction with helpers.
 
 ## Implementation Plan
 
@@ -152,6 +152,13 @@ Out of scope:
   - Commands: none.
   - Audit IDs updated: none.
   - Next: Checkpoint 1 — normalize shared tool outcome helpers.
+
+- 2026-06-05: Checkpoint 1 — normalized shared tool outcome helpers.
+  - Changed: Added local helpers for tool outcome/status class/icon, duration label, raw output preview, structured/input URL fallback, and sub-agent active-count labels; switched specialized cards to those helpers.
+  - Evidence: Focused diff review confirmed specialized parsing, preview priority, `default_open`, labels, and CSS classes stayed local and visually equivalent.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui`; `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`; `cargo clippy -p oxide-agent-web-ui`.
+  - Audit IDs updated: G1 verified; G3, Q1, Q2, V1, N1 in progress.
+  - Next: Checkpoint 2 — extract repeated visual primitives.
 
 ## Risks and Blockers
 

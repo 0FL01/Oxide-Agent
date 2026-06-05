@@ -1912,12 +1912,7 @@ fn ToolCard(call: Option<PersistedTaskEvent>, result: Option<PersistedTaskEvent>
         .and_then(|e| payload_str_event(e, "name"))
         .unwrap_or_default();
 
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
 
     // Parse the nested output JSON from output_preview.
     let output_json = result.as_ref().and_then(parse_output_json);
@@ -1959,13 +1954,7 @@ fn ToolCard(call: Option<PersistedTaskEvent>, result: Option<PersistedTaskEvent>
         }
     };
 
-    let status_class = if is_running {
-        "tool-card running"
-    } else if success {
-        "tool-card success"
-    } else {
-        "tool-card failure"
-    };
+    let status_class = outcome.status_class();
 
     view! {
         <section class=status_class>
@@ -1982,12 +1971,9 @@ fn ShellToolCard(
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
 ) -> impl IntoView {
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
 
     let status_text = if is_running {
         "running".to_string()
@@ -2000,36 +1986,14 @@ fn ShellToolCard(
             .unwrap_or_else(|| "failed".to_string())
     };
 
-    let duration_ms = output
-        .as_ref()
-        .and_then(|v| field_i64(v, "duration_ms"))
-        .or_else(|| {
-            result
-                .as_ref()
-                .and_then(|e| e.payload.get("duration_ms"))
-                .and_then(|v| v.as_i64())
-        });
+    let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
     let exit_code = output.as_ref().and_then(|v| field_i64(v, "exit_code"));
     let command = command_from_events(call.as_ref(), output.as_ref());
     let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
     let stderr = output.as_ref().and_then(|v| stream_text(v, "stderr"));
     let error_msg = output.as_ref().and_then(|v| field_str(v, "error_message"));
-
-    let icon = if is_running {
-        "\u{23f3}"
-    } else if success {
-        "\u{2713}"
-    } else {
-        "\u{2717}"
-    };
-
-    let duration_label = duration_ms.map(|ms| {
-        if ms >= 1000 {
-            format!("{:.1}s", ms as f64 / 1000.0)
-        } else {
-            format!("{ms}ms")
-        }
-    });
+    let icon = outcome.icon();
+    let raw_output = raw_output_preview(result.as_ref());
 
     // Default open: running, failed, or has no stream content (nothing to collapse)
     let has_streams = stdout.is_some() || stderr.is_some();
@@ -2078,7 +2042,7 @@ fn ShellToolCard(
                     <pre class="tool-stream-pre">"No output"</pre>
                 </div>
             })}
-            {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
+            {raw_output.map(|raw| view! {
                 <details class="tool-raw-details">
                     <summary>"Raw"</summary>
                     <pre class="tool-raw-json">{raw.to_string()}</pre>
@@ -2098,22 +2062,11 @@ fn SearchToolCard(
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
 ) -> impl IntoView {
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
 
-    let duration_ms = output
-        .as_ref()
-        .and_then(|v| field_i64(v, "duration_ms"))
-        .or_else(|| {
-            result
-                .as_ref()
-                .and_then(|e| e.payload.get("duration_ms"))
-                .and_then(|v| v.as_i64())
-        });
+    let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
     let query = call
         .as_ref()
         .and_then(|e| payload_str_event(e, "input_preview"));
@@ -2155,21 +2108,7 @@ fn SearchToolCard(
         Some(search_results.len())
     };
 
-    let icon = if is_running {
-        "\u{23f3}"
-    } else if success {
-        "\u{2713}"
-    } else {
-        "\u{2717}"
-    };
-
-    let duration_label = duration_ms.map(|ms| {
-        if ms >= 1000 {
-            format!("{:.1}s", ms as f64 / 1000.0)
-        } else {
-            format!("{ms}ms")
-        }
-    });
+    let icon = outcome.icon();
 
     let default_open = is_running || !success;
 
@@ -2196,6 +2135,7 @@ fn SearchToolCard(
     } else {
         result_summary.clone().or(query.clone())
     };
+    let raw_output = raw_output_preview(result.as_ref());
 
     view! {
         <div class="tool-card-header">
@@ -2246,7 +2186,7 @@ fn SearchToolCard(
             } else {
                 ().into_any()
             }}
-            {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
+            {raw_output.map(|raw| view! {
                 <details class="tool-raw-details">
                     <summary>"Raw"</summary>
                     <pre class="tool-raw-json">{raw.to_string()}</pre>
@@ -2330,22 +2270,11 @@ fn WebMarkdownToolCard(
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
 ) -> impl IntoView {
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
 
-    let duration_ms = output
-        .as_ref()
-        .and_then(|v| field_i64(v, "duration_ms"))
-        .or_else(|| {
-            result
-                .as_ref()
-                .and_then(|e| e.payload.get("duration_ms"))
-                .and_then(|v| v.as_i64())
-        });
+    let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
 
     let result_summary = result
         .as_ref()
@@ -2360,20 +2289,7 @@ fn WebMarkdownToolCard(
     let url = web_markdown
         .as_ref()
         .and_then(|doc| doc.url.clone())
-        .or_else(|| {
-            output
-                .as_ref()
-                .and_then(|v| v.get("structured_payload"))
-                .and_then(|payload| payload.get("url"))
-                .and_then(Value::as_str)
-                .map(String::from)
-        })
-        .or_else(|| {
-            call.as_ref()
-                .and_then(|e| payload_str_event(e, "input_preview"))
-                .and_then(|input| serde_json::from_str::<Value>(&input).ok())
-                .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
-        });
+        .or_else(|| tool_url_from_structured_or_input(output.as_ref(), call.as_ref()));
     let content_type = web_markdown
         .as_ref()
         .and_then(|doc| doc.content_type.clone());
@@ -2390,21 +2306,7 @@ fn WebMarkdownToolCard(
 
     let preview_host = url.as_ref().and_then(|u| host_from_url_str(u));
 
-    let icon = if is_running {
-        "\u{23f3}"
-    } else if success {
-        "\u{2713}"
-    } else {
-        "\u{2717}"
-    };
-
-    let duration_label = duration_ms.map(|ms| {
-        if ms >= 1000 {
-            format!("{:.1}s", ms as f64 / 1000.0)
-        } else {
-            format!("{ms}ms")
-        }
-    });
+    let icon = outcome.icon();
 
     let chars_display = markdown
         .as_ref()
@@ -2416,6 +2318,7 @@ fn WebMarkdownToolCard(
     } else {
         preview_host.clone()
     };
+    let raw_output = raw_output_preview(result.as_ref());
 
     view! {
         <div class="tool-card-header">
@@ -2474,7 +2377,7 @@ fn WebMarkdownToolCard(
             } else {
                 ().into_any()
             }}
-            {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
+            {raw_output.map(|raw| view! {
                 <details class="tool-raw-details">
                     <summary>"Raw"</summary>
                     <pre class="tool-raw-json">{raw.to_string()}</pre>
@@ -2490,22 +2393,11 @@ fn CrawlToolCard(
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
 ) -> impl IntoView {
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
 
-    let duration_ms = output
-        .as_ref()
-        .and_then(|v| field_i64(v, "duration_ms"))
-        .or_else(|| {
-            result
-                .as_ref()
-                .and_then(|e| e.payload.get("duration_ms"))
-                .and_then(|v| v.as_i64())
-        });
+    let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
 
     let result_summary = result
         .as_ref()
@@ -2534,38 +2426,12 @@ fn CrawlToolCard(
         .unwrap_or(false);
 
     // Fallback: try to extract URL from the ToolCall input_preview.
-    let failure_payload = output.as_ref().and_then(|v| v.get("structured_payload"));
-    let url = url
-        .or_else(|| {
-            failure_payload
-                .and_then(|payload| payload.get("url"))
-                .and_then(Value::as_str)
-                .map(String::from)
-        })
-        .or_else(|| {
-            call.as_ref()
-                .and_then(|e| payload_str_event(e, "input_preview"))
-                .and_then(|input| serde_json::from_str::<Value>(&input).ok())
-                .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
-        });
+    let failure_payload = tool_structured_payload(output.as_ref());
+    let url = url.or_else(|| tool_url_from_structured_or_input(output.as_ref(), call.as_ref()));
 
     let preview_host = url.as_ref().and_then(|u| host_from_url_str(u));
 
-    let icon = if is_running {
-        "\u{23f3}"
-    } else if success {
-        "\u{2713}"
-    } else {
-        "\u{2717}"
-    };
-
-    let duration_label = duration_ms.map(|ms| {
-        if ms >= 1000 {
-            format!("{:.1}s", ms as f64 / 1000.0)
-        } else {
-            format!("{ms}ms")
-        }
-    });
+    let icon = outcome.icon();
 
     let chars_display = chars.map(chars_label);
     let default_open = is_running;
@@ -2617,6 +2483,7 @@ fn CrawlToolCard(
     } else {
         preview_host.clone()
     };
+    let raw_output = raw_output_preview(result.as_ref());
 
     view! {
         <div class="tool-card-header">
@@ -2693,7 +2560,7 @@ fn CrawlToolCard(
                         <pre class="tool-stream-pre">{text}</pre>
                     </div>
                 })}
-            {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
+            {raw_output.map(|raw| view! {
                 <details class="tool-raw-details">
                     <summary>"Raw"</summary>
                     <pre class="tool-raw-json">{raw.to_string()}</pre>
@@ -2736,12 +2603,9 @@ fn SpawnSubAgentsToolCard(
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
 ) -> impl IntoView {
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
     let result_summary = result
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
@@ -2774,20 +2638,9 @@ fn SpawnSubAgentsToolCard(
         }
     }
 
-    let active_count = parsed
-        .as_ref()
-        .and_then(|v| v.get("active_count"))
-        .and_then(Value::as_u64);
-    let max_active = parsed
-        .as_ref()
-        .and_then(|v| v.get("max_active"))
-        .and_then(Value::as_u64);
-    let active_label = active_count.map(|active| match max_active {
-        Some(max) => format!("active {active}/{max}"),
-        None => format!("active {active}"),
-    });
+    let active_label = active_count_label(parsed.as_ref());
 
-    let icon = tool_status_icon(is_running, success);
+    let icon = outcome.icon();
     let started_count = tasks.len();
     let count_label = (started_count > 0).then(|| format!("{started_count} started"));
     let preview_text = if !success {
@@ -2799,9 +2652,7 @@ fn SpawnSubAgentsToolCard(
             .or_else(|| stdout.as_ref().map(|text| first_line(text)))
     };
     let default_open = is_running || !success || tasks.is_empty();
-    let raw_output = result
-        .as_ref()
-        .and_then(|e| e.payload.get("output_preview").cloned());
+    let raw_output = raw_output_preview(result.as_ref());
 
     view! {
         <div class="tool-card-header">
@@ -2867,16 +2718,13 @@ fn WaitSubAgentsToolCard(
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
 ) -> impl IntoView {
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
     let result_summary = result
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
-    let duration_label = tool_duration_ms(output.as_ref(), result.as_ref()).map(format_duration_ms);
+    let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
     let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
     let parsed = stdout
         .as_ref()
@@ -2895,18 +2743,7 @@ fn WaitSubAgentsToolCard(
         .and_then(|v| v.get("timed_out"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let active_count = parsed
-        .as_ref()
-        .and_then(|v| v.get("active_count"))
-        .and_then(Value::as_u64);
-    let max_active = parsed
-        .as_ref()
-        .and_then(|v| v.get("max_active"))
-        .and_then(Value::as_u64);
-    let active_label = active_count.map(|active| match max_active {
-        Some(max) => format!("active {active}/{max}"),
-        None => format!("active {active}"),
-    });
+    let active_label = active_count_label(parsed.as_ref());
 
     let total = statuses.len();
     let completed = statuses
@@ -2920,7 +2757,7 @@ fn WaitSubAgentsToolCard(
     let count_label = (total > 0).then(|| format!("{completed}/{total} done"));
     let failed_label = (failed > 0).then(|| format!("{failed} failed"));
 
-    let icon = tool_status_icon(is_running, success);
+    let icon = outcome.icon();
     let preview_text = if !success {
         result_summary.clone()
     } else {
@@ -2931,9 +2768,7 @@ fn WaitSubAgentsToolCard(
             .or_else(|| stdout.as_ref().map(|text| first_line(text)))
     };
     let default_open = is_running || !success || timed_out || failed > 0;
-    let raw_output = result
-        .as_ref()
-        .and_then(|e| e.payload.get("output_preview").cloned());
+    let raw_output = raw_output_preview(result.as_ref());
 
     view! {
         <div class="tool-card-header">
@@ -3005,12 +2840,9 @@ fn WriteTodosToolCard(
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
 ) -> impl IntoView {
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
     let result_summary = result
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
@@ -3030,11 +2862,9 @@ fn WriteTodosToolCard(
         .or_else(|| active.map(|_| "doing"));
     let has_todos = !todos.is_empty();
 
-    let icon = tool_status_icon(is_running, success);
+    let icon = outcome.icon();
     let preview_text = (!success).then(|| result_summary.clone()).flatten();
-    let raw_output = result
-        .as_ref()
-        .and_then(|e| e.payload.get("output_preview").cloned());
+    let raw_output = raw_output_preview(result.as_ref());
     let show_fallback = !has_todos && (stdout.is_some() || !is_running);
     let show_details = raw_output.is_some() || show_fallback;
     let default_open = !success || !has_todos;
@@ -3096,22 +2926,11 @@ fn GenericToolCard(
     result: Option<PersistedTaskEvent>,
     output: Option<Value>,
 ) -> impl IntoView {
-    let is_running = result.is_none();
-    let success = result
-        .as_ref()
-        .and_then(|e| e.payload.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let outcome = tool_outcome(result.as_ref());
+    let is_running = outcome.is_running;
+    let success = outcome.success;
 
-    let duration_ms = output
-        .as_ref()
-        .and_then(|v| field_i64(v, "duration_ms"))
-        .or_else(|| {
-            result
-                .as_ref()
-                .and_then(|e| e.payload.get("duration_ms"))
-                .and_then(|v| v.as_i64())
-        });
+    let duration_label = tool_duration_label(output.as_ref(), result.as_ref());
     let exit_code = output.as_ref().and_then(|v| field_i64(v, "exit_code"));
     let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
     let stderr = output.as_ref().and_then(|v| stream_text(v, "stderr"));
@@ -3119,21 +2938,7 @@ fn GenericToolCard(
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
 
-    let icon = if is_running {
-        "\u{23f3}"
-    } else if success {
-        "\u{2713}"
-    } else {
-        "\u{2717}"
-    };
-
-    let duration_label = duration_ms.map(|ms| {
-        if ms >= 1000 {
-            format!("{:.1}s", ms as f64 / 1000.0)
-        } else {
-            format!("{ms}ms")
-        }
-    });
+    let icon = outcome.icon();
 
     let has_streams = stdout.is_some() || stderr.is_some();
     let default_open = is_running || !success || !has_streams;
@@ -3145,6 +2950,7 @@ fn GenericToolCard(
     let preview_text = command_preview
         .or_else(|| stdout.as_ref().map(|t| first_line(t)))
         .or_else(|| (!success).then(|| result_summary.clone()).flatten());
+    let raw_output = raw_output_preview(result.as_ref());
 
     view! {
         <div class="tool-card-header">
@@ -3180,7 +2986,7 @@ fn GenericToolCard(
                     <pre class="tool-stream-pre">{text}</pre>
                 </div>
             })}
-            {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
+            {raw_output.map(|raw| view! {
                 <details class="tool-raw-details">
                     <summary>"Raw"</summary>
                     <pre class="tool-raw-json">{raw.to_string()}</pre>
@@ -3633,6 +3439,38 @@ fn field_i64(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(|v| v.as_i64())
 }
 
+#[derive(Clone, Copy)]
+struct ToolOutcome {
+    is_running: bool,
+    success: bool,
+}
+
+impl ToolOutcome {
+    fn icon(self) -> &'static str {
+        tool_status_icon(self.is_running, self.success)
+    }
+
+    fn status_class(self) -> &'static str {
+        if self.is_running {
+            "tool-card running"
+        } else if self.success {
+            "tool-card success"
+        } else {
+            "tool-card failure"
+        }
+    }
+}
+
+fn tool_outcome(result: Option<&PersistedTaskEvent>) -> ToolOutcome {
+    ToolOutcome {
+        is_running: result.is_none(),
+        success: result
+            .and_then(|e| e.payload.get("success"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    }
+}
+
 fn tool_duration_ms(output: Option<&Value>, result: Option<&PersistedTaskEvent>) -> Option<i64> {
     output
         .and_then(|v| field_i64(v, "duration_ms"))
@@ -3641,6 +3479,13 @@ fn tool_duration_ms(output: Option<&Value>, result: Option<&PersistedTaskEvent>)
                 .and_then(|e| e.payload.get("duration_ms"))
                 .and_then(|v| v.as_i64())
         })
+}
+
+fn tool_duration_label(
+    output: Option<&Value>,
+    result: Option<&PersistedTaskEvent>,
+) -> Option<String> {
+    tool_duration_ms(output, result).map(format_duration_ms)
 }
 
 fn format_duration_ms(ms: i64) -> String {
@@ -3661,9 +3506,50 @@ fn tool_status_icon(is_running: bool, success: bool) -> &'static str {
     }
 }
 
+fn raw_output_preview(result: Option<&PersistedTaskEvent>) -> Option<Value> {
+    result.and_then(|e| e.payload.get("output_preview").cloned())
+}
+
+fn tool_structured_payload(output: Option<&Value>) -> Option<&Value> {
+    output.and_then(|v| v.get("structured_payload"))
+}
+
+fn tool_structured_payload_str(output: Option<&Value>, key: &str) -> Option<String> {
+    tool_structured_payload(output)
+        .and_then(|payload| payload.get(key))
+        .and_then(Value::as_str)
+        .map(String::from)
+}
+
 fn input_preview_json(call: Option<&PersistedTaskEvent>) -> Option<Value> {
     call.and_then(|event| payload_str_event(event, "input_preview"))
         .and_then(|input| serde_json::from_str::<Value>(&input).ok())
+}
+
+fn input_preview_field_str(call: Option<&PersistedTaskEvent>, key: &str) -> Option<String> {
+    input_preview_json(call)
+        .and_then(|payload| payload.get(key).and_then(Value::as_str).map(String::from))
+}
+
+fn tool_url_from_structured_or_input(
+    output: Option<&Value>,
+    call: Option<&PersistedTaskEvent>,
+) -> Option<String> {
+    tool_structured_payload_str(output, "url").or_else(|| input_preview_field_str(call, "url"))
+}
+
+fn active_count_label(payload: Option<&Value>) -> Option<String> {
+    let active_count = payload
+        .and_then(|v| v.get("active_count"))
+        .and_then(Value::as_u64)?;
+    let max_active = payload
+        .and_then(|v| v.get("max_active"))
+        .and_then(Value::as_u64);
+
+    Some(match max_active {
+        Some(max) => format!("active {active_count}/{max}"),
+        None => format!("active {active_count}"),
+    })
 }
 
 fn parse_sub_agent_tasks_from_call(call: Option<&PersistedTaskEvent>) -> Vec<SubAgentTaskView> {
