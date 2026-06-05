@@ -71,8 +71,8 @@ Out of scope:
   - Source: Recon of activity grouping, tool result matching, tool card dispatch, delivered-file previews/linkification, and markdown rendering.
   - Acceptance: Activity timeline filters/grouping, tool call/result pairing, specialized tool-card branches, reasoning/todos/context cards, delivered-file linkification/previews, and CSS class names remain compatible.
   - Evidence required: focused diff review by slice, `cargo test -p oxide-agent-web-ui`, and wasm `cargo check`.
-  - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 3 moved task card, user/resume message rendering, inline edit form, delivered-file message/list/event preview rendering, and delivered-file linkification into focused task modules; activity drawer and tool-card slices remain pending for checkpoint 4.
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 3 moved task card, user/resume message rendering, inline edit form, delivered-file message/list/event preview rendering, and delivered-file linkification into focused task modules. Checkpoint 4 moved activity drawer/status/timing/grouping/context/todos cards to `crates/oxide-agent-web-ui/src/tasks/activity.rs` and tool-card dispatcher/specialized cards/payload parsers/rendering primitives to `crates/oxide-agent-web-ui/src/tasks/tool_cards.rs`; wasm check, clippy, and native tests passed.
 
 - G5: Pure helper/testable logic is isolated before high-volume UI moves
   - Source: Recon recommendation to avoid mixing behavior changes with large Leptos view moves.
@@ -86,28 +86,28 @@ Out of scope:
   - Acceptance: No backend/core/runtime/contracts/provider behavior changes; only web-ui task split files and this goal document change, except necessary import adjustments.
   - Evidence required: `git diff --name-only` and `git diff --stat` review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document. Checkpoint 2 changed only web-ui task split files and this goal document. Checkpoint 3 changed only web-ui task split files and this goal document.
+  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks.rs`, new `crates/oxide-agent-web-ui/src/tasks/*.rs` helper modules, and this goal document. Checkpoint 2 changed only web-ui task split files and this goal document. Checkpoint 3 changed only web-ui task split files and this goal document. Checkpoint 4 changed only web-ui task split files and this goal document.
 
 - Q2: No over-engineering or new dependencies
   - Source: AGENTS implementation bias and recon conclusion.
   - Acceptance: No `Cargo.toml` changes; no new crates/frameworks; no broad generic component registry/builder; modules stay boring and local.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and made no `Cargo.toml` changes. Checkpoint 3 added no dependencies and made no `Cargo.toml` changes.
+  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes. Checkpoint 2 added no dependencies and made no `Cargo.toml` changes. Checkpoint 3 added no dependencies and made no `Cargo.toml` changes. Checkpoint 4 added no dependencies and made no `Cargo.toml` changes.
 
 - V1: Web UI validation passes for meaningful checkpoints
   - Source: Repo validation practice for web UI and wasm-only compilation of `tasks.rs`.
   - Acceptance: Relevant validation commands pass after each meaningful checkpoint, or exact blockers are recorded with the smallest external action needed.
   - Evidence required: `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, and `git diff --check` before final completion.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 3 passed the same checkpoint 2 command set.
+  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`. Checkpoint 3 passed the same checkpoint 2 command set. Checkpoint 4 passed the same checkpoint 2 command set.
 
 - N1: No hidden visual redesign
   - Source: Refactor request is about slicing/maintainability, not UI changes.
   - Must preserve: Existing visible strings, task/card/composer/activity CSS classes, collapsed/expanded defaults, preview priorities, and specialized parser behavior unless explicitly approved later.
   - Evidence required: diff review and behavior checklist in progress log.
   - Status: pending
-  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed. Checkpoint 2 was a mechanical stream/composer move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 3 was a mechanical task-card/delivered-file move; no CSS files changed and visible strings/classes stayed in moved code.
+  - Evidence collected: 2026-06-05 checkpoint 1 was a mechanical helper move; no CSS files changed. Checkpoint 2 was a mechanical stream/composer move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 3 was a mechanical task-card/delivered-file move; no CSS files changed and visible strings/classes stayed in moved code. Checkpoint 4 was a mechanical activity/tool-card move; no CSS files changed and visible strings/classes stayed in moved code.
 
 ## Implementation Plan
 
@@ -190,6 +190,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
   - Audit IDs updated: G2, G4, Q1, Q2, V1, N1 evidence collected.
   - Next: Checkpoint 4 — extract activity and tool-card slices.
+
+- 2026-06-05: Checkpoint 4 completed.
+  - Changed: Added `crates/oxide-agent-web-ui/src/tasks/activity.rs` for activity drawer/status/timing/grouping/context/todos/event cards and `crates/oxide-agent-web-ui/src/tasks/tool_cards.rs` for tool-card dispatcher, specialized cards, rendering primitives, and loose payload parsers; `tasks.rs` dropped from 2,988 to 870 lines.
+  - Evidence: Tool call/result pairing keeps stable id matching with legacy name fallback; specialized tool branches, reasoning/todos/context cards, visible strings, and CSS classes were moved mechanically.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
+  - Audit IDs updated: G4 verified; Q1, Q2, V1, N1 evidence collected.
+  - Next: Checkpoint 5 — extract workspace facade and final audit.
 
 ## Risks and Blockers
 
