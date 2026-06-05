@@ -1,11 +1,11 @@
 # Goal: Web UI Tool Card Refactor
 
 Date started: 2026-06-05
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-05-web-ui-tool-card-refactor.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after web Activity/tool-card RECON: reduce duplication in `crates/oxide-agent-web-ui/src/tasks.rs` by extracting simple universal helpers for web transport tool rendering.
 Goal doc owner: Codex
-Last updated: 2026-06-05 09:58
+Last updated: 2026-06-05 10:03
 
 ## Objective
 
@@ -74,22 +74,22 @@ Out of scope:
   - Source: User requested refactor in `crates/oxide-agent-web-ui/src/tasks.rs`; AGENTS over-engineering guardrails require smallest maintainable change.
   - Acceptance: No backend/core/contracts/provider files change; no output formats, tool names, routes, or transport events change.
   - Evidence required: `git diff --stat` and file list review.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 implementation changed only `crates/oxide-agent-web-ui/src/tasks.rs`; this goal doc was updated for evidence. Checkpoint 2 changed only `crates/oxide-agent-web-ui/src/tasks.rs` plus this goal doc. Checkpoint 3 changed only `crates/oxide-agent-web-ui/src/tasks.rs` plus this goal doc.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 implementation changed only `crates/oxide-agent-web-ui/src/tasks.rs`; this goal doc was updated for evidence. Checkpoint 2 changed only `crates/oxide-agent-web-ui/src/tasks.rs` plus this goal doc. Checkpoint 3 changed only `crates/oxide-agent-web-ui/src/tasks.rs` plus this goal doc. Final audit: `git diff --name-only 16ac3887..HEAD` listed only `crates/oxide-agent-web-ui/src/tasks.rs` and this goal doc; no backend/core/contracts/provider files changed.
 
 - Q2: No new dependencies or broad abstractions
   - Source: `AGENTS.md` implementation bias and RECON recommendation.
   - Acceptance: No `Cargo.toml` changes; no new crates; no broad card registry/builder/macro framework; helpers stay local and boring.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 added local data helpers only; no `Cargo.toml` changes and no card registry/builder/macro framework. Checkpoint 2 added small local Leptos helpers/components only; no dependency or `Cargo.toml` changes. Checkpoint 3 added class-preserving helper variants only; no dependency or `Cargo.toml` changes.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 added local data helpers only; no `Cargo.toml` changes and no card registry/builder/macro framework. Checkpoint 2 added small local Leptos helpers/components only; no dependency or `Cargo.toml` changes. Checkpoint 3 added class-preserving helper variants only; no dependency or `Cargo.toml` changes. Final audit confirmed no `Cargo.toml` files in the checkpoint diff and helper extraction stayed local to `tasks.rs`.
 
 - V1: Web UI validation passes after each meaningful checkpoint
   - Source: Repo validation practice and prior web UI checks.
   - Acceptance: Required commands pass for the checkpoint scope or a blocker records exact failure output and smallest next action.
   - Evidence required: `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui`, and `env -u NO_COLOR trunk build --release` before final completion.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, and `cargo clippy -p oxide-agent-web-ui`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui`, and `git diff --check`. Checkpoint 3 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui`, `env -u NO_COLOR trunk build --release`, and `git diff --check`.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, and `cargo clippy -p oxide-agent-web-ui`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui`, and `git diff --check`. Checkpoint 3 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui`, `env -u NO_COLOR trunk build --release`, and `git diff --check`. Final verification reran the full validation contract and all commands passed.
 
 - N1: No visual redesign hidden inside refactor
   - Source: User goal is deduplication/refactor, not another UI redesign pass.
@@ -174,6 +174,13 @@ Out of scope:
   - Audit IDs updated: G3, G4, N1 verified; Q1, Q2, V1 remain in progress for final file-list/diff-check audit.
   - Next: Checkpoint 4 — final verification and audit update.
 
+- 2026-06-05: Checkpoint 4 — final verification and audit update.
+  - Changed: No implementation changes; updated this goal document with final audit status and completion evidence.
+  - Evidence: File-list audit preserved UI-only blast radius; dependency audit found no `Cargo.toml` changes; implementation diff remained a local helper refactor without a visual redesign.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui`; `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`; `cargo clippy -p oxide-agent-web-ui`; `env -u NO_COLOR trunk build --release`; `git diff --check`; `git diff --name-only 16ac3887..HEAD`; `git diff --stat 16ac3887..HEAD`.
+  - Audit IDs updated: Q1, Q2, V1 verified; all Completion Audit items verified.
+  - Next: Goal complete; no follow-up checkpoint remains for this goal.
+
 ## Risks and Blockers
 
 - Accidentally changing UI behavior during markup extraction.
@@ -190,11 +197,9 @@ Out of scope:
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: passed. G1-G4, Q1-Q2, V1, and N1 are verified.
+- Commands run: `cargo fmt`; `cargo check -p oxide-agent-web-ui`; `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`; `cargo clippy -p oxide-agent-web-ui`; `env -u NO_COLOR trunk build --release`; `git diff --check`; `git diff --name-only 16ac3887..HEAD`; `git diff --stat 16ac3887..HEAD`.
+- Artifacts inspected: `crates/oxide-agent-web-ui/src/tasks.rs` helper/card diff, this goal document, checkpoint file list, and checkpoint diff stat.
+- Remaining gaps: none for this goal.
+- User-accepted exceptions: none.
+- Final status: complete.
