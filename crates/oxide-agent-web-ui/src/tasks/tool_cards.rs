@@ -962,9 +962,13 @@ fn GenericToolCard(
 
 /// Extract first line from text, truncated to max chars.
 fn first_line(text: &str) -> String {
+    const MAX_CHARS: usize = 120;
+
     let line = text.lines().next().unwrap_or("");
-    if line.len() > 120 {
-        format!("{}...", &line[..120])
+    let mut chars = line.chars();
+    let truncated = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
     } else {
         line.to_string()
     }

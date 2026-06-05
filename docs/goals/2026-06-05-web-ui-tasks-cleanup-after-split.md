@@ -52,8 +52,8 @@ Out of scope:
   - Source: User-selected RECON findings for `latest_task`, `task_submit_error_message`, `DeliveredFileLink`, and `first_line`.
   - Acceptance: `latest_task` no longer requires cloning the full task list; UI submit-error copy no longer lives in `state.rs`; `DeliveredFileLink` fields are not broader than needed; `first_line` is Unicode-safe and keeps the same preview intent.
   - Evidence required: focused diff review, wasm `cargo check`, wasm `cargo clippy`, and native `cargo test -p oxide-agent-web-ui`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-05 checkpoint 1 changed `latest_task` to take `&[TaskSummary]` and clone only the selected latest task, moved submit-error UI copy from `state.rs` to `workspace.rs`, made `DeliveredFileLink` fields private, and replaced byte-index `first_line` truncation with character-boundary-safe truncation. Wasm check, wasm clippy, native tests, wasm test build, and diff checks passed.
 
 - G2: Composer duplicate event-handler logic is extracted without flow changes
   - Source: User-selected RECON findings for duplicated welcome/session composer handlers.
@@ -74,28 +74,28 @@ Out of scope:
   - Acceptance: Create-session/upload/create-task, existing-session upload/resume-or-create, cancel, profile update, edit-version stream startup, `streaming_task_id` stale guard, profile sentinels, and CSS class names are not semantically changed.
   - Evidence required: diff review by checkpoint plus wasm check/clippy.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 1 touched only pure helper visibility/location and preview truncation; create/submit/resume/cancel/edit-version flow code stayed unchanged and wasm check/clippy passed.
 
 - Q2: Cleanup stays simple and dependency-free
   - Source: Repository implementation bias and user focus on cleanup.
   - Acceptance: No new crates, no new services, no global state manager, no UI framework changes, and no broad abstractions are introduced.
   - Evidence required: `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml`, file list review, and diff review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 1 added no dependencies and made no `Cargo.toml` changes.
 
 - V1: Required validation passes
   - Source: Repository validation conventions for wasm-gated web UI.
   - Acceptance: Required commands pass for each checkpoint; release `trunk build` is run for component/CSS-affecting checkpoints and final verification.
   - Evidence required: command output summary recorded in Progress Log and Final Verification.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`, `cargo test -p oxide-agent-web-ui`, `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`, and `git diff --check`.
 
 - N1: Out-of-scope cleanup remains untouched
   - Source: User focus excludes testability-gap, CSS, and broad redesign work.
   - Must preserve: No CSS cleanup, selector renames, host-testability restructuring, backend changes, or broad workspace/task lifecycle rewrites are included in this goal.
   - Evidence required: file list review and diff review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: 2026-06-05 checkpoint 1 changed only `crates/oxide-agent-web-ui/src/tasks/{state,workspace,delivered_files,tool_cards}.rs` and this goal document; no CSS, backend, host-testability, or broad lifecycle changes.
 
 ## Implementation Plan
 
@@ -145,6 +145,13 @@ Out of scope:
   - Commands: `git status --short --branch`; goal-doc diff review; `git diff --check`.
   - Audit IDs updated: none; implementation not started.
   - Next: Checkpoint 1 — low-risk pure cleanup first.
+
+- 2026-06-05: Checkpoint 1 completed.
+  - Changed: Cleaned `latest_task`, submit-error UI copy location, `DeliveredFileLink` field visibility, and UTF-8-safe `first_line` truncation.
+  - Evidence: Diff review showed no task lifecycle sequencing changes and no dependency/CSS/backend changes.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-web-ui`; `cargo test -p oxide-agent-web-ui --target wasm32-unknown-unknown --no-run`; `git diff --check`.
+  - Audit IDs updated: G1 verified; Q1, Q2, V1, N1 evidence collected.
+  - Next: Checkpoint 2 — extract duplicated composer event helpers.
 
 ## Risks and Blockers
 

@@ -6,10 +6,10 @@ use super::payload::payload_str_event;
 
 #[derive(Clone)]
 pub(super) struct DeliveredFileLink {
-    pub(super) file_name: String,
-    pub(super) download_url: String,
-    pub(super) content_type: String,
-    pub(super) size_bytes: u64,
+    file_name: String,
+    download_url: String,
+    content_type: String,
+    size_bytes: u64,
 }
 
 pub(super) fn delivered_files_for_task(

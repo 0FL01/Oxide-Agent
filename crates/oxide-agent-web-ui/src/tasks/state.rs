@@ -1,7 +1,5 @@
 use leptos::prelude::*;
-use oxide_agent_web_contracts::{
-    ErrorCode, SessionDetail, SessionSummary, TaskDetail, TaskSummary,
-};
+use oxide_agent_web_contracts::{SessionDetail, SessionSummary, TaskDetail, TaskSummary};
 
 pub(super) fn summary_to_detail(session_id: &str, task: &TaskSummary) -> TaskDetail {
     TaskDetail {
@@ -57,8 +55,8 @@ pub(super) fn session_detail_to_summary(session: SessionDetail) -> SessionSummar
     }
 }
 
-pub(super) fn latest_task(tasks: Vec<TaskSummary>) -> Option<TaskSummary> {
-    tasks.into_iter().max_by_key(|task| task.updated_at)
+pub(super) fn latest_task(tasks: &[TaskSummary]) -> Option<TaskSummary> {
+    tasks.iter().max_by_key(|task| task.updated_at).cloned()
 }
 
 pub(super) fn latest_editable_task_id(tasks: &[TaskSummary]) -> Option<String> {
@@ -83,16 +81,4 @@ pub(super) fn upsert_task_summary(items: &mut Vec<TaskSummary>, task: TaskSummar
             .cmp(&b.created_at)
             .then_with(|| a.task_id.cmp(&b.task_id))
     });
-}
-
-pub(super) fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {
-    match error.error_code() {
-        Some(ErrorCode::SessionBusy) => {
-            "This session already has an active task. Stop it or wait for it to finish.".to_string()
-        }
-        Some(ErrorCode::TaskWaitingForUserInput) => {
-            "The active task is waiting for input. Reply in the composer to resume it.".to_string()
-        }
-        _ => error.to_string(),
-    }
 }

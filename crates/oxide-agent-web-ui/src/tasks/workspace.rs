@@ -4,9 +4,9 @@ use crate::routes::AppRoute;
 use crate::utils::{navigate, spawn_ui};
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, PersistedTaskEvent,
-    ProgressSnapshot, ResumeTaskRequest, SessionSummary, SseConnectionState, TaskDetail,
-    TaskStatus, TaskSummary, UpdateSessionProfileRequest,
+    AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
+    PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, SseConnectionState,
+    TaskDetail, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
 };
 use std::collections::HashMap;
 
@@ -23,7 +23,7 @@ use super::profile::{
 };
 use super::state::{
     latest_editable_task_id, latest_task, session_detail_to_summary, summary_to_detail,
-    task_submit_error_message, upsert_session_summary, upsert_task_summary,
+    upsert_session_summary, upsert_task_summary,
 };
 use super::streaming::{start_task_stream, StreamUiSignals};
 use super::task_card::TaskCard;
@@ -386,7 +386,7 @@ fn SessionWorkspace(
             match client.list_tasks(&session_id).await {
                 Ok(response) => {
                     set_drawer_open.set(false);
-                    let latest = latest_task(response.tasks.clone());
+                    let latest = latest_task(&response.tasks);
                     set_tasks.set(response.tasks);
                     if let Some(task) = latest {
                         let task_id = task.task_id.clone();
@@ -855,5 +855,17 @@ fn ComposerNotice(active_task: ReadSignal<Option<TaskDetail>>) -> impl IntoView 
             }.into_any(),
             _ => ().into_any(),
         }}
+    }
+}
+
+fn task_submit_error_message(error: &crate::api::ApiClientError) -> String {
+    match error.error_code() {
+        Some(ErrorCode::SessionBusy) => {
+            "This session already has an active task. Stop it or wait for it to finish.".to_string()
+        }
+        Some(ErrorCode::TaskWaitingForUserInput) => {
+            "The active task is waiting for input. Reply in the composer to resume it.".to_string()
+        }
+        _ => error.to_string(),
     }
 }
