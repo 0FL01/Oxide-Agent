@@ -2664,7 +2664,6 @@ fn SpawnSubAgentsToolCard(
         .and_then(|e| e.payload.get("success"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let duration_label = tool_duration_ms(output.as_ref(), result.as_ref()).map(format_duration_ms);
     let result_summary = result
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
@@ -2730,7 +2729,6 @@ fn SpawnSubAgentsToolCard(
         <div class="tool-card-header">
             <span class="tool-status-icon">{icon}</span>
             <span class="tool-name">"Sub-agents"</span>
-            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
             {count_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
             {active_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
             {(!success).then(|| result_summary.clone().map(|summary| view! {
@@ -2797,10 +2795,10 @@ fn WaitSubAgentsToolCard(
         .and_then(|e| e.payload.get("success"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let duration_label = tool_duration_ms(output.as_ref(), result.as_ref()).map(format_duration_ms);
     let result_summary = result
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
+    let duration_label = tool_duration_ms(output.as_ref(), result.as_ref()).map(format_duration_ms);
     let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
     let parsed = stdout
         .as_ref()
@@ -2935,7 +2933,6 @@ fn WriteTodosToolCard(
         .and_then(|e| e.payload.get("success"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let duration_label = tool_duration_ms(output.as_ref(), result.as_ref()).map(format_duration_ms);
     let result_summary = result
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
@@ -2953,26 +2950,21 @@ fn WriteTodosToolCard(
     let state_label = blocked
         .map(|_| "blocked")
         .or_else(|| active.map(|_| "doing"));
+    let has_todos = !todos.is_empty();
 
     let icon = tool_status_icon(is_running, success);
-    let preview_text = if !success {
-        result_summary.clone()
-    } else {
-        blocked
-            .or(active)
-            .map(|item| first_line(&item.description))
-            .or_else(|| stdout.as_ref().map(|text| first_line(text)))
-    };
-    let default_open = is_running || !success || blocked.is_some();
+    let preview_text = (!success).then(|| result_summary.clone()).flatten();
     let raw_output = result
         .as_ref()
         .and_then(|e| e.payload.get("output_preview").cloned());
+    let show_fallback = !has_todos && (stdout.is_some() || !is_running);
+    let show_details = raw_output.is_some() || show_fallback;
+    let default_open = !success || !has_todos;
 
     view! {
         <div class="tool-card-header">
             <span class="tool-status-icon">{icon}</span>
             <span class="tool-name">"Todos"</span>
-            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
             {count_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
             {state_label.map(|label| view! {
                 <span class=if label == "blocked" { "tool-meta danger" } else { "tool-meta" }>{label}</span>
@@ -2984,45 +2976,36 @@ fn WriteTodosToolCard(
         {preview_text.map(|text| view! {
             <div class="tool-preview">{text}</div>
         })}
-        <details class="tool-card-body" open=default_open>
-            <summary class="tool-card-expand">"details"</summary>
-            {if !todos.is_empty() {
-                view! {
-                    <section class="todos-card">
-                        <div class="todos-card-title">"Todos"</div>
-                        <ol class="todo-list">
-                            {todos.into_iter().map(|item| view! {
-                                <li class=format!("todo-item {}", item.status)>
-                                    <span class="todo-status">{todo_status_label(&item.status)}</span>
-                                    <span class="todo-description">{item.description}</span>
-                                </li>
-                            }).collect::<Vec<_>>()}
-                        </ol>
-                    </section>
-                }.into_any()
-            } else if let Some(text) = stdout.clone() {
-                view! {
-                    <div class="tool-stream">
-                        <div class="tool-stream-label">"output"</div>
-                        <pre class="tool-stream-pre">{text}</pre>
-                    </div>
-                }.into_any()
-            } else if !is_running {
-                view! {
-                    <div class="tool-stream">
-                        <pre class="tool-stream-pre">"No todos"</pre>
-                    </div>
-                }.into_any()
-            } else {
-                ().into_any()
-            }}
-            {raw_output.map(|raw| view! {
-                <details class="tool-raw-details">
-                    <summary>"Raw"</summary>
-                    <pre class="tool-raw-json">{raw.to_string()}</pre>
-                </details>
-            })}
-        </details>
+        {has_todos.then(|| render_todo_list(todos.clone(), false))}
+        {show_details.then(|| view! {
+            <details class="tool-card-body" open=default_open>
+                <summary class="tool-card-expand">"details"</summary>
+                {if show_fallback {
+                    if let Some(text) = stdout.clone() {
+                        view! {
+                            <div class="tool-stream">
+                                <div class="tool-stream-label">"output"</div>
+                                <pre class="tool-stream-pre">{text}</pre>
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <div class="tool-stream">
+                                <pre class="tool-stream-pre">"No todos"</pre>
+                            </div>
+                        }.into_any()
+                    }
+                } else {
+                    ().into_any()
+                }}
+                {raw_output.map(|raw| view! {
+                    <details class="tool-raw-details">
+                        <summary>"Raw"</summary>
+                        <pre class="tool-raw-json">{raw.to_string()}</pre>
+                    </details>
+                })}
+            </details>
+        })}
     }
 }
 
@@ -3133,6 +3116,10 @@ fn GenericToolCard(
 
 #[component]
 fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
+    if event.kind == TaskEventKind::Reasoning {
+        return view! { <ReasoningEventCard event=event /> }.into_any();
+    }
+
     let kind = event.kind.clone();
     let title = event_title(&event);
     let body = event_body(&event);
@@ -3167,6 +3154,37 @@ fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
                 </div>
             })}
         </details>
+    }
+    .into_any()
+}
+
+#[component]
+fn ReasoningEventCard(event: PersistedTaskEvent) -> impl IntoView {
+    let summary = reasoning_event_summary(&event).unwrap_or_else(|| "Thinking".to_string());
+    let preview = compact_reasoning_preview(&summary, 140);
+    let show_details = event.truncated || event.redacted || preview != summary;
+    let details_summary = summary.clone();
+
+    view! {
+        <section class="tool-card agent-event-card reasoning-event-card">
+            <div class="tool-card-header">
+                <span class="tool-status-icon reasoning-status-icon">"∴"</span>
+                <span class="tool-name">"Thinking"</span>
+                <span class="tool-meta">"CoT"</span>
+                {event.truncated.then(|| view! { <span class="tool-meta">"truncated"</span> })}
+                {event.redacted.then(|| view! { <span class="tool-meta danger">"redacted"</span> })}
+            </div>
+            <div class="tool-preview reasoning-preview">{preview}</div>
+            {show_details.then(|| view! {
+                <details class="tool-card-body reasoning-details">
+                    <summary class="tool-card-expand">"details"</summary>
+                    <div class="tool-stream">
+                        <div class="tool-stream-label">"reasoning"</div>
+                        <pre class="tool-stream-pre">{details_summary}</pre>
+                    </div>
+                </details>
+            })}
+        </section>
     }
 }
 
@@ -3266,44 +3284,13 @@ fn ContextCard(progress: ReadSignal<Option<ProgressSnapshot>>) -> impl IntoView 
 
 #[component]
 fn TodosCard(todos: Value) -> impl IntoView {
-    let items = todos
-        .get("items")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let items = parse_todo_items_from_value(&todos);
 
     if items.is_empty() {
         return ().into_any();
     }
 
-    view! {
-        <section class="todos-card">
-            <div class="todos-card-title">"Todos"</div>
-            <ol class="todo-list">
-                {items.into_iter().map(|item| {
-                    let description = item
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    let status = item
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("pending")
-                        .to_string();
-
-                    view! {
-                        <li class=format!("todo-item {}", status)>
-                            <span class="todo-status">{todo_status_label(&status)}</span>
-                            <span class="todo-description">{description}</span>
-                        </li>
-                    }
-                }).collect::<Vec<_>>()}
-            </ol>
-        </section>
-    }
-    .into_any()
+    render_todo_list(items, true)
 }
 
 // ── Event helpers ────────────────────────────────────────────────────────
@@ -3334,15 +3321,31 @@ fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
 /// Filter out empty reasoning events and other noise.
 fn is_useful_event(event: &PersistedTaskEvent) -> bool {
     if event.kind == TaskEventKind::Reasoning {
-        let summary = event
-            .payload
-            .get("summary")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim();
-        return !summary.is_empty() && summary != "Reasoning";
+        return reasoning_event_summary(event).is_some();
     }
     true
+}
+
+fn reasoning_event_summary(event: &PersistedTaskEvent) -> Option<String> {
+    payload_str_event(event, "summary")
+        .map(|summary| summary.trim().to_string())
+        .filter(|summary| !summary.is_empty() && summary != "Reasoning")
+        .or_else(|| {
+            let summary = event.summary.trim();
+            (!summary.is_empty() && summary != "Reasoning").then(|| summary.to_string())
+        })
+}
+
+fn compact_reasoning_preview(summary: &str, max_chars: usize) -> String {
+    let compact = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = compact.chars();
+    let preview = chars.by_ref().take(max_chars).collect::<String>();
+
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
 }
 
 fn event_kind_label(kind: &TaskEventKind) -> &'static str {
@@ -3758,26 +3761,68 @@ fn sub_agent_status_meta(status: &SubAgentStatusView) -> String {
 
 fn parse_todo_items_from_call(call: Option<&PersistedTaskEvent>) -> Vec<TodoToolItemView> {
     input_preview_json(call)
-        .and_then(|payload| {
-            payload.get("todos").and_then(Value::as_array).map(|items| {
-                items
-                    .iter()
-                    .map(|item| TodoToolItemView {
-                        description: item
-                            .get("description")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        status: item
-                            .get("status")
-                            .and_then(Value::as_str)
-                            .unwrap_or("pending")
-                            .to_string(),
-                    })
-                    .collect()
-            })
+        .map(|payload| parse_todo_items_from_value(&payload))
+        .unwrap_or_default()
+}
+
+fn parse_todo_items_from_value(value: &Value) -> Vec<TodoToolItemView> {
+    value
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| {
+            value
+                .get("todos")
+                .and_then(|todos| todos.get("items"))
+                .and_then(Value::as_array)
+        })
+        .or_else(|| value.get("todos").and_then(Value::as_array))
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| TodoToolItemView {
+                    description: item
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    status: item
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("pending")
+                        .to_string(),
+                })
+                .collect()
         })
         .unwrap_or_default()
+}
+
+fn render_todo_list(items: Vec<TodoToolItemView>, show_title: bool) -> AnyView {
+    if items.is_empty() {
+        return ().into_any();
+    }
+
+    view! {
+        <section class="todos-card">
+            {show_title.then(|| view! {
+                <div class="todos-card-title">"Todos"</div>
+            })}
+            <ol class="todo-list">
+                {items.into_iter().map(|item| {
+                    let label = todo_status_label(&item.status);
+                    let marker = todo_status_marker(label);
+
+                    view! {
+                        <li class=format!("todo-item {} {label}", item.status)>
+                            <span class=format!("todo-check {label}")>{marker}</span>
+                            <span class=format!("todo-status-badge {label}")>{label}</span>
+                            <span class=format!("todo-description todo-text {label}")>{item.description}</span>
+                        </li>
+                    }
+                }).collect::<Vec<_>>()}
+            </ol>
+        </section>
+    }
+    .into_any()
 }
 
 fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Option<String> {
@@ -3895,6 +3940,16 @@ fn todo_status_label(status: &str) -> &'static str {
         "blocked_on_user" => "blocked",
         "cancelled" => "cancelled",
         _ => "todo",
+    }
+}
+
+fn todo_status_marker(label: &str) -> &'static str {
+    match label {
+        "done" => "✓",
+        "doing" => "•",
+        "blocked" => "!",
+        "cancelled" => "×",
+        _ => "",
     }
 }
 
