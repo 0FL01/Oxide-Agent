@@ -1934,8 +1934,24 @@ fn ToolCard(call: Option<PersistedTaskEvent>, result: Option<PersistedTaskEvent>
             <SearchToolCard label="Brave Search" preview_query_first=true call=call result=result output=output_json />
         }
         .into_any(),
+        "searxng_search" => view! {
+            <SearchToolCard label="SearXNG" preview_query_first=false call=call result=result output=output_json />
+        }
+        .into_any(),
+        "web_markdown" => {
+            view! { <WebMarkdownToolCard call=call result=result output=output_json /> }.into_any()
+        }
         "crawl4ai_markdown" => {
             view! { <CrawlToolCard call=call result=result output=output_json /> }.into_any()
+        }
+        "spawn_sub_agents" => {
+            view! { <SpawnSubAgentsToolCard call=call result=result output=output_json /> }.into_any()
+        }
+        "wait_sub_agents" => {
+            view! { <WaitSubAgentsToolCard call=call result=result output=output_json /> }.into_any()
+        }
+        "write_todos" => {
+            view! { <WriteTodosToolCard call=call result=result output=output_json /> }.into_any()
         }
         _ => {
             view! { <GenericToolCard name=tool_name call=call result=result output=output_json /> }
@@ -2161,17 +2177,21 @@ fn SearchToolCard(
         .first()
         .filter(|sr| !sr.snippet.is_empty())
         .map(|sr| sr.snippet.clone());
+    let stdout_headline = stdout.as_ref().map(|text| first_line(text));
     // For Brave Search, query is the compact preview (stable, like Crawl's URL host).
     let preview_text = if success && preview_query_first {
-        query.clone().or_else(|| preview_snippet.clone())
+        query
+            .clone()
+            .or_else(|| preview_snippet.clone())
+            .or_else(|| stdout_headline.clone())
     } else if success {
         preview_snippet.or_else(|| {
-            query.clone().or_else(|| {
-                search_results
-                    .first()
-                    .filter(|sr| !sr.title.is_empty())
-                    .map(|sr| sr.title.clone())
-            })
+            search_results
+                .first()
+                .filter(|sr| !sr.title.is_empty())
+                .map(|sr| sr.title.clone())
+                .or_else(|| stdout_headline.clone())
+                .or_else(|| query.clone())
         })
     } else {
         result_summary.clone().or(query.clone())
@@ -2260,6 +2280,207 @@ fn chars_label(count: u64) -> String {
         format!("{:.1}K chars", count as f64 / 1_000.0)
     } else {
         format!("{count} chars")
+    }
+}
+
+#[derive(Clone, Default)]
+struct WebMarkdownOutput {
+    url: Option<String>,
+    content_type: Option<String>,
+    fetched_bytes: Option<u64>,
+    truncated: bool,
+    markdown: Option<String>,
+}
+
+fn parse_web_markdown_stdout(text: &str) -> Option<WebMarkdownOutput> {
+    let normalized = text.replace("\r\n", "\n");
+    let rest = normalized.strip_prefix("## Web Markdown\n\n")?;
+    let (metadata, body) = rest.split_once("\n\n").unwrap_or((rest, ""));
+
+    let mut parsed = WebMarkdownOutput::default();
+    for line in metadata.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+
+        match key.trim() {
+            "URL" if !value.is_empty() => parsed.url = Some(value.to_string()),
+            "Content-Type" if !value.is_empty() => parsed.content_type = Some(value.to_string()),
+            "Fetched-Bytes" => parsed.fetched_bytes = value.parse::<u64>().ok(),
+            "Truncated" => {
+                parsed.truncated = value.eq_ignore_ascii_case("yes")
+                    || value.eq_ignore_ascii_case("true")
+                    || value == "1";
+            }
+            _ => {}
+        }
+    }
+
+    if !body.is_empty() {
+        parsed.markdown = Some(body.to_string());
+    }
+
+    Some(parsed)
+}
+
+#[component]
+fn WebMarkdownToolCard(
+    call: Option<PersistedTaskEvent>,
+    result: Option<PersistedTaskEvent>,
+    output: Option<Value>,
+) -> impl IntoView {
+    let is_running = result.is_none();
+    let success = result
+        .as_ref()
+        .and_then(|e| e.payload.get("success"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let duration_ms = output
+        .as_ref()
+        .and_then(|v| field_i64(v, "duration_ms"))
+        .or_else(|| {
+            result
+                .as_ref()
+                .and_then(|e| e.payload.get("duration_ms"))
+                .and_then(|v| v.as_i64())
+        });
+
+    let result_summary = result
+        .as_ref()
+        .and_then(|event| tool_result_summary(event, output.as_ref()));
+
+    let stdout_text = output.as_ref().and_then(|v| stream_text(v, "stdout"));
+    let web_markdown = stdout_text
+        .as_ref()
+        .and_then(|text| parse_web_markdown_stdout(text));
+    let parsed_header = web_markdown.is_some();
+
+    let url = web_markdown
+        .as_ref()
+        .and_then(|doc| doc.url.clone())
+        .or_else(|| {
+            output
+                .as_ref()
+                .and_then(|v| v.get("structured_payload"))
+                .and_then(|payload| payload.get("url"))
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
+        .or_else(|| {
+            call.as_ref()
+                .and_then(|e| payload_str_event(e, "input_preview"))
+                .and_then(|input| serde_json::from_str::<Value>(&input).ok())
+                .and_then(|v| v.get("url").and_then(Value::as_str).map(String::from))
+        });
+    let content_type = web_markdown
+        .as_ref()
+        .and_then(|doc| doc.content_type.clone());
+    let fetched_bytes = web_markdown.as_ref().and_then(|doc| doc.fetched_bytes);
+    let truncated = web_markdown
+        .as_ref()
+        .map(|doc| doc.truncated)
+        .unwrap_or(false);
+    let markdown = if parsed_header {
+        web_markdown.as_ref().and_then(|doc| doc.markdown.clone())
+    } else {
+        stdout_text.clone()
+    };
+
+    let preview_host = url.as_ref().and_then(|u| host_from_url_str(u));
+
+    let icon = if is_running {
+        "\u{23f3}"
+    } else if success {
+        "\u{2713}"
+    } else {
+        "\u{2717}"
+    };
+
+    let duration_label = duration_ms.map(|ms| {
+        if ms >= 1000 {
+            format!("{:.1}s", ms as f64 / 1000.0)
+        } else {
+            format!("{ms}ms")
+        }
+    });
+
+    let chars_display = markdown
+        .as_ref()
+        .map(|text| chars_label(text.chars().count() as u64));
+    let default_open = is_running || !success;
+
+    let preview_text = if !success {
+        result_summary.clone()
+    } else {
+        preview_host.clone()
+    };
+
+    view! {
+        <div class="tool-card-header">
+            <span class="tool-status-icon">{icon}</span>
+            <span class="tool-name">"Web Markdown"</span>
+            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
+            {chars_display.map(|c| view! { <span class="tool-meta">{c}</span> })}
+            {truncated.then(|| view! { <span class="tool-meta">"truncated"</span> })}
+            {(!success).then(|| result_summary.clone().map(|summary| view! {
+                <span class="tool-meta danger">{summary}</span>
+            })).flatten()}
+        </div>
+        {preview_text.map(|text| view! {
+            <div class="tool-preview">{text}</div>
+        })}
+        <details class="tool-card-body" open=default_open>
+            <summary class="tool-card-expand">"details"</summary>
+            {url.clone().map(|u| view! {
+                <div class="tool-query">
+                    <span class="tool-label">"URL"</span>
+                    <code>{u}</code>
+                </div>
+            })}
+            {content_type.map(|content_type| view! {
+                <div class="tool-query">
+                    <span class="tool-label">"Content-Type"</span>
+                    <code>{content_type}</code>
+                </div>
+            })}
+            {fetched_bytes.map(|bytes| view! {
+                <div class="tool-query">
+                    <span class="tool-label">"Fetched"</span>
+                    <code>{format!("{bytes} bytes")}</code>
+                </div>
+            })}
+            {parsed_header.then(|| view! {
+                <div class="tool-query">
+                    <span class="tool-label">"Truncated"</span>
+                    <code>{if truncated { "yes" } else { "no" }}</code>
+                </div>
+            })}
+            {if let Some(md) = markdown.filter(|m| !m.is_empty()) {
+                view! {
+                    <div class="tool-stream">
+                        <div class="tool-stream-content">
+                            <MarkdownContent markdown=md />
+                        </div>
+                    </div>
+                }.into_any()
+            } else if !is_running {
+                view! {
+                    <div class="tool-stream">
+                        <pre class="tool-stream-pre">"No content"</pre>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+            {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
+                <details class="tool-raw-details">
+                    <summary>"Raw"</summary>
+                    <pre class="tool-raw-json">{raw.to_string()}</pre>
+                </details>
+            })}
+        </details>
     }
 }
 
@@ -2395,6 +2616,407 @@ fn CrawlToolCard(
                     </div>
                 })}
             {result.and_then(|e| e.payload.get("output_preview").cloned()).map(|raw| view! {
+                <details class="tool-raw-details">
+                    <summary>"Raw"</summary>
+                    <pre class="tool-raw-json">{raw.to_string()}</pre>
+                </details>
+            })}
+        </details>
+    }
+}
+
+// ── Delegation/Todos Tool Cards ───────────────────────────────────────────
+
+#[derive(Clone, Default)]
+struct SubAgentTaskView {
+    id: Option<String>,
+    task: String,
+    status: String,
+    tools: Vec<String>,
+    context: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct SubAgentStatusView {
+    id: String,
+    task: Option<String>,
+    status: String,
+    output: Option<String>,
+    elapsed_ms: Option<u64>,
+    completed: Option<bool>,
+}
+
+#[derive(Clone)]
+struct TodoToolItemView {
+    description: String,
+    status: String,
+}
+
+#[component]
+fn SpawnSubAgentsToolCard(
+    call: Option<PersistedTaskEvent>,
+    result: Option<PersistedTaskEvent>,
+    output: Option<Value>,
+) -> impl IntoView {
+    let is_running = result.is_none();
+    let success = result
+        .as_ref()
+        .and_then(|e| e.payload.get("success"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let duration_label = tool_duration_ms(output.as_ref(), result.as_ref()).map(format_duration_ms);
+    let result_summary = result
+        .as_ref()
+        .and_then(|event| tool_result_summary(event, output.as_ref()));
+    let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
+    let parsed = stdout
+        .as_ref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+
+    let requested = parse_sub_agent_tasks_from_call(call.as_ref());
+    let mut tasks = parsed
+        .as_ref()
+        .and_then(parse_spawned_sub_agent_tasks)
+        .unwrap_or_default();
+    if tasks.is_empty() {
+        tasks = requested.clone();
+        for task in &mut tasks {
+            if task.status.is_empty() {
+                task.status = if is_running { "starting" } else { "requested" }.to_string();
+            }
+        }
+    } else {
+        for (idx, task) in tasks.iter_mut().enumerate() {
+            if let Some(requested_task) = requested.get(idx) {
+                task.tools = requested_task.tools.clone();
+                task.context = requested_task.context.clone();
+                if task.task.is_empty() {
+                    task.task = requested_task.task.clone();
+                }
+            }
+        }
+    }
+
+    let active_count = parsed
+        .as_ref()
+        .and_then(|v| v.get("active_count"))
+        .and_then(Value::as_u64);
+    let max_active = parsed
+        .as_ref()
+        .and_then(|v| v.get("max_active"))
+        .and_then(Value::as_u64);
+    let active_label = active_count.map(|active| match max_active {
+        Some(max) => format!("active {active}/{max}"),
+        None => format!("active {active}"),
+    });
+
+    let icon = tool_status_icon(is_running, success);
+    let started_count = tasks.len();
+    let count_label = (started_count > 0).then(|| format!("{started_count} started"));
+    let preview_text = if !success {
+        result_summary.clone()
+    } else {
+        tasks
+            .first()
+            .map(|task| first_line(&task.task))
+            .or_else(|| stdout.as_ref().map(|text| first_line(text)))
+    };
+    let default_open = is_running || !success || tasks.is_empty();
+    let raw_output = result
+        .as_ref()
+        .and_then(|e| e.payload.get("output_preview").cloned());
+
+    view! {
+        <div class="tool-card-header">
+            <span class="tool-status-icon">{icon}</span>
+            <span class="tool-name">"Sub-agents"</span>
+            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
+            {count_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
+            {active_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
+            {(!success).then(|| result_summary.clone().map(|summary| view! {
+                <span class="tool-meta danger">{summary}</span>
+            })).flatten()}
+        </div>
+        {preview_text.map(|text| view! {
+            <div class="tool-preview">{text}</div>
+        })}
+        <details class="tool-card-body" open=default_open>
+            <summary class="tool-card-expand">"details"</summary>
+            {if !tasks.is_empty() {
+                view! {
+                    <ol class="search-result-list">
+                        {tasks.into_iter().map(|task| {
+                            let meta = sub_agent_task_meta(&task);
+                            view! {
+                                <li class="search-result-item">
+                                    <div class="search-result-title">{task.task}</div>
+                                    <div class="search-result-url">{meta}</div>
+                                    {task.context.filter(|context| !context.is_empty()).map(|context| view! {
+                                        <p class="search-result-snippet">{context}</p>
+                                    })}
+                                </li>
+                            }
+                        }).collect::<Vec<_>>()}
+                    </ol>
+                }.into_any()
+            } else if let Some(text) = stdout.clone() {
+                view! {
+                    <div class="tool-stream">
+                        <div class="tool-stream-label">"output"</div>
+                        <pre class="tool-stream-pre">{text}</pre>
+                    </div>
+                }.into_any()
+            } else if !is_running {
+                view! {
+                    <div class="tool-stream">
+                        <pre class="tool-stream-pre">"No sub-agents"</pre>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+            {raw_output.map(|raw| view! {
+                <details class="tool-raw-details">
+                    <summary>"Raw"</summary>
+                    <pre class="tool-raw-json">{raw.to_string()}</pre>
+                </details>
+            })}
+        </details>
+    }
+}
+
+#[component]
+fn WaitSubAgentsToolCard(
+    call: Option<PersistedTaskEvent>,
+    result: Option<PersistedTaskEvent>,
+    output: Option<Value>,
+) -> impl IntoView {
+    let is_running = result.is_none();
+    let success = result
+        .as_ref()
+        .and_then(|e| e.payload.get("success"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let duration_label = tool_duration_ms(output.as_ref(), result.as_ref()).map(format_duration_ms);
+    let result_summary = result
+        .as_ref()
+        .and_then(|event| tool_result_summary(event, output.as_ref()));
+    let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
+    let parsed = stdout
+        .as_ref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+
+    let mut statuses = parsed
+        .as_ref()
+        .and_then(parse_sub_agent_statuses)
+        .unwrap_or_default();
+    if statuses.is_empty() && is_running {
+        statuses = parse_sub_agent_wait_ids_from_call(call.as_ref());
+    }
+
+    let timed_out = parsed
+        .as_ref()
+        .and_then(|v| v.get("timed_out"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let active_count = parsed
+        .as_ref()
+        .and_then(|v| v.get("active_count"))
+        .and_then(Value::as_u64);
+    let max_active = parsed
+        .as_ref()
+        .and_then(|v| v.get("max_active"))
+        .and_then(Value::as_u64);
+    let active_label = active_count.map(|active| match max_active {
+        Some(max) => format!("active {active}/{max}"),
+        None => format!("active {active}"),
+    });
+
+    let total = statuses.len();
+    let completed = statuses
+        .iter()
+        .filter(|status| status.completed.unwrap_or(false) || status.status == "completed")
+        .count();
+    let failed = statuses
+        .iter()
+        .filter(|status| matches!(status.status.as_str(), "failed" | "timed_out" | "cancelled"))
+        .count();
+    let count_label = (total > 0).then(|| format!("{completed}/{total} done"));
+    let failed_label = (failed > 0).then(|| format!("{failed} failed"));
+
+    let icon = tool_status_icon(is_running, success);
+    let preview_text = if !success {
+        result_summary.clone()
+    } else {
+        statuses
+            .iter()
+            .find_map(|status| status.output.as_ref().map(|output| first_line(output)))
+            .or_else(|| statuses.first().map(sub_agent_status_preview))
+            .or_else(|| stdout.as_ref().map(|text| first_line(text)))
+    };
+    let default_open = is_running || !success || timed_out || failed > 0;
+    let raw_output = result
+        .as_ref()
+        .and_then(|e| e.payload.get("output_preview").cloned());
+
+    view! {
+        <div class="tool-card-header">
+            <span class="tool-status-icon">{icon}</span>
+            <span class="tool-name">"Sub-agent results"</span>
+            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
+            {count_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
+            {active_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
+            {timed_out.then(|| view! { <span class="tool-meta danger">"timed out"</span> })}
+            {failed_label.map(|label| view! { <span class="tool-meta danger">{label}</span> })}
+            {(!success).then(|| result_summary.clone().map(|summary| view! {
+                <span class="tool-meta danger">{summary}</span>
+            })).flatten()}
+        </div>
+        {preview_text.map(|text| view! {
+            <div class="tool-preview">{text}</div>
+        })}
+        <details class="tool-card-body" open=default_open>
+            <summary class="tool-card-expand">"details"</summary>
+            {if !statuses.is_empty() {
+                view! {
+                    <ol class="search-result-list">
+                        {statuses.into_iter().map(|status| {
+                            let title = status.task.clone().unwrap_or_else(|| status.id.clone());
+                            let meta = sub_agent_status_meta(&status);
+                            view! {
+                                <li class="search-result-item">
+                                    <div class="search-result-title">{title}</div>
+                                    <div class="search-result-url">{meta}</div>
+                                    {status.output.filter(|output| !output.is_empty()).map(|output| view! {
+                                        <div class="tool-stream-content">
+                                            <MarkdownContent markdown=output />
+                                        </div>
+                                    })}
+                                </li>
+                            }
+                        }).collect::<Vec<_>>()}
+                    </ol>
+                }.into_any()
+            } else if let Some(text) = stdout.clone() {
+                view! {
+                    <div class="tool-stream">
+                        <div class="tool-stream-label">"output"</div>
+                        <pre class="tool-stream-pre">{text}</pre>
+                    </div>
+                }.into_any()
+            } else if !is_running {
+                view! {
+                    <div class="tool-stream">
+                        <pre class="tool-stream-pre">"No sub-agent results"</pre>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+            {raw_output.map(|raw| view! {
+                <details class="tool-raw-details">
+                    <summary>"Raw"</summary>
+                    <pre class="tool-raw-json">{raw.to_string()}</pre>
+                </details>
+            })}
+        </details>
+    }
+}
+
+#[component]
+fn WriteTodosToolCard(
+    call: Option<PersistedTaskEvent>,
+    result: Option<PersistedTaskEvent>,
+    output: Option<Value>,
+) -> impl IntoView {
+    let is_running = result.is_none();
+    let success = result
+        .as_ref()
+        .and_then(|e| e.payload.get("success"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let duration_label = tool_duration_ms(output.as_ref(), result.as_ref()).map(format_duration_ms);
+    let result_summary = result
+        .as_ref()
+        .and_then(|event| tool_result_summary(event, output.as_ref()));
+    let stdout = output.as_ref().and_then(|v| stream_text(v, "stdout"));
+    let todos = parse_todo_items_from_call(call.as_ref());
+
+    let total = todos.len();
+    let completed = todos
+        .iter()
+        .filter(|item| item.status == "completed")
+        .count();
+    let active = todos.iter().find(|item| item.status == "in_progress");
+    let blocked = todos.iter().find(|item| item.status == "blocked_on_user");
+    let count_label = (total > 0).then(|| format!("{completed}/{total} done"));
+    let state_label = blocked
+        .map(|_| "blocked")
+        .or_else(|| active.map(|_| "doing"));
+
+    let icon = tool_status_icon(is_running, success);
+    let preview_text = if !success {
+        result_summary.clone()
+    } else {
+        blocked
+            .or(active)
+            .map(|item| first_line(&item.description))
+            .or_else(|| stdout.as_ref().map(|text| first_line(text)))
+    };
+    let default_open = is_running || !success || blocked.is_some();
+    let raw_output = result
+        .as_ref()
+        .and_then(|e| e.payload.get("output_preview").cloned());
+
+    view! {
+        <div class="tool-card-header">
+            <span class="tool-status-icon">{icon}</span>
+            <span class="tool-name">"Todos"</span>
+            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
+            {count_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
+            {state_label.map(|label| view! {
+                <span class=if label == "blocked" { "tool-meta danger" } else { "tool-meta" }>{label}</span>
+            })}
+            {(!success).then(|| result_summary.clone().map(|summary| view! {
+                <span class="tool-meta danger">{summary}</span>
+            })).flatten()}
+        </div>
+        {preview_text.map(|text| view! {
+            <div class="tool-preview">{text}</div>
+        })}
+        <details class="tool-card-body" open=default_open>
+            <summary class="tool-card-expand">"details"</summary>
+            {if !todos.is_empty() {
+                view! {
+                    <section class="todos-card">
+                        <div class="todos-card-title">"Todos"</div>
+                        <ol class="todo-list">
+                            {todos.into_iter().map(|item| view! {
+                                <li class=format!("todo-item {}", item.status)>
+                                    <span class="todo-status">{todo_status_label(&item.status)}</span>
+                                    <span class="todo-description">{item.description}</span>
+                                </li>
+                            }).collect::<Vec<_>>()}
+                        </ol>
+                    </section>
+                }.into_any()
+            } else if let Some(text) = stdout.clone() {
+                view! {
+                    <div class="tool-stream">
+                        <div class="tool-stream-label">"output"</div>
+                        <pre class="tool-stream-pre">{text}</pre>
+                    </div>
+                }.into_any()
+            } else if !is_running {
+                view! {
+                    <div class="tool-stream">
+                        <pre class="tool-stream-pre">"No todos"</pre>
+                    </div>
+                }.into_any()
+            } else {
+                ().into_any()
+            }}
+            {raw_output.map(|raw| view! {
                 <details class="tool-raw-details">
                     <summary>"Raw"</summary>
                     <pre class="tool-raw-json">{raw.to_string()}</pre>
@@ -2928,6 +3550,234 @@ fn field_str(value: &Value, key: &str) -> Option<String> {
 /// Extract an i64 field from a JSON value.
 fn field_i64(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(|v| v.as_i64())
+}
+
+fn tool_duration_ms(output: Option<&Value>, result: Option<&PersistedTaskEvent>) -> Option<i64> {
+    output
+        .and_then(|v| field_i64(v, "duration_ms"))
+        .or_else(|| {
+            result
+                .and_then(|e| e.payload.get("duration_ms"))
+                .and_then(|v| v.as_i64())
+        })
+}
+
+fn format_duration_ms(ms: i64) -> String {
+    if ms >= 1000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
+fn tool_status_icon(is_running: bool, success: bool) -> &'static str {
+    if is_running {
+        "\u{23f3}"
+    } else if success {
+        "\u{2713}"
+    } else {
+        "\u{2717}"
+    }
+}
+
+fn input_preview_json(call: Option<&PersistedTaskEvent>) -> Option<Value> {
+    call.and_then(|event| payload_str_event(event, "input_preview"))
+        .and_then(|input| serde_json::from_str::<Value>(&input).ok())
+}
+
+fn parse_sub_agent_tasks_from_call(call: Option<&PersistedTaskEvent>) -> Vec<SubAgentTaskView> {
+    input_preview_json(call)
+        .and_then(|payload| {
+            payload.get("tasks").and_then(Value::as_array).map(|tasks| {
+                tasks
+                    .iter()
+                    .map(|task| {
+                        let tools = task
+                            .get("tools")
+                            .and_then(Value::as_array)
+                            .map(|tools| {
+                                tools
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(ToString::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        SubAgentTaskView {
+                            id: None,
+                            task: task
+                                .get("task")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            status: String::new(),
+                            tools,
+                            context: task
+                                .get("context")
+                                .and_then(Value::as_str)
+                                .map(ToString::to_string),
+                        }
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn parse_spawned_sub_agent_tasks(payload: &Value) -> Option<Vec<SubAgentTaskView>> {
+    payload
+        .get("started")
+        .and_then(Value::as_array)
+        .map(|started| {
+            started
+                .iter()
+                .map(|task| SubAgentTaskView {
+                    id: task
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    task: task
+                        .get("task")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    status: task
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("running")
+                        .to_string(),
+                    tools: Vec::new(),
+                    context: None,
+                })
+                .collect()
+        })
+}
+
+fn sub_agent_task_meta(task: &SubAgentTaskView) -> String {
+    let mut parts = Vec::new();
+    if let Some(id) = &task.id {
+        if !id.is_empty() {
+            parts.push(format!("id: {id}"));
+        }
+    }
+    if !task.status.is_empty() {
+        parts.push(format!("status: {}", task.status));
+    }
+    if !task.tools.is_empty() {
+        parts.push(format!("tools: {}", task.tools.join(", ")));
+    }
+    if parts.is_empty() {
+        "sub-agent".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn parse_sub_agent_statuses(payload: &Value) -> Option<Vec<SubAgentStatusView>> {
+    payload
+        .get("statuses")
+        .and_then(Value::as_array)
+        .map(|statuses| {
+            statuses
+                .iter()
+                .map(|status| SubAgentStatusView {
+                    id: status
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    task: status
+                        .get("task")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    status: status
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    output: status
+                        .get("output")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    elapsed_ms: status.get("elapsed_ms").and_then(Value::as_u64),
+                    completed: status.get("completed").and_then(Value::as_bool),
+                })
+                .collect()
+        })
+}
+
+fn parse_sub_agent_wait_ids_from_call(
+    call: Option<&PersistedTaskEvent>,
+) -> Vec<SubAgentStatusView> {
+    input_preview_json(call)
+        .and_then(|payload| {
+            payload.get("ids").and_then(Value::as_array).map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(|id| SubAgentStatusView {
+                        id: id.to_string(),
+                        task: None,
+                        status: "waiting".to_string(),
+                        output: None,
+                        elapsed_ms: None,
+                        completed: None,
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn sub_agent_status_preview(status: &SubAgentStatusView) -> String {
+    status
+        .task
+        .as_ref()
+        .map(|task| format!("{}: {}", status.status, first_line(task)))
+        .unwrap_or_else(|| format!("{}: {}", status.status, status.id))
+}
+
+fn sub_agent_status_meta(status: &SubAgentStatusView) -> String {
+    let mut parts = Vec::new();
+    if !status.id.is_empty() {
+        parts.push(format!("id: {}", status.id));
+    }
+    if !status.status.is_empty() {
+        parts.push(format!("status: {}", status.status));
+    }
+    if let Some(elapsed_ms) = status.elapsed_ms {
+        let elapsed_ms = elapsed_ms.min(i64::MAX as u64) as i64;
+        parts.push(format!("elapsed: {}", format_duration_ms(elapsed_ms)));
+    }
+    if parts.is_empty() {
+        "sub-agent".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn parse_todo_items_from_call(call: Option<&PersistedTaskEvent>) -> Vec<TodoToolItemView> {
+    input_preview_json(call)
+        .and_then(|payload| {
+            payload.get("todos").and_then(Value::as_array).map(|items| {
+                items
+                    .iter()
+                    .map(|item| TodoToolItemView {
+                        description: item
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        status: item
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("pending")
+                            .to_string(),
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
 }
 
 fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Option<String> {
