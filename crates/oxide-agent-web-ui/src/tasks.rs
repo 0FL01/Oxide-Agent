@@ -1995,6 +1995,22 @@ fn ShellToolCard(
     let icon = outcome.icon();
     let raw_output = raw_output_preview(result.as_ref());
 
+    let mut header_metas = vec![tool_meta(status_text)];
+    if let Some(duration) = duration_label {
+        header_metas.push(tool_meta(duration));
+    }
+    if let Some(code) = exit_code {
+        let meta = format!("exit {code}");
+        if code != 0 {
+            header_metas.push(tool_meta_danger(meta));
+        } else {
+            header_metas.push(tool_meta(meta));
+        }
+    }
+    if let Some(message) = error_msg {
+        header_metas.push(tool_meta_danger(message));
+    }
+
     // Default open: running, failed, or has no stream content (nothing to collapse)
     let has_streams = stdout.is_some() || stderr.is_some();
     let default_open = is_running || !success || !has_streams;
@@ -2005,50 +2021,16 @@ fn ShellToolCard(
         .or_else(|| stdout.as_ref().map(|t| first_line(t)));
 
     view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">"Shell"</span>
-            <span class="tool-meta">{status_text}</span>
-            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
-            {exit_code.map(|code| view! {
-                <span class=if code != 0 { "tool-meta danger" } else { "tool-meta" }>
-                    {format!("exit {code}")}
-                </span>
-            })}
-            {error_msg.map(|msg| view! { <span class="tool-meta danger">{msg}</span> })}
-        </div>
-        {preview_text.map(|text| view! {
-            <div class="tool-preview">{format!("$ {text}")}</div>
-        })}
-        <details class="tool-card-body" open=default_open>
-            <summary class="tool-card-expand">"details"</summary>
-            {command.map(|cmd| view! {
-                <pre class="tool-command">{format!("$ {cmd}")}</pre>
-            })}
-            {stdout.clone().map(|text| view! {
-                <div class="tool-stream">
-                    <div class="tool-stream-label">"stdout"</div>
-                    <pre class="tool-stream-pre">{text}</pre>
-                </div>
-            })}
-            {stderr.clone().map(|text| view! {
-                <div class="tool-stream">
-                    <div class="tool-stream-label">"stderr"</div>
-                    <pre class="tool-stream-pre">{text}</pre>
-                </div>
-            })}
-            {(stdout.is_none() && stderr.is_none() && !is_running).then(|| view! {
-                <div class="tool-stream">
-                    <pre class="tool-stream-pre">"No output"</pre>
-                </div>
-            })}
-            {raw_output.map(|raw| view! {
-                <details class="tool-raw-details">
-                    <summary>"Raw"</summary>
-                    <pre class="tool-raw-json">{raw.to_string()}</pre>
-                </details>
-            })}
-        </details>
+        {tool_card_header(icon, "Shell", header_metas)}
+        {preview_text.map(|text| tool_preview(format!("$ {text}")))}
+        <ToolDetails open=default_open>
+            {command.map(tool_command)}
+            {stdout.clone().map(|text| tool_pre_stream(Some("stdout"), text))}
+            {stderr.clone().map(|text| tool_pre_stream(Some("stderr"), text))}
+            {(stdout.is_none() && stderr.is_none() && !is_running)
+                .then(|| tool_pre_stream(None, "No output".to_string()))}
+            {raw_output.map(tool_raw_details)}
+        </ToolDetails>
     }
 }
 
@@ -2137,29 +2119,24 @@ fn SearchToolCard(
     };
     let raw_output = raw_output_preview(result.as_ref());
 
+    let mut header_metas = Vec::new();
+    if let Some(duration) = duration_label {
+        header_metas.push(tool_meta(duration));
+    }
+    if let Some(count) = result_count {
+        header_metas.push(tool_meta(format!("{count} results")));
+    }
+    if !success {
+        if let Some(summary) = result_summary.clone() {
+            header_metas.push(tool_meta_danger(summary));
+        }
+    }
+
     view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">{label}</span>
-            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
-            {result_count.map(|n| view! {
-                <span class="tool-meta">{format!("{n} results")}</span>
-            })}
-            {(!success).then(|| result_summary.clone().map(|summary| view! {
-                <span class="tool-meta danger">{summary}</span>
-            })).flatten()}
-        </div>
-        {preview_text.map(|text| view! {
-            <div class="tool-preview">{text}</div>
-        })}
-        <details class="tool-card-body" open=default_open>
-            <summary class="tool-card-expand">"details"</summary>
-            {query.map(|q| view! {
-                <div class="tool-query">
-                    <span class="tool-label">"Query"</span>
-                    <code>{q}</code>
-                </div>
-            })}
+        {tool_card_header(icon, label, header_metas)}
+        {preview_text.map(tool_preview)}
+        <ToolDetails open=default_open>
+            {query.map(|q| tool_query_row("Query", q))}
             {if !search_results.is_empty() {
                 view! {
                     <ol class="search-result-list">
@@ -2175,24 +2152,12 @@ fn SearchToolCard(
                     </ol>
                 }.into_any()
             } else if let Some(text) = stdout {
-                view! {
-                    <div class="tool-stream">
-                        <div class="tool-stream-label">"output"</div>
-                        <div class="tool-stream-content">
-                            <MarkdownContent markdown=text />
-                        </div>
-                    </div>
-                }.into_any()
+                tool_markdown_stream(Some("output"), text)
             } else {
                 ().into_any()
             }}
-            {raw_output.map(|raw| view! {
-                <details class="tool-raw-details">
-                    <summary>"Raw"</summary>
-                    <pre class="tool-raw-json">{raw.to_string()}</pre>
-                </details>
-            })}
-        </details>
+            {raw_output.map(tool_raw_details)}
+        </ToolDetails>
     }
 }
 
@@ -2320,70 +2285,44 @@ fn WebMarkdownToolCard(
     };
     let raw_output = raw_output_preview(result.as_ref());
 
+    let mut header_metas = Vec::new();
+    if let Some(duration) = duration_label {
+        header_metas.push(tool_meta(duration));
+    }
+    if let Some(chars) = chars_display {
+        header_metas.push(tool_meta(chars));
+    }
+    if truncated {
+        header_metas.push(tool_meta("truncated"));
+    }
+    if !success {
+        if let Some(summary) = result_summary.clone() {
+            header_metas.push(tool_meta_danger(summary));
+        }
+    }
+
     view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">"Web Markdown"</span>
-            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
-            {chars_display.map(|c| view! { <span class="tool-meta">{c}</span> })}
-            {truncated.then(|| view! { <span class="tool-meta">"truncated"</span> })}
-            {(!success).then(|| result_summary.clone().map(|summary| view! {
-                <span class="tool-meta danger">{summary}</span>
-            })).flatten()}
-        </div>
-        {preview_text.map(|text| view! {
-            <div class="tool-preview">{text}</div>
-        })}
-        <details class="tool-card-body" open=default_open>
-            <summary class="tool-card-expand">"details"</summary>
-            {url.clone().map(|u| view! {
-                <div class="tool-query">
-                    <span class="tool-label">"URL"</span>
-                    <code>{u}</code>
-                </div>
-            })}
-            {content_type.map(|content_type| view! {
-                <div class="tool-query">
-                    <span class="tool-label">"Content-Type"</span>
-                    <code>{content_type}</code>
-                </div>
-            })}
-            {fetched_bytes.map(|bytes| view! {
-                <div class="tool-query">
-                    <span class="tool-label">"Fetched"</span>
-                    <code>{format!("{bytes} bytes")}</code>
-                </div>
-            })}
-            {parsed_header.then(|| view! {
-                <div class="tool-query">
-                    <span class="tool-label">"Truncated"</span>
-                    <code>{if truncated { "yes" } else { "no" }}</code>
-                </div>
+        {tool_card_header(icon, "Web Markdown", header_metas)}
+        {preview_text.map(tool_preview)}
+        <ToolDetails open=default_open>
+            {url.clone().map(|u| tool_query_row("URL", u))}
+            {content_type.map(|value| tool_query_row("Content-Type", value))}
+            {fetched_bytes.map(|bytes| tool_query_row("Fetched", format!("{bytes} bytes")))}
+            {parsed_header.then(|| {
+                tool_query_row(
+                    "Truncated",
+                    if truncated { "yes" } else { "no" }.to_string(),
+                )
             })}
             {if let Some(md) = markdown.filter(|m| !m.is_empty()) {
-                view! {
-                    <div class="tool-stream">
-                        <div class="tool-stream-content">
-                            <MarkdownContent markdown=md />
-                        </div>
-                    </div>
-                }.into_any()
+                tool_markdown_stream(None, md)
             } else if !is_running {
-                view! {
-                    <div class="tool-stream">
-                        <pre class="tool-stream-pre">"No content"</pre>
-                    </div>
-                }.into_any()
+                tool_pre_stream(None, "No content".to_string())
             } else {
                 ().into_any()
             }}
-            {raw_output.map(|raw| view! {
-                <details class="tool-raw-details">
-                    <summary>"Raw"</summary>
-                    <pre class="tool-raw-json">{raw.to_string()}</pre>
-                </details>
-            })}
-        </details>
+            {raw_output.map(tool_raw_details)}
+        </ToolDetails>
     }
 }
 
@@ -2485,66 +2424,33 @@ fn CrawlToolCard(
     };
     let raw_output = raw_output_preview(result.as_ref());
 
+    let mut header_metas = Vec::new();
+    if let Some(duration) = duration_label {
+        header_metas.push(tool_meta(duration));
+    }
+    if let Some(chars) = chars_display {
+        header_metas.push(tool_meta(chars));
+    }
+    if truncated {
+        header_metas.push(tool_meta("truncated"));
+    }
+    if let Some(summary) = failure_label.clone() {
+        header_metas.push(tool_meta_danger(summary));
+    }
+
     view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">"Crawl"</span>
-            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
-            {chars_display.map(|c| view! { <span class="tool-meta">{c}</span> })}
-            {truncated.then(|| view! { <span class="tool-meta">"truncated"</span> })}
-            {failure_label.clone().map(|summary| view! {
-                <span class="tool-meta danger">{summary}</span>
-            })}
-        </div>
-        {preview_text.map(|text| view! {
-            <div class="tool-preview">{text}</div>
-        })}
-        <details class="tool-card-body" open=default_open>
-            <summary class="tool-card-expand">"details"</summary>
-            {url.clone().map(|u| view! {
-                <div class="tool-query">
-                    <span class="tool-label">"URL"</span>
-                    <code>{u}</code>
-                </div>
-            })}
-            {failure_label.clone().map(|label| view! {
-                <div class="tool-query">
-                    <span class="tool-label">"Error"</span>
-                    <code>{label}</code>
-                </div>
-            })}
-            {failure_status_code.map(|code| view! {
-                <div class="tool-query">
-                    <span class="tool-label">"Status"</span>
-                    <code>{code.to_string()}</code>
-                </div>
-            })}
-            {failure_message.map(|message| view! {
-                <div class="tool-stream">
-                    <div class="tool-stream-label">"message"</div>
-                    <pre class="tool-stream-pre">{message}</pre>
-                </div>
-            })}
-            {failure_response_tail.map(|tail| view! {
-                <div class="tool-stream">
-                    <div class="tool-stream-label">"response tail"</div>
-                    <pre class="tool-stream-pre">{tail}</pre>
-                </div>
-            })}
+        {tool_card_header(icon, "Crawl", header_metas)}
+        {preview_text.map(tool_preview)}
+        <ToolDetails open=default_open>
+            {url.clone().map(|u| tool_query_row("URL", u))}
+            {failure_label.clone().map(|label| tool_query_row("Error", label))}
+            {failure_status_code.map(|code| tool_query_row("Status", code.to_string()))}
+            {failure_message.map(|message| tool_pre_stream(Some("message"), message))}
+            {failure_response_tail.map(|tail| tool_pre_stream(Some("response tail"), tail))}
             {if let Some(md) = markdown.filter(|m| !m.is_empty()) {
-                view! {
-                    <div class="tool-stream">
-                        <div class="tool-stream-content">
-                            <MarkdownContent markdown=md.to_string() />
-                        </div>
-                    </div>
-                }.into_any()
+                tool_markdown_stream(None, md.to_string())
             } else if success && !is_running {
-                view! {
-                    <div class="tool-stream">
-                        <pre class="tool-stream-pre">"No content"</pre>
-                    </div>
-                }.into_any()
+                tool_pre_stream(None, "No content".to_string())
             } else {
                 ().into_any()
             }}
@@ -2554,19 +2460,9 @@ fn CrawlToolCard(
                 .unwrap_or(false)
                 .then(|| stdout_text.clone())
                 .flatten()
-                .map(|text| view! {
-                    <div class="tool-stream">
-                        <div class="tool-stream-label">"output"</div>
-                        <pre class="tool-stream-pre">{text}</pre>
-                    </div>
-                })}
-            {raw_output.map(|raw| view! {
-                <details class="tool-raw-details">
-                    <summary>"Raw"</summary>
-                    <pre class="tool-raw-json">{raw.to_string()}</pre>
-                </details>
-            })}
-        </details>
+                .map(|text| tool_pre_stream(Some("output"), text))}
+            {raw_output.map(tool_raw_details)}
+        </ToolDetails>
     }
 }
 
@@ -2654,21 +2550,23 @@ fn SpawnSubAgentsToolCard(
     let default_open = is_running || !success || tasks.is_empty();
     let raw_output = raw_output_preview(result.as_ref());
 
+    let mut header_metas = Vec::new();
+    if let Some(label) = count_label {
+        header_metas.push(tool_meta(label));
+    }
+    if let Some(label) = active_label {
+        header_metas.push(tool_meta(label));
+    }
+    if !success {
+        if let Some(summary) = result_summary.clone() {
+            header_metas.push(tool_meta_danger(summary));
+        }
+    }
+
     view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">"Sub-agents"</span>
-            {count_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
-            {active_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
-            {(!success).then(|| result_summary.clone().map(|summary| view! {
-                <span class="tool-meta danger">{summary}</span>
-            })).flatten()}
-        </div>
-        {preview_text.map(|text| view! {
-            <div class="tool-preview">{text}</div>
-        })}
-        <details class="tool-card-body" open=default_open>
-            <summary class="tool-card-expand">"details"</summary>
+        {tool_card_header(icon, "Sub-agents", header_metas)}
+        {preview_text.map(tool_preview)}
+        <ToolDetails open=default_open>
             {if !tasks.is_empty() {
                 view! {
                     <ol class="search-result-list">
@@ -2687,28 +2585,14 @@ fn SpawnSubAgentsToolCard(
                     </ol>
                 }.into_any()
             } else if let Some(text) = stdout.clone() {
-                view! {
-                    <div class="tool-stream">
-                        <div class="tool-stream-label">"output"</div>
-                        <pre class="tool-stream-pre">{text}</pre>
-                    </div>
-                }.into_any()
+                tool_pre_stream(Some("output"), text)
             } else if !is_running {
-                view! {
-                    <div class="tool-stream">
-                        <pre class="tool-stream-pre">"No sub-agents"</pre>
-                    </div>
-                }.into_any()
+                tool_pre_stream(None, "No sub-agents".to_string())
             } else {
                 ().into_any()
             }}
-            {raw_output.map(|raw| view! {
-                <details class="tool-raw-details">
-                    <summary>"Raw"</summary>
-                    <pre class="tool-raw-json">{raw.to_string()}</pre>
-                </details>
-            })}
-        </details>
+            {raw_output.map(tool_raw_details)}
+        </ToolDetails>
     }
 }
 
@@ -2770,24 +2654,32 @@ fn WaitSubAgentsToolCard(
     let default_open = is_running || !success || timed_out || failed > 0;
     let raw_output = raw_output_preview(result.as_ref());
 
+    let mut header_metas = Vec::new();
+    if let Some(duration) = duration_label {
+        header_metas.push(tool_meta(duration));
+    }
+    if let Some(label) = count_label {
+        header_metas.push(tool_meta(label));
+    }
+    if let Some(label) = active_label {
+        header_metas.push(tool_meta(label));
+    }
+    if timed_out {
+        header_metas.push(tool_meta_danger("timed out"));
+    }
+    if let Some(label) = failed_label {
+        header_metas.push(tool_meta_danger(label));
+    }
+    if !success {
+        if let Some(summary) = result_summary.clone() {
+            header_metas.push(tool_meta_danger(summary));
+        }
+    }
+
     view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">"Sub-agent results"</span>
-            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
-            {count_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
-            {active_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
-            {timed_out.then(|| view! { <span class="tool-meta danger">"timed out"</span> })}
-            {failed_label.map(|label| view! { <span class="tool-meta danger">{label}</span> })}
-            {(!success).then(|| result_summary.clone().map(|summary| view! {
-                <span class="tool-meta danger">{summary}</span>
-            })).flatten()}
-        </div>
-        {preview_text.map(|text| view! {
-            <div class="tool-preview">{text}</div>
-        })}
-        <details class="tool-card-body" open=default_open>
-            <summary class="tool-card-expand">"details"</summary>
+        {tool_card_header(icon, "Sub-agent results", header_metas)}
+        {preview_text.map(tool_preview)}
+        <ToolDetails open=default_open>
             {if !statuses.is_empty() {
                 view! {
                     <ol class="search-result-list">
@@ -2809,28 +2701,14 @@ fn WaitSubAgentsToolCard(
                     </ol>
                 }.into_any()
             } else if let Some(text) = stdout.clone() {
-                view! {
-                    <div class="tool-stream">
-                        <div class="tool-stream-label">"output"</div>
-                        <pre class="tool-stream-pre">{text}</pre>
-                    </div>
-                }.into_any()
+                tool_pre_stream(Some("output"), text)
             } else if !is_running {
-                view! {
-                    <div class="tool-stream">
-                        <pre class="tool-stream-pre">"No sub-agent results"</pre>
-                    </div>
-                }.into_any()
+                tool_pre_stream(None, "No sub-agent results".to_string())
             } else {
                 ().into_any()
             }}
-            {raw_output.map(|raw| view! {
-                <details class="tool-raw-details">
-                    <summary>"Raw"</summary>
-                    <pre class="tool-raw-json">{raw.to_string()}</pre>
-                </details>
-            })}
-        </details>
+            {raw_output.map(tool_raw_details)}
+        </ToolDetails>
     }
 }
 
@@ -2869,50 +2747,40 @@ fn WriteTodosToolCard(
     let show_details = raw_output.is_some() || show_fallback;
     let default_open = !success || !has_todos;
 
+    let mut header_metas = Vec::new();
+    if let Some(label) = count_label {
+        header_metas.push(tool_meta(label));
+    }
+    if let Some(label) = state_label {
+        if label == "blocked" {
+            header_metas.push(tool_meta_danger(label));
+        } else {
+            header_metas.push(tool_meta(label));
+        }
+    }
+    if !success {
+        if let Some(summary) = result_summary.clone() {
+            header_metas.push(tool_meta_danger(summary));
+        }
+    }
+
     view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">"Todos"</span>
-            {count_label.map(|label| view! { <span class="tool-meta">{label}</span> })}
-            {state_label.map(|label| view! {
-                <span class=if label == "blocked" { "tool-meta danger" } else { "tool-meta" }>{label}</span>
-            })}
-            {(!success).then(|| result_summary.clone().map(|summary| view! {
-                <span class="tool-meta danger">{summary}</span>
-            })).flatten()}
-        </div>
-        {preview_text.map(|text| view! {
-            <div class="tool-preview">{text}</div>
-        })}
+        {tool_card_header(icon, "Todos", header_metas)}
+        {preview_text.map(tool_preview)}
         {has_todos.then(|| render_todo_list(todos.clone(), false))}
         {show_details.then(|| view! {
-            <details class="tool-card-body" open=default_open>
-                <summary class="tool-card-expand">"details"</summary>
+            <ToolDetails open=default_open>
                 {if show_fallback {
                     if let Some(text) = stdout.clone() {
-                        view! {
-                            <div class="tool-stream">
-                                <div class="tool-stream-label">"output"</div>
-                                <pre class="tool-stream-pre">{text}</pre>
-                            </div>
-                        }.into_any()
+                        tool_pre_stream(Some("output"), text)
                     } else {
-                        view! {
-                            <div class="tool-stream">
-                                <pre class="tool-stream-pre">"No todos"</pre>
-                            </div>
-                        }.into_any()
+                        tool_pre_stream(None, "No todos".to_string())
                     }
                 } else {
                     ().into_any()
                 }}
-                {raw_output.map(|raw| view! {
-                    <details class="tool-raw-details">
-                        <summary>"Raw"</summary>
-                        <pre class="tool-raw-json">{raw.to_string()}</pre>
-                    </details>
-                })}
-            </details>
+                {raw_output.map(tool_raw_details)}
+            </ToolDetails>
         })}
     }
 }
@@ -2951,48 +2819,37 @@ fn GenericToolCard(
         .or_else(|| stdout.as_ref().map(|t| first_line(t)))
         .or_else(|| (!success).then(|| result_summary.clone()).flatten());
     let raw_output = raw_output_preview(result.as_ref());
+    let command_detail = call
+        .as_ref()
+        .and_then(|e| payload_str_event(e, "command_preview"));
+
+    let mut header_metas = Vec::new();
+    if let Some(duration) = duration_label {
+        header_metas.push(tool_meta(duration));
+    }
+    if let Some(code) = exit_code {
+        let meta = format!("exit {code}");
+        if code != 0 {
+            header_metas.push(tool_meta_danger(meta));
+        } else {
+            header_metas.push(tool_meta(meta));
+        }
+    }
+    if !success {
+        if let Some(summary) = result_summary.clone() {
+            header_metas.push(tool_meta_danger(summary));
+        }
+    }
 
     view! {
-        <div class="tool-card-header">
-            <span class="tool-status-icon">{icon}</span>
-            <span class="tool-name">{name}</span>
-            {duration_label.map(|d| view! { <span class="tool-meta">{d}</span> })}
-            {exit_code.map(|code| view! {
-                <span class=if code != 0 { "tool-meta danger" } else { "tool-meta" }>
-                    {format!("exit {code}")}
-                </span>
-            })}
-            {(!success).then(|| result_summary.clone().map(|summary| view! {
-                <span class="tool-meta danger">{summary}</span>
-            })).flatten()}
-        </div>
-        {preview_text.map(|text| view! {
-            <div class="tool-preview">{text}</div>
-        })}
-        <details class="tool-card-body" open=default_open>
-            <summary class="tool-card-expand">"details"</summary>
-            {call.as_ref().and_then(|e| payload_str_event(e, "command_preview")).map(|cmd| view! {
-                <pre class="tool-command">{format!("$ {cmd}")}</pre>
-            })}
-            {stdout.map(|text| view! {
-                <div class="tool-stream">
-                    <div class="tool-stream-label">"output"</div>
-                    <pre class="tool-stream-pre">{text}</pre>
-                </div>
-            })}
-            {stderr.map(|text| view! {
-                <div class="tool-stream">
-                    <div class="tool-stream-label">"stderr"</div>
-                    <pre class="tool-stream-pre">{text}</pre>
-                </div>
-            })}
-            {raw_output.map(|raw| view! {
-                <details class="tool-raw-details">
-                    <summary>"Raw"</summary>
-                    <pre class="tool-raw-json">{raw.to_string()}</pre>
-                </details>
-            })}
-        </details>
+        {tool_card_header(icon, name, header_metas)}
+        {preview_text.map(tool_preview)}
+        <ToolDetails open=default_open>
+            {command_detail.map(tool_command)}
+            {stdout.map(|text| tool_pre_stream(Some("output"), text))}
+            {stderr.map(|text| tool_pre_stream(Some("stderr"), text))}
+            {raw_output.map(tool_raw_details)}
+        </ToolDetails>
     }
 }
 
@@ -3550,6 +3407,106 @@ fn active_count_label(payload: Option<&Value>) -> Option<String> {
         Some(max) => format!("active {active_count}/{max}"),
         None => format!("active {active_count}"),
     })
+}
+
+#[derive(Clone)]
+struct ToolHeaderMeta {
+    text: String,
+    danger: bool,
+}
+
+fn tool_meta(text: impl Into<String>) -> ToolHeaderMeta {
+    ToolHeaderMeta {
+        text: text.into(),
+        danger: false,
+    }
+}
+
+fn tool_meta_danger(text: impl Into<String>) -> ToolHeaderMeta {
+    ToolHeaderMeta {
+        text: text.into(),
+        danger: true,
+    }
+}
+
+fn tool_card_header(
+    icon: &'static str,
+    name: impl Into<String>,
+    metas: Vec<ToolHeaderMeta>,
+) -> AnyView {
+    let name = name.into();
+
+    view! {
+        <div class="tool-card-header">
+            <span class="tool-status-icon">{icon}</span>
+            <span class="tool-name">{name}</span>
+            {metas.into_iter().map(|meta| {
+                let class = if meta.danger { "tool-meta danger" } else { "tool-meta" };
+                view! { <span class=class>{meta.text}</span> }
+            }).collect::<Vec<_>>()}
+        </div>
+    }
+    .into_any()
+}
+
+fn tool_preview(text: String) -> AnyView {
+    view! { <div class="tool-preview">{text}</div> }.into_any()
+}
+
+#[component]
+fn ToolDetails(open: bool, children: Children) -> impl IntoView {
+    view! {
+        <details class="tool-card-body" open=open>
+            <summary class="tool-card-expand">"details"</summary>
+            {children()}
+        </details>
+    }
+}
+
+fn tool_query_row(label: &'static str, value: String) -> AnyView {
+    view! {
+        <div class="tool-query">
+            <span class="tool-label">{label}</span>
+            <code>{value}</code>
+        </div>
+    }
+    .into_any()
+}
+
+fn tool_command(command: String) -> AnyView {
+    view! { <pre class="tool-command">{format!("$ {command}")}</pre> }.into_any()
+}
+
+fn tool_pre_stream(label: Option<&'static str>, text: String) -> AnyView {
+    view! {
+        <div class="tool-stream">
+            {label.map(|label| view! { <div class="tool-stream-label">{label}</div> })}
+            <pre class="tool-stream-pre">{text}</pre>
+        </div>
+    }
+    .into_any()
+}
+
+fn tool_markdown_stream(label: Option<&'static str>, markdown: String) -> AnyView {
+    view! {
+        <div class="tool-stream">
+            {label.map(|label| view! { <div class="tool-stream-label">{label}</div> })}
+            <div class="tool-stream-content">
+                <MarkdownContent markdown=markdown />
+            </div>
+        </div>
+    }
+    .into_any()
+}
+
+fn tool_raw_details(raw: Value) -> AnyView {
+    view! {
+        <details class="tool-raw-details">
+            <summary>"Raw"</summary>
+            <pre class="tool-raw-json">{raw.to_string()}</pre>
+        </details>
+    }
+    .into_any()
 }
 
 fn parse_sub_agent_tasks_from_call(call: Option<&PersistedTaskEvent>) -> Vec<SubAgentTaskView> {

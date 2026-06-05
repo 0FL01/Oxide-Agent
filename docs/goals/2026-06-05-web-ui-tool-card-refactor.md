@@ -53,50 +53,50 @@ Out of scope:
   - Source: RECON finding that headers, previews, details wrappers, raw blocks, metadata rows, and stream wrappers are duplicated.
   - Acceptance: Introduce simple local helpers/components for repeated visual fragments such as header/meta, preview, details shell, raw output details, key/value row, pre stream, and markdown stream. Helpers preserve existing HTML classes and do not introduce a large generic builder/spec framework.
   - Evidence required: focused diff review plus native and wasm web-ui checks.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 2 added local visual primitives in `crates/oxide-agent-web-ui/src/tasks.rs`: `ToolHeaderMeta`, `tool_card_header`, `tool_preview`, `ToolDetails`, `tool_query_row`, `tool_command`, `tool_pre_stream`, `tool_markdown_stream`, and `tool_raw_details`. Focused diff review confirmed preserved classes: `tool-card-header`, `tool-status-icon`, `tool-name`, `tool-meta`, `tool-preview`, `tool-card-body`, `tool-card-expand`, `tool-query`, `tool-stream`, `tool-stream-label`, `tool-stream-pre`, `tool-stream-content`, and `tool-raw-details`; native and wasm checks passed.
 
 - G3: Specialized parsing and UX semantics remain local and unchanged
   - Source: RECON risk assessment that one generic `ToolCardSpec` would overfit because parsing, preview priority, and `default_open` differ per card.
   - Acceptance: Search result parsing, WebMarkdown parsing, Crawl4AI success/failure parsing, sub-agent parsing, todo parsing, preview priority, and `default_open` rules remain card-specific unless a helper is proven trivial and behavior-preserving.
   - Evidence required: diff review of each specialized card and manual behavior checklist recorded in progress log.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 moved only shared outcome/duration/raw-output/URL-fallback/active-count extraction; specialized parsing, preview priority, and `default_open` branches stayed in each card.
+  - Evidence collected: Checkpoint 1 moved only shared outcome/duration/raw-output/URL-fallback/active-count extraction; specialized parsing, preview priority, and `default_open` branches stayed in each card. Checkpoint 2 moved only repeated markup fragments; search/WebMarkdown/Crawl/sub-agent/todo parsing and preview/default-open expressions remained local.
 
 - G4: Tool-card rendering remains compatible with recent web UI polish
   - Source: Recent commits `377255ce`, `79c1919c`, and `acac93d7` added rich tool cards, inline todos, reasoning preview, and compact failed Crawl cards.
   - Acceptance: The refactor preserves current cards for `web_markdown`, `searxng_search`, `spawn_sub_agents`, `wait_sub_agents`, `write_todos`, Reasoning/CoT, and failed `crawl4ai_markdown` compact display.
   - Evidence required: diff review against the listed behaviors plus `env -u NO_COLOR trunk build --release`.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 preserved the existing specialized branches for `web_markdown`, `searxng_search`, `spawn_sub_agents`, `wait_sub_agents`, `write_todos`, and compact failed `crawl4ai_markdown`; Reasoning/CoT was left unchanged except for no helper application. Final Trunk evidence is still required before verification.
 
 - Q1: UI-only blast radius is preserved
   - Source: User requested refactor in `crates/oxide-agent-web-ui/src/tasks.rs`; AGENTS over-engineering guardrails require smallest maintainable change.
   - Acceptance: No backend/core/contracts/provider files change; no output formats, tool names, routes, or transport events change.
   - Evidence required: `git diff --stat` and file list review.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 implementation changed only `crates/oxide-agent-web-ui/src/tasks.rs`; this goal doc was updated for evidence.
+  - Evidence collected: Checkpoint 1 implementation changed only `crates/oxide-agent-web-ui/src/tasks.rs`; this goal doc was updated for evidence. Checkpoint 2 changed only `crates/oxide-agent-web-ui/src/tasks.rs` plus this goal doc.
 
 - Q2: No new dependencies or broad abstractions
   - Source: `AGENTS.md` implementation bias and RECON recommendation.
   - Acceptance: No `Cargo.toml` changes; no new crates; no broad card registry/builder/macro framework; helpers stay local and boring.
   - Evidence required: `Cargo.toml` diff review and implementation diff review.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 added local data helpers only; no `Cargo.toml` changes and no card registry/builder/macro framework.
+  - Evidence collected: Checkpoint 1 added local data helpers only; no `Cargo.toml` changes and no card registry/builder/macro framework. Checkpoint 2 added small local Leptos helpers/components only; no dependency or `Cargo.toml` changes.
 
 - V1: Web UI validation passes after each meaningful checkpoint
   - Source: Repo validation practice and prior web UI checks.
   - Acceptance: Required commands pass for the checkpoint scope or a blocker records exact failure output and smallest next action.
   - Evidence required: `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui`, and `env -u NO_COLOR trunk build --release` before final completion.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, and `cargo clippy -p oxide-agent-web-ui`.
+  - Evidence collected: Checkpoint 1 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, and `cargo clippy -p oxide-agent-web-ui`. Checkpoint 2 passed `cargo fmt`, `cargo check -p oxide-agent-web-ui`, `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`, `cargo clippy -p oxide-agent-web-ui`, and `git diff --check`.
 
 - N1: No visual redesign hidden inside refactor
   - Source: User goal is deduplication/refactor, not another UI redesign pass.
   - Must preserve: Existing card text, CSS class names, collapsed/expanded defaults, and specialized previews unless explicitly called out in this document and approved later.
   - Evidence required: diff review and behavior checklist.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 did not change visible strings, CSS classes, or details/default-open expressions; it only replaced repeated data extraction with helpers.
+  - Evidence collected: Checkpoint 1 did not change visible strings, CSS classes, or details/default-open expressions; it only replaced repeated data extraction with helpers. Checkpoint 2 preserved visible card names, meta text, preview choices, details labels, CSS classes, and local `default_open` expressions while moving repeated markup into helpers.
 
 ## Implementation Plan
 
@@ -159,6 +159,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui`; `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`; `cargo clippy -p oxide-agent-web-ui`.
   - Audit IDs updated: G1 verified; G3, Q1, Q2, V1, N1 in progress.
   - Next: Checkpoint 2 — extract repeated visual primitives.
+
+- 2026-06-05: Checkpoint 2 — extracted repeated visual primitives.
+  - Changed: Added local helper primitives for tool headers/meta, previews, details shells, key/value rows, command rows, pre streams, markdown streams, and raw output details; replaced repeated markup in specialized tool cards with those helpers.
+  - Evidence: Focused diff review confirmed specialized parsing, preview priority, `default_open`, card names, labels, and CSS classes stayed behavior-preserving; Reasoning/CoT was intentionally left outside the main tool-card helper extraction.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui`; `cargo check --target wasm32-unknown-unknown -p oxide-agent-web-ui`; `cargo clippy -p oxide-agent-web-ui`; `git diff --check`.
+  - Audit IDs updated: G2 verified; G3, G4, Q1, Q2, V1, N1 in progress.
+  - Next: Checkpoint 3 — apply/review remaining safe primitive usage by card groups and complete the behavior checklist.
 
 ## Risks and Blockers
 
