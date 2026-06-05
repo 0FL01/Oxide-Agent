@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-05-r2-to-postgres-storage.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/PRD-r2-to-pg.md`
 Goal doc owner: Codex
-Last updated: 2026-06-05
+Last updated: 2026-06-05 17:19 +03
 
 ## Objective
 
@@ -81,8 +81,8 @@ Out of scope:
   - Requirement: Verify all R2/S3/AWS references and classify them as runtime, tests, current docs, historical docs, or false positives; map old object namespaces to SQL entities.
   - Acceptance: Deletion map covers core, web, Telegram, docs, tests, CI, profiles, Cargo files, env vars, and all runtime R2/S3/AWS references have a planned removal/replacement.
   - Evidence required: Targeted `rg` output summary, deletion map artifact or updated goal section, SQL entity mapping, and diff review showing no SQLite work was added.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 0 map in `## Phase 0 Deletion and SQL Entity Map`; targeted `rg` summary found 75 R2/S3/AWS reference files and classified runtime, tests, current docs, historical docs, CI/env/profile, and false-positive matches; SQL entity map covers core, web, reminders, audit, wiki, control-plane, and web UI object namespaces; SQLite search found no storage/backend/dependency work.
 
 - G2: SQLx/Postgres foundation is added without broad business-logic porting
   - Source: `docs/prd/PRD-r2-to-pg.md:1966`
@@ -153,14 +153,14 @@ Out of scope:
   - Acceptance: No importer, backfill, R2 reader, R2 fallback, dual-write, or old object scan tooling is implemented.
   - Evidence required: Diff review, static grep guard output, and docs stating old R2 data is ignored.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 0 changed only the goal document and explicitly preserves no migration/import/backfill/dual-write/R2 fallback; re-run static guard and docs review after implementation phases.
 
 - Q2: Keep the solution simple and storage-focused
   - Source: `AGENTS.md`, `docs/prd/PRD-r2-to-pg.md:1021`
   - Acceptance: No SQLite backend, Supabase Storage bucket, new queue/cache/service, sharding, HA, or broad framework abstraction is added.
   - Evidence required: Cargo diffs, compose/deploy diffs, dependency review, and implementation diff review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 0 changed only the goal document; no dependency, service, queue/cache, SQLite, Supabase Storage, sharding, HA, or abstraction was added. Re-run after implementation phases.
 
 - Q3: Data model uses typed columns for queryable fields and JSONB only where justified
   - Source: `docs/prd/PRD-r2-to-pg.md:1230`, `docs/prd/PRD-r2-to-pg.md:2544`
@@ -216,14 +216,14 @@ Out of scope:
   - Must preserve: No migration, reader, dual-write, importer, backfill, or object-key scan story is added.
   - Evidence required: Diff review and grep guard output.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 0 map records old R2 data as intentionally out of scope and adds no importer, reader, dual-write, backfill, compatibility path, or object-key scan implementation. Re-run after implementation phases.
 
 - N2: SQLite remains absent
   - Source: `docs/prd/PRD-r2-to-pg.md:37`, `docs/prd/PRD-r2-to-pg.md:2314`
   - Must preserve: No SQLite dependency, feature, migration, tests, docs, or acceptance criteria.
   - Evidence required: Cargo/dependency grep and docs diff review.
   - Status: pending
-  - Evidence collected:
+  - Evidence collected: Phase 0 search `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example` found only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`, a sandbox/database hint; no SQLite dependency, feature, migration, or storage plan was added. Re-run after implementation phases.
 
 - N3: R2 is not retained as a fallback or feature flag after removal
   - Source: `docs/prd/PRD-r2-to-pg.md:35`, `docs/prd/PRD-r2-to-pg.md:1183`
@@ -231,6 +231,55 @@ Out of scope:
   - Evidence required: Static grep/cargo tree/docs review after Phase 6.
   - Status: pending
   - Evidence collected:
+
+## Phase 0 Deletion and SQL Entity Map
+
+Status: complete for implementation planning. This map is not authorization to delete R2 code before SQLx/Postgres paths have passing coverage.
+
+### Search evidence
+
+- Required PRD search terms verified: `R2`, `S3`, `Cloudflare`, `OXIDE_R2`, `storage-s3-r2`, `storage/r2`, `aws-sdk`, `aws_credential`, `aws_types`, `bucket`, `etag`, `list_keys_under_prefix`, `delete_prefix` (`docs/prd/PRD-r2-to-pg.md:1935`).
+- Broad reference command: `rg -l --hidden --glob '!target/**' --glob '!.git/**' -e 'R2|Cloudflare|S3|AWS|storage-s3-r2|storage/r2|OXIDE_R2|aws-sdk|aws_'`.
+- Broad reference result: 75 files total; `crates=51`, `current_docs=3`, `prd_docs=4`, `goal_docs=4`, `ci=1`, `profiles=8`, `root_files=4`.
+- Durable seam review command: `rg -n --hidden --glob '!target/**' --glob '!.git/**' -e 'StorageProvider|WebUiStore|build_primary_storage|R2WebUiStore|InMemoryWebUiStore|durable storage|persistence' crates docs README.md .env.example .github profiles`.
+- SQLite guard command: `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example`.
+- SQLite result: only `crates/oxide-agent-core/src/agent/preprocessor.rs:432` matched; it is a sandbox hint, not a storage dependency, feature, migration, or plan.
+- `config/**/*.yaml|yml` and `scripts/*.sh` had no direct R2/S3/AWS durable-storage matches in the docs/CI search.
+- No durable runtime state outside the known `StorageProvider` and `WebUiStore` seams was found; local/in-memory stores remain test/dev-only or transient.
+
+### Classification and deletion map
+
+| Class | Covered references | Later action |
+| --- | --- | --- |
+| Cargo dependencies/features | AWS deps in `crates/oxide-agent-core/Cargo.toml:29`; `storage-s3-r2` in profile feature lists `crates/oxide-agent-core/Cargo.toml:80`, `crates/oxide-agent-core/Cargo.toml:121`, `crates/oxide-agent-core/Cargo.toml:146`, and atomic feature deps `crates/oxide-agent-core/Cargo.toml:239`; transport/binary feature forwarding in `crates/oxide-agent-transport-web/Cargo.toml`, `crates/oxide-agent-transport-telegram/Cargo.toml`, `crates/oxide-agent-telegram-bot/Cargo.toml`; AWS entries in `Cargo.lock`. | Phase 1 adds SQLx/Postgres deps/profile wiring; Phase 6 removes AWS crates, `storage-s3-r2`, R2 `required-features`, and regenerates `Cargo.lock`. |
+| Capability/profile registry | R2 capability module `storage-s3-r2` / `storage/r2` in `crates/oxide-agent-core/src/capabilities/compiled.rs:299`; profile TOMLs enable `storage/r2`, e.g. `profiles/full.toml:20`. | Replace with `storage/sqlx`; update capability tests/snapshots and all `profiles/*.toml`. |
+| Core storage runtime | R2-only factory and module in `crates/oxide-agent-core/src/storage/modules.rs:31`; AWS client/object ops in `crates/oxide-agent-core/src/storage/r2_base.rs:15`, `crates/oxide-agent-core/src/storage/r2_base.rs:89`; object key layout in `crates/oxide-agent-core/src/storage/keys.rs:16`; R2 user/memory/control-plane/reminder/provider modules. | Keep `StorageProvider`; implement SQLx backend; replace object keys, prefix scans/deletes, ETags, and health probes with typed rows, indexed queries, transactions/versions, and DB health. Delete R2 modules after SQL coverage exists. |
+| Wiki memory runtime | Wiki object keys in `crates/oxide-agent-core/src/storage/keys.rs:62`; wiki context/page/inbox/raw keys in `crates/oxide-agent-core/src/storage/keys.rs:68`, `crates/oxide-agent-core/src/storage/keys.rs:80`, `crates/oxide-agent-core/src/storage/keys.rs:89`, `crates/oxide-agent-core/src/storage/keys.rs:98`; wiki docs currently describe S3/R2 at `docs/wiki-memory.md:3`. | Store wiki rows by typed scope/path metadata; replace prefix delete with SQL delete by context; update docs after runtime moves to SQL. |
+| Web persistence runtime | R2 production path in `crates/oxide-agent-transport-web/src/persistence/mod.rs:3`; `WebUiStore` seam in `crates/oxide-agent-transport-web/src/persistence/store.rs:31`; web R2 key layout in `crates/oxide-agent-transport-web/src/persistence/r2.rs:779`; web startup selector in `crates/oxide-agent-transport-web/src/bin/oxide-agent-web-console.rs:292`. | Add `SqlxWebUiStore`; use append-only task-event rows; use bounded task-file rows or rejection; replace `OXIDE_WEB_STORE=r2`/`storage/r2` selection with DB-backed startup. |
+| Telegram startup/runtime | R2-gated runner and R2-only failure path in `crates/oxide-agent-transport-telegram/src/runner.rs:31`; storage factory call in `crates/oxide-agent-transport-telegram/src/runner.rs:73`; R2/AWS redaction in `crates/oxide-agent-telegram-bot/src/main.rs`. | Build SQL storage via the factory, remove R2 feature gating, and use DB health/redaction for database config. |
+| Tests/snapshots | R2 integration tests in `crates/oxide-agent-core/tests/r2_flow_checkpoint_integration.rs`; R2 credential validation in `crates/oxide-agent-telegram-bot/tests/integration_validation.rs`; R2 web key-layout tests in `crates/oxide-agent-transport-web/src/persistence/r2.rs`; R2 capability snapshots under `crates/oxide-agent-core/tests/snapshots/`. | Convert to SQL integration/contract tests; update capability snapshots; add static guards denying runtime AWS/R2 references after Phase 6. |
+| Current env/docs/CI/deploy | `.env.example:9`, `.env.example:19`; `README.md:77`, `README.md:91`, `README.md:172`; `docs/deploy.md:18`, `docs/deploy.md:67`; CI dummy/secrets/deploy env in `.github/workflows/ci-cd.yml:18`, `.github/workflows/ci-cd.yml:103`; `AGENTS.md` current storage statements. | Replace R2 setup with local Postgres/Supabase DB variables, migration policy, pool settings, and old-R2-data-ignored note. Update `AGENTS.md` early once SQLx foundation is real. |
+| Historical/allowed docs | Source PRD `docs/prd/PRD-r2-to-pg.md`; implemented PRDs under `docs/prd/implemented/`; older goal history such as `docs/goals/2026-05-27-web-console-v1.md`. | Keep as historical/spec references; final grep guard must allow these paths separately from current setup/runtime docs. |
+| False positives/non-storage | `crates/oxide-agent-core/src/agent/preprocessor.rs:432` SQLite sandbox hint; UI/test text references such as “Cloudflare R2 limits”. | Do not implement around these; keep or update only if final static guard needs clearer allow-listing. |
+
+### SQL entity map
+
+| Old object namespace | Target SQL entity/entities | Notes |
+| --- | --- | --- |
+| `users/{user_id}/config.json` (`crates/oxide-agent-core/src/storage/keys.rs:16`) | `users`, `user_configs`, `user_contexts` | Split context-scoped mutable data out of full config rewrites. |
+| `users/{user_id}/agent_memory.json` and `users/{user_id}/topics/{context_key}/agent_memory.json` (`crates/oxide-agent-core/src/storage/keys.rs:22`, `crates/oxide-agent-core/src/storage/keys.rs:28`) | `agent_memory_snapshots`, `context_agent_memory_snapshots` | Preserve scoped memory reload through `StorageProvider`; typed `(user_id, context_key)` ownership. |
+| `users/{user_id}/topics/{context_key}/flows/{flow_id}/meta.json` and `/memory.json` (`crates/oxide-agent-core/src/storage/keys.rs:46`, `crates/oxide-agent-core/src/storage/keys.rs:52`) | `agent_flows`, `agent_flow_memory_snapshots` | Unique `(user_id, context_key, flow_id)`; flow memory can be snapshot JSONB with typed lifecycle columns. |
+| `{prefix}/wiki/v1/global/*` and `{prefix}/wiki/v1/contexts/{context_id}/*` (`crates/oxide-agent-core/src/storage/keys.rs:62`, `crates/oxide-agent-core/src/storage/keys.rs:68`) | `wiki_global_files`, `wiki_context_files`, `wiki_pages`, `wiki_inbox_items`, `wiki_raw_archive` | Store derived `context_id` plus typed source scope; global ownership remains B6 until implementation confirms desired uniqueness. |
+| `users/{user_id}/control_plane/agent_profiles/{agent_id}.json` (`crates/oxide-agent-core/src/storage/keys.rs:107`) | `agent_profiles` | Unique `(user_id, agent_id)`, version column for mutable updates. |
+| `topic_contexts`, `topic_agents_md`, `topic_infra`, `topic_bindings` object keys (`crates/oxide-agent-core/src/storage/keys.rs:119`, `crates/oxide-agent-core/src/storage/keys.rs:125`, `crates/oxide-agent-core/src/storage/keys.rs:137`, `crates/oxide-agent-core/src/storage/keys.rs:143`) | `topic_contexts`, `topic_agents_md`, `topic_infra_configs`, `topic_bindings` | Use transactions/version checks; replace prompt guard object with transactional duplicate guard. |
+| `users/{user_id}/private/secrets/{secret_ref}` (`crates/oxide-agent-core/src/storage/keys.rs:161`) | `user_secrets` | Preserve redaction; never expose secret material to prompts/logs/memory. |
+| `users/{user_id}/control_plane/audit/events.json` (`crates/oxide-agent-core/src/storage/keys.rs:167`) | `audit_events` | Append-only rows; unique `(user_id, version)` allocated transactionally. |
+| `users/{user_id}/control_plane/reminders/{reminder_id}.json` (`crates/oxide-agent-core/src/storage/keys.rs:149`, `crates/oxide-agent-core/src/storage/keys.rs:155`) | `reminder_jobs` | Index `(user_id, context_key, status)`, `(user_id, status, next_run_at)`; add lease/claim columns. |
+| `web/auth/v1/users/{user_id}.json`, `login_index/{normalized_login}.json`, `browser_sessions/{hash}.json` (`crates/oxide-agent-transport-web/src/persistence/r2.rs:779`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:783`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:787`) | `web_users`, `web_auth_sessions` | Use unique index on normalized login; auth sessions by token hash. |
+| `web/users/{user_id}/sessions/{session_id}.json` and `tasks/{session_id}/{task_id}.json` (`crates/oxide-agent-transport-web/src/persistence/r2.rs:791`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:799`) | `web_sessions`, `web_tasks`, `web_task_progress_latest` | Typed status/timestamps; progress latest should be separate/coalesced, not task-event rewrite. |
+| `web/users/{user_id}/task_events/{session_id}/{task_id}/chunk-{chunk_no}.json` (`crates/oxide-agent-transport-web/src/persistence/r2.rs:807`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:823`) | `web_task_events` | Append-only rows with unique `(user_id, session_id, task_id, seq)`; no SQL chunk table needed. |
+| `web/users/{user_id}/task_files/{session_id}/{task_id}/{file_id}.json/.bin` (`crates/oxide-agent-transport-web/src/persistence/r2.rs:811`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:835`, `crates/oxide-agent-transport-web/src/persistence/r2.rs:843`) | `web_task_files`, `web_task_file_blobs` or `web_task_files.content BYTEA` | Enforce configurable max size before Phase 2 completion (B1). |
+| R2 health/probe keys | none; DB health/migration check | Replace object write/head/list probes with SQL health query and migration status. |
 
 ## Implementation Plan
 
@@ -297,6 +346,7 @@ Out of scope:
 - 2026-06-05: First implementation checkpoint is Phase 0 deletion/entity mapping, not SQLx coding or R2 deletion, because the PRD explicitly warns not to delete R2 before SQL paths have passing coverage.
 - 2026-06-05: Keep one top-level migration stream by default because core and web tables share the same database and may need foreign keys/order guarantees.
 - 2026-06-05: Preserve `StorageProvider` and `WebUiStore` as seams unless implementation evidence shows a simpler local change is required.
+- 2026-06-05: Phase 0 classifies source PRDs, implemented PRDs, and older completed goals as historical/allowed R2 references; current setup docs, profiles, env examples, CI, Cargo features, and runtime code remain planned replacement/deletion targets.
 
 ## Progress Log
 
@@ -306,6 +356,13 @@ Out of scope:
   - Commands: `git status --short --branch`; `git diff --check`; goal-doc read/diff review.
   - Audit IDs updated: none; implementation not started.
   - Next: Phase 0 — deletion map and SQL entity map.
+
+- 2026-06-05 17:19 +03: Phase 0 deletion/entity map completed.
+  - Changed: Added the Phase 0 deletion map and SQL entity map to this goal document only; no SQLx implementation, R2 deletion, migration, or SQLite work was added.
+  - Evidence: Targeted R2/S3/AWS search matched 75 files and was classified by runtime, tests, current docs, historical docs, CI/env/profiles, and false positives; SQL entity mapping now covers old core/web/wiki/control-plane/reminder/audit/web object namespaces.
+  - Commands: `rg -l --hidden --glob '!target/**' --glob '!.git/**' -e 'R2|Cloudflare|S3|AWS|storage-s3-r2|storage/r2|OXIDE_R2|aws-sdk|aws_'`; `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example`; `rg -n --hidden --glob '!target/**' --glob '!.git/**' -e 'StorageProvider|WebUiStore|build_primary_storage|R2WebUiStore|InMemoryWebUiStore|durable storage|persistence' crates docs README.md .env.example .github profiles`; `git diff --check` passed.
+  - Audit IDs updated: G1 verified; Q1, Q2, N1, and N2 have Phase 0 evidence but remain pending until implementation/final static guards re-run.
+  - Next: Phase 1 — SQLx/Postgres foundation.
 
 ## Risks and Blockers
 
