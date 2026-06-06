@@ -5,7 +5,7 @@ Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-06-web-ui-css-v2-slice-plan.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to split `crates/oxide-agent-web-ui/src/styles.css` for maintainability, with `Редизайн (v2)` as the current base and `v1` as MVP legacy.
 Goal doc owner: Codex
-Last updated: 2026-06-06 23:06
+Last updated: 2026-06-06 23:18
 
 ## Objective
 
@@ -91,7 +91,7 @@ Out of scope:
   - Acceptance: Trunk can build the sliced stylesheet and generated app assets without CSS import/path failures.
   - Evidence required: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/`.
   - Status: verified
-  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split, after checkpoint 2 base-slice promotion, after checkpoint 3 shell extraction, after checkpoint 4 chat/composer extraction, after checkpoint 5 activity/metrics extraction, after checkpoint 6 markdown/page extraction, and after checkpoint 7 responsive extraction.
+  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split, after checkpoint 2 base-slice promotion, after checkpoint 3 shell extraction, after checkpoint 4 chat/composer extraction, after checkpoint 5 activity/metrics extraction, after checkpoint 6 markdown/page extraction, and after checkpoint 7 responsive extraction. Post-completion runtime regression showed Trunk kept `@import` URLs in the generated CSS but did not copy `src/styles/` into `dist/`; `crates/oxide-agent-web-ui/index.html:12` now declares `data-trunk rel="copy-dir" href="src/styles"`, and `env -u NO_COLOR trunk build --release` plus `test -f dist/styles/00-tokens.css && test -f dist/styles/10-responsive.css` verifies runtime CSS import assets are present.
 
 - V2: Rust-side web UI still compiles
   - Source: CSS class consumers live in Leptos components under `crates/oxide-agent-web-ui/src/`.
@@ -259,6 +259,13 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
   - Audit IDs updated: G1 verified; G2 verified; G3 verified; G4 verified; Q1 verified; Q2 verified; V1 verified; V2 verified; N1 verified.
   - Next: Commit the final checkpoint.
 
+- 2026-06-06 23:18: Post-completion runtime CSS import fix.
+  - Changed: Added `crates/oxide-agent-web-ui/index.html:12` with `data-trunk rel="copy-dir" href="src/styles"` so the browser can resolve the generated stylesheet's `@import url("./styles/*.css")` requests at runtime.
+  - Evidence: The broken UI rendered with browser-default styles because `dist/styles-*.css` contained only `@import` lines and `dist/styles/` was absent. After the fix, Trunk build output contains `dist/styles/00-tokens.css` through `dist/styles/10-responsive.css`.
+  - Commands: `find crates/oxide-agent-web-ui/dist -maxdepth 2 -type f`; `env -u NO_COLOR trunk build --release`; `test -f dist/styles/00-tokens.css && test -f dist/styles/10-responsive.css`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff --check`.
+  - Audit IDs updated: V1 evidence strengthened; Q1 preserved by entrypoint-only runtime asset fix.
+  - Next: Commit the regression fix.
+
 ## Risks and Blockers
 
 - Trunk/local CSS import behavior may differ from browser-relative expectations.
@@ -284,6 +291,6 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
 - Completion Audit result: all audit items G1-G4, Q1-Q2, V1-V2, and N1 are verified.
 - Commands run: `git diff --check`; `wc -l crates/oxide-agent-web-ui/src/styles.css`; `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort`; `rg "FRONT TEMPLATE REDESIGN OVERRIDE" crates/oxide-agent-web-ui/src/styles.css crates/oxide-agent-web-ui/src/styles`; `test ! -e crates/oxide-agent-web-ui/src/styles/03-v1-legacy.css && test ! -e crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; representative CSS owner and Rust consumer greps; `env -u NO_COLOR trunk build --release`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml`; `git status --short`; `git diff --name-only`.
 - Artifacts inspected: `crates/oxide-agent-web-ui/src/styles.css`; final slice set under `crates/oxide-agent-web-ui/src/styles/`; representative class consumers under `crates/oxide-agent-web-ui/src/`; dependency diff output; final file diff.
-- Remaining gaps: none known.
+- Remaining gaps: none known after the post-completion `copy-dir` fix for runtime CSS import assets.
 - User-accepted exceptions: none.
 - Final status: complete; ready for final checkpoint commit.
