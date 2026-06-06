@@ -1,6 +1,6 @@
 //! Tool execution helpers for the agent runner.
 
-use super::types::{AgentRunResult, AgentRunnerContext, RunState};
+use super::types::{AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState};
 use super::AgentRunner;
 use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
 use crate::agent::identity::SessionId;
@@ -72,7 +72,7 @@ pub(super) enum ToolTurnAssistantContent<'a> {
 }
 
 impl ToolTurnAssistantContent<'_> {
-    fn undelivered_draft(&self) -> Option<String> {
+    fn assistant_content(&self) -> Option<String> {
         match self {
             Self::NativeModelContent(content) => {
                 let trimmed = content.trim();
@@ -85,21 +85,17 @@ impl ToolTurnAssistantContent<'_> {
 
 struct BufferedRuntimeHistory {
     assistant_reasoning: StdMutex<Option<String>>,
-    undelivered_draft: Option<String>,
+    assistant_content: StdMutex<Option<String>>,
     events: StdMutex<Vec<BufferedRuntimeHistoryEvent>>,
 }
 
 impl BufferedRuntimeHistory {
-    fn new(assistant_reasoning: Option<String>, undelivered_draft: Option<String>) -> Self {
+    fn new(assistant_reasoning: Option<String>, assistant_content: Option<String>) -> Self {
         Self {
             assistant_reasoning: StdMutex::new(assistant_reasoning),
-            undelivered_draft,
+            assistant_content: StdMutex::new(assistant_content),
             events: StdMutex::new(Vec::new()),
         }
-    }
-
-    fn undelivered_draft(&self) -> Option<String> {
-        self.undelivered_draft.clone()
     }
 
     fn drain_events(&self) -> Vec<BufferedRuntimeHistoryEvent> {
@@ -122,11 +118,17 @@ impl ToolHistoryWriter for BufferedRuntimeHistory {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
+        let content = self
+            .assistant_content
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or_default();
         self.events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(BufferedRuntimeHistoryEvent::Assistant {
-                content: String::new(),
+                content,
                 reasoning,
                 tool_calls: batch.to_llm_tool_calls(),
             });
@@ -194,12 +196,16 @@ impl AgentRunner {
 
         let turn_id = TurnId::from(format!("{}_{}", ctx.task_id, state.iteration));
         let batch_id = ToolBatchId::from(format!("{}_tool_batch_{}", ctx.task_id, state.iteration));
+        let finish_after_todo_update = tool_calls
+            .iter()
+            .all(|tool_call| tool_call.function.name == "write_todos");
         let batch = OpenCodeGoToolCallBatch::from_llm_tool_calls(turn_id, tool_calls);
         let runtime_config = ToolRuntimeConfig::default();
-        let undelivered_draft = assistant_content.undelivered_draft();
+        let native_assistant_content = assistant_content.assistant_content();
+        let final_response_candidate = native_assistant_content.clone();
         let history = Arc::new(BufferedRuntimeHistory::new(
             reasoning_content,
-            undelivered_draft,
+            native_assistant_content,
         ));
         let history_writer: Arc<dyn ToolHistoryWriter> =
             Arc::<BufferedRuntimeHistory>::clone(&history);
@@ -221,8 +227,36 @@ impl AgentRunner {
         let result = runtime.execute_batch(batch, turn_context).await;
         self.apply_buffered_runtime_history(ctx, state, history.drain_events())
             .await;
-        self.apply_undelivered_tool_turn_draft(ctx, history.undelivered_draft());
         result.map_err(|error| anyhow::anyhow!("typed tool runtime failed: {error}"))?;
+
+        if finish_after_todo_update {
+            if let Some(final_answer) = final_response_candidate {
+                let todos_arc = Arc::clone(ctx.todos_arc);
+                let todos_complete = todos_arc.lock().await.is_complete();
+                if todos_complete {
+                    if self.content_loop_detected(final_answer.as_str()).await {
+                        return Err(self
+                            .loop_detected_error(
+                                ctx,
+                                state,
+                                crate::agent::loop_detection::LoopType::ContentLoop,
+                            )
+                            .await);
+                    }
+
+                    return self
+                        .handle_final_response(
+                            ctx,
+                            state,
+                            FinalResponseInput {
+                                final_answer,
+                                reasoning: None,
+                            },
+                        )
+                        .await;
+                }
+            }
+        }
 
         Self::emit_token_snapshot_update(
             ctx.progress_tx,
@@ -230,26 +264,6 @@ impl AgentRunner {
         )
         .await;
         Ok(None)
-    }
-
-    fn apply_undelivered_tool_turn_draft(
-        &mut self,
-        ctx: &mut AgentRunnerContext<'_>,
-        draft: Option<String>,
-    ) {
-        let Some(draft) = draft else {
-            return;
-        };
-
-        let notice = format!(
-            "[SYSTEM: The previous assistant tool-call turn included non-user-visible draft text. \
-It was not delivered to the user because that turn executed tools. Use it only as internal context; \
-if any of it is needed for the user, include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{draft}"
-        );
-        ctx.messages.push(Message::system(&notice));
-        ctx.agent
-            .memory_mut()
-            .add_message(AgentMessage::undelivered_assistant_draft(notice));
     }
 
     async fn emit_runtime_tool_call(&self, ctx: &mut AgentRunnerContext<'_>, tool_call: &ToolCall) {
@@ -386,7 +400,7 @@ mod tests {
     use super::*;
     use crate::agent::compaction::AgentMessageKind;
     use crate::agent::context::{AgentContext, EphemeralSession};
-    use crate::agent::providers::CompressionProvider;
+    use crate::agent::providers::{CompressionProvider, TodoItem, TodoList, TodoStatus};
     use crate::agent::runner::AgentRunnerConfig;
     use crate::agent::tool_runtime::{
         OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
@@ -404,6 +418,9 @@ mod tests {
     struct ParallelRuntimeExecutor {
         active: Arc<AtomicUsize>,
         max_seen: Arc<AtomicUsize>,
+    }
+    struct CompleteTodosRuntimeExecutor {
+        todos: Arc<tokio::sync::Mutex<TodoList>>,
     }
 
     #[async_trait]
@@ -505,6 +522,45 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ToolExecutor for CompleteTodosRuntimeExecutor {
+        fn name(&self) -> ToolName {
+            ToolName::from("write_todos")
+        }
+
+        fn spec(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "write_todos".to_string(),
+                description: "complete todos".to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<ToolOutput, ToolRuntimeError> {
+            let mut todos = self.todos.lock().await;
+            if todos.items.is_empty() {
+                todos.items.push(TodoItem {
+                    description: "finalize".to_string(),
+                    status: TodoStatus::Completed,
+                });
+            } else {
+                for item in &mut todos.items {
+                    item.status = TodoStatus::Completed;
+                }
+            }
+            drop(todos);
+
+            Ok(OutputNormalizer::new(ToolRuntimeConfig::default()).success(
+                &invocation,
+                "all todos complete",
+                "",
+            ))
+        }
+    }
+
     #[tokio::test]
     async fn typed_runtime_path_records_paired_assistant_and_tool_history() {
         let settings = AgentSettings {
@@ -598,7 +654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_tool_call_content_is_recorded_as_undelivered_draft() {
+    async fn native_tool_call_content_is_recorded_on_assistant_tool_call() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -665,16 +721,102 @@ mod tests {
 
         assert!(result.is_none());
         let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 2);
+        assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
+        assert_eq!(memory[0].content, draft);
+        assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
+    }
+
+    #[tokio::test]
+    async fn native_todo_completion_content_is_returned_as_final_response() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+
+        let mut initial_todos = TodoList::new();
+        initial_todos.items.push(TodoItem {
+            description: "write final report".to_string(),
+            status: TodoStatus::InProgress,
+        });
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(initial_todos.clone()));
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(CompleteTodosRuntimeExecutor {
+                todos: Arc::clone(&todos_arc),
+            }))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(4096);
+        session.memory_mut().todos = initial_todos;
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce final report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-final-todo-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-todos-1",
+            ToolCallFunction {
+                name: "write_todos".to_string(),
+                arguments:
+                    r#"{"todos":[{"description":"write final report","status":"completed"}]}"#
+                        .to_string(),
+            },
+            false,
+        );
+
+        let final_report = "Full report that should be delivered to the user.";
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::NativeModelContent(final_report),
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(matches!(
+            result,
+            Some(AgentRunResult::Final(answer)) if answer == final_report
+        ));
+        assert!(ctx.agent.memory().todos.is_complete());
+
+        let memory = ctx.agent.memory().get_messages();
         assert_eq!(memory.len(), 3);
         assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
-        assert!(
-            memory[0].content.is_empty(),
-            "native tool-call content must not be replayed as delivered assistant prose"
-        );
+        assert_eq!(memory[0].content, final_report);
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[2].kind, AgentMessageKind::UndeliveredAssistantDraft);
-        assert!(memory[2].content.contains("not delivered to the user"));
-        assert!(memory[2].content.contains(draft));
+        assert_eq!(memory[2].kind, AgentMessageKind::AssistantResponse);
+        assert_eq!(memory[2].content, final_report);
     }
 
     #[tokio::test]
