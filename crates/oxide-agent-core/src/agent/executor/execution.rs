@@ -840,16 +840,15 @@ fn effort_prompt_instructions(
         AgentExecutionEffort::Heavy => Some(
             concat!(
                 "[EFFORT: Heavy]\n",
-                "For complex, ambiguous, current, comparative, market, technical, legal, scientific, product, API, benchmark, planning, debugging, or best/latest/top/current tasks:\n",
-                "- Do a brief parent-level reconnaissance before broad delegation. Use the smallest useful inspection: for web tasks, run 1-3 targeted searches and read selected high-signal sources; for code/debug tasks, inspect entry points, errors, tests, and relevant files; for design/planning tasks, identify constraints, unknowns, acceptance criteria, and decision boundaries.\n",
-                "- From that reconnaissance, create a concise work plan: what is known, what remains uncertain, which branches are independent, and what evidence or files matter most.\n",
-                "- If `spawn_sub_agents` is available, delegate only after reconnaissance unless the task is clearly simple, local, strictly sequential, already well-scoped, or the user explicitly requested immediate parallel research.\n",
+                "For complex, broad, ambiguous, current, comparative, market, technical, legal, scientific, product, API, benchmark, planning, debugging, or best/latest/top/current tasks, use this workflow: scout -> delegation checkpoint -> parallel work -> synthesis.\n",
+                "- Scout first, but keep it brief. Do not turn the scout into full research. For web tasks, run 1-3 targeted searches and read 1-2 high-signal sources. For code/debug tasks, inspect entry points, errors, tests, and relevant files. For design/planning tasks, identify constraints, unknowns, acceptance criteria, and decision boundaries.\n",
+                "- After the scout, make a delegation checkpoint before continuing detailed work. Identify what is known, what remains uncertain, and which branches are independent.\n",
+                "- If `spawn_sub_agents` is available and the task is broad, comparative, current, or has 2+ independent branches, spawn sub-agents before continuing detailed research unless the task is clearly simple, local, strictly sequential, already well-scoped, or the user explicitly requested no delegation.\n",
                 "- Limit delegation: use 0 sub-agents when the task is simple, local, or strictly sequential; use 1-2 sub-agents when there are one or two independent branches; use 2-4 sub-agents only for broad research, architectural analysis, or comparative analysis.\n",
-                "- Prefer fewer, sharper branches over broad overlapping ones. Give each sub-agent a narrow task with context from reconnaissance, explicit exclusions, expected output format, and an explicit tools whitelist using only available tools.\n",
-                "- For web-research sub-agents, include source and freshness expectations, require reading selected URLs rather than relying on snippets, include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages, and keep `web_markdown` as the lightweight fallback.\n",
-                "- Treat sub-agent output as leads, not final truth. Use `wait_sub_agents` before relying on delegated findings, cross-check important claims in the parent synthesis, and resolve contradictions explicitly.\n",
-                "- Continue until evidence is sufficient or blockers are explicit. Prioritize primary sources, official docs, recent sources, reproducible checks, and directly relevant evidence.\n",
-                "Before final answer, verify internally: a brief reconnaissance was done or intentionally skipped for a clear reason; delegation was based on independent branches; selected sources/files were inspected; important claims and contradictions were checked; remaining uncertainty is explicit."
+                "- Give each sub-agent a narrow task with the scout snapshot: known facts, candidate sources/files/items, what to verify, explicit exclusions, expected output format, and an explicit tools whitelist using only available tools.\n",
+                "- For web-research sub-agents, require reading selected URLs rather than relying on snippets. Include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages; keep `web_markdown` as the lightweight fallback.\n",
+                "- Use `wait_sub_agents` before synthesis. Treat sub-agent output as leads, not final truth; cross-check decisive claims in the parent synthesis and resolve contradictions explicitly.\n",
+                "Before final answer, verify internally: the scout stayed brief; a delegation checkpoint happened; broad independent work was delegated when useful and available; selected sources/files were inspected; important uncertainty remains explicit."
             ),
         ),
     }?;
