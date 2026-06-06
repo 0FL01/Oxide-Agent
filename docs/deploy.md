@@ -69,7 +69,17 @@ docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.ym
 
 The complete variable list lives in `.env.example`.
 
-SQLx/Postgres is the durable storage backend. Previous object-storage data is intentionally not imported, read, or dual-written. Keep `OXIDE_DATABASE_MIGRATE_ON_STARTUP=false` for production/Supabase unless deployment explicitly runs migrations at startup.
+SQLx/Postgres is the durable storage backend. Previous object-storage data is intentionally not imported, read, or dual-written. Keep `OXIDE_DATABASE_MIGRATE_ON_STARTUP=false` for production/Supabase only when a separate migration job is guaranteed to complete before app startup; otherwise startup reconciliation can race a fresh remote database.
+
+### Postgres and Supabase checklist
+
+- Use one shared database URL through `OXIDE_DATABASE_URL` or `DATABASE_URL`; no object-storage credentials are required.
+- Keep `OXIDE_DATABASE_MAX_CONNECTIONS=5` unless the target Supabase/local Postgres limit is known to allow more.
+- Run migrations as a deploy step for production/Supabase, or set `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true` for local/dev and single-instance remote deployments. The Docker image includes `/app/migrations`, and `docker-compose.web.yml` enables startup migrations by default to avoid a first-boot race.
+- `docker-compose.web.local-services.yml` includes a local Postgres service on `127.0.0.1:55432`. Plain `docker-compose.web.yml` is remote-Postgres friendly and expects `OXIDE_DATABASE_URL` from `.env` or the shell.
+- Keep the default Postgres task-file limit (`OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432`) unless WAL/backups and retention have been reviewed.
+- Retention cleanup is bounded and opt-in from SQLx storage maintenance helpers; by default no scheduled deletion policy is enabled.
+- Verify startup with `capabilities --compiled --json`, then check logs for SQL health/migration errors before enabling traffic.
 
 ## Optional external services
 

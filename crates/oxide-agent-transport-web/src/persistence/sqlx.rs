@@ -30,6 +30,14 @@ pub struct SqlxWebUiStore {
     max_task_file_bytes: u64,
 }
 
+/// Row counts removed by one bounded SQLx web retention cleanup pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExpiredWebRecordsCleanup {
+    pub auth_sessions: u64,
+    pub task_events: u64,
+    pub task_files: u64,
+}
+
 impl SqlxWebUiStore {
     /// Creates a web store from the shared SQLx storage handle.
     #[must_use]
@@ -47,6 +55,88 @@ impl SqlxWebUiStore {
             storage,
             max_task_file_bytes,
         }
+    }
+
+    /// Deletes expired web records in bounded per-table batches.
+    ///
+    /// A zero `limit_per_table` is a no-op. Task file cleanup removes blob rows
+    /// through the existing foreign-key cascade.
+    pub async fn cleanup_expired_records(
+        &self,
+        now: DateTime<Utc>,
+        limit_per_table: usize,
+    ) -> WebUiStoreResult<ExpiredWebRecordsCleanup> {
+        if limit_per_table == 0 {
+            return Ok(ExpiredWebRecordsCleanup::default());
+        }
+        let limit = usize_to_i64(limit_per_table, "web retention cleanup limit")?;
+        let auth_sessions = query::<Postgres>(
+            r#"
+            DELETE FROM auth_sessions
+            WHERE ctid IN (
+                SELECT ctid
+                FROM auth_sessions
+                WHERE expires_at <= $1 OR (revoked_at IS NOT NULL AND revoked_at <= $1)
+                ORDER BY COALESCE(revoked_at, expires_at) ASC, session_token_hash ASC
+                LIMIT $2
+            )
+            "#,
+        )
+        .bind(now)
+        .bind(limit)
+        .execute(self.pool())
+        .await
+        .map_err(db_error)?
+        .rows_affected();
+        let task_events = query::<Postgres>(
+            r#"
+            DELETE FROM web_task_events
+            WHERE ctid IN (
+                SELECT ctid
+                FROM web_task_events
+                WHERE retention_expires_at IS NOT NULL
+                  AND retention_expires_at <= $1
+                ORDER BY retention_expires_at ASC, id ASC
+                LIMIT $2
+            )
+            "#,
+        )
+        .bind(now)
+        .bind(limit)
+        .execute(self.pool())
+        .await
+        .map_err(db_error)?
+        .rows_affected();
+        let task_files = query::<Postgres>(
+            r#"
+            DELETE FROM web_task_files
+            WHERE ctid IN (
+                SELECT ctid
+                FROM web_task_files
+                WHERE retention_expires_at IS NOT NULL
+                  AND retention_expires_at <= $1
+                ORDER BY retention_expires_at ASC,
+                         created_at ASC,
+                         user_id ASC,
+                         session_id ASC,
+                         task_id ASC,
+                         file_id ASC
+                LIMIT $2
+            )
+            "#,
+        )
+        .bind(now)
+        .bind(limit)
+        .execute(self.pool())
+        .await
+        .map_err(db_error)?
+        .rows_affected();
+
+        Ok(ExpiredWebRecordsCleanup {
+            auth_sessions,
+            task_events,
+            task_files,
+        })
     }
 
     fn pool(&self) -> &PgPool {
@@ -1511,7 +1601,13 @@ mod tests {
             .mark_unfinished_tasks_interrupted("backend restarted", reconcile_at)
             .await
             .expect("reconcile tasks");
-        assert_eq!(interrupted.len(), 2);
+        let mut interrupted_task_ids = interrupted
+            .iter()
+            .filter(|task| task.user_id == user_id)
+            .map(|task| task.task_id.as_str())
+            .collect::<Vec<_>>();
+        interrupted_task_ids.sort_unstable();
+        assert_eq!(interrupted_task_ids, ["queued", "running"]);
         assert_eq!(
             store
                 .load_task(user_id, "session-1", "running")
@@ -1535,6 +1631,93 @@ mod tests {
                 .expect("load completed")
                 .map(|task| task.status),
             Some(TaskStatus::Completed)
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlx_web_ui_store_persists_records_across_store_recreation() {
+        let Some(store) = test_store().await else {
+            eprintln!("skipping SQLx web store test: OXIDE_DATABASE_TEST_URL is not set");
+            return;
+        };
+        let now = postgres_timestamp_now();
+        let user_id = next_user_id();
+        save_user_and_session(&store, user_id, "session-1", now).await;
+        store
+            .save_auth_session(auth_session(user_id, "restart-token", now))
+            .await
+            .expect("save auth session");
+        store
+            .save_task(task_record(
+                user_id,
+                "session-1",
+                "task-1",
+                TaskStatus::Completed,
+                now,
+            ))
+            .await
+            .expect("save task");
+        store
+            .append_task_events(
+                user_id,
+                "session-1",
+                "task-1",
+                vec![event(user_id, "session-1", "task-1", 1)],
+            )
+            .await
+            .expect("append event");
+        store
+            .save_task_file(
+                WebTaskFileRecord {
+                    schema_version: 1,
+                    user_id,
+                    session_id: "session-1".to_string(),
+                    task_id: "task-1".to_string(),
+                    file_id: "file-1".to_string(),
+                    file_name: "restart.txt".to_string(),
+                    content_type: "text/plain".to_string(),
+                    size_bytes: 7,
+                    delivery_kind: FileDeliveryKind::Document,
+                    created_at: now,
+                },
+                b"restart".to_vec(),
+            )
+            .await
+            .expect("save task file");
+
+        let restarted_storage = SqlxStorage::connect(store.storage.config().clone())
+            .await
+            .expect("restarted SQLx storage should connect");
+        let restarted =
+            SqlxWebUiStore::with_max_task_file_bytes(Arc::new(restarted_storage), 1024 * 1024);
+
+        assert!(restarted
+            .load_auth_session("restart-token")
+            .await
+            .expect("auth session should load after restart")
+            .is_some());
+        assert!(restarted
+            .load_session(user_id, "session-1")
+            .await
+            .expect("session should load after restart")
+            .is_some());
+        assert_eq!(
+            restarted
+                .list_task_events(user_id, "session-1", "task-1", 0, 10)
+                .await
+                .expect("events should load after restart")
+                .events
+                .len(),
+            1
+        );
+        assert_eq!(
+            restarted
+                .load_task_file(user_id, "session-1", "task-1", "file-1")
+                .await
+                .expect("file should load after restart")
+                .expect("file exists")
+                .content,
+            b"restart"
         );
     }
 
@@ -1578,5 +1761,235 @@ mod tests {
             .await
             .expect_err("oversized file should fail");
         assert!(error.to_string().contains("Postgres storage limit"));
+    }
+
+    #[tokio::test]
+    async fn sqlx_web_ui_store_pages_large_event_stream_and_ignores_duplicate_seq() {
+        let Some(store) = test_store().await else {
+            eprintln!("skipping SQLx web store test: OXIDE_DATABASE_TEST_URL is not set");
+            return;
+        };
+        let now = postgres_timestamp_now();
+        let user_id = next_user_id();
+        save_user_and_session(&store, user_id, "session-1", now).await;
+        store
+            .save_task(task_record(
+                user_id,
+                "session-1",
+                "task-1",
+                TaskStatus::Running,
+                now,
+            ))
+            .await
+            .expect("save task");
+
+        let events = (1..=1_200)
+            .map(|seq| event(user_id, "session-1", "task-1", seq))
+            .collect::<Vec<_>>();
+        store
+            .append_task_events(user_id, "session-1", "task-1", events)
+            .await
+            .expect("append large event stream");
+        let mut duplicate = event(user_id, "session-1", "task-1", 1_200);
+        duplicate.summary = "duplicate-should-be-ignored".to_string();
+        store
+            .append_task_events(
+                user_id,
+                "session-1",
+                "task-1",
+                vec![duplicate, event(user_id, "session-1", "task-1", 1_201)],
+            )
+            .await
+            .expect("append duplicate and next event");
+
+        let tail = store
+            .list_task_events(user_id, "session-1", "task-1", 1_198, 10)
+            .await
+            .expect("tail event page should load");
+        assert_eq!(tail.events.len(), 3);
+        assert_eq!(tail.events[0].seq, 1_199);
+        assert_eq!(tail.events[1].seq, 1_200);
+        assert_ne!(tail.events[1].summary, "duplicate-should-be-ignored");
+        assert_eq!(tail.events[2].seq, 1_201);
+        assert!(!tail.has_more);
+
+        let row = query::<Postgres>(
+            r#"
+            SELECT COUNT(*) AS event_count
+            FROM web_task_events
+            WHERE user_id = $1 AND session_id = $2 AND task_id = $3
+            "#,
+        )
+        .bind(user_id)
+        .bind("session-1")
+        .bind("task-1")
+        .fetch_one(store.pool())
+        .await
+        .expect("event count should load");
+        assert_eq!(row_value::<i64>(&row, "event_count").unwrap(), 1_201);
+    }
+
+    #[tokio::test]
+    async fn sqlx_web_ui_store_retention_cleanup_is_bounded_and_idempotent() {
+        let Some(store) = test_store().await else {
+            eprintln!("skipping SQLx web store test: OXIDE_DATABASE_TEST_URL is not set");
+            return;
+        };
+        let now = postgres_timestamp_now();
+        let expired_at = now - Duration::seconds(5);
+        let fresh_until = now + Duration::days(1);
+        let user_id = next_user_id();
+        save_user_and_session(&store, user_id, "session-1", now).await;
+        store
+            .save_task(task_record(
+                user_id,
+                "session-1",
+                "task-1",
+                TaskStatus::Completed,
+                now,
+            ))
+            .await
+            .expect("save task");
+
+        let mut expired_session = auth_session(user_id, "expired", now);
+        expired_session.expires_at = expired_at;
+        store
+            .save_auth_session(expired_session)
+            .await
+            .expect("save expired auth session");
+        let mut revoked_session = auth_session(user_id, "revoked", now);
+        revoked_session.expires_at = fresh_until;
+        revoked_session.revoked_at = Some(expired_at);
+        store
+            .save_auth_session(revoked_session)
+            .await
+            .expect("save revoked auth session");
+        store
+            .save_auth_session(auth_session(user_id, "active", now))
+            .await
+            .expect("save active auth session");
+
+        store
+            .append_task_events(
+                user_id,
+                "session-1",
+                "task-1",
+                (1..=3)
+                    .map(|seq| event(user_id, "session-1", "task-1", seq))
+                    .collect(),
+            )
+            .await
+            .expect("append events");
+        query::<Postgres>(
+            r#"
+            UPDATE web_task_events
+            SET retention_expires_at = CASE WHEN seq = 3 THEN $2 ELSE $1 END
+            WHERE user_id = $3 AND session_id = $4 AND task_id = $5
+            "#,
+        )
+        .bind(expired_at)
+        .bind(fresh_until)
+        .bind(user_id)
+        .bind("session-1")
+        .bind("task-1")
+        .execute(store.pool())
+        .await
+        .expect("event retention timestamps should update");
+
+        for file_id in ["expired-file", "fresh-file"] {
+            store
+                .save_task_file(
+                    WebTaskFileRecord {
+                        schema_version: 1,
+                        user_id,
+                        session_id: "session-1".to_string(),
+                        task_id: "task-1".to_string(),
+                        file_id: file_id.to_string(),
+                        file_name: format!("{file_id}.txt"),
+                        content_type: "text/plain".to_string(),
+                        size_bytes: 5,
+                        delivery_kind: FileDeliveryKind::Document,
+                        created_at: now,
+                    },
+                    b"hello".to_vec(),
+                )
+                .await
+                .expect("save task file");
+        }
+        query::<Postgres>(
+            r#"
+            UPDATE web_task_files
+            SET retention_expires_at = CASE WHEN file_id = 'fresh-file' THEN $1 ELSE $2 END
+            WHERE user_id = $3 AND session_id = $4 AND task_id = $5
+            "#,
+        )
+        .bind(fresh_until)
+        .bind(expired_at)
+        .bind(user_id)
+        .bind("session-1")
+        .bind("task-1")
+        .execute(store.pool())
+        .await
+        .expect("file retention timestamps should update");
+
+        assert_eq!(
+            store
+                .cleanup_expired_records(now, 1)
+                .await
+                .expect("first bounded cleanup should execute"),
+            ExpiredWebRecordsCleanup {
+                auth_sessions: 1,
+                task_events: 1,
+                task_files: 1,
+            }
+        );
+        assert_eq!(
+            store
+                .cleanup_expired_records(now, 10)
+                .await
+                .expect("second cleanup should execute"),
+            ExpiredWebRecordsCleanup {
+                auth_sessions: 1,
+                task_events: 1,
+                task_files: 0,
+            }
+        );
+        assert_eq!(
+            store
+                .cleanup_expired_records(now, 10)
+                .await
+                .expect("idempotent cleanup should execute"),
+            ExpiredWebRecordsCleanup::default()
+        );
+        assert_eq!(
+            store
+                .cleanup_expired_records(fresh_until + Duration::seconds(1), 0)
+                .await
+                .expect("zero-limit cleanup should no-op"),
+            ExpiredWebRecordsCleanup::default()
+        );
+
+        assert!(store
+            .load_auth_session("active")
+            .await
+            .expect("active auth session lookup should execute")
+            .is_some());
+        let remaining_events = store
+            .list_task_events(user_id, "session-1", "task-1", 0, 10)
+            .await
+            .expect("remaining events should load")
+            .events;
+        assert_eq!(remaining_events.len(), 1);
+        assert_eq!(remaining_events[0].seq, 3);
+        assert!(store
+            .load_task_file(user_id, "session-1", "task-1", "fresh-file")
+            .await
+            .expect("fresh file lookup should execute")
+            .is_some());
+        assert!(store
+            .load_task_file(user_id, "session-1", "task-1", "expired-file")
+            .await
+            .expect("expired file lookup should execute")
+            .is_none());
     }
 }

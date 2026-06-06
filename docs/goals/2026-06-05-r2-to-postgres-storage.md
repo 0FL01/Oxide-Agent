@@ -1,11 +1,11 @@
 # Goal: R2 to SQLx/Postgres Durable Storage
 
 Date started: 2026-06-05
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-05-r2-to-postgres-storage.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/PRD-r2-to-pg.md`
 Goal doc owner: Codex
-Last updated: 2026-06-06 09:44 +03
+Last updated: 2026-06-06 12:10 +03
 
 ## Objective
 
@@ -36,23 +36,23 @@ Out of scope:
 
 - B1: Maximum task file/blob size for Postgres-only storage.
   - Impact: Current web upload defaults are risky for `bytea` storage and Supabase WAL/backups.
-  - Low-risk assumption or fallback: Phase 2 starts with a strict configurable limit and rejects larger files until the user approves another non-R2 blob architecture.
-  - User/external action needed: Approve or change the default maximum file size before Phase 7 hardening.
+  - Low-risk assumption or fallback: Use the strict configurable `OXIDE_WEB_TASK_FILE_MAX_BYTES` limit, default `33554432` bytes, and reject larger task files until the user approves another non-R2 blob architecture.
+  - User/external action needed: None for this goal; the user can change the env value later if operational WAL/backup review approves it.
 
 - B2: Retention defaults for task events, task files, wiki raw archives, old auth sessions, and optionally audit.
   - Impact: Infinite retention can grow Postgres/WAL; aggressive cleanup can break replay expectations.
-  - Low-risk assumption or fallback: Preserve final task/session state, add `retention_expires_at` fields, and keep cleanup bounded but disabled or conservative until policy is approved.
-  - User/external action needed: Decide retention policy before Phase 7 completion.
+  - Low-risk assumption or fallback: Preserve final task/session state, add `retention_expires_at` fields, and expose bounded/idempotent cleanup helpers without automatic deletion until policy is approved.
+  - User/external action needed: None for this goal; choose retention schedules before wiring an automatic cleanup job.
 
 - B3: Migration execution policy.
   - Impact: Local dev can benefit from startup migrations, but production/Supabase should prefer deploy-step migrations.
-  - Low-risk assumption or fallback: Add config with production default `OXIDE_DATABASE_MIGRATE_ON_STARTUP=false`; local docs may opt in explicitly.
-  - User/external action needed: Confirm whether local startup should run migrations automatically.
+  - Low-risk assumption or fallback: Keep config default `OXIDE_DATABASE_MIGRATE_ON_STARTUP=false`, but web Docker Compose enables startup migrations and ships `/app/migrations` to avoid first-boot races on fresh local or remote Postgres unless a separate migration job is guaranteed.
+  - User/external action needed: None for this goal; disable startup migrations only when deployment runs migrations before app startup.
 
 - B4: Supabase production connection endpoint and pool limits.
   - Impact: Wrong pool defaults can exhaust Supabase connection limits.
-  - Low-risk assumption or fallback: Use one shared pool per process and conservative defaults.
-  - User/external action needed: Verify the intended Supabase connection URL/pooler mode for the target deployment during Phase 1/7.
+  - Low-risk assumption or fallback: Use one shared pool per process, conservative default max connections of `5`, documented Supabase checklist, and explicit `OXIDE_DATABASE_URL`/pool env knobs.
+  - User/external action needed: None for this goal; verify final Supabase pooler URL/mode during real deployment.
 
 - B5: Conflict semantics for mutable records.
   - Impact: Old R2 ETag conflicts must become explicit SQL version checks, row locks, or last-write-wins behavior.
@@ -137,57 +137,57 @@ Out of scope:
   - Requirement: Provide current setup docs/env/config for local PostgreSQL and Supabase Postgres fresh setup without R2.
   - Acceptance: `.env.example`, README/current docs, deploy docs, CI/deployment env, and health checks use DB vars; docs state old R2 data is intentionally ignored; no current setup path requires object-storage credentials.
   - Evidence required: Docs/env diff review, local setup smoke or documented command sequence, Supabase compatibility checklist, and CI workflow review.
-  - Status: pending
-  - Evidence collected: Phase 1 added initial DB vars to `.env.example`, deploy docs, README, and CI Postgres service/smoke strategy. Phase 6 updated `.env.example`, README, deploy docs, CI/deploy env, profiles, and current setup paths to use SQLx/Postgres and `OXIDE_DATABASE_URL` without `OXIDE_R2_*`, `storage/r2`, or `storage-s3-r2`; docs state old object-storage data is intentionally ignored. Full Supabase compatibility and final hardening remain pending Phase 7.
+  - Status: verified
+  - Evidence collected: Phase 1 added initial DB vars to `.env.example`, deploy docs, README, and CI Postgres service/smoke strategy. Phase 6 updated `.env.example`, README, deploy docs, CI/deploy env, profiles, and current setup paths to use SQLx/Postgres and `OXIDE_DATABASE_URL` without `OXIDE_R2_*`, `storage/r2`, or `storage-s3-r2`; docs state old object-storage data is intentionally ignored. Phase 7 added Docker image migration packaging, web Compose startup-migration defaults for fresh remote/local Postgres, local Postgres only in `docker-compose.web.local-services.yml`, `OXIDE_DATABASE_MAX_CONNECTIONS`/task-file limit docs, and a deploy/Supabase checklist. Compose E2E on a clean local Postgres overlay returned `/health` ok, registered a user, verified `web_tasks`/`web_users` existed, and confirmed `_sqlx_migrations` count `6` before web reconciliation.
 
 - G9: SQL backend is hardened for production-like use
   - Source: `docs/prd/PRD-r2-to-pg.md:2250`
   - Requirement: Add indexes, retention/cleanup policies, pool tuning, failure-mode tests, performance smoke tests, and Supabase compatibility notes.
   - Acceptance: Large task event append/page does not scan O(n) or rewrite large blobs; cleanup jobs are bounded/idempotent; pool defaults are conservative; DB unavailable/migration/transaction/duplicate/claim failure modes produce actionable errors.
   - Evidence required: Query/index review, cleanup tests, performance smoke summaries, failure-mode tests, pool config docs, and Supabase checklist.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Phase 7 added `migrations/0006_storage_hardening.sql`, an indexed cleanup path for revoked auth sessions, bounded/idempotent cleanup helpers for expired web auth sessions/task events/task files and wiki rows, conservative pool-size documentation and a zero-pool-size config test, large task-event append/page/duplicate-seq smoke coverage, web store recreation persistence smoke, remote/local Compose startup migration packaging, and DB-backed core/web SQLx tests. Final profile checks, clippy, static guards, cargo-tree deny loops, and Compose E2E passed.
 
 - Q1: Fresh setup only; no old R2 data migration or compatibility path
   - Source: `docs/prd/PRD-r2-to-pg.md:29`
   - Acceptance: No importer, backfill, R2 reader, R2 fallback, dual-write, or old object scan tooling is implemented.
   - Evidence required: Diff review, static grep guard output, and docs stating old R2 data is ignored.
-  - Status: pending
-  - Evidence collected: Phase 0 changed only the goal document and explicitly preserves no migration/import/backfill/dual-write/R2 fallback; Phase 3 added direct SQL tables and SQL-backed core methods without importer, backfill, R2 reader, R2 object scan, or dual-write code. Phase 4 added fresh SQL reminder/audit tables and direct SQLx methods only, with no R2 reader/importer/dual-write path. Phase 5 added fresh SQL wiki rows and parses only current deterministic logical wiki keys; it does not read, import, scan, or dual-write old R2 objects. Phase 6 deleted the R2 runtime modules and web object persistence instead of adding compatibility readers, and the targeted no-R2 guard returned no disallowed runtime/setup hits.
+  - Status: verified
+  - Evidence collected: Phase 0 changed only the goal document and explicitly preserves no migration/import/backfill/dual-write/R2 fallback; Phase 3 added direct SQL tables and SQL-backed core methods without importer, backfill, R2 reader, R2 object scan, or dual-write code. Phase 4 added fresh SQL reminder/audit tables and direct SQLx methods only, with no R2 reader/importer/dual-write path. Phase 5 added fresh SQL wiki rows and parses only current deterministic logical wiki keys; it does not read, import, scan, or dual-write old R2 objects. Phase 6 deleted the R2 runtime modules and web object persistence instead of adding compatibility readers, and Phase 7 repeated the targeted no-R2 guard with no disallowed runtime/setup hits.
 
 - Q2: Keep the solution simple and storage-focused
   - Source: `AGENTS.md`, `docs/prd/PRD-r2-to-pg.md:1021`
   - Acceptance: No SQLite backend, Supabase Storage bucket, new queue/cache/service, sharding, HA, or broad framework abstraction is added.
   - Evidence required: Cargo diffs, compose/deploy diffs, dependency review, and implementation diff review.
-  - Status: pending
-  - Evidence collected: Phase 0 changed only the goal document; Phase 1 added only Postgres SQLx foundation dependencies/config, one shared pool, one migration stream, a CI Postgres service, and a smoke test. Phase 3 reused the same SQLx/Postgres pool and storage facade with direct queries. Phase 4 kept reminders as ordinary Postgres rows with status/lease columns and audit as append-only rows. Phase 5 stores wiki text as ordinary Postgres rows behind the existing storage facade. Phase 6 removed AWS/R2 dependencies and feature flags rather than adding another backend or service; SQLx/Postgres remains the only durable runtime storage backend.
+  - Status: verified
+  - Evidence collected: Phase 0 changed only the goal document; Phase 1 added only Postgres SQLx foundation dependencies/config, one shared pool, one migration stream, a CI Postgres service, and a smoke test. Phase 3 reused the same SQLx/Postgres pool and storage facade with direct queries. Phase 4 kept reminders as ordinary Postgres rows with status/lease columns and audit as append-only rows. Phase 5 stores wiki text as ordinary Postgres rows behind the existing storage facade. Phase 6 removed AWS/R2 dependencies and feature flags rather than adding another backend or service; SQLx/Postgres remains the only durable runtime storage backend. Phase 7 added only bounded SQL cleanup helpers, local-only optional Compose Postgres overlay, and docs/config for the same Postgres backend; no SQLite, Supabase Storage, Redis, queue, sharding, HA, or extra durable backend was added.
 
 - Q3: Data model uses typed columns for queryable fields and JSONB only where justified
   - Source: `docs/prd/PRD-r2-to-pg.md:1230`, `docs/prd/PRD-r2-to-pg.md:2544`
   - Acceptance: Identifiers, ownership/scope, status, timestamps, versions, pagination keys, and due-claim fields are typed/indexed columns; JSONB remains limited to flexible payloads/snapshots.
   - Evidence required: Migration review, query/index review, and tests proving indexed list/page/due queries.
-  - Status: pending
-  - Evidence collected: Phase 2 web migration uses typed identifiers, ownership, auth/login/session/task status, timestamps, version/order keys, event seq, file size/content type, and indexes for auth/session/task/event/file queries; JSONB is limited to model selections, attachment/event/progress payloads, task-file metadata, and flexible final session snapshots. Phase 3 core migration uses typed user/context/flow/profile/topic/binding/secret ownership, versions, timestamps, enum text columns, arrays, and indexes; JSONB is limited to agent memory snapshots and agent profile payloads. Phase 4 reminder/audit migration uses typed reminder status/schedule/thread kind, due/lease/run/version columns, per-user audit versions, and audit page indexes; JSONB is limited to audit payloads. Phase 5 wiki migration uses typed storage prefix, scope kind, context id, item kind, path, content byte count, retention marker, version, timestamps, and context/prefix indexes; wiki content is plain `TEXT` and uses no JSONB.
+  - Status: verified
+  - Evidence collected: Phase 2 web migration uses typed identifiers, ownership, auth/login/session/task status, timestamps, version/order keys, event seq, file size/content type, and indexes for auth/session/task/event/file queries; JSONB is limited to model selections, attachment/event/progress payloads, task-file metadata, and flexible final session snapshots. Phase 3 core migration uses typed user/context/flow/profile/topic/binding/secret ownership, versions, timestamps, enum text columns, arrays, and indexes; JSONB is limited to agent memory snapshots and agent profile payloads. Phase 4 reminder/audit migration uses typed reminder status/schedule/thread kind, due/lease/run/version columns, per-user audit versions, and audit page indexes; JSONB is limited to audit payloads. Phase 5 wiki migration uses typed storage prefix, scope kind, context id, item kind, path, content byte count, retention marker, version, timestamps, and context/prefix indexes; wiki content is plain `TEXT` and uses no JSONB. Phase 7 added a revoked-auth cleanup partial index and tests exercising indexed event pagination, duplicate seq handling, and retention cleanup selectors.
 
 - Q4: Append-only/high-volume paths avoid object-style rewrites and hot-row churn
   - Source: `docs/prd/PRD-r2-to-pg.md:23`, `docs/prd/PRD-r2-to-pg.md:715`, `docs/prd/PRD-r2-to-pg.md:2560`
   - Acceptance: Task events and audit are append-only rows; progress uses separate coalesced/debounced latest snapshot; large event batches do not rewrite chunks or full task blobs.
   - Evidence required: Event/audit/progress tests, performance smoke, and focused diff review.
-  - Status: pending
-  - Evidence collected: Phase 2 task events are append-only SQL rows with duplicate seq conflict-ignore, paged by indexed `(user_id, session_id, task_id, seq)` order; latest progress is stored in separate `web_task_progress` rows instead of rewriting event chunks. Phase 4 audit events are append-only SQL rows keyed by `(user_id, version)` and paged by indexed descending version order instead of rewriting a per-user JSON array.
+  - Status: verified
+  - Evidence collected: Phase 2 task events are append-only SQL rows with duplicate seq conflict-ignore, paged by indexed `(user_id, session_id, task_id, seq)` order; latest progress is stored in separate `web_task_progress` rows instead of rewriting event chunks. Phase 4 audit events are append-only SQL rows keyed by `(user_id, version)` and paged by indexed descending version order instead of rewriting a per-user JSON array. Phase 7 web SQLx tests append/page a 1201-event stream and prove duplicate seq inserts are ignored without chunk/blob rewrites; cleanup deletes expired rows in bounded batches instead of rewriting large objects.
 
 - Q5: SQL concurrency semantics replace ETags deliberately
   - Source: `docs/prd/PRD-r2-to-pg.md:167`, `docs/prd/PRD-r2-to-pg.md:2523`
   - Acceptance: Multi-record updates, reminders, audit version allocation, duplicate guards, and mutable records have explicit transactions, row locks, version checks, or documented last-write-wins behavior.
   - Evidence required: Concurrency tests, transaction-boundary notes, and conflict/error tests.
-  - Status: pending
-  - Evidence collected: Phase 3 core upserts use transactions with `SELECT ... FOR UPDATE`, transaction-scoped advisory locks for mutable record families and cross-table topic prompt duplicate guards, version columns built through existing storage builders, and SQL tests for version increments plus duplicate prompt conflicts. Phase 4 reminder mutations use row-locking updates/`SELECT ... FOR UPDATE`, explicit lease predicates, version increments, a single-winner concurrent claim test, and lease-expiry reclaim coverage; audit append locks `audit_stream_versions` with `FOR UPDATE` and allocates per-user versions transactionally.
+  - Status: verified
+  - Evidence collected: Phase 3 core upserts use transactions with `SELECT ... FOR UPDATE`, transaction-scoped advisory locks for mutable record families and cross-table topic prompt duplicate guards, version columns built through existing storage builders, and SQL tests for version increments plus duplicate prompt conflicts. Phase 4 reminder mutations use row-locking updates/`SELECT ... FOR UPDATE`, explicit lease predicates, version increments, a single-winner concurrent claim test, and lease-expiry reclaim coverage; audit append locks `audit_stream_versions` with `FOR UPDATE` and allocates per-user versions transactionally. Phase 7 web startup now runs migrations deterministically before reconciliation in Compose images, and cleanup/restart tests verify bounded idempotent mutations plus persisted records across store recreation.
 
 - V1: Core Rust validation passes for affected profiles
   - Source: `AGENTS.md`
   - Acceptance: Relevant `cargo fmt`, `cargo check`, `cargo clippy`, and `cargo test` commands pass for touched crates/profiles at each checkpoint.
   - Evidence required: Command output summaries recorded in Progress Log and Final Verification.
-  - Status: pending
+  - Status: verified
   - Evidence collected: Phase 1 validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`; modular registry snapshot tests passed for `profile-lite`, `profile-search-only`, `profile-no-sandbox`, `profile-media-enabled`, `profile-host-bwrap`, `profile-full`, `profile-embedded-opencode-local`, `profile-web-embedded-opencode-local`, and `all-features`. Phase 2 web validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-transport-web --no-default-features --features storage-sqlx`; `cargo clippy -p oxide-agent-transport-web --no-default-features --features storage-sqlx -- -D warnings`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; SQLx-focused and full web library tests with `storage-sqlx`. Phase 3 core/Telegram validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx -- -D warnings`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`.
 
   - Phase 4 validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`; `cargo clippy -p oxide-agent-core --no-default-features --features storage-sqlx -- -D warnings`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features storage-sqlx -- -D warnings`; profile checks for embedded Telegram and web; focused SQLx DB-backed core tests with 10 passed.
@@ -196,16 +196,20 @@ Out of scope:
 
   - Phase 6 validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`; modular registry snapshot tests for all profile/all-features outputs; `cargo test -p oxide-agent-core --test tool_runtime_static_guards --no-default-features --features storage-sqlx` with 19 passed.
 
+  - Phase 7 validation passed: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-transport-web --no-default-features --features storage-sqlx`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`; `cargo test -p oxide-agent-core --test tool_runtime_static_guards --no-default-features --features storage-sqlx` with 19 passed; Compose config and E2E checks passed.
+
 - V2: SQL integration and migration validation pass against clean Postgres
   - Source: `docs/prd/PRD-r2-to-pg.md:1206`, `docs/prd/PRD-r2-to-pg.md:2345`
   - Acceptance: Migrations apply to empty Postgres; SQL storage and web persistence contract tests pass without R2 env vars.
   - Evidence required: Postgres test DB command output, migration output, SQL integration test output, CI evidence.
-  - Status: pending
+  - Status: verified
   - Evidence collected: Phase 1 smoke passed against a temporary clean `postgres:16` container on port `55432`: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_storage_connects_and_runs_migrations_when_test_url_is_set -- --nocapture`. The smoke creates a shared pool, runs `migrations/0001_storage_health.sql`, and executes the SQL health query. Phase 2 applied `migrations/0002_web_persistence.sql` through the SQLx-backed app-state startup smoke and passed web SQL contract tests against a clean temporary Postgres container: `cargo test -p oxide-agent-transport-web --no-default-features --features storage-sqlx sqlx_ -- --nocapture` and `cargo test -p oxide-agent-transport-web --no-default-features --features storage-sqlx --lib` with `OXIDE_DATABASE_TEST_URL` set. Phase 3 applied `migrations/0003_core_storage.sql` against a clean temporary `postgres:16` container and passed focused SQLx core contract tests: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture`.
 
   - Phase 4 applied `migrations/0004_reminders_audit.sql` to a clean temporary `postgres:16` container and passed focused SQLx core contract tests: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture` with 10 SQLx tests passing, including reminder/audit coverage.
 
   - Phase 5 applied `migrations/0005_wiki_memory.sql` to a clean temporary `postgres:16` container and passed focused SQLx core contract tests: `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture` with 11 SQLx tests passing, including wiki memory row coverage.
+
+  - Phase 7 applied migrations through `0006_storage_hardening.sql` to clean temporary Postgres databases. Core SQLx tests passed with 13 SQLx tests, web SQLx tests passed with 8 SQLx tests, and Compose E2E verified `_sqlx_migrations` count `6` plus `web_tasks`/`web_users` existence on a fresh local-services Postgres before web reconciliation.
 
 - V3: Static dependency/reference guards prove R2/AWS runtime removal
   - Source: `docs/prd/PRD-r2-to-pg.md:2232`, `docs/prd/PRD-r2-to-pg.md:2639`
@@ -218,24 +222,24 @@ Out of scope:
   - Source: `docs/prd/PRD-r2-to-pg.md:2306`, `docs/prd/PRD-r2-to-pg.md:2390`
   - Acceptance: Local Postgres web console/auth/session/task/event restart smoke passes; Telegram startup/storage health check works; Supabase compatibility checklist is completed or explicitly deferred by user.
   - Evidence required: Smoke command/output summaries, screenshots/log snippets if relevant, and checklist results.
-  - Status: pending
-  - Evidence collected: Phase 2 web SQL startup smoke passed with `OXIDE_DATABASE_URL`, `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true`, and `OXIDE_DATABASE_MIGRATIONS_DIR=migrations`, asserting `WebStoreKind::Sqlx`; SQL unfinished-task reconciliation test verifies queued/running web tasks become interrupted and session active task ids are cleared after startup reconciliation. Phase 3 verified SQLx-only Telegram durable startup/build wiring with `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`, and production-like Telegram/web profile checks still build with SQLx selected when configured. Full local web-console restart and Supabase checklist remain pending.
+  - Status: verified
+  - Evidence collected: Phase 2 web SQL startup smoke passed with `OXIDE_DATABASE_URL`, `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true`, and `OXIDE_DATABASE_MIGRATIONS_DIR=migrations`, asserting `WebStoreKind::Sqlx`; SQL unfinished-task reconciliation test verifies queued/running web tasks become interrupted and session active task ids are cleared after startup reconciliation. Phase 3 verified SQLx-only Telegram durable startup/build wiring with `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features transport-telegram,storage-sqlx`, and production-like Telegram/web profile checks still build with SQLx selected when configured.
 
-  - Phase 4 rechecked SQLx-only Telegram build/profile paths and DB-backed reminder/audit storage through Postgres. Full local restart and Supabase checklist remain pending.
+  - Phase 4 rechecked SQLx-only Telegram build/profile paths and DB-backed reminder/audit storage through Postgres. Phase 7 web Compose E2E on a clean local-services Postgres passed `/health`, registration, migration-table checks, and log review with no `relation "web_tasks"` error; `SqlxWebUiStore` restart smoke persisted auth/session/task/event/file rows across store recreation; deploy docs include the Supabase checklist and remote-Postgres startup migration policy.
 
 - N1: Old R2 data migration remains excluded
   - Source: `docs/prd/PRD-r2-to-pg.md:29`
   - Must preserve: No migration, reader, dual-write, importer, backfill, or object-key scan story is added.
   - Evidence required: Diff review and grep guard output.
-  - Status: pending
-  - Evidence collected: Phase 0 map records old R2 data as intentionally out of scope and adds no importer, reader, dual-write, backfill, compatibility path, or object-key scan implementation. Phase 3 core SQLx implementation adds fresh SQL rows only and does not read, import, scan, or dual-write old R2 objects. Phase 4 reminder/audit SQLx implementation likewise adds fresh SQL rows and direct SQL mutations only, with no R2 reader/importer/dual-write path. Phase 5 wiki SQLx implementation stores fresh logical-key rows and does not scan/import/read old R2 wiki objects. Phase 6 deletes R2 runtime storage and object web persistence outright; the targeted no-R2 guard found no old object-key scan/importer/fallback path in current runtime/setup files.
+  - Status: verified
+  - Evidence collected: Phase 0 map records old R2 data as intentionally out of scope and adds no importer, reader, dual-write, backfill, compatibility path, or object-key scan implementation. Phase 3 core SQLx implementation adds fresh SQL rows only and does not read, import, scan, or dual-write old R2 objects. Phase 4 reminder/audit SQLx implementation likewise adds fresh SQL rows and direct SQL mutations only, with no R2 reader/importer/dual-write path. Phase 5 wiki SQLx implementation stores fresh logical-key rows and does not scan/import/read old R2 wiki objects. Phase 6 deletes R2 runtime storage and object web persistence outright; Phase 7 repeated the targeted no-R2 guard and found no old object-key scan/importer/fallback path in current runtime/setup files.
 
 - N2: SQLite remains absent
   - Source: `docs/prd/PRD-r2-to-pg.md:37`, `docs/prd/PRD-r2-to-pg.md:2314`
   - Must preserve: No SQLite dependency, feature, migration, tests, docs, or acceptance criteria.
   - Evidence required: Cargo/dependency grep and docs diff review.
-  - Status: pending
-  - Evidence collected: Phase 0 search `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example` found only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`, a sandbox/database hint. Phase 1 intentionally avoided the top-level `sqlx` crate after it pulled SQLite dependencies; direct `sqlx-core` + `sqlx-postgres` left `Cargo.lock` without `sqlx-sqlite`, `libsqlite3-sys`, or `rusqlite`. Phase 2 web SQLx dependency guard again matched only the pre-existing sandbox hint, and `cargo tree -p oxide-agent-transport-web --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package. Phase 3 guard again matched only the pre-existing sandbox hint, and `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package. Phase 4 guard repeated the same result for the SQLx core package after adding reminders/audit. Phase 5 guard repeated the same result after adding wiki storage rows. Phase 6 no-SQLite guard again matched only the same pre-existing sandbox hint, and `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package.
+  - Status: verified
+  - Evidence collected: Phase 0 search `rg -n -i --hidden --glob '!target/**' --glob '!.git/**' -e 'sqlite|rusqlite|sqlx::sqlite|Sqlite' Cargo.toml crates config .github .env.example` found only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`, a sandbox/database hint. Phase 1 intentionally avoided the top-level `sqlx` crate after it pulled SQLite dependencies; direct `sqlx-core` + `sqlx-postgres` left `Cargo.lock` without `sqlx-sqlite`, `libsqlite3-sys`, or `rusqlite`. Phase 2 web SQLx dependency guard again matched only the pre-existing sandbox hint, and `cargo tree -p oxide-agent-transport-web --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package. Phase 3 guard again matched only the pre-existing sandbox hint, and `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package. Phase 4 guard repeated the same result for the SQLx core package after adding reminders/audit. Phase 5 guard repeated the same result after adding wiki storage rows. Phase 6 no-SQLite guard again matched only the same pre-existing sandbox hint. Phase 7 no-SQLite guard again matched only the sandbox hint, and `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package.
 
 - N3: R2 is not retained as a fallback or feature flag after removal
   - Source: `docs/prd/PRD-r2-to-pg.md:35`, `docs/prd/PRD-r2-to-pg.md:1183`
@@ -450,6 +454,38 @@ Status: complete for physical runtime removal. SQLx/Postgres is now the only dur
 - Capability JSON for Telegram and web production-like profiles had no `storage/r2|storage-s3-r2` hits.
 - No-SQLite guard matched only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`; `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package.
 
+## Phase 7 Hardening and Final Verification Evidence
+
+Status: complete. SQLx/Postgres storage has bounded cleanup hooks, conservative pool/deploy guidance, deterministic web startup migrations for local/remote Compose, and final validation evidence for current runtime paths.
+
+### Added hardening artifacts
+
+- Migration stream: `migrations/0006_storage_hardening.sql` adds a partial cleanup index for revoked `auth_sessions`.
+- Core cleanup: `SqlxStorage::cleanup_expired_wiki_pages` deletes expired `wiki_pages` rows in bounded/idempotent batches and returns affected rows.
+- Web cleanup: `SqlxWebUiStore::cleanup_expired_records` deletes expired/revoked auth sessions, expired task events, and expired task files in bounded/idempotent batches; task-file blobs cascade through the existing FK.
+- Web startup: `docker/Dockerfile.app` ships `/app/migrations`; base `docker-compose.web.yml` is remote-Postgres friendly and enables startup migrations by default to avoid first-boot races; `docker-compose.web.local-services.yml` owns optional local Postgres and health-gated dependencies.
+- Docs/env: `.env.example`, README, and deploy docs document conservative DB pools, startup migration policy, local-services Postgres, task-file byte limits, bounded cleanup, old object-storage data ignored, and Supabase checklist.
+
+### Validation evidence
+
+- `cargo fmt --all -- --check`
+- `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`
+- `cargo check -p oxide-agent-transport-web --no-default-features --features storage-sqlx`
+- `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`
+- `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`
+- `cargo check --workspace --no-default-features --features profile-host-bwrap`
+- `cargo check --workspace --no-default-features --features profile-full`
+- `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`
+- `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_ -- --nocapture` passed 13 SQLx tests.
+- `OXIDE_DATABASE_TEST_URL=postgres://oxide_agent:oxide_agent@localhost:55432/oxide_agent_test cargo test -p oxide-agent-transport-web --no-default-features --features storage-sqlx sqlx_ -- --nocapture` passed 8 SQLx web tests.
+- `cargo test -p oxide-agent-core --test tool_runtime_static_guards --no-default-features --features storage-sqlx` passed 19 static guard tests.
+- `docker compose -f docker-compose.web.yml config --quiet` and `docker compose -f docker-compose.web.yml -f docker-compose.web.local-services.yml config --quiet` passed.
+- Compose E2E with clean local-services Postgres and `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true` returned `/health` ok, registered a web user, verified `web_tasks` and `web_users` exist, verified `_sqlx_migrations` count `6`, and found no `relation "web_tasks"` startup error in logs.
+- AWS cargo-tree deny loop returned no AWS SDK/S3 packages across core `profile-full`, Telegram `profile-embedded-opencode-local`, and web `profile-web-embedded-opencode-local`.
+- Targeted no-R2 guard returned no disallowed hits across current runtime/setup files.
+- No-SQLite guard matched only `crates/oxide-agent-core/src/agent/preprocessor.rs:432`; `cargo tree -p oxide-agent-core --no-default-features --features storage-sqlx -i sqlx-sqlite` reported no matching package.
+- Capability JSON for Telegram and web production-like profiles had no `storage/r2|storage-s3-r2` hits.
+
 ## Implementation Plan
 
 1. Phase 0 — deletion map and SQL entity map
@@ -523,6 +559,8 @@ Status: complete for physical runtime removal. SQLx/Postgres is now the only dur
 - 2026-06-05: Phase 4 keeps reminders as ordinary SQL rows with status/lease predicates and audit as append-only rows with per-user stream-version rows; no external queue, cache, or service is introduced.
 - 2026-06-06: Phase 5 keeps the existing deterministic wiki key API at the `StorageProvider` seam but parses keys into typed SQL `wiki_pages` metadata; global wiki rows are globally shared per storage prefix under B6 until the user requests user-scoped global wiki ownership.
 - 2026-06-06: Phase 6 removes the R2/AWS runtime outright; SQLx/Postgres is the only durable storage backend, and old object-storage data remains ignored rather than migrated, read, dual-written, or kept as fallback.
+- 2026-06-06: Phase 7 keeps cleanup bounded/idempotent and explicit rather than adding a scheduler or queue; automatic retention policy remains an operator choice outside this storage migration.
+- 2026-06-06: Web Compose ships migrations and enables startup migrations by default because fresh remote Postgres can otherwise race web reconciliation; local Postgres belongs only to `docker-compose.web.local-services.yml`, while base `docker-compose.web.yml` expects an explicit remote `OXIDE_DATABASE_URL`.
 
 ## Progress Log
 
@@ -582,45 +620,50 @@ Status: complete for physical runtime removal. SQLx/Postgres is now the only dur
   - Audit IDs updated: G7, V3, and N3 verified; G8, Q1, Q2, N1, N2, and V1 received Phase 6 evidence but remain pending where Phase 7/final audit still applies.
   - Next: Phase 7 — hardening and final verification.
 
+- 2026-06-06 12:10 +03: Phase 7 hardening and final verification completed.
+  - Changed: Added SQL hardening migration, bounded/idempotent cleanup helpers and tests for wiki/web retention rows, pool-size failure-mode test, large web event stream smoke, web store recreation persistence smoke, Docker migration packaging, remote/local Compose migration defaults, local-services Postgres overlay, and final docs/env/Supabase checklist updates.
+  - Evidence: Core SQLx tests passed with 13 tests; web SQLx tests passed with 8 tests; Compose E2E on clean local-services Postgres verified health, registration, migrated web tables, six applied migrations, and no `web_tasks` race; profile checks, clippy, static guards, no-R2/no-SQLite/AWS-deny guards, and capability no-R2 checks passed.
+  - Commands: `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx`; `cargo check -p oxide-agent-transport-web --no-default-features --features storage-sqlx`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`; `cargo check --workspace --no-default-features --features profile-full`; `cargo clippy --workspace --no-default-features --features profile-embedded-opencode-local -- -D warnings`; core/web SQLx DB tests; Compose config and E2E smoke; static guard tests; AWS cargo-tree deny loop; targeted no-R2 guard; no-SQLite guard; capability no-R2 checks; `git diff --check`.
+  - Audit IDs updated: G8, G9, Q1, Q2, Q3, Q4, Q5, V1, V2, V4, N1, and N2 verified; Completion Audit fully verified.
+  - Next: No implementation phase remains; prepare final PR/release review if desired.
+
 ## Risks and Blockers
 
 - Postgres-only task file blobs can grow WAL/backups quickly.
   - Impact: Large uploads/artifacts can make Supabase/local backups expensive or unstable.
-  - Evidence: PRD calls out current 200 MB web upload default as risky for Postgres-only storage.
-  - Mitigation or requested decision: Phase 2 enforces a strict configurable max size for web task files; ask user to approve or change the default before final hardening.
+  - Evidence: PRD calls out current 200 MB web upload default as risky for Postgres-only storage; Phase 2/7 enforce and document the stricter `OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432` default.
+  - Mitigation or requested decision: No blocker remains for this goal. Operators can change the env value later only after WAL/backup review.
   - Audit IDs affected: G3, G9, B1
 
 - Retention policy is unresolved for high-growth rows.
   - Impact: Task events, task files, wiki raw archives, old sessions, and possibly audit can grow unbounded.
-  - Evidence: PRD lists retention open questions for task events and wiki/task artifacts.
-  - Mitigation or requested decision: Add retention fields and bounded cleanup; obtain policy before final hardening.
+  - Evidence: PRD lists retention open questions for task events and wiki/task artifacts; Phases 2/5 added retention markers and Phase 7 added bounded/idempotent cleanup helpers and tests.
+  - Mitigation or requested decision: No blocker remains for this goal. Automatic cleanup scheduling is intentionally not added until an operator retention policy is chosen.
   - Audit IDs affected: G3, G6, G9, B2
 
 - Supabase pool/endpoint behavior can differ from local Postgres.
   - Impact: Production can hit connection limits even when CI passes.
-  - Evidence: PRD notes Supabase connection limits and recommends conservative pools.
-  - Mitigation or requested decision: Use one shared pool, conservative defaults, and a Supabase smoke checklist.
+  - Evidence: PRD notes Supabase connection limits and recommends conservative pools; Phase 7 documents `OXIDE_DATABASE_MAX_CONNECTIONS=5`, startup migration policy, and Supabase deployment checklist.
+  - Mitigation or requested decision: No blocker remains for this goal. Real deployment must supply the final Supabase URL/pooler mode and can lower the pool if needed.
   - Audit IDs affected: G2, G8, G9, B4
 
 - Historical docs can cause noisy final R2 grep results.
   - Impact: A naive grep may fail despite runtime R2 removal.
   - Evidence: Existing implemented goals and PRDs mention R2 historically.
-  - Mitigation or requested decision: Phase 0 and Phase 6 must define allowed historical paths and separate runtime/current-doc grep guards.
+  - Mitigation or requested decision: Phase 0 and Phase 6 defined allowed historical paths and separate runtime/current-doc grep guards; Phase 7 repeated the current runtime/setup guards.
   - Audit IDs affected: G1, G7, V3
 
 - SQL conflict semantics are not fully specified for every old ETag path.
   - Impact: Mutable records could silently change behavior if translated naively.
   - Evidence: PRD calls out ETag-to-SQL transaction/version translation as a risk.
-  - Mitigation or requested decision: Write transaction/concurrency tests per operation and ask for user decision only where behavior remains underspecified.
+  - Mitigation or requested decision: Implemented transaction/concurrency tests for user-visible mutable paths; no unresolved conflict-semantics blocker remains in the current SQL runtime.
   - Audit IDs affected: G4, G5, Q5, B5
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: all required audit items are verified: G1-G9, Q1-Q5, V1-V4, and N1-N3.
+- Commands run: Phase 0-7 progress entries record the full command set. Final Phase 7 commands included `cargo fmt --all -- --check`; focused core/web SQLx checks; workspace profile checks for embedded, web embedded, host bwrap, and full; workspace clippy for `profile-embedded-opencode-local`; core/web SQLx DB-backed tests against clean Postgres; Compose config checks; web Compose E2E on clean local-services Postgres; static guard tests; AWS cargo-tree deny loop; targeted no-R2 guard; no-SQLite guard/tree check; capability no-R2 checks; `git diff --check`.
+- Artifacts inspected: migrations `0001` through `0006`; SQLx core and web persistence implementations; Docker image/Compose configs; Cargo features and `Cargo.lock`; capability snapshots; CI workflow; `.env.example`; README; `docs/deploy.md`; `AGENTS.md`; runtime/static guard outputs.
+- Remaining gaps: none for this goal. Operational choices remain outside scope: real Supabase URL/pooler selection, optional automatic cleanup scheduling, and any future change to task-file byte limits.
+- User-accepted exceptions: old R2 data is intentionally ignored, not migrated, imported, scanned, read, dual-written, or kept as fallback; no real Supabase project was required for CI/local validation.
+- Final status: complete; durable runtime storage is SQLx/Postgres-only for current setup paths, with no R2/AWS durable storage dependency and no SQLite backend.

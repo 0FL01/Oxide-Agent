@@ -3,16 +3,50 @@ name: ${COMPOSE_PROJECT_NAME:-oxide-agent}-web
 services:
   oxide_web:
     environment:
+      OXIDE_DATABASE_URL: ${OXIDE_DATABASE_URL:-postgres://oxide_agent:oxide_agent@127.0.0.1:55432/oxide_agent}
+      OXIDE_DATABASE_MIGRATE_ON_STARTUP: ${OXIDE_DATABASE_MIGRATE_ON_STARTUP:-true}
+      OXIDE_DATABASE_MIGRATIONS_DIR: ${OXIDE_DATABASE_MIGRATIONS_DIR:-/app/migrations}
       SEARXNG_ENABLED: ${SEARXNG_ENABLED:-true}
       SEARXNG_URL: ${SEARXNG_URL:-http://127.0.0.1:8081}
       SEARXNG_BEARER_TOKEN: ${SEARXNG_BEARER_TOKEN:-}
       OXIDE_CRAWL4AI_BASE_URL: ${OXIDE_CRAWL4AI_BASE_URL:-http://127.0.0.1:11235}
       OXIDE_CRAWL4AI_API_TOKEN: ${OXIDE_CRAWL4AI_API_TOKEN:-}
     depends_on:
+      postgres:
+        condition: service_healthy
       searxng:
         condition: service_healthy
       crawl4ai:
         condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    container_name: oxide_agent_web_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${OXIDE_POSTGRES_USER:-oxide_agent}
+      POSTGRES_PASSWORD: ${OXIDE_POSTGRES_PASSWORD:-oxide_agent}
+      POSTGRES_DB: ${OXIDE_POSTGRES_DB:-oxide_agent}
+      TZ: Europe/Moscow
+    ports:
+      - "127.0.0.1:${OXIDE_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
 
   searxng:
     image: searxng/searxng:2026.5.31-300695de5
@@ -59,3 +93,6 @@ services:
       options:
         max-size: "1m"
         max-file: "3"
+
+volumes:
+  postgres-data:

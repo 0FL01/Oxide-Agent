@@ -127,6 +127,50 @@ impl SqlxStorage {
             .map_err(|error| StorageError::DatabaseMigration(error.to_string()))
     }
 
+    /// Deletes expired wiki rows in a bounded, idempotent batch.
+    ///
+    /// Retention timestamps are Unix seconds. A zero `limit` is a no-op so
+    /// operators cannot accidentally issue an unbounded cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Database`] when the cleanup query fails.
+    pub async fn cleanup_expired_wiki_pages(
+        &self,
+        now_unix_secs: u64,
+        limit: usize,
+    ) -> Result<u64, StorageError> {
+        if limit == 0 {
+            return Ok(0);
+        }
+        let result = query::<Postgres>(
+            r#"
+            DELETE FROM wiki_pages
+            WHERE ctid IN (
+                SELECT ctid
+                FROM wiki_pages
+                WHERE retention_expires_at IS NOT NULL
+                  AND retention_expires_at <= $1
+                ORDER BY retention_expires_at ASC,
+                         storage_prefix ASC,
+                         scope_kind ASC,
+                         context_id ASC,
+                         path ASC
+                LIMIT $2
+            )
+            "#,
+        )
+        .bind(u64_to_i64(
+            now_unix_secs,
+            "wiki retention cleanup timestamp",
+        )?)
+        .bind(usize_to_i64(limit, "wiki retention cleanup limit")?)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected())
+    }
+
     async fn save_agent_memory_scope(
         &self,
         user_id: i64,
@@ -3431,6 +3475,83 @@ mod tests {
             .await
             .expect("global read should execute")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn sqlx_wiki_retention_cleanup_is_bounded_and_idempotent() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let user_id = unique_user_id();
+        let context_key = "ctx-wiki-retention";
+        let context_id = wiki_context_id(user_id, context_key);
+        let storage_provider: Arc<dyn StorageProvider> = Arc::new(storage.clone());
+        let store = WikiStore::from_storage_provider(storage_provider, "prod");
+
+        store
+            .put_context_raw_item(&context_id, "2026-06", "expired-a", "# Expired A")
+            .await
+            .expect("first expired raw item should save");
+        store
+            .put_context_raw_item(&context_id, "2026-06", "expired-b", "# Expired B")
+            .await
+            .expect("second expired raw item should save");
+        store
+            .put_context_raw_item(&context_id, "2026-06", "fresh", "# Fresh")
+            .await
+            .expect("fresh raw item should save");
+
+        query::<Postgres>(
+            r#"
+            UPDATE wiki_pages
+            SET retention_expires_at = CASE
+                WHEN path = 'raw/2026-06/fresh.md' THEN 300
+                ELSE 100
+            END
+            WHERE storage_prefix = 'prod'
+              AND scope_kind = 'context'
+              AND context_id = $1
+              AND path LIKE 'raw/2026-06/%'
+            "#,
+        )
+        .bind(&context_id)
+        .execute(storage.pool())
+        .await
+        .expect("retention timestamps should update");
+
+        assert_eq!(
+            storage
+                .cleanup_expired_wiki_pages(200, 1)
+                .await
+                .expect("first bounded cleanup should execute"),
+            1
+        );
+        assert_eq!(
+            storage
+                .cleanup_expired_wiki_pages(200, 10)
+                .await
+                .expect("second cleanup should execute"),
+            1
+        );
+        assert_eq!(
+            storage
+                .cleanup_expired_wiki_pages(200, 10)
+                .await
+                .expect("idempotent cleanup should execute"),
+            0
+        );
+        assert!(store
+            .read_context_raw_item(&context_id, "2026-06", "fresh")
+            .await
+            .expect("fresh raw item should read")
+            .is_some());
+        assert_eq!(
+            storage
+                .cleanup_expired_wiki_pages(400, 0)
+                .await
+                .expect("zero-limit cleanup should no-op"),
+            0
+        );
     }
 
     async fn sqlx_test_storage() -> Option<SqlxStorage> {

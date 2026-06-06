@@ -197,4 +197,25 @@ mod tests {
             "unexpected config error: {error}"
         );
     }
+
+    #[test]
+    fn sqlx_config_rejects_zero_pool_size() {
+        let mut settings = AgentSettings::default();
+        settings.modules.insert(
+            SQLX_STORAGE_MODULE_ID.to_string(),
+            ModuleRuntimeConfig::default()
+                .with_string_value("database_url", "postgres://postgres:postgres@localhost/db")
+                .with_string_value("max_connections", "0"),
+        );
+
+        let error = SqlxStorageConfig::from_agent_settings(&settings)
+            .expect_err("zero max_connections should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("modules.storage/sqlx.max_connections must be greater than zero"),
+            "unexpected config error: {error}"
+        );
+    }
 }

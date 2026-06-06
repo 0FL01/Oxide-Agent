@@ -92,6 +92,8 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 | **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when using ZAI routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
 | **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
+For Supabase Postgres or small local deployments, keep the shared SQLx pool conservative (`OXIDE_DATABASE_MAX_CONNECTIONS=5`), run migrations as a deploy step, and keep the default Postgres task-file byte limit unless WAL/backups have been reviewed. `docker-compose.web.local-services.yml` includes a local Postgres on `127.0.0.1:55432`; the app image ships `/app/migrations`, and web Compose enables startup migrations by default so fresh local or single-instance remote databases cannot race web startup reconciliation.
+
 ### Supported LLM Providers for Agent Mode
 The bot supports **8 providers** for Agent Mode with tool calling:
 
@@ -169,8 +171,10 @@ This path is for the prebuilt `x86_64` release artifact built with the embedded 
    TELEGRAM_ALLOWED_USERS=123456789
    TELEGRAM_MANAGER_ALLOWED_USERS=123456789
 
-   OXIDE_DATABASE_URL=postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent
-   OXIDE_DATABASE_MIGRATE_ON_STARTUP=false
+    OXIDE_DATABASE_URL=postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent
+    OXIDE_DATABASE_MAX_CONNECTIONS=5
+    OXIDE_DATABASE_MIGRATE_ON_STARTUP=false
+    OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
 
    OPENCODE_GO_API_KEY=YOUR_OPENCODE_GO_API_KEY
    OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
@@ -281,7 +285,9 @@ DEBUG_MODE=false
 
 # PostgreSQL durable storage
 OXIDE_DATABASE_URL=postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent
+OXIDE_DATABASE_MAX_CONNECTIONS=5
 OXIDE_DATABASE_MIGRATE_ON_STARTUP=false
+OXIDE_WEB_TASK_FILE_MAX_BYTES=33554432
 
 # API Keys
 CHATGPT_AUTH_PATH=/app/config/chatgpt/auth.json
@@ -317,6 +323,8 @@ DUCKDUCKGO_JITTER_MS=1500
 # WIKI_MEMORY_WRITER_MODEL_ID="google/gemini-3-flash-preview"
 # WIKI_MEMORY_WRITER_MODEL_PROVIDER="openrouter"
 ```
+
+Plain `docker-compose.web.yml` is remote-Postgres friendly and expects `OXIDE_DATABASE_URL` from `.env` or the shell. Add `docker-compose.web.local-services.yml` when you want the bundled local Postgres. Keep `OXIDE_DATABASE_MIGRATE_ON_STARTUP=true` unless a separate migration job is guaranteed to finish before web startup.
 </details>
 
 ## Model Configuration

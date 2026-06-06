@@ -50,6 +50,7 @@ RUN --mount=type=cache,target=/app/target \
       test -x "/app/target/release/${binary}"; \
       cp "/app/target/release/${binary}" "/runtime/bin/${binary}"; \
     done; \
+    cp -R /app/migrations /runtime/migrations; \
     if [ "${BUILD_WEB_UI}" = "true" ]; then \
       rustup target add wasm32-unknown-unknown; \
       TRUNK_VERSION="v0.21.14"; \
@@ -121,6 +122,7 @@ RUN groupadd --system --gid 10001 oxide \
 WORKDIR /app
 COPY --from=builder /runtime/bin/ /app/
 COPY --from=builder /runtime/web/ /app/web/
+COPY --from=builder /runtime/migrations/ /app/migrations/
 COPY --from=external-runtime-binaries /runtime/bin/ /app/
 RUN chown -R oxide:oxide /app /home/oxide
 
