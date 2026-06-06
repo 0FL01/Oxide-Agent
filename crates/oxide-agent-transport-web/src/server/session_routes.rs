@@ -17,9 +17,9 @@ use crate::session::{web_session_sandbox_scope, WebSessionRuntimeOptions};
 
 use super::task_routes::{abort_task_handle, reject_active_task};
 use super::{
-    api_error, authenticated_user, authenticated_user_with_csrf, backend_unavailable_response,
-    canonical_model_selection, default_session_model_selection, load_current_user_record,
-    load_execution_profile_for_agent_profile_id, load_owned_session,
+    api_error, authenticated_user, authenticated_user_with_csrf, auto_title,
+    backend_unavailable_response, canonical_model_selection, default_session_model_selection,
+    load_current_user_record, load_execution_profile_for_agent_profile_id, load_owned_session,
     resolve_session_agent_profile_id, session_detail_from_record, session_summary_from_record,
     store_error_response, validate_optional_agent_profile_id, validate_session_title,
     web_chat_upload_limit_mb, AppState, WEB_SESSION_DEFAULT_TITLE, WEB_SESSION_FLOW_ID,
@@ -273,6 +273,11 @@ async fn create_session_for_request(
         last_task_status: None,
         last_preview: None,
         manually_renamed: false,
+        auto_title_source_message: None,
+        auto_title_replaceable_title: None,
+        auto_title_attempts: 0,
+        auto_title_next_attempt_at: None,
+        auto_title_last_error: None,
     };
     if let Err(error) = state.web_store.save_session(record.clone()).await {
         state
@@ -334,6 +339,7 @@ pub(crate) async fn api_update_session(
     let mut record = load_owned_session(&state, user.user_id, &session_id).await?;
     record.title = title;
     record.manually_renamed = true;
+    auto_title::clear_session_auto_title(&mut record);
     record.updated_at = chrono::Utc::now();
     state
         .web_store

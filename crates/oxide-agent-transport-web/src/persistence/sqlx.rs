@@ -471,14 +471,18 @@ impl WebUiStore for SqlxWebUiStore {
             .await?;
         let model_selection = optional_json(&record.model_selection, "model selection")?;
         let last_task_status = optional_enum_to_sql(&record.last_task_status, "task status")?;
+        let auto_title_attempts = u32_to_i32(record.auto_title_attempts, "auto title attempts")?;
         query::<Postgres>(
             r#"
             INSERT INTO web_sessions (
                 user_id, session_id, title, context_key, context_keys, agent_flow_id,
                 model_selection, agent_profile_id, active_task_id, last_task_status,
-                last_preview, manually_renamed, schema_version, created_at, updated_at
+                last_preview, manually_renamed, auto_title_source_message,
+                auto_title_replaceable_title, auto_title_attempts,
+                auto_title_next_attempt_at, auto_title_last_error,
+                schema_version, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             ON CONFLICT (user_id, session_id) DO UPDATE SET
                 title = EXCLUDED.title,
                 context_key = EXCLUDED.context_key,
@@ -490,6 +494,11 @@ impl WebUiStore for SqlxWebUiStore {
                 last_task_status = EXCLUDED.last_task_status,
                 last_preview = EXCLUDED.last_preview,
                 manually_renamed = EXCLUDED.manually_renamed,
+                auto_title_source_message = EXCLUDED.auto_title_source_message,
+                auto_title_replaceable_title = EXCLUDED.auto_title_replaceable_title,
+                auto_title_attempts = EXCLUDED.auto_title_attempts,
+                auto_title_next_attempt_at = EXCLUDED.auto_title_next_attempt_at,
+                auto_title_last_error = EXCLUDED.auto_title_last_error,
                 schema_version = EXCLUDED.schema_version,
                 updated_at = EXCLUDED.updated_at
             "#,
@@ -506,6 +515,11 @@ impl WebUiStore for SqlxWebUiStore {
         .bind(last_task_status)
         .bind(&record.last_preview)
         .bind(record.manually_renamed)
+        .bind(&record.auto_title_source_message)
+        .bind(&record.auto_title_replaceable_title)
+        .bind(auto_title_attempts)
+        .bind(record.auto_title_next_attempt_at)
+        .bind(&record.auto_title_last_error)
         .bind(u32_to_i32(
             record.schema_version,
             "web session schema_version",
@@ -527,7 +541,10 @@ impl WebUiStore for SqlxWebUiStore {
             r#"
             SELECT user_id, session_id, title, context_key, context_keys, agent_flow_id,
                    model_selection, agent_profile_id, active_task_id, last_task_status,
-                   last_preview, manually_renamed, schema_version, created_at, updated_at
+                   last_preview, manually_renamed, auto_title_source_message,
+                   auto_title_replaceable_title, auto_title_attempts,
+                   auto_title_next_attempt_at, auto_title_last_error,
+                   schema_version, created_at, updated_at
             FROM web_sessions
             WHERE user_id = $1 AND session_id = $2
             "#,
@@ -546,13 +563,47 @@ impl WebUiStore for SqlxWebUiStore {
             r#"
             SELECT user_id, session_id, title, context_key, context_keys, agent_flow_id,
                    model_selection, agent_profile_id, active_task_id, last_task_status,
-                   last_preview, manually_renamed, schema_version, created_at, updated_at
+                   last_preview, manually_renamed, auto_title_source_message,
+                   auto_title_replaceable_title, auto_title_attempts,
+                   auto_title_next_attempt_at, auto_title_last_error,
+                   schema_version, created_at, updated_at
             FROM web_sessions
             WHERE user_id = $1
             ORDER BY updated_at DESC
             "#,
         )
         .bind(user_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db_error)?;
+
+        rows.iter().map(row_to_session).collect()
+    }
+
+    async fn list_due_auto_title_sessions(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebSessionRecord>> {
+        let limit = usize_to_i64(limit, "auto title due session limit")?;
+        let rows = query::<Postgres>(
+            r#"
+            SELECT user_id, session_id, title, context_key, context_keys, agent_flow_id,
+                   model_selection, agent_profile_id, active_task_id, last_task_status,
+                   last_preview, manually_renamed, auto_title_source_message,
+                   auto_title_replaceable_title, auto_title_attempts,
+                   auto_title_next_attempt_at, auto_title_last_error,
+                   schema_version, created_at, updated_at
+            FROM web_sessions
+            WHERE auto_title_source_message IS NOT NULL
+              AND manually_renamed = FALSE
+              AND (auto_title_next_attempt_at IS NULL OR auto_title_next_attempt_at <= $1)
+            ORDER BY auto_title_next_attempt_at ASC NULLS FIRST, updated_at ASC
+            LIMIT $2
+            "#,
+        )
+        .bind(now)
+        .bind(limit)
         .fetch_all(self.pool())
         .await
         .map_err(db_error)?;
@@ -1044,6 +1095,14 @@ fn row_to_session(row: &PgRow) -> WebUiStoreResult<WebSessionRecord> {
         last_task_status,
         last_preview: row_value(row, "last_preview")?,
         manually_renamed: row_value(row, "manually_renamed")?,
+        auto_title_source_message: row_value(row, "auto_title_source_message")?,
+        auto_title_replaceable_title: row_value(row, "auto_title_replaceable_title")?,
+        auto_title_attempts: i32_to_u32(
+            row_value(row, "auto_title_attempts")?,
+            "auto title attempts",
+        )?,
+        auto_title_next_attempt_at: row_value(row, "auto_title_next_attempt_at")?,
+        auto_title_last_error: row_value(row, "auto_title_last_error")?,
     })
 }
 
@@ -1361,6 +1420,11 @@ mod tests {
             last_task_status: None,
             last_preview: None,
             manually_renamed: false,
+            auto_title_source_message: None,
+            auto_title_replaceable_title: None,
+            auto_title_attempts: 0,
+            auto_title_next_attempt_at: None,
+            auto_title_last_error: None,
         }
     }
 

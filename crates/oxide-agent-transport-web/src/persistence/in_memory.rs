@@ -184,6 +184,34 @@ impl WebUiStore for InMemoryWebUiStore {
         Ok(sessions)
     }
 
+    async fn list_due_auto_title_sessions(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebSessionRecord>> {
+        let mut sessions = self
+            .sessions
+            .read()
+            .await
+            .values()
+            .filter(|record| {
+                record.auto_title_source_message.is_some()
+                    && !record.manually_renamed
+                    && record
+                        .auto_title_next_attempt_at
+                        .is_none_or(|next_attempt_at| next_attempt_at <= now)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        sessions.sort_by(|a, b| {
+            a.auto_title_next_attempt_at
+                .cmp(&b.auto_title_next_attempt_at)
+                .then_with(|| a.updated_at.cmp(&b.updated_at))
+        });
+        sessions.truncate(limit);
+        Ok(sessions)
+    }
+
     async fn delete_session(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
         let removed = self
             .sessions
@@ -431,6 +459,11 @@ mod tests {
             last_task_status: None,
             last_preview: None,
             manually_renamed: false,
+            auto_title_source_message: None,
+            auto_title_replaceable_title: None,
+            auto_title_attempts: 0,
+            auto_title_next_attempt_at: None,
+            auto_title_last_error: None,
         }
     }
 

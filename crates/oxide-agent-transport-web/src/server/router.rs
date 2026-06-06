@@ -18,7 +18,7 @@ use super::{
     api_list_agent_profiles, api_list_model_routes, api_list_sessions, api_list_tasks, api_login,
     api_logout, api_me, api_public_config, api_refresh_model_routes, api_register, api_resume_task,
     api_update_agent_profile, api_update_session, api_update_session_profile, api_update_settings,
-    api_upload_task_attachments, health, sse, static_assets, AppState,
+    api_upload_task_attachments, auto_title, health, sse, static_assets, AppState,
 };
 
 pub fn build_router(state: AppState) -> Router {
@@ -146,6 +146,7 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) {
         .reconcile_unfinished_tasks_on_startup()
         .await
         .expect("web task startup reconciliation failed");
+    auto_title::spawn_retry_worker(state.clone());
     let router = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

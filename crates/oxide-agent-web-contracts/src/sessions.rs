@@ -26,6 +26,16 @@ pub struct WebSessionRecord {
     pub last_task_status: Option<TaskStatus>,
     pub last_preview: Option<String>,
     pub manually_renamed: bool,
+    #[serde(default)]
+    pub auto_title_source_message: Option<String>,
+    #[serde(default)]
+    pub auto_title_replaceable_title: Option<String>,
+    #[serde(default)]
+    pub auto_title_attempts: u32,
+    #[serde(default)]
+    pub auto_title_next_attempt_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub auto_title_last_error: Option<String>,
 }
 
 impl WebSessionRecord {
@@ -191,6 +201,11 @@ mod tests {
             last_task_status: None,
             last_preview: None,
             manually_renamed: false,
+            auto_title_source_message: None,
+            auto_title_replaceable_title: None,
+            auto_title_attempts: 0,
+            auto_title_next_attempt_at: None,
+            auto_title_last_error: None,
         }
     }
 

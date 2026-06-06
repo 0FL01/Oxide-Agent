@@ -22,7 +22,6 @@ use oxide_agent_web_contracts::{
     UserMessageEventPayload, WebSessionRecord, WebTaskRecord,
 };
 use serde::Deserialize;
-use std::time::Duration;
 
 use crate::session::{RunningTask, WebSessionRuntimeOptions};
 
@@ -36,8 +35,6 @@ use super::{
     DEFAULT_TASK_EVENTS_LIMIT, MAX_TASK_EVENTS_LIMIT, WEB_SESSION_DEFAULT_TITLE,
     WEB_TASK_SCHEMA_VERSION,
 };
-
-const AUTO_TITLE_BACKGROUND_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn abort_task_handle(state: &AppState, task_id: &str) {
     let handle = {
@@ -352,26 +349,6 @@ async fn spawn_persisted_registered_task(
     .await;
 }
 
-fn spawn_background_auto_title(state: AppState, request: auto_title::AutoTitleRequest) {
-    let session_id = request.session_id.clone();
-    tokio::spawn(async move {
-        match tokio::time::timeout(
-            AUTO_TITLE_BACKGROUND_TIMEOUT,
-            auto_title::generate_and_save_auto_title(state, request),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(session_id = %session_id, error = %error, "auto title generation failed in background");
-            }
-            Err(_) => {
-                tracing::warn!(session_id = %session_id, timeout_secs = AUTO_TITLE_BACKGROUND_TIMEOUT.as_secs(), "auto title generation timed out in background");
-            }
-        }
-    });
-}
-
 pub(crate) async fn api_list_tasks(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -453,9 +430,13 @@ pub(crate) async fn api_create_task(
     let preview = markdown_preview(&preview_source);
     let should_auto_title = is_first_task && !session.manually_renamed;
 
-    if should_auto_title && !state.auto_title_enabled && session.title == WEB_SESSION_DEFAULT_TITLE
-    {
-        session.title = preview.clone();
+    if should_auto_title && state.auto_title_enabled {
+        auto_title::prepare_session_auto_title(
+            &mut session,
+            preview_source.clone(),
+            preview.clone(),
+            now,
+        );
     }
     save_session_task_update(
         &state,
@@ -481,15 +462,7 @@ pub(crate) async fn api_create_task(
     .await;
 
     if should_auto_title && state.auto_title_enabled {
-        spawn_background_auto_title(
-            state.clone(),
-            auto_title::AutoTitleRequest {
-                user_id: user.user_id,
-                session_id,
-                first_user_message: preview_source,
-                fallback_preview: preview,
-            },
-        );
+        auto_title::spawn_background_auto_title(state.clone(), user.user_id, session_id);
     }
 
     Ok(Json(ApiCreateTaskResponse {

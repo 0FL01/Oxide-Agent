@@ -71,6 +71,12 @@ pub trait WebUiStore: Send + Sync {
 
     async fn list_sessions(&self, user_id: i64) -> WebUiStoreResult<Vec<WebSessionRecord>>;
 
+    async fn list_due_auto_title_sessions(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebSessionRecord>>;
+
     async fn delete_session(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool>;
 
     async fn save_task(&self, record: WebTaskRecord) -> WebUiStoreResult<()>;

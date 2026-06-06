@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use axum::http::HeaderMap;
+#[cfg(feature = "profile-lite")]
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(feature = "profile-lite")]
 use std::time::Duration;
@@ -19,7 +21,7 @@ use oxide_agent_web_contracts::{
     CreateSessionRequest as ApiCreateSessionRequest,
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
     ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
-    TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest,
+    TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest, UpdateSessionRequest,
     UpdateUserSettingsRequest, WebTaskRecord,
 };
 #[cfg(feature = "profile-lite")]
@@ -39,10 +41,10 @@ use super::WebStoreKind;
 use super::{
     api_cancel_task, api_create_agent_profile, api_create_session, api_create_session_with_request,
     api_create_task_version, api_delete_session, api_get_session, api_get_settings,
-    api_get_task_events, api_get_task_progress, api_list_sessions, api_update_session_profile,
-    api_update_settings, auth_cookie_value, csrf_header_value, parse_web_bool, AppState,
-    TaskEventsQuery, WebAssetsConfig, WebSandboxControl, WebStartupError, AUTH_COOKIE_NAME,
-    WEB_TASK_SCHEMA_VERSION,
+    api_get_task_events, api_get_task_progress, api_list_sessions, api_update_session,
+    api_update_session_profile, api_update_settings, auth_cookie_value, csrf_header_value,
+    parse_web_bool, AppState, TaskEventsQuery, WebAssetsConfig, WebSandboxControl, WebStartupError,
+    AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
 };
 #[cfg(feature = "profile-lite")]
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
@@ -170,7 +172,7 @@ impl WebSandboxControl for FakeSandboxControl {
 
 #[cfg(feature = "profile-lite")]
 struct AutoTitleTestLlmProvider {
-    title_response: String,
+    title_responses: Mutex<VecDeque<String>>,
     agent_response: String,
     block_title: bool,
     title_started: Arc<Notify>,
@@ -182,6 +184,20 @@ struct AutoTitleTestLlmProvider {
 impl AutoTitleTestLlmProvider {
     fn new(title_response: impl Into<String>, agent_response: impl Into<String>) -> Arc<Self> {
         Self::with_title_blocking(title_response, agent_response, false)
+    }
+
+    fn sequence(
+        title_responses: impl IntoIterator<Item = impl Into<String>>,
+        agent_response: impl Into<String>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            title_responses: Mutex::new(title_responses.into_iter().map(Into::into).collect()),
+            agent_response: agent_response.into(),
+            block_title: false,
+            title_started: Arc::new(Notify::new()),
+            title_release: Arc::new(Notify::new()),
+            title_returned: Arc::new(Notify::new()),
+        })
     }
 
     fn blocking_title(
@@ -197,7 +213,7 @@ impl AutoTitleTestLlmProvider {
         block_title: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
-            title_response: title_response.into(),
+            title_responses: Mutex::new(VecDeque::from([title_response.into()])),
             agent_response: agent_response.into(),
             block_title,
             title_started: Arc::new(Notify::new()),
@@ -265,8 +281,14 @@ impl LlmProvider for AutoTitleTestLlmProvider {
                 self.title_release.notified().await;
             }
             self.title_returned.notify_one();
+            let title_response = self
+                .title_responses
+                .lock()
+                .expect("title responses")
+                .pop_front()
+                .unwrap_or_default();
             return Ok(ChatResponse {
-                content: Some(self.title_response.clone()),
+                content: Some(title_response),
                 tool_calls: Vec::new(),
                 finish_reason: "stop".to_string(),
                 reasoning_content: None,
@@ -2874,6 +2896,175 @@ async fn api_create_task_does_not_store_preview_as_title_when_auto_title_is_empt
 
 #[cfg(feature = "profile-lite")]
 #[tokio::test]
+async fn api_auto_title_retries_empty_llm_response_and_saves_later_title() {
+    let llm = AutoTitleTestLlmProvider::sequence(["   ", "Политика данных CrofAI"], "ok");
+    let (mut state, _) = test_app_state_with_llm_provider(llm.clone());
+    state.auto_title_enabled = true;
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, auth_session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let axum::Json(created_session) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created_session.session.session_id;
+
+    let _ = api_create_task(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::extract::Path(session_id.clone()),
+        axum::Json(ApiCreateTaskRequest {
+            input_markdown: "Какая политика данных у https://crof.ai/ при инференсе моделей?"
+                .to_string(),
+            attachments: Vec::new(),
+            effort: None,
+        }),
+    )
+    .await
+    .expect("create task");
+
+    tokio::time::timeout(Duration::from_secs(2), llm.wait_title_returned())
+        .await
+        .expect("first auto title LLM should return");
+    wait_for_auto_title_attempts(&state, user.user_id, &session_id, 1).await;
+
+    let mut pending_session = state
+        .web_store
+        .load_session(user.user_id, &session_id)
+        .await
+        .expect("load session")
+        .expect("session exists");
+    assert_eq!(pending_session.title, "New session");
+    assert!(pending_session.auto_title_source_message.is_some());
+    pending_session.auto_title_next_attempt_at = Some(chrono::Utc::now());
+    state
+        .web_store
+        .save_session(pending_session)
+        .await
+        .expect("force auto title due");
+
+    let processed = super::auto_title::process_due_auto_titles_once(&state, 16)
+        .await
+        .expect("process due auto title");
+    assert_eq!(processed, 1);
+
+    wait_for_session_title(&state, user.user_id, &session_id, "Политика данных CrofAI").await;
+    let saved_session = state
+        .web_store
+        .load_session(user.user_id, &session_id)
+        .await
+        .expect("load saved session")
+        .expect("session exists");
+    assert!(saved_session.auto_title_source_message.is_none());
+    assert_eq!(saved_session.auto_title_attempts, 0);
+}
+
+#[cfg(feature = "profile-lite")]
+#[tokio::test]
+async fn api_manual_rename_clears_pending_auto_title_retry() {
+    let llm = AutoTitleTestLlmProvider::new("   ", "ok");
+    let (mut state, _) = test_app_state_with_llm_provider(llm.clone());
+    state.auto_title_enabled = true;
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, auth_session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let axum::Json(created_session) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created_session.session.session_id;
+
+    let _ = api_create_task(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::extract::Path(session_id.clone()),
+        axum::Json(ApiCreateTaskRequest {
+            input_markdown: "Нужна политика хранения данных".to_string(),
+            attachments: Vec::new(),
+            effort: None,
+        }),
+    )
+    .await
+    .expect("create task");
+
+    tokio::time::timeout(Duration::from_secs(2), llm.wait_title_returned())
+        .await
+        .expect("auto title LLM should return");
+    wait_for_auto_title_attempts(&state, user.user_id, &session_id, 1).await;
+
+    let _ = api_update_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::extract::Path(session_id.clone()),
+        axum::Json(UpdateSessionRequest {
+            title: "Manual title".to_string(),
+        }),
+    )
+    .await
+    .expect("manual rename");
+
+    let session = state
+        .web_store
+        .load_session(user.user_id, &session_id)
+        .await
+        .expect("load session")
+        .expect("session exists");
+    assert_eq!(session.title, "Manual title");
+    assert!(session.manually_renamed);
+    assert!(session.auto_title_source_message.is_none());
+
+    let processed = super::auto_title::process_due_auto_titles_once(&state, 16)
+        .await
+        .expect("process due auto title");
+    assert_eq!(processed, 0);
+}
+
+#[cfg(feature = "profile-lite")]
+#[tokio::test]
 async fn api_resume_waiting_task_reuses_task_id_and_persists_completion() {
     let state = test_app_state_with_responses(vec![
             ScriptedResponse::ToolCalls {
@@ -3283,6 +3474,32 @@ async fn wait_for_session_title(state: &AppState, user_id: i64, session_id: &str
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("session {session_id} did not reach title {expected:?}; last title: {last_title:?}");
+}
+
+#[cfg(feature = "profile-lite")]
+async fn wait_for_auto_title_attempts(
+    state: &AppState,
+    user_id: i64,
+    session_id: &str,
+    expected: u32,
+) {
+    let mut last_attempts = None;
+    for _ in 0..100 {
+        let session = state
+            .web_store
+            .load_session(user_id, session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        if session.auto_title_attempts == expected {
+            return;
+        }
+        last_attempts = Some(session.auto_title_attempts);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "session {session_id} did not reach auto-title attempts {expected}; last attempts: {last_attempts:?}"
+    );
 }
 
 async fn wait_for_persisted_progress(
