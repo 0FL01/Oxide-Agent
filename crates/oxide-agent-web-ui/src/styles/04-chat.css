@@ -545,3 +545,21 @@
 .welcome-view-composer {
   width: 100%;
 }
+
+/* === EDIT INPUT === */
+.inline-edit {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.inline-edit textarea {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  max-height: min(70vh, 720px);
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+}

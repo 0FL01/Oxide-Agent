@@ -1,0 +1,131 @@
+/* Markdown rendering and code block helpers.
+   Legacy fallback declarations are kept before canonical v2 rules. */
+
+/* === MARKDOWN CONTENT === */
+.markdown-content {
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content table {
+  border-collapse: separate;
+  border-spacing: 0;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid var(--border-strong);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.markdown-content tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.markdown-content tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.markdown-content th {
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 2px solid var(--border-strong);
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  color: var(--fg);
+  font-weight: 600;
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+}
+
+.markdown-content h1 { font-size: 1.3em; }
+.markdown-content h2 { font-size: 1.15em; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.3em; }
+.markdown-content h3 { font-size: 1.05em; }
+
+.markdown-content code {
+  background: var(--bg-panel-soft);
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-blue);
+}
+
+.markdown-content pre code {
+  display: block;
+  overflow-x: auto;
+  padding: var(--space-3);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  color: var(--fg);
+}
+
+.markdown-content {
+  color: var(--fg);
+  line-height: 1.7;
+}
+
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content pre,
+.markdown-content table {
+  margin-bottom: 12px;
+}
+
+.markdown-content code {
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+}
+
+.markdown-content pre code {
+  display: block;
+  padding: 12px;
+}
+
+/* === CODE BLOCK === */
+pre {
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.code-block {
+  display: grid;
+  gap: 6px;
+}
+
+.code-copy-button {
+  justify-self: end;
+  min-height: 28px;
+  border-color: var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  padding: 0 10px;
+}
+
+.code-copy-button:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
