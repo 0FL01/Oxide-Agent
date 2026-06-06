@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-web-transport-performance.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to focus web transport, run RECON, and plan how to accelerate frontend chat/page loading, including aggressive options.
 Goal doc owner: Codex
-Last updated: 2026-06-07 02:30
+Last updated: 2026-06-07 02:50
 
 ## Objective
 
@@ -93,21 +93,21 @@ Out of scope:
   - Acceptance: Add a local Moka-based cache in web transport for high-frequency, low-risk reads on the chat-open critical path, starting with authenticated user/session validation and settings/agent profiles; throttle or coalesce `last_seen_at` writes so ordinary GET requests do not write remote Postgres on every API call; explicitly invalidate or bounded-TTL cache entries on logout, password/session changes, settings/profile mutations, and user/session revocation paths where available.
   - Evidence required: dependency diff, implementation diff, cache hit/miss perf logs, before/after HAR for remote DB chat open, focused auth/settings/profile route tests or store tests, and `cargo check -p oxide-agent-transport-web`.
   - Status: in_progress
-  - Evidence collected: Added `moka` to `oxide-agent-transport-web` and introduced an AppState-owned 60s/1024-entry auth cache for browser session validation. `api_me`, standard auth extraction, and CSRF auth extraction now use the cache; login/register/bootstrap seed it; logout invalidates the current token; password change invalidates all auth entries. Cache hits skip the remote `load_auth_session -> load_user -> save_auth_session(last_seen_at)` path, so `last_seen_at` writes are naturally throttled to cache misses/TTL refreshes. Settings/profile cache and remote HAR before/after remain pending.
+  - Evidence collected: Added `moka` to `oxide-agent-transport-web` and introduced AppState-owned 60s/1024-entry caches for browser session validation, user settings, and agent-profile list responses. `api_me`, standard auth extraction, and CSRF auth extraction now use the auth cache; login/register/bootstrap seed it; logout invalidates the current token; password change invalidates all auth entries. Cache hits skip the remote `load_auth_session -> load_user -> save_auth_session(last_seen_at)` path, so `last_seen_at` writes are naturally throttled to cache misses/TTL refreshes. `/settings` now caches per-user settings and refreshes the cache after settings updates; `/agent-profiles` now caches per-user sorted profile lists and invalidates on create/update/delete. Warm-cache HAR after auth cache showed `/api/v1/me` dropping to ~6-7ms and full `/app` finishing around ~695ms; settings/profile warm-cache HAR after this increment remains pending.
 
 - Q1: Keep architecture simple and local
   - Source: Repository guardrail against over-engineering and target load up to 5 RPS.
   - Acceptance: no new services, queues, databases, caches, frameworks, or broad abstraction layers unless a checkpoint proves a simpler local change cannot meet the target.
   - Evidence required: dependency diff review and architecture decision notes.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 uses existing `tracing`, existing router middleware, and standard HTTP `Server-Timing`; no new services, crates, queues, databases, or external observability. Checkpoint 3 uses narrow existing SQL queries, additive store methods, and query-parameter pagination; no new dependencies or services. Moka is now approved for the web transport only because remote Postgres latency is measured on the chat-open critical path and the cache remains local/in-process, bounded by TTL/size, and simpler than adding Redis or another service. The first cache implementation is a single AppState-owned auth cache, not an external cache tier.
+  - Evidence collected: Checkpoint 1 uses existing `tracing`, existing router middleware, and standard HTTP `Server-Timing`; no new services, crates, queues, databases, or external observability. Checkpoint 3 uses narrow existing SQL queries, additive store methods, and query-parameter pagination; no new dependencies or services. Moka is now approved for the web transport only because remote Postgres latency is measured on the chat-open critical path and the cache remains local/in-process, bounded by TTL/size, and simpler than adding Redis or another service. The cache implementation uses AppState-owned auth/settings/profile caches, not an external cache tier.
 
 - Q2: Preserve web behavior and compatibility during migrations
   - Source: Existing web console contracts and user-facing chat/task flows must continue working.
   - Acceptance: session creation, task creation, attachment upload, task detail, activity drawer, SSE reconnect/replay, waiting-for-user-input, and terminal task summary refresh continue working.
   - Evidence required: focused tests/E2E/manual validation for changed flows.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 kept existing API contracts and compiles for the wasm target. Checkpoint 3 keeps task details/rendered recent chat available while making task list pagination additive through `has_more`/`next_offset`; older rendered history is available through the web UI load-more control. Checkpoint 4 adds `first_seq` and `before_seq` cursor behavior additively, leaving existing `after_seq` SSE/backfill consumers intact. Checkpoint 5 auth cache keeps cookie/CSRF/session expiry checks, preserves logout/password invalidation paths, and bounds stale auth state by the 60s TTL. Runtime smoke for active task SSE and waiting-for-user-input remains pending.
+  - Evidence collected: Checkpoint 2 kept existing API contracts and compiles for the wasm target. Checkpoint 3 keeps task details/rendered recent chat available while making task list pagination additive through `has_more`/`next_offset`; older rendered history is available through the web UI load-more control. Checkpoint 4 adds `first_seq` and `before_seq` cursor behavior additively, leaving existing `after_seq` SSE/backfill consumers intact. Checkpoint 5 auth cache keeps cookie/CSRF/session expiry checks, preserves logout/password invalidation paths, and bounds stale auth state by the 60s TTL. Settings/profile caches keep response contracts unchanged, refresh settings on mutation, and invalidate profile lists on profile mutation. Runtime smoke for active task SSE and waiting-for-user-input remains pending.
 
 - V1: Web frontend compiles
   - Source: Leptos CSR crate validation convention.
@@ -121,14 +121,14 @@ Out of scope:
   - Acceptance: `cargo check -p oxide-agent-transport-web` and `cargo check -p oxide-agent-web-contracts` succeed after backend/contract changes.
   - Evidence required: command output summary in Progress Log.
   - Status: verified
-  - Evidence collected: `cargo check -p oxide-agent-transport-web` and `cargo check -p oxide-agent-web-contracts` succeeded on 2026-06-07 after checkpoint 3 backend query/pagination changes, checkpoint 4 event-cursor changes, and checkpoint 5 auth-cache changes; `cargo test -p oxide-agent-transport-web --lib --no-run` compiled web transport unit tests with pre-existing unused-import warnings in `server/tests.rs`.
+  - Evidence collected: `cargo check -p oxide-agent-transport-web` and `cargo check -p oxide-agent-web-contracts` succeeded on 2026-06-07 after checkpoint 3 backend query/pagination changes, checkpoint 4 event-cursor changes, checkpoint 5 auth-cache changes, and checkpoint 5 settings/profile-cache changes; `cargo test -p oxide-agent-transport-web --lib --no-run` compiled web transport unit tests with pre-existing unused-import warnings in `server/tests.rs`.
 
 - N1: No unrelated transport/runtime changes
   - Source: Scope boundary from user request to focus web transport.
   - Must preserve: Telegram transport, core/runtime/provider behavior, sandbox backends, manager control plane, wiki memory, and direct Gemini absence.
   - Evidence required: `git diff --name-only` and final diff audit.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 diff is limited to `crates/oxide-agent-web-ui/src/tasks/workspace.rs`, `crates/oxide-agent-web-ui/src/sse.rs`, and this goal document. Checkpoint 3 diff is limited to web transport persistence/routes/tests, web contracts task response pagination metadata, web UI task loading/style files, and this goal document; no unrelated transport/runtime files are included. Checkpoint 4 diff is limited to web event contracts, web transport event store/route/tests, web UI event loading/activity drawer/style files, and this goal document. Checkpoint 5 auth-cache diff is limited to `oxide-agent-transport-web`, lockfile dependency metadata, and this goal document.
+  - Evidence collected: Checkpoint 2 diff is limited to `crates/oxide-agent-web-ui/src/tasks/workspace.rs`, `crates/oxide-agent-web-ui/src/sse.rs`, and this goal document. Checkpoint 3 diff is limited to web transport persistence/routes/tests, web contracts task response pagination metadata, web UI task loading/style files, and this goal document; no unrelated transport/runtime files are included. Checkpoint 4 diff is limited to web event contracts, web transport event store/route/tests, web UI event loading/activity drawer/style files, and this goal document. Checkpoint 5 cache diffs are limited to `oxide-agent-transport-web`, lockfile dependency metadata, and this goal document.
 
 ## Implementation Plan
 
@@ -234,6 +234,7 @@ Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/
 - 2026-06-07: Implement lazy event history through an additive `before_seq` cursor plus `first_seq` response metadata instead of replacing the existing `after_seq` replay contract; this keeps SSE reconnect/backfill stable while bounding initial event payloads.
 - 2026-06-07: Add a dedicated Moka local cache checkpoint before true SSE because remote Postgres latency is now the dominant measured chat-open bottleneck; keep the cache reliable with short TTLs, bounded size, explicit invalidation on mutation paths, and perf logs for hit/miss evidence.
 - 2026-06-07: Start the Moka checkpoint with auth/session validation only because HAR showed every chat-open API request pays remote auth DB latency; defer settings/profile caching to the next cache increment to keep invalidation review small.
+- 2026-06-07: Continue the Moka checkpoint with settings and agent-profile list caches because post-auth warm-cache HAR still showed `/settings` and `/agent-profiles` as remaining remote-DB reads on the chat-open path; keep them per-user, short-TTL, bounded, and explicitly invalidated/refreshed on mutation.
 
 ## Progress Log
 
@@ -292,6 +293,13 @@ Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/
   - Commands: `cargo fmt --check`; `cargo check -p oxide-agent-transport-web`; `cargo check -p oxide-agent-web-contracts`; `cargo test -p oxide-agent-transport-web --lib --no-run`; `cargo test -p oxide-agent-transport-web api_register_starts_browser_auth_session --lib`; `git diff --check`. The web transport test compile and focused auth route test still emit pre-existing unused-import warnings for `UpdateSessionRequest` and `api_update_session` in `crates/oxide-agent-transport-web/src/server/tests.rs`.
   - Audit IDs updated: G7 in progress, Q1 in progress, Q2 in progress, V2 verified, N1 in progress.
   - Next: Capture warm-cache HAR for `/api/v1/me` and chat open, then add settings/profile Moka cache if those endpoints remain ~1s on remote Postgres.
+
+- 2026-06-07 02:50: Checkpoint 5 settings/profile cache added.
+  - Changed: Added AppState-owned 60s/1024-entry Moka caches for user settings and agent-profile list responses, cached `/settings` and `/agent-profiles` reads, refreshed settings cache after settings update, invalidated profile cache on profile create/update/delete, and logged `settings_cache_hit`/`profiles_cache_hit` under `oxide_agent_transport_web::web_perf`.
+  - Evidence: Response contracts are unchanged; settings/profile caches are user-scoped, bounded, and short-TTL. Focused route tests assert settings/profile responses are cached and updated/invalidation paths remain compatible.
+  - Commands: `cargo fmt --check`; `cargo check -p oxide-agent-transport-web`; `cargo check -p oxide-agent-web-contracts`; `cargo test -p oxide-agent-transport-web --lib --no-run`; `cargo test -p oxide-agent-transport-web api_settings_round_trips_default_model_selection --lib`; `cargo test -p oxide-agent-transport-web api_agent_profile_default_and_session_selection_persist --lib`; `git diff --check`. The web transport test compile and focused tests still emit pre-existing unused-import warnings for `UpdateSessionRequest` and `api_update_session` in `crates/oxide-agent-transport-web/src/server/tests.rs`.
+  - Audit IDs updated: G7 in progress, Q1 in progress, Q2 in progress, V2 verified, N1 in progress.
+  - Next: Capture warm-cache HAR for `/settings` and `/agent-profiles`; if chat-open remains above target, narrow task-event/task ownership checks and reduce `/sessions` critical-path DB reads.
 
 ## Risks and Blockers
 

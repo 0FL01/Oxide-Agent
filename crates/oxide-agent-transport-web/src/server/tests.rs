@@ -43,10 +43,10 @@ use super::WebStoreKind;
 use super::{
     api_cancel_task, api_create_agent_profile, api_create_session, api_create_session_with_request,
     api_create_task_version, api_delete_session, api_get_session, api_get_settings,
-    api_get_task_events, api_get_task_progress, api_list_sessions, api_update_session,
-    api_update_session_profile, api_update_settings, auth_cookie_value, csrf_header_value,
-    parse_web_bool, AppState, TaskEventsQuery, WebAssetsConfig, WebSandboxControl, WebStartupError,
-    AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
+    api_get_task_events, api_get_task_progress, api_list_agent_profiles, api_list_sessions,
+    api_update_session, api_update_session_profile, api_update_settings, auth_cookie_value,
+    csrf_header_value, parse_web_bool, AppState, TaskEventsQuery, WebAssetsConfig,
+    WebSandboxControl, WebStartupError, AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
 };
 #[cfg(feature = "profile-lite")]
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
@@ -694,6 +694,14 @@ async fn api_settings_round_trips_default_model_selection() {
     .expect("settings response");
     assert_eq!(initial.default_model_selection, None);
     assert_eq!(initial.default_effort, None);
+    assert_eq!(
+        state
+            .user_settings_cache
+            .get(&user.user_id)
+            .await
+            .expect("initial settings cached"),
+        initial
+    );
 
     let selected = ModelSelection {
         qualified_id: "kimi-k2.6".to_string(),
@@ -727,6 +735,14 @@ async fn api_settings_round_trips_default_model_selection() {
         updated.default_model_selection
     );
     assert_eq!(stored.default_effort, updated.default_effort);
+    assert_eq!(
+        state
+            .user_settings_cache
+            .get(&user.user_id)
+            .await
+            .expect("updated settings cached"),
+        updated
+    );
 
     let axum::Json(updated_zen) = api_update_settings(
         axum::extract::State(state.clone()),
@@ -905,6 +921,22 @@ async fn api_agent_profile_default_and_session_selection_persist() {
     .await
     .expect("create agent profile");
     assert_eq!(created_profile.profile.display_name, "Reviewer");
+
+    let axum::Json(listed_profiles) = api_list_agent_profiles(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, None),
+    )
+    .await
+    .expect("list agent profiles");
+    assert_eq!(listed_profiles.profiles.len(), 1);
+    assert_eq!(
+        state
+            .agent_profiles_cache
+            .get(&user.user_id)
+            .await
+            .expect("agent profiles cached"),
+        listed_profiles
+    );
 
     let _ = api_update_settings(
         axum::extract::State(state.clone()),

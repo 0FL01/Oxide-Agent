@@ -28,6 +28,17 @@ pub(crate) async fn api_list_agent_profiles(
     headers: HeaderMap,
 ) -> Result<Json<ListAgentProfilesResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user(&state, &headers).await?;
+    if let Some(response) = state.agent_profiles_cache.get(&user.user_id).await {
+        tracing::debug!(
+            target: "oxide_agent_transport_web::web_perf",
+            user_id = user.user_id,
+            profiles_cache_hit = true,
+            profiles_count = response.profiles.len(),
+            "web agent profiles cache checked"
+        );
+        return Ok(Json(response));
+    }
+
     let mut profiles = state
         .session_manager
         .storage()
@@ -43,7 +54,19 @@ pub(crate) async fn api_list_agent_profiles(
             .cmp(&right.display_name.to_ascii_lowercase())
             .then_with(|| left.agent_id.cmp(&right.agent_id))
     });
-    Ok(Json(ListAgentProfilesResponse { profiles }))
+    let response = ListAgentProfilesResponse { profiles };
+    state
+        .agent_profiles_cache
+        .insert(user.user_id, response.clone())
+        .await;
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        user_id = user.user_id,
+        profiles_cache_hit = false,
+        profiles_count = response.profiles.len(),
+        "web agent profiles cache checked"
+    );
+    Ok(Json(response))
 }
 
 pub(crate) async fn api_create_agent_profile(
@@ -65,6 +88,7 @@ pub(crate) async fn api_create_agent_profile(
         })
         .await
         .map_err(control_plane_storage_error_response)?;
+    state.agent_profiles_cache.invalidate(&user.user_id).await;
     Ok(Json(CreateAgentProfileResponse {
         profile: agent_profile_view_from_record(record),
     }))
@@ -92,6 +116,7 @@ pub(crate) async fn api_update_agent_profile(
         .await
         .map_err(control_plane_storage_error_response)?;
     refresh_runtime_sessions_for_profile(&state, user.user_id, &agent_id).await?;
+    state.agent_profiles_cache.invalidate(&user.user_id).await;
     Ok(Json(UpdateAgentProfileResponse {
         profile: agent_profile_view_from_record(record),
     }))
@@ -112,6 +137,8 @@ pub(crate) async fn api_delete_agent_profile(
         .await
         .map_err(control_plane_storage_error_response)?;
     clear_agent_profile_references(&state, user.user_id, &agent_id).await?;
+    state.agent_profiles_cache.invalidate(&user.user_id).await;
+    state.user_settings_cache.invalidate(&user.user_id).await;
     Ok(Json(OkResponse { ok: true }))
 }
 

@@ -20,8 +20,29 @@ pub(crate) async fn api_get_settings(
     headers: HeaderMap,
 ) -> Result<Json<UserSettingsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user(&state, &headers).await?;
+    if let Some(response) = state.user_settings_cache.get(&user.user_id).await {
+        tracing::debug!(
+            target: "oxide_agent_transport_web::web_perf",
+            user_id = user.user_id,
+            settings_cache_hit = true,
+            "web settings cache checked"
+        );
+        return Ok(Json(response));
+    }
+
     let record = load_current_user_record(&state, user.user_id).await?;
-    Ok(Json(user_settings_response_from_record(&record)))
+    let response = user_settings_response_from_record(&record);
+    state
+        .user_settings_cache
+        .insert(user.user_id, response.clone())
+        .await;
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        user_id = user.user_id,
+        settings_cache_hit = false,
+        "web settings cache checked"
+    );
+    Ok(Json(response))
 }
 
 pub(crate) async fn api_update_settings(
@@ -49,7 +70,12 @@ pub(crate) async fn api_update_settings(
         .save_user(record.clone())
         .await
         .map_err(store_error_response)?;
-    Ok(Json(user_settings_response_from_record(&record)))
+    let response = user_settings_response_from_record(&record);
+    state
+        .user_settings_cache
+        .insert(user.user_id, response.clone())
+        .await;
+    Ok(Json(response))
 }
 
 fn user_settings_response_from_record(record: &WebUserRecord) -> UserSettingsResponse {
