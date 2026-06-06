@@ -1,7 +1,7 @@
 //! Authentication, CSRF protection, rate limiting, and cookie helpers.
 
-use super::{api_error, AppState, AUTH_COOKIE_NAME, CSRF_HEADER_NAME};
-use crate::auth::{current_user_for_token, AuthError};
+use super::{api_error, AppState, CachedAuthSession, AUTH_COOKIE_NAME, CSRF_HEADER_NAME};
+use crate::auth::{current_user_for_token, hash_session_token, AuthError};
 use axum::{
     http::{
         header::{COOKIE, HOST, ORIGIN, REFERER},
@@ -222,13 +222,9 @@ pub(crate) async fn authenticated_user(
     headers: &HeaderMap,
 ) -> Result<CurrentUser, (StatusCode, Json<ErrorEnvelope>)> {
     let raw_session_token = auth_cookie_value(headers).map_err(auth_error_response)?;
-    let (user, _) = current_user_for_token(
-        state.web_store.as_ref(),
-        &raw_session_token,
-        chrono::Utc::now(),
-    )
-    .await
-    .map_err(auth_error_response)?;
+    let (user, _) = current_user_for_token_cached(state, &raw_session_token, chrono::Utc::now())
+        .await
+        .map_err(auth_error_response)?;
     Ok(user)
 }
 
@@ -239,17 +235,95 @@ pub(crate) async fn authenticated_user_with_csrf(
     validate_csrf_request_origin(headers)?;
     let raw_session_token = auth_cookie_value(headers).map_err(auth_error_response)?;
     let csrf_token = csrf_header_value(headers).map_err(auth_error_response)?;
-    let (user, auth_session) = current_user_for_token(
-        state.web_store.as_ref(),
-        &raw_session_token,
-        chrono::Utc::now(),
-    )
-    .await
-    .map_err(auth_error_response)?;
+    let (user, auth_session) =
+        current_user_for_token_cached(state, &raw_session_token, chrono::Utc::now())
+            .await
+            .map_err(auth_error_response)?;
     if auth_session.csrf_token != csrf_token {
         return Err(auth_error_response(AuthError::CsrfInvalid));
     }
     Ok(user)
+}
+
+pub(crate) async fn current_user_for_token_cached(
+    state: &AppState,
+    raw_session_token: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(CurrentUser, crate::persistence::WebAuthSessionRecord), AuthError> {
+    let session_token_hash = hash_session_token(raw_session_token);
+    if let Some(entry) = state.auth_cache.get(&session_token_hash).await {
+        if entry.auth_session.revoked_at.is_some() || entry.auth_session.expires_at <= now {
+            state.auth_cache.invalidate(&session_token_hash).await;
+            tracing::debug!(
+                target: "oxide_agent_transport_web::web_perf",
+                auth_cache_hit = true,
+                auth_cache_valid = false,
+                user_id = entry.user.user_id,
+                cache_age_ms = (now - entry.cached_at).num_milliseconds(),
+                "web auth cache checked"
+            );
+            return Err(AuthError::Unauthorized);
+        }
+
+        tracing::debug!(
+            target: "oxide_agent_transport_web::web_perf",
+            auth_cache_hit = true,
+            auth_cache_valid = true,
+            user_id = entry.user.user_id,
+            cache_age_ms = (now - entry.cached_at).num_milliseconds(),
+            "web auth cache checked"
+        );
+        return Ok((entry.user, entry.auth_session));
+    }
+
+    let (user, auth_session) =
+        current_user_for_token(state.web_store.as_ref(), raw_session_token, now).await?;
+    state
+        .auth_cache
+        .insert(
+            session_token_hash,
+            CachedAuthSession {
+                user: user.clone(),
+                auth_session: auth_session.clone(),
+                cached_at: now,
+            },
+        )
+        .await;
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        auth_cache_hit = false,
+        auth_cache_valid = true,
+        user_id = user.user_id,
+        "web auth cache checked"
+    );
+    Ok((user, auth_session))
+}
+
+pub(crate) async fn cache_auth_session(
+    state: &AppState,
+    raw_session_token: &str,
+    user: CurrentUser,
+    auth_session: crate::persistence::WebAuthSessionRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    state
+        .auth_cache
+        .insert(
+            hash_session_token(raw_session_token),
+            CachedAuthSession {
+                user,
+                auth_session,
+                cached_at: now,
+            },
+        )
+        .await;
+}
+
+pub(crate) async fn invalidate_auth_session_cache(state: &AppState, raw_session_token: &str) {
+    state
+        .auth_cache
+        .invalidate(&hash_session_token(raw_session_token))
+        .await;
 }
 
 pub(crate) async fn load_owned_session(

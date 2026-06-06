@@ -8,16 +8,15 @@ use oxide_agent_web_contracts::{
     ErrorEnvelope, LoginRequest, OkResponse, RegisterRequest,
 };
 
-use crate::auth::{
-    bootstrap_user, change_password, create_auth_session_for_user, current_user_for_token,
-    login_user, logout_session, register_user, AuthError, AUTH_SESSION_TTL_SECS,
-};
-use crate::persistence::WebUiStore;
-
 use super::{
     auth_cookie_header, auth_cookie_value, auth_error_response, auth_rate_limit_key,
-    clear_auth_rate_limit, csrf_header_value, expired_auth_cookie_header, record_auth_failure,
+    cache_auth_session, clear_auth_rate_limit, csrf_header_value, current_user_for_token_cached,
+    expired_auth_cookie_header, invalidate_auth_session_cache, record_auth_failure,
     reject_auth_rate_limited, validate_csrf_request_origin, web_bool_env, web_env_value, AppState,
+};
+use crate::auth::{
+    bootstrap_user, change_password, create_auth_session_for_user, login_user, logout_session,
+    register_user, AuthError, AUTH_SESSION_TTL_SECS,
 };
 
 pub(crate) async fn api_register(
@@ -35,7 +34,7 @@ pub(crate) async fn api_register(
     )
     .await;
     let user = rate_limited_auth_result(&state, rate_limit_key, result).await?;
-    auth_session_response(state.web_store.as_ref(), user, chrono::Utc::now()).await
+    auth_session_response(&state, user, chrono::Utc::now()).await
 }
 
 pub(crate) async fn api_bootstrap(
@@ -54,7 +53,7 @@ pub(crate) async fn api_bootstrap(
     )
     .await;
     let user = rate_limited_auth_result(&state, rate_limit_key, result).await?;
-    auth_session_response(state.web_store.as_ref(), user, chrono::Utc::now()).await
+    auth_session_response(&state, user, chrono::Utc::now()).await
 }
 
 pub(crate) async fn api_login(
@@ -67,6 +66,14 @@ pub(crate) async fn api_login(
     let result = login_user(state.web_store.as_ref(), request, chrono::Utc::now()).await;
     let (user, auth_session, raw_session_token) =
         rate_limited_auth_result(&state, rate_limit_key, result).await?;
+    cache_auth_session(
+        &state,
+        &raw_session_token,
+        user.clone(),
+        auth_session.clone(),
+        chrono::Utc::now(),
+    )
+    .await;
     auth_session_response_with_token(user, auth_session.csrf_token, &raw_session_token)
 }
 
@@ -107,13 +114,22 @@ fn auth_session_response_with_token(
 }
 
 async fn auth_session_response(
-    store: &dyn WebUiStore,
+    state: &AppState,
     user: CurrentUser,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(HeaderMap, Json<AuthUserResponse>), (StatusCode, Json<ErrorEnvelope>)> {
-    let (auth_session, raw_session_token) = create_auth_session_for_user(store, user.user_id, now)
-        .await
-        .map_err(auth_error_response)?;
+    let (auth_session, raw_session_token) =
+        create_auth_session_for_user(state.web_store.as_ref(), user.user_id, now)
+            .await
+            .map_err(auth_error_response)?;
+    cache_auth_session(
+        state,
+        &raw_session_token,
+        user.clone(),
+        auth_session.clone(),
+        now,
+    )
+    .await;
     auth_session_response_with_token(user, auth_session.csrf_token, &raw_session_token)
 }
 
@@ -122,13 +138,10 @@ pub(crate) async fn api_me(
     headers: HeaderMap,
 ) -> Result<Json<CurrentUserResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let raw_session_token = auth_cookie_value(&headers).map_err(auth_error_response)?;
-    let (user, auth_session) = current_user_for_token(
-        state.web_store.as_ref(),
-        &raw_session_token,
-        chrono::Utc::now(),
-    )
-    .await
-    .map_err(auth_error_response)?;
+    let (user, auth_session) =
+        current_user_for_token_cached(&state, &raw_session_token, chrono::Utc::now())
+            .await
+            .map_err(auth_error_response)?;
     Ok(Json(CurrentUserResponse {
         user,
         csrf_token: auth_session.csrf_token,
@@ -150,6 +163,7 @@ pub(crate) async fn api_logout(
     )
     .await
     .map_err(auth_error_response)?;
+    invalidate_auth_session_cache(&state, &raw_session_token).await;
 
     let mut response_headers = HeaderMap::new();
     response_headers.insert(SET_COOKIE, expired_auth_cookie_header()?);
@@ -173,5 +187,6 @@ pub(crate) async fn api_change_password(
     )
     .await
     .map_err(auth_error_response)?;
+    state.auth_cache.invalidate_all();
     Ok(Json(OkResponse::ok()))
 }

@@ -39,6 +39,7 @@ sha2 = "0.10.9"
 base64 = "0.22.1"
 sqlx-postgres = { version = "0.8.6", default-features = false, features = ["chrono", "json", "uuid", "migrate"], optional = true }
 sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "json", "uuid", "migrate"], optional = true }
+moka = { version = "0.12", features = ["future"] }
 
 [features]
 default = []

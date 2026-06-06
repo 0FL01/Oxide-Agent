@@ -1,9 +1,11 @@
 //! Core types, constants, and environment helpers for the web transport server.
 
-use crate::persistence::{InMemoryWebUiStore, WebUiStore};
+use crate::persistence::{InMemoryWebUiStore, WebAuthSessionRecord, WebUiStore};
 use crate::session::WebSessionManager;
 use anyhow::Result as AnyResult;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use moka::future::Cache;
 #[cfg(not(feature = "socket_e2e"))]
 use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
@@ -13,6 +15,7 @@ use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
 use oxide_agent_core::{config::AgentSettings, llm::LlmClient, storage::StorageProvider};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_runtime::SessionRegistry;
+use oxide_agent_web_contracts::CurrentUser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap as StdHashMap;
 use std::fmt;
@@ -40,6 +43,15 @@ pub(crate) const DEFAULT_WEB_CHAT_UPLOAD_MAX_MB: u64 = 200;
 pub(crate) const YOLO_APPROVAL_DIAGNOSTIC: &str = "The agent requested approval, but web console runs in YOLO (full permission) mode. Reconfigure the agent or retry without an approval-requiring setup.";
 pub(crate) const AUTH_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub(crate) const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
+pub(crate) const AUTH_CACHE_TTL: Duration = Duration::from_secs(60);
+pub(crate) const AUTH_CACHE_MAX_CAPACITY: u64 = 1024;
+
+#[derive(Debug, Clone)]
+pub(crate) struct CachedAuthSession {
+    pub user: CurrentUser,
+    pub auth_session: WebAuthSessionRecord,
+    pub cached_at: DateTime<Utc>,
+}
 
 // ---------------------------------------------------------------------------
 // Store kind
@@ -188,6 +200,7 @@ pub struct AppState {
     pub web_store_kind: WebStoreKind,
     pub web_assets: WebAssetsConfig,
     pub(crate) auth_rate_limiter: Arc<AsyncMutex<AuthRateLimiter>>,
+    pub(crate) auth_cache: Cache<String, CachedAuthSession>,
     pub task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     pub task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     /// Tracks the JoinHandle for each running task so it can be aborted on completion.
@@ -228,6 +241,10 @@ impl AppState {
             web_store_kind,
             web_assets: WebAssetsConfig::from_env(),
             auth_rate_limiter: Arc::new(AsyncMutex::new(AuthRateLimiter::new())),
+            auth_cache: Cache::builder()
+                .max_capacity(AUTH_CACHE_MAX_CAPACITY)
+                .time_to_live(AUTH_CACHE_TTL)
+                .build(),
             task_progress: Arc::new(RwLock::new(StdHashMap::new())),
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),

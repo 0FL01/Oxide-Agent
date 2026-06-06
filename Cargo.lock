@@ -3421,6 +3421,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "lazy_static",
+ "moka",
  "oxide-agent-core",
  "oxide-agent-runtime",
  "oxide-agent-web-contracts",
