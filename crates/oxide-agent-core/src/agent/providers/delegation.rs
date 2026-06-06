@@ -79,6 +79,8 @@ use tokio::sync::Semaphore;
 const TOOL_SPAWN_SUB_AGENTS: &str = "spawn_sub_agents";
 const TOOL_WAIT_SUB_AGENTS: &str = "wait_sub_agents";
 const TOOL_CANCEL_SUB_AGENTS: &str = "cancel_sub_agents";
+const TOOL_WEB_MARKDOWN: &str = "web_markdown";
+const TOOL_CRAWL4AI_MARKDOWN: &str = "crawl4ai_markdown";
 const SUB_AGENT_MAX_CONCURRENT_JOBS: usize = 5;
 const SUB_AGENT_DEFAULT_WAIT_TIMEOUT_MS: u64 = 30_000;
 const SUB_AGENT_MAX_WAIT_TIMEOUT_MS: u64 = 3_600_000;
@@ -838,12 +840,19 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     ) -> Result<HashSet<String>> {
         let blocked = Self::blocked_tool_set();
         let requested: HashSet<String> = requested_tools.into_iter().collect();
-        let allowed: HashSet<String> = requested
+        let mut allowed: HashSet<String> = requested
             .iter()
             .filter(|name| !blocked.contains(*name))
             .filter(|name| available_tools.contains(*name))
             .cloned()
             .collect();
+
+        if requested.contains(TOOL_WEB_MARKDOWN)
+            && !blocked.contains(TOOL_CRAWL4AI_MARKDOWN)
+            && available_tools.contains(TOOL_CRAWL4AI_MARKDOWN)
+        {
+            allowed.insert(TOOL_CRAWL4AI_MARKDOWN.to_string());
+        }
 
         if allowed.is_empty() {
             warn!(
