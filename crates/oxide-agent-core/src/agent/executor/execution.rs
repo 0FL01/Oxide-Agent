@@ -840,15 +840,16 @@ fn effort_prompt_instructions(
         AgentExecutionEffort::Heavy => Some(
             concat!(
                 "[EFFORT: Heavy]\n",
-                "For current factual, comparative, market, technical, legal, scientific, product, API, benchmark, or best/latest/top/current research tasks:\n",
-                "- Create a source plan before final synthesis.\n",
-                "- If `spawn_sub_agents` is available, start by delegating 2-4 independent research branches before final synthesis unless the task is clearly simple or strictly sequential.\n",
-                "- Recommended branches: primary/official sources; recent independent secondary sources; contradictory evidence, criticism, and limitations; technical docs, benchmarks, repos, or changelogs when relevant.\n",
-                "- Give each sub-agent a narrow task and an explicit tools whitelist using only available tools, for example `web_search`, `web_extract`, `searxng_search`, `crawl4ai_markdown`, and `web_markdown`.\n",
-                "- For web-research sub-agents, include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages; keep `web_markdown` as the lightweight fallback.\n",
-                "- Use `wait_sub_agents` before relying on delegated findings. Treat sub-agent output as leads, not final truth; cross-check important claims in the parent synthesis.\n",
-                "- Use search plus extraction rather than snippets only, prioritize primary sources, and continue until evidence is sufficient or blockers are explicit.\n",
-                "Before final answer, verify internally: current sources were used; selected URLs were read; primary sources and contradictions were checked; independent branches were delegated when useful and available; if not delegated, the task was simple/sequential or delegation was unavailable."
+                "For complex, ambiguous, current, comparative, market, technical, legal, scientific, product, API, benchmark, planning, debugging, or best/latest/top/current tasks:\n",
+                "- Do a brief parent-level reconnaissance before broad delegation. Use the smallest useful inspection: for web tasks, run 1-3 targeted searches and read selected high-signal sources; for code/debug tasks, inspect entry points, errors, tests, and relevant files; for design/planning tasks, identify constraints, unknowns, acceptance criteria, and decision boundaries.\n",
+                "- From that reconnaissance, create a concise work plan: what is known, what remains uncertain, which branches are independent, and what evidence or files matter most.\n",
+                "- If `spawn_sub_agents` is available, delegate only after reconnaissance unless the task is clearly simple, local, strictly sequential, already well-scoped, or the user explicitly requested immediate parallel research.\n",
+                "- Limit delegation: use 0 sub-agents when the task is simple, local, or strictly sequential; use 1-2 sub-agents when there are one or two independent branches; use 2-4 sub-agents only for broad research, architectural analysis, or comparative analysis.\n",
+                "- Prefer fewer, sharper branches over broad overlapping ones. Give each sub-agent a narrow task with context from reconnaissance, explicit exclusions, expected output format, and an explicit tools whitelist using only available tools.\n",
+                "- For web-research sub-agents, include source and freshness expectations, require reading selected URLs rather than relying on snippets, include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages, and keep `web_markdown` as the lightweight fallback.\n",
+                "- Treat sub-agent output as leads, not final truth. Use `wait_sub_agents` before relying on delegated findings, cross-check important claims in the parent synthesis, and resolve contradictions explicitly.\n",
+                "- Continue until evidence is sufficient or blockers are explicit. Prioritize primary sources, official docs, recent sources, reproducible checks, and directly relevant evidence.\n",
+                "Before final answer, verify internally: a brief reconnaissance was done or intentionally skipped for a clear reason; delegation was based on independent branches; selected sources/files were inspected; important claims and contradictions were checked; remaining uncertainty is explicit."
             ),
         ),
     }?;
