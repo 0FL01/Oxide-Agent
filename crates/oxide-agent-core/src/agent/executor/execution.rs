@@ -840,15 +840,15 @@ fn effort_prompt_instructions(
         AgentExecutionEffort::Heavy => Some(
             concat!(
                 "[EFFORT: Heavy]\n",
-                "For complex, broad, ambiguous, current, comparative, market, technical, legal, scientific, product, API, benchmark, planning, debugging, or best/latest/top/current tasks, use this workflow: scout -> delegation checkpoint -> parallel work -> synthesis.\n",
-                "- Scout first, but keep it brief. Do not turn the scout into full research. For web tasks, run 1-3 targeted searches and read 1-2 high-signal sources. For code/debug tasks, inspect entry points, errors, tests, and relevant files. For design/planning tasks, identify constraints, unknowns, acceptance criteria, and decision boundaries.\n",
-                "- After the scout, make a delegation checkpoint before continuing detailed work. Identify what is known, what remains uncertain, and which branches are independent.\n",
-                "- If `spawn_sub_agents` is available and the task is broad, comparative, current, or has 2+ independent branches, spawn sub-agents before continuing detailed research unless the task is clearly simple, local, strictly sequential, already well-scoped, or the user explicitly requested no delegation.\n",
-                "- Limit delegation: use 0 sub-agents when the task is simple, local, or strictly sequential; use 1-2 sub-agents when there are one or two independent branches; use 2-4 sub-agents only for broad research, architectural analysis, or comparative analysis.\n",
-                "- Give each sub-agent a narrow task with the scout snapshot: known facts, candidate sources/files/items, what to verify, explicit exclusions, expected output format, and an explicit tools whitelist using only available tools.\n",
-                "- For web-research sub-agents, require reading selected URLs rather than relying on snippets. Include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages; keep `web_markdown` as the lightweight fallback.\n",
-                "- Use `wait_sub_agents` before synthesis. Treat sub-agent output as leads, not final truth; cross-check decisive claims in the parent synthesis and resolve contradictions explicitly.\n",
-                "Before final answer, verify internally: the scout stayed brief; a delegation checkpoint happened; broad independent work was delegated when useful and available; selected sources/files were inspected; important uncertainty remains explicit."
+                "For current factual, comparative, market, technical, legal, scientific, product, API, benchmark, or best/latest/top/current research tasks:\n",
+                "- Create a source plan before final synthesis.\n",
+                "- If `spawn_sub_agents` is available, start by delegating 2-4 independent research branches before final synthesis unless the task is clearly simple or strictly sequential.\n",
+                "- Recommended branches: primary/official sources; recent independent secondary sources; contradictory evidence, criticism, and limitations; technical docs, benchmarks, repos, or changelogs when relevant.\n",
+                "- Give each sub-agent a narrow task and an explicit tools whitelist using only available tools, for example `web_search`, `web_extract`, `searxng_search`, `crawl4ai_markdown`, and `web_markdown`.\n",
+                "- For web-research sub-agents, include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages; keep `web_markdown` as the lightweight fallback.\n",
+                "- Use `wait_sub_agents` before relying on delegated findings. Treat sub-agent output as leads, not final truth; cross-check important claims in the parent synthesis.\n",
+                "- Use search plus extraction rather than snippets only, prioritize primary sources, and continue until evidence is sufficient or blockers are explicit.\n",
+                "Before final answer, verify internally: current sources were used; selected URLs were read; primary sources and contradictions were checked; independent branches were delegated when useful and available; if not delegated, the task was simple/sequential or delegation was unavailable."
             ),
         ),
     }?;
