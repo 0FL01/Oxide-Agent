@@ -6,7 +6,7 @@ use super::types::{
 };
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::ChatResponse;
@@ -300,7 +300,12 @@ impl AgentRunner {
 
             if let Some(tx) = ctx.progress_tx {
                 let summary = crate::agent::thoughts::extract_reasoning_summary(reasoning, 100);
-                let _ = tx.send(AgentEvent::Reasoning { summary }).await;
+                let _ = tx
+                    .send(AgentEvent::Reasoning {
+                        source: AgentEventSource::Root,
+                        summary,
+                    })
+                    .await;
             }
         }
 

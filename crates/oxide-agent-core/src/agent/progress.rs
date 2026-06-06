@@ -60,6 +60,28 @@ pub struct FileDeliveryReceipt {
     pub download_url: Option<String>,
 }
 
+/// Execution source for events that can be relayed from delegated sub-agents.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEventSource {
+    /// Event came from the root agent task.
+    #[default]
+    Root,
+    /// Event came from a delegated sub-agent.
+    SubAgent,
+}
+
+impl AgentEventSource {
+    /// Stable string value used in transport payloads.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::SubAgent => "sub_agent",
+        }
+    }
+}
+
 /// Events that can occur during agent execution
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +101,9 @@ pub enum AgentEvent {
         /// Stable runtime invocation identifier for pairing call/result events.
         #[serde(default)]
         id: String,
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Tool name
         name: String,
         /// Tool input arguments
@@ -91,6 +116,9 @@ pub enum AgentEvent {
         /// Stable runtime invocation identifier for pairing call/result events.
         #[serde(default)]
         id: String,
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Tool name
         name: String,
         /// Tool execution output
@@ -109,6 +137,9 @@ pub enum AgentEvent {
     },
     /// Agent is continuing work due to incomplete todos
     Continuation {
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Reason for continuation
         reason: String,
         /// Number of continuations so far
@@ -116,6 +147,9 @@ pub enum AgentEvent {
     },
     /// Todos list was updated
     TodosUpdated {
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Updated list of tasks
         todos: TodoList,
     },
@@ -157,6 +191,9 @@ pub enum AgentEvent {
     Error(String),
     /// Agent's reasoning/thinking process (for models that support it)
     Reasoning {
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Short summary of reasoning
         summary: String,
     },
@@ -305,6 +342,55 @@ pub enum AgentEvent {
     },
 }
 
+impl AgentEvent {
+    /// Mark visible delegated progress before relaying it into the parent stream.
+    #[must_use]
+    pub fn with_sub_agent_source(self) -> Self {
+        match self {
+            Self::ToolCall {
+                id,
+                name,
+                input,
+                command_preview,
+                ..
+            } => Self::ToolCall {
+                id,
+                source: AgentEventSource::SubAgent,
+                name,
+                input,
+                command_preview,
+            },
+            Self::ToolResult {
+                id,
+                name,
+                output,
+                success,
+                ..
+            } => Self::ToolResult {
+                id,
+                source: AgentEventSource::SubAgent,
+                name,
+                output,
+                success,
+            },
+            Self::Continuation { reason, count, .. } => Self::Continuation {
+                source: AgentEventSource::SubAgent,
+                reason,
+                count,
+            },
+            Self::TodosUpdated { todos, .. } => Self::TodosUpdated {
+                source: AgentEventSource::SubAgent,
+                todos,
+            },
+            Self::Reasoning { summary, .. } => Self::Reasoning {
+                source: AgentEventSource::SubAgent,
+                summary,
+            },
+            other => other,
+        }
+    }
+}
+
 /// User-facing class of repeated context maintenance activity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -448,6 +534,7 @@ impl ProgressState {
                 name,
                 input,
                 command_preview,
+                ..
             } => self.handle_tool_call(id, name, input, command_preview),
             AgentEvent::ToolResult { id, success, .. } => self.handle_tool_result(&id, success),
             AgentEvent::WaitingForApproval {
@@ -455,8 +542,10 @@ impl ProgressState {
                 target_name,
                 summary,
             } => self.handle_waiting_for_approval(tool_name, target_name, summary),
-            AgentEvent::Continuation { reason, count } => self.handle_continuation(reason, count),
-            AgentEvent::TodosUpdated { todos } => self.handle_todos_update(todos),
+            AgentEvent::Continuation { reason, count, .. } => {
+                self.handle_continuation(reason, count)
+            }
+            AgentEvent::TodosUpdated { todos, .. } => self.handle_todos_update(todos),
             AgentEvent::FileToSend { file_name, .. } => self.handle_file_send(file_name),
             AgentEvent::FileToSendWithConfirmation { file_name, .. } => {
                 self.handle_file_send(file_name)
@@ -465,7 +554,7 @@ impl ProgressState {
             AgentEvent::Cancelling { tool_name } => self.handle_cancelling(tool_name),
             AgentEvent::Cancelled => self.handle_cancelled(),
             AgentEvent::Error(e) => self.handle_error(e),
-            AgentEvent::Reasoning { summary } => self.handle_reasoning(summary),
+            AgentEvent::Reasoning { summary, .. } => self.handle_reasoning(summary),
             AgentEvent::LoopDetected {
                 loop_type,
                 iteration,

@@ -1412,7 +1412,7 @@ fn spawn_sub_agent_progress_relay(
                 continue;
             }
 
-            if parent_tx.send(event).await.is_err() {
+            if parent_tx.send(event.with_sub_agent_source()).await.is_err() {
                 break;
             }
         }
@@ -1552,7 +1552,7 @@ mod tests {
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::identity::SessionId;
     use crate::agent::memory::AgentMessage;
-    use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
+    use crate::agent::progress::{AgentEvent, AgentEventSource, FileDeliveryKind, TokenSnapshot};
     use crate::agent::providers::TodoList;
     use crate::agent::runner::TimedRunResult;
     use crate::agent::session::{AgentMemoryScope, PendingUserInput, UserInputKind};
@@ -1860,6 +1860,7 @@ mod tests {
         assert!(should_forward_sub_agent_progress_event(
             &AgentEvent::ToolCall {
                 id: "tool-1".to_string(),
+                source: AgentEventSource::Root,
                 name: "execute_command".to_string(),
                 input: "{\"command\":\"pwd\"}".to_string(),
                 command_preview: Some("pwd".to_string()),
@@ -1882,6 +1883,7 @@ mod tests {
         sub_tx
             .send(AgentEvent::ToolCall {
                 id: "tool-1".to_string(),
+                source: AgentEventSource::Root,
                 name: "execute_command".to_string(),
                 input: "{\"command\":\"pwd\"}".to_string(),
                 command_preview: Some("pwd".to_string()),
@@ -1904,7 +1906,13 @@ mod tests {
         drop(parent_tx);
 
         let forwarded = parent_rx.recv().await.expect("forwarded event");
-        assert!(matches!(forwarded, AgentEvent::ToolCall { .. }));
+        assert!(matches!(
+            forwarded,
+            AgentEvent::ToolCall {
+                source: AgentEventSource::SubAgent,
+                ..
+            }
+        ));
         assert!(parent_rx.recv().await.is_none());
     }
 

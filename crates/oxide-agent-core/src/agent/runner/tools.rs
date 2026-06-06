@@ -5,7 +5,7 @@ use super::AgentRunner;
 use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
 use crate::agent::identity::SessionId;
 use crate::agent::memory::AgentMessage;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_failure_summary::summarize_tool_failure_content;
@@ -278,6 +278,7 @@ impl AgentRunner {
         let _ = tx
             .send(AgentEvent::ToolCall {
                 id: tool_call.invocation_id().into_inner(),
+                source: AgentEventSource::Root,
                 name: sanitized_name,
                 input: sanitized_args,
                 command_preview,
@@ -331,6 +332,7 @@ impl AgentRunner {
             let _ = tx
                 .send(AgentEvent::ToolResult {
                     id: output.invocation_id.as_str().to_string(),
+                    source: AgentEventSource::Root,
                     name: sanitize_xml_tags(&tool_name),
                     output: content.clone(),
                     success: output.success,

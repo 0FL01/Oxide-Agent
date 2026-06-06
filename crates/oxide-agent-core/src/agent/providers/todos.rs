@@ -3,7 +3,7 @@
 //! Provides `write_todos` tool for creating and managing task lists,
 //! enabling proactive agent behavior for complex multi-step requests.
 
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -299,7 +299,12 @@ impl TodosProvider {
         };
 
         if let Some(tx) = progress_tx {
-            let _ = tx.send(AgentEvent::TodosUpdated { todos: snapshot }).await;
+            let _ = tx
+                .send(AgentEvent::TodosUpdated {
+                    source: AgentEventSource::Root,
+                    todos: snapshot,
+                })
+                .await;
         }
 
         info!(
@@ -387,7 +392,7 @@ mod tests {
             .await?
             .ok_or("progress channel closed before todos update")?;
         match event {
-            AgentEvent::TodosUpdated { todos } => Ok(todos),
+            AgentEvent::TodosUpdated { todos, .. } => Ok(todos),
             _ => Err("expected TodosUpdated progress event".into()),
         }
     }

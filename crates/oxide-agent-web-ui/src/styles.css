@@ -2770,6 +2770,27 @@ textarea {
   min-width: 0;
 }
 
+.activity-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.activity-filter {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--muted);
+  font: 600 11px/1.2 var(--font-mono);
+  background: transparent;
+}
+
+.activity-filter.active {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
 .activity-title-separator {
   color: var(--faint);
   font-size: 13px;
@@ -2848,6 +2869,19 @@ textarea {
   border-radius: 10px;
   background: var(--surface);
   padding: 12px;
+}
+
+.tool-card.sub-agent::before {
+  content: "sub-agent";
+  display: inline-flex;
+  margin: 0 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: var(--faint);
+  font: 600 10px/1.2 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 /* context card lives outside .activity-timeline, needs matching horizontal inlay */

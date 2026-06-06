@@ -2,11 +2,11 @@ use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     PersistedTaskEvent, ProgressSnapshot, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::delivered_files::{delivered_file_link, DeliveredFileEventBody};
-use super::payload::payload_str_event;
+use super::payload::{is_sub_agent_event, payload_str_event};
 use super::tool_cards::{
     parse_todo_items_from_value, render_todo_list, tool_card_header_with_icon_class, tool_meta,
     tool_meta_danger, tool_pre_stream, tool_preview_with_class, ToolCard, ToolDetailsWithClass,
@@ -85,6 +85,7 @@ pub(super) fn ActivityDrawer(
 ) -> impl IntoView {
     let (elapsed_now_millis, set_elapsed_now_millis) =
         signal(browser_now_millis().unwrap_or_default());
+    let (show_sub_agent_events, set_show_sub_agent_events) = signal(true);
     if let Ok(handle) = set_interval_with_handle(
         move || {
             let next = browser_now_millis()
@@ -106,7 +107,16 @@ pub(super) fn ActivityDrawer(
                         <span class="activity-elapsed">{elapsed}</span>
                     })}
                 </div>
-                <button class="activity-close" type="button" on:click=move |_| set_open.set(false)>"×"</button>
+                <div class="activity-actions">
+                    <button
+                        class=move || if show_sub_agent_events.get() { "activity-filter active" } else { "activity-filter" }
+                        type="button"
+                        on:click=move |_| set_show_sub_agent_events.update(|value| *value = !*value)
+                    >
+                        {move || if show_sub_agent_events.get() { "Sub-agents" } else { "Root only" }}
+                    </button>
+                    <button class="activity-close" type="button" on:click=move |_| set_open.set(false)>"×"</button>
+                </div>
             </header>
             <ContextCard progress=progress />
             <div class="activity-timeline">
@@ -114,13 +124,17 @@ pub(super) fn ActivityDrawer(
                     let Some(task_id) = latest_activity_task_id(active_task, tasks) else {
                         return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
                     };
+                    let include_sub_agents = show_sub_agent_events.get();
                     let task_events: Vec<PersistedTaskEvent> = events
                         .get()
                         .into_iter()
                         .filter(|event| event.task_id == task_id)
+                        .filter(|event| include_sub_agents || !is_sub_agent_event(event))
                         .filter(|event| is_chat_visible_event(&event.kind))
                         .filter(is_useful_event)
                         .collect();
+                    let task_is_terminal = latest_activity_status(active_task, tasks)
+                        .is_some_and(|status| status.is_terminal());
                     let live_owner = active_task
                         .get()
                         .is_some_and(|task| task.task_id == task_id);
@@ -129,7 +143,7 @@ pub(super) fn ActivityDrawer(
                     } else {
                         None
                     };
-                    let items = group_activity_events(task_events);
+                    let items = group_activity_events(task_events, task_is_terminal);
                     if items.is_empty() && todos.is_none() {
                         return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();
                     }
@@ -285,7 +299,10 @@ enum ActivityItem {
     Event(PersistedTaskEvent),
 }
 
-fn group_activity_events(events: Vec<PersistedTaskEvent>) -> Vec<ActivityItem> {
+fn group_activity_events(
+    events: Vec<PersistedTaskEvent>,
+    task_is_terminal: bool,
+) -> Vec<ActivityItem> {
     let mut items: Vec<ActivityItem> = Vec::new();
 
     for event in events {
@@ -297,7 +314,7 @@ fn group_activity_events(events: Vec<PersistedTaskEvent>) -> Vec<ActivityItem> {
                 });
             }
             TaskEventKind::ToolResult => {
-                let id = payload_str_event(&event, "id").filter(|value| !value.is_empty());
+                let id = tool_pairing_key(&event);
                 let name = payload_str_event(&event, "name");
                 let mut attached = false;
 
@@ -311,10 +328,7 @@ fn group_activity_events(events: Vec<PersistedTaskEvent>) -> Vec<ActivityItem> {
                     if result.is_some() {
                         continue;
                     }
-                    let call_id = call
-                        .as_ref()
-                        .and_then(|c| payload_str_event(c, "id"))
-                        .filter(|value| !value.is_empty());
+                    let call_id = call.as_ref().and_then(tool_pairing_key);
                     let call_name = call.as_ref().and_then(|c| payload_str_event(c, "name"));
                     let stable_id_matches = id.is_some() && id == call_id;
                     let legacy_name_matches =
@@ -337,7 +351,62 @@ fn group_activity_events(events: Vec<PersistedTaskEvent>) -> Vec<ActivityItem> {
         }
     }
 
+    if task_is_terminal {
+        close_terminal_unmatched_tools(&mut items);
+    }
+
     items
+}
+
+fn tool_pairing_key(event: &PersistedTaskEvent) -> Option<String> {
+    [
+        "id",
+        "invocation_id",
+        "tool_call_id",
+        "provider_tool_call_id",
+    ]
+    .into_iter()
+    .find_map(|key| payload_str_event(event, key).filter(|value| !value.is_empty()))
+}
+
+fn close_terminal_unmatched_tools(items: &mut [ActivityItem]) {
+    for item in items.iter_mut() {
+        let ActivityItem::Tool { call, result } = item else {
+            continue;
+        };
+        if result.is_none() {
+            if let Some(call_event) = call.as_ref() {
+                *result = Some(missing_tool_result_event(call_event));
+            }
+        }
+    }
+}
+
+fn missing_tool_result_event(call: &PersistedTaskEvent) -> PersistedTaskEvent {
+    let name = payload_str_event(call, "name").unwrap_or_else(|| call.summary.clone());
+    let mut payload = json!({
+        "id": payload_str_event(call, "id"),
+        "source": payload_str_event(call, "source").unwrap_or_else(|| "root".to_string()),
+        "name": name,
+        "success": false,
+        "result_summary": "missing result after task finished",
+        "output_preview": "No matching tool result was received before the task finished.",
+    });
+    if let Some(object) = payload.as_object_mut() {
+        for key in ["invocation_id", "tool_call_id", "provider_tool_call_id"] {
+            if let Some(value) = payload_str_event(call, key) {
+                object.insert(key.to_string(), json!(value));
+            }
+        }
+    }
+
+    let mut result = call.clone();
+    result.kind = TaskEventKind::ToolResult;
+    result.summary = "Missing tool result".to_string();
+    result.payload = payload;
+    result.redacted = false;
+    result.truncated = false;
+    result
 }
 
 #[component]
@@ -366,6 +435,7 @@ fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
             <summary class="agent-event-summary">
                 <span class="agent-event-kind">{event_kind_label(&kind)}</span>
                 <span class="agent-event-title">{title}</span>
+                {is_sub_agent_event(&event).then(|| view! { <span class="agent-event-flag">"sub-agent"</span> })}
                 {event.truncated.then(|| view! { <span class="agent-event-flag">"truncated"</span> })}
                 {event.redacted.then(|| view! { <span class="agent-event-flag danger">"redacted"</span> })}
             </summary>
@@ -394,9 +464,17 @@ fn ReasoningEventCard(event: PersistedTaskEvent) -> impl IntoView {
     if event.redacted {
         header_metas.push(tool_meta_danger("redacted"));
     }
+    if is_sub_agent_event(&event) {
+        header_metas.push(tool_meta("sub-agent"));
+    }
+    let class = if is_sub_agent_event(&event) {
+        "tool-card agent-event-card reasoning-event-card sub-agent"
+    } else {
+        "tool-card agent-event-card reasoning-event-card"
+    };
 
     view! {
-        <section class="tool-card agent-event-card reasoning-event-card">
+        <section class=class>
             {tool_card_header_with_icon_class(
                 "∴",
                 "tool-status-icon reasoning-status-icon",

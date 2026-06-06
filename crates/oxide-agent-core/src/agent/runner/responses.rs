@@ -6,7 +6,7 @@ use super::types::{
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMemory;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::providers::TodoList;
 use crate::agent::session::PendingUserInput;
 use std::sync::Arc;
@@ -52,6 +52,7 @@ impl AgentRunner {
             if let Some(tx) = ctx.progress_tx {
                 let _ = tx
                     .send(AgentEvent::Continuation {
+                        source: AgentEventSource::Root,
                         reason: "Too many JSON errors, falling back to raw response".to_string(),
                         count: state.continuation_count,
                     })
@@ -70,6 +71,7 @@ impl AgentRunner {
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::Continuation {
+                    source: AgentEventSource::Root,
                     reason: "Invalid JSON response, retrying...".to_string(),
                     count: state.continuation_count,
                 })
@@ -158,6 +160,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
             if let Some(tx) = ctx.progress_tx {
                 let _ = tx
                     .send(AgentEvent::Continuation {
+                        source: AgentEventSource::Root,
                         reason: reason.clone(),
                         count: state.continuation_count,
                     })
@@ -186,6 +189,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
             if let Some(tx) = ctx.progress_tx {
                 let _ = tx
                     .send(AgentEvent::Continuation {
+                        source: AgentEventSource::Root,
                         reason: "New user context received, continuing the task.".to_string(),
                         count: state.continuation_count,
                     })

@@ -255,9 +255,20 @@ impl ApiClient {
         task_id: &str,
         after_seq: u64,
     ) -> Result<TaskEventsResponse, ApiClientError> {
+        self.task_events_page(session_id, task_id, after_seq, 500)
+            .await
+    }
+
+    pub async fn task_events_page(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        after_seq: u64,
+        limit: usize,
+    ) -> Result<TaskEventsResponse, ApiClientError> {
         decode(
             with_credentials(Request::get(&format!(
-                "/api/v1/sessions/{session_id}/tasks/{task_id}/events?after_seq={after_seq}&limit=100"
+                "/api/v1/sessions/{session_id}/tasks/{task_id}/events?after_seq={after_seq}&limit={limit}"
             )))
             .send()
             .await?,

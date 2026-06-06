@@ -1,3 +1,4 @@
+use crate::api::{ApiClient, ApiClientError};
 use crate::auth::use_auth;
 use crate::components::ErrorBanner;
 use crate::routes::AppRoute;
@@ -28,6 +29,63 @@ use super::state::{
 use super::streaming::{start_task_stream, StreamUiSignals};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
 use super::versions::group_task_versions;
+
+const TASK_EVENTS_PAGE_LIMIT: usize = 500;
+
+async fn load_all_task_events(
+    client: &ApiClient,
+    session_id: &str,
+    task_id: &str,
+) -> Result<Vec<PersistedTaskEvent>, ApiClientError> {
+    let mut after_seq = 0;
+    let mut events = Vec::new();
+
+    loop {
+        let response = client
+            .task_events_page(session_id, task_id, after_seq, TASK_EVENTS_PAGE_LIMIT)
+            .await?;
+        let next_seq = response.last_seq;
+        let has_more = response.has_more;
+        events.extend(response.events);
+
+        if !has_more || next_seq <= after_seq {
+            break;
+        }
+        after_seq = next_seq;
+    }
+
+    Ok(events)
+}
+
+fn merge_task_events(
+    set_events: WriteSignal<Vec<PersistedTaskEvent>>,
+    new_events: Vec<PersistedTaskEvent>,
+) {
+    set_events.update(|items| {
+        for event in new_events {
+            if !items
+                .iter()
+                .any(|item| item.task_id == event.task_id && item.seq == event.seq)
+            {
+                items.push(event);
+            }
+        }
+        items.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.task_id.cmp(&b.task_id))
+                .then_with(|| a.seq.cmp(&b.seq))
+        });
+    });
+}
+
+fn max_event_seq(events: &[PersistedTaskEvent]) -> u64 {
+    events
+        .iter()
+        .map(|event| event.seq)
+        .max()
+        .unwrap_or_default()
+}
 
 #[component]
 pub fn TaskConsole(
@@ -364,17 +422,34 @@ fn SessionWorkspace(
                     set_tasks.set(response.tasks);
                     if let Some(task) = latest {
                         let task_id = task.task_id.clone();
-                        if let Ok(response) = client.get_task(&session_id, &task_id).await {
-                            set_progress.set(response.task.last_progress.clone());
-                            if matches!(
-                                response.task.status,
-                                TaskStatus::Queued | TaskStatus::Running
-                            ) {
-                                set_active_task.set(Some(response.task));
+                        let task_detail = match client.get_task(&session_id, &task_id).await {
+                            Ok(response) => Some(response.task),
+                            Err(error) => {
+                                set_error.set(Some(error.to_string()));
+                                None
+                            }
+                        };
+                        let initial_last_seq =
+                            match load_all_task_events(&client, &session_id, &task_id).await {
+                                Ok(events) => {
+                                    let last_seq = max_event_seq(&events);
+                                    merge_task_events(set_events, events);
+                                    last_seq
+                                }
+                                Err(error) => {
+                                    set_error.set(Some(error.to_string()));
+                                    0
+                                }
+                            };
+                        if let Some(task) = task_detail {
+                            set_progress.set(task.last_progress.clone());
+                            if matches!(task.status, TaskStatus::Queued | TaskStatus::Running) {
+                                set_active_task.set(Some(task));
                                 start_task_stream(
                                     client.clone(),
                                     session_id.clone(),
                                     task_id.clone(),
+                                    initial_last_seq,
                                     StreamUiSignals {
                                         set_events,
                                         set_session_title,
@@ -389,15 +464,11 @@ fn SessionWorkspace(
                                         set_sessions,
                                     },
                                 );
-                            } else if response.task.status == TaskStatus::WaitingForUserInput {
-                                set_active_task.set(Some(response.task));
+                            } else if task.status == TaskStatus::WaitingForUserInput {
+                                set_active_task.set(Some(task));
                             } else {
                                 set_active_task.set(None);
                             }
-                        }
-                        match client.task_events(&session_id, &task_id, 0).await {
-                            Ok(response) => set_events.set(response.events),
-                            Err(error) => set_error.set(Some(error.to_string())),
                         }
                     } else {
                         // Empty session — clear signals
@@ -531,6 +602,7 @@ fn SessionWorkspace(
                         client,
                         session_id.clone(),
                         task.task_id.clone(),
+                        0,
                         StreamUiSignals {
                             set_events,
                             set_session_title,

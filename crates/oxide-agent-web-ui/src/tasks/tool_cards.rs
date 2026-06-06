@@ -4,8 +4,8 @@ use oxide_agent_web_contracts::PersistedTaskEvent;
 use serde_json::Value;
 
 use super::payload::{
-    field_i64, field_str, input_preview_field_str, input_preview_json, parse_output_json,
-    payload_str_event, raw_output_preview, stream_text,
+    field_i64, field_str, input_preview_field_str, input_preview_json, is_sub_agent_event,
+    parse_output_json, payload_str_event, raw_output_preview, stream_text,
 };
 
 // ── Tool Card (groups call + result) ─────────────────────────────────────
@@ -22,6 +22,7 @@ pub(super) fn ToolCard(
         .unwrap_or_default();
 
     let outcome = tool_outcome(result.as_ref());
+    let is_sub_agent = tool_event_is_sub_agent(call.as_ref(), result.as_ref());
 
     // Parse the nested output JSON from output_preview.
     let output_json = result.as_ref().and_then(parse_output_json);
@@ -63,13 +64,24 @@ pub(super) fn ToolCard(
         }
     };
 
-    let status_class = outcome.status_class();
+    let status_class = if is_sub_agent {
+        format!("{} sub-agent", outcome.status_class())
+    } else {
+        outcome.status_class().to_string()
+    };
 
     view! {
         <section class=status_class>
             {display}
         </section>
     }
+}
+
+fn tool_event_is_sub_agent(
+    call: Option<&PersistedTaskEvent>,
+    result: Option<&PersistedTaskEvent>,
+) -> bool {
+    call.is_some_and(is_sub_agent_event) || result.is_some_and(is_sub_agent_event)
 }
 
 // ── Shell Tool Card (execute_command) ────────────────────────────────────

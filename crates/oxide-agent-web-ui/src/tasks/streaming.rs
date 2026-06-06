@@ -24,6 +24,7 @@ pub(super) fn start_task_stream(
     client: crate::api::ApiClient,
     session_id: String,
     task_id: String,
+    initial_last_seq: u64,
     signals: StreamUiSignals,
 ) {
     signals.set_streaming_task_id.set(Some(task_id.clone()));
@@ -31,6 +32,7 @@ pub(super) fn start_task_stream(
         client,
         session_id,
         task_id,
+        initial_last_seq,
         set_session_title: signals.set_session_title,
         set_sessions: signals.set_sessions,
         set_events: signals.set_events,

@@ -15,6 +15,7 @@ pub struct TaskStreamConfig {
     pub client: ApiClient,
     pub session_id: String,
     pub task_id: String,
+    pub initial_last_seq: u64,
     pub set_session_title: WriteSignal<String>,
     pub set_sessions: WriteSignal<Vec<SessionSummary>>,
     pub set_events: WriteSignal<Vec<PersistedTaskEvent>>,
@@ -59,7 +60,7 @@ async fn poll_task_detail_until_paused_or_terminal(config: TaskStreamConfig) {
 }
 
 async fn run_task_stream(config: TaskStreamConfig) {
-    let mut last_seq = 0;
+    let mut last_seq = config.initial_last_seq;
     let mut attempts = 0_u8;
 
     loop {

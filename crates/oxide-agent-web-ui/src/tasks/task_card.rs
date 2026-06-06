@@ -615,6 +615,7 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
                             client,
                             session_id.clone(),
                             task.task_id.clone(),
+                            0,
                             stream_signals,
                         );
                         set_editing.set(false);

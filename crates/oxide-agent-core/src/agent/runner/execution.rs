@@ -4,7 +4,7 @@ use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_failure_summary::rewrite_tool_failure_messages;
 use anyhow::{anyhow, Result};
 use std::future::Future;
@@ -197,6 +197,7 @@ impl AgentRunner {
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::Continuation {
+                    source: AgentEventSource::Root,
                     reason: "New user context received, adapting the plan.".to_string(),
                     count: state.continuation_count,
                 })

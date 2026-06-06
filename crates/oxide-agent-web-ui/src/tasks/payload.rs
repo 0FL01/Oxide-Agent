@@ -10,6 +10,10 @@ pub(super) fn payload_str_event(event: &PersistedTaskEvent, key: &str) -> Option
         .map(ToString::to_string)
 }
 
+pub(super) fn is_sub_agent_event(event: &PersistedTaskEvent) -> bool {
+    event.payload.get("source").and_then(|value| value.as_str()) == Some("sub_agent")
+}
+
 /// Parse the nested JSON inside `output_preview` for ToolResult events.
 /// The output_preview field contains a JSON string (the ToolOutput encode_model_content).
 pub(super) fn parse_output_json(event: &PersistedTaskEvent) -> Option<Value> {

@@ -605,10 +605,10 @@ fn browser_event_parts(
         | AgentEvent::Reasoning { .. }
         | AgentEvent::LoopDetected { .. }
         | AgentEvent::Milestone { .. } => lifecycle_event_parts(event),
-        AgentEvent::TodosUpdated { todos } => (
+        AgentEvent::TodosUpdated { source, todos } => (
             TaskEventKind::TodosUpdated,
             "Todos updated".to_string(),
-            json!({ "todos": todos }),
+            json!({ "source": source.as_str(), "todos": todos }),
             false,
             false,
         ),
@@ -651,6 +651,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
     match event {
         AgentEvent::ToolCall {
             id,
+            source,
             name,
             input,
             command_preview,
@@ -668,6 +669,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
                 truncate_summary(name),
                 json!({
                     "id": id,
+                    "source": source.as_str(),
                     "name": name,
                     "input_preview": input_preview,
                     "command_preview": command_preview,
@@ -678,6 +680,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
         }
         AgentEvent::ToolResult {
             id,
+            source,
             name,
             output,
             success,
@@ -697,6 +700,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
                 truncate_summary(result_summary.as_deref().unwrap_or(name)),
                 json!({
                     "id": id,
+                    "source": source.as_str(),
                     "name": name,
                     "success": success,
                     "result_summary": result_summary,
@@ -785,12 +789,16 @@ fn file_event_payload(
 
 fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, bool) {
     match event {
-        AgentEvent::Continuation { reason, count } => {
+        AgentEvent::Continuation {
+            source,
+            reason,
+            count,
+        } => {
             let (reason_preview, truncated) = truncate_text(reason, EVENT_PREVIEW_MAX_CHARS);
             (
                 TaskEventKind::Continuation,
                 "Continuation".to_string(),
-                json!({ "reason": reason_preview, "count": count }),
+                json!({ "source": source.as_str(), "reason": reason_preview, "count": count }),
                 false,
                 truncated,
             )
@@ -826,12 +834,12 @@ fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, b
                 truncated,
             )
         }
-        AgentEvent::Reasoning { summary } => {
+        AgentEvent::Reasoning { source, summary } => {
             let (summary_preview, truncated) = truncate_text(summary, EVENT_PREVIEW_MAX_CHARS);
             (
                 TaskEventKind::Reasoning,
                 "Reasoning".to_string(),
-                json!({ "summary": summary_preview }),
+                json!({ "source": source.as_str(), "summary": summary_preview }),
                 false,
                 truncated,
             )
@@ -1233,7 +1241,7 @@ mod tests {
     use oxide_agent_core::agent::compaction::{
         CompactionBackend, CompactionPhase, CompactionReason,
     };
-    use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind};
+    use oxide_agent_core::agent::progress::{AgentEvent, AgentEventSource, FileDeliveryKind};
     use oxide_agent_web_contracts::TaskEventKind;
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -1357,6 +1365,7 @@ mod tests {
 
         tx.send(AgentEvent::ToolResult {
             id: "tool-1".to_string(),
+            source: AgentEventSource::Root,
             name: "execute_command".to_string(),
             output: long_output,
             success: true,
@@ -1480,6 +1489,7 @@ mod tests {
 
         tx.send(AgentEvent::ToolResult {
             id: "tool-1".to_string(),
+            source: AgentEventSource::Root,
             name: "web_markdown".to_string(),
             output,
             success: false,
@@ -1542,6 +1552,7 @@ mod tests {
 
         tx.send(AgentEvent::ToolResult {
             id: "tool-1".to_string(),
+            source: AgentEventSource::Root,
             name: "duckduckgo_search".to_string(),
             output,
             success: false,
@@ -1685,6 +1696,7 @@ mod tests {
 
         tx.send(AgentEvent::ToolCall {
             id: "tool-1".to_string(),
+            source: AgentEventSource::Root,
             name: "ssh_exec".to_string(),
             input: serde_json::json!({
                 "command": "deploy",
@@ -1698,6 +1710,7 @@ mod tests {
         .expect("send tool call");
         tx.send(AgentEvent::ToolResult {
             id: "tool-1".to_string(),
+            source: AgentEventSource::Root,
             name: "ssh_exec".to_string(),
             output: "SESSION_TOKEN=raw-session-token".to_string(),
             success: true,
@@ -1750,6 +1763,7 @@ mod tests {
 
         tx.send(AgentEvent::ToolCall {
             id: "tool-a".to_string(),
+            source: AgentEventSource::Root,
             name: "duckduckgo_search".to_string(),
             input: "q1".to_string(),
             command_preview: None,
@@ -1758,6 +1772,7 @@ mod tests {
         .expect("send first tool call");
         tx.send(AgentEvent::ToolCall {
             id: "tool-b".to_string(),
+            source: AgentEventSource::Root,
             name: "duckduckgo_search".to_string(),
             input: "q2".to_string(),
             command_preview: None,
@@ -1766,6 +1781,7 @@ mod tests {
         .expect("send second tool call");
         tx.send(AgentEvent::ToolResult {
             id: "tool-b".to_string(),
+            source: AgentEventSource::Root,
             name: "duckduckgo_search".to_string(),
             output: "result2".to_string(),
             success: true,
@@ -1774,6 +1790,7 @@ mod tests {
         .expect("send second tool result");
         tx.send(AgentEvent::ToolResult {
             id: "tool-a".to_string(),
+            source: AgentEventSource::Root,
             name: "duckduckgo_search".to_string(),
             output: "result1".to_string(),
             success: false,
@@ -1817,6 +1834,7 @@ mod tests {
 
         event_tx
             .send(AgentEvent::Reasoning {
+                source: AgentEventSource::Root,
                 summary: "Collecting detailed evidence".to_string(),
             })
             .await
