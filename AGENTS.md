@@ -42,7 +42,7 @@ Default branch: `dev`.
 - `crates/oxide-agent-core/src/sandbox/` - sandbox facade; backends: direct Docker, broker, Bubblewrap (`bwrap/`).
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
 - `crates/oxide-agent-transport-web/src/server/` - web console backend; `mod.rs` is a thin hub, `router.rs` owns route table/serve, route slices live in `*_routes.rs`, with `sse.rs`, `static_assets.rs`, `task_executor.rs`, and `types.rs` for streaming/assets/execution/state.
-- `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client, styles.
+- `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client; CSS entrypoint is `styles.css`, with maintained slices in `styles/` (`00-tokens.css` through `10-responsive.css`).
 - `crates/oxide-agent-core/src/capabilities/` - compiled module and capability manifests.
 - `crates/oxide-agent-core/src/agent/tool_runtime/` - typed tool registration and execution.
 - `docs/` - detailed documentation for hooks, integrations, sandbox, wiki memory, and TTS.
