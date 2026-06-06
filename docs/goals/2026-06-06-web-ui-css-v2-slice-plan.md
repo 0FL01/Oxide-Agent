@@ -1,11 +1,11 @@
 # Goal: Web UI CSS v2 Slice Plan
 
 Date started: 2026-06-06
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-06-web-ui-css-v2-slice-plan.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to split `crates/oxide-agent-web-ui/src/styles.css` for maintainability, with `Редизайн (v2)` as the current base and `v1` as MVP legacy.
 Goal doc owner: Codex
-Last updated: 2026-06-06 22:58
+Last updated: 2026-06-06 23:06
 
 ## Objective
 
@@ -48,64 +48,64 @@ Out of scope:
   - Source: User request to split `styles.css` into slices for maintainability.
   - Acceptance: `crates/oxide-agent-web-ui/src/styles.css` contains only ordered imports and short entrypoint comments, or an equally small Trunk-compatible entrypoint; focused slice files live under `crates/oxide-agent-web-ui/src/styles/`.
   - Evidence required: `wc -l crates/oxide-agent-web-ui/src/styles.css`, `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort`, and `env -u NO_COLOR trunk build --release`.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 1 scaffold created with `crates/oxide-agent-web-ui/src/styles.css` reduced to 3 lines and temporary ordered slices `crates/oxide-agent-web-ui/src/styles/00-v1-base.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; checkpoint 2 expanded the entrypoint to 6 ordered imports and added focused base slices `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; checkpoint 3 expanded the entrypoint to 7 ordered imports and added `03-shell.css`; checkpoint 4 expanded the entrypoint to 9 ordered imports and added `04-chat.css` and `05-composer.css`; checkpoint 5 expanded the entrypoint to 11 ordered imports and added `06-activity.css` and `07-metrics.css`; checkpoint 6 expanded the entrypoint to 13 ordered imports and added `08-markdown.css` and `09-pages.css`; responsive slice still pending.
+  - Status: verified
+  - Evidence collected: Checkpoint 1 scaffold created with `crates/oxide-agent-web-ui/src/styles.css` reduced to 3 lines and temporary ordered slices `crates/oxide-agent-web-ui/src/styles/00-v1-base.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; checkpoint 2 expanded the entrypoint to 6 ordered imports and added focused base slices `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; checkpoint 3 expanded the entrypoint to 7 ordered imports and added `03-shell.css`; checkpoint 4 expanded the entrypoint to 9 ordered imports and added `04-chat.css` and `05-composer.css`; checkpoint 5 expanded the entrypoint to 11 ordered imports and added `06-activity.css` and `07-metrics.css`; checkpoint 6 expanded the entrypoint to 13 ordered imports and added `08-markdown.css` and `09-pages.css`; checkpoint 7 reduced the entrypoint to 12 ordered imports ending with `10-responsive.css`, removed temporary residual files `03-v1-legacy.css` and `10-v2-current.css`, and `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort` lists the final target slice set.
 
 - G2: v2 is the canonical base, not an override block
   - Source: User clarified that `Редизайн (v2)` is the current base and `v1` was MVP.
   - Acceptance: The `FRONT TEMPLATE REDESIGN OVERRIDE` model is removed; duplicate selectors are resolved to one canonical v2 rule per slice unless a deliberate documented fallback is required.
   - Evidence required: grep for `FRONT TEMPLATE REDESIGN OVERRIDE`, duplicate-selector review for high-risk selectors, and focused diff review.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 2 removed `FRONT TEMPLATE REDESIGN OVERRIDE` from `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; v2 token/reset/primitive rules now live in base slices before component layers. Checkpoint 3 collapsed shell/sidebar/session-nav/topbar duplicate selectors into canonical `crates/oxide-agent-web-ui/src/styles/03-shell.css`. Checkpoint 4 moved chat/message/composer duplicate selectors into canonical `04-chat.css` and `05-composer.css`. Checkpoint 5 moved activity/tool-card/todo/context and metrics/event-panel duplicate selectors into canonical `06-activity.css` and `07-metrics.css`. Checkpoint 6 moved markdown/code and auth/settings/page duplicate selectors into canonical `08-markdown.css` and `09-pages.css`; residual `03-v1-legacy.css` and `10-v2-current.css` now contain only responsive rules intentionally deferred to checkpoint 7.
+  - Status: verified
+  - Evidence collected: Checkpoint 2 removed `FRONT TEMPLATE REDESIGN OVERRIDE` from `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; v2 token/reset/primitive rules now live in base slices before component layers. Checkpoint 3 collapsed shell/sidebar/session-nav/topbar duplicate selectors into canonical `crates/oxide-agent-web-ui/src/styles/03-shell.css`. Checkpoint 4 moved chat/message/composer duplicate selectors into canonical `04-chat.css` and `05-composer.css`. Checkpoint 5 moved activity/tool-card/todo/context and metrics/event-panel duplicate selectors into canonical `06-activity.css` and `07-metrics.css`. Checkpoint 6 moved markdown/code and auth/settings/page duplicate selectors into canonical `08-markdown.css` and `09-pages.css`. Checkpoint 7 moved the remaining responsive rules into canonical `10-responsive.css`, removed temporary residual files, and `rg "FRONT TEMPLATE REDESIGN OVERRIDE" crates/oxide-agent-web-ui/src/styles.css crates/oxide-agent-web-ui/src/styles` returns no matches.
 
 - G3: Component ownership is clear
   - Source: Maintainability goal from the user request.
   - Acceptance: A class family lives in one slice by component/area: tokens/reset/primitives, shell, chat, composer, activity/tool cards, markdown/code, pages, metrics, responsive.
   - Evidence required: file list review plus spot grep of representative classes (`.composer`, `.activity-drawer`, `.tool-card`, `.markdown-content`, `.settings-page`).
-  - Status: in_progress
-  - Evidence collected: Checkpoint 2 established base ownership with `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; checkpoint 3 established shell/navigation ownership with `03-shell.css`; checkpoint 4 established chat/message ownership with `04-chat.css` and composer ownership with `05-composer.css`; checkpoint 5 established activity/tool-card/todo/context ownership with `06-activity.css` and metrics/event-panel ownership with `07-metrics.css`; checkpoint 6 established markdown/code ownership with `08-markdown.css` and auth/settings/page ownership with `09-pages.css`; responsive ownership remains pending.
+  - Status: verified
+  - Evidence collected: Checkpoint 2 established base ownership with `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; checkpoint 3 established shell/navigation ownership with `03-shell.css`; checkpoint 4 established chat/message ownership with `04-chat.css` and composer ownership with `05-composer.css`; checkpoint 5 established activity/tool-card/todo/context ownership with `06-activity.css` and metrics/event-panel ownership with `07-metrics.css`; checkpoint 6 established markdown/code ownership with `08-markdown.css` and auth/settings/page ownership with `09-pages.css`; checkpoint 7 established responsive ownership with `10-responsive.css`. Representative owner grep confirms `.composer`, `.activity-drawer`, `.tool-card`, `.markdown-content`, `.settings-page`, and `.metrics-group` live in the expected slices.
 
 - G4: v1-only useful coverage is preserved or intentionally removed
   - Source: Recon found v1-only settings, metrics, and code-copy styles not fully represented in v2.
   - Acceptance: Settings/auth/not-found, metrics panel groups, code-copy helpers, status/error/notice helpers, and any class still emitted by Rust components remain styled; removed rules are verified unused.
   - Evidence required: grep for class consumers in `crates/oxide-agent-web-ui/src/**/*.rs`, diff review, and build validation.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 3 preserved legacy status badge coverage while moving shell ownership; grep confirmed active shell class consumers in `components.rs` and `sessions.rs`. Checkpoint 5 preserved v1-only metrics group coverage in `07-metrics.css` and confirmed active activity/tool/context consumers in `tasks/activity.rs`, `tasks/tool_cards.rs`, and `tasks/delivered_files.rs`. Checkpoint 6 preserved v1-only code-copy helpers in `08-markdown.css`, settings/auth/not-found and page utility coverage in `09-pages.css`, moved `inline-edit` coverage to `04-chat.css`, and confirmed active consumers in `markdown.rs`, `auth.rs`, `app.rs`, `components.rs`, `tasks/task_card.rs`, and `tasks/composer.rs`.
+  - Status: verified
+  - Evidence collected: Checkpoint 3 preserved legacy status badge coverage while moving shell ownership; grep confirmed active shell class consumers in `components.rs` and `sessions.rs`. Checkpoint 5 preserved v1-only metrics group coverage in `07-metrics.css` and confirmed active activity/tool/context consumers in `tasks/activity.rs`, `tasks/tool_cards.rs`, and `tasks/delivered_files.rs`. Checkpoint 6 preserved v1-only code-copy helpers in `08-markdown.css`, settings/auth/not-found and page utility coverage in `09-pages.css`, moved `inline-edit` coverage to `04-chat.css`, and confirmed active consumers in `markdown.rs`, `auth.rs`, `app.rs`, `components.rs`, `tasks/task_card.rs`, and `tasks/composer.rs`. Checkpoint 7 representative consumer grep confirms active classes remain emitted for `.composer`, `.activity-drawer`, `.tool-card`, `.markdown-content`, and `.settings-page`; no useful v1 coverage was deleted without being moved to an owner slice.
 
 - Q1: No visual redesign or class-contract changes
   - Source: User asked for maintainability slicing, not a new redesign.
   - Acceptance: Existing class names, visible strings, component markup, layout intent, and v2 visual treatment are preserved unless a user-approved follow-up explicitly changes them.
   - Evidence required: CSS-only diff review and `git diff --name-only` showing no Rust component changes except an entrypoint adjustment if required.
-  - Status: in_progress
-  - Evidence collected: Checkpoints 1-6 changed only CSS slices and this goal document; no Rust component markup or class strings were changed. Checkpoint 4 consumer grep covered chat/composer classes in `tasks/workspace.rs`, `tasks/task_card.rs`, `tasks/composer.rs`, `tasks/delivered_files.rs`, and `sessions.rs`. Checkpoint 5 consumer grep covered activity/tool/context classes in `tasks/activity.rs`, `tasks/tool_cards.rs`, and `tasks/delivered_files.rs`. Checkpoint 6 consumer grep covered markdown/code/page utility classes in `markdown.rs`, `auth.rs`, `app.rs`, `components.rs`, `tasks/task_card.rs`, and `tasks/composer.rs`. Final visual/class-contract audit remains pending until responsive extraction is complete.
+  - Status: verified
+  - Evidence collected: Checkpoints 1-7 changed only CSS slices and this goal document; no Rust component markup or class strings were changed. Checkpoint 4 consumer grep covered chat/composer classes in `tasks/workspace.rs`, `tasks/task_card.rs`, `tasks/composer.rs`, `tasks/delivered_files.rs`, and `sessions.rs`. Checkpoint 5 consumer grep covered activity/tool/context classes in `tasks/activity.rs`, `tasks/tool_cards.rs`, and `tasks/delivered_files.rs`. Checkpoint 6 consumer grep covered markdown/code/page utility classes in `markdown.rs`, `auth.rs`, `app.rs`, `components.rs`, `tasks/task_card.rs`, and `tasks/composer.rs`. Checkpoint 7 moved residual responsive rules without Rust changes; `git diff --name-only` shows only stylesheet/goal files, and Trunk plus wasm checks passed.
 
 - Q2: No over-engineering or new dependencies
   - Source: Repository implementation bias and user request scope.
   - Acceptance: No new crates, JS tooling, CSS frameworks, preprocessors, CSS modules, design-token generators, or broad abstraction layers.
   - Evidence required: `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml`, plus full diff review.
-  - Status: in_progress
-  - Evidence collected: Checkpoints 1-6 used plain CSS `@import` slices only. `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml` produced no output after checkpoints 2, 3, 4, 5, and 6.
+  - Status: verified
+  - Evidence collected: Checkpoints 1-7 used plain CSS `@import` slices only. `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml` produced no output after checkpoints 2, 3, 4, 5, 6, and 7.
 
 - V1: Web UI CSS build remains valid
   - Source: Trunk stylesheet entrypoint at `crates/oxide-agent-web-ui/index.html:11`.
   - Acceptance: Trunk can build the sliced stylesheet and generated app assets without CSS import/path failures.
   - Evidence required: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/`.
   - Status: verified
-  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split, after checkpoint 2 base-slice promotion, after checkpoint 3 shell extraction, after checkpoint 4 chat/composer extraction, after checkpoint 5 activity/metrics extraction, and after checkpoint 6 markdown/page extraction.
+  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split, after checkpoint 2 base-slice promotion, after checkpoint 3 shell extraction, after checkpoint 4 chat/composer extraction, after checkpoint 5 activity/metrics extraction, after checkpoint 6 markdown/page extraction, and after checkpoint 7 responsive extraction.
 
 - V2: Rust-side web UI still compiles
   - Source: CSS class consumers live in Leptos components under `crates/oxide-agent-web-ui/src/`.
   - Acceptance: No accidental Rust compile regressions while touching the UI crate.
   - Evidence required: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` from repo root.
   - Status: verified
-  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-06 after the scaffold split, after checkpoint 2 base-slice promotion, after checkpoint 3 shell extraction, after checkpoint 4 chat/composer extraction, after checkpoint 5 activity/metrics extraction, and after checkpoint 6 markdown/page extraction.
+  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-06 after the scaffold split, after checkpoint 2 base-slice promotion, after checkpoint 3 shell extraction, after checkpoint 4 chat/composer extraction, after checkpoint 5 activity/metrics extraction, after checkpoint 6 markdown/page extraction, and after checkpoint 7 responsive extraction.
 
 - N1: No unrelated product behavior changes
   - Source: Scope boundaries and repository guardrails.
   - Must preserve: backend APIs, SSE streams, auth/session/task behavior, storage, provider/runtime/core code, and Telegram transport behavior.
   - Evidence required: `git diff --name-only` and final diff audit.
-  - Status: in_progress
-  - Evidence collected: Checkpoints 1-6 changed only web UI stylesheet slices and this goal document. Final `git diff --name-only` audit remains pending until completion.
+  - Status: verified
+  - Evidence collected: Checkpoints 1-7 changed only web UI stylesheet slices and this goal document. Final `git status --short` and `git diff --name-only` audit shows only `docs/goals/2026-06-06-web-ui-css-v2-slice-plan.md`, `crates/oxide-agent-web-ui/src/styles.css`, deleted temporary residual files, and `crates/oxide-agent-web-ui/src/styles/10-responsive.css` before commit; no backend, transport, runtime, contract, or Rust behavior files changed.
 
 ## Implementation Plan
 
@@ -199,6 +199,7 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
 - 2026-06-06: For chat and composer, keep legacy fallback declarations before canonical v2 declarations inside the owning slices, move welcome/empty state with chat ownership, and leave activity status chips plus responsive media rules for their later checkpoints.
 - 2026-06-06: For activity and metrics, split mixed selectors by ownership where needed (`.agent-activity` in `06-activity.css`, `.events-panel`/`.event-card` in `07-metrics.css`) while keeping legacy fallback declarations before canonical v2 rules. Leave responsive media rules for checkpoint 7.
 - 2026-06-06: For markdown and pages, keep legacy fallback declarations before canonical v2 rules inside `08-markdown.css` and `09-pages.css`; move remaining non-responsive legacy utilities to their owning slices (`.session-header`/`.rename-form` to shell, `.inline-edit` to chat) so `03-v1-legacy.css` and `10-v2-current.css` contain only responsive rules before checkpoint 7.
+- 2026-06-06: Move all residual responsive rules into one final `10-responsive.css` slice and delete temporary residual files. Preserve the prior residual cascade by keeping legacy responsive rules before v2 responsive rules inside the final responsive slice.
 
 ## Progress Log
 
@@ -251,6 +252,13 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
   - Audit IDs updated: G1 in progress; G2 in progress; G3 in progress; G4 in progress; V1 verified; V2 verified; Q1, Q2, and N1 preserved by CSS-only/dependency-free diff.
   - Next: Checkpoint 7 — move all residual responsive rules into `10-responsive.css`, remove temporary residual files, and run the final audit.
 
+- 2026-06-06 23:06: Checkpoint 7 responsive extraction and final audit.
+  - Changed: Added `crates/oxide-agent-web-ui/src/styles/10-responsive.css`; moved all residual responsive media queries into it while preserving legacy-before-v2 cascade order; removed temporary residual files `crates/oxide-agent-web-ui/src/styles/03-v1-legacy.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; updated `crates/oxide-agent-web-ui/src/styles.css` to import the final target slice set only.
+  - Evidence: `wc -l crates/oxide-agent-web-ui/src/styles.css` reports 12 lines; `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort` lists exactly `00-tokens.css` through `10-responsive.css`; residual files are absent; `rg "FRONT TEMPLATE REDESIGN OVERRIDE" crates/oxide-agent-web-ui/src/styles.css crates/oxide-agent-web-ui/src/styles` returns no matches; representative owner and consumer greps passed; Trunk and wasm checks passed.
+  - Commands: `git diff --check`; `wc -l crates/oxide-agent-web-ui/src/styles.css`; `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort`; `rg "FRONT TEMPLATE REDESIGN OVERRIDE" crates/oxide-agent-web-ui/src/styles.css crates/oxide-agent-web-ui/src/styles`; `test ! -e crates/oxide-agent-web-ui/src/styles/03-v1-legacy.css && test ! -e crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; `rg -n '^(\.|@media).*composer|^\.composer|^\.activity-drawer|^\.tool-card|^\.markdown-content|^\.settings-page|^\.metrics-group' crates/oxide-agent-web-ui/src/styles/*.css`; `rg -n 'activity-drawer|metrics-group|settings-page|markdown-content|tool-card|composer' crates/oxide-agent-web-ui/src`; `env -u NO_COLOR trunk build --release`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml`; `git status --short`; `git diff --name-only`.
+  - Audit IDs updated: G1 verified; G2 verified; G3 verified; G4 verified; Q1 verified; Q2 verified; V1 verified; V2 verified; N1 verified.
+  - Next: Commit the final checkpoint.
+
 ## Risks and Blockers
 
 - Trunk/local CSS import behavior may differ from browser-relative expectations.
@@ -273,11 +281,9 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
 
 ## Final Verification
 
-Filled only when complete.
-
-- Completion Audit result:
-- Commands run:
-- Artifacts inspected:
-- Remaining gaps:
-- User-accepted exceptions:
-- Final status:
+- Completion Audit result: all audit items G1-G4, Q1-Q2, V1-V2, and N1 are verified.
+- Commands run: `git diff --check`; `wc -l crates/oxide-agent-web-ui/src/styles.css`; `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort`; `rg "FRONT TEMPLATE REDESIGN OVERRIDE" crates/oxide-agent-web-ui/src/styles.css crates/oxide-agent-web-ui/src/styles`; `test ! -e crates/oxide-agent-web-ui/src/styles/03-v1-legacy.css && test ! -e crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; representative CSS owner and Rust consumer greps; `env -u NO_COLOR trunk build --release`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml`; `git status --short`; `git diff --name-only`.
+- Artifacts inspected: `crates/oxide-agent-web-ui/src/styles.css`; final slice set under `crates/oxide-agent-web-ui/src/styles/`; representative class consumers under `crates/oxide-agent-web-ui/src/`; dependency diff output; final file diff.
+- Remaining gaps: none known.
+- User-accepted exceptions: none.
+- Final status: complete; ready for final checkpoint commit.

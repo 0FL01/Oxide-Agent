@@ -1,4 +1,26 @@
-/* Residual v2 responsive rules pending extraction into 10-responsive.css. */
+/* Responsive overrides. Keep this slice last in the stylesheet entrypoint. */
+
+@media (max-width: 1200px) {
+  .app-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .sidebar {
+    display: none;
+  }
+  .events-panel {
+    display: none;
+  }
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
 
 @media (max-width: 1023px) {
   .app-layout {
