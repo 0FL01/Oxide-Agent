@@ -34,6 +34,11 @@ use super::{
 use crate::agent::memory::AgentMemory;
 
 use super::SqlxStorageConfig;
+use crate::agent::wiki_memory::wiki_context_id;
+
+const WIKI_SCHEMA_VERSION: i32 = 1;
+const WIKI_DEFAULT_MAX_BYTES: usize = 64 * 1024;
+const WIKI_INBOX_MAX_BYTES: usize = 16 * 1024;
 
 /// Shared SQLx/Postgres handle for durable storage.
 #[derive(Clone)]
@@ -584,6 +589,113 @@ impl StorageProvider for SqlxStorage {
 
         tx.commit().await.map_err(db_error)?;
         Ok(record)
+    }
+
+    async fn load_wiki_text(&self, storage_key: String) -> Result<Option<String>, StorageError> {
+        let address = parse_wiki_storage_key(&storage_key)?;
+        let row = query::<Postgres>(
+            r#"
+            SELECT content
+            FROM wiki_pages
+            WHERE storage_prefix = $1
+              AND scope_kind = $2
+              AND context_id = $3
+              AND path = $4
+            "#,
+        )
+        .bind(&address.storage_prefix)
+        .bind(address.scope_kind.as_str())
+        .bind(&address.context_id)
+        .bind(&address.path)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|row| row_value::<String>(&row, "content"))
+            .transpose()
+    }
+
+    async fn save_wiki_text(
+        &self,
+        storage_key: String,
+        content: String,
+    ) -> Result<(), StorageError> {
+        let address = parse_wiki_storage_key(&storage_key)?;
+        validate_wiki_content_size(&address, &content)?;
+        let now = current_timestamp_unix_secs();
+        let content_bytes = usize_to_i64(content.len(), "wiki content_bytes")?;
+
+        query::<Postgres>(
+            r#"
+            INSERT INTO wiki_pages (
+                storage_prefix, scope_kind, context_id, item_kind, path, content,
+                content_bytes, retention_expires_at, version, schema_version,
+                created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, 1, $8, $9, $9)
+            ON CONFLICT (storage_prefix, scope_kind, context_id, path) DO UPDATE
+            SET item_kind = EXCLUDED.item_kind,
+                content = EXCLUDED.content,
+                content_bytes = EXCLUDED.content_bytes,
+                schema_version = EXCLUDED.schema_version,
+                version = wiki_pages.version + 1,
+                updated_at = EXCLUDED.updated_at
+            WHERE wiki_pages.content IS DISTINCT FROM EXCLUDED.content
+            "#,
+        )
+        .bind(&address.storage_prefix)
+        .bind(address.scope_kind.as_str())
+        .bind(&address.context_id)
+        .bind(address.item_kind.as_str())
+        .bind(&address.path)
+        .bind(content)
+        .bind(content_bytes)
+        .bind(WIKI_SCHEMA_VERSION)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn delete_wiki_text(&self, storage_key: String) -> Result<(), StorageError> {
+        let address = parse_wiki_storage_key(&storage_key)?;
+        query::<Postgres>(
+            r#"
+            DELETE FROM wiki_pages
+            WHERE storage_prefix = $1
+              AND scope_kind = $2
+              AND context_id = $3
+              AND path = $4
+            "#,
+        )
+        .bind(&address.storage_prefix)
+        .bind(address.scope_kind.as_str())
+        .bind(&address.context_id)
+        .bind(&address.path)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn delete_wiki_context(
+        &self,
+        user_id: i64,
+        context_key: String,
+    ) -> Result<(), StorageError> {
+        let context_id = wiki_context_id(user_id, &context_key);
+        query::<Postgres>(
+            r#"
+            DELETE FROM wiki_pages
+            WHERE scope_kind = 'context' AND context_id = $1
+            "#,
+        )
+        .bind(context_id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
     }
 
     async fn clear_all_context(&self, user_id: i64) -> Result<(), StorageError> {
@@ -1805,6 +1917,195 @@ fn usize_to_i64(value: usize, field: &str) -> Result<i64, StorageError> {
         .map_err(|_| StorageError::InvalidInput(format!("{field} value {value} exceeds i64 range")))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WikiScopeKind {
+    Global,
+    Context,
+}
+
+impl WikiScopeKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Context => "context",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WikiItemKind {
+    Global,
+    Core,
+    Page,
+    Inbox,
+    Raw,
+}
+
+impl WikiItemKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Core => "core",
+            Self::Page => "page",
+            Self::Inbox => "inbox",
+            Self::Raw => "raw",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WikiAddress {
+    storage_prefix: String,
+    scope_kind: WikiScopeKind,
+    context_id: String,
+    item_kind: WikiItemKind,
+    path: String,
+}
+
+fn parse_wiki_storage_key(storage_key: &str) -> Result<WikiAddress, StorageError> {
+    let key = storage_key.trim_matches('/');
+    let marker = "wiki/v1/";
+    let marker_start = key.find(marker).ok_or_else(|| {
+        StorageError::InvalidInput(format!(
+            "wiki storage key `{storage_key}` does not contain `{marker}`"
+        ))
+    })?;
+    if marker_start > 0 && !key[..marker_start].ends_with('/') {
+        return Err(StorageError::InvalidInput(format!(
+            "wiki storage key `{storage_key}` has invalid prefix before `{marker}`"
+        )));
+    }
+
+    let storage_prefix = key[..marker_start].trim_end_matches('/').to_string();
+    let logical = &key[marker_start + marker.len()..];
+    let parts = logical.split('/').collect::<Vec<_>>();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return Err(StorageError::InvalidInput(format!(
+            "wiki storage key `{storage_key}` contains an unsafe path segment"
+        )));
+    }
+
+    match parts.as_slice() {
+        ["global", file] => {
+            validate_wiki_markdown_leaf(file, storage_key)?;
+            Ok(WikiAddress {
+                storage_prefix,
+                scope_kind: WikiScopeKind::Global,
+                context_id: String::new(),
+                item_kind: WikiItemKind::Global,
+                path: (*file).to_string(),
+            })
+        }
+        ["contexts", context_id, file] => {
+            validate_wiki_context_id(context_id, storage_key)?;
+            validate_wiki_markdown_leaf(file, storage_key)?;
+            Ok(WikiAddress {
+                storage_prefix,
+                scope_kind: WikiScopeKind::Context,
+                context_id: (*context_id).to_string(),
+                item_kind: WikiItemKind::Core,
+                path: (*file).to_string(),
+            })
+        }
+        ["contexts", context_id, "pages", file] => {
+            validate_wiki_context_id(context_id, storage_key)?;
+            validate_wiki_markdown_leaf(file, storage_key)?;
+            Ok(WikiAddress {
+                storage_prefix,
+                scope_kind: WikiScopeKind::Context,
+                context_id: (*context_id).to_string(),
+                item_kind: WikiItemKind::Page,
+                path: format!("pages/{file}"),
+            })
+        }
+        ["contexts", context_id, "inbox", file] => {
+            validate_wiki_context_id(context_id, storage_key)?;
+            validate_wiki_markdown_leaf(file, storage_key)?;
+            Ok(WikiAddress {
+                storage_prefix,
+                scope_kind: WikiScopeKind::Context,
+                context_id: (*context_id).to_string(),
+                item_kind: WikiItemKind::Inbox,
+                path: format!("inbox/{file}"),
+            })
+        }
+        ["contexts", context_id, "raw", yyyy_mm, file] => {
+            validate_wiki_context_id(context_id, storage_key)?;
+            validate_wiki_year_month(yyyy_mm, storage_key)?;
+            validate_wiki_markdown_leaf(file, storage_key)?;
+            Ok(WikiAddress {
+                storage_prefix,
+                scope_kind: WikiScopeKind::Context,
+                context_id: (*context_id).to_string(),
+                item_kind: WikiItemKind::Raw,
+                path: format!("raw/{yyyy_mm}/{file}"),
+            })
+        }
+        _ => Err(StorageError::InvalidInput(format!(
+            "wiki storage key `{storage_key}` does not match a supported wiki path"
+        ))),
+    }
+}
+
+fn validate_wiki_context_id(context_id: &str, storage_key: &str) -> Result<(), StorageError> {
+    if context_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidInput(format!(
+            "wiki storage key `{storage_key}` contains invalid context id `{context_id}`"
+        )))
+    }
+}
+
+fn validate_wiki_markdown_leaf(file: &str, storage_key: &str) -> Result<(), StorageError> {
+    if file.ends_with(".md") && !file.contains('/') && !file.contains('\\') {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidInput(format!(
+            "wiki storage key `{storage_key}` contains invalid markdown file `{file}`"
+        )))
+    }
+}
+
+fn validate_wiki_year_month(yyyy_mm: &str, storage_key: &str) -> Result<(), StorageError> {
+    let valid = yyyy_mm.len() == 7
+        && yyyy_mm.as_bytes()[4] == b'-'
+        && yyyy_mm[..4].chars().all(|ch| ch.is_ascii_digit())
+        && yyyy_mm[5..].chars().all(|ch| ch.is_ascii_digit());
+    if valid {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidInput(format!(
+            "wiki storage key `{storage_key}` contains invalid raw archive month `{yyyy_mm}`"
+        )))
+    }
+}
+
+fn validate_wiki_content_size(address: &WikiAddress, content: &str) -> Result<(), StorageError> {
+    let max_bytes = match address.item_kind {
+        WikiItemKind::Inbox => WIKI_INBOX_MAX_BYTES,
+        WikiItemKind::Global | WikiItemKind::Core | WikiItemKind::Page | WikiItemKind::Raw => {
+            WIKI_DEFAULT_MAX_BYTES
+        }
+    };
+    let content_bytes = content.len();
+    if content_bytes <= max_bytes {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidInput(format!(
+            "wiki {} `{}` content size {content_bytes} exceeds {max_bytes} bytes",
+            address.item_kind.as_str(),
+            address.path
+        )))
+    }
+}
+
 fn row_to_user_context(row: &PgRow) -> Result<UserContextConfig, StorageError> {
     let forum_topic_icon_color = row_value::<Option<i64>>(row, "forum_topic_icon_color")?
         .map(|value| i64_to_u32(value, "forum_topic_icon_color"))
@@ -2389,6 +2690,7 @@ async fn ensure_topic_prompt_not_duplicated_in_tx(
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use serde_json::json;
@@ -2398,6 +2700,7 @@ mod tests {
     use super::row_value;
     use super::{SqlxStorage, SqlxStorageConfig};
     use crate::agent::memory::AgentMemory;
+    use crate::agent::wiki_memory::{wiki_context_id, WikiStore};
     use crate::storage::{
         AppendAuditEventOptions, CreateReminderJobOptions, OptionalMetadataPatch,
         ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind, StorageError, StorageProvider,
@@ -2981,6 +3284,155 @@ mod tests {
         assert_eq!(other.version, 1);
     }
 
+    #[tokio::test]
+    async fn sqlx_wiki_memory_rows_roundtrip_and_context_delete() {
+        let Some(storage) = sqlx_test_storage().await else {
+            return;
+        };
+        let user_id = unique_user_id();
+        let context_key = "ctx-wiki-sql";
+        let context_id = wiki_context_id(user_id, context_key);
+        let storage_provider: Arc<dyn StorageProvider> = Arc::new(storage.clone());
+        let store = WikiStore::from_storage_provider(storage_provider, "prod");
+
+        store
+            .put_global_file("index.md", "# Global Wiki")
+            .await
+            .expect("global wiki file should save");
+        store
+            .put_context_file(
+                &context_id,
+                "index.md",
+                "# Wiki Index\n\n- [deploy](pages/deploy-runbook.md)\n",
+            )
+            .await
+            .expect("context index should save");
+        store
+            .put_context_page(
+                &context_id,
+                "deploy-runbook",
+                "# Deploy\n\nRun smoke tests.",
+            )
+            .await
+            .expect("context page should save");
+        store
+            .put_context_inbox_item(&context_id, "candidate", "# Candidate")
+            .await
+            .expect("inbox item should save");
+        store
+            .put_context_raw_item(&context_id, "2026-06", "run-a", "# Raw capture")
+            .await
+            .expect("raw archive item should save");
+
+        let page = store
+            .read_context_page(&context_id, "deploy-runbook")
+            .await
+            .expect("page read should execute")
+            .expect("page should exist");
+        assert_eq!(
+            page.key,
+            format!("prod/wiki/v1/contexts/{context_id}/pages/deploy-runbook.md")
+        );
+        assert!(page.content.contains("Run smoke tests"));
+        assert!(store
+            .read_context_file(&context_id, "index.md")
+            .await
+            .expect("index read should execute")
+            .is_some());
+        assert!(store
+            .read_context_raw_item(&context_id, "2026-06", "run-a")
+            .await
+            .expect("raw read should execute")
+            .is_some());
+
+        let row = query::<Postgres>(
+            r#"
+            SELECT storage_prefix, scope_kind, context_id, item_kind, path, content_bytes, version
+            FROM wiki_pages
+            WHERE storage_prefix = 'prod'
+              AND scope_kind = 'context'
+              AND context_id = $1
+              AND path = 'pages/deploy-runbook.md'
+            "#,
+        )
+        .bind(&context_id)
+        .fetch_one(storage.pool())
+        .await
+        .expect("wiki page metadata row should exist");
+        assert_eq!(row_value::<String>(&row, "storage_prefix").unwrap(), "prod");
+        assert_eq!(row_value::<String>(&row, "scope_kind").unwrap(), "context");
+        assert_eq!(
+            row_value::<String>(&row, "context_id").unwrap(),
+            context_id.as_str()
+        );
+        assert_eq!(row_value::<String>(&row, "item_kind").unwrap(), "page");
+        assert_eq!(
+            row_value::<i64>(&row, "content_bytes").unwrap(),
+            "# Deploy\n\nRun smoke tests.".len() as i64
+        );
+
+        let version_before = row_value::<i64>(&row, "version").unwrap();
+        store
+            .put_context_page(
+                &context_id,
+                "deploy-runbook",
+                "# Deploy\n\nRun smoke tests.",
+            )
+            .await
+            .expect("same content should be accepted");
+        let version_after_same =
+            wiki_page_version(&storage, &context_id, "pages/deploy-runbook.md").await;
+        assert_eq!(version_before, version_after_same);
+        store
+            .put_context_page(
+                &context_id,
+                "deploy-runbook",
+                "# Deploy\n\nRun smoke tests again.",
+            )
+            .await
+            .expect("changed content should update");
+        let version_after_change =
+            wiki_page_version(&storage, &context_id, "pages/deploy-runbook.md").await;
+        assert_eq!(version_before + 1, version_after_change);
+
+        store
+            .delete_context_page(&context_id, "deploy-runbook")
+            .await
+            .expect("page delete should execute");
+        assert!(store
+            .read_context_page(&context_id, "deploy-runbook")
+            .await
+            .expect("page read after delete should execute")
+            .is_none());
+
+        let too_large_inbox = "x".repeat(16 * 1024 + 1);
+        let error = store
+            .put_context_inbox_item(&context_id, "too-large", &too_large_inbox)
+            .await
+            .expect_err("oversized inbox item should be rejected");
+        assert!(matches!(error, StorageError::InvalidInput(_)));
+
+        storage
+            .delete_wiki_context(user_id, context_key.to_string())
+            .await
+            .expect("context delete should execute");
+        assert!(store
+            .read_context_file(&context_id, "index.md")
+            .await
+            .expect("context index read after delete should execute")
+            .is_none());
+        assert!(store
+            .read_context_inbox_item(&context_id, "candidate")
+            .await
+            .expect("inbox read after context delete should execute")
+            .is_none());
+        assert!(store
+            .read_global_file("index.md")
+            .await
+            .expect("global read should execute")
+            .is_some());
+    }
+
     async fn sqlx_test_storage() -> Option<SqlxStorage> {
         sqlx_test_storage_with_connections(1).await
     }
@@ -3033,6 +3485,25 @@ mod tests {
         .await
         .expect("context row should exist");
         row_value(&row, "version").expect("context version should decode")
+    }
+
+    async fn wiki_page_version(storage: &SqlxStorage, context_id: &str, path: &str) -> i64 {
+        let row = query::<Postgres>(
+            r#"
+            SELECT version
+            FROM wiki_pages
+            WHERE storage_prefix = 'prod'
+              AND scope_kind = 'context'
+              AND context_id = $1
+              AND path = $2
+            "#,
+        )
+        .bind(context_id)
+        .bind(path)
+        .fetch_one(storage.pool())
+        .await
+        .expect("wiki page row should exist");
+        row_value(&row, "version").expect("wiki page version should decode")
     }
 
     fn assert_memory_eq(expected: &AgentMemory, actual: &AgentMemory) {

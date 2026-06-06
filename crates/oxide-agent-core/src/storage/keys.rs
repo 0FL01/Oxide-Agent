@@ -59,25 +59,25 @@ pub fn user_context_agent_flow_memory_key(
     format!("users/{user_id}/topics/{context_key}/flows/{flow_id}/memory.json")
 }
 
-/// Returns the S3 key for a global LLM Wiki file.
+/// Returns the deterministic storage key for a global LLM Wiki file.
 #[must_use]
 pub fn wiki_global_key(prefix: &str, file: &str) -> String {
     key_with_optional_prefix(prefix, &format!("wiki/v1/global/{file}"))
 }
 
-/// Returns the S3 key for a context-scoped LLM Wiki file.
+/// Returns the deterministic storage key for a context-scoped LLM Wiki file.
 #[must_use]
 pub fn wiki_context_key(prefix: &str, context_id: &str, file: &str) -> String {
     key_with_optional_prefix(prefix, &format!("wiki/v1/contexts/{context_id}/{file}"))
 }
 
-/// Returns the S3 prefix that covers all objects for a wiki context (pages, inbox, raw, core files).
+/// Returns the deterministic key prefix that covers all wiki rows/objects for a context.
 #[must_use]
 pub fn wiki_context_prefix(prefix: &str, context_id: &str) -> String {
     key_with_optional_prefix(prefix, &format!("wiki/v1/contexts/{context_id}/"))
 }
 
-/// Returns the S3 key for a context-scoped LLM Wiki topic page.
+/// Returns the deterministic storage key for a context-scoped LLM Wiki topic page.
 #[must_use]
 pub fn wiki_context_page_key(prefix: &str, context_id: &str, slug: &str) -> String {
     key_with_optional_prefix(
@@ -86,7 +86,7 @@ pub fn wiki_context_page_key(prefix: &str, context_id: &str, slug: &str) -> Stri
     )
 }
 
-/// Returns the S3 key for a context-scoped LLM Wiki inbox item.
+/// Returns the deterministic storage key for a context-scoped LLM Wiki inbox item.
 #[must_use]
 pub fn wiki_context_inbox_key(prefix: &str, context_id: &str, item_slug: &str) -> String {
     key_with_optional_prefix(
@@ -95,7 +95,7 @@ pub fn wiki_context_inbox_key(prefix: &str, context_id: &str, item_slug: &str) -
     )
 }
 
-/// Returns the S3 key for a context-scoped immutable LLM Wiki raw archive item.
+/// Returns the deterministic storage key for a context-scoped immutable LLM Wiki raw archive item.
 #[must_use]
 pub fn wiki_context_raw_key(prefix: &str, context_id: &str, yyyy_mm: &str, run_id: &str) -> String {
     key_with_optional_prefix(

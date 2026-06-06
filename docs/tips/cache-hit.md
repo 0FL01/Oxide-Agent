@@ -80,7 +80,7 @@ Assembly order: `base + stable + date_suffix + volatile`
 
 **Файл:** `crates/oxide-agent-core/src/agent/executor/execution.rs:361,391-411`
 
-Собирается каждый execution: assembler с `WikiSessionCache`, селект кандидатов по keywords task, загрузка из S3, рендер в `## Durable Wiki Memory` ~12KB. Селект кандидатов от task keywords (`wiki_memory/context.rs:70`). Рендер стабилен если task keywords ведут к тому же набору страниц.
+Собирается каждый execution: assembler с `WikiSessionCache`, селект кандидатов по keywords task, загрузка через `StorageProvider` (SQLx/Postgres в текущем durable профиле), рендер в `## Durable Wiki Memory` ~12KB. Селект кандидатов от task keywords (`wiki_memory/context.rs:70`). Рендер стабилен если task keywords ведут к тому же набору страниц.
 
 ### 5. Provider-native cache markers не используются
 
