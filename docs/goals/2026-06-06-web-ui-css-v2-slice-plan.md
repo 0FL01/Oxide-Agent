@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-06-web-ui-css-v2-slice-plan.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to split `crates/oxide-agent-web-ui/src/styles.css` for maintainability, with `Редизайн (v2)` as the current base and `v1` as MVP legacy.
 Goal doc owner: Codex
-Last updated: 2026-06-06
+Last updated: 2026-06-06 19:06
 
 ## Objective
 
@@ -48,8 +48,8 @@ Out of scope:
   - Source: User request to split `styles.css` into slices for maintainability.
   - Acceptance: `crates/oxide-agent-web-ui/src/styles.css` contains only ordered imports and short entrypoint comments, or an equally small Trunk-compatible entrypoint; focused slice files live under `crates/oxide-agent-web-ui/src/styles/`.
   - Evidence required: `wc -l crates/oxide-agent-web-ui/src/styles.css`, `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort`, and `env -u NO_COLOR trunk build --release`.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 scaffold created with `crates/oxide-agent-web-ui/src/styles.css` reduced to 3 lines and temporary ordered slices `crates/oxide-agent-web-ui/src/styles/00-v1-base.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; final focused slices still pending.
 
 - G2: v2 is the canonical base, not an override block
   - Source: User clarified that `Редизайн (v2)` is the current base and `v1` was MVP.
@@ -90,15 +90,15 @@ Out of scope:
   - Source: Trunk stylesheet entrypoint at `crates/oxide-agent-web-ui/index.html:11`.
   - Acceptance: Trunk can build the sliced stylesheet and generated app assets without CSS import/path failures.
   - Evidence required: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split.
 
 - V2: Rust-side web UI still compiles
   - Source: CSS class consumers live in Leptos components under `crates/oxide-agent-web-ui/src/`.
   - Acceptance: No accidental Rust compile regressions while touching the UI crate.
   - Evidence required: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` from repo root.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-06 after the scaffold split.
 
 - N1: No unrelated product behavior changes
   - Source: Scope boundaries and repository guardrails.
@@ -193,6 +193,7 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
 - 2026-06-06: Treat the redesign/v2 rules as the source of truth. v1/MVP rules are candidates for deletion only after confirming they are duplicated or unused.
 - 2026-06-06: Prefer plain CSS slices and the existing Trunk stylesheet entrypoint. Do not add CSS modules, preprocessors, design-token generators, JS tooling, or new dependencies.
 - 2026-06-06: First implementation step is a lossless scaffold split that preserves cascade order before deduplicating v1/v2 rules. This minimizes visual-regression risk and validates Trunk import behavior early.
+- 2026-06-06: Use temporary checkpoint-1 coarse slices `00-v1-base.css` and `10-v2-current.css` to preserve exact original cascade before later v2-first deduplication.
 
 ## Progress Log
 
@@ -202,6 +203,13 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
   - Commands: `git status --short`; `git diff --check`.
   - Audit IDs updated: none.
   - Next: Checkpoint 1 — create a lossless slice scaffold while preserving cascade order.
+
+- 2026-06-06 19:06: Checkpoint 1 lossless CSS slice scaffold.
+  - Changed: Reduced `crates/oxide-agent-web-ui/src/styles.css` to an ordered import entrypoint; split the original stylesheet into `crates/oxide-agent-web-ui/src/styles/00-v1-base.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css` at the v2 boundary without semantic CSS edits.
+  - Evidence: `wc -l crates/oxide-agent-web-ui/src/styles.css` reports 3 lines; `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort` lists `00-v1-base.css` and `10-v2-current.css`; concatenating the two slices matches `HEAD:crates/oxide-agent-web-ui/src/styles.css`; Trunk and wasm checks passed.
+  - Commands: `git diff --check`; `env -u NO_COLOR trunk build --release`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `python` content-equivalence check against `git show HEAD:crates/oxide-agent-web-ui/src/styles.css`.
+  - Audit IDs updated: G1 in progress; V1 verified; V2 verified; Q1, Q2, and N1 preserved by CSS-only scaffold diff.
+  - Next: Checkpoint 2 — promote v2 tokens, reset, and primitives to canonical base, replacing the temporary override-layer model incrementally.
 
 ## Risks and Blockers
 
