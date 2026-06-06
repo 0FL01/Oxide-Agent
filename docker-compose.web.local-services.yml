@@ -20,7 +20,7 @@ services:
         condition: service_healthy
 
   postgres:
-    image: postgres:16
+    image: postgres:18-alpine
     container_name: oxide_agent_web_postgres
     restart: unless-stopped
     environment:
@@ -31,7 +31,8 @@ services:
     ports:
       - "127.0.0.1:${OXIDE_POSTGRES_PORT:-55432}:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ./pg_data:/var/lib/postgresql
+      - ./postgres-init:/docker-entrypoint-initdb.d
     healthcheck:
       test:
         [
@@ -94,5 +95,4 @@ services:
         max-size: "1m"
         max-file: "3"
 
-volumes:
-  postgres-data:
+
