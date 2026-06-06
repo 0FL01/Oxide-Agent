@@ -88,27 +88,6 @@
   font-size: 11px;
 }
 
-/* === PROMPT / COMPOSER SECTION === */
-.composer {
-  display: grid;
-  gap: 0;
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-  background: var(--bg-panel-soft);
-}
-
-.composer-notice {
-  margin: 0;
-  border: none;
-  border-bottom: 1px solid var(--border-subtle);
-  padding: var(--space-2) var(--space-5);
-  font-size: 12px;
-}
-
-.composer-notice.waiting {
-  color: var(--accent-blue);
-}
-
 /* ── Context Card (Activity drawer) ─────────────────────────────────── */
 
 .context-card {
@@ -170,94 +149,6 @@
   color: var(--fg-muted);
   font: 500 10px/1 var(--font-mono);
   text-transform: lowercase;
-}
-
-/* === RESULTS PANEL (agent output) === */
-.results-panel {
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--space-5);
-  min-height: 0;
-  background: var(--bg-root);
-}
-
-/* === SESSION WORKSPACE === */
-.session-workspace {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.task-list {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--space-4) var(--space-5);
-  min-height: 0;
-}
-
-/* === TASK CARD (Activity Item) === */
-.task-card {
-  margin-bottom: var(--space-5);
-  padding-left: var(--space-5);
-  position: relative;
-  border-left: 1px solid var(--border-subtle);
-}
-
-.task-card::before {
-  content: '';
-  position: absolute;
-  left: -3px;
-  top: 0;
-  width: 5px;
-  height: 5px;
-  background: var(--border-strong);
-}
-
-.task-card.running::before {
-  background: var(--accent-blue);
-  animation: pulse 2s infinite;
-}
-
-.task-card.success::before {
-  background: var(--accent-green);
-}
-
-.task-card.error::before {
-  background: var(--accent-red);
-}
-
-.message {
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--fg);
-}
-
-.user-message {
-  background: transparent;
-  font-family: var(--font-sans);
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.assistant-message {
-  border: none;
-  background: var(--bg-panel-soft);
-  padding: var(--space-4);
-  margin-top: var(--space-2);
-}
-
-.error-message {
-  color: var(--accent-red);
-  font-size: 12px;
-}
-
-.pending-message {
-  color: var(--accent-yellow);
-  font-size: 12px;
 }
 
 /* === AGENT ACTIVITY (inline in task card) === */
@@ -914,45 +805,6 @@
   background: var(--bg-panel);
   border: 1px solid var(--border-subtle);
   color: var(--fg);
-}
-
-/* === EMPTY STATE === */
-.empty-state,
-.console-empty,
-.loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-faint);
-  text-align: center;
-  padding: var(--space-8);
-  border: none;
-  border-radius: 0;
-}
-
-.empty-state::before {
-  content: '\231B';
-  font-size: 28px;
-  color: var(--text-faint);
-  opacity: 0.5;
-  margin-bottom: var(--space-3);
-  line-height: 1;
-}
-
-.empty-state-title {
-  font-size: 13px;
-  font-weight: 500;
-  margin-bottom: var(--space-2);
-  color: var(--text-muted);
-}
-
-.empty-state-text {
-  font-size: 12px;
-  line-height: 1.6;
-  max-width: 380px;
-  color: var(--text-faint);
 }
 
 /* === AUTH PAGES === */

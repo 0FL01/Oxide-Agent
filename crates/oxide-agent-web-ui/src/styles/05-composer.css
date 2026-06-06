@@ -1,0 +1,152 @@
+/* Composer layout, controls, pending attachments, and composer notices.
+   Canonical v2 rules live here with legacy fallback coverage first. */
+
+/* === PROMPT / COMPOSER SECTION === */
+.composer {
+  display: grid;
+  gap: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  background: var(--bg-panel-soft);
+}
+
+.composer-notice {
+  margin: 0;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-5);
+  font-size: 12px;
+}
+
+.composer-notice.waiting {
+  color: var(--accent-blue);
+}
+
+.composer {
+  position: relative;
+  flex: 0 0 auto;
+  width: min(800px, calc(100% - 40px));
+  max-width: 800px;
+  margin: 0 auto 20px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.composer-inner {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.composer-inner.drag-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.composer-inner:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.composer textarea,
+.composer-inner textarea {
+  width: 100%;
+  background: transparent !important;
+  border: none !important;
+  outline: none;
+  box-shadow: none !important;
+  min-height: 24px;
+  max-height: 208px;
+  padding: 0;
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg);
+  resize: none;
+  overflow-y: auto;
+}
+
+.composer textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.composer textarea::placeholder {
+  color: var(--faint);
+}
+
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.composer-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.agent-profile-select {
+  width: 150px;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.composer-effort-select {
+  width: 112px;
+  min-height: 32px;
+  padding: 0 26px 0 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  color: var(--fg-muted);
+  background: transparent;
+  border-color: var(--border-subtle);
+}
+
+.composer-effort-select:hover,
+.composer-effort-select:focus {
+  color: var(--fg);
+  background: var(--bg-panel-soft);
+}
+
+.composer-actions.btn-hidden .btn-primary {
+  /* button stays visible but dimmed via :disabled */
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.composer-attach-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.composer-file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.composer-notice {
+  margin: 0 0 8px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.composer-notice.waiting {
+  border: 1px solid rgba(216, 162, 30, 0.35);
+  background: rgba(216, 162, 30, 0.06);
+  color: var(--warning);
+}
