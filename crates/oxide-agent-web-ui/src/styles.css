@@ -1,3 +1,6 @@
-/* Web UI stylesheet entrypoint. Keep imports ordered: legacy base first, current v2 layer last. */
-@import url("./styles/00-v1-base.css");
+/* Web UI stylesheet entrypoint. Keep imports ordered from base to component layers. */
+@import url("./styles/00-tokens.css");
+@import url("./styles/01-reset.css");
+@import url("./styles/02-primitives.css");
+@import url("./styles/03-v1-legacy.css");
 @import url("./styles/10-v2-current.css");

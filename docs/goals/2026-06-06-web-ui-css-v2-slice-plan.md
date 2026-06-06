@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-06-web-ui-css-v2-slice-plan.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to split `crates/oxide-agent-web-ui/src/styles.css` for maintainability, with `Редизайн (v2)` as the current base and `v1` as MVP legacy.
 Goal doc owner: Codex
-Last updated: 2026-06-06 19:06
+Last updated: 2026-06-06 19:20
 
 ## Objective
 
@@ -49,21 +49,21 @@ Out of scope:
   - Acceptance: `crates/oxide-agent-web-ui/src/styles.css` contains only ordered imports and short entrypoint comments, or an equally small Trunk-compatible entrypoint; focused slice files live under `crates/oxide-agent-web-ui/src/styles/`.
   - Evidence required: `wc -l crates/oxide-agent-web-ui/src/styles.css`, `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort`, and `env -u NO_COLOR trunk build --release`.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 scaffold created with `crates/oxide-agent-web-ui/src/styles.css` reduced to 3 lines and temporary ordered slices `crates/oxide-agent-web-ui/src/styles/00-v1-base.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; final focused slices still pending.
+  - Evidence collected: Checkpoint 1 scaffold created with `crates/oxide-agent-web-ui/src/styles.css` reduced to 3 lines and temporary ordered slices `crates/oxide-agent-web-ui/src/styles/00-v1-base.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; checkpoint 2 expanded the entrypoint to 6 ordered imports and added focused base slices `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; final component slices still pending.
 
 - G2: v2 is the canonical base, not an override block
   - Source: User clarified that `Редизайн (v2)` is the current base and `v1` was MVP.
   - Acceptance: The `FRONT TEMPLATE REDESIGN OVERRIDE` model is removed; duplicate selectors are resolved to one canonical v2 rule per slice unless a deliberate documented fallback is required.
   - Evidence required: grep for `FRONT TEMPLATE REDESIGN OVERRIDE`, duplicate-selector review for high-risk selectors, and focused diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 removed `FRONT TEMPLATE REDESIGN OVERRIDE` from `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; v2 token/reset/primitive rules now live in base slices before component layers. Component-level v1/v2 duplicate collapse remains pending.
 
 - G3: Component ownership is clear
   - Source: Maintainability goal from the user request.
   - Acceptance: A class family lives in one slice by component/area: tokens/reset/primitives, shell, chat, composer, activity/tool cards, markdown/code, pages, metrics, responsive.
   - Evidence required: file list review plus spot grep of representative classes (`.composer`, `.activity-drawer`, `.tool-card`, `.markdown-content`, `.settings-page`).
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 established base ownership with `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; shell/chat/activity/markdown/page ownership remains pending.
 
 - G4: v1-only useful coverage is preserved or intentionally removed
   - Source: Recon found v1-only settings, metrics, and code-copy styles not fully represented in v2.
@@ -91,14 +91,14 @@ Out of scope:
   - Acceptance: Trunk can build the sliced stylesheet and generated app assets without CSS import/path failures.
   - Evidence required: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/`.
   - Status: verified
-  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split.
+  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split and again after checkpoint 2 base-slice promotion.
 
 - V2: Rust-side web UI still compiles
   - Source: CSS class consumers live in Leptos components under `crates/oxide-agent-web-ui/src/`.
   - Acceptance: No accidental Rust compile regressions while touching the UI crate.
   - Evidence required: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` from repo root.
   - Status: verified
-  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-06 after the scaffold split.
+  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-06 after the scaffold split and again after checkpoint 2 base-slice promotion.
 
 - N1: No unrelated product behavior changes
   - Source: Scope boundaries and repository guardrails.
@@ -194,6 +194,7 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
 - 2026-06-06: Prefer plain CSS slices and the existing Trunk stylesheet entrypoint. Do not add CSS modules, preprocessors, design-token generators, JS tooling, or new dependencies.
 - 2026-06-06: First implementation step is a lossless scaffold split that preserves cascade order before deduplicating v1/v2 rules. This minimizes visual-regression risk and validates Trunk import behavior early.
 - 2026-06-06: Use temporary checkpoint-1 coarse slices `00-v1-base.css` and `10-v2-current.css` to preserve exact original cascade before later v2-first deduplication.
+- 2026-06-06: Promote base styles by ownership first, not by aggressive selector merging. Keep legacy base coverage inside the relevant base slice before the current v2 rule subset to minimize visual-regression risk while removing the late `FRONT TEMPLATE REDESIGN OVERRIDE` block.
 
 ## Progress Log
 
@@ -210,6 +211,13 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
   - Commands: `git diff --check`; `env -u NO_COLOR trunk build --release`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `python` content-equivalence check against `git show HEAD:crates/oxide-agent-web-ui/src/styles.css`.
   - Audit IDs updated: G1 in progress; V1 verified; V2 verified; Q1, Q2, and N1 preserved by CSS-only scaffold diff.
   - Next: Checkpoint 2 — promote v2 tokens, reset, and primitives to canonical base, replacing the temporary override-layer model incrementally.
+
+- 2026-06-06 19:20: Checkpoint 2 v2 base-slice promotion.
+  - Changed: Replaced the temporary `00-v1-base.css` import with base slices `00-tokens.css`, `01-reset.css`, `02-primitives.css`, moved remaining v1 component/page coverage to `03-v1-legacy.css`, and trimmed `10-v2-current.css` to the current v2 component layer.
+  - Evidence: `wc -l crates/oxide-agent-web-ui/src/styles.css` reports 6 lines; `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort` lists the three base slices plus `03-v1-legacy.css` and `10-v2-current.css`; `rg "FRONT TEMPLATE REDESIGN OVERRIDE" crates/oxide-agent-web-ui/src/styles.css crates/oxide-agent-web-ui/src/styles` returns no matches; compatibility token grep confirms `--fg-muted`, `--danger`, `--accent-dim`, `--border-hover`, `--input-min-height`, and `--drawer-width` remain defined/used; Trunk and wasm checks passed.
+  - Commands: `git diff --check`; `env -u NO_COLOR trunk build --release`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml`; focused `rg` checks for compatibility tokens and primitive selectors.
+  - Audit IDs updated: G1 in progress; G2 in progress; G3 in progress; V1 verified; V2 verified; Q1, Q2, and N1 preserved by CSS-only/dependency-free diff.
+  - Next: Checkpoint 3 — extract shell and navigation ownership from `03-v1-legacy.css` and `10-v2-current.css` into `03-shell.css`.
 
 ## Risks and Blockers
 
