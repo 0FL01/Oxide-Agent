@@ -171,6 +171,10 @@ pub struct TaskDetail {
 #[serde(rename_all = "snake_case")]
 pub struct ListTasksResponse {
     pub tasks: Vec<TaskSummary>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub next_offset: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

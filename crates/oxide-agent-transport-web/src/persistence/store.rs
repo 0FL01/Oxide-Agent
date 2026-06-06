@@ -123,6 +123,14 @@ pub trait WebUiStore: Send + Sync {
         session_id: &str,
     ) -> WebUiStoreResult<Vec<WebTaskRecord>>;
 
+    async fn list_recent_tasks_page(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebTaskRecord>>;
+
     async fn append_task_events(
         &self,
         user_id: i64,

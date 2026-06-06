@@ -79,6 +79,17 @@ pub(crate) fn task_preview_source(input_markdown: &str, attachments: &[TaskAttac
     }
 }
 
+const DEFAULT_TASK_LIST_LIMIT: usize = 20;
+const MAX_TASK_LIST_LIMIT: usize = 100;
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct TaskListQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
 pub(crate) fn build_task_execution_input(
     input_markdown: &str,
     attachments: &[TaskAttachment],
@@ -353,16 +364,26 @@ pub(crate) async fn api_list_tasks(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
+    Query(query): Query<TaskListQuery>,
 ) -> Result<Json<ListTasksResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user(&state, &headers).await?;
     let _session = load_owned_session(&state, user.user_id, &session_id).await?;
-    let task_records = state
+    let offset = query.offset.unwrap_or_default();
+    let requested_limit = query.limit.unwrap_or(DEFAULT_TASK_LIST_LIMIT);
+    let limit = requested_limit.clamp(1, MAX_TASK_LIST_LIMIT);
+    let fetch_limit = limit.saturating_add(1);
+    let mut task_records = state
         .web_store
-        .list_tasks(user.user_id, &session_id)
+        .list_recent_tasks_page(user.user_id, &session_id, offset, fetch_limit)
         .await
         .map_err(store_error_response)?;
+    let has_more = task_records.len() > limit;
+    if has_more {
+        task_records.remove(0);
+    }
     let tasks_count = task_records.len();
     let total_last_event_seq: u64 = task_records.iter().map(|task| task.last_event_seq).sum();
+    let next_offset = offset + tasks_count;
     let tasks = task_records
         .into_iter()
         .map(task_summary_from_record)
@@ -371,11 +392,19 @@ pub(crate) async fn api_list_tasks(
         target: "oxide_agent_transport_web::web_perf",
         user_id = user.user_id,
         session_id = %session_id,
+        offset,
+        limit,
         tasks_count,
+        has_more,
+        next_offset,
         total_last_event_seq,
         "web tasks listed"
     );
-    Ok(Json(ListTasksResponse { tasks }))
+    Ok(Json(ListTasksResponse {
+        tasks,
+        has_more,
+        next_offset,
+    }))
 }
 
 pub(crate) async fn api_create_task(

@@ -32,6 +32,7 @@ use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
 use super::versions::group_task_versions;
 
 const TASK_EVENTS_PAGE_LIMIT: usize = 500;
+const TASKS_PAGE_LIMIT: usize = 20;
 const SETTINGS_PROFILES_CACHE_TTL_MS: f64 = 30_000.0;
 
 #[derive(Clone)]
@@ -148,6 +149,12 @@ fn max_event_seq(events: &[PersistedTaskEvent]) -> u64 {
         .map(|event| event.seq)
         .max()
         .unwrap_or_default()
+}
+
+fn merge_task_summaries(items: &mut Vec<TaskSummary>, tasks: Vec<TaskSummary>) {
+    for task in tasks {
+        upsert_task_summary(items, task);
+    }
 }
 
 #[component]
@@ -414,6 +421,9 @@ fn SessionWorkspace(
     let auth = use_auth();
     let (_session_title, set_session_title) = signal("Session".to_string());
     let (tasks, set_tasks) = signal(Vec::<TaskSummary>::new());
+    let (tasks_has_more, set_tasks_has_more) = signal(false);
+    let (tasks_next_offset, set_tasks_next_offset) = signal(0_usize);
+    let (loading_older_tasks, set_loading_older_tasks) = signal(false);
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
@@ -465,7 +475,7 @@ fn SessionWorkspace(
             let client = auth.client();
             let (session_result, tasks_result) = join!(
                 client.get_session(&session_id),
-                client.list_tasks(&session_id)
+                client.list_tasks_page(&session_id, TASKS_PAGE_LIMIT, 0)
             );
 
             match session_result {
@@ -489,6 +499,8 @@ fn SessionWorkspace(
             match tasks_result {
                 Ok(response) => {
                     set_drawer_open.set(false);
+                    set_tasks_has_more.set(response.has_more);
+                    set_tasks_next_offset.set(response.next_offset);
                     let latest = latest_task(&response.tasks);
                     set_tasks.set(response.tasks);
                     if let Some(task) = latest {
@@ -544,6 +556,32 @@ fn SessionWorkspace(
             set_loading.set(false);
         });
     };
+
+    let session_id_for_load_older = session_id.clone();
+    let load_older_tasks = Callback::new(move |_| {
+        if loading_older_tasks.get_untracked() || !tasks_has_more.get_untracked() {
+            return;
+        }
+        set_loading_older_tasks.set(true);
+        set_error.set(None);
+        let session_id = session_id_for_load_older.clone();
+        let offset = tasks_next_offset.get_untracked();
+        spawn_ui(async move {
+            let client = auth.client();
+            match client
+                .list_tasks_page(&session_id, TASKS_PAGE_LIMIT, offset)
+                .await
+            {
+                Ok(response) => {
+                    set_tasks.update(|items| merge_task_summaries(items, response.tasks));
+                    set_tasks_has_more.set(response.has_more);
+                    set_tasks_next_offset.set(response.next_offset);
+                }
+                Err(error) => set_error.set(Some(task_submit_error_message(&error))),
+            }
+            set_loading_older_tasks.set(false);
+        });
+    });
 
     Effect::new(move |_| {
         if !loaded.get() {
@@ -764,6 +802,18 @@ fn SessionWorkspace(
                             let latest_editable_task_id = latest_editable_task_id(&tasks.get());
                             let session_id_for_cards = session_id_for_cards.clone();
                             view! {
+                                {move || tasks_has_more.get().then(|| view! {
+                                    <div class="load-older-tasks">
+                                        <button
+                                            type="button"
+                                            class="secondary"
+                                            disabled=loading_older_tasks
+                                            on:click=move |ev| load_older_tasks.run(ev)
+                                        >
+                                            {move || if loading_older_tasks.get() { "Loading history..." } else { "Load older messages" }}
+                                        </button>
+                                    </div>
+                                })}
                                 <For
                                     each=move || group_task_versions(&tasks.get())
                                     key=|group| group.version_group_id.clone()

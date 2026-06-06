@@ -323,6 +323,39 @@ impl WebUiStore for InMemoryWebUiStore {
         Ok(tasks)
     }
 
+    async fn list_recent_tasks_page(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebTaskRecord>> {
+        let mut tasks = self
+            .tasks
+            .read()
+            .await
+            .values()
+            .filter(|record| record.user_id == user_id && record.session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.task_id.cmp(&a.task_id))
+        });
+        let mut page = tasks
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        page.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        });
+        Ok(page)
+    }
+
     async fn append_task_events(
         &self,
         user_id: i64,

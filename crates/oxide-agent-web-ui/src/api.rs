@@ -194,10 +194,27 @@ impl ApiClient {
         decode(builder.send().await?).await
     }
 
+    #[allow(dead_code)]
     pub async fn list_tasks(&self, session_id: &str) -> Result<ListTasksResponse, ApiClientError> {
         decode(
             with_credentials(Request::get(&format!(
                 "/api/v1/sessions/{session_id}/tasks"
+            )))
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn list_tasks_page(
+        &self,
+        session_id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<ListTasksResponse, ApiClientError> {
+        decode(
+            with_credentials(Request::get(&format!(
+                "/api/v1/sessions/{session_id}/tasks?limit={limit}&offset={offset}"
             )))
             .send()
             .await?,

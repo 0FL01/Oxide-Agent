@@ -768,6 +768,38 @@ impl WebUiStore for SqlxWebUiStore {
         rows.iter().map(row_to_task).collect()
     }
 
+    async fn list_recent_tasks_page(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebTaskRecord>> {
+        let sql = task_list_select_sql(
+            "WHERE t.user_id = $1 AND t.session_id = $2",
+            "ORDER BY t.created_at DESC, t.task_id DESC LIMIT $3 OFFSET $4",
+        );
+        let rows = query::<Postgres>(&sql)
+            .bind(user_id)
+            .bind(session_id)
+            .bind(usize_to_i64(limit, "task list page limit")?)
+            .bind(usize_to_i64(offset, "task list page offset")?)
+            .fetch_all(self.pool())
+            .await
+            .map_err(db_error)?;
+
+        let mut tasks = rows
+            .iter()
+            .map(row_to_task)
+            .collect::<WebUiStoreResult<Vec<_>>>()?;
+        tasks.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        });
+        Ok(tasks)
+    }
+
     async fn append_task_events(
         &self,
         user_id: i64,

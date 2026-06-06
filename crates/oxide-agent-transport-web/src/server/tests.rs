@@ -36,6 +36,8 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
 
+#[cfg(feature = "profile-lite")]
+use super::task_routes::TaskListQuery;
 #[cfg(feature = "storage-sqlx")]
 use super::WebStoreKind;
 use super::{
@@ -2648,6 +2650,7 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
         axum::extract::State(state.clone()),
         auth_headers(&token_one, None),
         axum::extract::Path(session_id.clone()),
+        axum::extract::Query(TaskListQuery::default()),
     )
     .await
     .expect("list tasks");
