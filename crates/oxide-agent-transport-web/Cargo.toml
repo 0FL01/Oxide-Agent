@@ -42,14 +42,12 @@ sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-toki
 
 [features]
 default = []
-profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2", "storage-sqlx"]
-profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2", "storage-sqlx"]
+profile-lite = ["oxide-agent-core/profile-lite", "storage-sqlx"]
+profile-full = ["oxide-agent-core/profile-full", "storage-sqlx"]
 profile-web-embedded-opencode-local = [
     "oxide-agent-core/profile-web-embedded-opencode-local",
-    "storage-s3-r2",
     "storage-sqlx",
 ]
-storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
 storage-sqlx = [
     "oxide-agent-core/storage-sqlx",
     "dep:sqlx-core",

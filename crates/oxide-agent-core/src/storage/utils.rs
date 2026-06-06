@@ -1,8 +1,4 @@
 use super::AuditEventRecord;
-#[cfg(feature = "storage-s3-r2")]
-use aws_sdk_s3::error::SdkError;
-#[cfg(feature = "storage-s3-r2")]
-use aws_sdk_s3::operation::put_object::PutObjectError;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -66,14 +62,5 @@ pub(crate) fn current_timestamp_unix_secs() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs() as i64,
         Err(_) => 0,
-    }
-}
-
-#[must_use]
-#[cfg(feature = "storage-s3-r2")]
-pub(crate) fn is_precondition_failed_put_error(err: &SdkError<PutObjectError>) -> bool {
-    match err {
-        SdkError::ServiceError(service_err) => service_err.raw().status().as_u16() == 412,
-        _ => false,
     }
 }

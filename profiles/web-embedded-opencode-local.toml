@@ -3,7 +3,6 @@ cargo_features = ["profile-web-embedded-opencode-local", "tool-crawl4ai-markdown
 
 [modules]
 "transport/web" = { enabled = true }
-"storage/r2" = { enabled = true }
 "storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "llm-provider/opencode-zen" = { enabled = true }

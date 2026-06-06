@@ -250,7 +250,7 @@ impl WikiSessionCache {
     /// Reconcile runtime-owned protected metadata files for a validated patch.
     ///
     /// Planner patches cannot directly edit `index.md` or `log.md`; the runtime
-    /// updates them after validation so pages are discoverable without S3 LIST
+    /// updates them after validation so pages are discoverable without backend listing
     /// and each patch cycle has one compact chronological entry.
     pub async fn reconcile_context_patch_metadata(
         &self,

@@ -677,9 +677,8 @@ impl ManagerControlPlaneProvider {
             },
             ToolDefinition {
                 name: TOOL_FORUM_TOPIC_LIST.to_string(),
-                description:
-                    "List active Telegram forum topics tracked in persisted S3 topic records"
-                        .to_string(),
+                description: "List active Telegram forum topics tracked in persisted topic records"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {

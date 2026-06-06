@@ -1,30 +1,6 @@
 use super::*;
 
 #[test]
-fn user_context_agent_memory_key_uses_topic_namespace() {
-    let key = user_context_agent_memory_key(42, "-1001:77");
-    assert_eq!(key, "users/42/topics/-1001:77/agent_memory.json");
-}
-
-#[test]
-fn user_context_agent_flows_prefix_uses_topic_namespace() {
-    let prefix = user_context_agent_flows_prefix(42, "-1001:77");
-    assert_eq!(prefix, "users/42/topics/-1001:77/flows/");
-}
-
-#[test]
-fn user_context_agent_flow_key_uses_flow_namespace() {
-    let key = user_context_agent_flow_key(42, "-1001:77", "flow-123");
-    assert_eq!(key, "users/42/topics/-1001:77/flows/flow-123/meta.json");
-}
-
-#[test]
-fn user_context_agent_flow_memory_key_uses_flow_namespace() {
-    let key = user_context_agent_flow_memory_key(42, "-1001:77", "flow-123");
-    assert_eq!(key, "users/42/topics/-1001:77/flows/flow-123/memory.json");
-}
-
-#[test]
 fn generate_flow_id_returns_v4_uuid() {
     let flow_id = generate_flow_id();
     let parsed = Uuid::parse_str(&flow_id);
@@ -98,54 +74,6 @@ fn user_config_roundtrip_preserves_context_scoped_metadata() {
         .contexts
         .get("-1001:42")
         .is_some_and(|context| context.forum_topic_closed));
-}
-
-#[test]
-fn user_config_key_stays_stable() {
-    let key = user_config_key(42);
-    assert_eq!(key, "users/42/config.json");
-}
-
-#[test]
-fn agent_profile_key_uses_control_plane_namespace() {
-    let key = agent_profile_key(42, "agent-a");
-    assert_eq!(key, "users/42/control_plane/agent_profiles/agent-a.json");
-}
-
-#[test]
-fn topic_binding_key_uses_control_plane_namespace() {
-    let key = topic_binding_key(42, "topic-a");
-    assert_eq!(key, "users/42/control_plane/topic_bindings/topic-a.json");
-}
-
-#[test]
-fn topic_context_key_uses_control_plane_namespace() {
-    let key = topic_context_key(42, "topic-a");
-    assert_eq!(key, "users/42/control_plane/topic_contexts/topic-a.json");
-}
-
-#[test]
-fn topic_agents_md_key_uses_control_plane_namespace() {
-    let key = topic_agents_md_key(42, "topic-a");
-    assert_eq!(key, "users/42/control_plane/topic_agents_md/topic-a.json");
-}
-
-#[test]
-fn topic_infra_config_key_uses_control_plane_namespace() {
-    let key = topic_infra_config_key(42, "topic-a");
-    assert_eq!(key, "users/42/control_plane/topic_infra/topic-a.json");
-}
-
-#[test]
-fn private_secret_key_uses_private_namespace() {
-    let key = private_secret_key(42, "ssh/prod-key");
-    assert_eq!(key, "users/42/private/secrets/ssh/prod-key");
-}
-
-#[test]
-fn audit_events_key_uses_control_plane_namespace() {
-    let key = audit_events_key(42);
-    assert_eq!(key, "users/42/control_plane/audit/events.json");
 }
 
 #[test]

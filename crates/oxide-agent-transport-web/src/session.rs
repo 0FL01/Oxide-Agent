@@ -319,7 +319,7 @@ impl WebSessionManager {
 
     /// Create a new session manager using an explicit storage provider.
     ///
-    /// Production web console setup passes the durable R2 provider here so
+    /// Production web console setup passes the durable SQLx/Postgres provider here so
     /// runtime memory, wiki memory, topic AGENTS.md and reminder context share
     /// the same storage backend as the rest of the application.
     pub fn new_with_storage(
@@ -493,7 +493,7 @@ impl WebSessionManager {
         .await;
 
         // 2. Inject topic AGENTS.md only if the restored memory does not
-        //    already contain a pinned copy (e.g. after hydration from R2).
+        //    already contain a pinned copy from durable storage.
         inject_topic_agents_md_for_session(
             self.storage(),
             user_id,

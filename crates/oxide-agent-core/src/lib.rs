@@ -13,7 +13,7 @@ pub mod config;
 pub mod llm;
 /// Docker sandboxing for code execution.
 pub mod sandbox;
-/// Storage layer (R2/S3).
+/// SQL-backed durable storage layer.
 pub mod storage;
 /// Utility functions.
 pub mod utils;

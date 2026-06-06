@@ -265,7 +265,7 @@ mod tests {
     fn detects_chrono_timestamp_titles() {
         assert!(looks_like_timestamp_title("2026-05-29 20:53:47.208618014"));
         assert!(looks_like_timestamp_title("2026-05-29T20:53:47Z"));
-        assert!(!looks_like_timestamp_title("Cloudflare R2 limits"));
+        assert!(!looks_like_timestamp_title("Cloud storage limits"));
     }
 }
 

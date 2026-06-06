@@ -15,10 +15,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "llm-provider/opencode-zen"
       },
       {
-        "id": "storage/r2",
-        "module": "storage/r2"
-      },
-      {
         "id": "storage/sqlx",
         "module": "storage/sqlx"
       },
@@ -161,17 +157,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "storage-s3-r2",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "storage/r2",
-        "kind": "storage-backend",
-        "provides": [
-          "storage/r2"
-        ],
-        "requires": []
-      },
-      {
         "cargo_feature": "storage-sqlx",
         "config_properties": [
           {
@@ -297,7 +282,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "capabilities": [
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "storage/r2",
       "storage/sqlx",
       "tool/brave-search",
       "tool/duckduckgo-news",
@@ -311,7 +295,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "modules": [
       "llm-provider/opencode-go",
       "llm-provider/opencode-zen",
-      "storage/r2",
       "storage/sqlx",
       "tool/brave-search",
       "tool/duckduckgo",
@@ -337,7 +320,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "opencode_zen"
   ],
   "storage_backend_module_ids": [
-    "storage/r2",
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [],
@@ -366,13 +348,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "OPENCODE_ZEN_MODEL_CACHE_TTL_SECS",
         "OPENCODE_ZEN_MODELS_URL"
       ],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "storage/r2",
-      "kind": "storage-backend",
-      "cargo_feature": "storage-s3-r2",
-      "config_env": [],
       "requires_capabilities": []
     },
     {

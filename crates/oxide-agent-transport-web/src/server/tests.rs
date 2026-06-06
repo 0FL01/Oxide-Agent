@@ -1072,41 +1072,6 @@ async fn router_serves_frontend_assets_and_security_headers() {
     let _ = std::fs::remove_dir_all(asset_dir);
 }
 
-#[cfg(feature = "storage-s3-r2")]
-#[tokio::test]
-async fn r2_backed_app_state_builder_requires_r2_config() {
-    let _lock = web_env_mutex().lock().await;
-    let _guard = EnvGuard::capture(&[
-        "OXIDE_R2_ENDPOINT_URL",
-        "OXIDE_R2_ENDPOINT",
-        "OXIDE_R2_BUCKET_NAME",
-        "OXIDE_R2_BUCKET",
-        "OXIDE_R2_ACCESS_KEY_ID",
-        "OXIDE_R2_SECRET_ACCESS_KEY",
-    ]);
-    for key in [
-        "OXIDE_R2_ENDPOINT_URL",
-        "OXIDE_R2_ENDPOINT",
-        "OXIDE_R2_BUCKET_NAME",
-        "OXIDE_R2_BUCKET",
-        "OXIDE_R2_ACCESS_KEY_ID",
-        "OXIDE_R2_SECRET_ACCESS_KEY",
-    ] {
-        std::env::remove_var(key);
-    }
-
-    let settings = Arc::new(AgentSettings::default());
-    let llm = Arc::new(LlmClient::new(settings.as_ref()));
-    let Err(error) = super::build_r2_backed_app_state(SessionRegistry::new(), llm, settings).await
-    else {
-        panic!("missing R2 config should fail before startup");
-    };
-    assert!(
-        error.to_string().contains("OXIDE_R2_ENDPOINT"),
-        "unexpected startup error: {error}"
-    );
-}
-
 #[cfg(feature = "storage-sqlx")]
 #[tokio::test]
 async fn sqlx_backed_app_state_builder_requires_database_config() {

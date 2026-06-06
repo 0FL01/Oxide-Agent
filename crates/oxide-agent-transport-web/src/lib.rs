@@ -19,7 +19,7 @@
 //!     v
 //! [AgentExecutor] -- core agent loop (from oxide-agent-core)
 //!     |
-//!     +-- [InMemoryStorage] -- StorageProvider impl, no R2 required
+//!     +-- [InMemoryStorage] -- StorageProvider impl for hermetic tests
 //!     +-- [WebAgentTransport] -- AgentTransport impl, collects events in memory
 //!     +-- [ScriptedLlmProvider] -- deterministic LLM for tests
 //! ```

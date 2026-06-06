@@ -2,7 +2,7 @@
 
 Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It handles text, voice, images, documents, topic-scoped memory, sandbox tasks, a web console, and a manager control plane.
 
-Stack: Rust 1.94, `teloxide`, AWS SDK for Cloudflare R2, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
+Stack: Rust 1.94, `teloxide`, SQLx/Postgres durable storage, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
 
 ## Branch
 
@@ -37,7 +37,7 @@ Default branch: `dev`.
 ## Where To Look
 
 - `crates/oxide-agent-core/src/agent/` - executor, runner, hooks, compaction, wiki memory, providers, prompt composition.
-- `crates/oxide-agent-core/src/storage/` - storage facade, R2 backend, domain records (control-plane, reminders, flows).
+- `crates/oxide-agent-core/src/storage/` - storage facade, SQLx backend, domain records (control-plane, reminders, flows).
 - `crates/oxide-agent-core/src/llm/providers/` - LLM provider implementations.
 - `crates/oxide-agent-core/src/sandbox/` - sandbox facade; backends: direct Docker, broker, Bubblewrap (`bwrap/`).
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
@@ -60,7 +60,7 @@ Default branch: `dev`.
 - Topic-scoped `AGENTS.md` is stored separately, pinned during flow bootstrap, live-synced after `agents_md_update`, inherited by sub-agents.
 - Sandbox backends are explicit: direct Docker (`SANDBOX_BACKEND=docker`), broker (`SANDBOX_BACKEND=broker`), or Bubblewrap (`SANDBOX_BACKEND=bwrap`). Default Compose stays on broker; bwrap must not require Docker.
 - Manager CRUD goes through `manager_control_plane` provider with audit trail and RBAC (`manager_allowed_users`).
-- `storage-s3-r2` is the only production durable storage. Local filesystem is transient only.
+- `storage-sqlx` is the production durable storage. Local filesystem is transient only.
 - Direct Google Gemini provider code must stay absent. Gemini models are valid only through OpenRouter.
 
 ## Key Subsystems
@@ -72,7 +72,7 @@ Default branch: `dev`.
 - Compaction is runner-integrated with typed message classes, budget estimator, hot-memory classifier, externalized large tool payloads, and LLM summarization sidecar. Legacy staged pipeline (classifier/prune/rebuild/summarizer) has been removed.
 
 ### Wiki memory
-- Lives in `agent/wiki_memory/` -- no separate crate. Storage: S3/R2 object storage.
+- Lives in `agent/wiki_memory/` -- no separate crate. Storage: SQLx/Postgres via the storage facade.
 - Pages are deterministic Markdown: `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`.
 - Background planner (`planner.rs`) optionally uses LLM to extract structured memory.
 - Tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
@@ -111,7 +111,7 @@ Default branch: `dev`.
 - Secret refs: `env:KEY`, `storage:PATH`; secrets must not reach prompts or memory.
 
 ### Storage and LLM
-- Storage facade and R2 backend in `storage/`; context-scoped APIs for transport state.
+- Storage facade and SQLx/Postgres backend in `storage/`; context-scoped APIs for transport state.
 - LLM providers in `llm/providers/`; shared orchestration: `llm/client.rs`, `llm/capabilities.rs`, `llm/support/` (backoff, HTTP pooling, OpenAI compat), `llm/types.rs`.
 - Route failover: weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.

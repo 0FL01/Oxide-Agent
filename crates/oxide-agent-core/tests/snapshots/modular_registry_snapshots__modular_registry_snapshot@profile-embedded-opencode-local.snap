@@ -51,10 +51,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "sandbox-backend/docker-direct"
       },
       {
-        "id": "storage/r2",
-        "module": "storage/r2"
-      },
-      {
         "id": "storage/sqlx",
         "module": "storage/sqlx"
       },
@@ -278,17 +274,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "sandbox-backend/docker-direct/exec",
           "sandbox-backend/docker-direct/fileops",
           "sandbox-backend/docker-direct/lifecycle"
-        ],
-        "requires": []
-      },
-      {
-        "cargo_feature": "storage-s3-r2",
-        "config_properties": [],
-        "conflicts": [],
-        "id": "storage/r2",
-        "kind": "storage-backend",
-        "provides": [
-          "storage/r2"
         ],
         "requires": []
       },
@@ -598,7 +583,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/docker-direct/exec",
       "sandbox-backend/docker-direct/fileops",
       "sandbox-backend/docker-direct/lifecycle",
-      "storage/r2",
       "storage/sqlx",
       "tool/agents-md",
       "tool/brave-search",
@@ -628,7 +612,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/opencode-zen",
       "sandbox-backend/bwrap",
       "sandbox-backend/docker-direct",
-      "storage/r2",
       "storage/sqlx",
       "tool/agents-md",
       "tool/brave-search",
@@ -683,7 +666,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "opencode_zen"
   ],
   "storage_backend_module_ids": [
-    "storage/r2",
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
@@ -728,13 +710,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "module_id": "sandbox-backend/docker-direct",
       "kind": "sandbox-backend",
       "cargo_feature": "sandbox-backend-docker-direct",
-      "config_env": [],
-      "requires_capabilities": []
-    },
-    {
-      "module_id": "storage/r2",
-      "kind": "storage-backend",
-      "cargo_feature": "storage-s3-r2",
       "config_env": [],
       "requires_capabilities": []
     },

@@ -323,13 +323,6 @@ fn push_transport_and_storage_modules(modules: &mut Vec<Box<dyn CapabilityModule
         ["transport/http-api"]
     );
 
-    push_module!(
-        modules,
-        "storage-s3-r2",
-        "storage/r2",
-        StorageBackend,
-        ["storage/r2"]
-    );
     push_module_with_config!(
         modules,
         "storage-sqlx",
@@ -684,7 +677,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(feature = "storage-s3-r2", feature = "storage-sqlx"))]
+    #[cfg(feature = "storage-sqlx")]
     #[test]
     fn compiled_manifest_exposes_compiled_durable_storage_backends() {
         let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
@@ -694,11 +687,6 @@ mod tests {
             .filter(|module| module.kind() == CapabilityKind::StorageBackend)
             .map(|module| module.id().as_str())
             .collect();
-        #[cfg(all(feature = "storage-s3-r2", feature = "storage-sqlx"))]
-        let expected = vec!["storage/r2", "storage/sqlx"];
-        #[cfg(all(feature = "storage-s3-r2", not(feature = "storage-sqlx")))]
-        let expected = vec!["storage/r2"];
-        #[cfg(all(not(feature = "storage-s3-r2"), feature = "storage-sqlx"))]
         let expected = vec!["storage/sqlx"];
 
         assert_eq!(

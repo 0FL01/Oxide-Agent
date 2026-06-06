@@ -351,7 +351,6 @@ fn stale_compatibility_labels_are_removed_from_current_surfaces() {
         "crates/oxide-agent-core/src/llm/providers/openrouter/module.rs",
         "crates/oxide-agent-core/src/llm/types.rs",
         "crates/oxide-agent-core/src/storage/control_plane.rs",
-        "crates/oxide-agent-core/src/storage/telemetry.rs",
         "crates/oxide-agent-core/src/storage/tests/bindings.rs",
         "crates/oxide-agent-core/src/storage/tests/keys_and_user.rs",
         "crates/oxide-agent-transport-telegram/src/bot/context.rs",
@@ -620,7 +619,6 @@ fn startup_persisted_tool_drift_cleanup_is_removed() {
         "crates/oxide-agent-core/src/storage/mod.rs",
         "crates/oxide-agent-core/src/storage/modules.rs",
         "crates/oxide-agent-core/src/storage/provider.rs",
-        "crates/oxide-agent-core/src/storage/r2_memory.rs",
     ];
     let forbidden_patterns = [
         "startup_maintenance",
@@ -799,8 +797,8 @@ fn wiki_memory_uses_storage_facade_not_concrete_r2() {
         .expect("read wiki memory store");
 
     assert!(
-        !store.contains("R2Storage"),
-        "wiki memory must use StorageProvider-backed WikiObjectBackend, not concrete R2Storage"
+        !store.contains("SqlxStorage"),
+        "wiki memory must use StorageProvider-backed WikiObjectBackend, not a concrete storage backend"
     );
     assert!(
         store.contains("StorageProviderWikiBackend"),
@@ -822,10 +820,10 @@ fn telegram_runner_uses_storage_module_factory_not_concrete_r2() {
         runner.contains("storage::build_primary_storage"),
         "Telegram runner must build storage through the storage backend module factory"
     );
-    for forbidden in ["R2Storage", "R2StorageConfig", "R2Storage::new"] {
+    for forbidden in ["SqlxStorage::connect", "SqlxStorageConfig"] {
         assert!(
             !runner.contains(forbidden),
-            "Telegram runner must not reference concrete storage backend {forbidden}"
+            "Telegram runner must use the storage backend factory instead of concrete backend {forbidden}"
         );
     }
 }

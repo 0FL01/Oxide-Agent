@@ -20,10 +20,9 @@ impl crate::agent::wiki_memory::WikiObjectBackend for InMemoryWikiBackend {
             .ok()
             .and_then(|gate| gate.as_ref().cloned());
         if let Some(gate) = gate {
-            let _permit = gate
-                .acquire()
-                .await
-                .map_err(|_| crate::storage::StorageError::S3Put("test put gate closed".into()))?;
+            let _permit = gate.acquire().await.map_err(|_| {
+                crate::storage::StorageError::InvalidInput("test put gate closed".into())
+            })?;
         }
 
         self.objects

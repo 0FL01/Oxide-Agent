@@ -16,10 +16,8 @@ struct RedactionPatterns {
     token1: Regex,
     token2: Regex,
     token3: Regex,
-    r2_1: Regex,
-    r2_2: Regex,
-    r2_3: Regex,
-    r2_4: Regex,
+    database_url: Regex,
+    oxide_database_url: Regex,
 }
 
 impl RedactionPatterns {
@@ -33,10 +31,8 @@ impl RedactionPatterns {
             token1: Regex::new(r"(https?://[^/]+/bot)([0-9]+:[A-Za-z0-9_-]+)(/['\s]*)")?,
             token2: Regex::new(r"([0-9]{8,10}:[A-Za-z0-9_-]{35})")?,
             token3: Regex::new(r"(bot[0-9]{8,10}:)[A-Za-z0-9_-]+")?,
-            r2_1: Regex::new(r"OXIDE_R2_ACCESS_KEY_ID=[^\s&]+")?,
-            r2_2: Regex::new(r"OXIDE_R2_SECRET_ACCESS_KEY=[^\s&]+")?,
-            r2_3: Regex::new(r"'aws_access_key_id': '[^']*'")?,
-            r2_4: Regex::new(r"'aws_secret_access_key': '[^']*'")?,
+            database_url: Regex::new(r"DATABASE_URL=[^\s&]+")?,
+            oxide_database_url: Regex::new(r"OXIDE_DATABASE_URL=[^\s&]+")?,
         })
     }
 
@@ -55,20 +51,12 @@ impl RedactionPatterns {
             .replace_all(&output, "$1[TELEGRAM_TOKEN]")
             .to_string();
         output = self
-            .r2_1
-            .replace_all(&output, "OXIDE_R2_ACCESS_KEY_ID=[MASKED]")
+            .database_url
+            .replace_all(&output, "DATABASE_URL=[MASKED]")
             .to_string();
         output = self
-            .r2_2
-            .replace_all(&output, "OXIDE_R2_SECRET_ACCESS_KEY=[MASKED]")
-            .to_string();
-        output = self
-            .r2_3
-            .replace_all(&output, "'aws_access_key_id': '[MASKED]'")
-            .to_string();
-        output = self
-            .r2_4
-            .replace_all(&output, "'aws_secret_access_key': '[MASKED]'")
+            .oxide_database_url
+            .replace_all(&output, "OXIDE_DATABASE_URL=[MASKED]")
             .to_string();
         output
     }

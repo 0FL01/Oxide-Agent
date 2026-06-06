@@ -353,17 +353,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
-        "id": "storage/r2",
-        "kind": "storage-backend",
-        "cargo_feature": "storage-s3-r2",
-        "provides": [
-          "storage/r2"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
         "id": "storage/sqlx",
         "kind": "storage-backend",
         "cargo_feature": "storage-sqlx",
@@ -888,10 +877,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "sandbox-daemon/sandboxd"
       },
       {
-        "id": "storage/r2",
-        "module": "storage/r2"
-      },
-      {
         "id": "storage/sqlx",
         "module": "storage/sqlx"
       },
@@ -1043,7 +1028,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/docker-direct",
       "sandbox-backend/sandboxd-client",
       "sandbox-daemon/sandboxd",
-      "storage/r2",
       "storage/sqlx",
       "tool/agents-md",
       "tool/brave-search",
@@ -1103,7 +1087,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client/fileops",
       "sandbox-backend/sandboxd-client/lifecycle",
       "sandbox-daemon/sandboxd",
-      "storage/r2",
       "storage/sqlx",
       "tool/agents-md",
       "tool/brave-search",
@@ -1196,7 +1179,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "zai"
   ],
   "storage_backend_module_ids": [
-    "storage/r2",
     "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
@@ -1339,13 +1321,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
           "sandbox-backend/docker-direct"
         ]
       ]
-    },
-    {
-      "module_id": "storage/r2",
-      "kind": "storage-backend",
-      "cargo_feature": "storage-s3-r2",
-      "config_env": [],
-      "requires_capabilities": []
     },
     {
       "module_id": "storage/sqlx",

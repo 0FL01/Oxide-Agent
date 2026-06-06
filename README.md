@@ -19,7 +19,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 - **Topic-Scoped Infrastructure:** Per-topic agent profiles, hooks, tools, and memory isolation
 - **Manager Control Plane:** Programmatic topic management with RBAC, audit trail, and rollback support
 - **Sandbox Backends:** Docker broker isolation by default, plus optional bare-host Bubblewrap mode
-- **Wiki Memory:** S3/R2-backed persistent memory with optional LLM-assisted extraction
+- **Wiki Memory:** SQLx/Postgres-backed persistent memory with optional LLM-assisted extraction
 - **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly for maximum cache hit rate across all providers
 </details>
 
@@ -74,8 +74,8 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
     *   Images (analysis and description via multimodal models).
     *   Work with documents of various formats.
 *   **Voice Synthesis:** Kokoro TTS for English voice replies and Silero TTS for Russian voice replies.
-*   **Context Management:** Dialogue history saved in Cloudflare R2 (S3) with context-scoped isolation per topic.
-*   **Wiki Memory:** Persistent S3/R2-backed memory pages with optional LLM-assisted extraction and retrieval.
+*   **Context Management:** Dialogue history saved in SQLx/Postgres with context-scoped isolation per topic.
+*   **Wiki Memory:** Persistent SQLx/Postgres-backed memory pages with optional LLM-assisted extraction and retrieval.
 *   **Prompt Cache Optimization:** Static prefix + dynamic suffix assembly order maximizes cache hit rate across all providers.
 
 ## System Requirements
@@ -88,8 +88,7 @@ The bot is developed using **Rust 1.94**, the `teloxide` library, and integrates
 | :--- | :--- | :--- |
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` | **Primary Agent Mode provider** - recommended route: `deepseek-v4-flash` via `opencode-go`. [OpenCode](https://opencode.ai/) |
 | **Telegram** | `TELEGRAM_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
-| **Cloudflare R2** | `OXIDE_R2_*` | S3 storage (Access Key, Secret, Endpoint, Bucket) |
-| **PostgreSQL** | `OXIDE_DATABASE_URL` | SQLx durable-storage foundation for the staged R2-to-Postgres migration |
+| **PostgreSQL** | `OXIDE_DATABASE_URL` | SQLx durable storage for sessions, memory, web state, reminders, and audit |
 | **Zhipu AI (ZAI)** | `ZAI_API_KEY` | Required when using ZAI routes (`glm-4.7`, `glm-4.5-air`). [Zhipu AI](https://z.ai/) |
 | **Mistral AI** | `MISTRAL_API_KEY` | Required for Mistral routes (`mistral-large-latest`, etc.) |
 
@@ -170,11 +169,8 @@ This path is for the prebuilt `x86_64` release artifact built with the embedded 
    TELEGRAM_ALLOWED_USERS=123456789
    TELEGRAM_MANAGER_ALLOWED_USERS=123456789
 
-   OXIDE_R2_ACCESS_KEY_ID=YOUR_R2_KEY
-   OXIDE_R2_SECRET_ACCESS_KEY=YOUR_R2_SECRET
-   OXIDE_R2_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com
-   OXIDE_R2_BUCKET_NAME=your_bucket
-   OXIDE_R2_REGION=auto
+   OXIDE_DATABASE_URL=postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent
+   OXIDE_DATABASE_MIGRATE_ON_STARTUP=false
 
    OPENCODE_GO_API_KEY=YOUR_OPENCODE_GO_API_KEY
    OPENCODE_GO_API_BASE=https://opencode.ai/zen/go/v1/chat/completions
@@ -283,12 +279,9 @@ REMINDER_SILENT_NO_CHANGE_ENABLED=true
 AGENT_TIMEOUT_SECS=300
 DEBUG_MODE=false
 
-# Cloudflare R2 (S3)
-OXIDE_R2_ACCESS_KEY_ID=...
-OXIDE_R2_SECRET_ACCESS_KEY=...
-OXIDE_R2_ENDPOINT_URL=...
-OXIDE_R2_BUCKET_NAME=...
-OXIDE_R2_REGION=auto
+# PostgreSQL durable storage
+OXIDE_DATABASE_URL=postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent
+OXIDE_DATABASE_MIGRATE_ON_STARTUP=false
 
 # API Keys
 CHATGPT_AUTH_PATH=/app/config/chatgpt/auth.json
@@ -582,9 +575,9 @@ Sensitive SSH operations require operator approval with single-use tokens.
 
 ## Wiki Memory
 
-Persistent S3/R2-backed memory pages with deterministic storage and optional LLM-assisted extraction.
+Persistent SQLx/Postgres-backed memory pages with deterministic storage and optional LLM-assisted extraction.
 
-- **Storage:** Deterministic Markdown pages at `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md` in S3/R2
+- **Storage:** Deterministic Markdown pages persisted as SQL rows keyed by `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`
 - **Background Planner:** Optionally uses LLM to extract structured memory after agent completion
 - **Tools:** `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents)
 - **Writer:** Enable with `WIKI_MEMORY_WRITER_ENABLED=true`; configure extraction model via `WIKI_MEMORY_WRITER_MODEL_ID` / `WIKI_MEMORY_WRITER_MODEL_PROVIDER`
@@ -599,7 +592,7 @@ Details: `docs/wiki-memory.md`
 
 ### Deterministic Context
 - Topic-scoped `AGENTS.md`
-- S3/R2-backed wiki memory
+- SQLx/Postgres-backed wiki memory
 - Runtime context injections
 - Enabled tools and profile instructions
 
@@ -755,7 +748,7 @@ crates/
 │       │   ├── manager.rs      # Sandbox manager facade
 │       │   ├── broker.rs       # Broker client/protocol
 │       │   └── traits.rs       # Sandbox backend traits
-│       ├── storage/            # Storage facade, R2 backend, control-plane records
+│       ├── storage/            # Storage facade, SQLx backend, control-plane records
 │       ├── capabilities/       # Capability module manifests
 │       └── config.rs
 ├── oxide-agent-runtime/        # Session orchestration, execution cycle, tool providers, sandbox
@@ -832,11 +825,11 @@ Each profile is a composition of atomic capability features. Build with `--no-de
 | Profile | Description | Key Components |
 |---------|-------------|----------------|
 | `profile-full` | Full production deployment | All features |
-| `profile-embedded-opencode-local` | Telegram + local OpenCode, bwrap | transport-telegram, storage-s3-r2, llm-opencode-go, bwrap |
-| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-s3-r2, llm-opencode-go, bwrap |
-| `profile-lite` | Minimal Telegram bot | transport-telegram, storage-s3-r2, llm-opencode-go, todos, webfetch, reminders |
+| `profile-embedded-opencode-local` | Telegram + local OpenCode, bwrap | transport-telegram, storage-sqlx, llm-opencode-go, bwrap |
+| `profile-web-embedded-opencode-local` | Web interface + local OpenCode | transport-web, storage-sqlx, llm-opencode-go, bwrap |
+| `profile-lite` | Minimal Telegram bot | transport-telegram, storage-sqlx, llm-opencode-go, todos, webfetch, reminders |
 | `profile-search-only` | Search-only agent | transport-telegram, web/tavily/duckduckgo/brave-search/searxng capability features |
-| `profile-no-sandbox` | Telegram without sandbox | transport-telegram, storage-s3-r2, llm-opencode-go, wiki memory |
+| `profile-no-sandbox` | Telegram without sandbox | transport-telegram, storage-sqlx, llm-opencode-go, wiki memory |
 | `profile-media-enabled` | Media processing only | transport-telegram, media audio/image/video, file delivery |
 | `profile-host-bwrap` | Host-level bwrap, no Docker | transport-telegram, llm-opencode-go + openrouter, bwrap |
 
@@ -867,7 +860,7 @@ cargo build --release --no-default-features --features profile-full
 - **teloxide** (0.17) - Telegram Bot API with macros and handlers
 - **tokio** (1.52) - asynchronous runtime
 - **async-openai** (0.40) - OpenAI-compatible APIs
-- **aws-sdk-s3** (1.127) - Cloudflare R2 integration
+- **sqlx-postgres/sqlx-core** (0.8) - PostgreSQL durable storage
 - **bollard** (0.20) - Docker API for sandbox management
 - **leptos** (0.8) - Web interface frontend (CSR)
 - **axum** (0.7) - Web interface HTTP API

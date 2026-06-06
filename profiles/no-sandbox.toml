@@ -3,7 +3,6 @@ cargo_features = ["profile-no-sandbox"]
 
 [modules]
 "transport/telegram" = { enabled = true }
-"storage/r2" = { enabled = true }
 "storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "tool/todos" = { enabled = true }

@@ -3,12 +3,6 @@ use thiserror::Error;
 /// Errors that can occur during storage operations.
 #[derive(Error, Debug)]
 pub enum StorageError {
-    /// Error retrieving object from S3.
-    #[error("S3 Get error: {0}")]
-    S3Get(String),
-    /// Error putting object into S3.
-    #[error("S3 put error: {0}")]
-    S3Put(String),
     /// Error during JSON serialization or deserialization.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),

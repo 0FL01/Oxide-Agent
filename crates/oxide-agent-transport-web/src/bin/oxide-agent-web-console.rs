@@ -261,8 +261,8 @@ async fn build_app_state(
     llm: Arc<LlmClient>,
     agent_settings: Arc<AgentSettings>,
 ) -> Result<AppState, Box<dyn std::error::Error>> {
-    if use_r2_web_store() {
-        return build_r2_app_state(registry, llm, agent_settings).await;
+    if unsupported_web_store_env() {
+        return Err("unsupported OXIDE_WEB_STORE value; use sqlx or postgres".into());
     }
     if use_sqlx_web_store(agent_settings.as_ref()) {
         return build_sqlx_app_state(registry, llm, agent_settings).await;
@@ -292,28 +292,8 @@ async fn build_sqlx_app_state(
     Err("SQLx/Postgres web persistence requires the storage-sqlx feature".into())
 }
 
-#[cfg(feature = "storage-s3-r2")]
-async fn build_r2_app_state(
-    registry: SessionRegistry,
-    llm: Arc<LlmClient>,
-    agent_settings: Arc<AgentSettings>,
-) -> Result<AppState, Box<dyn std::error::Error>> {
-    oxide_agent_transport_web::build_r2_backed_app_state(registry, llm, agent_settings)
-        .await
-        .map_err(Into::into)
-}
-
-#[cfg(not(feature = "storage-s3-r2"))]
-async fn build_r2_app_state(
-    _registry: SessionRegistry,
-    _llm: Arc<LlmClient>,
-    _agent_settings: Arc<AgentSettings>,
-) -> Result<AppState, Box<dyn std::error::Error>> {
-    Err("OXIDE_WEB_STORE=r2 requires the storage-s3-r2 feature".into())
-}
-
-fn use_r2_web_store() -> bool {
-    web_store_env().is_some_and(|value| value == "r2")
+fn unsupported_web_store_env() -> bool {
+    web_store_env().is_some_and(|value| value != "sqlx" && value != "postgres")
 }
 
 fn use_sqlx_web_store(agent_settings: &AgentSettings) -> bool {
