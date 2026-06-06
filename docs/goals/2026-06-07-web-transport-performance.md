@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-web-transport-performance.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to focus web transport, run RECON, and plan how to accelerate frontend chat/page loading, including aggressive options.
 Goal doc owner: Codex
-Last updated: 2026-06-07 01:30
+Last updated: 2026-06-07 01:50
 
 ## Objective
 
@@ -71,8 +71,8 @@ Out of scope:
   - Source: RECON found `load_all_task_events` at `crates/oxide-agent-web-ui/src/tasks/workspace.rs:35` and merge/sort cost at `crates/oxide-agent-web-ui/src/tasks/workspace.rs:60`.
   - Acceptance: opening a session loads only the latest bounded event window required for immediate UI; older events are loaded by cursor on demand; event dedup/merge avoids per-event full sort.
   - Evidence required: long-event session before/after load time, transferred bytes, frontend scripting time, and cargo/web E2E validation for activity/SSE behavior.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Session entry now loads only the latest 100 events for the latest task through a `before_seq` cursor path, preserves SSE replay from the latest loaded seq, and exposes `Load older activity` in the activity drawer to fetch older events in 500-event cursor pages. Long-event timing and browser byte captures are still pending.
 
 - G5: Live SSE delivery does not poll Postgres every second for active streams
   - Source: RECON found SSE loop DB replay/reload/sleep in `crates/oxide-agent-transport-web/src/server/sse.rs:91`, `sse_replay_batch` at `crates/oxide-agent-transport-web/src/server/sse.rs:161`, and task reload at `crates/oxide-agent-transport-web/src/server/sse.rs:192`.
@@ -86,7 +86,7 @@ Out of scope:
   - Acceptance: event append, activity filtering, sidebar filtering, task grouping, and markdown rendering avoid unnecessary full-list/full-markdown recomputation on common reactive ticks.
   - Evidence required: code diff, frontend profiler or timing evidence on large scenarios, and wasm cargo check.
   - Status: in_progress
-  - Evidence collected: Event merge and SSE append now preserve monotonic event order without sorting after every in-order batch/event; full sort is retained only for out-of-order insertion.
+  - Evidence collected: Event merge and SSE append now preserve monotonic event order without sorting after every in-order batch/event; full sort is retained only for out-of-order insertion. Session entry no longer merges/sorts the full persisted event history for long tasks; older activity is merged only on demand.
 
 - Q1: Keep architecture simple and local
   - Source: Repository guardrail against over-engineering and target load up to 5 RPS.
@@ -100,28 +100,28 @@ Out of scope:
   - Acceptance: session creation, task creation, attachment upload, task detail, activity drawer, SSE reconnect/replay, waiting-for-user-input, and terminal task summary refresh continue working.
   - Evidence required: focused tests/E2E/manual validation for changed flows.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 kept existing API contracts and compiles for the wasm target. Checkpoint 3 keeps task details/rendered recent chat available while making task list pagination additive through `has_more`/`next_offset`; older rendered history is available through the web UI load-more control. Runtime smoke for active task SSE and waiting-for-user-input remains pending.
+  - Evidence collected: Checkpoint 2 kept existing API contracts and compiles for the wasm target. Checkpoint 3 keeps task details/rendered recent chat available while making task list pagination additive through `has_more`/`next_offset`; older rendered history is available through the web UI load-more control. Checkpoint 4 adds `first_seq` and `before_seq` cursor behavior additively, leaving existing `after_seq` SSE/backfill consumers intact. Runtime smoke for active task SSE and waiting-for-user-input remains pending.
 
 - V1: Web frontend compiles
   - Source: Leptos CSR crate validation convention.
   - Acceptance: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeds after frontend changes.
   - Evidence required: command output summary in Progress Log.
   - Status: verified
-  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-07 after checkpoint 2 frontend changes and again after checkpoint 3 task pagination UI changes.
+  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-07 after checkpoint 2 frontend changes, checkpoint 3 task pagination UI changes, and checkpoint 4 lazy event-history UI changes.
 
 - V2: Web backend/contracts compile
   - Source: Web transport and contracts route changes require Rust validation.
   - Acceptance: `cargo check -p oxide-agent-transport-web` and `cargo check -p oxide-agent-web-contracts` succeed after backend/contract changes.
   - Evidence required: command output summary in Progress Log.
   - Status: verified
-  - Evidence collected: `cargo check -p oxide-agent-transport-web` and `cargo check -p oxide-agent-web-contracts` succeeded on 2026-06-07 after checkpoint 3 backend query and pagination changes; `cargo test -p oxide-agent-transport-web --lib --no-run` compiled web transport unit tests with pre-existing unused-import warnings in `server/tests.rs`.
+  - Evidence collected: `cargo check -p oxide-agent-transport-web` and `cargo check -p oxide-agent-web-contracts` succeeded on 2026-06-07 after checkpoint 3 backend query/pagination changes and checkpoint 4 event-cursor changes; `cargo test -p oxide-agent-transport-web --lib --no-run` compiled web transport unit tests with pre-existing unused-import warnings in `server/tests.rs`.
 
 - N1: No unrelated transport/runtime changes
   - Source: Scope boundary from user request to focus web transport.
   - Must preserve: Telegram transport, core/runtime/provider behavior, sandbox backends, manager control plane, wiki memory, and direct Gemini absence.
   - Evidence required: `git diff --name-only` and final diff audit.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 diff is limited to `crates/oxide-agent-web-ui/src/tasks/workspace.rs`, `crates/oxide-agent-web-ui/src/sse.rs`, and this goal document. Checkpoint 3 diff is limited to web transport persistence/routes/tests, web contracts task response pagination metadata, web UI task loading/style files, and this goal document; no unrelated transport/runtime files are included.
+  - Evidence collected: Checkpoint 2 diff is limited to `crates/oxide-agent-web-ui/src/tasks/workspace.rs`, `crates/oxide-agent-web-ui/src/sse.rs`, and this goal document. Checkpoint 3 diff is limited to web transport persistence/routes/tests, web contracts task response pagination metadata, web UI task loading/style files, and this goal document; no unrelated transport/runtime files are included. Checkpoint 4 diff is limited to web event contracts, web transport event store/route/tests, web UI event loading/activity drawer/style files, and this goal document.
 
 ## Implementation Plan
 
@@ -218,6 +218,7 @@ Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/
 - 2026-06-07: Remove the redundant latest-task detail request without changing contracts; initial `last_progress` can be refreshed by the existing SSE/detail polling path for active tasks instead of paying an unconditional extra round-trip on every session open.
 - 2026-06-07: Start checkpoint 3 with non-breaking backend query narrowing before changing task-list DTOs; this preserves current page rendering while removing unused session columns and task-progress joins immediately.
 - 2026-06-07: Use bounded recent-task pagination before splitting `TaskSummary`; this caps initial chat payload and preserves rendered markdown for the visible recent history without an N+1 detail hydration path.
+- 2026-06-07: Implement lazy event history through an additive `before_seq` cursor plus `first_seq` response metadata instead of replacing the existing `after_seq` replay contract; this keeps SSE reconnect/backfill stable while bounding initial event payloads.
 
 ## Progress Log
 
@@ -255,6 +256,13 @@ Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/
   - Commands: `cargo fmt --check`; `cargo check -p oxide-agent-transport-web`; `cargo check -p oxide-agent-web-contracts`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-transport-web --lib --no-run`; `git diff --check`.
   - Audit IDs updated: G3 in progress, Q1 in progress, Q2 in progress, V1 verified, V2 verified, N1 in progress.
   - Next: Checkpoint 4 — stop eager full-history task-event loading by switching session entry to a bounded latest-event window and loading older activity by cursor.
+
+- 2026-06-07 01:50: Checkpoint 4 lazy event history added.
+  - Changed: Added additive event cursor metadata/queries (`first_seq`, `before_seq`), implemented reverse event-page reads in SQLx and in-memory stores, changed session entry to load only the latest 100 task events, and added an activity-drawer `Load older activity` control for 500-event older pages.
+  - Evidence: Existing `after_seq` event page and SSE backfill paths remain intact; changed files are limited to web contracts, web transport event persistence/route/test files, web UI API/workspace/activity/style files, and this goal document.
+  - Commands: `cargo fmt --check`; `cargo check -p oxide-agent-web-contracts`; `cargo check -p oxide-agent-transport-web`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `cargo test -p oxide-agent-transport-web --lib --no-run`; `git diff --check`. The web transport test compile still emits pre-existing unused-import warnings for `UpdateSessionRequest` and `api_update_session` in `crates/oxide-agent-transport-web/src/server/tests.rs`.
+  - Audit IDs updated: G4 in progress, G6 in progress, Q2 in progress, V1 verified, V2 verified, N1 in progress.
+  - Next: Capture long-event browser Network/profiler evidence and then proceed to Checkpoint 5 true live SSE if polling remains the dominant bottleneck.
 
 ## Risks and Blockers
 

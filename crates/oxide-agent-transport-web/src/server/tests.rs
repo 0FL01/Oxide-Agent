@@ -1234,6 +1234,7 @@ fn sse_start_seq_uses_query_before_last_event_id() {
             &headers,
             &TaskEventsQuery {
                 after_seq: None,
+                before_seq: None,
                 limit: None,
             },
         ),
@@ -1244,6 +1245,7 @@ fn sse_start_seq_uses_query_before_last_event_id() {
             &headers,
             &TaskEventsQuery {
                 after_seq: Some(9),
+                before_seq: None,
                 limit: None,
             },
         ),
@@ -2211,6 +2213,7 @@ async fn api_task_events_are_auth_scoped_and_replay_after_seq() {
         axum::extract::Path((session_id.clone(), "task-events".to_string())),
         axum::extract::Query(TaskEventsQuery {
             after_seq: Some(1),
+            before_seq: None,
             limit: Some(1),
         }),
     )
@@ -2228,6 +2231,7 @@ async fn api_task_events_are_auth_scoped_and_replay_after_seq() {
         axum::extract::Path((session_id, "task-events".to_string())),
         axum::extract::Query(TaskEventsQuery {
             after_seq: Some(0),
+            before_seq: None,
             limit: Some(200),
         }),
     )

@@ -82,6 +82,9 @@ pub(super) fn ActivityDrawer(
     active_task: ReadSignal<Option<TaskDetail>>,
     events: ReadSignal<Vec<PersistedTaskEvent>>,
     progress: ReadSignal<Option<ProgressSnapshot>>,
+    has_older_events: ReadSignal<bool>,
+    loading_older_events: ReadSignal<bool>,
+    load_older_events: Callback<leptos::ev::MouseEvent>,
 ) -> impl IntoView {
     let (elapsed_now_millis, set_elapsed_now_millis) =
         signal(browser_now_millis().unwrap_or_default());
@@ -120,6 +123,18 @@ pub(super) fn ActivityDrawer(
             </header>
             <ContextCard progress=progress />
             <div class="activity-timeline">
+                {move || has_older_events.get().then(|| view! {
+                    <div class="activity-load-older">
+                        <button
+                            type="button"
+                            class="secondary"
+                            disabled=loading_older_events
+                            on:click=move |ev| load_older_events.run(ev)
+                        >
+                            {move || if loading_older_events.get() { "Loading older activity..." } else { "Load older activity" }}
+                        </button>
+                    </div>
+                })}
                 {move || {
                     let Some(task_id) = latest_activity_task_id(active_task, tasks) else {
                         return view! { <div class="activity-empty">"No activity yet."</div> }.into_any();

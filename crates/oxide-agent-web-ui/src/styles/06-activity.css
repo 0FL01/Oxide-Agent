@@ -599,6 +599,12 @@
   padding: 12px;
 }
 
+.activity-load-older {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 12px;
+}
+
 .agent-activity {
   width: var(--drawer-width);
   flex: 0 0 var(--drawer-width);

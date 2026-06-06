@@ -148,6 +148,15 @@ pub trait WebUiStore: Send + Sync {
         limit: usize,
     ) -> WebUiStoreResult<TaskEventsResponse>;
 
+    async fn list_task_events_before(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        before_seq: u64,
+        limit: usize,
+    ) -> WebUiStoreResult<TaskEventsResponse>;
+
     async fn save_task_file(
         &self,
         record: WebTaskFileRecord,

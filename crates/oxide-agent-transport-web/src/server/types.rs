@@ -533,6 +533,8 @@ pub struct TaskEventsQuery {
     #[serde(default)]
     pub after_seq: Option<u64>,
     #[serde(default)]
+    pub before_seq: Option<u64>,
+    #[serde(default)]
     pub limit: Option<usize>,
 }
 

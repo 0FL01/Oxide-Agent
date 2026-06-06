@@ -66,6 +66,8 @@ pub struct UserMessageEventPayload {
 #[serde(rename_all = "snake_case")]
 pub struct TaskEventsResponse {
     pub events: Vec<PersistedTaskEvent>,
+    #[serde(default)]
+    pub first_seq: u64,
     pub last_seq: u64,
     pub has_more: bool,
 }

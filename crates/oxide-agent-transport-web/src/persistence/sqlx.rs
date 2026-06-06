@@ -876,9 +876,56 @@ impl WebUiStore for SqlxWebUiStore {
             .take(limit)
             .map(row_to_event)
             .collect::<WebUiStoreResult<Vec<_>>>()?;
+        let first_seq = events.first().map_or(after_seq, |event| event.seq);
         let last_seq = events.last().map_or(after_seq, |event| event.seq);
         Ok(TaskEventsResponse {
             events,
+            first_seq,
+            last_seq,
+            has_more,
+        })
+    }
+
+    async fn list_task_events_before(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        before_seq: u64,
+        limit: usize,
+    ) -> WebUiStoreResult<TaskEventsResponse> {
+        let fetch_limit = limit.saturating_add(1);
+        let rows = query::<Postgres>(
+            r#"
+            SELECT user_id, session_id, task_id, seq, kind, summary, payload,
+                   redacted, truncated, schema_version, created_at
+            FROM web_task_events
+            WHERE user_id = $1 AND session_id = $2 AND task_id = $3 AND seq < $4
+            ORDER BY seq DESC
+            LIMIT $5
+            "#,
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .bind(task_id)
+        .bind(u64_to_i64(before_seq, "before_seq")?)
+        .bind(usize_to_i64(fetch_limit, "task event page limit")?)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db_error)?;
+
+        let has_more = rows.len() > limit;
+        let mut events = rows
+            .iter()
+            .take(limit)
+            .map(row_to_event)
+            .collect::<WebUiStoreResult<Vec<_>>>()?;
+        events.sort_by_key(|event| event.seq);
+        let first_seq = events.first().map_or(before_seq, |event| event.seq);
+        let last_seq = events.last().map_or(0, |event| event.seq);
+        Ok(TaskEventsResponse {
+            events,
+            first_seq,
             last_seq,
             has_more,
         })
@@ -1685,8 +1732,18 @@ mod tests {
             .await
             .expect("list first event page");
         assert_eq!(page.events.len(), 200);
+        assert_eq!(page.first_seq, 1);
         assert_eq!(page.last_seq, 200);
         assert!(page.has_more);
+
+        let tail = store
+            .list_task_events_before(user_id, "session-1", "task-1", 251, 25)
+            .await
+            .expect("list tail event page");
+        assert_eq!(tail.events.len(), 25);
+        assert_eq!(tail.first_seq, 226);
+        assert_eq!(tail.last_seq, 250);
+        assert!(tail.has_more);
 
         store
             .save_task_file(

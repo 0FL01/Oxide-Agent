@@ -552,19 +552,29 @@ pub(crate) async fn api_get_task_events(
         .unwrap_or(DEFAULT_TASK_EVENTS_LIMIT)
         .clamp(1, MAX_TASK_EVENTS_LIMIT);
 
-    let events = state
-        .web_store
-        .list_task_events(user.user_id, &session_id, &task_id, after_seq, limit)
-        .await
-        .map_err(store_error_response)?;
+    let before_seq = query.before_seq;
+    let events = if let Some(before_seq) = before_seq {
+        state
+            .web_store
+            .list_task_events_before(user.user_id, &session_id, &task_id, before_seq, limit)
+            .await
+    } else {
+        state
+            .web_store
+            .list_task_events(user.user_id, &session_id, &task_id, after_seq, limit)
+            .await
+    }
+    .map_err(store_error_response)?;
     tracing::debug!(
         target: "oxide_agent_transport_web::web_perf",
         user_id = user.user_id,
         session_id = %session_id,
         task_id = %task_id,
         after_seq,
+        before_seq,
         limit,
         events_count = events.events.len(),
+        first_seq = events.first_seq,
         last_seq = events.last_seq,
         has_more = events.has_more,
         "web task events listed"

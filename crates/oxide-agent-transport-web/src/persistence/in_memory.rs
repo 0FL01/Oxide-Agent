@@ -397,10 +397,44 @@ impl WebUiStore for InMemoryWebUiStore {
             .collect::<Vec<_>>();
         let has_more = matching.len() > limit;
         let events = matching.into_iter().take(limit).collect::<Vec<_>>();
+        let first_seq = events.first().map_or(after_seq, |event| event.seq);
         let last_seq = events.last().map_or(after_seq, |event| event.seq);
 
         Ok(TaskEventsResponse {
             events,
+            first_seq,
+            last_seq,
+            has_more,
+        })
+    }
+
+    async fn list_task_events_before(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        before_seq: u64,
+        limit: usize,
+    ) -> WebUiStoreResult<TaskEventsResponse> {
+        let events = self.events.read().await;
+        let mut matching = events
+            .get(&Self::task_key(user_id, session_id, task_id))
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|event| event.seq < before_seq)
+            .collect::<Vec<_>>();
+        matching.sort_by(|a, b| b.seq.cmp(&a.seq));
+
+        let has_more = matching.len() > limit;
+        let mut events = matching.into_iter().take(limit).collect::<Vec<_>>();
+        events.sort_by_key(|event| event.seq);
+        let first_seq = events.first().map_or(before_seq, |event| event.seq);
+        let last_seq = events.last().map_or(0, |event| event.seq);
+
+        Ok(TaskEventsResponse {
+            events,
+            first_seq,
             last_seq,
             has_more,
         })
@@ -707,8 +741,19 @@ mod tests {
             .expect("list events");
         assert_eq!(response.events.len(), 1);
         assert_eq!(response.events[0].seq, 2);
+        assert_eq!(response.first_seq, 2);
         assert_eq!(response.last_seq, 2);
         assert!(response.has_more);
+
+        let tail = store
+            .list_task_events_before(1, "newer", "task-1", 4, 1)
+            .await
+            .expect("list event tail");
+        assert_eq!(tail.events.len(), 1);
+        assert_eq!(tail.events[0].seq, 3);
+        assert_eq!(tail.first_seq, 3);
+        assert_eq!(tail.last_seq, 3);
+        assert!(tail.has_more);
 
         assert!(store
             .list_task_events(2, "foreign", "task-1", 0, 100)

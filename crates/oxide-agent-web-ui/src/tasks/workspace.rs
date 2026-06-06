@@ -8,7 +8,8 @@ use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
     PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, SseConnectionState,
-    TaskDetail, TaskStatus, TaskSummary, UpdateSessionProfileRequest, UserSettingsResponse,
+    TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
+    UserSettingsResponse,
 };
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap};
 
@@ -31,7 +32,8 @@ use super::streaming::{start_task_stream, StreamUiSignals};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
 use super::versions::group_task_versions;
 
-const TASK_EVENTS_PAGE_LIMIT: usize = 500;
+const TASK_EVENTS_INITIAL_LIMIT: usize = 100;
+const TASK_EVENTS_OLDER_LIMIT: usize = 500;
 const TASKS_PAGE_LIMIT: usize = 20;
 const SETTINGS_PROFILES_CACHE_TTL_MS: f64 = 30_000.0;
 
@@ -88,29 +90,20 @@ async fn load_settings_profiles(
     )
 }
 
-async fn load_all_task_events(
+async fn load_latest_task_events(
     client: &ApiClient,
     session_id: &str,
     task_id: &str,
-) -> Result<Vec<PersistedTaskEvent>, ApiClientError> {
-    let mut after_seq = 0;
-    let mut events = Vec::new();
-
-    loop {
-        let response = client
-            .task_events_page(session_id, task_id, after_seq, TASK_EVENTS_PAGE_LIMIT)
-            .await?;
-        let next_seq = response.last_seq;
-        let has_more = response.has_more;
-        events.extend(response.events);
-
-        if !has_more || next_seq <= after_seq {
-            break;
-        }
-        after_seq = next_seq;
-    }
-
-    Ok(events)
+    last_event_seq: u64,
+) -> Result<TaskEventsResponse, ApiClientError> {
+    client
+        .task_events_before_page(
+            session_id,
+            task_id,
+            last_event_seq.saturating_add(1),
+            TASK_EVENTS_INITIAL_LIMIT,
+        )
+        .await
 }
 
 fn merge_task_events(
@@ -424,6 +417,9 @@ fn SessionWorkspace(
     let (tasks_has_more, set_tasks_has_more) = signal(false);
     let (tasks_next_offset, set_tasks_next_offset) = signal(0_usize);
     let (loading_older_tasks, set_loading_older_tasks) = signal(false);
+    let (activity_has_older_events, set_activity_has_older_events) = signal(false);
+    let (activity_before_seq, set_activity_before_seq) = signal(0_u64);
+    let (loading_older_activity, set_loading_older_activity) = signal(false);
     let (input, set_input) = signal(String::new());
     let (error, set_error) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
@@ -470,6 +466,8 @@ fn SessionWorkspace(
         set_active_task.set(None);
         set_streaming_task_id.set(None);
         set_selected_versions.set(HashMap::new());
+        set_activity_has_older_events.set(false);
+        set_activity_before_seq.set(0);
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
@@ -506,18 +504,26 @@ fn SessionWorkspace(
                     if let Some(task) = latest {
                         let task_id = task.task_id.clone();
                         let task_detail = summary_to_detail(&session_id, &task);
-                        let initial_last_seq =
-                            match load_all_task_events(&client, &session_id, &task_id).await {
-                                Ok(events) => {
-                                    let last_seq = max_event_seq(&events);
-                                    merge_task_events(set_events, events);
-                                    last_seq
-                                }
-                                Err(error) => {
-                                    set_error.set(Some(error.to_string()));
-                                    0
-                                }
-                            };
+                        let initial_last_seq = match load_latest_task_events(
+                            &client,
+                            &session_id,
+                            &task_id,
+                            task.last_event_seq,
+                        )
+                        .await
+                        {
+                            Ok(response) => {
+                                let last_seq = max_event_seq(&response.events);
+                                set_activity_has_older_events.set(response.has_more);
+                                set_activity_before_seq.set(response.first_seq);
+                                merge_task_events(set_events, response.events);
+                                last_seq
+                            }
+                            Err(error) => {
+                                set_error.set(Some(error.to_string()));
+                                0
+                            }
+                        };
                         if matches!(task_detail.status, TaskStatus::Queued | TaskStatus::Running) {
                             set_active_task.set(Some(task_detail));
                             start_task_stream(
@@ -549,6 +555,8 @@ fn SessionWorkspace(
                         set_events.set(Vec::new());
                         set_progress.set(None);
                         set_active_task.set(None);
+                        set_activity_has_older_events.set(false);
+                        set_activity_before_seq.set(0);
                     }
                 }
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
@@ -580,6 +588,41 @@ fn SessionWorkspace(
                 Err(error) => set_error.set(Some(task_submit_error_message(&error))),
             }
             set_loading_older_tasks.set(false);
+        });
+    });
+
+    let session_id_for_load_older_activity = session_id.clone();
+    let load_older_activity = Callback::new(move |_| {
+        if loading_older_activity.get_untracked() || !activity_has_older_events.get_untracked() {
+            return;
+        }
+        let Some(task) = latest_task(&tasks.get_untracked()) else {
+            return;
+        };
+        let before_seq = activity_before_seq.get_untracked();
+        if before_seq == 0 {
+            set_activity_has_older_events.set(false);
+            return;
+        }
+
+        set_loading_older_activity.set(true);
+        set_error.set(None);
+        let session_id = session_id_for_load_older_activity.clone();
+        let task_id = task.task_id.clone();
+        spawn_ui(async move {
+            let client = auth.client();
+            match client
+                .task_events_before_page(&session_id, &task_id, before_seq, TASK_EVENTS_OLDER_LIMIT)
+                .await
+            {
+                Ok(response) => {
+                    set_activity_has_older_events.set(response.has_more);
+                    set_activity_before_seq.set(response.first_seq);
+                    merge_task_events(set_events, response.events);
+                }
+                Err(error) => set_error.set(Some(task_submit_error_message(&error))),
+            }
+            set_loading_older_activity.set(false);
         });
     });
 
@@ -976,6 +1019,9 @@ fn SessionWorkspace(
                 active_task=active_task
                 events=events
                 progress=progress
+                has_older_events=activity_has_older_events
+                loading_older_events=loading_older_activity
+                load_older_events=load_older_activity
             />
         </section>
     }
