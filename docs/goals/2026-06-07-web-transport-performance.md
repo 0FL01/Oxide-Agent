@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-web-transport-performance.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to focus web transport, run RECON, and plan how to accelerate frontend chat/page loading, including aggressive options.
 Goal doc owner: Codex
-Last updated: 2026-06-07 00:50
+Last updated: 2026-06-07 01:10
 
 ## Objective
 
@@ -64,8 +64,8 @@ Out of scope:
   - Source: RECON found full task markdown in `TaskSummary` at `crates/oxide-agent-web-contracts/src/tasks.rs:120`, full task list loading at `crates/oxide-agent-transport-web/src/persistence/sqlx.rs:714`, and full session columns at `crates/oxide-agent-transport-web/src/persistence/sqlx.rs:561`.
   - Acceptance: task/session list endpoints return lightweight fields needed for list rendering, support bounded pagination or explicit limits, and keep full markdown/details on detail/events paths.
   - Evidence required: contract/server/frontend diff, payload-size before/after table, SQL query review, and focused cargo checks for web UI, web transport, and web contracts.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Session listing now uses narrow SQLx summary/context-key queries instead of loading full session records with auto-title internals; task listing now avoids the unused `web_task_progress` join and returns `last_progress` as absent for list records. Full task markdown DTO/pagination work is still pending.
 
 - G4: Task events are loaded incrementally instead of eager full-history load
   - Source: RECON found `load_all_task_events` at `crates/oxide-agent-web-ui/src/tasks/workspace.rs:35` and merge/sort cost at `crates/oxide-agent-web-ui/src/tasks/workspace.rs:60`.
@@ -93,14 +93,14 @@ Out of scope:
   - Acceptance: no new services, queues, databases, caches, frameworks, or broad abstraction layers unless a checkpoint proves a simpler local change cannot meet the target.
   - Evidence required: dependency diff review and architecture decision notes.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 uses existing `tracing`, existing router middleware, and standard HTTP `Server-Timing`; no new services, crates, queues, databases, or external observability.
+  - Evidence collected: Checkpoint 1 uses existing `tracing`, existing router middleware, and standard HTTP `Server-Timing`; no new services, crates, queues, databases, or external observability. Checkpoint 3 starts with narrow existing SQL queries and store methods; no new dependencies or services.
 
 - Q2: Preserve web behavior and compatibility during migrations
   - Source: Existing web console contracts and user-facing chat/task flows must continue working.
   - Acceptance: session creation, task creation, attachment upload, task detail, activity drawer, SSE reconnect/replay, waiting-for-user-input, and terminal task summary refresh continue working.
   - Evidence required: focused tests/E2E/manual validation for changed flows.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 kept existing API contracts and compiles for the wasm target. Runtime smoke for active task SSE and waiting-for-user-input remains pending.
+  - Evidence collected: Checkpoint 2 kept existing API contracts and compiles for the wasm target. Checkpoint 3 keeps external API response shapes unchanged while narrowing backend list queries. Runtime smoke for active task SSE and waiting-for-user-input remains pending.
 
 - V1: Web frontend compiles
   - Source: Leptos CSR crate validation convention.
@@ -113,15 +113,15 @@ Out of scope:
   - Source: Web transport and contracts route changes require Rust validation.
   - Acceptance: `cargo check -p oxide-agent-transport-web` and `cargo check -p oxide-agent-web-contracts` succeed after backend/contract changes.
   - Evidence required: command output summary in Progress Log.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo check -p oxide-agent-transport-web` and `cargo check -p oxide-agent-web-contracts` succeeded on 2026-06-07 after checkpoint 3 backend query changes; `cargo test -p oxide-agent-transport-web --lib --no-run` compiled web transport unit tests with pre-existing unused-import warnings in `server/tests.rs`.
 
 - N1: No unrelated transport/runtime changes
   - Source: Scope boundary from user request to focus web transport.
   - Must preserve: Telegram transport, core/runtime/provider behavior, sandbox backends, manager control plane, wiki memory, and direct Gemini absence.
   - Evidence required: `git diff --name-only` and final diff audit.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 diff is limited to `crates/oxide-agent-web-ui/src/tasks/workspace.rs`, `crates/oxide-agent-web-ui/src/sse.rs`, and this goal document; pre-existing user-modified `AGENTS.md` remains excluded.
+  - Evidence collected: Checkpoint 2 diff is limited to `crates/oxide-agent-web-ui/src/tasks/workspace.rs`, `crates/oxide-agent-web-ui/src/sse.rs`, and this goal document. Checkpoint 3 diff is limited to web transport persistence/session route files and this goal document; no unrelated transport/runtime files are included.
 
 ## Implementation Plan
 
@@ -216,6 +216,7 @@ Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/
 - 2026-06-07: Do not add external queues/caches/services for the target scale; prefer local in-process channels and bounded API payloads.
 - 2026-06-07: Implement Checkpoint 1 as debug tracing plus standard `Server-Timing` instead of adding a metrics stack or synthetic benchmark crate; this keeps measurement reusable without new dependencies.
 - 2026-06-07: Remove the redundant latest-task detail request without changing contracts; initial `last_progress` can be refreshed by the existing SSE/detail polling path for active tasks instead of paying an unconditional extra round-trip on every session open.
+- 2026-06-07: Start checkpoint 3 with non-breaking backend query narrowing before changing task-list DTOs; this preserves current page rendering while removing unused session columns and task-progress joins immediately.
 
 ## Progress Log
 
@@ -239,6 +240,13 @@ Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff --check`.
   - Audit IDs updated: G2 in progress, G6 in progress, Q2 in progress, V1 verified, N1 in progress.
   - Next: Capture browser Network before/after for ordinary session opening and run an active-task SSE smoke; then continue to lightweight list payload checkpoint.
+
+- 2026-06-07 01:10: Checkpoint 3 lightweight list query narrowing started.
+  - Changed: Added store-level session summary/context-key list methods, changed `/api/v1/sessions` to use narrow summary/context queries while preserving sandbox orphan reconciliation, and changed SQLx task listing to skip the unused task-progress join by selecting `NULL::jsonb AS last_progress_payload` for list rows.
+  - Evidence: External web API response shapes remain unchanged; changed files are limited to `crates/oxide-agent-transport-web/src/persistence/store.rs`, `crates/oxide-agent-transport-web/src/persistence/in_memory.rs`, `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`, `crates/oxide-agent-transport-web/src/server/session_routes.rs`, and this goal document.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-transport-web`; `cargo check -p oxide-agent-web-contracts`; `cargo test -p oxide-agent-transport-web --lib --no-run`; `git diff --check`.
+  - Audit IDs updated: G3 in progress, Q1 in progress, Q2 in progress, V2 verified, N1 in progress.
+  - Next: Finish checkpoint 3 with an explicit lightweight task-list DTO or pagination/load-more path so full task markdown leaves the list endpoint without regressing rendered chat history.
 
 ## Risks and Blockers
 

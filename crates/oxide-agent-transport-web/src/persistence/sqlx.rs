@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_core::storage::SqlxStorage;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, TaskEventsResponse, WebSessionRecord, WebTaskRecord,
+    PersistedTaskEvent, SessionSummary, TaskEventsResponse, WebSessionRecord, WebTaskRecord,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
@@ -16,8 +16,9 @@ use sqlx_postgres::{PgPool, PgRow, Postgres};
 use uuid::Uuid;
 
 use super::{
-    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebTaskFileBlob, WebTaskFileRecord,
-    WebUiStore, WebUiStoreError, WebUiStoreResult, WebUserRecord, WEB_AUTH_SCHEMA_VERSION,
+    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebSessionContextKeys,
+    WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError, WebUiStoreResult,
+    WebUserRecord, WEB_AUTH_SCHEMA_VERSION,
 };
 
 const DEFAULT_TASK_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -580,6 +581,43 @@ impl WebUiStore for SqlxWebUiStore {
         rows.iter().map(row_to_session).collect()
     }
 
+    async fn list_session_summaries(&self, user_id: i64) -> WebUiStoreResult<Vec<SessionSummary>> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT session_id, title, model_selection, agent_profile_id, active_task_id,
+                   last_task_status, last_preview, created_at, updated_at
+            FROM web_sessions
+            WHERE user_id = $1
+            ORDER BY updated_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db_error)?;
+
+        rows.iter().map(row_to_session_summary).collect()
+    }
+
+    async fn list_session_context_keys(
+        &self,
+        user_id: i64,
+    ) -> WebUiStoreResult<Vec<WebSessionContextKeys>> {
+        let rows = query::<Postgres>(
+            r#"
+            SELECT context_key, context_keys
+            FROM web_sessions
+            WHERE user_id = $1
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(self.pool())
+        .await
+        .map_err(db_error)?;
+
+        rows.iter().map(row_to_session_context_keys).collect()
+    }
+
     async fn list_due_auto_title_sessions(
         &self,
         now: DateTime<Utc>,
@@ -716,7 +754,7 @@ impl WebUiStore for SqlxWebUiStore {
         user_id: i64,
         session_id: &str,
     ) -> WebUiStoreResult<Vec<WebTaskRecord>> {
-        let sql = task_select_sql(
+        let sql = task_list_select_sql(
             "WHERE t.user_id = $1 AND t.session_id = $2",
             "ORDER BY t.created_at ASC",
         );
@@ -1012,6 +1050,22 @@ fn task_select_sql(join_or_where: &str, order_by: &str) -> String {
     )
 }
 
+fn task_list_select_sql(join_or_where: &str, order_by: &str) -> String {
+    format!(
+        r#"
+            SELECT t.user_id, t.session_id, t.task_id, t.version_group_id, t.version_index,
+                   t.parent_task_id, t.status, t.input_markdown, t.attachments,
+                   t.input_edited_at, t.final_response_markdown, t.error_message,
+                   t.pending_user_input, t.last_event_seq, t.schema_version, t.created_at,
+                   t.started_at, t.updated_at, t.finished_at,
+                   NULL::jsonb AS last_progress_payload
+            FROM web_tasks t
+            {join_or_where}
+            {order_by}
+            "#
+    )
+}
+
 fn row_to_user(row: &PgRow) -> WebUiStoreResult<WebUserRecord> {
     let role = enum_from_sql(row_value::<String>(row, "role")?.as_str(), "web user role")?;
     let status = enum_from_sql(
@@ -1103,6 +1157,35 @@ fn row_to_session(row: &PgRow) -> WebUiStoreResult<WebSessionRecord> {
         )?,
         auto_title_next_attempt_at: row_value(row, "auto_title_next_attempt_at")?,
         auto_title_last_error: row_value(row, "auto_title_last_error")?,
+    })
+}
+
+fn row_to_session_summary(row: &PgRow) -> WebUiStoreResult<SessionSummary> {
+    let model_selection = optional_from_json(
+        row_value::<Option<Value>>(row, "model_selection")?,
+        "model selection",
+    )?;
+    let last_task_status = optional_enum_from_sql(
+        row_value::<Option<String>>(row, "last_task_status")?,
+        "task status",
+    )?;
+    Ok(SessionSummary {
+        session_id: row_value(row, "session_id")?,
+        title: row_value(row, "title")?,
+        model_selection,
+        agent_profile_id: row_value(row, "agent_profile_id")?,
+        last_preview: row_value(row, "last_preview")?,
+        active_task_id: row_value(row, "active_task_id")?,
+        last_task_status,
+        created_at: row_value(row, "created_at")?,
+        updated_at: row_value(row, "updated_at")?,
+    })
+}
+
+fn row_to_session_context_keys(row: &PgRow) -> WebUiStoreResult<WebSessionContextKeys> {
+    Ok(WebSessionContextKeys {
+        context_key: row_value(row, "context_key")?,
+        context_keys: row_value(row, "context_keys")?,
     })
 }
 

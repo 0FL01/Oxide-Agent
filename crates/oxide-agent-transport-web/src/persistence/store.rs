@@ -2,7 +2,7 @@ use std::fmt;
 
 use async_trait::async_trait;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, TaskEventsResponse, WebSessionRecord, WebTaskRecord,
+    PersistedTaskEvent, SessionSummary, TaskEventsResponse, WebSessionRecord, WebTaskRecord,
 };
 
 use super::{
@@ -10,6 +10,28 @@ use super::{
 };
 
 pub type WebUiStoreResult<T> = Result<T, WebUiStoreError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSessionContextKeys {
+    pub context_key: String,
+    pub context_keys: Vec<String>,
+}
+
+impl WebSessionContextKeys {
+    pub fn tracked_context_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        for key in self
+            .context_keys
+            .iter()
+            .chain(std::iter::once(&self.context_key))
+        {
+            if !key.is_empty() && !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+        keys
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebUiStoreError {
@@ -70,6 +92,13 @@ pub trait WebUiStore: Send + Sync {
     ) -> WebUiStoreResult<Option<WebSessionRecord>>;
 
     async fn list_sessions(&self, user_id: i64) -> WebUiStoreResult<Vec<WebSessionRecord>>;
+
+    async fn list_session_summaries(&self, user_id: i64) -> WebUiStoreResult<Vec<SessionSummary>>;
+
+    async fn list_session_context_keys(
+        &self,
+        user_id: i64,
+    ) -> WebUiStoreResult<Vec<WebSessionContextKeys>>;
 
     async fn list_due_auto_title_sessions(
         &self,

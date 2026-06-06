@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, TaskEventsResponse, TaskStatus, WebSessionRecord, WebTaskRecord,
+    PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
+    WebTaskRecord,
 };
 use tokio::sync::RwLock;
 
 use super::{
-    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebTaskFileBlob, WebTaskFileRecord,
-    WebUiStore, WebUiStoreError, WebUiStoreResult, WebUserRecord,
+    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebSessionContextKeys,
+    WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError, WebUiStoreResult,
+    WebUserRecord,
 };
 
 type SessionKey = (i64, String);
@@ -181,6 +183,43 @@ impl WebUiStore for InMemoryWebUiStore {
             .cloned()
             .collect::<Vec<_>>();
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(sessions)
+    }
+
+    async fn list_session_summaries(&self, user_id: i64) -> WebUiStoreResult<Vec<SessionSummary>> {
+        let sessions = self.list_sessions(user_id).await?;
+        Ok(sessions
+            .into_iter()
+            .map(|record| SessionSummary {
+                session_id: record.session_id,
+                title: record.title,
+                model_selection: record.model_selection,
+                agent_profile_id: record.agent_profile_id,
+                last_preview: record.last_preview,
+                active_task_id: record.active_task_id,
+                last_task_status: record.last_task_status,
+                created_at: record.created_at,
+                updated_at: record.updated_at,
+            })
+            .collect())
+    }
+
+    async fn list_session_context_keys(
+        &self,
+        user_id: i64,
+    ) -> WebUiStoreResult<Vec<WebSessionContextKeys>> {
+        let mut sessions = self
+            .sessions
+            .read()
+            .await
+            .values()
+            .filter(|record| record.user_id == user_id)
+            .map(|record| WebSessionContextKeys {
+                context_key: record.context_key.clone(),
+                context_keys: record.context_keys.clone(),
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by(|a, b| a.context_key.cmp(&b.context_key));
         Ok(sessions)
     }
 

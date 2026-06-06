@@ -13,6 +13,7 @@ use oxide_agent_web_contracts::{
 };
 use std::collections::HashSet;
 
+use crate::persistence::WebSessionContextKeys;
 use crate::session::{web_session_sandbox_scope, WebSessionRuntimeOptions};
 
 use super::task_routes::{abort_task_handle, reject_active_task};
@@ -29,11 +30,11 @@ use super::{
 async fn reconcile_web_sandbox_orphans_with_sessions(
     state: &AppState,
     user_id: i64,
-    sessions: &[WebSessionRecord],
+    sessions: &[WebSessionContextKeys],
 ) -> Result<u64, String> {
     let live_contexts = sessions
         .iter()
-        .flat_map(WebSessionRecord::tracked_context_keys)
+        .flat_map(WebSessionContextKeys::tracked_context_keys)
         .collect::<HashSet<_>>();
     let sandbox_control = state.sandbox_control();
     let sandboxes = sandbox_control
@@ -77,7 +78,7 @@ async fn reconcile_web_sandbox_orphans_with_sessions(
 async fn reconcile_web_sandbox_orphans(state: &AppState, user_id: i64) -> Result<u64, String> {
     let sessions = state
         .web_store
-        .list_sessions(user_id)
+        .list_session_context_keys(user_id)
         .await
         .map_err(|error| error.to_string())?;
     reconcile_web_sandbox_orphans_with_sessions(state, user_id, &sessions).await
@@ -161,13 +162,13 @@ pub(crate) async fn api_list_sessions(
     headers: HeaderMap,
 ) -> Result<Json<ListSessionsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user(&state, &headers).await?;
-    let session_records = state
+    let session_contexts = state
         .web_store
-        .list_sessions(user.user_id)
+        .list_session_context_keys(user.user_id)
         .await
         .map_err(store_error_response)?;
     if let Err(error) =
-        reconcile_web_sandbox_orphans_with_sessions(&state, user.user_id, &session_records).await
+        reconcile_web_sandbox_orphans_with_sessions(&state, user.user_id, &session_contexts).await
     {
         tracing::warn!(
             user_id = user.user_id,
@@ -175,11 +176,12 @@ pub(crate) async fn api_list_sessions(
             "Web sandbox reconcile during list_sessions failed"
         );
     }
-    let sessions_count = session_records.len();
-    let sessions = session_records
-        .into_iter()
-        .map(session_summary_from_record)
-        .collect();
+    let sessions = state
+        .web_store
+        .list_session_summaries(user.user_id)
+        .await
+        .map_err(store_error_response)?;
+    let sessions_count = sessions.len();
     tracing::debug!(
         target: "oxide_agent_transport_web::web_perf",
         user_id = user.user_id,
