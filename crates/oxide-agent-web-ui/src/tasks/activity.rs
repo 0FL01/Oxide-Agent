@@ -457,7 +457,7 @@ fn ReasoningEventCard(event: PersistedTaskEvent) -> impl IntoView {
     let show_details = event.truncated || event.redacted || preview != summary;
     let details_summary = summary.clone();
 
-    let mut header_metas = vec![tool_meta("CoT")];
+    let mut header_metas = Vec::new();
     if event.truncated {
         header_metas.push(tool_meta("truncated"));
     }
