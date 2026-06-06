@@ -603,7 +603,7 @@ impl WebUiStore for SqlxWebUiStore {
                 final_response_markdown = EXCLUDED.final_response_markdown,
                 error_message = EXCLUDED.error_message,
                 pending_user_input = EXCLUDED.pending_user_input,
-                last_event_seq = EXCLUDED.last_event_seq,
+                last_event_seq = GREATEST(web_tasks.last_event_seq, EXCLUDED.last_event_seq),
                 schema_version = EXCLUDED.schema_version,
                 started_at = EXCLUDED.started_at,
                 updated_at = EXCLUDED.updated_at,

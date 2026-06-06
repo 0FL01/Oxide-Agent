@@ -120,12 +120,16 @@ fn task_sse_stream(
                     ) {
                         yield Ok(event);
                     }
-                    let should_emit_status = task.status != last_status || task.status.is_terminal();
-                    last_status = task.status;
-                    if should_emit_status {
+                    let replay_tail_drained = !batch.has_more
+                        && stream_state.last_seq >= task.last_event_seq;
+                    let closing_status = status_closes_client_stream(task.status);
+                    let should_emit_status = task.status != last_status
+                        || (task.status.is_terminal() && replay_tail_drained);
+                    if should_emit_status && (!closing_status || replay_tail_drained) {
                         yield Ok(sse_status_event(&task, stream_state.last_seq));
+                        last_status = task.status;
                     }
-                    if task.status.is_terminal() && !batch.has_more {
+                    if task.status.is_terminal() && replay_tail_drained {
                         break;
                     }
                 }
@@ -143,6 +147,10 @@ fn task_sse_stream(
             }
         }
     }
+}
+
+const fn status_closes_client_stream(status: ApiTaskStatus) -> bool {
+    matches!(status, ApiTaskStatus::WaitingForUserInput) || status.is_terminal()
 }
 
 struct TaskSseBatch {
