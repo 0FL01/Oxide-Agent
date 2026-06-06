@@ -1,11 +1,12 @@
 use axum::{
     body::Body,
-    http::{header::CONTENT_SECURITY_POLICY, HeaderValue, Request},
+    http::{header::CONTENT_SECURITY_POLICY, HeaderName, HeaderValue, Request},
     middleware::{self, Next},
     response::Response,
     routing::{delete, get, patch, post},
     Router,
 };
+use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
@@ -100,7 +101,7 @@ pub fn build_router(state: AppState) -> Router {
             post(api_cancel_task),
         )
         .fallback(static_assets::static_assets_handler)
-        .layer(middleware::from_fn(add_security_headers))
+        .layer(middleware::from_fn(add_web_response_headers))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state)
@@ -117,9 +118,35 @@ fn web_cors_layer() -> CorsLayer {
     }
 }
 
-async fn add_security_headers(request: Request<Body>, next: Next) -> Response {
+async fn add_web_response_headers(request: Request<Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let started_at = Instant::now();
     let mut response = next.run(request).await;
+    let elapsed = started_at.elapsed();
+    let status = response.status();
+    let content_length = response
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        method = %method,
+        path = %path,
+        status = %status,
+        latency_ms = elapsed.as_millis(),
+        content_length_bytes = ?content_length,
+        "web response measured"
+    );
+
     let headers = response.headers_mut();
+    if let Ok(value) =
+        HeaderValue::from_str(&format!("app;dur={:.1}", elapsed.as_secs_f64() * 1000.0))
+    {
+        headers.insert(HeaderName::from_static("server-timing"), value);
+    }
     headers.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),

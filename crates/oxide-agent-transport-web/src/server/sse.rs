@@ -17,7 +17,7 @@ use oxide_agent_web_contracts::{
 };
 use serde::Serialize;
 use std::convert::Infallible;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{DEFAULT_TASK_EVENTS_LIMIT, MAX_TASK_EVENTS_LIMIT};
 
@@ -42,6 +42,17 @@ pub(crate) async fn api_sse_task_stream(
             .clamp(1, MAX_TASK_EVENTS_LIMIT),
         task,
     };
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        user_id = stream_state.user_id,
+        session_id = %stream_state.session_id,
+        task_id = %stream_state.task_id,
+        after_seq = stream_state.last_seq,
+        limit = stream_state.limit,
+        task_status = ?stream_state.task.status,
+        task_last_event_seq = stream_state.task.last_event_seq,
+        "web sse stream opened"
+    );
 
     Ok(Sse::new(task_sse_stream(stream_state)))
 }
@@ -159,6 +170,7 @@ struct TaskSseBatch {
 }
 
 async fn sse_replay_batch(stream_state: &mut TaskSseStreamState) -> Result<TaskSseBatch, Event> {
+    let started_at = Instant::now();
     let response = stream_state
         .state
         .web_store
@@ -177,6 +189,20 @@ async fn sse_replay_batch(stream_state: &mut TaskSseStreamState) -> Result<TaskS
                 true,
             )
         })?;
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        user_id = stream_state.user_id,
+        session_id = %stream_state.session_id,
+        task_id = %stream_state.task_id,
+        query = "list_task_events",
+        after_seq = stream_state.last_seq,
+        limit = stream_state.limit,
+        latency_ms = started_at.elapsed().as_millis(),
+        events_count = response.events.len(),
+        last_seq = response.last_seq,
+        has_more = response.has_more,
+        "web sse db query"
+    );
 
     let mut sse_events = Vec::with_capacity(response.events.len());
     for event in response.events {
@@ -190,7 +216,8 @@ async fn sse_replay_batch(stream_state: &mut TaskSseStreamState) -> Result<TaskS
 }
 
 async fn sse_reload_task(stream_state: &TaskSseStreamState) -> Result<WebTaskRecord, Event> {
-    stream_state
+    let started_at = Instant::now();
+    let task = stream_state
         .state
         .web_store
         .load_task(
@@ -205,14 +232,24 @@ async fn sse_reload_task(stream_state: &TaskSseStreamState) -> Result<WebTaskRec
                 format!("Failed to load task status: {error}"),
                 true,
             )
-        })?
-        .ok_or_else(|| {
-            sse_error_event(
-                ErrorCode::NotFound,
-                "Task is no longer available.".to_string(),
-                false,
-            )
-        })
+        })?;
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        user_id = stream_state.user_id,
+        session_id = %stream_state.session_id,
+        task_id = %stream_state.task_id,
+        query = "load_task",
+        latency_ms = started_at.elapsed().as_millis(),
+        found = task.is_some(),
+        "web sse db query"
+    );
+    task.ok_or_else(|| {
+        sse_error_event(
+            ErrorCode::NotFound,
+            "Task is no longer available.".to_string(),
+            false,
+        )
+    })
 }
 
 fn progress_event_if_changed(

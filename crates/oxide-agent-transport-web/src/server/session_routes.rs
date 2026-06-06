@@ -175,10 +175,17 @@ pub(crate) async fn api_list_sessions(
             "Web sandbox reconcile during list_sessions failed"
         );
     }
+    let sessions_count = session_records.len();
     let sessions = session_records
         .into_iter()
         .map(session_summary_from_record)
         .collect();
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        user_id = user.user_id,
+        sessions_count,
+        "web sessions listed"
+    );
     Ok(Json(ListSessionsResponse { sessions }))
 }
 

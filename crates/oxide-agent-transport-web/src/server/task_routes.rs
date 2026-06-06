@@ -356,14 +356,25 @@ pub(crate) async fn api_list_tasks(
 ) -> Result<Json<ListTasksResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user(&state, &headers).await?;
     let _session = load_owned_session(&state, user.user_id, &session_id).await?;
-    let tasks = state
+    let task_records = state
         .web_store
         .list_tasks(user.user_id, &session_id)
         .await
-        .map_err(store_error_response)?
+        .map_err(store_error_response)?;
+    let tasks_count = task_records.len();
+    let total_last_event_seq: u64 = task_records.iter().map(|task| task.last_event_seq).sum();
+    let tasks = task_records
         .into_iter()
         .map(task_summary_from_record)
         .collect();
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        user_id = user.user_id,
+        session_id = %session_id,
+        tasks_count,
+        total_last_event_seq,
+        "web tasks listed"
+    );
     Ok(Json(ListTasksResponse { tasks }))
 }
 
@@ -517,6 +528,18 @@ pub(crate) async fn api_get_task_events(
         .list_task_events(user.user_id, &session_id, &task_id, after_seq, limit)
         .await
         .map_err(store_error_response)?;
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        user_id = user.user_id,
+        session_id = %session_id,
+        task_id = %task_id,
+        after_seq,
+        limit,
+        events_count = events.events.len(),
+        last_seq = events.last_seq,
+        has_more = events.has_more,
+        "web task events listed"
+    );
     Ok(Json(events))
 }
 

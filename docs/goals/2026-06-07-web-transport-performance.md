@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-web-transport-performance.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to focus web transport, run RECON, and plan how to accelerate frontend chat/page loading, including aggressive options.
 Goal doc owner: Codex
-Last updated: 2026-06-07 00:00
+Last updated: 2026-06-07 00:30
 
 ## Objective
 
@@ -50,8 +50,8 @@ Out of scope:
   - Source: User asked for expected acceleration percentages; RECON showed multiple bottlenecks that need measured before/after evidence.
   - Acceptance: There is a reproducible way to capture request waterfall, transferred bytes, key endpoint latency, event count, and SSE DB/query cadence for representative scenarios.
   - Evidence required: documented commands or scripts, captured baseline table, and at least one run covering ordinary session load plus long-event session load.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Added debug-level `oxide_agent_transport_web::web_perf` backend measurements for response latency, list sizes, task-event page sizes, and SSE DB polling cadence; added `Server-Timing: app;dur=...` response header for browser waterfall captures. Baseline scenario runs still pending.
 
 - G2: Initial page/session load waterfall is removed
   - Source: RECON found sequential requests in `crates/oxide-agent-web-ui/src/tasks/workspace.rs:400` and settings/profile sequence at `crates/oxide-agent-web-ui/src/tasks/workspace.rs:135`.
@@ -92,8 +92,8 @@ Out of scope:
   - Source: Repository guardrail against over-engineering and target load up to 5 RPS.
   - Acceptance: no new services, queues, databases, caches, frameworks, or broad abstraction layers unless a checkpoint proves a simpler local change cannot meet the target.
   - Evidence required: dependency diff review and architecture decision notes.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 uses existing `tracing`, existing router middleware, and standard HTTP `Server-Timing`; no new services, crates, queues, databases, or external observability.
 
 - Q2: Preserve web behavior and compatibility during migrations
   - Source: Existing web console contracts and user-facing chat/task flows must continue working.
@@ -183,12 +183,38 @@ Out of scope:
   - SSE latency from generated event to browser receipt and SQL query cadence per active stream.
 - Done when: every Completion Audit item is verified with current evidence or explicitly dropped by user.
 
+## Baseline Measurement Procedure
+
+Backend measurement is debug-only and local to the web transport. Start the web console with:
+
+```bash
+RUST_LOG=oxide_agent_transport_web::web_perf=debug,tower_http=warn cargo run -p oxide-agent-web-console --no-default-features --features profile-web-embedded-opencode-local
+```
+
+Capture these two scenarios with browser DevTools Network open, cache disabled, and log preserved:
+
+1. Ordinary session load: open `/app/session/:session_id` for a recent session with a normal task count.
+2. Long-event session load: open `/app/session/:session_id` for a task with hundreds/thousands of persisted events, then open the activity drawer.
+
+Record for each scenario:
+
+| Scenario | Endpoint or stream | Requests | `Server-Timing app` ms | Transferred bytes | Event/list count | SSE DB queries/sec | Notes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Ordinary session load | `/api/v1/sessions` | pending | pending | pending | pending | n/a | pending baseline run |
+| Ordinary session load | `/api/v1/sessions/:id/tasks` | pending | pending | pending | pending | n/a | pending baseline run |
+| Ordinary session load | latest task events | pending | pending | pending | pending | n/a | pending baseline run |
+| Long-event session load | latest task events | pending | pending | pending | pending | n/a | pending baseline run |
+| Active task stream | `/stream` | pending | pending | pending | pending | pending | pending baseline run |
+
+Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/event counts and SSE DB query cadence. Use browser Network to fill request waterfall and transferred bytes; `Server-Timing` is visible per response where the browser exposes timing details.
+
 ## Decisions
 
 - 2026-06-07: Store this as `docs/goals/2026-06-07-web-transport-performance.md` because the repo already uses `docs/goals/` for durable goal contracts.
 - 2026-06-07: Start with measurement and low-risk waterfall/payload fixes before the more invasive SSE event bus. RECON indicates these provide large wins with less architectural risk.
 - 2026-06-07: Treat true push SSE as the main aggressive backend option, but only after baseline and simpler list/event-load fixes establish remaining need and expected payoff.
 - 2026-06-07: Do not add external queues/caches/services for the target scale; prefer local in-process channels and bounded API payloads.
+- 2026-06-07: Implement Checkpoint 1 as debug tracing plus standard `Server-Timing` instead of adding a metrics stack or synthetic benchmark crate; this keeps measurement reusable without new dependencies.
 
 ## Progress Log
 
@@ -198,6 +224,13 @@ Out of scope:
   - Commands: `git status --short`; `git log --oneline -5`; `git diff -- AGENTS.md`; docs convention reviewed under `docs/goals/`.
   - Audit IDs updated: none; this is the planning checkpoint.
   - Next: Checkpoint 1 — baseline measurement for ordinary and long-event session loads.
+
+- 2026-06-07 00:30: Checkpoint 1 measurement harness started.
+  - Changed: Added debug web performance logs for HTTP responses, session/task list sizes, task event page sizes, and SSE DB query cadence; added `Server-Timing` response header; documented the baseline capture procedure and table.
+  - Evidence: Code paths touched are limited to `crates/oxide-agent-transport-web/src/server/router.rs`, `session_routes.rs`, `task_routes.rs`, and `sse.rs`; no new dependencies or services added.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-transport-web`; `git diff --check`.
+  - Audit IDs updated: G1 in progress, Q1 in progress.
+  - Next: Run focused backend validation, commit harness, then capture ordinary/long-event baseline numbers before optimization checkpoint 2.
 
 ## Risks and Blockers
 
