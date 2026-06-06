@@ -463,11 +463,22 @@ fn CrawlToolCard(
         .as_ref()
         .and_then(|event| tool_result_summary(event, output.as_ref()));
 
-    // Parse the inner JSON from stdout.text (crawl4ai success payload).
+    // Parse the inner JSON from stdout.text (crawl4ai success payload). Large
+    // tool outputs are truncated in output_preview, so fall back to the compact
+    // display_payload persisted by the web transport.
     let stdout_text = output.as_ref().and_then(|v| stream_text(v, "stdout"));
-    let crawl: Option<Value> = stdout_text
+    let crawl_from_stdout: Option<Value> = stdout_text
         .as_ref()
         .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let crawl_from_display = result
+        .as_ref()
+        .and_then(|event| event.payload.get("display_payload"))
+        .filter(|payload| {
+            payload.get("provider").and_then(Value::as_str) == Some("crawl4ai_markdown")
+        })
+        .cloned();
+    let crawl = crawl_from_stdout.or(crawl_from_display);
+    let show_raw_stdout_fallback = success && crawl.is_none();
     let url: Option<String> = crawl.as_ref().and_then(|v| {
         v.get("final_url")
             .or_else(|| v.get("url"))
@@ -480,10 +491,25 @@ fn CrawlToolCard(
     let chars = crawl
         .as_ref()
         .and_then(|v| v.get("chars").and_then(Value::as_u64));
+    let status_code = crawl
+        .as_ref()
+        .and_then(|v| v.get("status_code").and_then(Value::as_u64));
+    let markdown_kind = crawl.as_ref().and_then(|v| {
+        v.get("markdown_kind")
+            .and_then(Value::as_str)
+            .map(String::from)
+    });
+    let fresh = crawl
+        .as_ref()
+        .and_then(|v| v.get("fresh").and_then(Value::as_bool));
     let truncated = crawl
         .as_ref()
         .and_then(|v| v.get("truncated").and_then(Value::as_bool))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || crawl
+            .as_ref()
+            .and_then(|v| v.get("markdown_preview_truncated").and_then(Value::as_bool))
+            .unwrap_or(false);
 
     // Fallback: try to extract URL from the ToolCall input_preview.
     let failure_payload = tool_structured_payload(output.as_ref());
@@ -564,6 +590,9 @@ fn CrawlToolCard(
         {preview_text.map(tool_preview)}
         <ToolDetails open=default_open>
             {url.clone().map(|u| tool_query_row("URL", u))}
+            {status_code.map(|code| tool_query_row("Status", code.to_string()))}
+            {markdown_kind.map(|kind| tool_query_row("Markdown", kind))}
+            {fresh.map(|fresh| tool_query_row("Fresh", if fresh { "yes" } else { "no" }.to_string()))}
             {failure_label.clone().map(|label| tool_query_row("Error", label))}
             {failure_status_code.map(|code| tool_query_row("Status", code.to_string()))}
             {failure_message.map(|message| tool_pre_stream(Some("message"), message))}
@@ -576,7 +605,7 @@ fn CrawlToolCard(
                 ().into_any()
             }}
             // If stdout was not parseable as crawl JSON, show raw stdout as fallback.
-            {(if success { crawl.is_none() } else { false })
+            {show_raw_stdout_fallback
                 .then(|| stdout_text.clone())
                 .flatten()
                 .map(|text| tool_pre_stream(Some("output"), text))}

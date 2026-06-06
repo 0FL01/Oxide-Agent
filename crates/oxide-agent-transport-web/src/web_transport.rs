@@ -56,6 +56,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
 const WEB_EVENT_SCHEMA_VERSION: u32 = 1;
 const EVENT_SUMMARY_MAX_CHARS: usize = 160;
 const EVENT_PREVIEW_MAX_CHARS: usize = 4_000;
+const TOOL_DISPLAY_MARKDOWN_MAX_CHARS: usize = 12_000;
 const REDACTED_EVENT_PAYLOAD: &str = "[redacted sensitive event payload]";
 
 #[derive(Debug, Clone)]
@@ -688,6 +689,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
             let (output_preview, truncated, redacted) =
                 preview_event_text(output, EVENT_PREVIEW_MAX_CHARS);
             let result_summary = tool_result_summary(name, *success, output);
+            let display_payload = tool_display_payload(name, *success, output);
             // Extract duration_ms from the full ToolOutput JSON before truncation,
             // so the UI can display timing even when the preview is too large to parse.
             let duration_ms: Option<i64> = serde_json::from_str::<Value>(output)
@@ -705,6 +707,7 @@ fn tool_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, bool, 
                     "success": success,
                     "result_summary": result_summary,
                     "duration_ms": duration_ms,
+                    "display_payload": display_payload,
                     "output_preview": output_preview,
                 }),
                 redacted,
@@ -1087,6 +1090,65 @@ fn truncate_summary(value: &str) -> String {
     truncate_text(value, EVENT_SUMMARY_MAX_CHARS).0
 }
 
+fn tool_display_payload(name: &str, success: bool, output: &str) -> Option<Value> {
+    if name != "crawl4ai_markdown" || !success {
+        return None;
+    }
+
+    let output = serde_json::from_str::<Value>(output).ok()?;
+    let stdout_text = stream_text_from_output(&output, "stdout")?;
+    let crawl = serde_json::from_str::<Value>(&stdout_text).ok()?;
+    let markdown = crawl.get("markdown").and_then(Value::as_str).unwrap_or("");
+    let (safe_markdown, _) = redact_sensitive_text(markdown);
+    let (markdown_preview, markdown_preview_truncated) =
+        truncate_text(&safe_markdown, TOOL_DISPLAY_MARKDOWN_MAX_CHARS);
+
+    Some(json!({
+        "provider": "crawl4ai_markdown",
+        "url": crawl.get("url").and_then(Value::as_str),
+        "final_url": crawl.get("final_url").and_then(Value::as_str),
+        "status_code": crawl.get("status_code").and_then(Value::as_u64),
+        "markdown_kind": crawl.get("markdown_kind").and_then(Value::as_str),
+        "markdown": markdown_preview,
+        "chars": crawl
+            .get("chars")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| markdown.chars().count() as u64),
+        "truncated": crawl
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "markdown_preview_truncated": markdown_preview_truncated,
+        "fresh": crawl.get("fresh").and_then(Value::as_bool),
+    }))
+}
+
+fn stream_text_from_output(output: &Value, stream_name: &str) -> Option<String> {
+    let stream = output.get(stream_name)?;
+    if stream
+        .get("binary")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    if let Some(text) = stream.get("text").and_then(Value::as_str) {
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+    }
+
+    let head = stream.get("head").and_then(Value::as_str);
+    let tail = stream.get("tail").and_then(Value::as_str);
+    match (head, tail) {
+        (Some(head), Some(tail)) => Some(format!("{head}\n...\n{tail}")),
+        (Some(head), None) => Some(head.to_string()),
+        (None, Some(tail)) => Some(tail.to_string()),
+        _ => None,
+    }
+}
+
 fn tool_result_summary(name: &str, success: bool, output: &str) -> Option<String> {
     if success {
         return None;
@@ -1398,6 +1460,74 @@ mod tests {
         assert_eq!(tool_result.payload["success"], true);
         assert!(tool_result.truncated);
         assert_eq!(result.persisted_events[1].kind, TaskEventKind::Finished);
+    }
+
+    #[tokio::test]
+    async fn collect_events_persists_crawl_display_payload_for_truncated_output() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+        let markdown = format!("# Title\n\n{}", "body ".repeat(1_200));
+        let crawl_stdout = serde_json::json!({
+            "provider": "crawl4ai_markdown",
+            "url": "https://arxiv.org/abs/2602.10604",
+            "final_url": "https://arxiv.org/abs/2602.10604",
+            "status_code": 200,
+            "markdown_kind": "markdown",
+            "markdown": markdown,
+            "truncated": false,
+            "chars": 6_009,
+            "elapsed_ms": 2936,
+            "fresh": false
+        })
+        .to_string();
+        let output = serde_json::json!({
+            "tool_call_id": "call-crawl",
+            "tool_name": "crawl4ai_markdown",
+            "status": "success",
+            "success": true,
+            "duration_ms": 2968,
+            "stdout": { "binary": false, "bytes_captured": crawl_stdout.len(), "bytes_total_known": crawl_stdout.len(), "text": crawl_stdout, "truncated": false },
+            "stderr": { "binary": false, "bytes_captured": 0, "bytes_total_known": 0, "text": "", "truncated": false },
+            "error_message": null,
+            "timeout_reason": null,
+            "cancellation_reason": null,
+            "cleanup_status": "not_needed",
+            "artifacts": []
+        })
+        .to_string();
+
+        tx.send(AgentEvent::ToolResult {
+            id: "tool-1".to_string(),
+            source: AgentEventSource::Root,
+            name: "crawl4ai_markdown".to_string(),
+            output,
+            success: true,
+        })
+        .await
+        .expect("send tool result");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        let tool_result = &result.persisted_events[0];
+        assert!(tool_result.truncated);
+        let display = &tool_result.payload["display_payload"];
+        assert_eq!(display["provider"], "crawl4ai_markdown");
+        assert_eq!(display["final_url"], "https://arxiv.org/abs/2602.10604");
+        assert_eq!(display["chars"], 6_009);
+        assert!(display["markdown"].as_str().unwrap().starts_with("# Title"));
     }
 
     #[tokio::test]
