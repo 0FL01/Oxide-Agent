@@ -2,5 +2,6 @@
 @import url("./styles/00-tokens.css");
 @import url("./styles/01-reset.css");
 @import url("./styles/02-primitives.css");
+@import url("./styles/03-shell.css");
 @import url("./styles/03-v1-legacy.css");
 @import url("./styles/10-v2-current.css");

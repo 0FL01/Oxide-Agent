@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-06-web-ui-css-v2-slice-plan.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to split `crates/oxide-agent-web-ui/src/styles.css` for maintainability, with `Редизайн (v2)` as the current base and `v1` as MVP legacy.
 Goal doc owner: Codex
-Last updated: 2026-06-06 19:20
+Last updated: 2026-06-06 22:30
 
 ## Objective
 
@@ -49,63 +49,63 @@ Out of scope:
   - Acceptance: `crates/oxide-agent-web-ui/src/styles.css` contains only ordered imports and short entrypoint comments, or an equally small Trunk-compatible entrypoint; focused slice files live under `crates/oxide-agent-web-ui/src/styles/`.
   - Evidence required: `wc -l crates/oxide-agent-web-ui/src/styles.css`, `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort`, and `env -u NO_COLOR trunk build --release`.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 scaffold created with `crates/oxide-agent-web-ui/src/styles.css` reduced to 3 lines and temporary ordered slices `crates/oxide-agent-web-ui/src/styles/00-v1-base.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; checkpoint 2 expanded the entrypoint to 6 ordered imports and added focused base slices `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; final component slices still pending.
+  - Evidence collected: Checkpoint 1 scaffold created with `crates/oxide-agent-web-ui/src/styles.css` reduced to 3 lines and temporary ordered slices `crates/oxide-agent-web-ui/src/styles/00-v1-base.css` and `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; checkpoint 2 expanded the entrypoint to 6 ordered imports and added focused base slices `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; checkpoint 3 expanded the entrypoint to 7 ordered imports and added `03-shell.css`; final component slices still pending.
 
 - G2: v2 is the canonical base, not an override block
   - Source: User clarified that `Редизайн (v2)` is the current base and `v1` was MVP.
   - Acceptance: The `FRONT TEMPLATE REDESIGN OVERRIDE` model is removed; duplicate selectors are resolved to one canonical v2 rule per slice unless a deliberate documented fallback is required.
   - Evidence required: grep for `FRONT TEMPLATE REDESIGN OVERRIDE`, duplicate-selector review for high-risk selectors, and focused diff review.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 removed `FRONT TEMPLATE REDESIGN OVERRIDE` from `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; v2 token/reset/primitive rules now live in base slices before component layers. Component-level v1/v2 duplicate collapse remains pending.
+  - Evidence collected: Checkpoint 2 removed `FRONT TEMPLATE REDESIGN OVERRIDE` from `crates/oxide-agent-web-ui/src/styles/10-v2-current.css`; v2 token/reset/primitive rules now live in base slices before component layers. Checkpoint 3 collapsed shell/sidebar/session-nav/topbar duplicate selectors into canonical `crates/oxide-agent-web-ui/src/styles/03-shell.css`; responsive media-query duplicates remain intentionally deferred to checkpoint 7.
 
 - G3: Component ownership is clear
   - Source: Maintainability goal from the user request.
   - Acceptance: A class family lives in one slice by component/area: tokens/reset/primitives, shell, chat, composer, activity/tool cards, markdown/code, pages, metrics, responsive.
   - Evidence required: file list review plus spot grep of representative classes (`.composer`, `.activity-drawer`, `.tool-card`, `.markdown-content`, `.settings-page`).
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 established base ownership with `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; shell/chat/activity/markdown/page ownership remains pending.
+  - Evidence collected: Checkpoint 2 established base ownership with `00-tokens.css`, `01-reset.css`, and `02-primitives.css`; checkpoint 3 established shell/navigation ownership with `03-shell.css`; chat/activity/markdown/page ownership remains pending.
 
 - G4: v1-only useful coverage is preserved or intentionally removed
   - Source: Recon found v1-only settings, metrics, and code-copy styles not fully represented in v2.
   - Acceptance: Settings/auth/not-found, metrics panel groups, code-copy helpers, status/error/notice helpers, and any class still emitted by Rust components remain styled; removed rules are verified unused.
   - Evidence required: grep for class consumers in `crates/oxide-agent-web-ui/src/**/*.rs`, diff review, and build validation.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 3 preserved legacy status badge coverage while moving shell ownership; grep confirmed active shell class consumers in `components.rs` and `sessions.rs`. Settings, metrics, code-copy, and page coverage remain pending for later checkpoints.
 
 - Q1: No visual redesign or class-contract changes
   - Source: User asked for maintainability slicing, not a new redesign.
   - Acceptance: Existing class names, visible strings, component markup, layout intent, and v2 visual treatment are preserved unless a user-approved follow-up explicitly changes them.
   - Evidence required: CSS-only diff review and `git diff --name-only` showing no Rust component changes except an entrypoint adjustment if required.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoints 1-3 changed only CSS slices and this goal document; no Rust component markup or class strings were changed. Final visual/class-contract audit remains pending until all slices are extracted.
 
 - Q2: No over-engineering or new dependencies
   - Source: Repository implementation bias and user request scope.
   - Acceptance: No new crates, JS tooling, CSS frameworks, preprocessors, CSS modules, design-token generators, or broad abstraction layers.
   - Evidence required: `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml`, plus full diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoints 1-3 used plain CSS `@import` slices only. `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml` produced no output after checkpoints 2 and 3.
 
 - V1: Web UI CSS build remains valid
   - Source: Trunk stylesheet entrypoint at `crates/oxide-agent-web-ui/index.html:11`.
   - Acceptance: Trunk can build the sliced stylesheet and generated app assets without CSS import/path failures.
   - Evidence required: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/`.
   - Status: verified
-  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split and again after checkpoint 2 base-slice promotion.
+  - Evidence collected: `env -u NO_COLOR trunk build --release` from `crates/oxide-agent-web-ui/` succeeded on 2026-06-06 after the import-based scaffold split, after checkpoint 2 base-slice promotion, and after checkpoint 3 shell extraction.
 
 - V2: Rust-side web UI still compiles
   - Source: CSS class consumers live in Leptos components under `crates/oxide-agent-web-ui/src/`.
   - Acceptance: No accidental Rust compile regressions while touching the UI crate.
   - Evidence required: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` from repo root.
   - Status: verified
-  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-06 after the scaffold split and again after checkpoint 2 base-slice promotion.
+  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-06 after the scaffold split, after checkpoint 2 base-slice promotion, and after checkpoint 3 shell extraction.
 
 - N1: No unrelated product behavior changes
   - Source: Scope boundaries and repository guardrails.
   - Must preserve: backend APIs, SSE streams, auth/session/task behavior, storage, provider/runtime/core code, and Telegram transport behavior.
   - Evidence required: `git diff --name-only` and final diff audit.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoints 1-3 changed only web UI stylesheet slices and this goal document. Final `git diff --name-only` audit remains pending until completion.
 
 ## Implementation Plan
 
@@ -195,6 +195,7 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
 - 2026-06-06: First implementation step is a lossless scaffold split that preserves cascade order before deduplicating v1/v2 rules. This minimizes visual-regression risk and validates Trunk import behavior early.
 - 2026-06-06: Use temporary checkpoint-1 coarse slices `00-v1-base.css` and `10-v2-current.css` to preserve exact original cascade before later v2-first deduplication.
 - 2026-06-06: Promote base styles by ownership first, not by aggressive selector merging. Keep legacy base coverage inside the relevant base slice before the current v2 rule subset to minimize visual-regression risk while removing the late `FRONT TEMPLATE REDESIGN OVERRIDE` block.
+- 2026-06-06: For shell/navigation, merge the computed legacy-plus-v2 result into one canonical shell slice instead of keeping adjacent v1/v2 override blocks. Leave responsive media queries for checkpoint 7, where all responsive rules are moved and deduplicated together.
 
 ## Progress Log
 
@@ -218,6 +219,13 @@ Temporary coarse files are allowed only during checkpoint 1 if they make the fir
   - Commands: `git diff --check`; `env -u NO_COLOR trunk build --release`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml`; focused `rg` checks for compatibility tokens and primitive selectors.
   - Audit IDs updated: G1 in progress; G2 in progress; G3 in progress; V1 verified; V2 verified; Q1, Q2, and N1 preserved by CSS-only/dependency-free diff.
   - Next: Checkpoint 3 — extract shell and navigation ownership from `03-v1-legacy.css` and `10-v2-current.css` into `03-shell.css`.
+
+- 2026-06-06 22:30: Checkpoint 3 shell/navigation extraction.
+  - Changed: Added `crates/oxide-agent-web-ui/src/styles/03-shell.css`; moved and collapsed canonical shell/sidebar/session navigation/topbar/status badge rules out of `03-v1-legacy.css` and the leading shell block of `10-v2-current.css`; updated `crates/oxide-agent-web-ui/src/styles.css` to import the shell slice after base primitives.
+  - Evidence: `wc -l crates/oxide-agent-web-ui/src/styles.css` reports 7 lines; `find crates/oxide-agent-web-ui/src/styles -maxdepth 1 -type f | sort` lists `03-shell.css`; anchored shell-selector grep found no non-responsive shell selector ownership left in `03-v1-legacy.css` or `10-v2-current.css`; consumer grep confirms active shell classes in `components.rs` and `sessions.rs`; Trunk and wasm checks passed.
+  - Commands: `git diff --check`; `env -u NO_COLOR trunk build --release`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff -- Cargo.toml crates/oxide-agent-web-ui/Cargo.toml package.json pnpm-lock.yaml`; focused `rg` checks for shell selectors and shell class consumers.
+  - Audit IDs updated: G1 in progress; G2 in progress; G3 in progress; G4 in progress; V1 verified; V2 verified; Q1, Q2, and N1 preserved by CSS-only/dependency-free diff.
+  - Next: Checkpoint 4 — extract chat, message, and composer ownership into `04-chat.css` and `05-composer.css`.
 
 ## Risks and Blockers
 
