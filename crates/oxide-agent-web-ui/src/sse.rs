@@ -9,6 +9,7 @@ use oxide_agent_web_contracts::{
     TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
 use serde::Deserialize;
+use std::cmp::Ordering;
 
 #[derive(Clone)]
 pub struct TaskStreamConfig {
@@ -614,15 +615,22 @@ fn append_unique_event(events: WriteSignal<Vec<PersistedTaskEvent>>, event: Pers
             .iter()
             .any(|item| item.task_id == event.task_id && item.seq == event.seq)
         {
+            let needs_sort = items
+                .last()
+                .is_some_and(|last| compare_task_events(last, &event) == Ordering::Greater);
             items.push(event);
-            items.sort_by(|a, b| {
-                a.created_at
-                    .cmp(&b.created_at)
-                    .then_with(|| a.task_id.cmp(&b.task_id))
-                    .then_with(|| a.seq.cmp(&b.seq))
-            });
+            if needs_sort {
+                items.sort_by(compare_task_events);
+            }
         }
     });
+}
+
+fn compare_task_events(a: &PersistedTaskEvent, b: &PersistedTaskEvent) -> Ordering {
+    a.created_at
+        .cmp(&b.created_at)
+        .then_with(|| a.task_id.cmp(&b.task_id))
+        .then_with(|| a.seq.cmp(&b.seq))
 }
 
 fn task_detail_to_summary(task: &TaskDetail) -> TaskSummary {

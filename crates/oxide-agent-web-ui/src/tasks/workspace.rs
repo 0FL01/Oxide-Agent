@@ -3,13 +3,14 @@ use crate::auth::use_auth;
 use crate::components::ErrorBanner;
 use crate::routes::AppRoute;
 use crate::utils::{navigate, spawn_ui};
+use futures_util::join;
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
     PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, SseConnectionState,
-    TaskDetail, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
+    TaskDetail, TaskStatus, TaskSummary, UpdateSessionProfileRequest, UserSettingsResponse,
 };
-use std::collections::HashMap;
+use std::{cell::RefCell, cmp::Ordering, collections::HashMap};
 
 use super::activity::{ActivityDrawer, ActivityStatusChip};
 use super::composer::{
@@ -31,6 +32,60 @@ use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
 use super::versions::group_task_versions;
 
 const TASK_EVENTS_PAGE_LIMIT: usize = 500;
+const SETTINGS_PROFILES_CACHE_TTL_MS: f64 = 30_000.0;
+
+#[derive(Clone)]
+struct SettingsProfilesCacheEntry {
+    loaded_at_ms: f64,
+    settings: UserSettingsResponse,
+    profiles: Vec<AgentProfileView>,
+}
+
+thread_local! {
+    static SETTINGS_PROFILES_CACHE: RefCell<Option<SettingsProfilesCacheEntry>> = const { RefCell::new(None) };
+}
+
+fn now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map(|performance| performance.now())
+        .unwrap_or_default()
+}
+
+fn cached_settings_profiles() -> Option<SettingsProfilesCacheEntry> {
+    let now = now_ms();
+    SETTINGS_PROFILES_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .as_ref()
+            .filter(|entry| now - entry.loaded_at_ms <= SETTINGS_PROFILES_CACHE_TTL_MS)
+            .cloned()
+    })
+}
+
+async fn load_settings_profiles(
+    client: &ApiClient,
+) -> (Option<UserSettingsResponse>, Option<Vec<AgentProfileView>>) {
+    if let Some(entry) = cached_settings_profiles() {
+        return (Some(entry.settings), Some(entry.profiles));
+    }
+
+    let (settings_result, profiles_result) = join!(client.settings(), client.list_agent_profiles());
+    if let (Ok(settings), Ok(profiles)) = (&settings_result, &profiles_result) {
+        SETTINGS_PROFILES_CACHE.with(|cache| {
+            *cache.borrow_mut() = Some(SettingsProfilesCacheEntry {
+                loaded_at_ms: now_ms(),
+                settings: settings.clone(),
+                profiles: profiles.profiles.clone(),
+            });
+        });
+    }
+
+    (
+        settings_result.ok(),
+        profiles_result.ok().map(|response| response.profiles),
+    )
+}
 
 async fn load_all_task_events(
     client: &ApiClient,
@@ -62,21 +117,29 @@ fn merge_task_events(
     new_events: Vec<PersistedTaskEvent>,
 ) {
     set_events.update(|items| {
+        let mut needs_sort = false;
         for event in new_events {
             if !items
                 .iter()
                 .any(|item| item.task_id == event.task_id && item.seq == event.seq)
             {
+                needs_sort |= items
+                    .last()
+                    .is_some_and(|last| compare_task_events(last, &event) == Ordering::Greater);
                 items.push(event);
             }
         }
-        items.sort_by(|a, b| {
-            a.created_at
-                .cmp(&b.created_at)
-                .then_with(|| a.task_id.cmp(&b.task_id))
-                .then_with(|| a.seq.cmp(&b.seq))
-        });
+        if needs_sort {
+            items.sort_by(compare_task_events);
+        }
     });
+}
+
+fn compare_task_events(a: &PersistedTaskEvent, b: &PersistedTaskEvent) -> Ordering {
+    a.created_at
+        .cmp(&b.created_at)
+        .then_with(|| a.task_id.cmp(&b.task_id))
+        .then_with(|| a.seq.cmp(&b.seq))
 }
 
 fn max_event_seq(events: &[PersistedTaskEvent]) -> u64 {
@@ -139,11 +202,12 @@ fn WelcomeView(set_sessions: WriteSignal<Vec<SessionSummary>>) -> impl IntoView 
         set_profiles_loaded.set(true);
         spawn_ui(async move {
             let client = auth.client();
-            if let Ok(settings) = client.settings().await {
+            let (settings, loaded_profiles) = load_settings_profiles(&client).await;
+            if let Some(settings) = settings {
                 apply_loaded_default_effort(settings, effort_touched, set_selected_effort);
             }
-            if let Ok(response) = client.list_agent_profiles().await {
-                set_profiles.set(response.profiles);
+            if let Some(loaded_profiles) = loaded_profiles {
+                set_profiles.set(loaded_profiles);
             }
         });
     });
@@ -376,11 +440,12 @@ fn SessionWorkspace(
         set_profiles_loaded.set(true);
         spawn_ui(async move {
             let client = auth.client();
-            if let Ok(settings) = client.settings().await {
+            let (settings, loaded_profiles) = load_settings_profiles(&client).await;
+            if let Some(settings) = settings {
                 apply_loaded_default_effort(settings, effort_touched, set_selected_effort);
             }
-            if let Ok(response) = client.list_agent_profiles().await {
-                set_profiles.set(response.profiles);
+            if let Some(loaded_profiles) = loaded_profiles {
+                set_profiles.set(loaded_profiles);
             }
         });
     });
@@ -398,7 +463,12 @@ fn SessionWorkspace(
         let session_id = session_id_for_load.clone();
         spawn_ui(async move {
             let client = auth.client();
-            match client.get_session(&session_id).await {
+            let (session_result, tasks_result) = join!(
+                client.get_session(&session_id),
+                client.list_tasks(&session_id)
+            );
+
+            match session_result {
                 Ok(response) => {
                     set_session_title.set(response.session.title.clone());
                     set_selected_profile.set(
@@ -415,20 +485,15 @@ fn SessionWorkspace(
                 }
                 Err(error) => set_error.set(Some(error.to_string())),
             }
-            match client.list_tasks(&session_id).await {
+
+            match tasks_result {
                 Ok(response) => {
                     set_drawer_open.set(false);
                     let latest = latest_task(&response.tasks);
                     set_tasks.set(response.tasks);
                     if let Some(task) = latest {
                         let task_id = task.task_id.clone();
-                        let task_detail = match client.get_task(&session_id, &task_id).await {
-                            Ok(response) => Some(response.task),
-                            Err(error) => {
-                                set_error.set(Some(error.to_string()));
-                                None
-                            }
-                        };
+                        let task_detail = summary_to_detail(&session_id, &task);
                         let initial_last_seq =
                             match load_all_task_events(&client, &session_id, &task_id).await {
                                 Ok(events) => {
@@ -441,34 +506,31 @@ fn SessionWorkspace(
                                     0
                                 }
                             };
-                        if let Some(task) = task_detail {
-                            set_progress.set(task.last_progress.clone());
-                            if matches!(task.status, TaskStatus::Queued | TaskStatus::Running) {
-                                set_active_task.set(Some(task));
-                                start_task_stream(
-                                    client.clone(),
-                                    session_id.clone(),
-                                    task_id.clone(),
-                                    initial_last_seq,
-                                    StreamUiSignals {
-                                        set_events,
-                                        set_session_title,
-                                        set_progress,
-                                        set_active_task,
-                                        set_tasks,
-                                        set_sse_state,
-                                        set_error,
-                                        streaming_task_id,
-                                        set_streaming_task_id,
-                                        set_last_terminal_status,
-                                        set_sessions,
-                                    },
-                                );
-                            } else if task.status == TaskStatus::WaitingForUserInput {
-                                set_active_task.set(Some(task));
-                            } else {
-                                set_active_task.set(None);
-                            }
+                        if matches!(task_detail.status, TaskStatus::Queued | TaskStatus::Running) {
+                            set_active_task.set(Some(task_detail));
+                            start_task_stream(
+                                client.clone(),
+                                session_id.clone(),
+                                task_id.clone(),
+                                initial_last_seq,
+                                StreamUiSignals {
+                                    set_events,
+                                    set_session_title,
+                                    set_progress,
+                                    set_active_task,
+                                    set_tasks,
+                                    set_sse_state,
+                                    set_error,
+                                    streaming_task_id,
+                                    set_streaming_task_id,
+                                    set_last_terminal_status,
+                                    set_sessions,
+                                },
+                            );
+                        } else if task_detail.status == TaskStatus::WaitingForUserInput {
+                            set_active_task.set(Some(task_detail));
+                        } else {
+                            set_active_task.set(None);
                         }
                     } else {
                         // Empty session — clear signals

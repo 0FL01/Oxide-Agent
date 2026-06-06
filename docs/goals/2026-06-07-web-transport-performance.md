@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-web-transport-performance.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request to focus web transport, run RECON, and plan how to accelerate frontend chat/page loading, including aggressive options.
 Goal doc owner: Codex
-Last updated: 2026-06-07 00:30
+Last updated: 2026-06-07 00:50
 
 ## Objective
 
@@ -57,8 +57,8 @@ Out of scope:
   - Source: RECON found sequential requests in `crates/oxide-agent-web-ui/src/tasks/workspace.rs:400` and settings/profile sequence at `crates/oxide-agent-web-ui/src/tasks/workspace.rs:135`.
   - Acceptance: independent requests for settings, profiles, session detail, and task list run concurrently where possible; redundant `get_task` after `list_tasks` is removed or justified by a contract change.
   - Evidence required: code diff, browser/network waterfall before/after, and `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Frontend code now runs settings/profile requests concurrently, short-caches both for 30 seconds, runs session detail and task list requests concurrently on workspace load, and derives latest `TaskDetail` from the already-loaded `TaskSummary` instead of issuing redundant latest-task `get_task`. Browser before/after waterfall still pending.
 
 - G3: List endpoints avoid large overfetch
   - Source: RECON found full task markdown in `TaskSummary` at `crates/oxide-agent-web-contracts/src/tasks.rs:120`, full task list loading at `crates/oxide-agent-transport-web/src/persistence/sqlx.rs:714`, and full session columns at `crates/oxide-agent-transport-web/src/persistence/sqlx.rs:561`.
@@ -85,8 +85,8 @@ Out of scope:
   - Source: RECON found per-event sort in `crates/oxide-agent-web-ui/src/sse.rs:611`, activity full-vector filter at `crates/oxide-agent-web-ui/src/tasks/activity.rs:123`, sidebar full-list clone at `crates/oxide-agent-web-ui/src/sessions.rs:44`, task grouping clones at `crates/oxide-agent-web-ui/src/tasks/versions.rs:10`, and markdown render cost at `crates/oxide-agent-web-ui/src/markdown.rs:11`.
   - Acceptance: event append, activity filtering, sidebar filtering, task grouping, and markdown rendering avoid unnecessary full-list/full-markdown recomputation on common reactive ticks.
   - Evidence required: code diff, frontend profiler or timing evidence on large scenarios, and wasm cargo check.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Event merge and SSE append now preserve monotonic event order without sorting after every in-order batch/event; full sort is retained only for out-of-order insertion.
 
 - Q1: Keep architecture simple and local
   - Source: Repository guardrail against over-engineering and target load up to 5 RPS.
@@ -99,15 +99,15 @@ Out of scope:
   - Source: Existing web console contracts and user-facing chat/task flows must continue working.
   - Acceptance: session creation, task creation, attachment upload, task detail, activity drawer, SSE reconnect/replay, waiting-for-user-input, and terminal task summary refresh continue working.
   - Evidence required: focused tests/E2E/manual validation for changed flows.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 kept existing API contracts and compiles for the wasm target. Runtime smoke for active task SSE and waiting-for-user-input remains pending.
 
 - V1: Web frontend compiles
   - Source: Leptos CSR crate validation convention.
   - Acceptance: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeds after frontend changes.
   - Evidence required: command output summary in Progress Log.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown` succeeded on 2026-06-07 after checkpoint 2 frontend changes.
 
 - V2: Web backend/contracts compile
   - Source: Web transport and contracts route changes require Rust validation.
@@ -120,8 +120,8 @@ Out of scope:
   - Source: Scope boundary from user request to focus web transport.
   - Must preserve: Telegram transport, core/runtime/provider behavior, sandbox backends, manager control plane, wiki memory, and direct Gemini absence.
   - Evidence required: `git diff --name-only` and final diff audit.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 diff is limited to `crates/oxide-agent-web-ui/src/tasks/workspace.rs`, `crates/oxide-agent-web-ui/src/sse.rs`, and this goal document; pre-existing user-modified `AGENTS.md` remains excluded.
 
 ## Implementation Plan
 
@@ -215,6 +215,7 @@ Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/
 - 2026-06-07: Treat true push SSE as the main aggressive backend option, but only after baseline and simpler list/event-load fixes establish remaining need and expected payoff.
 - 2026-06-07: Do not add external queues/caches/services for the target scale; prefer local in-process channels and bounded API payloads.
 - 2026-06-07: Implement Checkpoint 1 as debug tracing plus standard `Server-Timing` instead of adding a metrics stack or synthetic benchmark crate; this keeps measurement reusable without new dependencies.
+- 2026-06-07: Remove the redundant latest-task detail request without changing contracts; initial `last_progress` can be refreshed by the existing SSE/detail polling path for active tasks instead of paying an unconditional extra round-trip on every session open.
 
 ## Progress Log
 
@@ -231,6 +232,13 @@ Use backend logs with `target=oxide_agent_transport_web::web_perf` to fill list/
   - Commands: `cargo fmt`; `cargo check -p oxide-agent-transport-web`; `git diff --check`.
   - Audit IDs updated: G1 in progress, Q1 in progress.
   - Next: Run focused backend validation, commit harness, then capture ordinary/long-event baseline numbers before optimization checkpoint 2.
+
+- 2026-06-07 00:50: Checkpoint 2 frontend waterfall work started.
+  - Changed: Parallelized settings/profile loading and workspace session/task loading, added a 30-second in-memory settings/profile cache, removed redundant latest-task `get_task` on session open, and avoided event-vector sorting for in-order event batches/SSE events.
+  - Evidence: Code paths touched are `crates/oxide-agent-web-ui/src/tasks/workspace.rs` and `crates/oxide-agent-web-ui/src/sse.rs`; no new dependencies, services, queues, or API contract changes.
+  - Commands: `cargo fmt`; `cargo check -p oxide-agent-web-ui --target wasm32-unknown-unknown`; `git diff --check`.
+  - Audit IDs updated: G2 in progress, G6 in progress, Q2 in progress, V1 verified, N1 in progress.
+  - Next: Capture browser Network before/after for ordinary session opening and run an active-task SSE smoke; then continue to lightweight list payload checkpoint.
 
 ## Risks and Blockers
 
