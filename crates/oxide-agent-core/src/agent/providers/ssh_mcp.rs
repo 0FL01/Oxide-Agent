@@ -10,16 +10,16 @@ use crate::llm::ToolDefinition;
 use crate::storage::{
     StorageProvider, TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use rmcp::{
+    ServiceExt,
     model::CallToolRequestParams,
     service::{Peer, RoleClient, RunningService, ServiceError},
     transport::{ConfigureCommandExt, TokioChildProcess},
-    ServiceExt,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 #[cfg(test)]
 use sha2::{Digest, Sha256};
 use shell_escape::unix::escape;
@@ -35,14 +35,14 @@ use tempfile::TempDir;
 use tempfile::{Builder, NamedTempFile};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 
 use super::file_delivery::{
-    chat_delivery_max_file_size_bytes, deliver_file_via_progress, format_generic_delivery_report,
-    FileDeliveryRequest, FileDeliveryStatus,
+    FileDeliveryRequest, FileDeliveryStatus, chat_delivery_max_file_size_bytes,
+    deliver_file_via_progress, format_generic_delivery_report,
 };
 
 const TOOL_SSH_EXEC: &str = "ssh_exec";
@@ -638,9 +638,10 @@ impl Drop for UpstreamSshMcpSession {
             client.take();
         }
         if let Ok(mut stderr_task) = self.stderr_task.try_lock()
-            && let Some(task) = stderr_task.take() {
-                task.abort();
-            }
+            && let Some(task) = stderr_task.take()
+        {
+            task.abort();
+        }
     }
 }
 
@@ -1401,9 +1402,10 @@ impl SshMcpProvider {
 
         let cleanup_result = tokio::fs::remove_file(&download_path).await;
         if let Err(error) = cleanup_result
-            && error.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(path = %download_path.display(), error = %error, "Failed to cleanup transferred SSH file");
-            }
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %download_path.display(), error = %error, "Failed to cleanup transferred SSH file");
+        }
 
         let (payload, report, ok) = delivery_result.map_err(ssh_runtime_failure)?;
         Ok(typed_ssh_payload_output(
@@ -2202,7 +2204,7 @@ async fn validate_ssh_private_key(
                 source,
                 SecretProbeKind::SshPrivateKey,
                 error.to_string(),
-            )
+            );
         }
     };
     let key_path = key_file.path();
@@ -2210,8 +2212,6 @@ async fn validate_ssh_private_key(
     let mut public_command = Command::new("ssh-keygen");
     public_command.arg("-y").arg("-f").arg(key_path);
     let public_result = run_command_with_timeout(public_command, KEY_PROBE_TIMEOUT_SECS).await;
-
-    
 
     match public_result {
         Ok(output) if output.exit_code == 0 => {
@@ -2557,15 +2557,15 @@ pub fn inject_topic_infra_preflight_system_message(
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_stale_private_key_tempfiles_in, decode_hex, default_remote_file_name,
-        fingerprint_for_request, inject_approval_credentials, inject_ssh_approval_system_message,
-        inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
-        normalize_check_process_args, parse_ssh_keygen_listing, parse_wrapped_remote_output,
-        typed_apply_file_edit_payload, typed_read_file_payload, typed_ssh_exec_output,
-        unique_transfer_local_path, validate_chat_file_name, write_private_key_tempfile_in,
         RemoteOutput, SecretProbeKind, SecretProbeReport, SshApprovalRegistry,
         TopicInfraPreflightReport, UpstreamApplyFileEditResponse, UpstreamReadFileResponse,
-        WrappedCommandMarkers,
+        WrappedCommandMarkers, cleanup_stale_private_key_tempfiles_in, decode_hex,
+        default_remote_file_name, fingerprint_for_request, inject_approval_credentials,
+        inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
+        is_dangerous_command, is_sensitive_path, normalize_check_process_args,
+        parse_ssh_keygen_listing, parse_wrapped_remote_output, typed_apply_file_edit_payload,
+        typed_read_file_payload, typed_ssh_exec_output, unique_transfer_local_path,
+        validate_chat_file_name, write_private_key_tempfile_in,
     };
     use crate::agent::identity::SessionId;
     use crate::agent::tool_runtime::{

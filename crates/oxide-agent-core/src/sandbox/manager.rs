@@ -6,7 +6,9 @@
 
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use anyhow::Context;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
+#[cfg(feature = "sandbox-backend-docker-direct")]
+use bollard::Docker;
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use bollard::container::LogOutput;
 #[cfg(feature = "sandbox-backend-docker-direct")]
@@ -22,8 +24,6 @@ use bollard::query_parameters::{
     CreateContainerOptions, DownloadFromContainerOptions, InspectContainerOptions,
     LogsOptionsBuilder, RemoveContainerOptions, StartContainerOptions, UploadToContainerOptions,
 };
-#[cfg(feature = "sandbox-backend-docker-direct")]
-use bollard::Docker;
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use bytes::Bytes;
 #[cfg(feature = "sandbox-backend-docker-direct")]
@@ -56,12 +56,12 @@ use tracing::{debug, info, warn};
     feature = "sandbox-backend-sandboxd-client"
 ))]
 use crate::config::get_sandbox_image;
-use crate::config::{get_sandbox_backend_config, SandboxBackendConfig};
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use crate::config::{
-    get_stack_logs_project, SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS,
-    SANDBOX_MEMORY_LIMIT,
+    SANDBOX_CPU_PERIOD, SANDBOX_CPU_QUOTA, SANDBOX_EXEC_TIMEOUT_SECS, SANDBOX_MEMORY_LIMIT,
+    get_stack_logs_project,
 };
+use crate::config::{SandboxBackendConfig, get_sandbox_backend_config};
 #[cfg(feature = "sandbox-backend-sandboxd-client")]
 use crate::sandbox::broker::SandboxBrokerClient;
 #[cfg(feature = "sandbox-backend-docker-direct")]
@@ -438,7 +438,9 @@ fn docker_backend_not_compiled() -> anyhow::Error {
 
 #[cfg(not(feature = "sandbox-backend-bwrap"))]
 fn bwrap_backend_not_compiled() -> anyhow::Error {
-    anyhow!("SANDBOX_BACKEND=bwrap was selected, but this binary was not compiled with sandbox-backend-bwrap. Build with --features sandbox-backend-bwrap or select SANDBOX_BACKEND=docker/broker.")
+    anyhow!(
+        "SANDBOX_BACKEND=bwrap was selected, but this binary was not compiled with sandbox-backend-bwrap. Build with --features sandbox-backend-bwrap or select SANDBOX_BACKEND=docker/broker."
+    )
 }
 
 fn compiled_sandbox_backends() -> Vec<&'static str> {
@@ -1162,11 +1164,12 @@ impl DockerSandboxManager {
         until: Option<DateTime<Utc>>,
     ) -> Result<()> {
         if let (Some(since), Some(until)) = (since, until)
-            && since > until {
-                return Err(anyhow!(
-                    "Invalid stack log time window: 'since' must be earlier than or equal to 'until'"
-                ));
-            }
+            && since > until
+        {
+            return Err(anyhow!(
+                "Invalid stack log time window: 'since' must be earlier than or equal to 'until'"
+            ));
+        }
 
         Ok(())
     }
@@ -1435,10 +1438,11 @@ impl DockerSandboxManager {
             }
 
             if let Some(previous) = last_kept
-                && Self::is_stack_log_exact_duplicate_burst(previous, &entry) {
-                    Self::record_stack_log_suppression(&mut suppressed, "exact_duplicate_burst", 1);
-                    continue;
-                }
+                && Self::is_stack_log_exact_duplicate_burst(previous, &entry)
+            {
+                Self::record_stack_log_suppression(&mut suppressed, "exact_duplicate_burst", 1);
+                continue;
+            }
 
             filtered.push(entry);
             last_kept = filtered.last();
@@ -2480,13 +2484,14 @@ impl DockerSandboxManager {
         let file_size = self.file_size_bytes(container_path, None).await?;
 
         if let Some(max_file_size) = max_file_size
-            && file_size > max_file_size {
-                anyhow::bail!(
-                    "File too large: {} bytes (max {} MB)",
-                    file_size,
-                    max_file_size / 1024 / 1024
-                );
-            }
+            && file_size > max_file_size
+        {
+            anyhow::bail!(
+                "File too large: {} bytes (max {} MB)",
+                file_size,
+                max_file_size / 1024 / 1024
+            );
+        }
 
         let container_id = self
             .container_id
@@ -2883,8 +2888,8 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker daemon"]
-    async fn test_write_file_round_trips_large_binary_content(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_write_file_round_trips_large_binary_content()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut sandbox = DockerSandboxManager::new(12349).await?;
         sandbox.create_sandbox().await?;
 
@@ -2939,9 +2944,11 @@ mod tests {
         )
         .expect_err("selector should fail without compose project");
 
-        assert!(error
-            .to_string()
-            .contains("Unable to resolve compose project for stack log discovery"));
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to resolve compose project for stack log discovery")
+        );
     }
 
     #[test]
@@ -3002,12 +3009,10 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(DockerSandboxManager::stack_log_source_from_summary(
-            &stopped,
-            &BTreeSet::new(),
-            false,
-        )
-        .is_none());
+        assert!(
+            DockerSandboxManager::stack_log_source_from_summary(&stopped, &BTreeSet::new(), false,)
+                .is_none()
+        );
 
         let included =
             DockerSandboxManager::stack_log_source_from_summary(&stopped, &BTreeSet::new(), true)

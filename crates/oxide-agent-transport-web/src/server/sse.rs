@@ -8,14 +8,14 @@
 //! steady-state DB polling. Postgres remains the source of truth for
 //! reconnect, post-restart catch-up, and slow-consumer overflow.
 
-use super::{authenticated_user, load_owned_task, task_detail_from_record};
 use super::{AppState, TaskEventsQuery};
+use super::{authenticated_user, load_owned_task, task_detail_from_record};
 use axum::{
     extract::{Path, Query, State},
-    http::{header::HeaderMap, StatusCode},
+    http::{StatusCode, header::HeaderMap},
     response::{
-        sse::{Event, Sse},
         Json,
+        sse::{Event, Sse},
     },
 };
 use futures_util::stream::Stream;

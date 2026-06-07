@@ -245,7 +245,9 @@ async fn resume_ssh_approval_is_disabled_for_typed_runtime_v1() {
         Err(error) => error,
     };
 
-    assert!(error
-        .to_string()
-        .contains("SSH approval resume is disabled in typed tool runtime v1"));
+    assert!(
+        error
+            .to_string()
+            .contains("SSH approval resume is disabled in typed tool runtime v1")
+    );
 }

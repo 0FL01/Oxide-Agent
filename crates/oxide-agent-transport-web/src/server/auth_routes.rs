@@ -1,7 +1,7 @@
 use axum::{
-    extract::State,
-    http::{header::SET_COOKIE, HeaderMap, StatusCode},
     Json,
+    extract::State,
+    http::{HeaderMap, StatusCode, header::SET_COOKIE},
 };
 use oxide_agent_web_contracts::{
     AuthUserResponse, BootstrapRequest, ChangePasswordRequest, CurrentUser, CurrentUserResponse,
@@ -9,14 +9,14 @@ use oxide_agent_web_contracts::{
 };
 
 use super::{
-    auth_cookie_header, auth_cookie_value, auth_error_response, auth_rate_limit_key,
+    AppState, auth_cookie_header, auth_cookie_value, auth_error_response, auth_rate_limit_key,
     cache_auth_session, clear_auth_rate_limit, csrf_header_value, current_user_for_token_cached,
     expired_auth_cookie_header, invalidate_auth_session_cache, record_auth_failure,
-    reject_auth_rate_limited, validate_csrf_request_origin, web_bool_env, web_env_value, AppState,
+    reject_auth_rate_limited, validate_csrf_request_origin, web_bool_env, web_env_value,
 };
 use crate::auth::{
-    bootstrap_user, change_password, create_auth_session_for_user, login_user, logout_session,
-    register_user, AuthError, AUTH_SESSION_TTL_SECS,
+    AUTH_SESSION_TTL_SECS, AuthError, bootstrap_user, change_password,
+    create_auth_session_for_user, login_user, logout_session, register_user,
 };
 
 pub(crate) async fn api_register(

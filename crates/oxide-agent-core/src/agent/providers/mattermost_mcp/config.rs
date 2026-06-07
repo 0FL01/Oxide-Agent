@@ -57,9 +57,10 @@ impl MattermostMcpConfig {
 
     fn resolve_binary_path() -> Option<String> {
         if let Ok(path) = std::env::var("MATTERMOST_MCP_BINARY_PATH")
-            && !path.trim().is_empty() {
-                return Some(path);
-            }
+            && !path.trim().is_empty()
+        {
+            return Some(path);
+        }
 
         for path in DEFAULT_BINARY_PATHS {
             if std::path::Path::new(path).exists() {

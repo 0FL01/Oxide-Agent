@@ -320,9 +320,10 @@ fn explicit_remember_content(task: &str, response: &str, evidence: &[String]) ->
         return response.trim().to_string();
     }
     if let Some(payload) = extract_explicit_remember_payload(task)
-        && !payload.trim().is_empty() {
-            return payload;
-        }
+        && !payload.trim().is_empty()
+    {
+        return payload;
+    }
     if let Some(first_evidence) = evidence.first() {
         return format!(
             "Verified memory candidate for '{}'. See evidence: {}",
@@ -475,7 +476,10 @@ fn procedure_from_write_result(result: &str) -> Option<ToolDerivedMemoryDraft> {
             CONTENT_MAX_CHARS,
         ),
         short_description: truncate_chars(
-            &format!("Direct sandbox write for {} ({} bytes)", path, bytes_written),
+            &format!(
+                "Direct sandbox write for {} ({} bytes)",
+                path, bytes_written
+            ),
             SHORT_DESCRIPTION_MAX_CHARS,
         ),
         importance: 0.76,
@@ -520,7 +524,10 @@ fn procedure_from_edit_result(tool_name: &str, result: &str) -> Option<ToolDeriv
         importance: 0.82,
         confidence: 0.78,
         source: "episodic_extract_hook".to_string(),
-        reason: format!("captured successful {} result as a reusable edit procedure", tool_name),
+        reason: format!(
+            "captured successful {} result as a reusable edit procedure",
+            tool_name
+        ),
         tags: vec![
             "procedure".to_string(),
             format!("tool:{tool_name}"),
@@ -791,9 +798,11 @@ mod tests {
         );
 
         let drafts = runtime.snapshot();
-        assert!(drafts
-            .iter()
-            .any(|draft| draft.kind == ToolDerivedMemoryKind::Preference));
+        assert!(
+            drafts
+                .iter()
+                .any(|draft| draft.kind == ToolDerivedMemoryKind::Preference)
+        );
     }
 
     #[test]

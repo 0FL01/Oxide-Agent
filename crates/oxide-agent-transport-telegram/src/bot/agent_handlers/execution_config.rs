@@ -1,14 +1,14 @@
-use super::{current_reminder_schedule_notifier, reminder_thread_kind, SESSION_REGISTRY};
-use crate::bot::topic_route::TopicRouteDecision;
+use super::{SESSION_REGISTRY, current_reminder_schedule_notifier, reminder_thread_kind};
 use crate::bot::TelegramThreadKind;
 use crate::bot::TelegramThreadSpec;
+use crate::bot::topic_route::TopicRouteDecision;
 use oxide_agent_core::agent::{
-    dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
+    AgentExecutionProfile, SessionId, dm_tool_policy, manager_default_blocked_tools,
+    parse_agent_profile,
     providers::{
         agents_md_tool_names, inject_topic_infra_preflight_system_message,
         inspect_topic_infra_config, manager_control_plane_tool_names, reminder_tool_names,
     },
-    AgentExecutionProfile, SessionId,
 };
 use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::LlmClient;
@@ -245,7 +245,7 @@ pub(crate) async fn apply_reminder_context(
         chat_id: chat_id.0,
         thread_id: thread_spec
             .thread_id
-            .map(|thread_id| i64::from(thread_id.0 .0)),
+            .map(|thread_id| i64::from(thread_id.0.0)),
         thread_kind: reminder_thread_kind(thread_spec),
         notifier: current_reminder_schedule_notifier().await,
     });

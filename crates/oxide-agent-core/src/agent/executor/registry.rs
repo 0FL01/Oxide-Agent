@@ -1,8 +1,6 @@
 use super::AgentExecutor;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{SandboxRuntime, TodoList};
-#[cfg(test)]
-use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 #[cfg(feature = "tool-brave-search")]
 use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(feature = "tool-compression")]
@@ -85,6 +83,8 @@ use crate::agent::tool_runtime::WebFetchMdToolModule;
 use crate::agent::tool_runtime::WikiMemoryToolModule;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::tool_runtime::YtdlpToolModule;
+#[cfg(test)]
+use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::tool_runtime::{AgentsMdModuleContext, AgentsMdToolModule};
 #[cfg(feature = "integration-ssh-mcp")]

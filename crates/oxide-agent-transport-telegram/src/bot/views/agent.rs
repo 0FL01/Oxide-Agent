@@ -482,8 +482,8 @@ pub fn confirmation_markup(use_inline: bool, action: ConfirmationType) -> ReplyM
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_flow_inline_keyboard_with_toggle, get_agent_inline_keyboard,
-        get_agent_inline_keyboard_with_exit, get_agent_keyboard, AgentView, DefaultAgentView,
+        AgentView, DefaultAgentView, agent_flow_inline_keyboard_with_toggle,
+        get_agent_inline_keyboard, get_agent_inline_keyboard_with_exit, get_agent_keyboard,
     };
 
     #[test]
@@ -515,11 +515,13 @@ mod tests {
     #[test]
     fn inline_keyboards_hide_attach_detach_when_disabled() {
         let inline = get_agent_inline_keyboard_with_exit(true, Some("flow-1"), false);
-        assert!(!inline
-            .inline_keyboard
-            .iter()
-            .flatten()
-            .any(|button| button.text == "🔗 Attach" || button.text == "✂️ Detach"));
+        assert!(
+            !inline
+                .inline_keyboard
+                .iter()
+                .flatten()
+                .any(|button| button.text == "🔗 Attach" || button.text == "✂️ Detach")
+        );
 
         let flow_controls = agent_flow_inline_keyboard_with_toggle("flow-1", false);
         assert!(flow_controls.inline_keyboard.is_empty());

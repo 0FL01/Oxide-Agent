@@ -33,8 +33,8 @@ use oxide_agent_core::agent::{
     AgentExecutionProfile, AgentExecutor, AgentMemory, AgentMemoryScope, AgentSession, SessionId,
 };
 use oxide_agent_core::config::{
-    AgentSettings, ModelInfo, DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
-    DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+    AgentSettings, DEFAULT_AGENT_MODEL_CONTEXT_WINDOW_TOKENS,
+    DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS, ModelInfo,
 };
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
@@ -1158,12 +1158,14 @@ mod tests {
         let executor = executor.read().await;
 
         assert!(executor.session().memory.has_topic_agents_md());
-        assert!(executor
-            .session()
-            .memory
-            .get_messages()
-            .iter()
-            .any(|message| message.content.contains("Bootstrap instructions")));
+        assert!(
+            executor
+                .session()
+                .memory
+                .get_messages()
+                .iter()
+                .any(|message| message.content.contains("Bootstrap instructions"))
+        );
     }
 
     #[tokio::test]
@@ -1298,9 +1300,11 @@ mod tests {
             routes[0].max_output_tokens,
             DEFAULT_AGENT_MODEL_MAX_OUTPUT_TOKENS
         );
-        assert!(routes
-            .iter()
-            .all(|route| route.id != "opencode-go/deepseek-v4-flash"));
+        assert!(
+            routes
+                .iter()
+                .all(|route| route.id != "opencode-go/deepseek-v4-flash")
+        );
         assert!(routes.iter().all(|route| route.provider != "mistral"));
     }
 
@@ -1358,9 +1362,11 @@ mod tests {
         );
         assert_eq!(routes[0].id, "opencode-zen/deepseek-v4-flash-free");
         assert_eq!(routes[0].provider, "opencode-zen");
-        assert!(routes
-            .iter()
-            .all(|route| route.id != "opencode-go/deepseek-v4-flash"));
+        assert!(
+            routes
+                .iter()
+                .all(|route| route.id != "opencode-go/deepseek-v4-flash")
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -15,20 +15,20 @@ use std::{cell::RefCell, cmp::Ordering, collections::HashMap};
 
 use super::activity::{ActivityDrawer, ActivityStatusChip};
 use super::composer::{
+    AgentEffortSelect, AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
     append_pending_browser_files, browser_files, browser_files_from_input_event, can_submit_input,
     handle_composer_drag, handle_composer_drop, handle_composer_input, handle_composer_paste,
-    persist_default_effort, submit_parent_form_on_ctrl_enter, AgentEffortSelect,
-    AgentProfileSelect, PendingAttachmentFile, PendingAttachmentList,
+    persist_default_effort, submit_parent_form_on_ctrl_enter,
 };
 use super::profile::{
-    agent_effort_from_value, agent_profile_selection_from_value, apply_loaded_default_effort,
-    profile_value_to_id, PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE,
+    PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_from_value,
+    agent_profile_selection_from_value, apply_loaded_default_effort, profile_value_to_id,
 };
 use super::state::{
     latest_editable_task_id, latest_task, session_detail_to_summary, summary_to_detail,
     upsert_session_summary, upsert_task_summary,
 };
-use super::streaming::{start_task_stream, StreamUiSignals};
+use super::streaming::{StreamUiSignals, start_task_stream};
 use super::task_card::{TaskCard, TaskCardModel, TaskCardSignals};
 use super::versions::group_task_versions;
 

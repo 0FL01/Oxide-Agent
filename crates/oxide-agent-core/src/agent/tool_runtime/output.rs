@@ -5,7 +5,7 @@ use super::types::{ToolCallId, ToolName};
 use crate::llm::{InvocationId, ProviderToolCallId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Required terminal states for a tool invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -67,11 +67,12 @@ impl WebUiStore for InMemoryWebUiStore {
         {
             let login_index = self.login_index.read().await;
             if let Some(existing) = login_index.get(&normalized_login)
-                && existing.user_id != user_id {
-                    return Err(WebUiStoreError::Conflict(format!(
-                        "login {normalized_login} already belongs to another user"
-                    )));
-                }
+                && existing.user_id != user_id
+            {
+                return Err(WebUiStoreError::Conflict(format!(
+                    "login {normalized_login} already belongs to another user"
+                )));
+            }
         }
 
         self.users.write().await.insert(user_id, record);
@@ -678,16 +679,20 @@ mod tests {
             .save_auth_session(auth_session)
             .await
             .expect("save auth session");
-        assert!(store
-            .revoke_auth_session("token-hash", now)
-            .await
-            .expect("revoke auth session"));
-        assert!(store
-            .load_auth_session("token-hash")
-            .await
-            .expect("load auth session")
-            .and_then(|record| record.revoked_at)
-            .is_some());
+        assert!(
+            store
+                .revoke_auth_session("token-hash", now)
+                .await
+                .expect("revoke auth session")
+        );
+        assert!(
+            store
+                .load_auth_session("token-hash")
+                .await
+                .expect("load auth session")
+                .and_then(|record| record.revoked_at)
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -788,12 +793,14 @@ mod tests {
         assert_eq!(tail.last_seq, 3);
         assert!(tail.has_more);
 
-        assert!(store
-            .list_task_events(2, "foreign", "task-1", 0, 100)
-            .await
-            .expect("list foreign events")
-            .events
-            .is_empty());
+        assert!(
+            store
+                .list_task_events(2, "foreign", "task-1", 0, 100)
+                .await
+                .expect("list foreign events")
+                .events
+                .is_empty()
+        );
     }
 
     #[tokio::test]

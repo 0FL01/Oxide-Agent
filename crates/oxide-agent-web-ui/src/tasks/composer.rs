@@ -6,7 +6,7 @@ use oxide_agent_web_contracts::{
 };
 
 use super::profile::{
-    agent_effort_value, missing_profile_option_label, PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE,
+    PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, agent_effort_value, missing_profile_option_label,
 };
 
 #[derive(Clone)]

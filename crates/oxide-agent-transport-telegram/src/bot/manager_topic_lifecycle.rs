@@ -1,13 +1,13 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use oxide_agent_core::agent::providers::{
     ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
     ForumTopicEditResult, ForumTopicThreadRequest, ManagerTopicLifecycle,
 };
+use teloxide::Bot;
 use teloxide::payloads::{CreateForumTopicSetters, EditForumTopicSetters};
 use teloxide::prelude::Requester;
 use teloxide::types::{ChatId, CustomEmojiId, MessageId, Rgb, ThreadId};
-use teloxide::Bot;
 
 /// Telegram transport implementation of manager forum topic lifecycle.
 #[derive(Clone)]
@@ -70,7 +70,7 @@ impl ManagerTopicLifecycle for TelegramManagerTopicLifecycle {
 
         Ok(ForumTopicCreateResult {
             chat_id: chat_id.0,
-            thread_id: i64::from(created.thread_id.0 .0),
+            thread_id: i64::from(created.thread_id.0.0),
             name: created.name,
             icon_color: created.icon_color.to_u32(),
             icon_custom_emoji_id: created.icon_custom_emoji_id.map(|id| id.0),
@@ -157,8 +157,8 @@ impl ManagerTopicLifecycle for TelegramManagerTopicLifecycle {
 #[cfg(test)]
 mod tests {
     use super::TelegramManagerTopicLifecycle;
-    use teloxide::types::ChatId;
     use teloxide::Bot;
+    use teloxide::types::ChatId;
 
     #[test]
     fn resolves_chat_id_from_context_when_present() {

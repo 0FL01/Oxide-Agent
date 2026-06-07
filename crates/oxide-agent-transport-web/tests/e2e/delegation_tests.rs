@@ -59,9 +59,11 @@ async fn e2e_spawned_sub_agent_does_not_block_task_completion() {
         model_log.first().map(String::as_str),
         Some("opencode-go/deepseek-v4-flash")
     );
-    assert!(model_log
-        .iter()
-        .any(|model| model == "opencode-go/deepseek-v4-flash"));
+    assert!(
+        model_log
+            .iter()
+            .any(|model| model == "opencode-go/deepseek-v4-flash")
+    );
 
     server.abort();
 }

@@ -4,11 +4,11 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    count_tokens_cached, AgentMessageKind, ArchiveRef, CompactedSummaryMetadata,
-    CompactionRetention, OXIDE_COMPACTED_SUMMARY_PREFIX,
+    AgentMessageKind, ArchiveRef, CompactedSummaryMetadata, CompactionRetention,
+    OXIDE_COMPACTED_SUMMARY_PREFIX, count_tokens_cached,
 };
 use crate::agent::providers::TodoList;
-use crate::agent::recovery::{repair_agent_message_history_runtime, HistoryRepairOutcome};
+use crate::agent::recovery::{HistoryRepairOutcome, repair_agent_message_history_runtime};
 use crate::llm::{TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1088,9 +1088,11 @@ mod tests {
         let current = AgentMessage::user_task("second")
             .with_created_at_unix(Some(100 + TEMPORAL_BOUNDARY_THRESHOLD_SECONDS));
 
-        assert!(memory
-            .soft_temporal_boundary_before_user_task(&current)
-            .is_none());
+        assert!(
+            memory
+                .soft_temporal_boundary_before_user_task(&current)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1257,9 +1259,11 @@ mod tests {
         memory.add_message(AgentMessage::topic_agents_md("# Topic AGENTS"));
 
         assert!(memory.has_topic_agents_md());
-        assert!(memory.get_messages()[0]
-            .content
-            .starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX));
+        assert!(
+            memory.get_messages()[0]
+                .content
+                .starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX)
+        );
     }
 
     #[test]
@@ -1336,13 +1340,17 @@ mod tests {
         );
 
         assert!(summary.content.contains("Agent Mode hot context compacted"));
-        assert!(summary
-            .content
-            .contains("wiki_memory_lookup_available: true"));
+        assert!(
+            summary
+                .content
+                .contains("wiki_memory_lookup_available: true")
+        );
         assert!(summary.content.contains("wiki_memory_search"));
-        assert!(summary
-            .content
-            .contains("Wiki Memory is durable background, not a full transcript."));
+        assert!(
+            summary
+                .content
+                .contains("Wiki Memory is durable background, not a full transcript.")
+        );
     }
 
     #[test]
@@ -1465,10 +1473,12 @@ mod tests {
 
         assert!(memory.has_topic_agents_md());
         assert_eq!(memory.get_messages().len(), 13);
-        assert!(!memory
-            .get_messages()
-            .iter()
-            .any(|message| message.content.starts_with("[Previous context compressed]")));
+        assert!(
+            !memory
+                .get_messages()
+                .iter()
+                .any(|message| message.content.starts_with("[Previous context compressed]"))
+        );
     }
 
     /// Compacted summary must not contain volatile metadata (timestamps, provider,

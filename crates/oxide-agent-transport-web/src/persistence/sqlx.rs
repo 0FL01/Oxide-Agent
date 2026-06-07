@@ -11,7 +11,7 @@ use oxide_agent_web_contracts::{
     PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
     WebTaskRecord,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sqlx_core::query::query;
 use sqlx_core::row::Row;
@@ -19,9 +19,9 @@ use sqlx_postgres::{PgPool, PgRow, Postgres};
 use uuid::Uuid;
 
 use super::{
-    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebSessionContextKeys,
-    WebTaskEventState, WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError,
-    WebUiStoreResult, WebUserRecord, WEB_AUTH_SCHEMA_VERSION,
+    LoginIndexRecord, ValidateWebRecord, WEB_AUTH_SCHEMA_VERSION, WebAuthSessionRecord,
+    WebSessionContextKeys, WebTaskEventState, WebTaskFileBlob, WebTaskFileRecord, WebUiStore,
+    WebUiStoreError, WebUiStoreResult, WebUserRecord,
 };
 
 const DEFAULT_TASK_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -2173,11 +2173,12 @@ fn db_error(error: sqlx_core::error::Error) -> WebUiStoreError {
 
 fn login_conflict_error(error: sqlx_core::error::Error, normalized_login: &str) -> WebUiStoreError {
     if let sqlx_core::error::Error::Database(database_error) = &error
-        && database_error.is_unique_violation() {
-            return WebUiStoreError::Conflict(format!(
-                "login {normalized_login} already belongs to another user"
-            ));
-        }
+        && database_error.is_unique_violation()
+    {
+        return WebUiStoreError::Conflict(format!(
+            "login {normalized_login} already belongs to another user"
+        ));
+    }
     db_error(error)
 }
 
@@ -2401,10 +2402,12 @@ mod tests {
             store.users_count().await.expect("count users") >= users_before + 1,
             "users_count should include the saved user"
         );
-        assert!(store
-            .save_user(user_record(user_id + 1, &format!("alice-{user_id}"), now))
-            .await
-            .is_err());
+        assert!(
+            store
+                .save_user(user_record(user_id + 1, &format!("alice-{user_id}"), now))
+                .await
+                .is_err()
+        );
 
         store
             .save_auth_session(auth_session(user_id, "keep", now))
@@ -2428,16 +2431,20 @@ mod tests {
             .expect("save session");
         let task = task_record(user_id, "session-1", "task-1", TaskStatus::Completed, now);
         store.save_task(task).await.expect("save task");
-        assert!(store
-            .load_task(user_id, "session-1", "task-1")
-            .await
-            .expect("load task")
-            .and_then(|task| task.last_progress)
-            .is_some());
-        assert!(store
-            .task_exists(user_id, "session-1")
-            .await
-            .expect("task exists"));
+        assert!(
+            store
+                .load_task(user_id, "session-1", "task-1")
+                .await
+                .expect("load task")
+                .and_then(|task| task.last_progress)
+                .is_some()
+        );
+        assert!(
+            store
+                .task_exists(user_id, "session-1")
+                .await
+                .expect("task exists")
+        );
         let task_state = store
             .load_task_event_state(user_id, "session-1", "task-1")
             .await
@@ -2496,16 +2503,20 @@ mod tests {
             .expect("file exists");
         assert_eq!(file.content, b"hello");
 
-        assert!(store
-            .delete_session(user_id, "session-1")
-            .await
-            .expect("delete session"));
-        assert!(store
-            .list_task_events(user_id, "session-1", "task-1", 0, 10)
-            .await
-            .expect("list deleted events")
-            .events
-            .is_empty());
+        assert!(
+            store
+                .delete_session(user_id, "session-1")
+                .await
+                .expect("delete session")
+        );
+        assert!(
+            store
+                .list_task_events(user_id, "session-1", "task-1", 0, 10)
+                .await
+                .expect("list deleted events")
+                .events
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -2653,16 +2664,20 @@ mod tests {
         let restarted =
             SqlxWebUiStore::with_max_task_file_bytes(Arc::new(restarted_storage), 1024 * 1024);
 
-        assert!(restarted
-            .load_auth_session("restart-token")
-            .await
-            .expect("auth session should load after restart")
-            .is_some());
-        assert!(restarted
-            .load_session(user_id, "session-1")
-            .await
-            .expect("session should load after restart")
-            .is_some());
+        assert!(
+            restarted
+                .load_auth_session("restart-token")
+                .await
+                .expect("auth session should load after restart")
+                .is_some()
+        );
+        assert!(
+            restarted
+                .load_session(user_id, "session-1")
+                .await
+                .expect("session should load after restart")
+                .is_some()
+        );
         assert_eq!(
             restarted
                 .list_task_events(user_id, "session-1", "task-1", 0, 10)
@@ -2931,11 +2946,13 @@ mod tests {
             ExpiredWebRecordsCleanup::default()
         );
 
-        assert!(store
-            .load_auth_session("active")
-            .await
-            .expect("active auth session lookup should execute")
-            .is_some());
+        assert!(
+            store
+                .load_auth_session("active")
+                .await
+                .expect("active auth session lookup should execute")
+                .is_some()
+        );
         let remaining_events = store
             .list_task_events(user_id, "session-1", "task-1", 0, 10)
             .await
@@ -2943,15 +2960,19 @@ mod tests {
             .events;
         assert_eq!(remaining_events.len(), 1);
         assert_eq!(remaining_events[0].seq, 3);
-        assert!(store
-            .load_task_file(user_id, "session-1", "task-1", "fresh-file")
-            .await
-            .expect("fresh file lookup should execute")
-            .is_some());
-        assert!(store
-            .load_task_file(user_id, "session-1", "task-1", "expired-file")
-            .await
-            .expect("expired file lookup should execute")
-            .is_none());
+        assert!(
+            store
+                .load_task_file(user_id, "session-1", "task-1", "fresh-file")
+                .await
+                .expect("fresh file lookup should execute")
+                .is_some()
+        );
+        assert!(
+            store
+                .load_task_file(user_id, "session-1", "task-1", "expired-file")
+                .await
+                .expect("expired file lookup should execute")
+                .is_none()
+        );
     }
 }

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::config::AgentSettings;
+use crate::llm::LlmProvider;
 use crate::llm::capabilities::{ProviderCapabilities, ToolHistoryMode};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
-use crate::llm::LlmProvider;
 
 /// Capability module for MiniMax routes.
 pub(crate) struct MiniMaxProviderModule;

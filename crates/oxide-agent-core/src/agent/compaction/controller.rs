@@ -1,15 +1,15 @@
 //! Runtime/session-level compaction controller.
 
 use super::{
-    build_compacted_history, extract_previous_compacted_summary, BuildCompactedHistoryRequest,
-    CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactedHistoryBuildError,
-    CompactedSummaryMetadata, CompactionBackend, CompactionPhase, CompactionReason,
-    LocalLlmSummary,
+    BuildCompactedHistoryRequest, CompactSummaryBackend, CompactSummaryError,
+    CompactSummaryRequest, CompactedHistoryBuildError, CompactedSummaryMetadata, CompactionBackend,
+    CompactionPhase, CompactionReason, LocalLlmSummary, build_compacted_history,
+    extract_previous_compacted_summary,
 };
 use crate::agent::memory::{
     AgentMemory, AgentMessage, CompactedHistoryReplacementError, CompactedHistoryReplacementOutcome,
 };
-use crate::config::{ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
+use crate::config::{AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS, ModelInfo};
 use crate::llm::LlmClient;
 use std::sync::Arc;
 use std::time::Duration;
@@ -386,10 +386,12 @@ mod tests {
                 .count(),
             1
         );
-        assert!(memory
-            .get_messages()
-            .iter()
-            .all(|message| !message.content.contains("Previous current-format summary.")));
+        assert!(
+            memory
+                .get_messages()
+                .iter()
+                .all(|message| !message.content.contains("Previous current-format summary."))
+        );
     }
 
     #[tokio::test]
@@ -427,14 +429,18 @@ mod tests {
                 .count(),
             1
         );
-        assert!(memory
-            .get_messages()
-            .iter()
-            .any(|message| message.content == "Continue after second compact"));
-        assert!(memory
-            .get_messages()
-            .iter()
-            .any(|message| message.content.contains("generation: 3")));
+        assert!(
+            memory
+                .get_messages()
+                .iter()
+                .any(|message| message.content == "Continue after second compact")
+        );
+        assert!(
+            memory
+                .get_messages()
+                .iter()
+                .any(|message| message.content.contains("generation: 3"))
+        );
     }
 
     #[tokio::test]

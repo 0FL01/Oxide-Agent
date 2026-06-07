@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::{SqlxStorage, SqlxStorageConfig, SQLX_STORAGE_MODULE_ID};
+use super::{SQLX_STORAGE_MODULE_ID, SqlxStorage, SqlxStorageConfig};
 use super::{StorageError, StorageProvider};
 use crate::config::AgentSettings;
 

@@ -1,7 +1,7 @@
 //! Model route selection and structured-output routing policy.
 
-use super::types::{AgentRunnerConfig, AgentRunnerContext};
 use super::AgentRunner;
+use super::types::{AgentRunnerConfig, AgentRunnerContext};
 use crate::agent::tool_runtime::v1_tool_runtime_enabled_for_model;
 use crate::config::ModelInfo;
 use crate::llm::{LlmClient, LlmError};

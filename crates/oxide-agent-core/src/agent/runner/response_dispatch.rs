@@ -1,16 +1,16 @@
 //! LLM response dispatch for native, structured, and unstructured responses.
 
+use super::AgentRunner;
 use super::tools::ToolTurnAssistantContent;
 use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
-use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::ChatResponse;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use tracing::{debug, info, warn};
 
 impl AgentRunner {
@@ -457,9 +457,11 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error
-            .to_string()
-            .contains("tool runtime registry is required for active tool calls"));
+        assert!(
+            error
+                .to_string()
+                .contains("tool runtime registry is required for active tool calls")
+        );
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
             "missing tool runtime must not write partial assistant/tool history"

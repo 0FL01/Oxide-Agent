@@ -20,11 +20,13 @@ pub fn build_openai_messages(
     history: &[Message],
     user_message: &str,
 ) -> Result<Vec<ChatCompletionRequestMessage>, LlmError> {
-    let mut messages = vec![ChatCompletionRequestSystemMessageArgs::default()
-        .content(system_prompt)
-        .build()
-        .map_err(|e| LlmError::Unknown(e.to_string()))?
-        .into()];
+    let mut messages = vec![
+        ChatCompletionRequestSystemMessageArgs::default()
+            .content(system_prompt)
+            .build()
+            .map_err(|e| LlmError::Unknown(e.to_string()))?
+            .into(),
+    ];
 
     for msg in history {
         let m = match msg.role.as_str() {

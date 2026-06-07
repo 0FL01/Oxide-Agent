@@ -1,15 +1,15 @@
 use super::workspace::resolve_workspace_path;
 use super::{
-    host_arch, load_manifest, BwrapNetworkMode, BwrapRootMode, BwrapSandboxManager,
-    WORKSPACE_PREFIX,
+    BwrapNetworkMode, BwrapRootMode, BwrapSandboxManager, WORKSPACE_PREFIX, host_arch,
+    load_manifest,
 };
 use crate::sandbox::{SandboxEditReadGuard, SandboxFileEdit, SandboxScope};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 #[cfg(unix)]
-use std::os::unix::fs::symlink;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -198,11 +198,13 @@ async fn bwrap_state_lifecycle_persists_workspace_and_recreate_wipes_it() {
     );
 
     manager.destroy().await.unwrap();
-    assert!(!temp
-        .path()
-        .join("scopes")
-        .join(scope.stable_name())
-        .exists());
+    assert!(
+        !temp
+            .path()
+            .join("scopes")
+            .join(scope.stable_name())
+            .exists()
+    );
 }
 
 #[cfg(unix)]
@@ -231,10 +233,12 @@ async fn bwrap_workspace_file_ops_reject_symlink_escapes() {
     std::fs::write(outside.join("secret.txt"), b"secret").expect("outside secret");
 
     symlink(&outside, manager.state.workspace.join("linked-dir")).expect("parent symlink");
-    assert!(manager
-        .write_file("linked-dir/new.txt", b"nope")
-        .await
-        .is_err());
+    assert!(
+        manager
+            .write_file("linked-dir/new.txt", b"nope")
+            .await
+            .is_err()
+    );
     assert!(manager.list_files("linked-dir").await.is_err());
 
     symlink(
@@ -243,10 +247,12 @@ async fn bwrap_workspace_file_ops_reject_symlink_escapes() {
     )
     .expect("final symlink");
     assert!(manager.read_file("secret-link.txt").await.is_err());
-    assert!(manager
-        .write_file("secret-link.txt", b"nope")
-        .await
-        .is_err());
+    assert!(
+        manager
+            .write_file("secret-link.txt", b"nope")
+            .await
+            .is_err()
+    );
 }
 
 #[cfg(unix)]
@@ -394,11 +400,13 @@ async fn bwrap_invocation_args_encode_network_root_modes_and_bind_policy() {
             .expect("auto resolver should stage a bind source");
         assert!(staged_resolv.starts_with(&overlay_manager.state.scope_dir));
         assert_ne!(staged_resolv, PathBuf::from("/etc/resolv.conf"));
-        assert!(!staged_resolv
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            !staged_resolv
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         let overlay_args_with_resolv = args_to_strings(overlay_manager.bwrap_args(
             Some(&work_dir),
             Some(&staged_resolv),
@@ -699,10 +707,12 @@ async fn bwrap_metadata_reports_manifest_path_package_manager_and_sha() {
         record.labels.get("agent.image_manifest_path"),
         Some(&manifest_path.display().to_string())
     );
-    assert!(record
-        .labels
-        .get("agent.image_manifest_sha256")
-        .is_some_and(|value| !value.is_empty()));
+    assert!(
+        record
+            .labels
+            .get("agent.image_manifest_sha256")
+            .is_some_and(|value| !value.is_empty())
+    );
     assert_eq!(
         record.labels.get("agent.package_manager"),
         Some(&"apt".to_string())
@@ -961,12 +971,16 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
             .await
             .unwrap()
     );
-    assert!(!root_upper_parent
-        .join(changed_delete_scope.stable_name())
-        .exists());
-    assert!(!changed_root_upper_parent
-        .join(changed_delete_scope.stable_name())
-        .exists());
+    assert!(
+        !root_upper_parent
+            .join(changed_delete_scope.stable_name())
+            .exists()
+    );
+    assert!(
+        !changed_root_upper_parent
+            .join(changed_delete_scope.stable_name())
+            .exists()
+    );
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     let file_upper = temp.path().join("file-upper");
@@ -1091,12 +1105,16 @@ async fn bwrap_exec_preserves_nonzero_exit_truncates_output_and_times_out() {
     assert_eq!(output.exit_code, 7);
     assert_eq!(output.stdout, "abcdefgh");
     assert!(output.stderr.contains("qrstuvwx"));
-    assert!(output
-        .stderr
-        .contains("stdout truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 16 bytes"));
-    assert!(output
-        .stderr
-        .contains("stderr truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 10 bytes"));
+    assert!(
+        output
+            .stderr
+            .contains("stdout truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 16 bytes")
+    );
+    assert!(
+        output
+            .stderr
+            .contains("stderr truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 10 bytes")
+    );
 
     let child_pid_file = temp.path().join("bwrap-child.pid");
     create_fake_bwrap_script(

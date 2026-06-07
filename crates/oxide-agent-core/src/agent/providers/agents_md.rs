@@ -6,9 +6,9 @@ use crate::agent::tool_runtime::{
 };
 use crate::llm::ToolDefinition;
 use crate::storage::{
-    validate_topic_agents_md_content, StorageProvider, UpsertTopicAgentsMdOptions,
+    StorageProvider, UpsertTopicAgentsMdOptions, validate_topic_agents_md_content,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -332,12 +332,14 @@ mod tests {
             .expect("typed AGENTS.md get succeeds");
 
         assert_eq!(output.status, ToolOutputStatus::Success);
-        assert!(output
-            .stdout
-            .text
-            .as_deref()
-            .expect("stdout text")
-            .contains("Stay focused"));
+        assert!(
+            output
+                .stdout
+                .text
+                .as_deref()
+                .expect("stdout text")
+                .contains("Stay focused")
+        );
     }
 
     #[tokio::test]
@@ -439,8 +441,10 @@ mod tests {
             .await
             .expect_err("oversized AGENTS.md must be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("agents_md must not exceed 300 lines"));
+        assert!(
+            error
+                .to_string()
+                .contains("agents_md must not exceed 300 lines")
+        );
     }
 }

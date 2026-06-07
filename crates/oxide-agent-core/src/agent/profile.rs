@@ -267,30 +267,32 @@ pub fn dm_tool_policy() -> ToolAccessPolicy {
 
     // Check for admin override via DM_ALLOWED_TOOLS (allowlist mode)
     if let Ok(allowed) = std::env::var(DM_ALLOWED_TOOLS_ENV)
-        && !allowed.is_empty() {
-            let tools: HashSet<String> = allowed
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect();
-            if !tools.is_empty() {
-                // Allowlist mode: only these tools are allowed
-                return ToolAccessPolicy::new(Some(tools), HashSet::new());
-            }
+        && !allowed.is_empty()
+    {
+        let tools: HashSet<String> = allowed
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        if !tools.is_empty() {
+            // Allowlist mode: only these tools are allowed
+            return ToolAccessPolicy::new(Some(tools), HashSet::new());
         }
+    }
 
     // Check for additional blocked tools via DM_BLOCKED_TOOLS env var
     if let Ok(blocked) = std::env::var(DM_BLOCKED_TOOLS_ENV)
-        && !blocked.is_empty() {
-            let additional: Vec<String> = blocked
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect();
-            policy = policy.with_additional_blocked_tools(additional);
-        }
+        && !blocked.is_empty()
+    {
+        let additional: Vec<String> = blocked
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        policy = policy.with_additional_blocked_tools(additional);
+    }
 
     policy
 }
@@ -448,9 +450,10 @@ fn parse_tool_name_set(value: &Value, camel_key: &str, snake_key: &str) -> Optio
 #[cfg(test)]
 mod tests {
     use super::{
-        dm_default_blocked_tools, dm_tool_policy, manager_default_blocked_tools,
-        parse_agent_profile, topic_agent_default_blocked_tools, topic_agent_manageable_hooks,
-        topic_agent_protected_hooks, AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy,
+        AgentExecutionProfile, HookAccessPolicy, ToolAccessPolicy, dm_default_blocked_tools,
+        dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
+        topic_agent_default_blocked_tools, topic_agent_manageable_hooks,
+        topic_agent_protected_hooks,
     };
     use crate::llm::ToolDefinition;
     use serde_json::json;

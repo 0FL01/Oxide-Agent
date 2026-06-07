@@ -1,12 +1,12 @@
 use axum::{
+    Json,
     body::Body,
     extract::{Path, Query, State},
     http::{
-        header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
         HeaderMap, HeaderValue, StatusCode,
+        header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
     },
     response::Response,
-    Json,
 };
 use oxide_agent_core::agent::providers::sandbox::SandboxRuntime;
 use oxide_agent_core::agent::{AgentMessageAttachment, AgentUserInput};
@@ -28,13 +28,13 @@ use crate::session::{RunningTask, WebSessionRuntimeOptions};
 
 use super::task_executor::{self, TaskRunRequest, WebTaskPersistence};
 use super::{
-    api_error, authenticated_user, authenticated_user_with_csrf, auto_title,
-    backend_unavailable_response, default_session_model_selection,
-    invalidate_session_summaries_cache, load_execution_profile_for_agent_profile_id,
-    load_owned_session, load_owned_task, markdown_preview, not_found_response,
-    store_error_response, task_detail_from_record, task_summary_from_record,
-    validate_task_input_with_attachments, AppState, TaskEventsQuery, DEFAULT_TASK_EVENTS_LIMIT,
-    EVENT_LOGS, MAX_TASK_EVENTS_LIMIT, WEB_SESSION_DEFAULT_TITLE, WEB_TASK_SCHEMA_VERSION,
+    AppState, DEFAULT_TASK_EVENTS_LIMIT, EVENT_LOGS, MAX_TASK_EVENTS_LIMIT, TaskEventsQuery,
+    WEB_SESSION_DEFAULT_TITLE, WEB_TASK_SCHEMA_VERSION, api_error, authenticated_user,
+    authenticated_user_with_csrf, auto_title, backend_unavailable_response,
+    default_session_model_selection, invalidate_session_summaries_cache,
+    load_execution_profile_for_agent_profile_id, load_owned_session, load_owned_task,
+    markdown_preview, not_found_response, store_error_response, task_detail_from_record,
+    task_summary_from_record, validate_task_input_with_attachments,
 };
 
 const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
@@ -1255,9 +1255,10 @@ pub(crate) async fn api_cancel_task(
             tokio::time::sleep(super::EVENT_LOG_RETENTION_AFTER_CLOSE).await;
             let mut logs = EVENT_LOGS.lock().await;
             if let Some(current) = logs.get(&task_id_for_cleanup)
-                && current.closed_at().await == Some(closed_at) {
-                    logs.remove(&task_id_for_cleanup);
-                }
+                && current.closed_at().await == Some(closed_at)
+            {
+                logs.remove(&task_id_for_cleanup);
+            }
         });
     }
 

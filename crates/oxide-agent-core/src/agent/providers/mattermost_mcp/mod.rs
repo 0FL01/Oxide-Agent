@@ -7,7 +7,7 @@ use crate::agent::tool_runtime::{
     ToolRuntimeError,
 };
 use crate::llm::ToolDefinition;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -544,15 +544,21 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(tools.len(), TOOL_MAPPINGS.len());
-        assert!(tools
-            .iter()
-            .any(|tool| tool.name == TOOL_MATTERMOST_POST_MESSAGE));
-        assert!(tools
-            .iter()
-            .any(|tool| tool.name == TOOL_MATTERMOST_SEARCH_USERS));
-        assert!(tools
-            .iter()
-            .any(|tool| tool.name == TOOL_MATTERMOST_UPLOAD_FILE));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name == TOOL_MATTERMOST_POST_MESSAGE)
+        );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name == TOOL_MATTERMOST_SEARCH_USERS)
+        );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name == TOOL_MATTERMOST_UPLOAD_FILE)
+        );
     }
 
     #[test]

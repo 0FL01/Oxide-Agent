@@ -1,9 +1,9 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use dotenvy::dotenv;
 use oxide_agent_core::capabilities::compiled_capability_manifest;
 use oxide_agent_core::config::load_module_runtime_settings;
 use oxide_agent_core::llm::providers::chatgpt::{
-    resolve_auth_file_path, ChatGptAuthFlow, ChatGptAuthStatus,
+    ChatGptAuthFlow, ChatGptAuthStatus, resolve_auth_file_path,
 };
 use std::env;
 use std::path::PathBuf;
@@ -224,7 +224,7 @@ const fn capabilities_usage() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_capability_startup_command, CapabilityCommand, Cli, Command};
+    use super::{CapabilityCommand, Cli, Command, parse_capability_startup_command};
     use std::path::PathBuf;
 
     #[test]

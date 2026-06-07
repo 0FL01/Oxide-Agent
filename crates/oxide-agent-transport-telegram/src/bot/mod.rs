@@ -28,8 +28,8 @@ pub mod unauthorized_cache;
 pub mod views;
 
 pub use thread::{
-    build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec,
-    resolve_thread_spec_from_context, thread_peer_key, thread_peer_key_from_spec,
-    OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec,
+    OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec, build_outbound_thread_params,
+    general_forum_topic_id, resolve_thread_spec, resolve_thread_spec_from_context, thread_peer_key,
+    thread_peer_key_from_spec,
 };
 pub use unauthorized_cache::UnauthorizedCache;

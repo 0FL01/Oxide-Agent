@@ -5,4 +5,4 @@
 /// Progress runtime loop and transport abstractions.
 pub mod progress;
 
-pub use progress::{spawn_progress_runtime, AgentTransport, DeliveryMode, ProgressRuntimeConfig};
+pub use progress::{AgentTransport, DeliveryMode, ProgressRuntimeConfig, spawn_progress_runtime};

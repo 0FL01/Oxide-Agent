@@ -152,7 +152,7 @@ fn capabilities_usage_error() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_startup_command, StartupCommand};
+    use super::{StartupCommand, parse_startup_command};
     use std::io;
 
     #[test]

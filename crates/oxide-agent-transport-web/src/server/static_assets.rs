@@ -4,8 +4,8 @@ use super::AppState;
 use axum::{
     extract::State,
     http::{
-        header::{CACHE_CONTROL, CONTENT_TYPE},
         HeaderValue, StatusCode, Uri,
+        header::{CACHE_CONTROL, CONTENT_TYPE},
     },
     response::{IntoResponse, Response},
 };

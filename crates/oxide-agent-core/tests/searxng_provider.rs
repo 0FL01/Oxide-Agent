@@ -91,9 +91,11 @@ mod searxng_tests {
                     request_text.contains(&format!("Authorization: {expected}"))
                         || request_text.contains(&format!("authorization: {expected}"))
                 ),
-                None => assert!(!request_text
-                    .to_ascii_lowercase()
-                    .contains("\r\nauthorization:")),
+                None => assert!(
+                    !request_text
+                        .to_ascii_lowercase()
+                        .contains("\r\nauthorization:")
+                ),
             }
 
             let response = format!(

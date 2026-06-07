@@ -91,7 +91,7 @@ pub fn build_outbound_thread_params(spec: TelegramThreadSpec) -> OutboundThreadP
 /// Returns a reusable chat+thread peer key for routing.
 #[must_use]
 pub fn thread_peer_key(chat_id: ChatId, thread_id: Option<ThreadId>) -> String {
-    let thread_part = thread_id.map_or(0, |id| id.0 .0);
+    let thread_part = thread_id.map_or(0, |id| id.0.0);
     format!("{}:{thread_part}", chat_id.0)
 }
 
@@ -124,8 +124,9 @@ pub const fn general_forum_topic_id() -> ThreadId {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec_from_context,
-        thread_peer_key, thread_peer_key_from_spec, TelegramThreadKind, TelegramThreadSpec,
+        TelegramThreadKind, TelegramThreadSpec, build_outbound_thread_params,
+        general_forum_topic_id, resolve_thread_spec_from_context, thread_peer_key,
+        thread_peer_key_from_spec,
     };
     use teloxide::types::{ChatId, MessageId, ThreadId};
 

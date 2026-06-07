@@ -1,4 +1,4 @@
-use crate::config::{get_opencode_go_max_concurrent, OPENCODE_GO_CHAT_TEMPERATURE};
+use crate::config::{OPENCODE_GO_CHAT_TEMPERATURE, get_opencode_go_max_concurrent};
 use crate::llm::providers::protocol_profiles::{
     ANTHROPIC_CLIENT_TOOL_PROFILE, CHAT_LIKE_TOOL_PROFILE,
 };
@@ -8,13 +8,13 @@ use crate::llm::{
     TokenUsage, ToolCall, ToolDefinition,
 };
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use discovery::{
-    ModelProtocol, OpenCodeGoDiscoveryConfig, OpenCodeGoModelCatalog, OPENCODE_GO_PROVIDER_ID,
-    OPENCODE_ZEN_PROVIDER_ID,
+    ModelProtocol, OPENCODE_GO_PROVIDER_ID, OPENCODE_ZEN_PROVIDER_ID, OpenCodeGoDiscoveryConfig,
+    OpenCodeGoModelCatalog,
 };
 use reqwest::{Client as HttpClient, Url};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
@@ -452,7 +452,7 @@ impl LlmProvider for OpenCodeGoProvider {
                     anthropic_extra_headers(&self.api_key),
                 ),
                 ModelProtocol::Unknown => {
-                    return Err(unsupported_protocol_error(model_id, self.profile))
+                    return Err(unsupported_protocol_error(model_id, self.profile));
                 }
             };
         let _permit = self.throttle.acquire(model_id).await;
@@ -539,7 +539,7 @@ impl LlmProvider for OpenCodeGoProvider {
                     )));
                 }
                 ModelProtocol::Unknown => {
-                    return Err(unsupported_protocol_error(model_id, self.profile))
+                    return Err(unsupported_protocol_error(model_id, self.profile));
                 }
             };
 
@@ -628,7 +628,7 @@ impl LlmProvider for OpenCodeGoProvider {
                     anthropic_extra_headers(&self.api_key),
                 ),
                 ModelProtocol::Unknown => {
-                    return Err(unsupported_protocol_error(model_id, self.profile))
+                    return Err(unsupported_protocol_error(model_id, self.profile));
                 }
             };
         log_request_summary(OpenCodeRequestLog {
@@ -1332,7 +1332,7 @@ fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
         Some(_) => {
             return Err(LlmError::JsonError(
                 "Invalid tool_calls format from OpenCode Go".to_string(),
-            ))
+            ));
         }
         None => Vec::new(),
     };
@@ -1613,12 +1613,12 @@ fn parse_anthropic_usage(value: &Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_anthropic_completion_body, build_anthropic_messages_body, build_chat_completion_body,
-        build_tool_chat_body, derive_messages_api_base, is_reasoning_model, normalize_model_id,
+        OpenCodeGoAdaptiveThrottle, OpenCodeProviderProfile, build_anthropic_completion_body,
+        build_anthropic_messages_body, build_chat_completion_body, build_tool_chat_body,
+        derive_messages_api_base, is_reasoning_model, normalize_model_id,
         opencode_go_should_throttle, parse_anthropic_messages_response, parse_anthropic_usage,
         parse_chat_response, parse_tool_calls, parse_usage, prepare_anthropic_messages,
         prepare_structured_messages, prepare_tools_json, unsupported_protocol_error,
-        OpenCodeGoAdaptiveThrottle, OpenCodeProviderProfile,
     };
     use crate::llm::{
         LlmError, Message, MessageContentPart, ToolCall, ToolCallCorrelation, ToolCallFunction,
@@ -1831,18 +1831,20 @@ mod tests {
             Message::assistant_with_tools_and_reasoning(
                 "Calling tools",
                 Some("provider thinking trace".to_string()),
-                vec![ToolCall::new(
-                    "invoke-opencode-1",
-                    ToolCallFunction {
-                        name: "read_file".to_string(),
-                        arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
-                    },
-                    false,
-                )
-                .with_correlation(
-                    ToolCallCorrelation::new("invoke-opencode-1")
-                        .with_provider_tool_call_id("call-opencode-1"),
-                )],
+                vec![
+                    ToolCall::new(
+                        "invoke-opencode-1",
+                        ToolCallFunction {
+                            name: "read_file".to_string(),
+                            arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+                        },
+                        false,
+                    )
+                    .with_correlation(
+                        ToolCallCorrelation::new("invoke-opencode-1")
+                            .with_provider_tool_call_id("call-opencode-1"),
+                    ),
+                ],
             ),
             Message::tool_with_correlation(
                 "invoke-opencode-1",
@@ -1944,18 +1946,20 @@ mod tests {
         let history = vec![
             Message::assistant_with_tools(
                 "Calling tools",
-                vec![ToolCall::new(
-                    "invoke-opencode-1",
-                    ToolCallFunction {
-                        name: "read_file".to_string(),
-                        arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
-                    },
-                    false,
-                )
-                .with_correlation(
-                    ToolCallCorrelation::new("invoke-opencode-1")
-                        .with_provider_tool_call_id("toolu-opencode-1"),
-                )],
+                vec![
+                    ToolCall::new(
+                        "invoke-opencode-1",
+                        ToolCallFunction {
+                            name: "read_file".to_string(),
+                            arguments: r#"{"path":"Cargo.toml"}"#.to_string(),
+                        },
+                        false,
+                    )
+                    .with_correlation(
+                        ToolCallCorrelation::new("invoke-opencode-1")
+                            .with_provider_tool_call_id("toolu-opencode-1"),
+                    ),
+                ],
             ),
             Message::tool_with_correlation(
                 "invoke-opencode-1",
@@ -2254,9 +2258,11 @@ mod tests {
             unsupported_protocol_error("opencode-zen/custom-free", OpenCodeProviderProfile::zen());
 
         assert!(error.to_string().contains("OpenCode Zen"));
-        assert!(error
-            .to_string()
-            .contains("modules.llm-provider/opencode-zen.protocol_overrides"));
+        assert!(
+            error
+                .to_string()
+                .contains("modules.llm-provider/opencode-zen.protocol_overrides")
+        );
         assert!(error.to_string().contains("custom-free"));
     }
 

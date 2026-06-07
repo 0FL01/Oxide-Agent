@@ -14,7 +14,7 @@ use crate::config::{
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error};
@@ -364,9 +364,11 @@ mod tests {
         assert_eq!(spec.name, TOOL_NAME);
         assert!(spec.description.contains("Brave Search API"));
         assert_eq!(spec.parameters["required"][0], "query");
-        assert!(spec.parameters["properties"]
-            .get("extra_snippets")
-            .is_some());
+        assert!(
+            spec.parameters["properties"]
+                .get("extra_snippets")
+                .is_some()
+        );
         assert!(spec.parameters["properties"].get("page").is_some());
     }
 

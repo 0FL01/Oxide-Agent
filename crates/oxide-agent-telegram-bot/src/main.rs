@@ -1,6 +1,6 @@
 use dotenvy::dotenv;
 use oxide_agent_core::capabilities::{compiled_capability_manifest, compiled_profile_name};
-use oxide_agent_core::config::{load_module_runtime_settings, AgentSettings};
+use oxide_agent_core::config::{AgentSettings, load_module_runtime_settings};
 use oxide_agent_core::sandbox::preflight_sandbox_backend;
 use oxide_agent_transport_telegram::config::{BotSettings, TelegramSettings};
 use oxide_agent_transport_telegram::runner::run_bot;
@@ -9,7 +9,7 @@ use std::env;
 use std::io::{self, Write};
 use std::sync::Arc;
 use tracing::{error, info};
-use tracing_subscriber::{prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// Regex patterns for redacting sensitive data
 struct RedactionPatterns {
@@ -417,7 +417,7 @@ fn init_settings() -> Arc<BotSettings> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_startup_command, StartupCommand};
+    use super::{StartupCommand, parse_startup_command};
     use std::io;
 
     #[test]

@@ -4,9 +4,9 @@ use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
 };
-use crate::agent::wiki_memory::{wiki_context_id, WikiPage, WikiStore};
+use crate::agent::wiki_memory::{WikiPage, WikiStore, wiki_context_id};
 use crate::llm::ToolDefinition;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
@@ -736,14 +736,15 @@ impl WikiMemoryProvider {
                 let previous_hash = existing.as_ref().map(|page| page.content_hash.clone());
                 if let (Some(expected), Some(actual)) =
                     (args.expected_hash.as_deref(), previous_hash.as_deref())
-                    && expected != actual {
-                        return Err(anyhow!(
-                            "wiki memory hash mismatch for {}: expected {}, actual {}",
-                            target.id(),
-                            expected,
-                            actual
-                        ));
-                    }
+                    && expected != actual
+                {
+                    return Err(anyhow!(
+                        "wiki memory hash mismatch for {}: expected {}, actual {}",
+                        target.id(),
+                        expected,
+                        actual
+                    ));
+                }
                 let key = existing
                     .as_ref()
                     .map(|page| page.key.clone())
@@ -761,14 +762,15 @@ impl WikiMemoryProvider {
                 let previous_hash = existing.as_ref().map(|page| page.content_hash.clone());
                 if let (Some(expected), Some(actual)) =
                     (args.expected_hash.as_deref(), previous_hash.as_deref())
-                    && expected != actual {
-                        return Err(anyhow!(
-                            "wiki memory hash mismatch for {}: expected {}, actual {}",
-                            target.id(),
-                            expected,
-                            actual
-                        ));
-                    }
+                    && expected != actual
+                {
+                    return Err(anyhow!(
+                        "wiki memory hash mismatch for {}: expected {}, actual {}",
+                        target.id(),
+                        expected,
+                        actual
+                    ));
+                }
                 let key = existing
                     .as_ref()
                     .map(|page| page.key.clone())
@@ -1338,10 +1340,12 @@ mod tests {
 
         assert_eq!(parsed["found"], true);
         assert_eq!(parsed["id"], "page:btc-price");
-        assert!(parsed["content"]
-            .as_str()
-            .expect("content string")
-            .contains("76 840.69"));
+        assert!(
+            parsed["content"]
+                .as_str()
+                .expect("content string")
+                .contains("76 840.69")
+        );
         assert!(parsed["content_hash"].as_str().is_some());
     }
 
@@ -1399,14 +1403,18 @@ mod tests {
                 .expect("valid json");
 
         assert_eq!(parsed["section_found"], true);
-        assert!(parsed["content"]
-            .as_str()
-            .expect("content")
-            .contains("Run smoke tests"));
-        assert!(!parsed["content"]
-            .as_str()
-            .expect("content")
-            .contains("previous image"));
+        assert!(
+            parsed["content"]
+                .as_str()
+                .expect("content")
+                .contains("Run smoke tests")
+        );
+        assert!(
+            !parsed["content"]
+                .as_str()
+                .expect("content")
+                .contains("previous image")
+        );
     }
 
     #[tokio::test]
@@ -1438,10 +1446,12 @@ mod tests {
 
         assert_eq!(parsed["count"], 1);
         assert_eq!(parsed["matches"][0]["id"], "page:deploy-notes");
-        assert!(parsed["matches"][0]["snippets"][0]
-            .as_str()
-            .expect("snippet")
-            .contains("rollback"));
+        assert!(
+            parsed["matches"][0]["snippets"][0]
+                .as_str()
+                .expect("snippet")
+                .contains("rollback")
+        );
     }
 
     #[tokio::test]
@@ -1462,12 +1472,14 @@ mod tests {
             .expect("typed wiki memory read succeeds");
 
         assert_eq!(output.status, ToolOutputStatus::Success);
-        assert!(output
-            .stdout
-            .text
-            .as_deref()
-            .expect("stdout text")
-            .contains("76 840.69"));
+        assert!(
+            output
+                .stdout
+                .text
+                .as_deref()
+                .expect("stdout text")
+                .contains("76 840.69")
+        );
     }
 
     #[tokio::test]

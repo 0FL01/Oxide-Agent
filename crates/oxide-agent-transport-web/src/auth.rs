@@ -1,9 +1,9 @@
 //! Authentication helpers for the web console.
 
+use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use oxide_agent_web_contracts::{
     BootstrapRequest, ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest, UserRole,
@@ -13,8 +13,8 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::persistence::{
-    WebAuthSessionRecord, WebUiStore, WebUiStoreError, WebUserRecord, WebUserStatus,
-    WEB_AUTH_SCHEMA_VERSION,
+    WEB_AUTH_SCHEMA_VERSION, WebAuthSessionRecord, WebUiStore, WebUiStoreError, WebUserRecord,
+    WebUserStatus,
 };
 
 const LOGIN_MIN_LEN: usize = 3;
@@ -389,9 +389,9 @@ mod tests {
     };
 
     use crate::auth::{
-        bootstrap_user, change_password, current_user_for_token, hash_password, hash_session_token,
-        login_user, logout_session, normalize_login, register_user, validate_password,
-        verify_password, AuthError,
+        AuthError, bootstrap_user, change_password, current_user_for_token, hash_password,
+        hash_session_token, login_user, logout_session, normalize_login, register_user,
+        validate_password, verify_password,
     };
     use crate::persistence::{InMemoryWebUiStore, WebUiStore, WebUserStatus};
 
@@ -627,9 +627,11 @@ mod tests {
         .await
         .expect("change password");
 
-        assert!(current_user_for_token(&store, &token_one, now)
-            .await
-            .is_ok());
+        assert!(
+            current_user_for_token(&store, &token_one, now)
+                .await
+                .is_ok()
+        );
         assert!(matches!(
             current_user_for_token(&store, &token_two, now).await,
             Err(AuthError::Unauthorized)
@@ -646,15 +648,17 @@ mod tests {
             .await,
             Err(AuthError::InvalidCredentials)
         ));
-        assert!(login_user(
-            &store,
-            LoginRequest {
-                login: "alice".to_string(),
-                password: "new correct horse battery staple".to_string(),
-            },
-            now,
-        )
-        .await
-        .is_ok());
+        assert!(
+            login_user(
+                &store,
+                LoginRequest {
+                    login: "alice".to_string(),
+                    password: "new correct horse battery staple".to_string(),
+                },
+                now,
+            )
+            .await
+            .is_ok()
+        );
     }
 }

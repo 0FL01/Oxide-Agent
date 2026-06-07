@@ -150,7 +150,7 @@ fn parse_bool(value: String, name: &str) -> Result<bool, StorageError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SqlxStorageConfig, SQLX_STORAGE_MODULE_ID};
+    use super::{SQLX_STORAGE_MODULE_ID, SqlxStorageConfig};
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
 
     #[test]

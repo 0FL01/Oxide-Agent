@@ -289,9 +289,11 @@ fn completed_tool_batch_indices(
         && messages[cursor].resolved_kind() == AgentMessageKind::ToolResult
     {
         if let Some(invocation_id) = tool_result_invocation_id(&messages[cursor])
-            && expected_set.contains(&invocation_id) && seen_ids.insert(invocation_id) {
-                indices.push(cursor);
-            }
+            && expected_set.contains(&invocation_id)
+            && seen_ids.insert(invocation_id)
+        {
+            indices.push(cursor);
+        }
         cursor += 1;
     }
 
@@ -511,18 +513,26 @@ mod tests {
                 .count(),
             1
         );
-        assert!(replacement
-            .iter()
-            .all(|message| !message.content.contains("Old current-format summary.")));
-        assert!(replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::TopicAgentsMd));
-        assert!(replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::UserTask));
-        assert!(replacement
-            .iter()
-            .any(|message| message.content == "latest request"));
+        assert!(
+            replacement
+                .iter()
+                .all(|message| !message.content.contains("Old current-format summary."))
+        );
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::TopicAgentsMd)
+        );
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::UserTask)
+        );
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.content == "latest request")
+        );
     }
 
     #[test]
@@ -573,9 +583,11 @@ mod tests {
         })
         .expect("history builds with terminal open tool batch");
 
-        assert!(replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall)
+        );
 
         let mut with_result = replacement;
         with_result.push(AgentMessage::tool(
@@ -627,12 +639,16 @@ mod tests {
         })
         .expect("history builds without orphaning tool result");
 
-        assert!(!replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult));
-        assert!(!replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
+        assert!(
+            !replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult)
+        );
+        assert!(
+            !replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall)
+        );
 
         let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
         assert!(!repair_outcome.applied);
@@ -669,15 +685,21 @@ mod tests {
         })
         .expect("minimum floor skips oversized complete tool batch");
 
-        assert!(replacement
-            .iter()
-            .any(|message| message.content == "Need fresh pricing data."));
-        assert!(!replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
-        assert!(!replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult));
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.content == "Need fresh pricing data.")
+        );
+        assert!(
+            !replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall)
+        );
+        assert!(
+            !replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult)
+        );
         assert!(replacement.iter().map(message_tokens).sum::<usize>() <= 2_000);
 
         let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);

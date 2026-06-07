@@ -8,13 +8,13 @@ use oxide_agent_web_contracts::{
 };
 use std::collections::HashMap;
 
-use super::activity::{thought_label, ThinkingButton};
+use super::activity::{ThinkingButton, thought_label};
 use super::composer::MessageAttachments;
 use super::delivered_files::{
-    delivered_files_for_task, linkify_delivered_files_in_markdown, DeliveredFilesMessage,
+    DeliveredFilesMessage, delivered_files_for_task, linkify_delivered_files_in_markdown,
 };
 use super::state::{summary_to_detail, upsert_task_summary};
-use super::streaming::{start_task_stream, StreamUiSignals};
+use super::streaming::{StreamUiSignals, start_task_stream};
 use super::versions::selected_version_index;
 
 // ── Task Card ────────────────────────────────────────────────────────────

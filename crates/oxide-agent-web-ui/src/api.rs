@@ -11,7 +11,7 @@ use oxide_agent_web_contracts::{
     UpdateSessionRequest, UpdateSessionResponse, UpdateUserSettingsRequest,
     UploadTaskAttachmentsResponse, UserSettingsResponse,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

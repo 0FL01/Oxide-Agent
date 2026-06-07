@@ -1,9 +1,9 @@
 //! Response handling for the agent runner.
 
+use super::AgentRunner;
 use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
-use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMemory;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
@@ -211,9 +211,10 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
         if let Some(tx) = ctx.progress_tx
-            && !ctx.config.is_sub_agent {
-                let _ = tx.send(AgentEvent::Finished).await;
-            }
+            && !ctx.config.is_sub_agent
+        {
+            let _ = tx.send(AgentEvent::Finished).await;
+        }
         Ok(Some(AgentRunResult::Final(final_response)))
     }
 

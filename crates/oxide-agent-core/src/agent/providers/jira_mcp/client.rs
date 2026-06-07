@@ -2,10 +2,10 @@
 
 use anyhow::{Context, Result};
 use rmcp::{
+    ServiceExt,
     model::CallToolRequestParams,
     service::{Peer, RoleClient, RunningService},
     transport::{ConfigureCommandExt, TokioChildProcess},
-    ServiceExt,
 };
 use std::process::Stdio;
 use std::sync::Arc;

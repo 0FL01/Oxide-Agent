@@ -1,6 +1,4 @@
-use oxide_agent_core::agent::progress::{
-    LlmRetryState, ProgressState, Step, StepStatus,
-};
+use oxide_agent_core::agent::progress::{LlmRetryState, ProgressState, Step, StepStatus};
 
 /// Render a progress state into Telegram-ready HTML.
 pub fn render_progress_html(state: &ProgressState) -> String {

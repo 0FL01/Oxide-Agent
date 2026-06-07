@@ -2,8 +2,8 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use oxide_agent_core::agent::memory::{AgentMessage, MessageRole};
 use oxide_agent_core::agent::SessionId;
+use oxide_agent_core::agent::memory::{AgentMessage, MessageRole};
 use oxide_agent_transport_web::session::{TaskStatus, WebSessionManager};
 use serde_json::Value;
 
@@ -281,9 +281,11 @@ async fn e2e_zai_seeded_initial_anchor_missing_after_healthy_cleanup() {
             artifacts.progress["latest_token_snapshot"]["budget_state"],
             "Healthy"
         );
-        assert!(artifacts.progress["last_compaction_status"]
-            .as_str()
-            .is_some_and(|value| value.contains("Cleanup:")));
+        assert!(
+            artifacts.progress["last_compaction_status"]
+                .as_str()
+                .is_some_and(|value| value.contains("Cleanup:"))
+        );
         assert!(
             final_response.contains(&anchor_tail),
             "anchor tail missing despite healthy budget and no cleanup; final_response={final_response:?}; anchor={anchor:?}"

@@ -5,8 +5,8 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use super::providers;
 use super::{
-    capabilities, support, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
-    ProviderCapabilities, ToolDefinition,
+    ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, ProviderCapabilities,
+    ToolDefinition, capabilities, support,
 };
 use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 
@@ -648,18 +648,19 @@ impl LlmClient {
                     );
 
                     if attempt < Self::MAX_RETRIES
-                        && let Some(backoff) = Self::get_retry_delay(&e, attempt) {
-                            info!(
-                                model = model_name,
-                                backoff_ms = backoff.as_millis(),
-                                attempt = attempt,
-                                max_attempts = Self::MAX_RETRIES,
-                                error_type = ?e,
-                                "Retrying LLM request"
-                            );
-                            tokio::time::sleep(backoff).await;
-                            continue;
-                        }
+                        && let Some(backoff) = Self::get_retry_delay(&e, attempt)
+                    {
+                        info!(
+                            model = model_name,
+                            backoff_ms = backoff.as_millis(),
+                            attempt = attempt,
+                            max_attempts = Self::MAX_RETRIES,
+                            error_type = ?e,
+                            "Retrying LLM request"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
 
                     return Err(e);
                 }
@@ -873,18 +874,19 @@ impl LlmClient {
                             &e,
                             attempt,
                             initial_backoff_ms,
-                        ) {
-                            warn!(
-                                "{} failed (attempt {}/{}): {}, retrying after {:?}",
-                                context,
-                                attempt,
-                                Self::MAX_RETRIES,
-                                e,
-                                backoff
-                            );
-                            tokio::time::sleep(backoff).await;
-                            continue;
-                        }
+                        )
+                    {
+                        warn!(
+                            "{} failed (attempt {}/{}): {}, retrying after {:?}",
+                            context,
+                            attempt,
+                            Self::MAX_RETRIES,
+                            e,
+                            backoff
+                        );
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
                     warn!("{} failed after {} attempts: {}", context, attempt, e);
                     return Err(e);
                 }
@@ -1154,9 +1156,10 @@ mod tests {
 
         assert!(llm.is_provider_available("opencode-go"));
         assert!(llm.is_provider_available("opencode_go"));
-        assert!(llm
-            .configured_provider_names()
-            .contains(&"opencode-go".to_string()));
+        assert!(
+            llm.configured_provider_names()
+                .contains(&"opencode-go".to_string())
+        );
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -1176,9 +1179,10 @@ mod tests {
 
         assert!(llm.is_provider_available("opencode-zen"));
         assert!(llm.is_provider_available("opencode_zen"));
-        assert!(llm
-            .configured_provider_names()
-            .contains(&"opencode-zen".to_string()));
+        assert!(
+            llm.configured_provider_names()
+                .contains(&"opencode-zen".to_string())
+        );
     }
 
     #[cfg(feature = "llm-openrouter")]

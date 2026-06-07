@@ -217,7 +217,7 @@ fn inline_file_url(download_url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{linkify_delivered_files_in_markdown, DeliveredFileLink};
+    use super::{DeliveredFileLink, linkify_delivered_files_in_markdown};
 
     fn delivered_file(file_name: &str, download_url: &str) -> DeliveredFileLink {
         DeliveredFileLink {

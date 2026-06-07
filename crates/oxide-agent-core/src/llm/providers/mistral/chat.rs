@@ -10,11 +10,11 @@ use crate::llm::providers::mistral::{
     types::{MISTRAL_REASONING_EFFORT, MISTRAL_REASONING_MODEL_ID},
 };
 use crate::llm::{
-    support::http::{parse_retry_after, APP_USER_AGENT},
     ChatResponse, ChatWithToolsRequest, LlmError, Message, ToolDefinition,
+    support::http::{APP_USER_AGENT, parse_retry_after},
 };
 use reqwest::Client as HttpClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 /// Build chat completion request body

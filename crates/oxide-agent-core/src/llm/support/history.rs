@@ -209,27 +209,28 @@ pub(crate) fn validate_tool_history(
         let message = &messages[index];
 
         if message.role == "assistant"
-            && let Some(tool_calls) = &message.tool_calls {
-                if tool_calls.is_empty() {
-                    return Err(LlmError::RepairableHistory(
-                        "assistant tool call batch is empty".to_string(),
-                    ));
-                }
-
-                let expected_ids = extract_expected_invocation_ids(message)?;
-                let (cursor, seen_results) =
-                    validate_tool_result_sequence(messages, index + 1, &expected_ids)?;
-                check_batch_completion(
-                    cursor,
-                    messages.len(),
-                    &expected_ids,
-                    &seen_results,
-                    capabilities,
-                )?;
-
-                index = cursor;
-                continue;
+            && let Some(tool_calls) = &message.tool_calls
+        {
+            if tool_calls.is_empty() {
+                return Err(LlmError::RepairableHistory(
+                    "assistant tool call batch is empty".to_string(),
+                ));
             }
+
+            let expected_ids = extract_expected_invocation_ids(message)?;
+            let (cursor, seen_results) =
+                validate_tool_result_sequence(messages, index + 1, &expected_ids)?;
+            check_batch_completion(
+                cursor,
+                messages.len(),
+                &expected_ids,
+                &seen_results,
+                capabilities,
+            )?;
+
+            index = cursor;
+            continue;
+        }
 
         if message.role == "tool" {
             return Err(orphaned_tool_result_error(message));
@@ -534,7 +535,7 @@ mod tests {
             name: None,
             tool_calls: Some(vec![tool_call("call-1", "search")]),
             tool_call_correlations: Some(vec![
-                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("")
+                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id(""),
             ]),
         }];
 

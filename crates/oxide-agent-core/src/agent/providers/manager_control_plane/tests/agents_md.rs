@@ -233,7 +233,9 @@ async fn topic_agents_md_upsert_rejects_more_than_300_lines() {
         .await
         .expect_err("oversized AGENTS.md must be rejected");
 
-    assert!(error
-        .to_string()
-        .contains("agents_md must not exceed 300 lines"));
+    assert!(
+        error
+            .to_string()
+            .contains("agents_md must not exceed 300 lines")
+    );
 }

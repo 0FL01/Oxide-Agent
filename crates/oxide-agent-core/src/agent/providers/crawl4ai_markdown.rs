@@ -8,13 +8,13 @@ use crate::agent::tool_runtime::{
     ToolRuntimeError,
 };
 use crate::llm::ToolDefinition;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Url;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1177,15 +1177,18 @@ mod tests {
         let spec = Crawl4AiMarkdownProvider::tool_definition();
 
         assert_eq!(spec.name, TOOL_CRAWL4AI_MARKDOWN);
-        assert!(spec
-            .description
-            .contains("configured Crawl4AI REST service"));
-        assert!(spec
-            .description
-            .contains("Use after selecting specific URLs from brave_search or searxng_search"));
-        assert!(spec
-            .description
-            .contains("Do not crawl every search result"));
+        assert!(
+            spec.description
+                .contains("configured Crawl4AI REST service")
+        );
+        assert!(
+            spec.description
+                .contains("Use after selecting specific URLs from brave_search or searxng_search")
+        );
+        assert!(
+            spec.description
+                .contains("Do not crawl every search result")
+        );
         assert_eq!(spec.parameters["required"], json!(["url"]));
         assert_eq!(spec.parameters["additionalProperties"], json!(false));
         assert!(spec.parameters["properties"].get("headers").is_none());
@@ -1278,9 +1281,11 @@ mod tests {
             crawl_request["crawler_config"]["params"]["page_timeout"],
             json!(3000)
         );
-        assert!(crawl_request["crawler_config"]["params"]
-            .get("js_code")
-            .is_none());
+        assert!(
+            crawl_request["crawler_config"]["params"]
+                .get("js_code")
+                .is_none()
+        );
     }
 
     #[tokio::test]

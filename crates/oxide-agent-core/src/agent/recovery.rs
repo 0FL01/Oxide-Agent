@@ -482,10 +482,12 @@ pub fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
 
         // Parse JSON to check structure
         if let Ok(parsed) = serde_json::from_str::<Value>(&json_str)
-            && parsed.is_object() && parsed.get("todos").is_some() {
-                warn!("Correcting malformed tool call to 'write_todos' with extracted arguments");
-                return ("write_todos".to_string(), json_str);
-            }
+            && parsed.is_object()
+            && parsed.get("todos").is_some()
+        {
+            warn!("Correcting malformed tool call to 'write_todos' with extracted arguments");
+            return ("write_todos".to_string(), json_str);
+        }
     }
 
     // PATTERN 2: Check if name contains "todos" followed by JSON array
@@ -510,20 +512,21 @@ pub fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
 
                 // Try to parse the JSON array part and wrap it in the expected structure
                 if let Ok(parsed_array) = serde_json::from_str::<Value>(json_part)
-                    && parsed_array.is_array() {
-                        // Construct the proper arguments structure: {"todos": [...]}
-                        let corrected_args = serde_json::json!({
-                            "todos": parsed_array
-                        });
+                    && parsed_array.is_array()
+                {
+                    // Construct the proper arguments structure: {"todos": [...]}
+                    let corrected_args = serde_json::json!({
+                        "todos": parsed_array
+                    });
 
-                        if let Ok(args_str) = serde_json::to_string(&corrected_args) {
-                            warn!(
-                                corrected_name = "write_todos",
-                                "Correcting malformed tool call: extracted array and wrapped in proper structure"
-                            );
-                            return ("write_todos".to_string(), args_str);
-                        }
+                    if let Ok(args_str) = serde_json::to_string(&corrected_args) {
+                        warn!(
+                            corrected_name = "write_todos",
+                            "Correcting malformed tool call: extracted array and wrapped in proper structure"
+                        );
+                        return ("write_todos".to_string(), args_str);
                     }
+                }
 
                 // If JSON parsing failed, log and fall back
                 warn!(
@@ -584,14 +587,15 @@ pub fn extract_first_json(input: &str) -> Option<String> {
             }
             '}' if !in_string => {
                 if depth == 1
-                    && let Some(start) = start_idx {
-                        // Found complete object
-                        let json_str = input[start..=i].trim();
-                        // Validate it's actually JSON
-                        if serde_json::from_str::<Value>(json_str).is_ok() {
-                            return Some(json_str.to_string());
-                        }
+                    && let Some(start) = start_idx
+                {
+                    // Found complete object
+                    let json_str = input[start..=i].trim();
+                    // Validate it's actually JSON
+                    if serde_json::from_str::<Value>(json_str).is_ok() {
+                        return Some(json_str.to_string());
                     }
+                }
                 depth -= 1;
                 if depth == 0 {
                     start_idx = None;
@@ -622,11 +626,7 @@ pub fn extract_fenced_json(input: &str) -> Option<String> {
     let mut block = after_start[..end].trim().to_string();
 
     block = strip_fence_language(&block);
-    if block.is_empty() {
-        None
-    } else {
-        Some(block)
-    }
+    if block.is_empty() { None } else { Some(block) }
 }
 
 fn strip_fence_language(block: &str) -> String {
@@ -753,11 +753,7 @@ fn extract_tag_value<'a>(content: &'a str, tag: &str) -> Option<&'a str> {
     let after_open = &content[start..];
     let end = after_open.find("</").unwrap_or(after_open.len());
     let value = after_open[..end].trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn extract_token_after_tool_name<'a>(
@@ -1472,7 +1468,9 @@ mod tests {
             repaired[0]
                 .resolved_tool_call_correlations()
                 .expect("assistant correlations"),
-            vec![ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1")]
+            vec![
+                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("provider-call-1")
+            ]
         );
     }
 

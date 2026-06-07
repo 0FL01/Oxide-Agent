@@ -13,8 +13,8 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
 use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::runner::{
-    run_with_timeout, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
-    TimedRunResult,
+    AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
+    run_with_timeout,
 };
 use crate::agent::session::AgentMemoryScope;
 use crate::agent::tool_runtime::{
@@ -22,22 +22,22 @@ use crate::agent::tool_runtime::{
     ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::{
-    get_agent_continuation_limit, get_agent_search_limit, get_sub_agent_max_iterations,
-    AgentSettings,
+    AgentSettings, get_agent_continuation_limit, get_agent_search_limit,
+    get_sub_agent_max_iterations,
 };
 use crate::llm::{Message, ToolDefinition};
 use crate::sandbox::SandboxScope;
 use crate::storage::StorageProvider;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -1544,9 +1544,9 @@ fn role_label(role: &MessageRole) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay,
-        DelegationProvider, SubAgentJobStatus, SubAgentJobStore, SUB_AGENT_MAX_CONCURRENT_JOBS,
+        DelegationProvider, SUB_AGENT_MAX_CONCURRENT_JOBS, SubAgentJobStatus, SubAgentJobStore,
         TOOL_CANCEL_SUB_AGENTS, TOOL_SPAWN_SUB_AGENTS, TOOL_WAIT_SUB_AGENTS,
+        should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay,
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::{AgentContext, EphemeralSession};
@@ -2006,10 +2006,12 @@ mod tests {
             prepared.tool_runtime_registry.specs().len(),
             prepared.tools.len()
         );
-        assert!(prepared
-            .tool_runtime_registry
-            .get(&ToolName::from("write_todos"))
-            .is_some());
+        assert!(
+            prepared
+                .tool_runtime_registry
+                .get(&ToolName::from("write_todos"))
+                .is_some()
+        );
 
         let ctx = DelegationProvider::build_sub_agent_runner_context(&mut prepared);
         assert!(ctx.tool_runtime_registry.is_some());
@@ -2091,9 +2093,11 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error
-            .to_string()
-            .contains("Failed to load topic AGENTS.md for sub-agent bootstrap"));
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to load topic AGENTS.md for sub-agent bootstrap")
+        );
     }
 
     #[test]

@@ -1,20 +1,20 @@
 //! LLM calling, retry, failover, and history repair helpers.
 
-use super::types::{AgentRunnerContext, RunState};
 use super::AgentRunner;
+use super::types::{AgentRunnerContext, RunState};
 use crate::agent::compaction::{
-    estimate_request_budget, CompactionPolicy, CompactionRequest, CompactionTrigger,
+    CompactionPolicy, CompactionRequest, CompactionTrigger, estimate_request_budget,
 };
 use crate::agent::memory::{AgentMessage, AgentMessageAttachment, AgentMessageAttachmentKind};
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::SandboxRuntime;
 use crate::agent::recovery::repair_agent_message_history_for_provider;
-use crate::config::{ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
+use crate::config::{AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS, ModelInfo};
 use crate::llm::{
     ChatResponse, LlmClient, LlmError, Message, MessageContentPart, ProviderCapabilities,
 };
 use crate::sandbox::SandboxFileOps;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -550,69 +550,70 @@ impl AgentRunner {
                 let retry_budget_remaining =
                     metadata.attempt < metadata.max_retries || unbounded_retry;
                 if retry_budget_remaining
-                    && let Some(backoff) = LlmClient::get_retry_delay(&error, metadata.attempt) {
+                    && let Some(backoff) = LlmClient::get_retry_delay(&error, metadata.attempt)
+                {
+                    debug!(
+                        error = %error,
+                        error_class = Self::error_class(&error),
+                        attempt = metadata.attempt,
+                        max_attempts = metadata.max_retries,
+                        provider = metadata.provider_name,
+                        unbounded_retry,
+                        retry_budget_remaining,
+                        backoff_ms = backoff.as_millis(),
+                        "LLM retry decision computed"
+                    );
+                    let wait_secs = backoff.as_secs();
+                    let wait_secs_display = if wait_secs > 0 {
+                        Some(wait_secs)
+                    } else {
+                        LlmClient::get_rate_limit_wait_secs(&error)
+                    };
+
+                    if LlmClient::is_rate_limit_error(&error) {
+                        Self::emit_rate_limit_retrying(
+                            ctx.progress_tx,
+                            metadata.attempt,
+                            metadata.max_retries,
+                            unbounded_retry,
+                            wait_secs_display,
+                            metadata.provider_name,
+                        )
+                        .await;
                         debug!(
                             error = %error,
-                            error_class = Self::error_class(&error),
                             attempt = metadata.attempt,
                             max_attempts = metadata.max_retries,
-                            provider = metadata.provider_name,
-                            unbounded_retry,
-                            retry_budget_remaining,
                             backoff_ms = backoff.as_millis(),
-                            "LLM retry decision computed"
+                            provider = metadata.provider_name,
+                            "Retrying LLM request after rate limit"
                         );
-                        let wait_secs = backoff.as_secs();
-                        let wait_secs_display = if wait_secs > 0 {
-                            Some(wait_secs)
-                        } else {
-                            LlmClient::get_rate_limit_wait_secs(&error)
-                        };
-
-                        if LlmClient::is_rate_limit_error(&error) {
-                            Self::emit_rate_limit_retrying(
-                                ctx.progress_tx,
-                                metadata.attempt,
-                                metadata.max_retries,
-                                unbounded_retry,
-                                wait_secs_display,
-                                metadata.provider_name,
-                            )
-                            .await;
-                            debug!(
-                                error = %error,
-                                attempt = metadata.attempt,
-                                max_attempts = metadata.max_retries,
-                                backoff_ms = backoff.as_millis(),
-                                provider = metadata.provider_name,
-                                "Retrying LLM request after rate limit"
-                            );
-                        } else {
-                            let error_class = Self::error_class(&error);
-                            Self::emit_llm_retrying(
-                                ctx.progress_tx,
-                                metadata.attempt,
-                                metadata.max_retries,
-                                unbounded_retry,
-                                wait_secs_display,
-                                metadata.provider_name,
-                                error_class,
-                            )
-                            .await;
-                            debug!(
-                                error = %error,
-                                error_class = error_class,
-                                attempt = metadata.attempt,
-                                max_attempts = metadata.max_retries,
-                                backoff_ms = backoff.as_millis(),
-                                provider = metadata.provider_name,
-                                "Retrying LLM request after retryable error"
-                            );
-                        }
-
-                        tokio::time::sleep(backoff).await;
-                        return Ok(AttemptOutcome::RetrySameRoute);
+                    } else {
+                        let error_class = Self::error_class(&error);
+                        Self::emit_llm_retrying(
+                            ctx.progress_tx,
+                            metadata.attempt,
+                            metadata.max_retries,
+                            unbounded_retry,
+                            wait_secs_display,
+                            metadata.provider_name,
+                            error_class,
+                        )
+                        .await;
+                        debug!(
+                            error = %error,
+                            error_class = error_class,
+                            attempt = metadata.attempt,
+                            max_attempts = metadata.max_retries,
+                            backoff_ms = backoff.as_millis(),
+                            provider = metadata.provider_name,
+                            "Retrying LLM request after retryable error"
+                        );
                     }
+
+                    tokio::time::sleep(backoff).await;
+                    return Ok(AttemptOutcome::RetrySameRoute);
+                }
 
                 if LlmClient::is_rate_limit_error(&error) && !ctx.config.model_routes.is_empty() {
                     return Ok(AttemptOutcome::FailoverToNextRoute(error));
@@ -975,7 +976,7 @@ mod tests {
         single_final_response_provider, stub_non_chat_methods,
     };
     use crate::agent::runner::{AgentRunResult, AgentRunnerConfig, AgentRunnerContext};
-    use crate::config::{AgentSettings, ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
+    use crate::config::{AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS, AgentSettings, ModelInfo};
     use crate::llm::{LlmError, MockLlmProvider, ToolCall, ToolCallFunction};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex as StdMutex};
@@ -1471,9 +1472,11 @@ mod tests {
         drop(ctx);
         drop(progress_tx);
         let events = collect_progress_events(&mut progress_rx).await;
-        assert!(!events
-            .iter()
-            .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) }));
+        assert!(
+            !events
+                .iter()
+                .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) })
+        );
     }
 
     #[tokio::test]
@@ -1551,8 +1554,10 @@ mod tests {
         drop(ctx);
         drop(progress_tx);
         let events = collect_progress_events(&mut progress_rx).await;
-        assert!(!events
-            .iter()
-            .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) }));
+        assert!(
+            !events
+                .iter()
+                .any(|event| { matches!(event, AgentEvent::ProviderFailoverActivated { .. }) })
+        );
     }
 }

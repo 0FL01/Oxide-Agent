@@ -1,7 +1,7 @@
 //! Tool execution helpers for the agent runner.
 
-use super::types::{AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState};
 use super::AgentRunner;
+use super::types::{AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState};
 use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
 use crate::agent::identity::SessionId;
 use crate::agent::memory::AgentMessage;
@@ -10,9 +10,9 @@ use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_failure_summary::summarize_tool_failure_content;
 use crate::agent::tool_runtime::{
-    v1_tool_runtime_enabled_for_model, ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata,
-    ToolBatchId, ToolCallRuntime, ToolHistoryError, ToolHistoryWriter, ToolOutput,
-    ToolRuntimeConfig, ToolTurnContext, TurnId,
+    ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata, ToolBatchId, ToolCallRuntime,
+    ToolHistoryError, ToolHistoryWriter, ToolOutput, ToolRuntimeConfig, ToolTurnContext, TurnId,
+    v1_tool_runtime_enabled_for_model,
 };
 use crate::config::ModelInfo;
 
@@ -229,33 +229,32 @@ impl AgentRunner {
             .await;
         result.map_err(|error| anyhow::anyhow!("typed tool runtime failed: {error}"))?;
 
-        if finish_after_todo_update
-            && let Some(final_answer) = final_response_candidate {
-                let todos_arc = Arc::clone(ctx.todos_arc);
-                let todos_complete = todos_arc.lock().await.is_complete();
-                if todos_complete {
-                    if self.content_loop_detected(final_answer.as_str()).await {
-                        return Err(self
-                            .loop_detected_error(
-                                ctx,
-                                state,
-                                crate::agent::loop_detection::LoopType::ContentLoop,
-                            )
-                            .await);
-                    }
-
-                    return self
-                        .handle_final_response(
+        if finish_after_todo_update && let Some(final_answer) = final_response_candidate {
+            let todos_arc = Arc::clone(ctx.todos_arc);
+            let todos_complete = todos_arc.lock().await.is_complete();
+            if todos_complete {
+                if self.content_loop_detected(final_answer.as_str()).await {
+                    return Err(self
+                        .loop_detected_error(
                             ctx,
                             state,
-                            FinalResponseInput {
-                                final_answer,
-                                reasoning: None,
-                            },
+                            crate::agent::loop_detection::LoopType::ContentLoop,
                         )
-                        .await;
+                        .await);
                 }
+
+                return self
+                    .handle_final_response(
+                        ctx,
+                        state,
+                        FinalResponseInput {
+                            final_answer,
+                            reasoning: None,
+                        },
+                    )
+                    .await;
             }
+        }
 
         Self::emit_token_snapshot_update(
             ctx.progress_tx,
@@ -1257,9 +1256,11 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error
-            .to_string()
-            .contains("typed tool runtime v1 requires an opencode-go or opencode-zen route"));
+        assert!(
+            error
+                .to_string()
+                .contains("typed tool runtime v1 requires an opencode-go or opencode-zen route")
+        );
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
             "unsupported route must not write partial assistant/tool history"

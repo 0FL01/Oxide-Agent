@@ -4,19 +4,19 @@
 //! via the HTTP API. Unlike Telegram transport, this does not send messages
 //! to any chat — it only records the event timeline for later inspection.
 
-use crate::persistence::{WebTaskFileRecord, WebUiStore, WEB_TASK_FILE_SCHEMA_VERSION};
+use crate::persistence::{WEB_TASK_FILE_SCHEMA_VERSION, WebTaskFileRecord, WebUiStore};
 use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
 use oxide_agent_web_contracts::{PersistedTaskEvent, ProgressSnapshot, TaskEventKind, TaskStatus};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// Returns the snake_case variant name of an AgentEvent.
@@ -564,9 +564,10 @@ pub async fn collect_events(
 
         // Track named milestones from the agent core.
         if let AgentEvent::Milestone { name, timestamp_ms } = &event
-            && let Some(ts) = chrono::DateTime::from_timestamp_millis(*timestamp_ms) {
-                timestamps.named_milestones.insert(name.clone(), ts);
-            }
+            && let Some(ts) = chrono::DateTime::from_timestamp_millis(*timestamp_ms)
+        {
+            timestamps.named_milestones.insert(name.clone(), ts);
+        }
 
         match &event {
             AgentEvent::ToolCall { id, name, .. } => {
@@ -583,9 +584,10 @@ pub async fn collect_events(
             AgentEvent::ToolResult { id, name, .. } => {
                 let key = tool_event_pairing_key(id, name);
                 if let Some(idx) = active_tool_calls.remove(&key)
-                    && let Some(tool_call) = tool_calls.get_mut(idx) {
-                        tool_call.finished_at = Some(chrono::Utc::now());
-                    }
+                    && let Some(tool_call) = tool_calls.get_mut(idx)
+                {
+                    tool_call.finished_at = Some(chrono::Utc::now());
+                }
             }
             _ => {}
         }
@@ -597,21 +599,22 @@ pub async fn collect_events(
         }
 
         if let Some(scope) = browser_event_scope.as_ref()
-            && should_persist_browser_event(&event) {
-                let persisted_event = persisted_event_from_agent_event(
-                    scope,
-                    next_seq,
-                    event_received_at,
-                    &event,
-                    stored_file.as_ref(),
-                    file_storage_error.as_deref(),
-                );
-                if let Some(live_event_tx) = live_event_tx.as_ref() {
-                    let _ = live_event_tx.send(persisted_event.clone());
-                }
-                persisted_events.push(persisted_event);
-                next_seq += 1;
+            && should_persist_browser_event(&event)
+        {
+            let persisted_event = persisted_event_from_agent_event(
+                scope,
+                next_seq,
+                event_received_at,
+                &event,
+                stored_file.as_ref(),
+                file_storage_error.as_deref(),
+            );
+            if let Some(live_event_tx) = live_event_tx.as_ref() {
+                let _ = live_event_tx.send(persisted_event.clone());
             }
+            persisted_events.push(persisted_event);
+            next_seq += 1;
+        }
 
         match event {
             AgentEvent::FileToSendWithConfirmation {
@@ -1262,9 +1265,10 @@ fn stream_text_from_output(output: &Value, stream_name: &str) -> Option<String> 
     }
 
     if let Some(text) = stream.get("text").and_then(Value::as_str)
-        && !text.is_empty() {
-            return Some(text.to_string());
-        }
+        && !text.is_empty()
+    {
+        return Some(text.to_string());
+    }
 
     let head = stream.get("head").and_then(Value::as_str);
     let tail = stream.get("tail").and_then(Value::as_str);
@@ -1426,7 +1430,7 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_events, event_variant_name, BrowserEventScope, TaskEventLog, TaskEventLogMessage,
+        BrowserEventScope, TaskEventLog, TaskEventLogMessage, collect_events, event_variant_name,
     };
     use crate::persistence::{InMemoryWebUiStore, WebUiStore};
     use oxide_agent_core::agent::compaction::{
@@ -1543,11 +1547,13 @@ mod tests {
             ]
         );
         assert!(!event_names.iter().any(|event| event == "pruning_applied"));
-        assert!(result
-            .state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status.contains("Compaction: compacted history")));
+        assert!(
+            result
+                .state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("Compaction: compacted history"))
+        );
     }
 
     #[tokio::test]
@@ -2077,10 +2083,12 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 2);
         assert_eq!(result.tool_calls[0].id, "tool-a");
         assert_eq!(result.tool_calls[1].id, "tool-b");
-        assert!(result
-            .tool_calls
-            .iter()
-            .all(|call| call.finished_at.is_some()));
+        assert!(
+            result
+                .tool_calls
+                .iter()
+                .all(|call| call.finished_at.is_some())
+        );
         assert_eq!(result.persisted_events[0].payload["id"], "tool-a");
         assert_eq!(result.persisted_events[1].payload["id"], "tool-b");
         assert_eq!(result.persisted_events[2].payload["id"], "tool-b");
@@ -2115,9 +2123,11 @@ mod tests {
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.current_thought.as_deref() == Some("Collecting detailed evidence")
         }));
-        assert!(snapshots
-            .last()
-            .is_some_and(|snapshot| snapshot.is_finished));
+        assert!(
+            snapshots
+                .last()
+                .is_some_and(|snapshot| snapshot.is_finished)
+        );
         assert!(result.state.is_finished);
     }
 

@@ -1,13 +1,13 @@
 //! Authentication, CSRF protection, rate limiting, and cookie helpers.
 
-use super::{api_error, AppState, CachedAuthSession, AUTH_COOKIE_NAME, CSRF_HEADER_NAME};
-use crate::auth::{current_user_for_token, hash_session_token, AuthError};
+use super::{AUTH_COOKIE_NAME, AppState, CSRF_HEADER_NAME, CachedAuthSession, api_error};
+use crate::auth::{AuthError, current_user_for_token, hash_session_token};
 use axum::{
-    http::{
-        header::{COOKIE, HOST, ORIGIN, REFERER},
-        HeaderMap, HeaderValue, StatusCode,
-    },
     Json,
+    http::{
+        HeaderMap, HeaderValue, StatusCode,
+        header::{COOKIE, HOST, ORIGIN, REFERER},
+    },
 };
 use oxide_agent_web_contracts::{
     CurrentUser, ErrorCode, ErrorEnvelope, WebSessionRecord, WebTaskRecord,

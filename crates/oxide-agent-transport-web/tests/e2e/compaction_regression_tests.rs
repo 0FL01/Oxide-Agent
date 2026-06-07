@@ -5,13 +5,13 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
-use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::SessionId;
+use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::config::{AgentSettings, ModelInfo};
 use oxide_agent_core::llm::{ChatResponse, LlmClient, TokenUsage, ToolCall, ToolCallFunction};
 use oxide_agent_runtime::SessionRegistry;
-use oxide_agent_transport_web::session::WebSessionManager;
 use oxide_agent_transport_web::AppState;
+use oxide_agent_transport_web::session::WebSessionManager;
 
 use super::helpers::{
     create_session_http_with_user, create_task_http_with_body, fetch_task_events,
@@ -20,7 +20,7 @@ use super::helpers::{
 };
 use super::providers::SequencedZaiProvider;
 
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 fn derive_session_id(session_id: &str, user_id: i64) -> SessionId {
     let mut h = DefaultHasher::new();
@@ -445,9 +445,11 @@ async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -620,9 +622,11 @@ async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -790,9 +794,11 @@ async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
     assert!(!event_names.iter().any(|event| event.contains("dedup")));
 
     let sid = derive_session_id(&session_id, user_id);
@@ -1529,12 +1535,16 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_started"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_started")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
     assert!(
         !event_names.iter().any(|event| event == "pruning_applied"),
         "runtime manual compaction must not emit removed prune/archive cleanup events"
@@ -1621,24 +1631,36 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
         .map(str::to_string)
         .collect();
 
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_started"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "tool_call:compress"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "tool_result:compress"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "tool_call:write_todos"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "tool_result:write_todos"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_started")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "tool_call:compress")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "tool_result:compress")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "tool_call:write_todos")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "tool_result:write_todos")
+    );
     assert!(
         !event_names.iter().any(|event| event == "pruning_applied"),
         "runtime compaction must not emit removed prune/archive cleanup events"

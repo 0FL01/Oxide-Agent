@@ -1,7 +1,7 @@
 use super::{
-    cancel_status_inline_markup, finalize_cancel_status_if_needed, is_task_cancelled_error,
-    save_memory_after_task, send_agent_message, should_preserve_pending_file_input,
-    SESSION_REGISTRY,
+    SESSION_REGISTRY, cancel_status_inline_markup, finalize_cancel_status_if_needed,
+    is_task_cancelled_error, save_memory_after_task, send_agent_message,
+    should_preserve_pending_file_input,
 };
 use crate::bot::agent_handlers::{
     media_route_unavailable_detail, preprocess_agent_message_input,
@@ -11,15 +11,15 @@ use crate::bot::agent_transport::{SilentTelegramAgentTransport, TelegramAgentTra
 use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::{AgentView, DefaultAgentView};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use oxide_agent_core::agent::{
-    compaction::CompactRunOutcome, progress::AgentEvent, AgentExecutionOutcome, SessionId,
+    AgentExecutionOutcome, SessionId, compaction::CompactRunOutcome, progress::AgentEvent,
 };
 use oxide_agent_core::config::get_agent_max_iterations;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
-use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
+use oxide_agent_runtime::{ProgressRuntimeConfig, spawn_progress_runtime};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;

@@ -11,7 +11,7 @@
 
 use oxide_agent_core::agent::{AgentExecutor, AgentSession};
 use oxide_agent_core::capabilities::{
-    compiled_capability_manifest, CapabilityId, CapabilityKind, ModuleId, ModuleManifestEntry,
+    CapabilityId, CapabilityKind, ModuleId, ModuleManifestEntry, compiled_capability_manifest,
 };
 use oxide_agent_core::config::{AgentSettings, ModuleRuntimeConfig};
 use oxide_agent_core::llm::LlmClient;

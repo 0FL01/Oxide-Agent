@@ -1,7 +1,7 @@
 use super::error::BraveSearchError;
 use super::types::{BraveSearchResponse, NormalizedBraveSearchArgs};
-use reqwest::header::ACCEPT;
 use reqwest::StatusCode;
+use reqwest::header::ACCEPT;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};

@@ -5,8 +5,8 @@
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use url::Url;
 
 /// Hook that limits the number of search tool calls.
@@ -157,18 +157,18 @@ impl Hook for SearchBudgetHook {
 
                 if tool_name == "web_markdown"
                     && let Some(host) = Self::web_markdown_host_from_arguments(arguments)
-                        && self
-                            .blocked_web_markdown_hosts
-                            .lock()
-                            .expect("blocked_web_markdown_hosts poisoned")
-                            .contains(&host)
-                        {
-                            return HookResult::Block {
-                                reason: format!(
-                                    "web_markdown is temporarily unavailable for host {host} in this task because the site returned an anti-bot challenge. Do not retry this host with the lightweight fetcher; use another source."
-                                ),
-                            };
-                        }
+                    && self
+                        .blocked_web_markdown_hosts
+                        .lock()
+                        .expect("blocked_web_markdown_hosts poisoned")
+                        .contains(&host)
+                {
+                    return HookResult::Block {
+                        reason: format!(
+                            "web_markdown is temporarily unavailable for host {host} in this task because the site returned an anti-bot challenge. Do not retry this host with the lightweight fetcher; use another source."
+                        ),
+                    };
+                }
 
                 if self.is_search_tool(tool_name) {
                     let limit = context.search_limit.unwrap_or(self.limit).max(self.limit);

@@ -1,6 +1,6 @@
+use super::CachedWikiPage;
 use super::cache::WikiSessionCache;
 use super::scope::wiki_context_id;
-use super::CachedWikiPage;
 use crate::storage::StorageError;
 use std::collections::HashSet;
 use std::sync::Arc;

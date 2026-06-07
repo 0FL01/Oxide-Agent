@@ -94,11 +94,7 @@ impl ManagerControlPlaneProvider {
     }
 
     pub(super) fn dry_run_outcome(dry_run: bool) -> &'static str {
-        if dry_run {
-            "dry_run"
-        } else {
-            "applied"
-        }
+        if dry_run { "dry_run" } else { "applied" }
     }
 
     pub(super) fn optional_metadata_payload_value(

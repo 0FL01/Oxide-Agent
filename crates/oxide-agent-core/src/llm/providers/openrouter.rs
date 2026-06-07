@@ -10,7 +10,7 @@ use crate::config::{
 use crate::llm::support::http::{extract_text_content, send_json_request};
 use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, TokenUsage};
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use reqwest::Client as HttpClient;
 use serde_json::json;
 
@@ -421,7 +421,7 @@ impl LlmProvider for OpenRouterProvider {
             Some(_) => {
                 return Err(LlmError::JsonError(
                     "Invalid tool_calls format from OpenRouter".to_string(),
-                ))
+                ));
             }
             None => Vec::new(),
         };

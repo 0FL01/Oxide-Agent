@@ -1,10 +1,10 @@
 use axum::{
+    Router,
     body::Body,
-    http::{header::CONTENT_SECURITY_POLICY, HeaderName, HeaderValue, Request},
+    http::{HeaderName, HeaderValue, Request, header::CONTENT_SECURITY_POLICY},
     middleware::{self, Next},
     response::Response,
     routing::{delete, get, patch, post},
-    Router,
 };
 use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
@@ -12,14 +12,14 @@ use tower_http::trace::TraceLayer;
 
 use super::types::is_production_run_mode;
 use super::{
-    api_bootstrap, api_cancel_task, api_change_password, api_create_agent_profile,
+    AppState, api_bootstrap, api_cancel_task, api_change_password, api_create_agent_profile,
     api_create_session_with_request, api_create_task, api_create_task_version,
     api_delete_agent_profile, api_delete_session, api_download_task_file, api_get_session,
     api_get_settings, api_get_task, api_get_task_events, api_get_task_progress,
     api_list_agent_profiles, api_list_model_routes, api_list_sessions, api_list_tasks, api_login,
     api_logout, api_me, api_public_config, api_refresh_model_routes, api_register, api_resume_task,
     api_update_agent_profile, api_update_session, api_update_session_profile, api_update_settings,
-    api_upload_task_attachments, auto_title, health, sse, static_assets, AppState,
+    api_upload_task_attachments, auto_title, health, sse, static_assets,
 };
 
 pub fn build_router(state: AppState) -> Router {

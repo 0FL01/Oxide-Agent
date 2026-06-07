@@ -6,7 +6,7 @@ use crate::llm::{
     InvocationId, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol, ToolTransport,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use thiserror::Error;
 

@@ -1,9 +1,9 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    Json,
 };
-use oxide_agent_core::agent::{parse_agent_profile, AgentExecutionProfile, ToolAccessPolicy};
+use oxide_agent_core::agent::{AgentExecutionProfile, ToolAccessPolicy, parse_agent_profile};
 use oxide_agent_core::storage::{AgentProfileRecord, StorageError, UpsertAgentProfileOptions};
 use oxide_agent_web_contracts::{
     AgentProfileSelection, AgentProfileView, CreateAgentProfileRequest, CreateAgentProfileResponse,
@@ -16,8 +16,9 @@ use crate::persistence::WebUserRecord;
 
 use super::settings_routes::load_current_user_record;
 use super::{
-    api_error, authenticated_user, authenticated_user_with_csrf, backend_unavailable_response,
-    invalidate_session_summaries_cache, not_found_response, store_error_response, AppState,
+    AppState, api_error, authenticated_user, authenticated_user_with_csrf,
+    backend_unavailable_response, invalidate_session_summaries_cache, not_found_response,
+    store_error_response,
 };
 
 const MAX_AGENT_PROFILE_ID_CHARS: usize = 64;
@@ -367,7 +368,9 @@ fn validate_agent_profile_system_prompt(
         return Err(api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::ValidationError,
-            format!("Agent profile system prompt must be at most {MAX_AGENT_PROFILE_PROMPT_CHARS} characters."),
+            format!(
+                "Agent profile system prompt must be at most {MAX_AGENT_PROFILE_PROMPT_CHARS} characters."
+            ),
             false,
         ));
     }

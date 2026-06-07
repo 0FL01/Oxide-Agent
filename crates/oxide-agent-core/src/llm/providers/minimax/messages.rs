@@ -5,8 +5,8 @@ use claudius::{
     ToolUseBlock,
 };
 
-use crate::llm::providers::protocol_profiles::ANTHROPIC_CLIENT_TOOL_PROFILE;
 use crate::llm::Message;
+use crate::llm::providers::protocol_profiles::ANTHROPIC_CLIENT_TOOL_PROFILE;
 
 /// Convert our Message to claudius MessageParam
 ///
@@ -173,18 +173,20 @@ mod tests {
     fn converts_assistant_message_with_tool_calls() {
         let msg = Message::assistant_with_tools(
             "I'll check the weather.",
-            vec![ToolCall::new(
-                "invoke-weather-1".to_string(),
-                ToolCallFunction {
-                    name: "get_weather".to_string(),
-                    arguments: r#"{"city":"Moscow"}"#.to_string(),
-                },
-                false,
-            )
-            .with_correlation(
-                ToolCallCorrelation::new("invoke-weather-1")
-                    .with_provider_tool_call_id("call_abc123"),
-            )],
+            vec![
+                ToolCall::new(
+                    "invoke-weather-1".to_string(),
+                    ToolCallFunction {
+                        name: "get_weather".to_string(),
+                        arguments: r#"{"city":"Moscow"}"#.to_string(),
+                    },
+                    false,
+                )
+                .with_correlation(
+                    ToolCallCorrelation::new("invoke-weather-1")
+                        .with_provider_tool_call_id("call_abc123"),
+                ),
+            ],
         );
         let param = to_claudius_message(&msg);
 

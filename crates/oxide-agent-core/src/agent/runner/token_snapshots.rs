@@ -1,9 +1,9 @@
 //! Token snapshot helpers for runner progress and diagnostics.
 
-use super::types::AgentRunnerContext;
 use super::AgentRunner;
+use super::types::AgentRunnerContext;
 use crate::agent::compaction::{
-    estimate_request_budget, CompactionPolicy, CompactionRequest, CompactionTrigger,
+    CompactionPolicy, CompactionRequest, CompactionTrigger, estimate_request_budget,
 };
 use crate::agent::progress::{AgentEvent, TokenSnapshot};
 use tracing::info;
@@ -134,9 +134,10 @@ mod tests {
 
         AgentRunner::refresh_messages_from_memory(&mut ctx);
 
-        assert!(!ctx
-            .messages
-            .iter()
-            .any(|message| message.role == "system" && message.content == "temporary warning"));
+        assert!(
+            !ctx.messages
+                .iter()
+                .any(|message| message.role == "system" && message.content == "temporary warning")
+        );
     }
 }

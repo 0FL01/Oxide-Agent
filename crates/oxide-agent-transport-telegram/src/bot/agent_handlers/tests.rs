@@ -1,20 +1,20 @@
 use super::{
-    agent_mode_session_keys, assemble_text_batch, begin_completed_response_finalization,
-    cancel_status_reply_markup, cleanup_abandoned_empty_flow,
-    clear_completed_response_delivery_state, clear_pending_cancel_confirmation,
-    clear_pending_cancel_message, derive_agent_mode_session_id, ensure_session_exists,
-    is_no_user_visible_change_response, manager_control_plane_enabled, manager_default_chat_id,
-    mark_completed_response_execution_started, merge_prompt_instructions,
+    AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, AgentCallbackAction, AgentControlCommand,
+    BatchedTextTaskContext, CompletedResponseDeliveryAction, EnsureSessionContext,
+    NO_USER_VISIBLE_CHANGE_SENTINEL, PendingTextInputBatch, PendingTextInputPart, SESSION_REGISTRY,
+    SessionTransportContext, agent_mode_session_keys, assemble_text_batch,
+    begin_completed_response_finalization, cancel_status_reply_markup,
+    cleanup_abandoned_empty_flow, clear_completed_response_delivery_state,
+    clear_pending_cancel_confirmation, clear_pending_cancel_message, derive_agent_mode_session_id,
+    ensure_session_exists, is_no_user_visible_change_response, manager_control_plane_enabled,
+    manager_default_chat_id, mark_completed_response_execution_started, merge_prompt_instructions,
     parse_agent_callback_action, parse_agent_control_command, pending_cancel_confirmation,
     pending_cancel_message, prepare_completed_response_delivery,
     queue_followup_during_completed_response_delivery, remember_pending_cancel_confirmation,
     remember_pending_cancel_message, remove_session, resolve_execution_profile,
     select_existing_session_id, session_manager_control_plane_enabled,
     should_create_fresh_flow_on_detach, should_merge_text_batch, take_pending_cancel_confirmation,
-    take_pending_cancel_message, use_inline_flow_controls, AgentCallbackAction,
-    AgentControlCommand, BatchedTextTaskContext, CompletedResponseDeliveryAction,
-    EnsureSessionContext, PendingTextInputBatch, PendingTextInputPart, SessionTransportContext,
-    AGENT_TEXT_INPUT_SPLIT_THRESHOLD_CHARS, NO_USER_VISIBLE_CHANGE_SENTINEL, SESSION_REGISTRY,
+    take_pending_cancel_message, use_inline_flow_controls,
 };
 use crate::bot::views::{
     AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
@@ -22,8 +22,8 @@ use crate::bot::views::{
     AGENT_CALLBACK_CONFIRM_COMPACT_YES,
 };
 use crate::bot::{
-    general_forum_topic_id, resolve_thread_spec_from_context, TelegramThreadKind,
-    TelegramThreadSpec,
+    TelegramThreadKind, TelegramThreadSpec, general_forum_topic_id,
+    resolve_thread_spec_from_context,
 };
 use crate::config::{BotSettings, TelegramSettings};
 use async_trait::async_trait;
@@ -39,8 +39,8 @@ use oxide_agent_core::storage::{
 };
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use teloxide::types::{ChatId, MessageId, ReplyMarkup, ThreadId};
 use teloxide::Bot;
+use teloxide::types::{ChatId, MessageId, ReplyMarkup, ThreadId};
 
 fn test_batch() -> PendingTextInputBatch {
     let agent_settings = Arc::new(AgentSettings::default());
@@ -1234,8 +1234,8 @@ async fn threaded_transport_session_recreates_primary_when_manager_rbac_changes(
 }
 
 #[tokio::test]
-async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refreshes_after_complete(
-) {
+async fn threaded_transport_session_defers_rbac_refresh_while_running_then_refreshes_after_complete()
+ {
     let flow_id = "flow-rbac-running";
     let bot = Bot::new("token");
     let chat_id = ChatId(-100_123);
@@ -1486,10 +1486,12 @@ async fn attach_cleanup_keeps_non_empty_flow_record() {
 
     cleanup_abandoned_empty_flow(&storage, 77, "-100123:42", "flow-a").await;
 
-    assert!(cleared_flows
-        .lock()
-        .expect("cleared_flows mutex poisoned")
-        .is_empty());
+    assert!(
+        cleared_flows
+            .lock()
+            .expect("cleared_flows mutex poisoned")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1500,10 +1502,12 @@ async fn attach_cleanup_skips_delete_when_memory_lookup_fails() {
 
     cleanup_abandoned_empty_flow(&storage, 77, "-100123:42", "flow-a").await;
 
-    assert!(cleared_flows
-        .lock()
-        .expect("cleared_flows mutex poisoned")
-        .is_empty());
+    assert!(
+        cleared_flows
+            .lock()
+            .expect("cleared_flows mutex poisoned")
+            .is_empty()
+    );
 }
 
 #[test]

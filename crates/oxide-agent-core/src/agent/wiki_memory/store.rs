@@ -1,6 +1,6 @@
 use crate::storage::{
-    wiki_context_inbox_key, wiki_context_key, wiki_context_page_key, wiki_context_raw_key,
-    wiki_global_key, StorageError, StorageProvider,
+    StorageError, StorageProvider, wiki_context_inbox_key, wiki_context_key, wiki_context_page_key,
+    wiki_context_raw_key, wiki_global_key,
 };
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -483,10 +483,12 @@ mod tests {
             *backend.delete_keys.lock().await,
             vec!["prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md".to_string()]
         );
-        assert!(!backend
-            .objects
-            .lock()
-            .await
-            .contains_key("prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md"));
+        assert!(
+            !backend
+                .objects
+                .lock()
+                .await
+                .contains_key("prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md")
+        );
     }
 }

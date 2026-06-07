@@ -1,12 +1,12 @@
 //! Core execution loop for the agent runner.
 
-use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use super::AgentRunner;
+use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_failure_summary::rewrite_tool_failure_messages;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::future::Future;
 use tracing::debug;
 
@@ -41,9 +41,10 @@ impl AgentRunner {
             }
 
             if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs
-                && let Some(res) = self.apply_timeout_hook(ctx, &mut state)? {
-                    return Ok(AgentRunResult::Final(res));
-                }
+                && let Some(res) = self.apply_timeout_hook(ctx, &mut state)?
+            {
+                return Ok(AgentRunResult::Final(res));
+            }
 
             self.apply_pending_runtime_context(ctx, &mut state).await;
 

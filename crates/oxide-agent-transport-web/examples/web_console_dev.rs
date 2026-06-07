@@ -3,7 +3,7 @@ use oxide_agent_core::llm::LlmClient;
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_transport_web::scripted_llm::{ScriptedLlmProvider, ScriptedResponse};
 use oxide_agent_transport_web::session::WebSessionManager;
-use oxide_agent_transport_web::{serve, AppState};
+use oxide_agent_transport_web::{AppState, serve};
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;

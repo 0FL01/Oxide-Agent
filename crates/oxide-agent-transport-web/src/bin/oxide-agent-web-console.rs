@@ -1,10 +1,10 @@
 use dotenvy::dotenv;
 use oxide_agent_core::capabilities::{compiled_capability_manifest, compiled_profile_name};
-use oxide_agent_core::config::{load_module_runtime_settings, AgentSettings};
+use oxide_agent_core::config::{AgentSettings, load_module_runtime_settings};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_transport_web::session::WebSessionManager;
-use oxide_agent_transport_web::{serve, AppState};
+use oxide_agent_transport_web::{AppState, serve};
 use std::env;
 use std::io;
 use std::net::SocketAddr;

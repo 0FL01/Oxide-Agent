@@ -1,13 +1,13 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::BwrapSandboxManager;
 use super::workspace::{
     cleanup_old_files, dir_size, ensure_no_symlink_escape, list_workspace_entries,
     resolve_workspace_path,
 };
-use super::BwrapSandboxManager;
 use crate::sandbox::traits::apply_sandbox_file_edit;
 use crate::sandbox::{
     SandboxApplyFileEditResult, SandboxEditReadGuard, SandboxFileEdit, SandboxFileListing,

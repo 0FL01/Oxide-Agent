@@ -4,7 +4,7 @@
 //! durable state used by the transport-agnostic [`StorageProvider`].
 
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx_core::{
@@ -16,6 +16,13 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::{
+    AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
+    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind,
+    ReminderThreadKind, StorageError, StorageProvider, TopicAgentsMdRecord, TopicBindingKind,
+    TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord,
+    TopicInfraToolMode, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
+    UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
+    UserConfig, UserContextConfig,
     builders::{
         build_agent_flow_record, build_agent_profile_record, build_audit_event_record,
         build_reminder_job_record, build_topic_agents_md_record, build_topic_binding_record,
@@ -23,13 +30,7 @@ use super::{
     },
     control_plane::normalize_topic_prompt_payload,
     utils::current_timestamp_unix_secs,
-    validate_topic_agents_md_content, validate_topic_context_content, AgentFlowRecord,
-    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, CreateReminderJobOptions,
-    ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind, StorageError,
-    StorageProvider, TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
-    TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
-    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
-    UpsertTopicInfraConfigOptions, UserConfig, UserContextConfig,
+    validate_topic_agents_md_content, validate_topic_context_content,
 };
 use crate::agent::memory::AgentMemory;
 
@@ -2718,13 +2719,14 @@ async fn ensure_topic_prompt_not_duplicated_in_tx(
         .map(|row| row_value::<String>(&row, "content"))
         .transpose()?;
     if let Some(existing_content) = existing_content
-        && normalize_topic_prompt_payload(&existing_content) == normalized_candidate {
-            return Err(StorageError::DuplicateTopicPromptContent {
-                topic_id: topic_id.to_string(),
-                existing_kind: existing_kind.as_str().to_string(),
-                attempted_kind: attempted_kind.as_str().to_string(),
-            });
-        }
+        && normalize_topic_prompt_payload(&existing_content) == normalized_candidate
+    {
+        return Err(StorageError::DuplicateTopicPromptContent {
+            topic_id: topic_id.to_string(),
+            existing_kind: existing_kind.as_str().to_string(),
+            attempted_kind: attempted_kind.as_str().to_string(),
+        });
+    }
 
     Ok(())
 }
@@ -2732,8 +2734,8 @@ async fn ensure_topic_prompt_not_duplicated_in_tx(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use serde_json::json;
@@ -2743,7 +2745,7 @@ mod tests {
     use super::row_value;
     use super::{SqlxStorage, SqlxStorageConfig};
     use crate::agent::memory::AgentMemory;
-    use crate::agent::wiki_memory::{wiki_context_id, WikiStore};
+    use crate::agent::wiki_memory::{WikiStore, wiki_context_id};
     use crate::storage::{
         AppendAuditEventOptions, CreateReminderJobOptions, OptionalMetadataPatch,
         ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind, StorageError, StorageProvider,
@@ -2908,31 +2910,39 @@ mod tests {
             .clear_agent_memory_for_flow(user_id, "ctx-a".to_string(), "flow-a".to_string())
             .await
             .expect("flow clear should delete memory and metadata");
-        assert!(storage
-            .load_agent_memory_for_flow(user_id, "ctx-a".to_string(), "flow-a".to_string())
-            .await
-            .expect("flow memory lookup should succeed")
-            .is_none());
-        assert!(storage
-            .get_agent_flow_record(user_id, "ctx-a".to_string(), "flow-a".to_string())
-            .await
-            .expect("flow record lookup should succeed")
-            .is_none());
+        assert!(
+            storage
+                .load_agent_memory_for_flow(user_id, "ctx-a".to_string(), "flow-a".to_string())
+                .await
+                .expect("flow memory lookup should succeed")
+                .is_none()
+        );
+        assert!(
+            storage
+                .get_agent_flow_record(user_id, "ctx-a".to_string(), "flow-a".to_string())
+                .await
+                .expect("flow record lookup should succeed")
+                .is_none()
+        );
 
         storage
             .clear_agent_memory_for_context(user_id, "ctx-a".to_string())
             .await
             .expect("context clear should delete context memory");
-        assert!(storage
-            .load_agent_memory_for_context(user_id, "ctx-a".to_string())
-            .await
-            .expect("context memory lookup should succeed")
-            .is_none());
-        assert!(storage
-            .load_agent_memory(user_id)
-            .await
-            .expect("global memory lookup should succeed")
-            .is_some());
+        assert!(
+            storage
+                .load_agent_memory_for_context(user_id, "ctx-a".to_string())
+                .await
+                .expect("context memory lookup should succeed")
+                .is_none()
+        );
+        assert!(
+            storage
+                .load_agent_memory(user_id)
+                .await
+                .expect("global memory lookup should succeed")
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -3038,11 +3048,13 @@ mod tests {
             .delete_secret_value(user_id, "storage:ssh/key".to_string())
             .await
             .expect("secret should delete");
-        assert!(storage
-            .get_secret_value(user_id, "storage:ssh/key".to_string())
-            .await
-            .expect("secret lookup should succeed")
-            .is_none());
+        assert!(
+            storage
+                .get_secret_value(user_id, "storage:ssh/key".to_string())
+                .await
+                .expect("secret lookup should succeed")
+                .is_none()
+        );
 
         let binding = storage
             .upsert_topic_binding(UpsertTopicBindingOptions {
@@ -3121,11 +3133,13 @@ mod tests {
             .expect("due reminder should be claimed");
         assert_eq!(claimed.version, reminder.version + 1);
         assert_eq!(claimed.lease_until, Some(200));
-        assert!(storage
-            .claim_reminder_job(user_id, reminder.reminder_id.clone(), 250, 150)
-            .await
-            .expect("second claim should execute")
-            .is_none());
+        assert!(
+            storage
+                .claim_reminder_job(user_id, reminder.reminder_id.clone(), 250, 150)
+                .await
+                .expect("second claim should execute")
+                .is_none()
+        );
 
         let reclaimed = storage
             .claim_reminder_job(user_id, reminder.reminder_id.clone(), 300, 200)
@@ -3196,11 +3210,13 @@ mod tests {
             .delete_reminder_job(user_id, reminder.reminder_id.clone())
             .await
             .expect("delete should execute");
-        assert!(storage
-            .get_reminder_job(user_id, reminder.reminder_id)
-            .await
-            .expect("lookup after delete should execute")
-            .is_none());
+        assert!(
+            storage
+                .get_reminder_job(user_id, reminder.reminder_id)
+                .await
+                .expect("lookup after delete should execute")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -3241,11 +3257,13 @@ mod tests {
             .filter(Option::is_some)
             .count();
         assert_eq!(claims, 1);
-        assert!(storage
-            .list_due_reminder_jobs(user_id, 150, 10)
-            .await
-            .expect("due list should execute")
-            .is_empty());
+        assert!(
+            storage
+                .list_due_reminder_jobs(user_id, 150, 10)
+                .await
+                .expect("due list should execute")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3377,16 +3395,20 @@ mod tests {
             format!("prod/wiki/v1/contexts/{context_id}/pages/deploy-runbook.md")
         );
         assert!(page.content.contains("Run smoke tests"));
-        assert!(store
-            .read_context_file(&context_id, "index.md")
-            .await
-            .expect("index read should execute")
-            .is_some());
-        assert!(store
-            .read_context_raw_item(&context_id, "2026-06", "run-a")
-            .await
-            .expect("raw read should execute")
-            .is_some());
+        assert!(
+            store
+                .read_context_file(&context_id, "index.md")
+                .await
+                .expect("index read should execute")
+                .is_some()
+        );
+        assert!(
+            store
+                .read_context_raw_item(&context_id, "2026-06", "run-a")
+                .await
+                .expect("raw read should execute")
+                .is_some()
+        );
 
         let row = query::<Postgres>(
             r#"
@@ -3442,11 +3464,13 @@ mod tests {
             .delete_context_page(&context_id, "deploy-runbook")
             .await
             .expect("page delete should execute");
-        assert!(store
-            .read_context_page(&context_id, "deploy-runbook")
-            .await
-            .expect("page read after delete should execute")
-            .is_none());
+        assert!(
+            store
+                .read_context_page(&context_id, "deploy-runbook")
+                .await
+                .expect("page read after delete should execute")
+                .is_none()
+        );
 
         let too_large_inbox = "x".repeat(16 * 1024 + 1);
         let error = store
@@ -3459,21 +3483,27 @@ mod tests {
             .delete_wiki_context(user_id, context_key.to_string())
             .await
             .expect("context delete should execute");
-        assert!(store
-            .read_context_file(&context_id, "index.md")
-            .await
-            .expect("context index read after delete should execute")
-            .is_none());
-        assert!(store
-            .read_context_inbox_item(&context_id, "candidate")
-            .await
-            .expect("inbox read after context delete should execute")
-            .is_none());
-        assert!(store
-            .read_global_file("index.md")
-            .await
-            .expect("global read should execute")
-            .is_some());
+        assert!(
+            store
+                .read_context_file(&context_id, "index.md")
+                .await
+                .expect("context index read after delete should execute")
+                .is_none()
+        );
+        assert!(
+            store
+                .read_context_inbox_item(&context_id, "candidate")
+                .await
+                .expect("inbox read after context delete should execute")
+                .is_none()
+        );
+        assert!(
+            store
+                .read_global_file("index.md")
+                .await
+                .expect("global read should execute")
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -3539,11 +3569,13 @@ mod tests {
                 .expect("idempotent cleanup should execute"),
             0
         );
-        assert!(store
-            .read_context_raw_item(&context_id, "2026-06", "fresh")
-            .await
-            .expect("fresh raw item should read")
-            .is_some());
+        assert!(
+            store
+                .read_context_raw_item(&context_id, "2026-06", "fresh")
+                .await
+                .expect("fresh raw item should read")
+                .is_some()
+        );
         assert_eq!(
             storage
                 .cleanup_expired_wiki_pages(400, 0)

@@ -70,10 +70,12 @@ fn user_config_roundtrip_preserves_context_scoped_metadata() {
             .and_then(|context| context.forum_topic_name.as_deref()),
         Some("Topic 42")
     );
-    assert!(parsed
-        .contexts
-        .get("-1001:42")
-        .is_some_and(|context| context.forum_topic_closed));
+    assert!(
+        parsed
+            .contexts
+            .get("-1001:42")
+            .is_some_and(|context| context.forum_topic_closed)
+    );
 }
 
 #[test]

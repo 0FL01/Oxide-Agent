@@ -70,8 +70,8 @@ pub use executor::{
 pub use hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookRegistry, HookResult};
 pub use identity::SessionId;
 pub use input_intent::{
-    classify_agent_input_intent, AgentInputIntentClassification, AgentInputIntentSnapshot,
-    AgentInputSessionStatus,
+    AgentInputIntentClassification, AgentInputIntentSnapshot, AgentInputSessionStatus,
+    classify_agent_input_intent,
 };
 pub use loop_detection::{LoopDetectedEvent, LoopDetectionService, LoopType};
 pub use memory::{
@@ -82,10 +82,10 @@ pub use memory_behavior::{
     MemoryBehaviorRuntime, ToolDerivedMemoryDraft, ToolDerivedMemoryKind, TopicMemoryPolicy,
 };
 pub use profile::{
+    AgentExecutionProfile, HookAccessPolicy, ParsedAgentProfile, ToolAccessPolicy,
     dm_default_blocked_tools, dm_tool_policy, manager_default_blocked_tools, parse_agent_profile,
     topic_agent_all_hooks, topic_agent_default_blocked_tools, topic_agent_manageable_hooks,
-    topic_agent_protected_hooks, AgentExecutionProfile, HookAccessPolicy, ParsedAgentProfile,
-    ToolAccessPolicy,
+    topic_agent_protected_hooks,
 };
 pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
 pub use providers::{SshApprovalGrant, SshApprovalRequestView};

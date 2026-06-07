@@ -1,9 +1,9 @@
 //! Message preparation utilities for Mistral API
 
+use crate::llm::Message;
 use crate::llm::providers::mistral::id_mapper::ToolCallIdMapper;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
-use crate::llm::Message;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Prepare structured messages for tool calling
 ///
@@ -36,29 +36,30 @@ pub fn prepare_structured_messages(
                 });
 
                 if let Some(calls) = tool_calls
-                    && !calls.is_empty() {
-                        let mistral_tool_calls: Vec<Value> = calls
-                            .iter()
-                            .filter_map(|tc| {
-                                CHAT_LIKE_TOOL_PROFILE
-                                    .encode_tool_call(tc)
-                                    .and_then(|call| call.into_chat_like())
-                                    .map(|call| {
-                                        // Transform ID to Mistral-compatible format
-                                        let mistral_id = id_mapper.mistral_id_for(&call.id);
-                                        json!({
-                                            "id": mistral_id,
-                                            "type": "function",
-                                            "function": {
-                                                "name": call.name,
-                                                "arguments": call.arguments
-                                            }
-                                        })
+                    && !calls.is_empty()
+                {
+                    let mistral_tool_calls: Vec<Value> = calls
+                        .iter()
+                        .filter_map(|tc| {
+                            CHAT_LIKE_TOOL_PROFILE
+                                .encode_tool_call(tc)
+                                .and_then(|call| call.into_chat_like())
+                                .map(|call| {
+                                    // Transform ID to Mistral-compatible format
+                                    let mistral_id = id_mapper.mistral_id_for(&call.id);
+                                    json!({
+                                        "id": mistral_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": call.name,
+                                            "arguments": call.arguments
+                                        }
                                     })
-                            })
-                            .collect();
-                        msg_obj["tool_calls"] = json!(mistral_tool_calls);
-                    }
+                                })
+                        })
+                        .collect();
+                    msg_obj["tool_calls"] = json!(mistral_tool_calls);
+                }
                 other_messages.push(msg_obj);
             }
             "tool" => {

@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use oxide_agent_core::llm::DiscoveredLlmModel;
 use oxide_agent_web_contracts::{
@@ -9,7 +9,7 @@ use oxide_agent_web_contracts::{
     ModelRouteSourceView, ModelRouteView, ModelSelection,
 };
 
-use super::{api_error, authenticated_user, authenticated_user_with_csrf, AppState};
+use super::{AppState, api_error, authenticated_user, authenticated_user_with_csrf};
 
 const DEFAULT_OPENCODE_GO_QUALIFIED_MODEL_ID: &str = "opencode-go/kimi-k2.6";
 const MAX_MODEL_SELECTION_CHARS: usize = 128;

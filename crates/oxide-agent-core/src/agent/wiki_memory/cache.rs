@@ -1,5 +1,5 @@
 use super::patch::ValidatedWikiPatch;
-use super::store::{wiki_content_hash, WikiPage, WikiStore};
+use super::store::{WikiPage, WikiStore, wiki_content_hash};
 use crate::storage::StorageError;
 use chrono::{DateTime, Utc};
 use moka::future::Cache;
@@ -851,14 +851,18 @@ mod tests {
         assert_eq!(metadata_pages, 2);
         assert_eq!(flush.written_pages, 3);
         let objects = backend.objects.lock().await;
-        assert!(objects
-            .get("prod/wiki/v1/contexts/ctx-12345678/index.md")
-            .expect("index should be written")
-            .contains("pages/deploy-workflow.md"));
-        assert!(objects
-            .get("prod/wiki/v1/contexts/ctx-12345678/log.md")
-            .expect("log should be written")
-            .contains("changed=pages/deploy-workflow.md"));
+        assert!(
+            objects
+                .get("prod/wiki/v1/contexts/ctx-12345678/index.md")
+                .expect("index should be written")
+                .contains("pages/deploy-workflow.md")
+        );
+        assert!(
+            objects
+                .get("prod/wiki/v1/contexts/ctx-12345678/log.md")
+                .expect("log should be written")
+                .contains("changed=pages/deploy-workflow.md")
+        );
     }
 
     #[tokio::test]
@@ -877,11 +881,13 @@ mod tests {
             .load_context_index(context_id)
             .await
             .expect("context index should load");
-        assert!(first_cache
-            .load_context_file(context_id, "overview.md")
-            .await
-            .expect("context file should load")
-            .is_none());
+        assert!(
+            first_cache
+                .load_context_file(context_id, "overview.md")
+                .await
+                .expect("context file should load")
+                .is_none()
+        );
         assert_eq!(backend.get_keys.lock().await.len(), 3);
 
         let second_backend: Arc<dyn WikiObjectBackend> = backend.clone();
@@ -894,11 +900,13 @@ mod tests {
             .load_context_index(context_id)
             .await
             .expect("context index should load from shared cache");
-        assert!(second_cache
-            .load_context_file(context_id, "overview.md")
-            .await
-            .expect("context file should load from shared cache")
-            .is_none());
+        assert!(
+            second_cache
+                .load_context_file(context_id, "overview.md")
+                .await
+                .expect("context file should load from shared cache")
+                .is_none()
+        );
 
         assert_eq!(backend.get_keys.lock().await.len(), 3);
         assert_eq!(second_cache.metrics().await.backend_gets, 0);

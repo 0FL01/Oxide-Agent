@@ -9,6 +9,6 @@ pub mod agent;
 pub mod session_registry;
 
 pub use agent::runtime::{
-    spawn_progress_runtime, AgentTransport, DeliveryMode, ProgressRuntimeConfig,
+    AgentTransport, DeliveryMode, ProgressRuntimeConfig, spawn_progress_runtime,
 };
 pub use session_registry::SessionRegistry;

@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::{Mutex, mpsc::Sender};
 use tracing::info;
 
 /// Status of a todo item
@@ -624,8 +624,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_todos_runtime_executor_emits_progress_update(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_todos_runtime_executor_emits_progress_update()
+    -> Result<(), Box<dyn std::error::Error>> {
         let todos = Arc::new(Mutex::new(TodoList::new()));
         let provider = Arc::new(TodosProvider::new(Arc::clone(&todos)));
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(4);

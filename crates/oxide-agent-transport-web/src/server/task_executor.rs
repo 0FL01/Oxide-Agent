@@ -4,12 +4,13 @@
 //! and tracking timeline milestones.
 
 use super::{
-    markdown_preview, pending_user_input_view, progress_snapshot_from_serializable, AppState,
-    Milestones, SerializableProgress, TaskTimelineRecord, EVENT_LOGS, YOLO_APPROVAL_DIAGNOSTIC,
+    AppState, EVENT_LOGS, Milestones, SerializableProgress, TaskTimelineRecord,
+    YOLO_APPROVAL_DIAGNOSTIC, markdown_preview, pending_user_input_view,
+    progress_snapshot_from_serializable,
 };
 use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
-use crate::web_transport::{collect_events, BrowserEventScope, TaskEventLog};
+use crate::web_transport::{BrowserEventScope, TaskEventLog, collect_events};
 use oxide_agent_core::agent::{
     AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentUserInput,
     PendingUserInput,
@@ -21,7 +22,7 @@ use oxide_agent_web_contracts::{
 use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
@@ -361,13 +362,14 @@ fn spawn_event_collector(
                 persist_task_events(&web_task, collected.persisted_events).await;
             }
             if let Some(handle) = live_progress_persister_handle
-                && let Err(error) = handle.await {
-                    warn!(
-                        task_id = %web_task.task_id,
-                        error = %error,
-                        "Live web progress persistence task failed"
-                    );
-                }
+                && let Err(error) = handle.await
+            {
+                warn!(
+                    task_id = %web_task.task_id,
+                    error = %error,
+                    "Live web progress persistence task failed"
+                );
+            }
             persist_task_progress(&web_task, progress).await;
         }
     })
@@ -603,9 +605,10 @@ fn spawn_event_log_cleanup(task_id: String, closed_at: std::time::Instant) {
         // log. A fresh task that re-used the same id would have a
         // different `closed_at` (or `None`), and we must not touch it.
         if let Some(current) = logs.get(&task_id)
-            && current.closed_at().await == Some(closed_at) {
-                logs.remove(&task_id);
-            }
+            && current.closed_at().await == Some(closed_at)
+        {
+            logs.remove(&task_id);
+        }
     });
 }
 

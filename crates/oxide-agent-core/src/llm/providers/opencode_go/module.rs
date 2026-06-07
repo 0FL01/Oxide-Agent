@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::config::{AgentSettings, ModelInfo};
+use crate::llm::LlmProvider;
 use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
-use crate::llm::LlmProvider;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 

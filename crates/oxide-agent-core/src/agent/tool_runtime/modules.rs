@@ -20,10 +20,8 @@ use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 #[cfg(feature = "integration-ssh-mcp")]
 use std::sync::OnceLock;
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::{Mutex, mpsc::Sender};
 
-#[cfg(feature = "integration-ssh-mcp")]
-use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::providers::AgentsMdProvider;
 #[cfg(feature = "tool-brave-search")]
@@ -58,6 +56,8 @@ use crate::agent::providers::WebFetchMdProvider;
 use crate::agent::providers::WikiMemoryProvider;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::providers::YtdlpProvider;
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "integration-mcp-jira")]
 use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
 #[cfg(feature = "tool-tts-kokoro")]
@@ -952,12 +952,13 @@ impl KokoroTtsToolModule {
         let config = TtsConfig::from_env();
 
         if let Ok(url) = std::env::var("KOKORO_TTS_URL")
-            && url.trim().is_empty() {
-                tracing::debug!(
-                    "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
-                );
-                return None;
-            }
+            && url.trim().is_empty()
+        {
+            tracing::debug!(
+                "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
+            );
+            return None;
+        }
 
         tracing::debug!(url = %config.base_url, "Registering TTS provider");
         let mut provider =
@@ -995,12 +996,13 @@ impl SileroTtsToolModule {
         let config = SileroTtsConfig::from_env();
 
         if let Ok(url) = std::env::var("SILERO_TTS_URL")
-            && url.trim().is_empty() {
-                tracing::debug!(
-                    "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
-                );
-                return None;
-            }
+            && url.trim().is_empty()
+        {
+            tracing::debug!(
+                "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
+            );
+            return None;
+        }
 
         tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");
         let mut provider =

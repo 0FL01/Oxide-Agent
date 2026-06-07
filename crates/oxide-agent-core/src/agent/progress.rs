@@ -682,17 +682,19 @@ impl ProgressState {
     /// Helper: Complete the last in-progress step
     fn complete_last_step(&mut self) {
         if let Some(last) = self.steps.last_mut()
-            && last.status == StepStatus::InProgress {
-                last.status = StepStatus::Completed;
-            }
+            && last.status == StepStatus::InProgress
+        {
+            last.status = StepStatus::Completed;
+        }
     }
 
     /// Helper: Mark the last in-progress step as failed
     fn fail_last_step(&mut self) {
         if let Some(last) = self.steps.last_mut()
-            && last.status == StepStatus::InProgress {
-                last.status = StepStatus::Failed;
-            }
+            && last.status == StepStatus::InProgress
+        {
+            last.status = StepStatus::Failed;
+        }
     }
 
     fn handle_thinking(&mut self, snapshot: TokenSnapshot) {
@@ -765,14 +767,15 @@ impl ProgressState {
         if !id.is_empty()
             && let Some(step) = self.steps.iter_mut().rev().find(|step| {
                 step.status == StepStatus::InProgress && step.tool_id.as_deref() == Some(id)
-            }) {
-                step.status = if success {
-                    StepStatus::Completed
-                } else {
-                    StepStatus::Failed
-                };
-                return;
-            }
+            })
+        {
+            step.status = if success {
+                StepStatus::Completed
+            } else {
+                StepStatus::Failed
+            };
+            return;
+        }
 
         if success {
             self.complete_last_step();
@@ -831,14 +834,15 @@ impl ProgressState {
         if let Some((task, blocked_on_user)) = current_task {
             // Update step description with current task
             if let Some(last) = self.steps.last_mut()
-                && last.status == StepStatus::InProgress {
-                    let prefix = if blocked_on_user {
-                        "📋 Waiting on user"
-                    } else {
-                        "📋"
-                    };
-                    last.description = format!("{prefix} {task} ({completed}/{total})");
-                }
+                && last.status == StepStatus::InProgress
+            {
+                let prefix = if blocked_on_user {
+                    "📋 Waiting on user"
+                } else {
+                    "📋"
+                };
+                last.description = format!("{prefix} {task} ({completed}/{total})");
+            }
         }
     }
 
@@ -1144,18 +1148,24 @@ mod tests {
 
         assert_eq!(state.steps.len(), 1);
         assert_eq!(state.steps[0].status, super::StepStatus::Completed);
-        assert!(state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status.contains("Compaction: compacted history")));
-        assert!(state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status.contains("manual/manual")));
-        assert!(state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status.contains("mock/compact")));
+        assert!(
+            state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("Compaction: compacted history"))
+        );
+        assert!(
+            state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("manual/manual"))
+        );
+        assert!(
+            state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("mock/compact"))
+        );
     }
 
     #[test]
@@ -1166,9 +1176,11 @@ mod tests {
             count: 3,
         });
 
-        assert!(state
-            .repeated_compaction_warning
-            .as_deref()
-            .is_some_and(|warning| warning == "History compaction: 3x"));
+        assert!(
+            state
+                .repeated_compaction_warning
+                .as_deref()
+                .is_some_and(|warning| warning == "History compaction: 3x")
+        );
     }
 }

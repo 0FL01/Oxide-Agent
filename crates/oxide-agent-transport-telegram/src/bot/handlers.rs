@@ -1,14 +1,14 @@
+use crate::bot::UnauthorizedCache;
 use crate::bot::context::{current_context_state, set_current_context_state};
 use crate::bot::state::State;
 use crate::bot::topic_route::{resolve_topic_route, touch_dynamic_binding_activity_if_needed};
-use crate::bot::views::{agent_control_markup, AgentView, DefaultAgentView};
-use crate::bot::UnauthorizedCache;
+use crate::bot::views::{AgentView, DefaultAgentView, agent_control_markup};
 use crate::bot::{
-    build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams, TelegramThreadKind,
-    TelegramThreadSpec,
+    OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec, build_outbound_thread_params,
+    resolve_thread_spec,
 };
 use crate::config::BotSettings;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::StorageProvider;
 use oxide_agent_core::utils::truncate_str;
@@ -110,25 +110,26 @@ async fn check_state_and_redirect(
 
     if let Some(state_str) =
         current_or_default_context_state(storage, settings, user_id, msg, thread_spec).await?
-        && state_str == "agent_mode" {
-            info!("Restoring agent mode for user {user_id} based on persisted state.");
-            dialogue
-                .update(State::AgentMode)
-                .await
-                .map_err(|e| anyhow!(e.to_string()))?;
+        && state_str == "agent_mode"
+    {
+        info!("Restoring agent mode for user {user_id} based on persisted state.");
+        dialogue
+            .update(State::AgentMode)
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
 
-            Box::pin(crate::bot::agent_handlers::handle_agent_message(
-                bot.clone(),
-                msg.clone(),
-                storage.clone(),
-                llm.clone(),
-                dialogue.clone(),
-                settings.clone(),
-            ))
-            .await?;
+        Box::pin(crate::bot::agent_handlers::handle_agent_message(
+            bot.clone(),
+            msg.clone(),
+            storage.clone(),
+            llm.clone(),
+            dialogue.clone(),
+            settings.clone(),
+        ))
+        .await?;
 
-            return Ok(true);
-        }
+        return Ok(true);
+    }
     Ok(false)
 }
 
@@ -928,8 +929,8 @@ pub async fn handle_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_menu_callback_data, should_default_to_agent_mode, MenuCallbackData,
-        MENU_CALLBACK_AGENT_MODE, MENU_CALLBACK_BACK,
+        MENU_CALLBACK_AGENT_MODE, MENU_CALLBACK_BACK, MenuCallbackData, parse_menu_callback_data,
+        should_default_to_agent_mode,
     };
     use crate::config::{BotSettings, TelegramSettings};
     use oxide_agent_core::config::AgentSettings;

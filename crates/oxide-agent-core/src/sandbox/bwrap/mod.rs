@@ -1,6 +1,6 @@
 //! Bubblewrap sandbox backend.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};

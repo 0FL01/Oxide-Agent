@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::agent::progress::AgentEvent;
 use crate::agent::progress::FileDeliveryKind;
 use crate::agent::providers::file_delivery::{
-    deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus,
+    FileDeliveryRequest, FileDeliveryStatus, deliver_file_via_progress,
 };
 
 const TOOL_TEXT_TO_SPEECH_EN: &str = "text_to_speech_en";
@@ -560,12 +560,14 @@ mod tests {
             .expect("invalid voice returns model-visible output");
 
         assert_eq!(output.status, ToolOutputStatus::Success);
-        assert!(output
-            .stdout
-            .text
-            .as_deref()
-            .expect("stdout text")
-            .contains("Invalid TTS parameters"));
+        assert!(
+            output
+                .stdout
+                .text
+                .as_deref()
+                .expect("stdout text")
+                .contains("Invalid TTS parameters")
+        );
     }
 
     #[test]

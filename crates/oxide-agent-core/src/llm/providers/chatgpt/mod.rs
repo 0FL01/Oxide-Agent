@@ -2,8 +2,8 @@ mod auth;
 pub(crate) mod module;
 
 pub use auth::{
-    resolve_auth_file_path, ChatGptAuthFlow, ChatGptAuthRecord, ChatGptAuthStatus,
-    ChatGptDeviceAuthorization,
+    ChatGptAuthFlow, ChatGptAuthRecord, ChatGptAuthStatus, ChatGptDeviceAuthorization,
+    resolve_auth_file_path,
 };
 pub(crate) use module::ChatGptProviderModule;
 
@@ -16,13 +16,12 @@ use crate::llm::{
 };
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use reqwest::{header::HeaderMap, Client as HttpClient};
-use serde_json::{json, Value};
+use reqwest::{Client as HttpClient, header::HeaderMap};
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
 
 const CHATGPT_CODEX_API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
-const JSON_OBJECT_INSTRUCTIONS_SUFFIX: &str =
-    "Return valid JSON only. The response must be a single JSON object with no markdown or extra text.";
+const JSON_OBJECT_INSTRUCTIONS_SUFFIX: &str = "Return valid JSON only. The response must be a single JSON object with no markdown or extra text.";
 
 /// ChatGPT headless OAuth provider.
 #[derive(Debug, Clone)]
@@ -796,9 +795,9 @@ fn parse_usage(value: &Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::{
+        ChatGptResponseMetadata, ChatGptStreamDiagnostics, StreamedChatGptResponse,
         build_chat_request_body, decode_utf8_prefix, finish_streaming_response,
-        prepare_responses_request, process_sse_event, ChatGptResponseMetadata,
-        ChatGptStreamDiagnostics, StreamedChatGptResponse,
+        prepare_responses_request, process_sse_event,
     };
     use crate::llm::{LlmError, Message, ToolCall, ToolCallCorrelation, ToolCallFunction};
     use reqwest::StatusCode;
@@ -817,9 +816,11 @@ mod tests {
             None,
         );
 
-        assert!(body["instructions"]
-            .as_str()
-            .is_some_and(|value| value.contains("JSON")));
+        assert!(
+            body["instructions"]
+                .as_str()
+                .is_some_and(|value| value.contains("JSON"))
+        );
         assert_eq!(
             body["input"][0]["content"][0]["text"],
             json!("Return valid JSON only.")
@@ -878,18 +879,20 @@ mod tests {
         let history = vec![
             Message::assistant_with_tools(
                 "Calling tools",
-                vec![ToolCall::new(
-                    "invoke-chatgpt-1",
-                    ToolCallFunction {
-                        name: "search".to_string(),
-                        arguments: r#"{"query":"oxide"}"#.to_string(),
-                    },
-                    false,
-                )
-                .with_correlation(
-                    ToolCallCorrelation::new("invoke-chatgpt-1")
-                        .with_provider_tool_call_id("call-chatgpt-1"),
-                )],
+                vec![
+                    ToolCall::new(
+                        "invoke-chatgpt-1",
+                        ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: r#"{"query":"oxide"}"#.to_string(),
+                        },
+                        false,
+                    )
+                    .with_correlation(
+                        ToolCallCorrelation::new("invoke-chatgpt-1")
+                            .with_provider_tool_call_id("call-chatgpt-1"),
+                    ),
+                ],
             ),
             Message::tool_with_correlation(
                 "invoke-chatgpt-1",
@@ -1011,8 +1014,11 @@ mod tests {
                 assert!(details.contains("trace_id=trace_456"));
                 assert!(details.contains("events=2"));
                 assert!(details.contains("saw_completion=false"));
-                assert!(details
-                    .contains("ignored_event_types=response.created,response.output_item.added"));
+                assert!(
+                    details.contains(
+                        "ignored_event_types=response.created,response.output_item.added"
+                    )
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -1047,9 +1053,11 @@ mod tests {
     #[test]
     fn decode_utf8_prefix_handles_split_multibyte_sequences() {
         let mut pending = vec![0xF0, 0x9F];
-        assert!(decode_utf8_prefix(&mut pending)
-            .expect("partial utf8")
-            .is_none());
+        assert!(
+            decode_utf8_prefix(&mut pending)
+                .expect("partial utf8")
+                .is_none()
+        );
 
         pending.extend_from_slice(&[0x99, 0x82]);
         assert_eq!(

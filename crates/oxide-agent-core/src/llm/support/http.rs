@@ -315,14 +315,15 @@ pub fn extract_text_content(response: &Value, path: &[&str]) -> Result<String, L
 /// - HTTP-date (RFC 7231, e.g., "Wed, 21 Oct 2015 07:28:00 GMT")
 pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
     if let Some(header_val) = headers.get(reqwest::header::RETRY_AFTER)
-        && let Ok(val_str) = header_val.to_str() {
-            if let Ok(secs) = val_str.parse::<u64>() {
-                return Some(secs);
-            }
-            if let Some(wait_secs) = parse_http_date(val_str) {
-                return Some(wait_secs);
-            }
+        && let Ok(val_str) = header_val.to_str()
+    {
+        if let Ok(secs) = val_str.parse::<u64>() {
+            return Some(secs);
         }
+        if let Some(wait_secs) = parse_http_date(val_str) {
+            return Some(wait_secs);
+        }
+    }
     None
 }
 

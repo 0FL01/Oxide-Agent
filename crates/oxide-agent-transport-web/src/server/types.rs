@@ -193,7 +193,10 @@ impl fmt::Display for WebStartupError {
                 write!(f, "web UI store is unavailable during startup: {message}")
             }
             Self::StaticAssetsUnavailable(message) => {
-                write!(f, "web UI static assets are unavailable during startup: {message}")
+                write!(
+                    f,
+                    "web UI static assets are unavailable during startup: {message}"
+                )
             }
         }
     }

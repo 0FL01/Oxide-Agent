@@ -265,15 +265,17 @@ mod tests {
             )
             .expect("transient hook result should apply");
 
-        assert!(ctx
-            .messages
-            .iter()
-            .any(|message| message.role == "system" && message.content == "temporary warning"));
-        assert!(!ctx
-            .agent
-            .memory()
-            .get_messages()
-            .iter()
-            .any(|message| message.content == "temporary warning"));
+        assert!(
+            ctx.messages
+                .iter()
+                .any(|message| message.role == "system" && message.content == "temporary warning")
+        );
+        assert!(
+            !ctx.agent
+                .memory()
+                .get_messages()
+                .iter()
+                .any(|message| message.content == "temporary warning")
+        );
     }
 }

@@ -150,9 +150,11 @@ async fn prepare_execution_heavy_effort_raises_runner_budgets() {
     assert!(prepared.runner_config.max_iterations >= 512);
     assert!(prepared.runner_config.continuation_limit >= 150);
     assert!(prepared.runner_config.timeout_secs >= 180 * 60);
-    assert!(prepared
-        .system_prompt
-        .contains("2-4 independent research branches"));
+    assert!(
+        prepared
+            .system_prompt
+            .contains("2-4 independent research branches")
+    );
     assert!(prepared.system_prompt.contains("wait_sub_agents"));
     assert!(prepared.system_prompt.contains("Before final answer"));
 }
@@ -367,9 +369,11 @@ async fn manual_compaction_uses_current_compaction_controller() {
             .count(),
         1
     );
-    assert!(messages
-        .iter()
-        .all(|message| !message.content.contains("[COMPACTION_SUMMARY]")));
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.content.contains("[COMPACTION_SUMMARY]"))
+    );
     assert_eq!(event_names, vec!["runtime_started", "runtime_completed"]);
 }
 
@@ -453,9 +457,11 @@ async fn manual_compaction_runtime_generations_increment_across_repeated_compact
             .count(),
         1
     );
-    assert!(messages
-        .iter()
-        .any(|message| message.content.contains("generation: 3")));
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.content.contains("generation: 3"))
+    );
 }
 
 #[tokio::test]

@@ -8,8 +8,8 @@ use crate::agent::providers::TodoList;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
-    get_agent_continuation_limit, get_agent_max_iterations, get_agent_model,
-    get_agent_search_limit, ModelInfo,
+    ModelInfo, get_agent_continuation_limit, get_agent_max_iterations, get_agent_model,
+    get_agent_search_limit,
 };
 use crate::llm::{Message, ToolDefinition};
 use anyhow::Error;

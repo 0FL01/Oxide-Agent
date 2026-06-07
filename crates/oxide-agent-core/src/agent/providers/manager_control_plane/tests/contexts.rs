@@ -139,9 +139,11 @@ async fn topic_context_upsert_rejects_agents_style_content() {
         .await
         .expect_err("AGENTS-style topic context must be rejected");
 
-    assert!(error
-        .to_string()
-        .contains("store AGENTS.md-style documents in topic_agents_md"));
+    assert!(
+        error
+            .to_string()
+            .contains("store AGENTS.md-style documents in topic_agents_md")
+    );
 }
 
 #[tokio::test]
@@ -169,9 +171,11 @@ async fn topic_context_upsert_surfaces_duplicate_topic_prompt_error() {
         .await
         .expect_err("duplicate topic prompt must be rejected");
 
-    assert!(error
-        .to_string()
-        .contains("duplicate topic prompt content for topic topic-a"));
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate topic prompt content for topic topic-a")
+    );
 }
 
 #[tokio::test]
@@ -327,7 +331,9 @@ async fn topic_context_rollback_rejects_duplicate_topic_prompt_restore() {
         .await
         .expect_err("duplicate rollback restore must be rejected");
 
-    assert!(error
-        .to_string()
-        .contains("duplicate topic prompt content for topic topic-a"));
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate topic prompt content for topic topic-a")
+    );
 }

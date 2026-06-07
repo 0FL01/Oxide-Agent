@@ -9,11 +9,11 @@
 //! - voxtral-mini-realtime-26-02 (streaming)
 
 use crate::config::MISTRAL_AUDIO_TRANSCRIBE_TEMPERATURE;
-use crate::llm::support::http::parse_retry_after;
 use crate::llm::LlmError;
+use crate::llm::support::http::parse_retry_after;
 use reqwest::{
-    multipart::{Form, Part},
     Client as HttpClient, StatusCode,
+    multipart::{Form, Part},
 };
 use serde_json::Value;
 use std::time::Duration;
@@ -75,14 +75,15 @@ where
             }
             Err(e) => {
                 if attempt < MAX_RETRIES
-                    && let Some(backoff) = get_retry_delay(&e, attempt) {
-                        warn!(
-                            "{} failed (attempt {}/{}): {}, retrying after {:?}",
-                            context, attempt, MAX_RETRIES, e, backoff
-                        );
-                        sleep(backoff).await;
-                        continue;
-                    }
+                    && let Some(backoff) = get_retry_delay(&e, attempt)
+                {
+                    warn!(
+                        "{} failed (attempt {}/{}): {}, retrying after {:?}",
+                        context, attempt, MAX_RETRIES, e, backoff
+                    );
+                    sleep(backoff).await;
+                    continue;
+                }
                 warn!("{} failed after {} attempts: {}", context, attempt, e);
                 return Err(e);
             }

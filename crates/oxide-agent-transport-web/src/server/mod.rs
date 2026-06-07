@@ -66,7 +66,7 @@ pub(crate) use task_routes::{
 };
 pub use types::*;
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{Json, extract::State, http::StatusCode};
 use oxide_agent_web_contracts::{ErrorCode, ErrorEnvelope, PublicConfigResponse};
 
 // ---------------------------------------------------------------------------

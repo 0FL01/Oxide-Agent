@@ -1,7 +1,7 @@
-use crate::bot::{thread_peer_key_from_spec, TelegramThreadKind, TelegramThreadSpec};
+use crate::bot::{TelegramThreadKind, TelegramThreadSpec, thread_peer_key_from_spec};
 use anyhow::Result;
 use oxide_agent_core::sandbox::SandboxScope;
-use oxide_agent_core::storage::{generate_flow_id, StorageProvider, UserConfig, UserContextConfig};
+use oxide_agent_core::storage::{StorageProvider, UserConfig, UserContextConfig, generate_flow_id};
 use std::sync::Arc;
 use teloxide::types::ChatId;
 
@@ -19,7 +19,7 @@ fn context_entry_mut<'a>(
     entry.chat_id = Some(chat_id.0);
     entry.thread_id = thread_spec
         .thread_id
-        .map(|thread_id| i64::from(thread_id.0 .0));
+        .map(|thread_id| i64::from(thread_id.0.0));
     entry
 }
 
@@ -38,7 +38,7 @@ pub(crate) fn sandbox_scope(
         Some(chat_id.0),
         thread_spec
             .thread_id
-            .map(|thread_id| i64::from(thread_id.0 .0)),
+            .map(|thread_id| i64::from(thread_id.0.0)),
     )
 }
 

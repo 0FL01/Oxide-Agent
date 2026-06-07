@@ -3,8 +3,8 @@
 //! Loads settings from environment variables and defines configuration constants.
 //!
 use crate::capabilities::{
-    compiled_capability_manifest, CompiledCapabilityManifest, EnabledCapabilityManifest,
-    ManifestError,
+    CompiledCapabilityManifest, EnabledCapabilityManifest, ManifestError,
+    compiled_capability_manifest,
 };
 use crate::llm::providers::{provider_missing_route_config_message, provider_module_id};
 use crate::llm::{provider_capabilities_for_model, provider_media_capabilities_for_model};
@@ -767,21 +767,23 @@ impl AgentSettings {
     fn apply_tool_provider_env_fallbacks(&mut self) {
         if self.tavily_api_key.is_none()
             && let Ok(val) = std::env::var("TAVILY_API_KEY")
-                && !val.is_empty() {
-                    self.tavily_api_key = Some(val);
-                }
+            && !val.is_empty()
+        {
+            self.tavily_api_key = Some(val);
+        }
 
         if self.tavily_enabled.is_none() {
             self.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
         }
 
         if self.brave_search_api_key.is_none()
-            && let Ok(val) = std::env::var("BRAVE_SEARCH_API_KEY") {
-                let val = val.trim();
-                if !val.is_empty() {
-                    self.brave_search_api_key = Some(val.to_string());
-                }
+            && let Ok(val) = std::env::var("BRAVE_SEARCH_API_KEY")
+        {
+            let val = val.trim();
+            if !val.is_empty() {
+                self.brave_search_api_key = Some(val.to_string());
             }
+        }
 
         if self.brave_search_enabled.is_none() {
             self.brave_search_enabled = parse_optional_env_bool("BRAVE_SEARCH_ENABLED");
@@ -793,34 +795,38 @@ impl AgentSettings {
 
         if self.duckduckgo_user_agent.is_none()
             && let Ok(val) = std::env::var("DUCKDUCKGO_USER_AGENT")
-                && !val.is_empty() {
-                    self.duckduckgo_user_agent = Some(val);
-                }
+            && !val.is_empty()
+        {
+            self.duckduckgo_user_agent = Some(val);
+        }
 
         if self.duckduckgo_proxy_url.is_none()
             && let Ok(val) =
                 std::env::var("DUCKDUCKGO_PROXY_URL").or_else(|_| std::env::var("DUCKDUCKGO_PROXY"))
-                && !val.is_empty() {
-                    self.duckduckgo_proxy_url = Some(val);
-                }
+            && !val.is_empty()
+        {
+            self.duckduckgo_proxy_url = Some(val);
+        }
 
         if self.searxng_url.is_none()
             && let Ok(val) = std::env::var("SEARXNG_URL")
-                && !val.is_empty() {
-                    self.searxng_url = Some(val);
-                }
+            && !val.is_empty()
+        {
+            self.searxng_url = Some(val);
+        }
 
         if self.searxng_enabled.is_none() {
             self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
         }
 
         if self.searxng_bearer_token.is_none()
-            && let Ok(val) = std::env::var("SEARXNG_BEARER_TOKEN") {
-                let val = val.trim();
-                if !val.is_empty() {
-                    self.searxng_bearer_token = Some(val.to_string());
-                }
+            && let Ok(val) = std::env::var("SEARXNG_BEARER_TOKEN")
+        {
+            let val = val.trim();
+            if !val.is_empty() {
+                self.searxng_bearer_token = Some(val.to_string());
             }
+        }
     }
 
     fn parse_model_routes_from_env(prefix: &str) -> Option<Vec<ModelInfo>> {
@@ -1010,10 +1016,9 @@ impl AgentSettings {
     }
 
     fn resolve_execution_model(&self, prefer_sub_agent: bool) -> ModelInfo {
-        if prefer_sub_agent
-            && let Some((_, info)) = self.sub_agent_model_spec() {
-                return info;
-            }
+        if prefer_sub_agent && let Some((_, info)) = self.sub_agent_model_spec() {
+            return info;
+        }
         if let Some((_, info)) = self.agent_model_spec() {
             return info;
         }
@@ -1374,12 +1379,16 @@ mod tests {
             .validate_route_providers()
             .expect_err("unknown provider should fail");
 
-        assert!(error
-            .to_string()
-            .contains("AGENT_MODEL_PROVIDER references provider 'removed-provider'"));
-        assert!(error
-            .to_string()
-            .contains("no compiled LLM provider module owns that provider alias or ID"));
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_MODEL_PROVIDER references provider 'removed-provider'")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("no compiled LLM provider module owns that provider alias or ID")
+        );
     }
 
     #[test]
@@ -1428,9 +1437,11 @@ mod tests {
             .validate_route_providers()
             .expect_err("unknown weighted route provider should fail");
 
-        assert!(error
-            .to_string()
-            .contains("AGENT_MODEL_ROUTES[0].provider references provider 'removed-provider'"));
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_MODEL_ROUTES[0].provider references provider 'removed-provider'")
+        );
     }
 
     #[cfg(feature = "llm-openrouter")]
@@ -1549,9 +1560,11 @@ mod tests {
             .validate_route_model_capabilities()
             .expect_err("unknown OpenRouter agent model should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("AGENT_MODEL route llm-provider/openrouter/unknown/model is not approved"));
+        assert!(
+            error.to_string().contains(
+                "AGENT_MODEL route llm-provider/openrouter/unknown/model is not approved"
+            )
+        );
     }
 
     #[cfg(feature = "llm-openrouter")]
@@ -1572,9 +1585,11 @@ mod tests {
             .validate_route_model_capabilities()
             .expect_err("unknown OpenRouter media model should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("MEDIA_MODEL route llm-provider/openrouter/unknown/model is not approved"));
+        assert!(
+            error.to_string().contains(
+                "MEDIA_MODEL route llm-provider/openrouter/unknown/model is not approved"
+            )
+        );
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -1836,8 +1851,8 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn settings_do_not_require_zai_key_when_active_routes_use_opencode_go(
-    ) -> Result<(), ConfigError> {
+    fn settings_do_not_require_zai_key_when_active_routes_use_opencode_go()
+    -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());

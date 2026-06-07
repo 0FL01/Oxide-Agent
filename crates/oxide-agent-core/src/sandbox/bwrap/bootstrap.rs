@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
@@ -15,7 +15,7 @@ use super::env::{
 };
 use super::host_fs::ensure_configured_dir;
 use super::image::{default_manifest_env, host_arch};
-use super::{ScopeLock, BWRAP_DEFAULT_IMAGE, WORKSPACE_PREFIX};
+use super::{BWRAP_DEFAULT_IMAGE, ScopeLock, WORKSPACE_PREFIX};
 
 const BWRAP_IMAGE_BOOTSTRAP_OFF: &str = "off";
 const BWRAP_IMAGE_BOOTSTRAP_DOWNLOAD: &str = "download";

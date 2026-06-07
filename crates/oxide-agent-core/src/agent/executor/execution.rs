@@ -11,21 +11,21 @@ use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKin
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_agent_system_prompt;
 use crate::agent::providers::{SshApprovalRequestView, TopicInfraPreflightReport};
-use crate::agent::runner::{run_with_timeout, AgentRunner, AgentRunnerConfig};
+use crate::agent::runner::{AgentRunner, AgentRunnerConfig, run_with_timeout};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
 use crate::agent::wiki_memory::planner::{
     extract_explicit_remember_payload, has_explicit_remember_intent,
 };
 use crate::agent::wiki_memory::{
-    wiki_context_id, WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchOperation,
-    WikiPatchPlanner, WikiPatchSet, WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache,
-    WikiStore,
+    WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchOperation, WikiPatchPlanner,
+    WikiPatchSet, WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache, WikiStore,
+    wiki_context_id,
 };
 use crate::config::{
-    get_agent_continuation_limit, get_agent_max_iterations, get_agent_search_limit, ModelInfo,
+    ModelInfo, get_agent_continuation_limit, get_agent_max_iterations, get_agent_search_limit,
 };
 use crate::llm::{InternalTextPurpose, LlmClient};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -1013,20 +1013,18 @@ fn effort_prompt_instructions(
         AgentExecutionEffort::Extended => Some(
             "[EFFORT: Extended]\nFor web research tasks, use multiple targeted searches, read selected primary sources, cross-check important claims, and state blockers instead of stopping early.",
         ),
-        AgentExecutionEffort::Heavy => Some(
-            concat!(
-                "[EFFORT: Heavy]\n",
-                "For current factual, comparative, market, technical, legal, scientific, product, API, benchmark, or best/latest/top/current research tasks:\n",
-                "- Create a source plan before final synthesis.\n",
-                "- If `spawn_sub_agents` is available, start by delegating 2-4 independent research branches before final synthesis unless the task is clearly simple or strictly sequential.\n",
-                "- Recommended branches: primary/official sources; recent independent secondary sources; contradictory evidence, criticism, and limitations; technical docs, benchmarks, repos, or changelogs when relevant.\n",
-                "- Give each sub-agent a narrow task and an explicit tools whitelist using only available tools, for example `web_search`, `web_extract`, `searxng_search`, `crawl4ai_markdown`, and `web_markdown`.\n",
-                "- For web-research sub-agents, include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages; keep `web_markdown` as the lightweight fallback.\n",
-                "- Use `wait_sub_agents` before relying on delegated findings. Treat sub-agent output as leads, not final truth; cross-check important claims in the parent synthesis.\n",
-                "- Use search plus extraction rather than snippets only, prioritize primary sources, and continue until evidence is sufficient or blockers are explicit.\n",
-                "Before final answer, verify internally: current sources were used; selected URLs were read; primary sources and contradictions were checked; independent branches were delegated when useful and available; if not delegated, the task was simple/sequential or delegation was unavailable."
-            ),
-        ),
+        AgentExecutionEffort::Heavy => Some(concat!(
+            "[EFFORT: Heavy]\n",
+            "For current factual, comparative, market, technical, legal, scientific, product, API, benchmark, or best/latest/top/current research tasks:\n",
+            "- Create a source plan before final synthesis.\n",
+            "- If `spawn_sub_agents` is available, start by delegating 2-4 independent research branches before final synthesis unless the task is clearly simple or strictly sequential.\n",
+            "- Recommended branches: primary/official sources; recent independent secondary sources; contradictory evidence, criticism, and limitations; technical docs, benchmarks, repos, or changelogs when relevant.\n",
+            "- Give each sub-agent a narrow task and an explicit tools whitelist using only available tools, for example `web_search`, `web_extract`, `searxng_search`, `crawl4ai_markdown`, and `web_markdown`.\n",
+            "- For web-research sub-agents, include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages; keep `web_markdown` as the lightweight fallback.\n",
+            "- Use `wait_sub_agents` before relying on delegated findings. Treat sub-agent output as leads, not final truth; cross-check important claims in the parent synthesis.\n",
+            "- Use search plus extraction rather than snippets only, prioritize primary sources, and continue until evidence is sufficient or blockers are explicit.\n",
+            "Before final answer, verify internally: current sources were used; selected URLs were read; primary sources and contradictions were checked; independent branches were delegated when useful and available; if not delegated, the task was simple/sequential or delegation was unavailable."
+        )),
     }?;
 
     Some(

@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     extract::State,
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use oxide_agent_web_contracts::{
     ErrorCode, ErrorEnvelope, UpdateUserSettingsRequest, UserSettingsResponse,
@@ -13,7 +13,7 @@ use crate::persistence::WebUserRecord;
 use super::agent_profiles::validate_optional_agent_profile_id;
 use super::model_routes::canonical_model_selection;
 use super::{
-    api_error, authenticated_user, authenticated_user_with_csrf, store_error_response, AppState,
+    AppState, api_error, authenticated_user, authenticated_user_with_csrf, store_error_response,
 };
 
 #[derive(Debug)]

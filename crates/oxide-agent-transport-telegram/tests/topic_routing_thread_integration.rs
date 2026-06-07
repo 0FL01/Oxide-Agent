@@ -10,7 +10,7 @@ use oxide_agent_transport_telegram::bot::thread::{
     build_outbound_thread_params, resolve_thread_spec_from_context,
 };
 use oxide_agent_transport_telegram::bot::topic_route::{
-    resolve_topic_route, resolve_topic_route_decision, TopicRouteContext,
+    TopicRouteContext, resolve_topic_route, resolve_topic_route_decision,
 };
 use oxide_agent_transport_telegram::config::{
     BotSettings, TelegramSettings, TelegramTopicSettings,

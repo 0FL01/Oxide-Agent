@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
-use oxide_agent_core::agent::progress::{FileDeliveryKind, LlmRetryState, ProgressState};
 use oxide_agent_core::agent::AgentMemory;
+use oxide_agent_core::agent::progress::{FileDeliveryKind, LlmRetryState, ProgressState};
 use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
 use oxide_agent_core::config::{AgentSettings, ModelInfo};
 #[cfg(feature = "profile-lite")]
@@ -32,24 +32,25 @@ use oxide_agent_web_contracts::{
 };
 #[cfg(feature = "profile-lite")]
 use tokio::sync::Notify;
-use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
-use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
+use crate::persistence::{WEB_TASK_FILE_SCHEMA_VERSION, WebTaskFileRecord};
 
+use super::EVENT_LOGS;
 #[cfg(feature = "profile-lite")]
 use super::task_routes::TaskListQuery;
-use super::EVENT_LOGS;
 use crate::web_transport::TaskEventLog;
 
 #[cfg(feature = "storage-sqlx")]
 use super::WebStoreKind;
 use super::{
-    api_cancel_task, api_create_agent_profile, api_create_session, api_create_session_with_request,
-    api_create_task_version, api_delete_session, api_get_session, api_get_settings,
-    api_get_task_events, api_get_task_progress, api_list_agent_profiles, api_list_sessions,
-    api_update_session, api_update_session_profile, api_update_settings, auth_cookie_value,
-    csrf_header_value, parse_web_bool, AppState, TaskEventsQuery, WebAssetsConfig,
-    WebSandboxControl, WebStartupError, AUTH_COOKIE_NAME, WEB_TASK_SCHEMA_VERSION,
+    AUTH_COOKIE_NAME, AppState, TaskEventsQuery, WEB_TASK_SCHEMA_VERSION, WebAssetsConfig,
+    WebSandboxControl, WebStartupError, api_cancel_task, api_create_agent_profile,
+    api_create_session, api_create_session_with_request, api_create_task_version,
+    api_delete_session, api_get_session, api_get_settings, api_get_task_events,
+    api_get_task_progress, api_list_agent_profiles, api_list_sessions, api_update_session,
+    api_update_session_profile, api_update_settings, auth_cookie_value, csrf_header_value,
+    parse_web_bool,
 };
 #[cfg(feature = "profile-lite")]
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};
@@ -1089,10 +1090,11 @@ async fn router_serves_frontend_assets_and_security_headers() {
         .headers()
         .get("content-security-policy")
         .expect("content security policy");
-    assert!(csp
-        .to_str()
-        .expect("valid csp")
-        .contains("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'"));
+    assert!(
+        csp.to_str()
+            .expect("valid csp")
+            .contains("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'")
+    );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("browser route body");
@@ -1694,9 +1696,11 @@ async fn api_create_session_prunes_orphan_web_sandboxes() {
     .expect("create session");
 
     let deleted_names = sandbox_control.deleted_names();
-    assert!(deleted_names
-        .iter()
-        .any(|name| name == &SandboxScope::new(user.user_id, "web").container_name()));
+    assert!(
+        deleted_names
+            .iter()
+            .any(|name| name == &SandboxScope::new(user.user_id, "web").container_name())
+    );
     assert!(deleted_names.iter().any(|name| {
         name == &SandboxScope::new(user.user_id, "web-session-orphan").container_name()
     }));
@@ -1772,23 +1776,27 @@ async fn api_delete_session_destroys_web_sandbox_and_clears_flow_memory() {
     .expect("delete session");
 
     assert!(response.ok);
-    assert!(state
-        .web_store
-        .load_session(user.user_id, &created.session.session_id)
-        .await
-        .expect("load deleted session")
-        .is_none());
-    assert!(state
-        .session_manager
-        .storage()
-        .load_agent_memory_for_flow(
-            user.user_id,
-            record.context_key.clone(),
-            record.agent_flow_id.clone(),
-        )
-        .await
-        .expect("load flow memory")
-        .is_none());
+    assert!(
+        state
+            .web_store
+            .load_session(user.user_id, &created.session.session_id)
+            .await
+            .expect("load deleted session")
+            .is_none()
+    );
+    assert!(
+        state
+            .session_manager
+            .storage()
+            .load_agent_memory_for_flow(
+                user.user_id,
+                record.context_key.clone(),
+                record.agent_flow_id.clone(),
+            )
+            .await
+            .expect("load flow memory")
+            .is_none()
+    );
     assert_eq!(sandbox_control.destroyed_scopes().len(), 1);
     assert_eq!(
         sandbox_control.destroyed_scopes()[0].namespace(),
@@ -1901,9 +1909,11 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         .expect("load edited session")
         .expect("edited session exists");
     assert_ne!(edited_session.context_key, original_context_key);
-    assert!(edited_session
-        .context_key
-        .starts_with(&format!("web-session-{session_id}-branch-")));
+    assert!(
+        edited_session
+            .context_key
+            .starts_with(&format!("web-session-{session_id}-branch-"))
+    );
 
     let original = state
         .web_store
@@ -3521,12 +3531,16 @@ fn build_task_agent_user_input_preserves_text_and_maps_image_refs() {
     let input = super::build_task_agent_user_input("Analyze these", &attachments);
 
     assert!(input.text_projection().contains("Analyze these"));
-    assert!(input
-        .text_projection()
-        .contains("/workspace/uploads/demo-screenshot.jpg"));
-    assert!(input
-        .text_projection()
-        .contains("/workspace/uploads/demo-report.pdf"));
+    assert!(
+        input
+            .text_projection()
+            .contains("/workspace/uploads/demo-screenshot.jpg")
+    );
+    assert!(
+        input
+            .text_projection()
+            .contains("/workspace/uploads/demo-report.pdf")
+    );
     assert_eq!(input.attachments.len(), 1);
     assert_eq!(
         input.attachments[0].kind,

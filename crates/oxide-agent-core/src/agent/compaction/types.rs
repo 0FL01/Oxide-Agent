@@ -346,8 +346,8 @@ pub struct BudgetEstimate {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_retention, wiki_memory_lookup_available, AgentMessageKind, BudgetState,
-        CompactionPolicy, CompactionRetention,
+        AgentMessageKind, BudgetState, CompactionPolicy, CompactionRetention, resolve_retention,
+        wiki_memory_lookup_available,
     };
     use crate::llm::ToolDefinition;
 

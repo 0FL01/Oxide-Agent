@@ -1,11 +1,11 @@
-use crate::llm::support::http::{create_http_client, APP_USER_AGENT};
 use crate::llm::LlmError;
-use anyhow::{anyhow, bail, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use crate::llm::support::http::{APP_USER_AGENT, create_http_client};
+use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -477,10 +477,10 @@ fn extract_account_id_from_jwt(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_account_id_from_jwt, persist_auth_record, resolve_auth_file_path, ChatGptAuthFlow,
-        ChatGptAuthRecord, ChatGptAuthStatus,
+        ChatGptAuthFlow, ChatGptAuthRecord, ChatGptAuthStatus, extract_account_id_from_jwt,
+        persist_auth_record, resolve_auth_file_path,
     };
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use serde_json::json;
     use tempfile::tempdir;
 

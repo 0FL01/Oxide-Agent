@@ -1,6 +1,6 @@
 use super::error::BraveSearchError;
 use super::types::{BraveSearchResponse, BraveWebResult, NormalizedBraveSearchArgs, TOOL_NAME};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fmt::Write;
 
 const MAX_OUTPUT_CHARS: usize = 20_000;

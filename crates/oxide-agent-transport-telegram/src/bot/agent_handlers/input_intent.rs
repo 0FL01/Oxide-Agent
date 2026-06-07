@@ -2,8 +2,8 @@ use super::SESSION_REGISTRY;
 use oxide_agent_core::agent::compaction::AgentMessageKind;
 use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::{
-    classify_agent_input_intent, AgentInputIntentClassification, AgentInputIntentSnapshot,
-    AgentInputSessionStatus,
+    AgentInputIntentClassification, AgentInputIntentSnapshot, AgentInputSessionStatus,
+    classify_agent_input_intent,
 };
 use oxide_agent_core::agent::{AgentSession, AgentStatus, SessionId};
 use oxide_agent_core::config::AgentSettings;

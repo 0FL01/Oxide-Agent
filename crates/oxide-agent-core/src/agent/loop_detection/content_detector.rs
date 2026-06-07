@@ -161,9 +161,10 @@ impl ContentLoopDetector {
             .and_then(|positions| positions.first().copied());
 
         if let Some(first_pos) = first_pos
-            && self.chunk_at(first_pos) != chunk {
-                return false;
-            }
+            && self.chunk_at(first_pos) != chunk
+        {
+            return false;
+        }
 
         let positions = self.chunk_stats.entry(hash.to_string()).or_default();
         positions.push(position);

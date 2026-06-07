@@ -17,13 +17,13 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 use std::fmt::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, warn};
 
-use super::file_delivery::{deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus};
+use super::file_delivery::{FileDeliveryRequest, FileDeliveryStatus, deliver_file_via_progress};
 use super::sandbox::SandboxRuntime;
 
 /// Patterns indicating fatal, unrecoverable yt-dlp errors
@@ -1131,9 +1131,11 @@ mod tests {
         assert!(stdout.contains("## Search Results for: rust talk"));
         assert!(stdout.contains("RustConf talk"));
         assert!(stdout.contains("https://youtube.test/watch?v=abc"));
-        assert!(sandbox
-            .commands()
-            .iter()
-            .any(|command| command.contains("ytsearch1:rust talk")));
+        assert!(
+            sandbox
+                .commands()
+                .iter()
+                .any(|command| command.contains("ytsearch1:rust talk"))
+        );
     }
 }

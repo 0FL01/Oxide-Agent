@@ -1,10 +1,10 @@
 use super::{AgentExecutionOptions, AgentExecutor};
 use crate::agent::compaction::{
-    wiki_memory_lookup_available, CompactRequestContext, CompactRunOutcome, CompactionBackend,
-    CompactionPhase, CompactionReason,
+    CompactRequestContext, CompactRunOutcome, CompactionBackend, CompactionPhase, CompactionReason,
+    wiki_memory_lookup_available,
 };
 use crate::agent::progress::AgentEvent;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use tokio::time::Duration;
 use tracing::warn;
 

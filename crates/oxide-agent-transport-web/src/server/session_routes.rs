@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     extract::{Multipart, Path, State},
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use oxide_agent_core::agent::preprocessor::Preprocessor;
 use oxide_agent_web_contracts::{
@@ -15,17 +15,17 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::persistence::WebSessionContextKeys;
-use crate::session::{web_session_sandbox_scope, WebSessionRuntimeOptions};
+use crate::session::{WebSessionRuntimeOptions, web_session_sandbox_scope};
 
 use super::task_routes::{abort_task_handle, reject_active_task};
 use super::{
+    AppState, WEB_SESSION_DEFAULT_TITLE, WEB_SESSION_FLOW_ID, WEB_SESSION_SCHEMA_VERSION,
     api_error, authenticated_user, authenticated_user_with_csrf, auto_title,
     backend_unavailable_response, canonical_model_selection, default_session_model_selection,
     load_current_user_record, load_execution_profile_for_agent_profile_id, load_owned_session,
     resolve_session_agent_profile_id, session_detail_from_record, session_summary_from_record,
     store_error_response, validate_optional_agent_profile_id, validate_session_title,
-    web_chat_upload_limit_mb, AppState, WEB_SESSION_DEFAULT_TITLE, WEB_SESSION_FLOW_ID,
-    WEB_SESSION_SCHEMA_VERSION,
+    web_chat_upload_limit_mb,
 };
 
 async fn reconcile_web_sandbox_orphans_with_sessions(

@@ -19,8 +19,8 @@ use oxide_agent_core::config::AgentSettings;
 use oxide_agent_core::llm::{
     ChatResponse, ChatWithToolsRequest, LlmClient, LlmError, LlmProvider, Message,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Mock provider that returns JSON decode errors with optional retry behavior
 struct JsonDecodeRetryMock {

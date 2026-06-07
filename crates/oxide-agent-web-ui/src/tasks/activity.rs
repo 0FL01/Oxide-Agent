@@ -2,14 +2,15 @@ use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     PersistedTaskEvent, ProgressSnapshot, TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Duration;
 
-use super::delivered_files::{delivered_file_link, DeliveredFileEventBody};
+use super::delivered_files::{DeliveredFileEventBody, delivered_file_link};
 use super::payload::{is_sub_agent_event, payload_str_event};
 use super::tool_cards::{
-    parse_todo_items_from_value, render_todo_list, tool_card_header_with_icon_class, tool_meta,
-    tool_meta_danger, tool_pre_stream, tool_preview_with_class, ToolCard, ToolDetailsWithClass,
+    ToolCard, ToolDetailsWithClass, parse_todo_items_from_value, render_todo_list,
+    tool_card_header_with_icon_class, tool_meta, tool_meta_danger, tool_pre_stream,
+    tool_preview_with_class,
 };
 
 #[component]

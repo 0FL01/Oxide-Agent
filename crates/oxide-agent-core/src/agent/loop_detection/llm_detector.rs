@@ -7,7 +7,7 @@ use crate::llm::{InternalTextPurpose, LlmClient, LlmError, Message};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::sync::Arc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tracing::{debug, warn};
 
 const MIN_INTERVAL: usize = 3;
@@ -299,10 +299,11 @@ impl LlmLoopDetector {
             prompt.push_str(": ");
             prompt.push_str(message.content.trim());
             if let Some(reasoning) = message.reasoning_content.as_deref()
-                && !reasoning.trim().is_empty() {
-                    prompt.push_str("\n  reasoning: ");
-                    prompt.push_str(reasoning.trim());
-                }
+                && !reasoning.trim().is_empty()
+            {
+                prompt.push_str("\n  reasoning: ");
+                prompt.push_str(reasoning.trim());
+            }
             prompt.push('\n');
         }
         prompt
@@ -353,9 +354,10 @@ impl LlmLoopDetector {
                 '}' if !in_string => {
                     depth = depth.saturating_sub(1);
                     if depth == 0
-                        && let Some(start) = start_idx {
-                            return Some(input[start..=idx].to_string());
-                        }
+                        && let Some(start) = start_idx
+                    {
+                        return Some(input[start..=idx].to_string());
+                    }
                 }
                 _ => {
                     escaped = false;
@@ -423,7 +425,9 @@ mod tests {
     async fn skips_before_threshold() {
         let config = LoopDetectionConfig::default();
         let client = Arc::new(MockLoopScout {
-            responses: vec![r#"{"is_stuck":true,"confidence":0.95,"reasoning":"loop"}"#.to_string()],
+            responses: vec![
+                r#"{"is_stuck":true,"confidence":0.95,"reasoning":"loop"}"#.to_string(),
+            ],
             index: std::sync::Mutex::new(0),
         });
         let mut detector = LlmLoopDetector::new(client, &config);

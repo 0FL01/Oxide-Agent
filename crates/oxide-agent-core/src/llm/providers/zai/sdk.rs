@@ -4,17 +4,17 @@ mod stream;
 use super::ZaiProvider;
 use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::{ChatResponse, ChatWithToolsRequest, LlmError, Message, TokenUsage, ToolCall};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Serialize;
 use serde_json::json;
 use tracing::warn;
+use zai_rs::ZaiError;
 use zai_rs::model::chat::ChatCompletion;
 use zai_rs::model::chat_base_response::{ChatCompletionResponse, ToolCallMessage, Usage};
 use zai_rs::model::chat_message_types::{TextMessage, VisionMessage, VisionRichContent};
-use zai_rs::model::chat_models::{GLM4_5_air, GLM4_5v, GLM5_turbo, GLM4_6, GLM4_7, GLM5};
+use zai_rs::model::chat_models::{GLM4_5_air, GLM4_5v, GLM4_6, GLM4_7, GLM5, GLM5_turbo};
 use zai_rs::model::tools::{ResponseFormat, ThinkingType};
 use zai_rs::model::traits::{Chat, ModelName, ThinkEnable};
-use zai_rs::ZaiError;
 
 use messages::{
     convert_to_text_messages, convert_to_vision_messages, convert_tools, extract_text_content,
@@ -584,22 +584,23 @@ pub fn parse_zai_flush_time(message: &str) -> Option<u64> {
     if let Some(caps) = regex::Regex::new(r"\b(\d{10,13})\b")
         .ok()
         .and_then(|r| r.captures(&message_lower))
-        && let Some(ts_str) = caps.get(1) {
-            let ts = ts_str.as_str();
-            // Determine if seconds or milliseconds
-            let ts_value: i64 = ts.parse().ok()?;
-            let ts_seconds = if ts.len() > 10 {
-                // Milliseconds
-                ts_value / 1000
-            } else {
-                ts_value
-            };
-            let now = chrono::Utc::now().timestamp();
-            let wait_secs = ts_seconds - now;
-            if wait_secs > 0 {
-                return Some(wait_secs as u64);
-            }
+        && let Some(ts_str) = caps.get(1)
+    {
+        let ts = ts_str.as_str();
+        // Determine if seconds or milliseconds
+        let ts_value: i64 = ts.parse().ok()?;
+        let ts_seconds = if ts.len() > 10 {
+            // Milliseconds
+            ts_value / 1000
+        } else {
+            ts_value
+        };
+        let now = chrono::Utc::now().timestamp();
+        let wait_secs = ts_seconds - now;
+        if wait_secs > 0 {
+            return Some(wait_secs as u64);
         }
+    }
 
     // Pattern 2: ISO datetime string (look for it in the message)
     if let Some(caps) =
@@ -607,13 +608,14 @@ pub fn parse_zai_flush_time(message: &str) -> Option<u64> {
             .ok()
             .and_then(|r| r.captures(message))
         && let Some(dt_str) = caps.get(1)
-            && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str.as_str()) {
-                let now = chrono::Utc::now();
-                let duration = dt.signed_duration_since(now);
-                if duration.num_seconds() > 0 {
-                    return Some(duration.num_seconds() as u64);
-                }
-            }
+        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str.as_str())
+    {
+        let now = chrono::Utc::now();
+        let duration = dt.signed_duration_since(now);
+        if duration.num_seconds() > 0 {
+            return Some(duration.num_seconds() as u64);
+        }
+    }
 
     None
 }
@@ -633,13 +635,13 @@ mod tests {
     };
     use crate::llm::LlmError;
     use serde_json::json;
+    use zai_rs::ZaiError;
     use zai_rs::model::chat_base_response::{
         ChatCompletionResponse, Choice, Message as ResponseMessage,
     };
     use zai_rs::model::chat_message_types::TextMessage;
     use zai_rs::model::chat_models::GLM4_6;
     use zai_rs::model::tools::ThinkingType;
-    use zai_rs::ZaiError;
 
     // ── select_model tests ──────────────────────────────────────────────
 

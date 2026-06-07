@@ -1,14 +1,14 @@
 use super::{
-    agent_mode_session_keys, automatic_agent_control_markup, build_batched_text_task_context,
-    cancel_agent_task, configure_active_session, confirm_destructive_action,
-    ensure_agent_flow_session_keys, ensure_session_exists, exit_agent_mode,
-    handle_batched_text_input_if_needed, handle_running_agent_message_if_needed,
+    ActiveSessionConfig, AgentControlCommand, AgentDialogue, AgentTaskContext,
+    BatchedTextInputCheck, EnsureSessionContext, RunningAgentMessageContext,
+    SessionTransportContext, agent_mode_session_keys, automatic_agent_control_markup,
+    build_batched_text_task_context, cancel_agent_task, configure_active_session,
+    confirm_destructive_action, ensure_agent_flow_session_keys, ensure_session_exists,
+    exit_agent_mode, handle_batched_text_input_if_needed, handle_running_agent_message_if_needed,
     is_agent_mode_context, manager_control_plane_enabled, manager_default_chat_id,
     parse_agent_control_command, resolve_execution_profile, resolve_topic_infra_config,
     route_allows_agent_processing, show_agent_controls, spawn_agent_task, use_inline_flow_controls,
-    use_inline_topic_controls, ActiveSessionConfig, AgentControlCommand, AgentDialogue,
-    AgentTaskContext, BatchedTextInputCheck, EnsureSessionContext, RunningAgentMessageContext,
-    SessionTransportContext,
+    use_inline_topic_controls,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, sandbox_scope, set_current_context_state, storage_context_key,
@@ -16,7 +16,7 @@ use crate::bot::context::{
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::thread::OutboundThreadParams;
 use crate::bot::topic_route::{
-    resolve_topic_route, touch_dynamic_binding_activity_if_needed, TopicRouteDecision,
+    TopicRouteDecision, resolve_topic_route, touch_dynamic_binding_activity_if_needed,
 };
 use crate::bot::views::{AgentView, DefaultAgentView};
 use crate::bot::{build_outbound_thread_params, resolve_thread_spec};

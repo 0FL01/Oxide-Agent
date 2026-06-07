@@ -113,7 +113,7 @@ fn sort_json_value(value: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_tool_call_args, ToolCallDetector};
+    use super::{ToolCallDetector, canonicalize_tool_call_args};
 
     #[test]
     fn detects_at_threshold() {

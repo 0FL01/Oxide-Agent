@@ -1,11 +1,11 @@
 #[cfg(feature = "storage-sqlx")]
 use crate::bot;
 #[cfg(feature = "storage-sqlx")]
+use crate::bot::UnauthorizedCache;
+#[cfg(feature = "storage-sqlx")]
 use crate::bot::handlers::Command;
 #[cfg(feature = "storage-sqlx")]
 use crate::bot::state::State;
-#[cfg(feature = "storage-sqlx")]
-use crate::bot::UnauthorizedCache;
 use crate::config::BotSettings;
 #[cfg(feature = "storage-sqlx")]
 use crate::config::{
@@ -15,9 +15,9 @@ use crate::config::{
 use oxide_agent_core::{llm, storage};
 use std::sync::Arc;
 #[cfg(feature = "storage-sqlx")]
-use teloxide::dispatching::dialogue::InMemStorage;
-#[cfg(feature = "storage-sqlx")]
 use teloxide::dispatching::UpdateHandler;
+#[cfg(feature = "storage-sqlx")]
+use teloxide::dispatching::dialogue::InMemStorage;
 #[cfg(feature = "storage-sqlx")]
 use teloxide::prelude::*;
 #[cfg(feature = "storage-sqlx")]

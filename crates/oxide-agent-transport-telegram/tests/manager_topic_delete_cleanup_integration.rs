@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::agent::providers::{
     ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
     ForumTopicEditResult, ForumTopicThreadRequest, ManagerControlPlaneProvider,
@@ -8,7 +9,6 @@ use oxide_agent_core::agent::tool_runtime::{
     ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext, ToolInvocation,
     ToolName, ToolTimeoutConfig, TurnId,
 };
-use oxide_agent_core::agent::AgentMemory;
 use oxide_agent_core::llm::InvocationId;
 use oxide_agent_core::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, StorageError,
@@ -428,11 +428,13 @@ async fn manager_forum_topic_delete_cleans_transport_topic_scope() -> anyhow::Re
             .as_slice(),
         &[context_key.clone(), "77".to_string()]
     );
-    assert!(!storage
-        .get_user_config(user_id)
-        .await?
-        .contexts
-        .contains_key(&context_key));
+    assert!(
+        !storage
+            .get_user_config(user_id)
+            .await?
+            .contexts
+            .contains_key(&context_key)
+    );
     assert_eq!(
         storage.audit_events.lock().expect("mutex poisoned").len(),
         1

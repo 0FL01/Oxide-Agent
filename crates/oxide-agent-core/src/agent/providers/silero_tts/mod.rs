@@ -43,6 +43,6 @@ pub mod types;
 pub use client::SileroClient;
 pub use provider::SileroTtsProvider;
 pub use types::{
-    SileroSampleRate, SileroTtsConfig, SileroTtsFormat, SileroTtsRequest, SileroTtsSpeaker,
-    TextToSpeechRuArgs, DEFAULT_FORMAT, DEFAULT_SAMPLE_RATE, DEFAULT_SPEAKER,
+    DEFAULT_FORMAT, DEFAULT_SAMPLE_RATE, DEFAULT_SPEAKER, SileroSampleRate, SileroTtsConfig,
+    SileroTtsFormat, SileroTtsRequest, SileroTtsSpeaker, TextToSpeechRuArgs,
 };

@@ -36,6 +36,6 @@ pub mod types;
 pub use client::KokoroClient;
 pub use provider::KokoroTtsProvider;
 pub use types::{
-    TextToSpeechArgs, TtsConfig, TtsFormat, TtsRequest, TtsVoice, DEFAULT_FORMAT, DEFAULT_SPEED,
-    DEFAULT_VOICE,
+    DEFAULT_FORMAT, DEFAULT_SPEED, DEFAULT_VOICE, TextToSpeechArgs, TtsConfig, TtsFormat,
+    TtsRequest, TtsVoice,
 };

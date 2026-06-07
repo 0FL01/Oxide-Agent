@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 /// Local shell command process manager.
 #[derive(Debug, Clone)]

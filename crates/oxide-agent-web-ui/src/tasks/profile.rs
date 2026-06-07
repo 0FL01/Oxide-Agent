@@ -63,7 +63,7 @@ pub(super) fn profile_value_to_id(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{missing_profile_option_label, PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE};
+    use super::{PROFILE_VALUE_DEFAULT, PROFILE_VALUE_NONE, missing_profile_option_label};
 
     #[test]
     fn missing_profile_option_keeps_persisted_selection_visible_before_profiles_load() {

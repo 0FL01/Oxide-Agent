@@ -223,7 +223,7 @@ mod tests {
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
         provider_key, provider_missing_route_config_message, provider_module_id,
     };
-    use crate::config::{test_env_mutex, AgentSettings, ModuleRuntimeConfig};
+    use crate::config::{AgentSettings, ModuleRuntimeConfig, test_env_mutex};
 
     fn settings_with_provider_key(module_id: &str, api_key: &str) -> AgentSettings {
         let mut settings = AgentSettings::default();
@@ -311,7 +311,9 @@ mod tests {
 
         assert_eq!(
             provider_missing_route_config_message("opencode_go", &settings),
-            Some("Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes")
+            Some(
+                "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes"
+            )
         );
 
         let settings = settings_with_provider_key("llm-provider/opencode-go", "test-opencode-key");

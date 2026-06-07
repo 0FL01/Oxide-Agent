@@ -1,5 +1,5 @@
-use super::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use super::AgentExecutor;
+use super::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use crate::agent::compaction::CompactionController;
 use crate::agent::hooks::{
     CompletionCheckHook, EpisodicExtractHook, HotContextHealthHook, RetrievalAdvisorHook,
@@ -9,8 +9,8 @@ use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext, SshApprova
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::AgentSession;
 use crate::agent::wiki_memory::WikiStore;
-use crate::config::get_agent_search_limit;
 use crate::config::ModelInfo;
+use crate::config::get_agent_search_limit;
 use crate::llm::LlmClient;
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use std::sync::Arc;
