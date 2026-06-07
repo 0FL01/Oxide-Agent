@@ -290,6 +290,43 @@ fn task_sse_stream(
                             stream_state.last_seq = event.seq;
                             yield Ok(sse_persisted_task_event(&event));
                         }
+                        Ok(TaskEventLogMessage::Status {
+                            status,
+                            final_response_available,
+                            last_seq,
+                        }) => {
+                            if last_seq > stream_state.task.last_event_seq {
+                                stream_state.task.last_event_seq = last_seq;
+                            }
+                            stream_state.task.status = status;
+                            // If the broadcast confirms a final response is
+                            // available but our in-memory task record does
+                            // not yet carry the content, mark it available
+                            // so the emitted `task_status` event reflects
+                            // the truth. A subsequent terminal event or
+                            // client-side refresh will load the actual
+                            // markdown.
+                            if final_response_available
+                                && stream_state.task.final_response_markdown.is_none()
+                            {
+                                stream_state.task.final_response_markdown =
+                                    Some(String::new());
+                            }
+                            yield Ok(sse_status_event(
+                                &stream_state.task,
+                                stream_state.last_seq,
+                            ));
+                        }
+                        Ok(TaskEventLogMessage::Progress { snapshot, .. }) => {
+                            stream_state.task.last_progress = Some(snapshot.clone());
+                            yield Ok(sse_json_event(
+                                "progress",
+                                &TaskSseProgress {
+                                    task_id: stream_state.task_id.clone(),
+                                    progress: snapshot,
+                                },
+                            ));
+                        }
                         Ok(TaskEventLogMessage::Closed) => {
                             // Task is finished; deliver any final status
                             // from a one-shot DB read so the client sees the

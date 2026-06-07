@@ -15,7 +15,8 @@ use oxide_agent_core::agent::{
     PendingUserInput,
 };
 use oxide_agent_web_contracts::{
-    AgentEffort as WebAgentEffort, PersistedTaskEvent, TaskStatus as ApiTaskStatus, WebTaskRecord,
+    AgentEffort as WebAgentEffort, PersistedTaskEvent, ProgressSnapshot,
+    TaskStatus as ApiTaskStatus, WebTaskRecord,
 };
 use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
@@ -424,6 +425,7 @@ async fn persist_task_completed(web_task: &WebTaskPersistence, final_response: S
         update_web_session_for_task(web_task, ApiTaskStatus::Completed, None, Some(preview), now)
             .await;
     }
+    broadcast_status_if_present(web_task, ApiTaskStatus::Completed, true).await;
     close_event_log_if_present(web_task).await;
 }
 
@@ -450,6 +452,7 @@ async fn persist_task_waiting_for_user_input(
         )
         .await;
     }
+    broadcast_status_if_present(web_task, ApiTaskStatus::WaitingForUserInput, false).await;
     close_event_log_if_present(web_task).await;
 }
 
@@ -467,6 +470,7 @@ async fn persist_task_failed(web_task: &WebTaskPersistence, message: impl Into<S
     if updated {
         update_web_session_for_task(web_task, ApiTaskStatus::Failed, None, None, now).await;
     }
+    broadcast_status_if_present(web_task, ApiTaskStatus::Failed, false).await;
     close_event_log_if_present(web_task).await;
 }
 
@@ -476,14 +480,51 @@ async fn close_event_log_if_present(web_task: &WebTaskPersistence) {
     }
 }
 
+async fn broadcast_status_if_present(
+    web_task: &WebTaskPersistence,
+    status: ApiTaskStatus,
+    final_response_available: bool,
+) {
+    let Some(event_log) = web_task.event_log.as_ref() else {
+        return;
+    };
+    let last_seq = web_task
+        .web_store
+        .load_task_event_state(web_task.user_id, &web_task.session_id, &web_task.task_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.last_event_seq)
+        .unwrap_or_else(|| 0);
+    event_log
+        .notify_status(status, final_response_available, last_seq)
+        .await;
+}
+
+async fn broadcast_progress_if_present(web_task: &WebTaskPersistence, snapshot: ProgressSnapshot) {
+    let Some(event_log) = web_task.event_log.as_ref() else {
+        return;
+    };
+    let last_seq = web_task
+        .web_store
+        .load_task_event_state(web_task.user_id, &web_task.session_id, &web_task.task_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.last_event_seq)
+        .unwrap_or_else(|| 0);
+    event_log.notify_progress(snapshot, last_seq).await;
+}
+
 async fn persist_task_progress(web_task: &WebTaskPersistence, progress: SerializableProgress) {
     let now = chrono::Utc::now();
     let snapshot = progress_snapshot_from_serializable(progress);
     update_web_task_unless_cancelled(web_task, |task| {
-        task.last_progress = Some(snapshot);
+        task.last_progress = Some(snapshot.clone());
         task.updated_at = now;
     })
     .await;
+    broadcast_progress_if_present(web_task, snapshot).await;
 }
 
 async fn persist_task_events(

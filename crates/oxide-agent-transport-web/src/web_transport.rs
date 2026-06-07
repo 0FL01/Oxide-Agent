@@ -7,7 +7,7 @@
 use crate::persistence::{WebTaskFileRecord, WebUiStore, WEB_TASK_FILE_SCHEMA_VERSION};
 use oxide_agent_core::agent::progress::{AgentEvent, FileDeliveryKind, ProgressState};
 use oxide_agent_runtime::{AgentTransport, DeliveryMode};
-use oxide_agent_web_contracts::{PersistedTaskEvent, TaskEventKind};
+use oxide_agent_web_contracts::{PersistedTaskEvent, ProgressSnapshot, TaskEventKind, TaskStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -105,6 +105,13 @@ pub struct TaskEventLog {
     /// New consumers (SSE, late subscribers) read from this for the
     /// authoritative in-memory view of persisted events.
     persisted: Arc<RwLock<Vec<PersistedTaskEvent>>>,
+    /// Latest task status known to the persister. Updated via
+    /// `notify_status`; read by late subscribers that connect after a
+    /// status change has already been broadcast.
+    last_status: Arc<RwLock<Option<TaskStatus>>>,
+    /// Latest progress snapshot known to the persister. Updated via
+    /// `notify_progress`; read by late subscribers.
+    last_progress_snapshot: Arc<RwLock<Option<ProgressSnapshot>>>,
     /// Broadcasts each new event to SSE subscribers.
     broadcast_tx: broadcast::Sender<TaskEventLogMessage>,
     /// Flag set when the task is done.
@@ -123,11 +130,25 @@ pub struct TaskEventEntry {
 /// Messages broadcast to live SSE subscribers.
 ///
 /// `Persisted` carries the full `PersistedTaskEvent` row so subscribers do not
-/// need a separate DB read to render the event. `Closed` is the terminal
-/// sentinel that tells subscribers the log will not produce any more events.
+/// need a separate DB read to render the event. `Status` and `Progress` carry
+/// out-of-band status/progress updates from the persister (e.g. terminal
+/// state changes, progress snapshots) so subscribers see them without a DB
+/// poll. `Closed` is the terminal sentinel that tells subscribers the log
+/// will not produce any more events.
 #[derive(Debug, Clone)]
 pub enum TaskEventLogMessage {
-    Persisted { event: PersistedTaskEvent },
+    Persisted {
+        event: PersistedTaskEvent,
+    },
+    Status {
+        status: TaskStatus,
+        final_response_available: bool,
+        last_seq: u64,
+    },
+    Progress {
+        snapshot: ProgressSnapshot,
+        last_seq: u64,
+    },
     Closed,
 }
 
@@ -144,6 +165,8 @@ impl TaskEventLog {
         Self {
             events: Arc::new(RwLock::new(Vec::new())),
             persisted: Arc::new(RwLock::new(Vec::new())),
+            last_status: Arc::new(RwLock::new(None)),
+            last_progress_snapshot: Arc::new(RwLock::new(None)),
             broadcast_tx,
             done: Arc::new(RwLock::new(false)),
         }
@@ -198,6 +221,44 @@ impl TaskEventLog {
     /// in append order.
     pub async fn persisted_snapshot(&self) -> Vec<PersistedTaskEvent> {
         self.persisted.read().await.clone()
+    }
+
+    /// Broadcast a status change to live subscribers. Stores the latest
+    /// status so late subscribers can read it via `last_status` instead of
+    /// falling back to DB.
+    pub async fn notify_status(
+        &self,
+        status: TaskStatus,
+        final_response_available: bool,
+        last_seq: u64,
+    ) {
+        *self.last_status.write().await = Some(status);
+        let _ = self.broadcast_tx.send(TaskEventLogMessage::Status {
+            status,
+            final_response_available,
+            last_seq,
+        });
+    }
+
+    /// Broadcast a progress snapshot to live subscribers. Stores the latest
+    /// snapshot so late subscribers can read it via `last_progress_snapshot`.
+    pub async fn notify_progress(&self, snapshot: ProgressSnapshot, last_seq: u64) {
+        *self.last_progress_snapshot.write().await = Some(snapshot.clone());
+        let _ = self
+            .broadcast_tx
+            .send(TaskEventLogMessage::Progress { snapshot, last_seq });
+    }
+
+    /// Returns the latest status broadcast via `notify_status`, or `None`
+    /// if no status change has been broadcast yet.
+    pub async fn last_status(&self) -> Option<TaskStatus> {
+        *self.last_status.read().await
+    }
+
+    /// Returns the latest progress snapshot broadcast via `notify_progress`,
+    /// or `None` if no progress update has been broadcast yet.
+    pub async fn last_progress_snapshot(&self) -> Option<ProgressSnapshot> {
+        self.last_progress_snapshot.read().await.clone()
     }
 
     /// Mark the event log as done — SSE subscribers will stop receiving after this.
@@ -1356,7 +1417,9 @@ mod tests {
         CompactionBackend, CompactionPhase, CompactionReason,
     };
     use oxide_agent_core::agent::progress::{AgentEvent, AgentEventSource, FileDeliveryKind};
-    use oxide_agent_web_contracts::{PersistedTaskEvent, TaskEventKind};
+    use oxide_agent_web_contracts::{
+        PersistedTaskEvent, ProgressSnapshot, TaskEventKind, TaskStatus,
+    };
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -2113,5 +2176,58 @@ mod tests {
             other => panic!("expected Closed sentinel, got {other:?}"),
         }
         assert!(log.is_closed().await);
+    }
+
+    #[tokio::test]
+    async fn notify_status_broadcasts_status_message_and_records_last_status() {
+        let log = TaskEventLog::new();
+        let mut rx = log.subscribe();
+        log.notify_status(TaskStatus::Completed, true, 7).await;
+        match rx.recv().await {
+            Ok(TaskEventLogMessage::Status {
+                status,
+                final_response_available,
+                last_seq,
+            }) => {
+                assert_eq!(status, TaskStatus::Completed);
+                assert!(final_response_available);
+                assert_eq!(last_seq, 7);
+            }
+            other => panic!("expected Status message, got {other:?}"),
+        }
+        assert_eq!(log.last_status().await, Some(TaskStatus::Completed));
+    }
+
+    #[tokio::test]
+    async fn notify_progress_broadcasts_progress_message_and_records_snapshot() {
+        let log = TaskEventLog::new();
+        let mut rx = log.subscribe();
+        let snapshot = ProgressSnapshot {
+            current_iteration: 3,
+            max_iterations: 10,
+            is_finished: false,
+            error: None,
+            current_thought: Some("thinking".to_string()),
+            current_todos: None,
+            last_compaction_status: None,
+            repeated_compaction_warning: None,
+            last_history_repair_status: None,
+            latest_token_snapshot: None,
+            llm_retry: None,
+            provider_failover_notice: None,
+        };
+        log.notify_progress(snapshot.clone(), 5).await;
+        match rx.recv().await {
+            Ok(TaskEventLogMessage::Progress {
+                snapshot: received,
+                last_seq,
+            }) => {
+                assert_eq!(received.current_iteration, 3);
+                assert_eq!(last_seq, 5);
+            }
+            other => panic!("expected Progress message, got {other:?}"),
+        }
+        let stored = log.last_progress_snapshot().await;
+        assert_eq!(stored.unwrap().current_iteration, 3);
     }
 }

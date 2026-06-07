@@ -33,7 +33,7 @@ use super::{
     load_owned_session, load_owned_task, markdown_preview, not_found_response,
     store_error_response, task_detail_from_record, task_summary_from_record,
     validate_task_input_with_attachments, AppState, TaskEventsQuery, DEFAULT_TASK_EVENTS_LIMIT,
-    MAX_TASK_EVENTS_LIMIT, WEB_SESSION_DEFAULT_TITLE, WEB_TASK_SCHEMA_VERSION,
+    EVENT_LOGS, MAX_TASK_EVENTS_LIMIT, WEB_SESSION_DEFAULT_TITLE, WEB_TASK_SCHEMA_VERSION,
 };
 
 pub(crate) async fn abort_task_handle(state: &AppState, task_id: &str) {
@@ -920,7 +920,12 @@ pub(crate) async fn api_resume_task(
     }
     state
         .web_store
-        .append_task_events(user.user_id, &session_id, &task_id, vec![resume_event])
+        .append_task_events(
+            user.user_id,
+            &session_id,
+            &task_id,
+            vec![resume_event.clone()],
+        )
         .await
         .map_err(store_error_response)?;
     state
@@ -928,6 +933,17 @@ pub(crate) async fn api_resume_task(
         .save_task(task.clone())
         .await
         .map_err(store_error_response)?;
+
+    // Broadcast the resume event and the new Running status to any
+    // in-process SSE subscriber. The fresh event log for the resume
+    // session lives in `running_task.event_log`; populate it with the
+    // resume event so subscribers can render it without waiting for the
+    // first agent event.
+    running_task.event_log.push_persisted(resume_event).await;
+    running_task
+        .event_log
+        .notify_status(ApiTaskStatus::Running, false, task.last_event_seq)
+        .await;
 
     let preview = markdown_preview(&task_preview_source(&input_markdown, &attachments));
     save_session_task_update(
@@ -978,6 +994,7 @@ pub(crate) async fn api_cancel_task(
     task.pending_user_input = None;
     task.updated_at = now;
     task.finished_at = Some(now);
+    let cancelled_last_seq = task.last_event_seq;
     state
         .web_store
         .save_task(task)
@@ -992,6 +1009,17 @@ pub(crate) async fn api_cancel_task(
         .cancel_task(&task_id, &session_id)
         .await;
     abort_task_handle(&state, &task_id).await;
+
+    // Broadcast the Cancelled status and close the in-process event log
+    // so any subscriber sees the terminal state and the live loop closes.
+    {
+        let logs = EVENT_LOGS.lock().await;
+        if let Some(log) = logs.get(&task_id) {
+            log.notify_status(ApiTaskStatus::Cancelled, false, cancelled_last_seq)
+                .await;
+            log.close().await;
+        }
+    }
 
     Ok(Json(ApiCancelTaskResponse {
         ok: true,
