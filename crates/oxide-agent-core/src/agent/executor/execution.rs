@@ -396,7 +396,34 @@ impl AgentExecutor {
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         options: AgentExecutionOptions,
     ) -> PreparedExecution {
+        let prepare_started_at = Instant::now();
+        let mut phase_started_at = prepare_started_at;
+        let task_id = self
+            .session
+            .current_task_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            memory_messages = self.session.memory.get_messages().len(),
+            memory_tokens = self.session.memory.token_count(),
+            phase = "prepare_started",
+            elapsed_ms = 0_u128,
+            "Agent prepare execution latency"
+        );
+
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            phase = "todos_snapshot_created",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let model_routes = self
             .model_routes_override
             .clone()
@@ -405,13 +432,81 @@ impl AgentExecutor {
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            model = %model.id,
+            provider = ?model.provider,
+            route_count = model_routes.len(),
+            phase = "model_routes_resolved",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let tool_runtime_registry =
             Arc::new(self.build_tool_runtime_registry(Arc::clone(&todos_arc), progress_tx));
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            phase = "tool_runtime_registry_built",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let tools = tool_runtime_registry.specs();
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            tool_count = tools.len(),
+            phase = "tool_specs_collected",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            structured_output,
+            phase = "structured_output_resolved",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let wiki_context = self.render_wiki_context_for_task(task).await;
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            wiki_context_available = wiki_context.is_some(),
+            wiki_context_chars = wiki_context.as_ref().map_or(0, String::len),
+            phase = "wiki_context_rendered",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let prompt_instructions =
             effort_prompt_instructions(self.execution_profile.prompt_instructions(), options);
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            prompt_instructions_chars = prompt_instructions.as_ref().map_or(0, String::len),
+            phase = "prompt_instructions_resolved",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let system_prompt = create_agent_system_prompt(
             task,
             &tools,
@@ -421,7 +516,32 @@ impl AgentExecutor {
             wiki_context.as_deref(),
         )
         .await;
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            system_prompt_chars = system_prompt.base.len(),
+            date_suffix_chars = system_prompt.date_suffix.len(),
+            structured_output,
+            phase = "system_prompt_assembled",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let messages = AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            source_message_count = self.session.memory.get_messages().len(),
+            message_count = messages.len(),
+            phase = "memory_messages_converted",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let max_iterations = options
             .min_max_iterations()
             .map_or_else(get_agent_max_iterations, |minimum| {
@@ -441,6 +561,32 @@ impl AgentExecutor {
             .map_or_else(get_agent_search_limit, |minimum| {
                 get_agent_search_limit().max(minimum)
             });
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            max_iterations,
+            continuation_limit,
+            timeout_secs,
+            search_limit,
+            phase = "runner_limits_resolved",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            model = %model.id,
+            provider = ?model.provider,
+            tool_count = tools.len(),
+            message_count = messages.len(),
+            wiki_context_available = wiki_context.is_some(),
+            phase = "prepare_assembled",
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+
         PreparedExecution {
             todos_arc,
             tool_runtime_registry,

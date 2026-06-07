@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-core-prepare-execution-latency.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after web first-message latency was reduced from `1482ms` to `~0.55ms`; remaining first-LLM delay is now inside core `prepare_execution` and pre-LLM runner work.
 Goal doc owner: Codex
-Last updated: 2026-06-07 14:50
+Last updated: 2026-06-07 15:09
 
 ## Objective
 
@@ -54,8 +54,8 @@ Out of scope:
   - Source: User asked for RECON and a plan because `prepare_execution: 601ms` is now the dominant delay before first LLM call.
   - Acceptance: INFO logs under `oxide_agent_core::agent_latency` show phase-level timings for model route resolution, tool runtime registry build, tool specs collection, wiki context rendering, prompt assembly, memory conversion, and final prepare completion.
   - Evidence required: code diff, successful Rust validation, and runtime log showing the new phase logs with `phase_ms` and `elapsed_ms`.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Core-1 implementation adds `oxide_agent_core::agent_latency` INFO phase logs inside `prepare_execution` for `prepare_started`, `todos_snapshot_created`, `model_routes_resolved`, `tool_runtime_registry_built`, `tool_specs_collected`, `structured_output_resolved`, `wiki_context_rendered`, `prompt_instructions_resolved`, `system_prompt_assembled`, `memory_messages_converted`, `runner_limits_resolved`, and `prepare_assembled`. Validation passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`. Runtime log evidence is still pending after rebuild.
 
 - G2: Wiki context latency is isolated
   - Source: RECON found `render_wiki_context_for_task` is the most likely source of `~601ms`, because it performs multiple storage reads and currently has no INFO sub-phase logs.
@@ -82,15 +82,15 @@ Out of scope:
   - Source: `AGENTS.md` architecture and prompt-cache guidance.
   - Acceptance: Core/runtime remain transport-agnostic; prompt dynamic blocks stay at the end; no direct Google Gemini provider is introduced; no new external infrastructure is added.
   - Evidence required: diff review and validation commands.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Core-1 only adds INFO latency logging in `crates/oxide-agent-core/src/agent/executor/execution.rs`; it does not change prompt assembly order, tool registration, wiki behavior, provider routing, transport boundaries, or add dependencies. Validation passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
 
 - N1: Web transport checkpoint remains closed
   - Source: CP5 runtime evidence proved web task creation is no longer bottleneck.
   - Must preserve: Avoid reopening web task create persistence/caching unless new core logs prove a web interaction is still on the hot path.
   - Evidence required: diff scope review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Core-1 diff scope is limited to core executor logging and this goal doc; no web transport files are touched.
 
 ## Implementation Plan
 
@@ -145,6 +145,13 @@ Out of scope:
   - Commands: `git diff --check` passed. Rust validation not run because this checkpoint is docs-only.
   - Audit IDs updated: G1-G4/Q1/N1 pending.
   - Next: Core-1 implementation: add INFO phase timing inside `prepare_execution`.
+
+- 2026-06-07 15:06: Core-1 prepare phase logging implemented
+  - Changed: Added INFO phase timing in `crates/oxide-agent-core/src/agent/executor/execution.rs` across the serial `prepare_execution` pipeline.
+  - Evidence: Logs now split aggregate prepare latency into model route resolution, tool registry/spec collection, wiki context render, prompt assembly, memory conversion, runner limit resolution, and final prepare assembly.
+  - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
+  - Audit IDs updated: G1 in progress, Q1 in progress, N1 in progress.
+  - Next: Collect runtime logs after rebuild to verify G1 and decide whether Core-2 wiki sub-phase logging is still needed.
 
 ## Risks and Blockers
 
