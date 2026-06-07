@@ -303,12 +303,6 @@ async fn create_session_for_request(
     let session_id = uuid::Uuid::new_v4().to_string();
     let context_key = format!("web-session-{session_id}");
     let now = chrono::Utc::now();
-    let sandbox_scope = web_session_sandbox_scope(user.user_id, &context_key);
-    state
-        .sandbox_control()
-        .ensure_scope_sandbox(sandbox_scope.clone())
-        .await
-        .map_err(|error| backend_unavailable_response(error.to_string()))?;
     state
         .session_manager
         .create_session_with_model_selection(
@@ -352,12 +346,6 @@ async fn create_session_for_request(
             .session_manager
             .delete_session(&record.session_id)
             .await;
-        if let Err(cleanup_error) = state.sandbox_control().destroy_scope(sandbox_scope).await {
-            tracing::warn!(
-                error = %cleanup_error,
-                "Failed to rollback web sandbox after session save failure"
-            );
-        }
         return Err(store_error_response(error));
     }
     if let Err(error) = reconcile_web_sandbox_orphans(&state, user.user_id).await {

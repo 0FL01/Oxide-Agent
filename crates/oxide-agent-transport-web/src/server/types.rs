@@ -87,8 +87,6 @@ pub(crate) trait WebSandboxControl: Send + Sync {
 
     async fn list_user_sandboxes(&self, user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>>;
 
-    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord>;
-
     async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool>;
 }
 
@@ -107,10 +105,6 @@ impl WebSandboxControl for RuntimeWebSandboxControl {
 
     async fn list_user_sandboxes(&self, user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>> {
         self.admin.list_user_sandboxes(user_id).await
-    }
-
-    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord> {
-        self.admin.ensure_scope_sandbox(scope).await
     }
 
     async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool> {
@@ -133,23 +127,6 @@ impl WebSandboxControl for NoopWebSandboxControl {
 
     async fn list_user_sandboxes(&self, _user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>> {
         Ok(Vec::new())
-    }
-
-    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord> {
-        Ok(SandboxContainerRecord {
-            container_id: scope.stable_name(),
-            container_name: scope.container_name(),
-            image: Some("socket-e2e-noop".to_string()),
-            created_at: None,
-            state: Some("running".to_string()),
-            status: Some("running".to_string()),
-            running: true,
-            user_id: Some(scope.owner_id()),
-            scope: Some(scope.namespace().to_string()),
-            chat_id: scope.chat_id(),
-            thread_id: scope.thread_id(),
-            labels: scope.docker_labels(),
-        })
     }
 
     async fn delete_sandbox_by_name(

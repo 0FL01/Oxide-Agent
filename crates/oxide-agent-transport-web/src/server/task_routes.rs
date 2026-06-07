@@ -30,11 +30,11 @@ use super::task_executor::{self, TaskRunRequest, WebTaskPersistence};
 use super::{
     AppState, DEFAULT_TASK_EVENTS_LIMIT, EVENT_LOGS, MAX_TASK_EVENTS_LIMIT, TaskEventsQuery,
     WEB_SESSION_DEFAULT_TITLE, WEB_TASK_SCHEMA_VERSION, api_error, authenticated_user,
-    authenticated_user_with_csrf, auto_title, backend_unavailable_response,
-    default_session_model_selection, invalidate_session_summaries_cache,
-    load_execution_profile_for_agent_profile_id, load_owned_session, load_owned_task,
-    markdown_preview, not_found_response, store_error_response, task_detail_from_record,
-    task_summary_from_record, validate_task_input_with_attachments,
+    authenticated_user_with_csrf, auto_title, default_session_model_selection,
+    invalidate_session_summaries_cache, load_execution_profile_for_agent_profile_id,
+    load_owned_session, load_owned_task, markdown_preview, not_found_response,
+    store_error_response, task_detail_from_record, task_summary_from_record,
+    validate_task_input_with_attachments,
 };
 
 const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
@@ -980,14 +980,6 @@ pub(crate) async fn api_create_task_version(
     }
     session.context_key = branch_context_key;
     session.updated_at = now;
-    state
-        .sandbox_control()
-        .ensure_scope_sandbox(crate::session::web_session_sandbox_scope(
-            user.user_id,
-            &session.context_key,
-        ))
-        .await
-        .map_err(|error| backend_unavailable_response(error.to_string()))?;
     best_effort_copy_attachments_between_web_sandboxes(
         user.user_id,
         &source_context_key,

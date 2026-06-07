@@ -77,7 +77,6 @@ struct FakeSandboxControl {
 
 #[derive(Default)]
 struct FakeSandboxState {
-    ensured_scopes: Vec<SandboxScope>,
     destroyed_scopes: Vec<SandboxScope>,
     deleted_names: Vec<String>,
     sandboxes: Vec<SandboxContainerRecord>,
@@ -91,14 +90,6 @@ impl FakeSandboxControl {
                 ..FakeSandboxState::default()
             })),
         }
-    }
-
-    fn ensured_scopes(&self) -> Vec<SandboxScope> {
-        self.state
-            .lock()
-            .expect("fake sandbox state")
-            .ensured_scopes
-            .clone()
     }
 
     fn destroyed_scopes(&self) -> Vec<SandboxScope> {
@@ -157,20 +148,6 @@ impl WebSandboxControl for FakeSandboxControl {
             .filter(|sandbox| sandbox.user_id == Some(user_id))
             .cloned()
             .collect())
-    }
-
-    async fn ensure_scope_sandbox(
-        &self,
-        scope: SandboxScope,
-    ) -> anyhow::Result<SandboxContainerRecord> {
-        let mut state = self.state.lock().expect("fake sandbox state");
-        state.ensured_scopes.push(scope.clone());
-        let record = fake_sandbox_record(scope);
-        state
-            .sandboxes
-            .retain(|sandbox| sandbox.container_name != record.container_name);
-        state.sandboxes.push(record.clone());
-        Ok(record)
     }
 
     async fn delete_sandbox_by_name(
@@ -1399,11 +1376,13 @@ async fn api_sessions_are_auth_scoped_and_use_web_session_context() {
         .expect("session exists");
     assert_eq!(record.context_key, format!("web-session-{session_id}"));
     assert_eq!(record.agent_flow_id, "main");
-    assert_eq!(sandbox_control.ensured_scopes().len(), 1);
-    assert_eq!(
-        sandbox_control.ensured_scopes()[0].namespace(),
-        record.context_key,
-        "web session sandbox should be scoped per session context"
+    assert!(
+        sandbox_control
+            .list_user_sandboxes(user_one.user_id)
+            .await
+            .expect("list user sandboxes")
+            .is_empty(),
+        "web session creation should not eagerly create a sandbox"
     );
 
     let axum::Json(listed) = api_list_sessions(
@@ -1853,7 +1832,8 @@ async fn api_delete_session_destroys_web_sandbox_and_clears_flow_memory() {
 
 #[tokio::test]
 async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_checked() {
-    let state = test_app_state();
+    let (state, sandbox_control) =
+        test_app_state_with_responses(vec![ScriptedResponse::Text("ok".to_string())]);
     let now = chrono::Utc::now();
     let user_one = register_user(
         state.web_store.as_ref(),
@@ -1959,6 +1939,14 @@ async fn api_create_task_version_and_cancel_task_are_auth_scoped_and_status_chec
         edited_session
             .context_key
             .starts_with(&format!("web-session-{session_id}-branch-"))
+    );
+    assert!(
+        sandbox_control
+            .list_user_sandboxes(user_one.user_id)
+            .await
+            .expect("list user sandboxes")
+            .is_empty(),
+        "task version without attachments should not eagerly create a sandbox"
     );
 
     let original = state
@@ -2263,7 +2251,7 @@ async fn api_task_events_are_auth_scoped_and_replay_after_seq() {
     .await
     .expect("create session");
     let session_id = created_session.session.session_id;
-    let task = task_record(
+    let mut task = task_record(
         user_one.user_id,
         &session_id,
         "task-events",
@@ -2271,6 +2259,7 @@ async fn api_task_events_are_auth_scoped_and_replay_after_seq() {
         "Prompt",
         now,
     );
+    task.last_event_seq = 2;
     state.web_store.save_task(task).await.expect("save task");
     state
         .web_store
