@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_core::storage::SqlxStorage;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, SessionSummary, TaskEventsResponse, WebSessionRecord, WebTaskRecord,
+    PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
+    WebTaskRecord,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
@@ -48,6 +49,16 @@ fn log_store_query(
         elapsed_ms = started_at.elapsed().as_millis(),
         "web sqlx store latency"
     );
+}
+
+fn is_initial_task_without_progress(record: &WebTaskRecord) -> bool {
+    record.status == TaskStatus::Running
+        && record.last_event_seq == 0
+        && record.started_at.is_some()
+        && record.finished_at.is_none()
+        && record.final_response_markdown.is_none()
+        && record.error_message.is_none()
+        && record.pending_user_input.is_none()
 }
 
 /// SQLx-backed implementation of [`WebUiStore`].
@@ -315,6 +326,10 @@ impl SqlxWebUiStore {
 
     async fn save_task_progress(&self, record: &WebTaskRecord) -> WebUiStoreResult<()> {
         let Some(progress) = &record.last_progress else {
+            if is_initial_task_without_progress(record) {
+                return Ok(());
+            }
+
             let started_at = Instant::now();
             let result = query::<Postgres>(
                 r#"
@@ -585,8 +600,6 @@ impl WebUiStore for SqlxWebUiStore {
 
     async fn save_session(&self, record: WebSessionRecord) -> WebUiStoreResult<()> {
         record.validate_web_record()?;
-        self.ensure_user_row(record.user_id, record.created_at)
-            .await?;
         let model_selection = optional_json(&record.model_selection, "model selection")?;
         let last_task_status = optional_enum_to_sql(&record.last_task_status, "task status")?;
         let auto_title_attempts = u32_to_i32(record.auto_title_attempts, "auto title attempts")?;
@@ -805,8 +818,6 @@ impl WebUiStore for SqlxWebUiStore {
 
     async fn save_task(&self, record: WebTaskRecord) -> WebUiStoreResult<()> {
         record.validate_web_record()?;
-        self.ensure_user_row(record.user_id, record.created_at)
-            .await?;
         let status = enum_to_sql(&record.status, "task status")?;
         let attachments = json_value(&record.attachments, "task attachments")?;
         let pending_user_input = optional_json(&record.pending_user_input, "pending user input")?;

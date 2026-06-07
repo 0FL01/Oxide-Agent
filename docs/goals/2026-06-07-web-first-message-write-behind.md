@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-web-first-message-write-behind.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after web transport RECON to reduce first-message latency; container crash data loss is acceptable, low latency is the priority, and DB can catch up asynchronously.
 Goal doc owner: Codex
-Last updated: 2026-06-07 10:30
+Last updated: 2026-06-07 13:29
 
 ## Objective
 
@@ -58,8 +58,8 @@ Out of scope:
   - Source: User accepted plan item 1 and 2: remove redundant `ensure_user_row` and no-op `save_task_progress.delete_empty`.
   - Acceptance: `save_task`/`save_session` no longer pay `ensure_user_row` on the authenticated hot path, and initial task creation with no progress does not issue a `DELETE FROM web_task_progress` round trip.
   - Evidence required: code diff, SQLx latency logs before/after, cargo check/clippy, and a measured create-task latency reduction.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 implementation removes `ensure_user_row` from SQLx `save_task` and `save_session`, while keeping auth/user creation writes synchronous. Initial running task records with no progress now skip the no-op `web_task_progress` delete; non-initial no-progress records still retain the old delete behavior for explicit progress clearing. Commands passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`. Runtime before/after logs are still required before marking G2 verified.
 
 - G3: Agent spawn is moved before non-critical session update persistence
   - Source: User accepted lower latency over strict immediate DB durability.
@@ -101,14 +101,14 @@ Out of scope:
   - Acceptance: `cargo fmt`, `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`, and `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local` succeed after each checkpoint.
   - Evidence required: command output summary in Progress Log.
   - Status: verified
-  - Evidence collected: Commands passed on 2026-06-07 after observability and clippy config updates.
+  - Evidence collected: Commands passed on 2026-06-07 after observability and clippy config updates. Re-ran after checkpoint 2 SQLx hot-path changes: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
 
 - N1: Do not change unrelated transports or provider behavior
   - Source: User scoped the work to web transport focus.
   - Must preserve: Telegram transport behavior, provider behavior, sandbox backends, manager control plane, wiki memory semantics, and direct Gemini absence.
   - Evidence required: `git diff --name-only` review before each commit.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 code change is limited to `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`; docs update is limited to this goal document. `git diff --name-only` reviewed before commit.
 
 ## Baseline Numbers
 
@@ -194,6 +194,7 @@ Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains s
 - 2026-06-07: Treat remote Postgres round-trip latency as the proven bottleneck; executor queue, runtime registry, and executor lock all measured at `0ms` on the sampled first-message path.
 - 2026-06-07: Accept non-crash-durable write-behind for selected web task/session state because the user explicitly prioritizes latency and says container crash data loss is acceptable.
 - 2026-06-07: Use existing `moka` in `oxide-agent-transport-web`; no new dependency or external cache service is justified.
+- 2026-06-07: Preserve explicit progress clearing for non-initial no-progress task saves while skipping the first-message no-op progress delete. This removes the hot round trip without broadening the semantic change more than needed.
 
 ## Progress Log
 
@@ -203,6 +204,13 @@ Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains s
   - Commands: `git status --short`; `git log --oneline -5`; `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
   - Audit IDs updated: G1 verified, V1 verified, G5 baseline recorded.
   - Next: Checkpoint 2 — remove redundant hot DB calls before introducing write-behind.
+
+- 2026-06-07 13:29: Checkpoint 2 code path implemented.
+  - Changed: Removed SQLx `ensure_user_row` calls from `save_task` and `save_session`; skipped initial no-progress task `web_task_progress` delete while retaining the delete for non-initial no-progress saves.
+  - Evidence: Hot first-message path should remove two `ensure_user_row` round trips and the initial `save_task_progress.delete_empty` round trip from create-task logs; runtime measurement still pending after container rebuild.
+  - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`; `git diff --name-only`.
+  - Audit IDs updated: G2 in progress, V1 verified, N1 in progress.
+  - Next: Rebuild/run web stack and capture before/after latency logs for G2 verification, then proceed to checkpoint 3.
 
 ## Risks and Blockers
 
