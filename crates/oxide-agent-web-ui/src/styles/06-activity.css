@@ -724,14 +724,13 @@
 }
 
 .reasoning-status-icon {
-  background: var(--accent-dim);
-  color: var(--accent);
+  background: var(--surface);
+  color: var(--faint);
   font-weight: 700;
 }
 
 .reasoning-preview {
   border-color: var(--border-hover);
-  border-left: 2px solid var(--accent);
   background: linear-gradient(135deg, var(--bg), rgba(255, 255, 255, 0.025));
   color: var(--fg);
 }
