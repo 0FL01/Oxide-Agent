@@ -312,3 +312,9 @@ Filled only when complete.
   - Evidence: file references documented in RECON Summary, Repository Context, and Implementation Plan.
   - Audit IDs updated: all set to pending.
   - Next: Checkpoint 1 — extend `TaskEventLog` to carry `PersistedTaskEvent` payloads.
+
+- 2026-06-07 04:35: Checkpoint 1 completed.
+  - Changed: Added `TaskEventLogMessage::{Persisted, Closed}` enum, added `persisted: Arc<RwLock<Vec<PersistedTaskEvent>>>` snapshot vec, added `push_persisted`/`latest_seq`/`persisted_snapshot` methods, switched `broadcast_tx` to the new message type, bumped capacity from 100 to 256 (`TASK_EVENT_BROADCAST_CAPACITY`), and updated `close()` to broadcast a typed `Closed` sentinel. Removed the dead `push(&AgentEvent)` broadcast (it had no subscribers and was synthesizing fake `PersistedTaskEvent` rows). Added 4 focused tests covering broadcast receipt, seq dedup, `latest_seq`, and `Closed` sentinel.
+  - Evidence: All 17 `web_transport::tests` pass, including the 4 new ones; `cargo check -p oxide-agent-transport-web` is clean. Pre-existing failure of `api_task_events_are_auth_scoped_and_replay_after_seq` reproduces on the base branch and is unrelated.
+  - Commands: `cargo check -p oxide-agent-transport-web`; `cargo test -p oxide-agent-transport-web --lib web_transport`; `cargo fmt`.
+  - Audit IDs updated: G1 evidence partial (broadcast now carries full payloads; SSE handler still polls, addressed in Checkpoint 2).

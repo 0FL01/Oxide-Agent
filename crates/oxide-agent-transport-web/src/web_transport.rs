@@ -97,10 +97,16 @@ impl BrowserStoredFile {
 /// Events collected for a single task execution.
 #[derive(Debug, Clone)]
 pub struct TaskEventLog {
-    /// Events in order of arrival.
+    /// Lightweight event entries kept for backwards compatibility with existing
+    /// `drain`/`take`/`snapshot` callers. New SSE consumers should prefer
+    /// `persisted_snapshot` and the broadcast channel.
     pub events: Arc<RwLock<Vec<TaskEventEntry>>>,
+    /// Full `PersistedTaskEvent` rows in append order, deduped by `seq`.
+    /// New consumers (SSE, late subscribers) read from this for the
+    /// authoritative in-memory view of persisted events.
+    persisted: Arc<RwLock<Vec<PersistedTaskEvent>>>,
     /// Broadcasts each new event to SSE subscribers.
-    broadcast_tx: broadcast::Sender<TaskEventEntry>,
+    broadcast_tx: broadcast::Sender<TaskEventLogMessage>,
     /// Flag set when the task is done.
     done: Arc<RwLock<bool>>,
 }
@@ -114,36 +120,84 @@ pub struct TaskEventEntry {
     pub event_name: String,
 }
 
+/// Messages broadcast to live SSE subscribers.
+///
+/// `Persisted` carries the full `PersistedTaskEvent` row so subscribers do not
+/// need a separate DB read to render the event. `Closed` is the terminal
+/// sentinel that tells subscribers the log will not produce any more events.
+#[derive(Debug, Clone)]
+pub enum TaskEventLogMessage {
+    Persisted { event: PersistedTaskEvent },
+    Closed,
+}
+
+/// Capacity of the in-process broadcast channel. Sized to comfortably cover
+/// bursty tool-call sequences; a slow consumer that overflows this ring buffer
+/// is expected to fall back to DB replay.
+const TASK_EVENT_BROADCAST_CAPACITY: usize = 256;
+
 impl TaskEventLog {
     /// Create a new empty event log.
     #[must_use]
     pub fn new() -> Self {
-        let (broadcast_tx, _broadcast_rx) = broadcast::channel(100);
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel(TASK_EVENT_BROADCAST_CAPACITY);
         Self {
             events: Arc::new(RwLock::new(Vec::new())),
+            persisted: Arc::new(RwLock::new(Vec::new())),
             broadcast_tx,
             done: Arc::new(RwLock::new(false)),
         }
     }
 
-    /// Record an event with the current timestamp and broadcast it to SSE subscribers.
+    /// Record a lightweight event entry. The full `PersistedTaskEvent` row
+    /// (with `seq`, `kind`, `payload`, etc.) is recorded separately via
+    /// `push_persisted`; that path also broadcasts to SSE subscribers.
     pub async fn push(&self, event: &AgentEvent) {
         let event_name = event_variant_name(event);
         let entry = TaskEventEntry {
             timestamp: chrono::Utc::now(),
             event_name,
         };
-        let broadcast_entry = entry.clone();
         self.events.write().await.push(entry);
+    }
+
+    /// Record a fully built `PersistedTaskEvent` and broadcast it to SSE
+    /// subscribers. Dedupes by `seq` so duplicate appends (e.g. retry from the
+    /// DB persister path) do not produce duplicate SSE events.
+    pub async fn push_persisted(&self, event: PersistedTaskEvent) {
+        let seq = event.seq;
+        let event_for_broadcast = event.clone();
+        {
+            let mut store = self.persisted.write().await;
+            if let Some(existing) = store.iter().position(|e| e.seq == seq) {
+                store[existing] = event;
+            } else {
+                store.push(event);
+            }
+        }
         // Broadcast to SSE subscribers. Ignore error if no active receivers.
-        let _ = self.broadcast_tx.send(broadcast_entry);
+        let _ = self.broadcast_tx.send(TaskEventLogMessage::Persisted {
+            event: event_for_broadcast,
+        });
     }
 
     /// Subscribe to new events as they are pushed. The returned receiver will
     /// receive events published after this call (not the current snapshot).
     #[must_use]
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<TaskEventEntry> {
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<TaskEventLogMessage> {
         self.broadcast_tx.subscribe()
+    }
+
+    /// Returns the highest `seq` recorded via `push_persisted`, or 0 if none.
+    pub async fn latest_seq(&self) -> u64 {
+        let store = self.persisted.read().await;
+        store.iter().map(|e| e.seq).max().unwrap_or(0)
+    }
+
+    /// Returns a snapshot of all persisted events recorded via `push_persisted`,
+    /// in append order.
+    pub async fn persisted_snapshot(&self) -> Vec<PersistedTaskEvent> {
+        self.persisted.read().await.clone()
     }
 
     /// Mark the event log as done — SSE subscribers will stop receiving after this.
@@ -152,12 +206,8 @@ impl TaskEventLog {
             let mut d = self.done.write().await;
             *d = true;
         }
-        // Send a sentinel event to wake up any waiting receivers.
-        let sentinel = TaskEventEntry {
-            timestamp: chrono::Utc::now(),
-            event_name: "stream_closed".to_string(),
-        };
-        let _ = self.broadcast_tx.send(sentinel);
+        // Send a terminal sentinel to wake up any waiting receivers.
+        let _ = self.broadcast_tx.send(TaskEventLogMessage::Closed);
     }
 
     /// Returns `true` if `close()` has been called.
@@ -1298,13 +1348,15 @@ const SENSITIVE_KEY_MARKERS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_events, event_variant_name, BrowserEventScope, TaskEventLog};
+    use super::{
+        collect_events, event_variant_name, BrowserEventScope, TaskEventLog, TaskEventLogMessage,
+    };
     use crate::persistence::{InMemoryWebUiStore, WebUiStore};
     use oxide_agent_core::agent::compaction::{
         CompactionBackend, CompactionPhase, CompactionReason,
     };
     use oxide_agent_core::agent::progress::{AgentEvent, AgentEventSource, FileDeliveryKind};
-    use oxide_agent_web_contracts::TaskEventKind;
+    use oxide_agent_web_contracts::{PersistedTaskEvent, TaskEventKind};
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -1988,5 +2040,78 @@ mod tests {
             .last()
             .is_some_and(|snapshot| snapshot.is_finished));
         assert!(result.state.is_finished);
+    }
+
+    fn sample_persisted_event(seq: u64) -> PersistedTaskEvent {
+        PersistedTaskEvent {
+            schema_version: 1,
+            task_id: "task-1".to_string(),
+            session_id: "session-1".to_string(),
+            user_id: 7,
+            seq,
+            created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .expect("timestamp is valid"),
+            kind: TaskEventKind::ToolResult,
+            summary: format!("event-{seq}"),
+            payload: serde_json::json!({ "seq": seq }),
+            redacted: false,
+            truncated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn push_persisted_broadcasts_full_event_to_subscribers() {
+        let log = TaskEventLog::new();
+        let mut rx = log.subscribe();
+        let event = sample_persisted_event(11);
+
+        log.push_persisted(event.clone()).await;
+
+        match rx.recv().await {
+            Ok(TaskEventLogMessage::Persisted { event: received }) => {
+                assert_eq!(received.seq, 11);
+                assert_eq!(received.kind, TaskEventKind::ToolResult);
+                assert_eq!(received.payload, serde_json::json!({ "seq": 11 }));
+            }
+            other => panic!("expected Persisted message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn push_persisted_dedupes_by_seq() {
+        let log = TaskEventLog::new();
+        log.push_persisted(sample_persisted_event(1)).await;
+        log.push_persisted(sample_persisted_event(2)).await;
+        log.push_persisted(sample_persisted_event(2)).await;
+        log.push_persisted(sample_persisted_event(3)).await;
+
+        let snapshot = log.persisted_snapshot().await;
+        assert_eq!(snapshot.len(), 3, "duplicate seq=2 should be deduped");
+        assert_eq!(
+            snapshot.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_seq_tracks_max_persisted_seq() {
+        let log = TaskEventLog::new();
+        assert_eq!(log.latest_seq().await, 0, "empty log reports 0");
+        log.push_persisted(sample_persisted_event(5)).await;
+        log.push_persisted(sample_persisted_event(3)).await;
+        log.push_persisted(sample_persisted_event(7)).await;
+        assert_eq!(log.latest_seq().await, 7);
+    }
+
+    #[tokio::test]
+    async fn close_broadcasts_closed_sentinel() {
+        let log = TaskEventLog::new();
+        let mut rx = log.subscribe();
+        log.close().await;
+        match rx.recv().await {
+            Ok(TaskEventLogMessage::Closed) => {}
+            other => panic!("expected Closed sentinel, got {other:?}"),
+        }
+        assert!(log.is_closed().await);
     }
 }
