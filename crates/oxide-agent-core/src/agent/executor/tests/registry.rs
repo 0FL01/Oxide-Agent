@@ -4,6 +4,7 @@ use crate::agent::profile::{AgentExecutionProfile, ToolAccessPolicy};
 use crate::config::{ModelInfo, ModuleRuntimeConfig};
 #[cfg(feature = "tool-sandbox-exec")]
 use crate::storage::MockStorageProvider;
+use crate::testing::{test_remove_env, test_set_env};
 #[cfg(feature = "tool-sandbox-exec")]
 use std::collections::HashSet;
 
@@ -307,9 +308,9 @@ fn typed_runtime_registry_exposes_webfetch_tool() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     // Ensure crawl4ai is not configured, so webfetch_md wins the precedence.
-    std::env::remove_var("OXIDE_CRAWL4AI_BASE_URL");
-    std::env::remove_var("OXIDE_CRAWL4AI_ENABLED");
-    std::env::remove_var("WEBFETCH_MD_ENABLED");
+    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
+    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
+    test_remove_env("WEBFETCH_MD_ENABLED");
 
     let executor = build_executor();
     let registry =
@@ -328,8 +329,8 @@ fn typed_runtime_registry_exposes_crawl4ai_markdown_tool() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
-    std::env::remove_var("OXIDE_CRAWL4AI_ENABLED");
+    test_set_env("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
+    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
 
     let executor = build_executor();
     let registry =
@@ -341,7 +342,7 @@ fn typed_runtime_registry_exposes_crawl4ai_markdown_tool() {
 
     assert!(tool_names.contains("crawl4ai_markdown"));
 
-    std::env::remove_var("OXIDE_CRAWL4AI_BASE_URL");
+    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
 }
 
 #[cfg(feature = "tool-ytdlp")]
@@ -375,9 +376,9 @@ fn typed_runtime_registry_drops_webfetch_when_crawl4ai_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
-    std::env::remove_var("OXIDE_CRAWL4AI_ENABLED");
-    std::env::remove_var("WEBFETCH_MD_ENABLED");
+    test_set_env("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
+    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
+    test_remove_env("WEBFETCH_MD_ENABLED");
 
     let executor = build_executor();
     let registry =
@@ -396,7 +397,7 @@ fn typed_runtime_registry_drops_webfetch_when_crawl4ai_configured() {
         "web_markdown must be suppressed when crawl4ai is configured to avoid duplicate attention cost"
     );
 
-    std::env::remove_var("OXIDE_CRAWL4AI_BASE_URL");
+    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
 }
 
 #[cfg(all(feature = "tool-webfetch-md", feature = "tool-crawl4ai-markdown"))]
@@ -405,9 +406,9 @@ fn typed_runtime_registry_keeps_webfetch_when_crawl4ai_unconfigured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::remove_var("OXIDE_CRAWL4AI_BASE_URL");
-    std::env::remove_var("OXIDE_CRAWL4AI_ENABLED");
-    std::env::remove_var("WEBFETCH_MD_ENABLED");
+    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
+    test_remove_env("OXIDE_CRAWL4AI_ENABLED");
+    test_remove_env("WEBFETCH_MD_ENABLED");
 
     let executor = build_executor();
     let registry =
@@ -434,9 +435,9 @@ fn typed_runtime_registry_respects_webfetch_md_enabled_override() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     // Crawl4AI is configured...
-    std::env::set_var("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
+    test_set_env("OXIDE_CRAWL4AI_BASE_URL", "http://crawl4ai:11235");
     // ...but operator explicitly disabled webfetch_md as a belt-and-braces override.
-    std::env::set_var("WEBFETCH_MD_ENABLED", "false");
+    test_set_env("WEBFETCH_MD_ENABLED", "false");
 
     let executor = build_executor();
     let registry =
@@ -449,8 +450,8 @@ fn typed_runtime_registry_respects_webfetch_md_enabled_override() {
     assert!(tool_names.contains("crawl4ai_markdown"));
     assert!(!tool_names.contains("web_markdown"));
 
-    std::env::remove_var("OXIDE_CRAWL4AI_BASE_URL");
-    std::env::remove_var("WEBFETCH_MD_ENABLED");
+    test_remove_env("OXIDE_CRAWL4AI_BASE_URL");
+    test_remove_env("WEBFETCH_MD_ENABLED");
 }
 
 #[cfg(all(feature = "tool-tts-kokoro", feature = "tool-tts-silero"))]
@@ -459,8 +460,8 @@ fn typed_runtime_registry_exposes_tts_tools() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("KOKORO_TTS_URL", "http://kokoro-tts:8880");
-    std::env::set_var("SILERO_TTS_URL", "http://silero-tts:8000");
+    test_set_env("KOKORO_TTS_URL", "http://kokoro-tts:8880");
+    test_set_env("SILERO_TTS_URL", "http://silero-tts:8000");
 
     let executor = build_executor();
     let registry =
@@ -482,8 +483,8 @@ fn typed_runtime_registry_exposes_tts_tools() {
         );
     }
 
-    std::env::remove_var("SILERO_TTS_URL");
-    std::env::remove_var("KOKORO_TTS_URL");
+    test_remove_env("SILERO_TTS_URL");
+    test_remove_env("KOKORO_TTS_URL");
 }
 
 #[cfg(all(
@@ -643,7 +644,7 @@ fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("KOKORO_TTS_URL", "http://kokoro-tts:8880");
+    test_set_env("KOKORO_TTS_URL", "http://kokoro-tts:8880");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
@@ -667,7 +668,7 @@ fn typed_runtime_registry_skips_disabled_kokoro_tts_module() {
     assert!(!tool_names.contains("text_to_speech_en_file"));
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("KOKORO_TTS_URL");
+    test_remove_env("KOKORO_TTS_URL");
 }
 
 #[cfg(feature = "tool-media-audio")]
@@ -751,7 +752,7 @@ fn typed_runtime_registry_skips_disabled_silero_tts_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("SILERO_TTS_URL", "http://silero-tts:8000");
+    test_set_env("SILERO_TTS_URL", "http://silero-tts:8000");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
@@ -775,7 +776,7 @@ fn typed_runtime_registry_skips_disabled_silero_tts_module() {
     assert!(!tool_names.contains("text_to_speech_ru_file"));
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("SILERO_TTS_URL");
+    test_remove_env("SILERO_TTS_URL");
 }
 
 #[cfg(feature = "tool-ytdlp")]
@@ -837,8 +838,8 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("TAVILY_API_KEY", "dummy-key");
-    std::env::set_var("TAVILY_ENABLED", "true");
+    test_set_env("TAVILY_API_KEY", "dummy-key");
+    test_set_env("TAVILY_ENABLED", "true");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
@@ -862,8 +863,8 @@ fn typed_runtime_registry_skips_disabled_tavily_module() {
     assert!(!tool_names.contains("web_extract"));
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("TAVILY_ENABLED");
-    std::env::remove_var("TAVILY_API_KEY");
+    test_remove_env("TAVILY_ENABLED");
+    test_remove_env("TAVILY_API_KEY");
 }
 
 #[cfg(feature = "tool-duckduckgo")]
@@ -872,7 +873,7 @@ fn typed_runtime_registry_skips_disabled_duckduckgo_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("DUCKDUCKGO_ENABLED", "true");
+    test_set_env("DUCKDUCKGO_ENABLED", "true");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
@@ -897,7 +898,7 @@ fn typed_runtime_registry_skips_disabled_duckduckgo_module() {
     #[cfg(feature = "tool-todos")]
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("DUCKDUCKGO_ENABLED");
+    test_remove_env("DUCKDUCKGO_ENABLED");
 }
 
 #[cfg(feature = "tool-searxng")]
@@ -906,8 +907,8 @@ fn typed_runtime_registry_skips_disabled_searxng_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("SEARXNG_URL", "http://searxng:8080");
-    std::env::set_var("SEARXNG_ENABLED", "true");
+    test_set_env("SEARXNG_URL", "http://searxng:8080");
+    test_set_env("SEARXNG_ENABLED", "true");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
@@ -931,8 +932,8 @@ fn typed_runtime_registry_skips_disabled_searxng_module() {
     #[cfg(feature = "tool-todos")]
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("SEARXNG_ENABLED");
-    std::env::remove_var("SEARXNG_URL");
+    test_remove_env("SEARXNG_ENABLED");
+    test_remove_env("SEARXNG_URL");
 }
 
 #[cfg(feature = "tool-brave-search")]
@@ -941,8 +942,8 @@ fn typed_runtime_registry_skips_disabled_brave_search_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("BRAVE_SEARCH_API_KEY", "dummy-key");
-    std::env::set_var("BRAVE_SEARCH_ENABLED", "true");
+    test_set_env("BRAVE_SEARCH_API_KEY", "dummy-key");
+    test_set_env("BRAVE_SEARCH_ENABLED", "true");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
@@ -966,8 +967,8 @@ fn typed_runtime_registry_skips_disabled_brave_search_module() {
     #[cfg(feature = "tool-todos")]
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("BRAVE_SEARCH_ENABLED");
-    std::env::remove_var("BRAVE_SEARCH_API_KEY");
+    test_remove_env("BRAVE_SEARCH_ENABLED");
+    test_remove_env("BRAVE_SEARCH_API_KEY");
 }
 
 #[cfg(feature = "tool-brave-search")]
@@ -976,8 +977,8 @@ fn current_tool_definitions_include_brave_search_when_key_is_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("BRAVE_SEARCH_API_KEY", "dummy-key");
-    std::env::set_var("BRAVE_SEARCH_ENABLED", "true");
+    test_set_env("BRAVE_SEARCH_API_KEY", "dummy-key");
+    test_set_env("BRAVE_SEARCH_ENABLED", "true");
 
     let tool_names = build_executor()
         .current_tool_definitions()
@@ -987,8 +988,8 @@ fn current_tool_definitions_include_brave_search_when_key_is_configured() {
 
     assert!(tool_names.contains("brave_search"));
 
-    std::env::remove_var("BRAVE_SEARCH_ENABLED");
-    std::env::remove_var("BRAVE_SEARCH_API_KEY");
+    test_remove_env("BRAVE_SEARCH_ENABLED");
+    test_remove_env("BRAVE_SEARCH_API_KEY");
 }
 
 #[cfg(all(feature = "tool-tavily", feature = "tool-duckduckgo"))]
@@ -997,9 +998,9 @@ fn typed_runtime_registry_registers_search_modules_once() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("TAVILY_API_KEY", "dummy-key");
-    std::env::set_var("TAVILY_ENABLED", "true");
-    std::env::set_var("DUCKDUCKGO_ENABLED", "true");
+    test_set_env("TAVILY_API_KEY", "dummy-key");
+    test_set_env("TAVILY_ENABLED", "true");
+    test_set_env("DUCKDUCKGO_ENABLED", "true");
 
     let executor = build_executor();
     let registry =
@@ -1035,9 +1036,9 @@ fn typed_runtime_registry_registers_search_modules_once() {
         1
     );
 
-    std::env::remove_var("DUCKDUCKGO_ENABLED");
-    std::env::remove_var("TAVILY_ENABLED");
-    std::env::remove_var("TAVILY_API_KEY");
+    test_remove_env("DUCKDUCKGO_ENABLED");
+    test_remove_env("TAVILY_ENABLED");
+    test_remove_env("TAVILY_API_KEY");
 }
 
 #[cfg(feature = "manager-control-plane")]
@@ -1199,10 +1200,10 @@ fn typed_runtime_registry_exposes_jira_mcp_tools_when_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("JIRA_URL", "https://jira.example.test");
-    std::env::set_var("JIRA_EMAIL", "bot@example.test");
-    std::env::set_var("JIRA_API_TOKEN", "dummy-token");
-    std::env::set_var("JIRA_MCP_BINARY_PATH", "jira-mcp");
+    test_set_env("JIRA_URL", "https://jira.example.test");
+    test_set_env("JIRA_EMAIL", "bot@example.test");
+    test_set_env("JIRA_API_TOKEN", "dummy-token");
+    test_set_env("JIRA_MCP_BINARY_PATH", "jira-mcp");
 
     let executor = build_executor();
     let registry =
@@ -1219,10 +1220,10 @@ fn typed_runtime_registry_exposes_jira_mcp_tools_when_configured() {
         );
     }
 
-    std::env::remove_var("JIRA_MCP_BINARY_PATH");
-    std::env::remove_var("JIRA_API_TOKEN");
-    std::env::remove_var("JIRA_EMAIL");
-    std::env::remove_var("JIRA_URL");
+    test_remove_env("JIRA_MCP_BINARY_PATH");
+    test_remove_env("JIRA_API_TOKEN");
+    test_remove_env("JIRA_EMAIL");
+    test_remove_env("JIRA_URL");
 }
 
 #[cfg(feature = "integration-mcp-mattermost")]
@@ -1231,9 +1232,9 @@ fn typed_runtime_registry_exposes_mattermost_mcp_tools_when_configured() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("MATTERMOST_URL", "https://mattermost.example.test");
-    std::env::set_var("MATTERMOST_TOKEN", "dummy-token");
-    std::env::set_var("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
+    test_set_env("MATTERMOST_URL", "https://mattermost.example.test");
+    test_set_env("MATTERMOST_TOKEN", "dummy-token");
+    test_set_env("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
 
     let executor = build_executor();
     let registry =
@@ -1254,9 +1255,9 @@ fn typed_runtime_registry_exposes_mattermost_mcp_tools_when_configured() {
         );
     }
 
-    std::env::remove_var("MATTERMOST_MCP_BINARY_PATH");
-    std::env::remove_var("MATTERMOST_TOKEN");
-    std::env::remove_var("MATTERMOST_URL");
+    test_remove_env("MATTERMOST_MCP_BINARY_PATH");
+    test_remove_env("MATTERMOST_TOKEN");
+    test_remove_env("MATTERMOST_URL");
 }
 
 #[cfg(feature = "integration-mcp-jira")]
@@ -1265,10 +1266,10 @@ fn typed_runtime_registry_skips_disabled_jira_mcp_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("JIRA_URL", "https://jira.example.test");
-    std::env::set_var("JIRA_EMAIL", "bot@example.test");
-    std::env::set_var("JIRA_API_TOKEN", "dummy-token");
-    std::env::set_var("JIRA_MCP_BINARY_PATH", "jira-mcp");
+    test_set_env("JIRA_URL", "https://jira.example.test");
+    test_set_env("JIRA_EMAIL", "bot@example.test");
+    test_set_env("JIRA_API_TOKEN", "dummy-token");
+    test_set_env("JIRA_MCP_BINARY_PATH", "jira-mcp");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
@@ -1293,10 +1294,10 @@ fn typed_runtime_registry_skips_disabled_jira_mcp_module() {
     assert!(!tool_names.contains("jira_schema"));
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("JIRA_MCP_BINARY_PATH");
-    std::env::remove_var("JIRA_API_TOKEN");
-    std::env::remove_var("JIRA_EMAIL");
-    std::env::remove_var("JIRA_URL");
+    test_remove_env("JIRA_MCP_BINARY_PATH");
+    test_remove_env("JIRA_API_TOKEN");
+    test_remove_env("JIRA_EMAIL");
+    test_remove_env("JIRA_URL");
 }
 
 #[cfg(feature = "integration-mcp-mattermost")]
@@ -1305,9 +1306,9 @@ fn typed_runtime_registry_skips_disabled_mattermost_mcp_module() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("MATTERMOST_URL", "https://mattermost.example.test");
-    std::env::set_var("MATTERMOST_TOKEN", "dummy-token");
-    std::env::set_var("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
+    test_set_env("MATTERMOST_URL", "https://mattermost.example.test");
+    test_set_env("MATTERMOST_TOKEN", "dummy-token");
+    test_set_env("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
 
     let settings = Arc::new(AgentSettings {
         modules: std::collections::BTreeMap::from([(
@@ -1331,9 +1332,9 @@ fn typed_runtime_registry_skips_disabled_mattermost_mcp_module() {
     assert!(!tool_names.contains("mattermost_post_message"));
     assert!(tool_names.contains("write_todos"));
 
-    std::env::remove_var("MATTERMOST_MCP_BINARY_PATH");
-    std::env::remove_var("MATTERMOST_TOKEN");
-    std::env::remove_var("MATTERMOST_URL");
+    test_remove_env("MATTERMOST_MCP_BINARY_PATH");
+    test_remove_env("MATTERMOST_TOKEN");
+    test_remove_env("MATTERMOST_URL");
 }
 
 #[cfg(all(
@@ -1345,13 +1346,13 @@ fn typed_runtime_registry_registers_mcp_modules_once() {
     let _guard = crate::config::test_env_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    std::env::set_var("JIRA_URL", "https://jira.example.test");
-    std::env::set_var("JIRA_EMAIL", "bot@example.test");
-    std::env::set_var("JIRA_API_TOKEN", "dummy-token");
-    std::env::set_var("JIRA_MCP_BINARY_PATH", "jira-mcp");
-    std::env::set_var("MATTERMOST_URL", "https://mattermost.example.test");
-    std::env::set_var("MATTERMOST_TOKEN", "dummy-token");
-    std::env::set_var("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
+    test_set_env("JIRA_URL", "https://jira.example.test");
+    test_set_env("JIRA_EMAIL", "bot@example.test");
+    test_set_env("JIRA_API_TOKEN", "dummy-token");
+    test_set_env("JIRA_MCP_BINARY_PATH", "jira-mcp");
+    test_set_env("MATTERMOST_URL", "https://mattermost.example.test");
+    test_set_env("MATTERMOST_TOKEN", "dummy-token");
+    test_set_env("MATTERMOST_MCP_BINARY_PATH", "mattermost-mcp");
 
     let executor = build_executor();
     let registry =
@@ -1372,13 +1373,13 @@ fn typed_runtime_registry_registers_mcp_modules_once() {
         );
     }
 
-    std::env::remove_var("MATTERMOST_MCP_BINARY_PATH");
-    std::env::remove_var("MATTERMOST_TOKEN");
-    std::env::remove_var("MATTERMOST_URL");
-    std::env::remove_var("JIRA_MCP_BINARY_PATH");
-    std::env::remove_var("JIRA_API_TOKEN");
-    std::env::remove_var("JIRA_EMAIL");
-    std::env::remove_var("JIRA_URL");
+    test_remove_env("MATTERMOST_MCP_BINARY_PATH");
+    test_remove_env("MATTERMOST_TOKEN");
+    test_remove_env("MATTERMOST_URL");
+    test_remove_env("JIRA_MCP_BINARY_PATH");
+    test_remove_env("JIRA_API_TOKEN");
+    test_remove_env("JIRA_EMAIL");
+    test_remove_env("JIRA_URL");
 }
 
 #[cfg(all(

@@ -11,7 +11,7 @@
 /// `std::env::set_var` is `unsafe` in Rust 2024 edition. This helper
 /// centralizes the `unsafe` block so every test call site stays clean.
 #[track_caller]
-pub fn test_set_env(key: &str, value: &str) {
+pub fn test_set_env(key: impl AsRef<std::ffi::OsStr>, value: impl AsRef<std::ffi::OsStr>) {
     unsafe { std::env::set_var(key, value) };
 }
 
@@ -20,7 +20,7 @@ pub fn test_set_env(key: &str, value: &str) {
 /// `std::env::remove_var` is `unsafe` in Rust 2024 edition. This helper
 /// centralizes the `unsafe` block so every test call site stays clean.
 #[track_caller]
-pub fn test_remove_env(key: &str) {
+pub fn test_remove_env(key: impl AsRef<std::ffi::OsStr>) {
     unsafe { std::env::remove_var(key) };
 }
 

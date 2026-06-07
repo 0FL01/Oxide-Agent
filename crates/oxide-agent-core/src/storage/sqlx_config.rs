@@ -152,6 +152,7 @@ fn parse_bool(value: String, name: &str) -> Result<bool, StorageError> {
 mod tests {
     use super::{SQLX_STORAGE_MODULE_ID, SqlxStorageConfig};
     use crate::config::{AgentSettings, ModuleRuntimeConfig};
+    use crate::testing::test_remove_env;
 
     #[test]
     fn sqlx_config_reads_module_values() {
@@ -183,8 +184,8 @@ mod tests {
         let _guard = crate::config::test_env_mutex()
             .lock()
             .expect("test env mutex should lock");
-        std::env::remove_var("OXIDE_DATABASE_URL");
-        std::env::remove_var("DATABASE_URL");
+        test_remove_env("OXIDE_DATABASE_URL");
+        test_remove_env("DATABASE_URL");
         let settings = AgentSettings::default();
 
         let error = SqlxStorageConfig::from_agent_settings(&settings)

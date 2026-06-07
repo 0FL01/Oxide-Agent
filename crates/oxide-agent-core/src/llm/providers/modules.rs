@@ -224,6 +224,7 @@ mod tests {
         provider_key, provider_missing_route_config_message, provider_module_id,
     };
     use crate::config::{AgentSettings, ModuleRuntimeConfig, test_env_mutex};
+    use crate::testing::{test_remove_env, test_set_env};
 
     fn settings_with_provider_key(module_id: &str, api_key: &str) -> AgentSettings {
         let mut settings = AgentSettings::default();
@@ -303,9 +304,9 @@ mod tests {
         let previous_api_key = std::env::var("OPENCODE_GO_API_KEY").ok();
         let previous_primary_api_key = std::env::var("OPENCODE_API_KEY").ok();
         let previous_zen_api_key = std::env::var("OPENCODE_ZEN_API_KEY").ok();
-        std::env::remove_var("OPENCODE_GO_API_KEY");
-        std::env::remove_var("OPENCODE_API_KEY");
-        std::env::remove_var("OPENCODE_ZEN_API_KEY");
+        test_remove_env("OPENCODE_GO_API_KEY");
+        test_remove_env("OPENCODE_API_KEY");
+        test_remove_env("OPENCODE_ZEN_API_KEY");
 
         let settings = AgentSettings::default();
 
@@ -324,13 +325,13 @@ mod tests {
         );
 
         if let Some(api_key) = previous_api_key {
-            std::env::set_var("OPENCODE_GO_API_KEY", api_key);
+            test_set_env("OPENCODE_GO_API_KEY", api_key);
         }
         if let Some(api_key) = previous_primary_api_key {
-            std::env::set_var("OPENCODE_API_KEY", api_key);
+            test_set_env("OPENCODE_API_KEY", api_key);
         }
         if let Some(api_key) = previous_zen_api_key {
-            std::env::set_var("OPENCODE_ZEN_API_KEY", api_key);
+            test_set_env("OPENCODE_ZEN_API_KEY", api_key);
         }
     }
 
@@ -372,24 +373,24 @@ mod tests {
         let previous_go_key = std::env::var("OPENCODE_GO_API_KEY").ok();
         let previous_primary_key = std::env::var("OPENCODE_API_KEY").ok();
         let previous_zen_key = std::env::var("OPENCODE_ZEN_API_KEY").ok();
-        std::env::set_var("OPENCODE_GO_API_KEY", "test-opencode-go-key");
-        std::env::remove_var("OPENCODE_API_KEY");
-        std::env::remove_var("OPENCODE_ZEN_API_KEY");
+        test_set_env("OPENCODE_GO_API_KEY", "test-opencode-go-key");
+        test_remove_env("OPENCODE_API_KEY");
+        test_remove_env("OPENCODE_ZEN_API_KEY");
 
         let providers = build_configured_providers(&AgentSettings::default());
 
         assert!(providers.contains_key("opencode-zen"));
 
         if let Some(api_key) = previous_go_key {
-            std::env::set_var("OPENCODE_GO_API_KEY", api_key);
+            test_set_env("OPENCODE_GO_API_KEY", api_key);
         } else {
-            std::env::remove_var("OPENCODE_GO_API_KEY");
+            test_remove_env("OPENCODE_GO_API_KEY");
         }
         if let Some(api_key) = previous_primary_key {
-            std::env::set_var("OPENCODE_API_KEY", api_key);
+            test_set_env("OPENCODE_API_KEY", api_key);
         }
         if let Some(api_key) = previous_zen_key {
-            std::env::set_var("OPENCODE_ZEN_API_KEY", api_key);
+            test_set_env("OPENCODE_ZEN_API_KEY", api_key);
         }
     }
 

@@ -1211,6 +1211,7 @@ pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{test_remove_env, test_set_env};
     use serde_json::json;
     use std::env;
 
@@ -1223,7 +1224,7 @@ mod tests {
             })
             .collect();
         for key in keys {
-            env::remove_var(key);
+            test_remove_env(key);
         }
     }
 
@@ -1236,7 +1237,7 @@ mod tests {
             "OPENCODE_GO_MODELS_URL",
             "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
         ] {
-            env::remove_var(key);
+            test_remove_env(key);
         }
     }
 
@@ -1248,44 +1249,44 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        env::set_var("OPENROUTER_API_KEY", "dummy_openrouter_key");
+        test_set_env("OPENROUTER_API_KEY", "dummy_openrouter_key");
 
-        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
-        env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
+        test_set_env("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_PROVIDER", "openrouter");
+        test_set_env("AGENT_MODEL_TEMPERATURE", "0.42");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), Some(0.42));
 
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("AGENT_MODEL_TEMPERATURE");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
+        test_remove_env("AGENT_MODEL_TEMPERATURE");
 
         // 2. Test empty env var ignored by direct fallback parsing.
-        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
-        env::set_var("AGENT_MODEL_TEMPERATURE", "");
+        test_set_env("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_PROVIDER", "openrouter");
+        test_set_env("AGENT_MODEL_TEMPERATURE", "");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), None);
 
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("AGENT_MODEL_TEMPERATURE");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
+        test_remove_env("AGENT_MODEL_TEMPERATURE");
 
         // 3. Test explicit environment mapping case.
-        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
-        env::set_var("AGENT_MODEL_TEMPERATURE", "0.13");
+        test_set_env("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_PROVIDER", "openrouter");
+        test_set_env("AGENT_MODEL_TEMPERATURE", "0.13");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), Some(0.13));
 
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("AGENT_MODEL_TEMPERATURE");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
+        test_remove_env("AGENT_MODEL_TEMPERATURE");
 
-        env::remove_var("OPENROUTER_API_KEY");
+        test_remove_env("OPENROUTER_API_KEY");
         Ok(())
     }
 
@@ -1347,14 +1348,14 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = env::var_os("SANDBOX_BACKEND");
 
-        env::set_var("SANDBOX_BACKEND", "bwrap");
+        test_set_env("SANDBOX_BACKEND", "bwrap");
         assert_eq!(
             get_sandbox_backend_config().expect("bwrap sandbox backend env should parse"),
             SandboxBackendConfig::Bwrap
         );
         assert!(!sandbox_uses_broker());
 
-        env::set_var("SANDBOX_BACKEND", "broker");
+        test_set_env("SANDBOX_BACKEND", "broker");
         assert_eq!(
             get_sandbox_backend_config().expect("broker sandbox backend env should parse"),
             SandboxBackendConfig::Broker
@@ -1362,8 +1363,8 @@ mod tests {
         assert!(sandbox_uses_broker());
 
         match previous {
-            Some(value) => env::set_var("SANDBOX_BACKEND", value),
-            None => env::remove_var("SANDBOX_BACKEND"),
+            Some(value) => test_set_env("SANDBOX_BACKEND", value),
+            None => test_remove_env("SANDBOX_BACKEND"),
         }
     }
 
@@ -1719,23 +1720,22 @@ mod tests {
     #[cfg(all(feature = "llm-minimax", feature = "llm-zai"))]
     #[test]
     fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
-        use std::env;
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
 
-        env::set_var("ZAI_API_KEY", "test-key");
-        env::set_var("AGENT_MODEL_ROUTES__0__ID", "MiniMax-M2.7");
-        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "minimax");
-        env::set_var("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
-        env::set_var("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "204800");
-        env::set_var("AGENT_MODEL_ROUTES__0__WEIGHT", "10");
-        env::set_var("AGENT_MODEL_ROUTES__1__ID", "glm-4.7");
-        env::set_var("AGENT_MODEL_ROUTES__1__PROVIDER", "zai");
-        env::set_var("AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS", "32000");
-        env::set_var("AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS", "200000");
-        env::set_var("AGENT_MODEL_ROUTES__1__WEIGHT", "3");
+        test_set_env("ZAI_API_KEY", "test-key");
+        test_set_env("AGENT_MODEL_ROUTES__0__ID", "MiniMax-M2.7");
+        test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "minimax");
+        test_set_env("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
+        test_set_env("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "204800");
+        test_set_env("AGENT_MODEL_ROUTES__0__WEIGHT", "10");
+        test_set_env("AGENT_MODEL_ROUTES__1__ID", "glm-4.7");
+        test_set_env("AGENT_MODEL_ROUTES__1__PROVIDER", "zai");
+        test_set_env("AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS", "32000");
+        test_set_env("AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS", "200000");
+        test_set_env("AGENT_MODEL_ROUTES__1__WEIGHT", "3");
 
         let settings = AgentSettings::new()?;
         let routes = settings.get_configured_agent_model_routes();
@@ -1761,7 +1761,7 @@ mod tests {
             "AGENT_MODEL_ROUTES__1__WEIGHT",
             "ZAI_API_KEY",
         ] {
-            env::remove_var(key);
+            test_remove_env(key);
         }
 
         Ok(())
@@ -1774,13 +1774,13 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        env::remove_var("ZAI_API_KEY");
+        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
-        env::set_var("AGENT_MODEL_ID", "chat-model");
-        env::set_var("AGENT_MODEL_PROVIDER", "opencode-go");
-        env::set_var("OPENCODE_API_KEY", "opencode-key");
-        env::set_var(
+        test_set_env("AGENT_MODEL_ID", "chat-model");
+        test_set_env("AGENT_MODEL_PROVIDER", "opencode-go");
+        test_set_env("OPENCODE_API_KEY", "opencode-key");
+        test_set_env(
             "OPENCODE_GO_API_BASE",
             "https://opencode.example.test/v1/chat/completions",
         );
@@ -1811,8 +1811,8 @@ mod tests {
             "https://opencode.example.test/v1/chat/completions"
         );
 
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
         clear_opencode_go_env();
         Ok(())
     }
@@ -1825,11 +1825,11 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
         clear_opencode_go_env();
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("ZAI_API_KEY");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
+        test_remove_env("ZAI_API_KEY");
 
-        env::set_var("OPENCODE_API_KEY", "opencode-key");
+        test_set_env("OPENCODE_API_KEY", "opencode-key");
 
         let settings = AgentSettings::new()?;
         let primary = settings.get_configured_agent_model();
@@ -1857,14 +1857,14 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        env::remove_var("ZAI_API_KEY");
+        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
-        env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
-        env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode-go");
-        env::set_var("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
-        env::set_var("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "200000");
+        test_set_env("OPENCODE_GO_API_KEY", "opencode-key");
+        test_set_env("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode-go");
+        test_set_env("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
+        test_set_env("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "200000");
 
         let settings = AgentSettings::new()?;
         let primary = settings.get_configured_agent_model();
@@ -1893,11 +1893,11 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        env::remove_var("ZAI_API_KEY");
+        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
-        env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
+        test_set_env("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
 
         let error = AgentSettings::new().expect_err("missing OpenCode Go key should fail");
         assert!(error.to_string().contains("OPENCODE_API_KEY"));
@@ -1908,13 +1908,13 @@ mod tests {
 
     #[test]
     fn tavily_enabled_flag_overrides_api_key_fallback() {
-        env::set_var("TAVILY_API_KEY", "dummy-key");
-        env::set_var("TAVILY_ENABLED", "false");
+        test_set_env("TAVILY_API_KEY", "dummy-key");
+        test_set_env("TAVILY_ENABLED", "false");
 
         assert!(!is_tavily_enabled());
 
-        env::remove_var("TAVILY_ENABLED");
-        env::remove_var("TAVILY_API_KEY");
+        test_remove_env("TAVILY_ENABLED");
+        test_remove_env("TAVILY_API_KEY");
     }
 
     #[test]
@@ -1922,7 +1922,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("DUCKDUCKGO_ENABLED");
+        test_remove_env("DUCKDUCKGO_ENABLED");
 
         assert!(is_duckduckgo_enabled());
     }
@@ -1932,11 +1932,11 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::set_var("DUCKDUCKGO_ENABLED", "false");
+        test_set_env("DUCKDUCKGO_ENABLED", "false");
 
         assert!(!is_duckduckgo_enabled());
 
-        env::remove_var("DUCKDUCKGO_ENABLED");
+        test_remove_env("DUCKDUCKGO_ENABLED");
     }
 
     fn clear_brave_search_env() {
@@ -1951,7 +1951,7 @@ mod tests {
             "BRAVE_SEARCH_MAX_CONCURRENT",
             "BRAVE_SEARCH_MIN_DELAY_MS",
         ] {
-            env::remove_var(key);
+            test_remove_env(key);
         }
     }
 
@@ -1964,7 +1964,7 @@ mod tests {
 
         assert!(!is_brave_search_enabled());
 
-        env::set_var("BRAVE_SEARCH_API_KEY", "brave-key");
+        test_set_env("BRAVE_SEARCH_API_KEY", "brave-key");
         assert!(is_brave_search_enabled());
 
         clear_brave_search_env();
@@ -1977,12 +1977,12 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_brave_search_env();
 
-        env::set_var("BRAVE_SEARCH_API_KEY", "brave-key");
-        env::set_var("BRAVE_SEARCH_ENABLED", "false");
+        test_set_env("BRAVE_SEARCH_API_KEY", "brave-key");
+        test_set_env("BRAVE_SEARCH_ENABLED", "false");
         assert!(!is_brave_search_enabled());
 
-        env::remove_var("BRAVE_SEARCH_API_KEY");
-        env::set_var("BRAVE_SEARCH_ENABLED", "true");
+        test_remove_env("BRAVE_SEARCH_API_KEY");
+        test_set_env("BRAVE_SEARCH_ENABLED", "true");
         assert!(is_brave_search_enabled());
         assert_eq!(get_brave_search_api_key(), None);
 
@@ -2024,13 +2024,13 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_brave_search_env();
 
-        env::set_var("BRAVE_SEARCH_TIMEOUT_SECS", "7");
-        env::set_var("BRAVE_SEARCH_COUNTRY", "DE");
-        env::set_var("BRAVE_SEARCH_LANG", "de");
-        env::set_var("BRAVE_SEARCH_UI_LANG", "de-DE");
-        env::set_var("BRAVE_SEARCH_SAFESEARCH", "strict");
-        env::set_var("BRAVE_SEARCH_MAX_CONCURRENT", "2");
-        env::set_var("BRAVE_SEARCH_MIN_DELAY_MS", "500");
+        test_set_env("BRAVE_SEARCH_TIMEOUT_SECS", "7");
+        test_set_env("BRAVE_SEARCH_COUNTRY", "DE");
+        test_set_env("BRAVE_SEARCH_LANG", "de");
+        test_set_env("BRAVE_SEARCH_UI_LANG", "de-DE");
+        test_set_env("BRAVE_SEARCH_SAFESEARCH", "strict");
+        test_set_env("BRAVE_SEARCH_MAX_CONCURRENT", "2");
+        test_set_env("BRAVE_SEARCH_MIN_DELAY_MS", "500");
 
         assert_eq!(get_brave_search_timeout(), 7);
         assert_eq!(get_brave_search_country(), "DE");
@@ -2048,10 +2048,10 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("DUCKDUCKGO_MAX_CONCURRENT");
-        env::remove_var("DUCKDUCKGO_MIN_DELAY_MS");
-        env::remove_var("DUCKDUCKGO_JITTER_MS");
-        env::remove_var("DUCKDUCKGO_COOLDOWN_SECS");
+        test_remove_env("DUCKDUCKGO_MAX_CONCURRENT");
+        test_remove_env("DUCKDUCKGO_MIN_DELAY_MS");
+        test_remove_env("DUCKDUCKGO_JITTER_MS");
+        test_remove_env("DUCKDUCKGO_COOLDOWN_SECS");
 
         let config = get_duckduckgo_rate_limit_config();
         assert_eq!(
@@ -2067,12 +2067,12 @@ mod tests {
 
     #[test]
     fn searxng_enabled_flag_falls_back_to_url_presence() {
-        env::remove_var("SEARXNG_ENABLED");
-        env::set_var("SEARXNG_URL", "http://searxng:8080");
+        test_remove_env("SEARXNG_ENABLED");
+        test_set_env("SEARXNG_URL", "http://searxng:8080");
 
         assert!(is_searxng_enabled());
 
-        env::remove_var("SEARXNG_URL");
+        test_remove_env("SEARXNG_URL");
     }
 
     #[test]
@@ -2080,17 +2080,17 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("SEARXNG_BEARER_TOKEN");
+        test_remove_env("SEARXNG_BEARER_TOKEN");
 
         assert_eq!(get_searxng_bearer_token(), None);
 
-        env::set_var("SEARXNG_BEARER_TOKEN", "  ");
+        test_set_env("SEARXNG_BEARER_TOKEN", "  ");
         assert_eq!(get_searxng_bearer_token(), None);
 
-        env::set_var("SEARXNG_BEARER_TOKEN", " test-token ");
+        test_set_env("SEARXNG_BEARER_TOKEN", " test-token ");
         assert_eq!(get_searxng_bearer_token(), Some("test-token".to_string()));
 
-        env::remove_var("SEARXNG_BEARER_TOKEN");
+        test_remove_env("SEARXNG_BEARER_TOKEN");
     }
 
     #[test]
@@ -2098,7 +2098,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("SEARXNG_ROTATION_ENGINES");
+        test_remove_env("SEARXNG_ROTATION_ENGINES");
 
         assert_eq!(
             get_searxng_rotation_engines(),
@@ -2117,7 +2117,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::set_var("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
+        test_set_env("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
 
         assert_eq!(
             get_searxng_rotation_engines(),
@@ -2128,7 +2128,7 @@ mod tests {
             ]
         );
 
-        env::remove_var("SEARXNG_ROTATION_ENGINES");
+        test_remove_env("SEARXNG_ROTATION_ENGINES");
     }
 }
 

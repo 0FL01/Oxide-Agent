@@ -47,14 +47,14 @@ Out of scope:
   - Acceptance: `crates/oxide-agent-core/src/testing.rs` exports `pub fn test_set_env(key: &str, value: &str)` and `pub fn test_remove_env(key: &str)` with `#[track_caller]`, wrapping `unsafe { std::env::set_var/remove_var }`.
   - Evidence required: file read showing both functions with correct signatures and `#[track_caller]`.
   - Status: verified
-  - Evidence collected: Both functions added at top of `testing.rs` with `#[track_caller]`, doc comments, `unsafe` wrappers. `cargo check -p oxide-agent-core --features profile-full` passes.
+  - Evidence collected: Both functions added with `#[track_caller]`, generic `impl AsRef<OsStr>` signatures to accept `String`, `&str`, and `OsString`. `cargo check -p oxide-agent-core --features profile-full` passes.
 
 - G2: All `std::env::set_var` / `std::env::remove_var` calls in test code replaced with helpers
   - Source: RECON — 249 call sites across 10 files.
   - Acceptance: `rg 'std::env::(set_var|remove_var)' crates/ --glob '*.rs'` returns zero hits in test code. Only the `testing.rs` helpers themselves contain the raw `unsafe` calls.
   - Evidence required: `rg` command returning zero results outside `testing.rs`.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Batch A complete (6 core files, 304 calls replaced). Batch B pending (4 files, ~25 calls).
 
 - G3: Missing `reasoning_effort` field in `ChatWithToolsRequest` fixed
   - Source: RECON — 16 call sites in 3 integration test files.
@@ -223,6 +223,19 @@ Out of scope:
   - Evidence: `cargo check -p oxide-agent-core --features profile-full` passes.
   - Audit IDs updated: G1 → verified.
   - Next: Checkpoint 2 — Batch A (core crate test files, ~214 calls).
+
+- 2026-06-07: Checkpoint 2 — Batch A complete (6 core crate test files, 304 calls replaced).
+  - Changed:
+    - `config.rs`: 92 replacements (env::set_var → test_set_env, env::remove_var → test_remove_env), added `use crate::testing`, removed redundant inner `use std::env`.
+    - `registry.rs`: 91 replacements (std::env::set_var → test_set_env, std::env::remove_var → test_remove_env), added import.
+    - `bwrap/tests.rs`: 110 replacements, added import.
+    - `manager.rs`: 6 replacements, added import.
+    - `sqlx_config.rs`: 2 replacements, added import.
+    - `modules.rs`: 13 replacements, added import.
+  - Refined `test_set_env`/`test_remove_env` signatures to `impl AsRef<OsStr>` to handle `String`, `&str`, and `OsString` call sites.
+  - Evidence: `rg` returns zero unsafe env calls in all 6 files. Core compilation passes (remaining errors are Batch B + API drift from Checkpoints 3-4).
+  - Audit IDs updated: G2 → in_progress (Batch A done, Batch B pending).
+  - Next: Checkpoint 3 — Batch B (transport + remaining files, ~25 calls).
 
 ## Risks and Blockers
 

@@ -2707,6 +2707,7 @@ impl Drop for DockerSandboxManager {
 #[cfg(test)]
 mod backend_selection_tests {
     use super::*;
+    use crate::testing::{test_remove_env, test_set_env};
     use std::ffi::OsString;
 
     #[test]
@@ -2723,7 +2724,7 @@ mod backend_selection_tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous: Option<OsString> = std::env::var_os("SANDBOX_BACKEND");
 
-        std::env::set_var("SANDBOX_BACKEND", uncompiled_backend);
+        test_set_env("SANDBOX_BACKEND", uncompiled_backend);
         let error = selected_sandbox_backend().unwrap_err().to_string();
 
         assert!(error.contains("SANDBOX_BACKEND="));
@@ -2738,8 +2739,8 @@ mod backend_selection_tests {
         }
 
         match previous {
-            Some(value) => std::env::set_var("SANDBOX_BACKEND", value),
-            None => std::env::remove_var("SANDBOX_BACKEND"),
+            Some(value) => test_set_env("SANDBOX_BACKEND", value),
+            None => test_remove_env("SANDBOX_BACKEND"),
         }
     }
 
@@ -2750,7 +2751,7 @@ mod backend_selection_tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous: Option<OsString> = std::env::var_os("SANDBOX_BACKEND");
-        std::env::set_var("SANDBOX_BACKEND", "bwrap");
+        test_set_env("SANDBOX_BACKEND", "bwrap");
 
         let list_error =
             SandboxManager::list_stack_log_sources(StackLogsListSourcesRequest::default())
@@ -2768,8 +2769,8 @@ mod backend_selection_tests {
         }
 
         match previous {
-            Some(value) => std::env::set_var("SANDBOX_BACKEND", value),
-            None => std::env::remove_var("SANDBOX_BACKEND"),
+            Some(value) => test_set_env("SANDBOX_BACKEND", value),
+            None => test_remove_env("SANDBOX_BACKEND"),
         }
     }
 }
