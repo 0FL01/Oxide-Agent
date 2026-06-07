@@ -2,7 +2,8 @@ use std::fmt;
 
 use async_trait::async_trait;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, SessionSummary, TaskEventsResponse, WebSessionRecord, WebTaskRecord,
+    PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
+    WebTaskRecord,
 };
 
 use super::{
@@ -15,6 +16,12 @@ pub type WebUiStoreResult<T> = Result<T, WebUiStoreError>;
 pub struct WebSessionContextKeys {
     pub context_key: String,
     pub context_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebTaskEventState {
+    pub status: TaskStatus,
+    pub last_event_seq: u64,
 }
 
 impl WebSessionContextKeys {
@@ -116,6 +123,15 @@ pub trait WebUiStore: Send + Sync {
         session_id: &str,
         task_id: &str,
     ) -> WebUiStoreResult<Option<WebTaskRecord>>;
+
+    async fn task_exists(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool>;
+
+    async fn load_task_event_state(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskEventState>>;
 
     async fn list_tasks(
         &self,

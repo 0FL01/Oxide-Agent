@@ -10,8 +10,8 @@ use tokio::sync::RwLock;
 
 use super::{
     LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebSessionContextKeys,
-    WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError, WebUiStoreResult,
-    WebUserRecord,
+    WebTaskEventState, WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError,
+    WebUiStoreResult, WebUserRecord,
 };
 
 type SessionKey = (i64, String);
@@ -304,6 +304,32 @@ impl WebUiStore for InMemoryWebUiStore {
             .await
             .get(&Self::task_key(user_id, session_id, task_id))
             .cloned())
+    }
+
+    async fn task_exists(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
+        Ok(self
+            .tasks
+            .read()
+            .await
+            .values()
+            .any(|record| record.user_id == user_id && record.session_id == session_id))
+    }
+
+    async fn load_task_event_state(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskEventState>> {
+        Ok(self
+            .tasks
+            .read()
+            .await
+            .get(&Self::task_key(user_id, session_id, task_id))
+            .map(|record| WebTaskEventState {
+                status: record.status,
+                last_event_seq: record.last_event_seq,
+            }))
     }
 
     async fn list_tasks(
@@ -721,6 +747,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["task-1", "task-2"]
         );
+        assert!(store.task_exists(1, "newer").await.expect("task exists"));
+        let task_state = store
+            .load_task_event_state(1, "newer", "task-1")
+            .await
+            .expect("load task event state")
+            .expect("task event state exists");
+        assert_eq!(task_state.status, TaskStatus::Completed);
+        assert_eq!(task_state.last_event_seq, 0);
 
         store
             .append_task_events(

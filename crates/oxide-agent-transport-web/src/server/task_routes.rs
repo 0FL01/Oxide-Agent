@@ -419,7 +419,7 @@ pub(crate) async fn api_create_task(
     let input_markdown =
         validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
     let execution_input = build_task_agent_user_input(&input_markdown, &attachments);
-    reject_active_task(&state, user.user_id, &session_id).await?;
+    reject_active_task(&state, user.user_id, &session).await?;
 
     ensure_runtime_session(&state, user.user_id, &session).await;
     let Some(running_task) = state
@@ -441,12 +441,12 @@ pub(crate) async fn api_create_task(
     // Check whether this is the first task BEFORE saving the new one,
     // otherwise list_tasks would already include it and is_empty()
     // would always return false.
-    let is_first_task = state
+    let has_existing_tasks = state
         .web_store
-        .list_tasks(user.user_id, &session_id)
+        .task_exists(user.user_id, &session_id)
         .await
-        .map_err(store_error_response)?
-        .is_empty();
+        .map_err(store_error_response)?;
+    let is_first_task = !has_existing_tasks;
 
     let task_record = new_running_web_task_record(RunningWebTaskRecordInput {
         task_id: task_id.clone(),
@@ -538,6 +538,35 @@ pub(crate) async fn api_get_task_progress(
     }))
 }
 
+fn event_query_is_drained(
+    after_seq: u64,
+    before_seq: Option<u64>,
+    task_last_event_seq: u64,
+) -> bool {
+    match before_seq {
+        Some(before_seq) => before_seq <= 1,
+        None => after_seq >= task_last_event_seq,
+    }
+}
+
+fn empty_task_events_response(after_seq: u64, before_seq: Option<u64>) -> TaskEventsResponse {
+    if let Some(before_seq) = before_seq {
+        return TaskEventsResponse {
+            events: Vec::new(),
+            first_seq: before_seq,
+            last_seq: 0,
+            has_more: false,
+        };
+    }
+
+    TaskEventsResponse {
+        events: Vec::new(),
+        first_seq: after_seq,
+        last_seq: after_seq,
+        has_more: false,
+    }
+}
+
 pub(crate) async fn api_get_task_events(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -545,7 +574,14 @@ pub(crate) async fn api_get_task_events(
     Query(query): Query<TaskEventsQuery>,
 ) -> Result<Json<TaskEventsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user(&state, &headers).await?;
-    let _task = load_owned_task(&state, user.user_id, &session_id, &task_id).await?;
+    let Some(task_state) = state
+        .web_store
+        .load_task_event_state(user.user_id, &session_id, &task_id)
+        .await
+        .map_err(store_error_response)?
+    else {
+        return Err(not_found_response());
+    };
     let after_seq = query.after_seq.unwrap_or_default();
     let limit = query
         .limit
@@ -553,6 +589,22 @@ pub(crate) async fn api_get_task_events(
         .clamp(1, MAX_TASK_EVENTS_LIMIT);
 
     let before_seq = query.before_seq;
+    if event_query_is_drained(after_seq, before_seq, task_state.last_event_seq) {
+        tracing::debug!(
+            target: "oxide_agent_transport_web::web_perf",
+            user_id = user.user_id,
+            session_id = %session_id,
+            task_id = %task_id,
+            after_seq,
+            before_seq,
+            limit,
+            task_status = ?task_state.status,
+            task_last_event_seq = task_state.last_event_seq,
+            "web task events skipped drained query"
+        );
+        return Ok(Json(empty_task_events_response(after_seq, before_seq)));
+    }
+
     let events = if let Some(before_seq) = before_seq {
         state
             .web_store
@@ -946,23 +998,23 @@ pub(crate) async fn api_cancel_task(
 pub(crate) async fn reject_active_task(
     state: &AppState,
     user_id: i64,
-    session_id: &str,
+    session: &WebSessionRecord,
 ) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
-    let session = load_owned_session(state, user_id, session_id).await?;
-    let Some(active_task_id) = session.active_task_id else {
+    let session_id = &session.session_id;
+    let Some(active_task_id) = session.active_task_id.clone() else {
         return Ok(());
     };
 
-    let Some(task) = state
+    let Some(task_state) = state
         .web_store
-        .load_task(user_id, session_id, &active_task_id)
+        .load_task_event_state(user_id, session_id, &active_task_id)
         .await
         .map_err(store_error_response)?
     else {
         return Ok(());
     };
 
-    if task.status == ApiTaskStatus::WaitingForUserInput {
+    if task_state.status == ApiTaskStatus::WaitingForUserInput {
         return Err((
             StatusCode::CONFLICT,
             Json(
@@ -976,7 +1028,7 @@ pub(crate) async fn reject_active_task(
         ));
     }
 
-    if task.status.is_active() {
+    if task_state.status.is_active() {
         return Err(api_error(
             StatusCode::CONFLICT,
             ErrorCode::SessionBusy,

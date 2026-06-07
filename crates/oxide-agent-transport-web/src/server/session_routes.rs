@@ -367,8 +367,8 @@ pub(crate) async fn api_update_session_profile(
     Json(request): Json<UpdateSessionProfileRequest>,
 ) -> Result<Json<UpdateSessionResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user_with_csrf(&state, &headers).await?;
-    reject_active_task(&state, user.user_id, &session_id).await?;
     let mut record = load_owned_session(&state, user.user_id, &session_id).await?;
+    reject_active_task(&state, user.user_id, &record).await?;
     let agent_profile_id =
         validate_optional_agent_profile_id(&state, user.user_id, request.agent_profile_id, true)
             .await?;

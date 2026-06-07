@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use super::{
     LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebSessionContextKeys,
-    WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError, WebUiStoreResult,
-    WebUserRecord, WEB_AUTH_SCHEMA_VERSION,
+    WebTaskEventState, WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError,
+    WebUiStoreResult, WebUserRecord, WEB_AUTH_SCHEMA_VERSION,
 };
 
 const DEFAULT_TASK_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -749,6 +749,47 @@ impl WebUiStore for SqlxWebUiStore {
         row.as_ref().map(row_to_task).transpose()
     }
 
+    async fn task_exists(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT 1
+            FROM web_tasks
+            WHERE user_id = $1 AND session_id = $2
+            LIMIT 1
+            "#,
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(db_error)?;
+
+        Ok(row.is_some())
+    }
+
+    async fn load_task_event_state(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskEventState>> {
+        let row = query::<Postgres>(
+            r#"
+            SELECT status, last_event_seq
+            FROM web_tasks
+            WHERE user_id = $1 AND session_id = $2 AND task_id = $3
+            "#,
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .bind(task_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(db_error)?;
+
+        row.as_ref().map(row_to_task_event_state).transpose()
+    }
+
     async fn list_tasks(
         &self,
         user_id: i64,
@@ -1303,6 +1344,14 @@ fn row_to_task(row: &PgRow) -> WebUiStoreResult<WebTaskRecord> {
     })
 }
 
+fn row_to_task_event_state(row: &PgRow) -> WebUiStoreResult<WebTaskEventState> {
+    let status = enum_from_sql(row_value::<String>(row, "status")?.as_str(), "task status")?;
+    Ok(WebTaskEventState {
+        status,
+        last_event_seq: i64_to_u64(row_value(row, "last_event_seq")?, "last_event_seq")?,
+    })
+}
+
 fn row_to_event(row: &PgRow) -> WebUiStoreResult<PersistedTaskEvent> {
     let kind = enum_from_sql(
         row_value::<String>(row, "kind")?.as_str(),
@@ -1719,6 +1768,17 @@ mod tests {
             .expect("load task")
             .and_then(|task| task.last_progress)
             .is_some());
+        assert!(store
+            .task_exists(user_id, "session-1")
+            .await
+            .expect("task exists"));
+        let task_state = store
+            .load_task_event_state(user_id, "session-1", "task-1")
+            .await
+            .expect("load task event state")
+            .expect("task event state exists");
+        assert_eq!(task_state.status, TaskStatus::Completed);
+        assert_eq!(task_state.last_event_seq, 0);
 
         let events = (1..=250)
             .map(|seq| event(user_id, "session-1", "task-1", seq))
