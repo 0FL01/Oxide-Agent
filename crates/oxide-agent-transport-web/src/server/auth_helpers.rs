@@ -289,6 +289,7 @@ pub(crate) async fn current_user_for_token_cached(
             },
         )
         .await;
+    spawn_user_route_cache_prewarm(state, user.user_id);
     tracing::debug!(
         target: "oxide_agent_transport_web::web_perf",
         auth_cache_hit = false,
@@ -306,6 +307,7 @@ pub(crate) async fn cache_auth_session(
     auth_session: crate::persistence::WebAuthSessionRecord,
     now: chrono::DateTime<chrono::Utc>,
 ) {
+    let user_id = user.user_id;
     state
         .auth_cache
         .insert(
@@ -317,6 +319,24 @@ pub(crate) async fn cache_auth_session(
             },
         )
         .await;
+    spawn_user_route_cache_prewarm(state, user_id);
+}
+
+pub(crate) fn spawn_user_route_cache_prewarm(state: &AppState, user_id: i64) {
+    let settings_state = state.clone();
+    tokio::spawn(async move {
+        super::settings_routes::prewarm_user_settings_cache(settings_state, user_id).await;
+    });
+
+    let profiles_state = state.clone();
+    tokio::spawn(async move {
+        super::agent_profiles::prewarm_agent_profiles_cache(profiles_state, user_id).await;
+    });
+
+    let sessions_state = state.clone();
+    tokio::spawn(async move {
+        super::session_routes::prewarm_session_summaries_cache(sessions_state, user_id).await;
+    });
 }
 
 pub(crate) async fn invalidate_auth_session_cache(state: &AppState, raw_session_token: &str) {

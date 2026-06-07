@@ -10,13 +10,14 @@ use oxide_agent_web_contracts::{
     ErrorCode, ErrorEnvelope, ListAgentProfilesResponse, OkResponse, UpdateAgentProfileRequest,
     UpdateAgentProfileResponse,
 };
+use std::sync::Arc;
 
 use crate::persistence::WebUserRecord;
 
 use super::settings_routes::load_current_user_record;
 use super::{
     api_error, authenticated_user, authenticated_user_with_csrf, backend_unavailable_response,
-    not_found_response, store_error_response, AppState,
+    invalidate_session_summaries_cache, not_found_response, store_error_response, AppState,
 };
 
 const MAX_AGENT_PROFILE_ID_CHARS: usize = 64;
@@ -39,26 +40,9 @@ pub(crate) async fn api_list_agent_profiles(
         return Ok(Json(response));
     }
 
-    let mut profiles = state
-        .session_manager
-        .storage()
-        .list_agent_profiles(user.user_id)
+    let response = cached_agent_profiles(&state, user.user_id)
         .await
-        .map_err(control_plane_storage_error_response)?
-        .into_iter()
-        .map(agent_profile_view_from_record)
-        .collect::<Vec<_>>();
-    profiles.sort_by(|left, right| {
-        left.display_name
-            .to_ascii_lowercase()
-            .cmp(&right.display_name.to_ascii_lowercase())
-            .then_with(|| left.agent_id.cmp(&right.agent_id))
-    });
-    let response = ListAgentProfilesResponse { profiles };
-    state
-        .agent_profiles_cache
-        .insert(user.user_id, response.clone())
-        .await;
+        .map_err(agent_profiles_cache_error_response)?;
     tracing::debug!(
         target: "oxide_agent_transport_web::web_perf",
         user_id = user.user_id,
@@ -67,6 +51,54 @@ pub(crate) async fn api_list_agent_profiles(
         "web agent profiles cache checked"
     );
     Ok(Json(response))
+}
+
+#[derive(Debug)]
+pub(crate) struct AgentProfilesCacheLoadError(String);
+
+fn agent_profiles_cache_error_response(
+    error: Arc<AgentProfilesCacheLoadError>,
+) -> (StatusCode, Json<ErrorEnvelope>) {
+    backend_unavailable_response(format!("Agent profiles are unavailable: {}", error.0))
+}
+
+pub(crate) async fn prewarm_agent_profiles_cache(state: AppState, user_id: i64) {
+    if let Err(error) = cached_agent_profiles(&state, user_id).await {
+        tracing::debug!(
+            target: "oxide_agent_transport_web::web_perf",
+            user_id,
+            error = ?error,
+            "web agent profiles cache prewarm failed"
+        );
+    }
+}
+
+async fn cached_agent_profiles(
+    state: &AppState,
+    user_id: i64,
+) -> Result<ListAgentProfilesResponse, Arc<AgentProfilesCacheLoadError>> {
+    let state = state.clone();
+    let cache = state.agent_profiles_cache.clone();
+    cache
+        .try_get_with(user_id, async move {
+            let mut profiles = state
+                .session_manager
+                .storage()
+                .list_agent_profiles(user_id)
+                .await
+                .map_err(|error| AgentProfilesCacheLoadError(error.to_string()))?
+                .into_iter()
+                .map(agent_profile_view_from_record)
+                .collect::<Vec<_>>();
+            profiles.sort_by(|left, right| {
+                left.display_name
+                    .to_ascii_lowercase()
+                    .cmp(&right.display_name.to_ascii_lowercase())
+                    .then_with(|| left.agent_id.cmp(&right.agent_id))
+            });
+            Ok(ListAgentProfilesResponse { profiles })
+        })
+        .await
 }
 
 pub(crate) async fn api_create_agent_profile(
@@ -192,10 +224,12 @@ async fn clear_agent_profile_references(
         .list_sessions(user_id)
         .await
         .map_err(store_error_response)?;
+    let mut sessions_changed = false;
     for mut session in sessions {
         if session.agent_profile_id.as_deref() != Some(agent_id) {
             continue;
         }
+        sessions_changed = true;
         session.agent_profile_id = None;
         session.updated_at = chrono::Utc::now();
         state
@@ -207,6 +241,9 @@ async fn clear_agent_profile_references(
             .session_manager
             .set_session_execution_profile(&session.session_id, None, None)
             .await;
+    }
+    if sessions_changed {
+        invalidate_session_summaries_cache(state, user_id).await;
     }
     Ok(())
 }

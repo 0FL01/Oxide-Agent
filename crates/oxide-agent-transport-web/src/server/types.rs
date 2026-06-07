@@ -15,7 +15,9 @@ use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
 use oxide_agent_core::{config::AgentSettings, llm::LlmClient, storage::StorageProvider};
 #[cfg(feature = "storage-sqlx")]
 use oxide_agent_runtime::SessionRegistry;
-use oxide_agent_web_contracts::{CurrentUser, ListAgentProfilesResponse, UserSettingsResponse};
+use oxide_agent_web_contracts::{
+    CurrentUser, ListAgentProfilesResponse, ListSessionsResponse, UserSettingsResponse,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap as StdHashMap;
 use std::fmt;
@@ -49,6 +51,8 @@ pub(crate) const USER_SETTINGS_CACHE_TTL: Duration = Duration::from_secs(60);
 pub(crate) const USER_SETTINGS_CACHE_MAX_CAPACITY: u64 = 1024;
 pub(crate) const AGENT_PROFILES_CACHE_TTL: Duration = Duration::from_secs(60);
 pub(crate) const AGENT_PROFILES_CACHE_MAX_CAPACITY: u64 = 1024;
+pub(crate) const SESSION_SUMMARIES_CACHE_TTL: Duration = Duration::from_secs(15);
+pub(crate) const SESSION_SUMMARIES_CACHE_MAX_CAPACITY: u64 = 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CachedAuthSession {
@@ -207,6 +211,7 @@ pub struct AppState {
     pub(crate) auth_cache: Cache<String, CachedAuthSession>,
     pub(crate) user_settings_cache: Cache<i64, UserSettingsResponse>,
     pub(crate) agent_profiles_cache: Cache<i64, ListAgentProfilesResponse>,
+    pub(crate) session_summaries_cache: Cache<i64, ListSessionsResponse>,
     pub task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     pub task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     /// Tracks the JoinHandle for each running task so it can be aborted on completion.
@@ -258,6 +263,10 @@ impl AppState {
             agent_profiles_cache: Cache::builder()
                 .max_capacity(AGENT_PROFILES_CACHE_MAX_CAPACITY)
                 .time_to_live(AGENT_PROFILES_CACHE_TTL)
+                .build(),
+            session_summaries_cache: Cache::builder()
+                .max_capacity(SESSION_SUMMARIES_CACHE_MAX_CAPACITY)
+                .time_to_live(SESSION_SUMMARIES_CACHE_TTL)
                 .build(),
             task_progress: Arc::new(RwLock::new(StdHashMap::new())),
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),

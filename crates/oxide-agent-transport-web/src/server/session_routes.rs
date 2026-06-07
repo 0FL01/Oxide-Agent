@@ -12,6 +12,7 @@ use oxide_agent_web_contracts::{
     UploadTaskAttachmentsResponse, WebSessionRecord,
 };
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::persistence::WebSessionContextKeys;
 use crate::session::{web_session_sandbox_scope, WebSessionRuntimeOptions};
@@ -82,6 +83,53 @@ async fn reconcile_web_sandbox_orphans(state: &AppState, user_id: i64) -> Result
         .await
         .map_err(|error| error.to_string())?;
     reconcile_web_sandbox_orphans_with_sessions(state, user_id, &sessions).await
+}
+
+#[derive(Debug)]
+pub(crate) struct SessionSummariesCacheLoadError(String);
+
+fn session_summaries_cache_error_response(
+    error: Arc<SessionSummariesCacheLoadError>,
+) -> (StatusCode, Json<ErrorEnvelope>) {
+    api_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        ErrorCode::BackendUnavailable,
+        format!("Web sessions are unavailable: {}", error.0),
+        true,
+    )
+}
+
+pub(crate) async fn prewarm_session_summaries_cache(state: AppState, user_id: i64) {
+    if let Err(error) = cached_session_summaries(&state, user_id).await {
+        tracing::debug!(
+            target: "oxide_agent_transport_web::web_perf",
+            user_id,
+            error = ?error,
+            "web sessions cache prewarm failed"
+        );
+    }
+}
+
+async fn cached_session_summaries(
+    state: &AppState,
+    user_id: i64,
+) -> Result<ListSessionsResponse, Arc<SessionSummariesCacheLoadError>> {
+    let state = state.clone();
+    let cache = state.session_summaries_cache.clone();
+    cache
+        .try_get_with(user_id, async move {
+            let sessions = state
+                .web_store
+                .list_session_summaries(user_id)
+                .await
+                .map_err(|error| SessionSummariesCacheLoadError(error.to_string()))?;
+            Ok(ListSessionsResponse { sessions })
+        })
+        .await
+}
+
+pub(crate) async fn invalidate_session_summaries_cache(state: &AppState, user_id: i64) {
+    state.session_summaries_cache.invalidate(&user_id).await;
 }
 
 fn is_web_session_sandbox_scope(scope: &str) -> bool {
@@ -162,6 +210,17 @@ pub(crate) async fn api_list_sessions(
     headers: HeaderMap,
 ) -> Result<Json<ListSessionsResponse>, (StatusCode, Json<ErrorEnvelope>)> {
     let user = authenticated_user(&state, &headers).await?;
+    if let Some(response) = state.session_summaries_cache.get(&user.user_id).await {
+        tracing::debug!(
+            target: "oxide_agent_transport_web::web_perf",
+            user_id = user.user_id,
+            sessions_count = response.sessions.len(),
+            sessions_cache_hit = true,
+            "web sessions listed"
+        );
+        return Ok(Json(response));
+    }
+
     let session_contexts = state
         .web_store
         .list_session_context_keys(user.user_id)
@@ -176,19 +235,18 @@ pub(crate) async fn api_list_sessions(
             "Web sandbox reconcile during list_sessions failed"
         );
     }
-    let sessions = state
-        .web_store
-        .list_session_summaries(user.user_id)
+    let response = cached_session_summaries(&state, user.user_id)
         .await
-        .map_err(store_error_response)?;
-    let sessions_count = sessions.len();
+        .map_err(session_summaries_cache_error_response)?;
+    let sessions_count = response.sessions.len();
     tracing::debug!(
         target: "oxide_agent_transport_web::web_perf",
         user_id = user.user_id,
         sessions_count,
+        sessions_cache_hit = false,
         "web sessions listed"
     );
-    Ok(Json(ListSessionsResponse { sessions }))
+    Ok(Json(response))
 }
 
 #[cfg(test)]
@@ -308,6 +366,7 @@ async fn create_session_for_request(
             "Web sandbox reconcile after create_session failed"
         );
     }
+    invalidate_session_summaries_cache(&state, user.user_id).await;
     Ok(Json(ApiCreateSessionResponse {
         session: session_summary_from_record(record),
     }))
@@ -355,6 +414,7 @@ pub(crate) async fn api_update_session(
         .save_session(record.clone())
         .await
         .map_err(store_error_response)?;
+    invalidate_session_summaries_cache(&state, user.user_id).await;
     Ok(Json(UpdateSessionResponse {
         session: session_detail_from_record(record),
     }))
@@ -385,6 +445,7 @@ pub(crate) async fn api_update_session_profile(
         .save_session(record.clone())
         .await
         .map_err(store_error_response)?;
+    invalidate_session_summaries_cache(&state, user.user_id).await;
     state
         .session_manager
         .set_session_execution_profile(&session_id, agent_profile_id, execution_profile)
@@ -434,5 +495,6 @@ pub(crate) async fn api_delete_session(
             "Web sandbox reconcile after delete_session failed"
         );
     }
+    invalidate_session_summaries_cache(&state, user.user_id).await;
     Ok(Json(OkResponse::ok()))
 }

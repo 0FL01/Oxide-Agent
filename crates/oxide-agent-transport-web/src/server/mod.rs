@@ -53,6 +53,7 @@ pub(crate) use session_routes::api_create_session;
 pub(crate) use session_routes::{
     api_create_session_with_request, api_delete_session, api_get_session, api_list_sessions,
     api_update_session, api_update_session_profile, api_upload_task_attachments,
+    invalidate_session_summaries_cache,
 };
 pub(crate) use settings_routes::{api_get_settings, api_update_settings, load_current_user_record};
 pub(crate) use task_routes::{
