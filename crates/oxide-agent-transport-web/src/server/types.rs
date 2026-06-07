@@ -48,6 +48,11 @@ pub(crate) const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
 pub(crate) const AUTH_CACHE_TTL: Duration = Duration::from_secs(60);
 pub(crate) const AUTH_CACHE_MAX_CAPACITY: u64 = 1024;
 pub(crate) const USER_SETTINGS_CACHE_TTL: Duration = Duration::from_secs(60);
+/// How long a closed `TaskEventLog` stays queryable in the global
+/// `EVENT_LOGS` registry for late subscribers before a background cleanup
+/// task removes it. 60s is long enough for a browser tab to reconnect
+/// after a network blip, short enough to keep the map bounded.
+pub(crate) const EVENT_LOG_RETENTION_AFTER_CLOSE: Duration = Duration::from_secs(60);
 pub(crate) const USER_SETTINGS_CACHE_MAX_CAPACITY: u64 = 1024;
 pub(crate) const AGENT_PROFILES_CACHE_TTL: Duration = Duration::from_secs(60);
 pub(crate) const AGENT_PROFILES_CACHE_MAX_CAPACITY: u64 = 1024;

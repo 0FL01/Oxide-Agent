@@ -1012,13 +1012,28 @@ pub(crate) async fn api_cancel_task(
 
     // Broadcast the Cancelled status and close the in-process event log
     // so any subscriber sees the terminal state and the live loop closes.
-    {
+    let cleanup_deadline = {
         let logs = EVENT_LOGS.lock().await;
         if let Some(log) = logs.get(&task_id) {
             log.notify_status(ApiTaskStatus::Cancelled, false, cancelled_last_seq)
                 .await;
             log.close().await;
+            log.closed_at().await
+        } else {
+            None
         }
+    };
+    if let Some(closed_at) = cleanup_deadline {
+        let task_id_for_cleanup = task_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(super::EVENT_LOG_RETENTION_AFTER_CLOSE).await;
+            let mut logs = EVENT_LOGS.lock().await;
+            if let Some(current) = logs.get(&task_id_for_cleanup) {
+                if current.closed_at().await == Some(closed_at) {
+                    logs.remove(&task_id_for_cleanup);
+                }
+            }
+        });
     }
 
     Ok(Json(ApiCancelTaskResponse {

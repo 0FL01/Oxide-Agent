@@ -477,7 +477,31 @@ async fn persist_task_failed(web_task: &WebTaskPersistence, message: impl Into<S
 async fn close_event_log_if_present(web_task: &WebTaskPersistence) {
     if let Some(event_log) = web_task.event_log.as_ref() {
         event_log.close().await;
+        if let Some(closed_at) = event_log.closed_at().await {
+            spawn_event_log_cleanup(web_task.task_id.clone(), closed_at);
+        }
     }
+}
+
+/// Spawn a background task that removes the `TaskEventLog` entry for
+/// `task_id` from the global `EVENT_LOGS` registry after
+/// `EVENT_LOG_RETENTION_AFTER_CLOSE`. Late subscribers that connect
+/// during the retention window can still query the in-memory snapshot
+/// for replay; after the window expires the entry is evicted and
+/// subscribers fall back to the durable DB.
+fn spawn_event_log_cleanup(task_id: String, closed_at: std::time::Instant) {
+    tokio::spawn(async move {
+        tokio::time::sleep(super::EVENT_LOG_RETENTION_AFTER_CLOSE).await;
+        let mut logs = EVENT_LOGS.lock().await;
+        // Only evict if the entry in the map is still the same closed
+        // log. A fresh task that re-used the same id would have a
+        // different `closed_at` (or `None`), and we must not touch it.
+        if let Some(current) = logs.get(&task_id) {
+            if current.closed_at().await == Some(closed_at) {
+                logs.remove(&task_id);
+            }
+        }
+    });
 }
 
 async fn broadcast_status_if_present(

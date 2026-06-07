@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -116,6 +117,10 @@ pub struct TaskEventLog {
     broadcast_tx: broadcast::Sender<TaskEventLogMessage>,
     /// Flag set when the task is done.
     done: Arc<RwLock<bool>>,
+    /// Monotonic timestamp recorded the first time `close()` is called.
+    /// Used by the lifecycle cleanup task in `EVENT_LOGS` to evict the
+    /// entry after a retention window. `None` while the log is still open.
+    closed_at: Arc<RwLock<Option<Instant>>>,
 }
 
 /// A simplified event entry that stores only the event name.
@@ -169,6 +174,7 @@ impl TaskEventLog {
             last_progress_snapshot: Arc::new(RwLock::new(None)),
             broadcast_tx,
             done: Arc::new(RwLock::new(false)),
+            closed_at: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -262,11 +268,18 @@ impl TaskEventLog {
     }
 
     /// Mark the event log as done — SSE subscribers will stop receiving after this.
+    /// Idempotent: subsequent calls do nothing and do not refresh the
+    /// `closed_at` timestamp, so the lifecycle TTL is anchored to the
+    /// first close.
     pub async fn close(&self) {
         {
             let mut d = self.done.write().await;
+            if *d {
+                return;
+            }
             *d = true;
         }
+        *self.closed_at.write().await = Some(Instant::now());
         // Send a terminal sentinel to wake up any waiting receivers.
         let _ = self.broadcast_tx.send(TaskEventLogMessage::Closed);
     }
@@ -274,6 +287,13 @@ impl TaskEventLog {
     /// Returns `true` if `close()` has been called.
     pub async fn is_closed(&self) -> bool {
         *self.done.read().await
+    }
+
+    /// Returns the monotonic instant at which `close()` was first called,
+    /// or `None` if the log is still open. The lifecycle cleanup task in
+    /// `EVENT_LOGS` uses this to schedule eviction.
+    pub async fn closed_at(&self) -> Option<Instant> {
+        *self.closed_at.read().await
     }
 
     /// Drain all events and return them.
@@ -2229,5 +2249,28 @@ mod tests {
         }
         let stored = log.last_progress_snapshot().await;
         assert_eq!(stored.unwrap().current_iteration, 3);
+    }
+
+    #[tokio::test]
+    async fn closed_at_is_none_before_close_and_set_after_close() {
+        let log = TaskEventLog::new();
+        assert!(log.closed_at().await.is_none());
+        assert!(!log.is_closed().await);
+        log.close().await;
+        assert!(log.closed_at().await.is_some());
+        assert!(log.is_closed().await);
+    }
+
+    #[tokio::test]
+    async fn close_is_idempotent_and_does_not_refresh_closed_at() {
+        let log = TaskEventLog::new();
+        log.close().await;
+        let first = log.closed_at().await;
+        // Sleep long enough that a re-close would record a measurably
+        // later instant if it refreshed the timestamp.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        log.close().await;
+        let second = log.closed_at().await;
+        assert_eq!(first, second, "second close must not refresh closed_at");
     }
 }
