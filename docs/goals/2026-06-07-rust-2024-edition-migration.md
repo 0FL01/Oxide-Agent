@@ -146,48 +146,63 @@ authors = ["@0FL01"]
 
 ## Implementation Plan
 
-1. Add `[workspace.package]` to workspace root
-   - Audit IDs: G1, N1, N3.
-   - Expected changes: `Cargo.toml` (root) — add `[workspace.package]` block with `version = "0.1.0"`, `edition = "2024"`, `license = "MIT"`, `authors = ["@0FL01"]`.
-   - Validation: `git diff Cargo.toml` review.
-   - Exit condition: root Cargo.toml contains the new `[workspace.package]` section.
+The migration is performed **iteratively**: one crate at a time, bottom-up by dependency order, with `cargo check` + `cargo clippy` validation after each crate. This isolates any Rust 2024 edition incompatibilities (e.g. `impl Trait` capture rules, new deny-by-default lints) to the crate being changed.
 
-2. Update all 8 crate Cargo.toml to use workspace inheritance
-   - Audit IDs: G2, N1, N2, N3.
-   - Expected changes: In each of the 8 crate `Cargo.toml` files, replace `version = "0.1.0"`, `edition = "2021"`, `license = "MIT"`, `authors = ["@0FL01"]` with `version.workspace = true`, `edition.workspace = true`, `license.workspace = true`, `authors.workspace = true`.
-   - Validation: `git diff --name-only` review; all 8 files changed.
-   - Exit condition: no crate has hardcoded `version`, `edition`, `license`, or `authors`.
+### Checkpoint 0: Add `[workspace.package]` to workspace root
 
-3. Full workspace compilation check — resolve incompatibilities
-   - Audit IDs: G3, Q1, Q2.
-   - Expected changes: fix any Rust 2024 edition compilation errors in `.rs` files if found.
-   - Validation: `cargo check --workspace --no-default-features --features profile-full`.
-   - Exit condition: zero compilation errors.
-   - Incompatibility handling: if `cargo check` fails, diagnose the specific Rust 2024 breaking change, apply minimal fix, re-check. If fix requires scope expansion, document in Risks and Blockers and seek user decision.
+- Audit IDs: G1, N1, N3.
+- Add `[workspace.package]` block with `version = "0.1.0"`, `edition = "2024"`, `license = "MIT"`, `authors = ["@0FL01"]`.
+- Validation: `cargo check` (purely additive, no crate changes).
+- Exit condition: root `Cargo.toml` contains the new section; no crate changed yet.
 
-4. Profile validation
-   - Audit IDs: Q2, Q1.
-   - Expected changes: no new changes expected; verify profiles compile cleanly.
-   - Validation: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-host-bwrap`.
-   - Exit condition: all profiles pass.
+### Checkpoints 1–8: Migrate each crate (bottom-up order)
 
-5. Clippy check
-   - Audit IDs: G4.
-   - Expected changes: fix any new clippy warnings introduced by Rust 2024 edition.
-   - Validation: `cargo clippy --workspace --no-default-features --features profile-full`.
-   - Exit condition: zero deny-level clippy warnings.
+Each crate follows the same sub-steps:
 
-6. Formatting pass
-   - Audit IDs: G5.
-   - Expected changes: `cargo fmt --all` may produce formatting diffs under Rust 2024 rules.
-   - Validation: `cargo fmt --all -- --check` succeeds; `git diff --name-only` review.
-   - Exit condition: code is formatted to Rust 2024 conventions.
+1. Replace `edition = "2021"` with `edition.workspace = true` in its `Cargo.toml`.
+2. Run `cargo check --no-default-features --features profile-full` (or the smallest feature set that covers the crate).
+3. **Fix any Rust 2024 compilation errors** (e.g. `impl Trait` capture changes, `unsafe_op_in_unsafe_fn`, new reserved keywords) — isolate to the current crate.
+4. Run `cargo clippy --no-default-features --features profile-full` — fix any new clippy warnings introduced by the edition change.
+5. Replace the remaining 3 fields (`version.workspace = true`, `license.workspace = true`, `authors.workspace = true`) — these are metadata-only with zero compilation impact.
+6. **Commit** the crate with a descriptive message.
 
-7. Final audit and commit
-   - Audit IDs: all.
-   - Expected changes: update this goal doc with evidence; final commit with all changes.
-   - Validation: `git status --short` clean; all audit items verified.
-   - Exit condition: Completion Audit fully verified.
+**Crate order** (bottom-up by workspace dependency graph):
+
+| #  | Crate                        | Why this order                     |
+|----|------------------------------|------------------------------------|
+| 1  | `oxide-agent-core`           | Foundation — no internal deps      |
+| 2  | `oxide-agent-runtime`        | Depends on core                    |
+| 3  | `oxide-agent-web-contracts`  | No workspace deps                  |
+| 4  | `oxide-agent-transport-telegram` | Depends on core, runtime        |
+| 5  | `oxide-agent-transport-web`  | Depends on core, runtime, contracts|
+| 6  | `oxide-agent-web-ui`         | WASM target, depends on contracts  |
+| 7  | `oxide-agent-telegram-bot`   | Depends on transport-telegram      |
+| 8  | `oxide-agent-sandboxd`       | Depends on core                    |
+
+**Incompatibility handling**: if `cargo check` or `cargo clippy` fails, diagnose the specific Rust 2024 breaking change, apply minimal fix, re-check. If fix requires scope expansion or is non-trivial, document in Risks and Blockers and seek user decision before continuing.
+
+### Checkpoint 9: Granular profile validation
+
+- Audit IDs: Q2, Q1.
+- Run `cargo check` for all other non-default profiles:
+  - `profile-embedded-opencode-local`
+  - `profile-web-embedded-opencode-local`
+  - `profile-host-bwrap`
+- No new code changes expected — verify profiles compile cleanly after edition migration.
+- Exit condition: all profiles pass.
+
+### Checkpoint 10: Formatting pass
+
+- Audit IDs: G5.
+- Run `cargo fmt --all` — Rust 2024 formatting conventions may produce diffs.
+- Run `cargo fmt --all -- --check` to confirm clean state.
+- Exit condition: code is formatted to Rust 2024 conventions; commit formatting changes separately.
+
+### Checkpoint 11: Final audit
+
+- Audit IDs: all.
+- Update this goal doc with evidence; review all Completion Audit items.
+- Exit condition: `git status --short` clean; every audit item verified with current evidence.
 
 ## Validation Contract
 
@@ -214,6 +229,7 @@ authors = ["@0FL01"]
 - 2026-06-07: Run `cargo fmt` after edition change because Rust 2024 has new formatting conventions that may produce diffs.
 - 2026-06-07: Validate multiple profiles (full, embedded, web, bwrap) because the workspace uses feature-gated compilation and not all code compiles under every profile.
 - 2026-06-07: Treat any Rust 2024 incompatibility as a potential scope expansion — fix if minimal, document and seek user decision if non-trivial.
+- 2026-06-07: Changed Implementation Plan from bulk-update to iterative per-crate migration. Each crate is migrated bottom-up (dependency order), with `cargo check` + `cargo clippy` validation after each crate. This isolates edition incompatibilities to a single crate at a time, avoiding a cascade of errors from 8 simultaneous edition changes.
 
 ## Progress Log
 
@@ -222,7 +238,13 @@ authors = ["@0FL01"]
   - Evidence: RECON completed. All 8 crates inventory confirmed. Rust 2024 breaking changes audited — no high-risk items found. rustc 1.94.0 available. Duplicated metadata confirmed across all crates.
   - Commands: `rustc --version`; grep/rg scans for `unsafe fn`, `macro_rules!`, `gen`, `extern`, `mut ref`; file reads of all 8 crate Cargo.toml files.
   - Audit IDs updated: G1-G5 pending, Q1-Q2 pending, N1-N3 pending.
-  - Next: Checkpoint 1 — add `[workspace.package]` to root Cargo.toml.
+  - Next: Checkpoint 0 — add `[workspace.package]` to root Cargo.toml.
+
+- 2026-06-07 20:00: Checkpoint 0 — `[workspace.package]` added to root.
+  - Changed: `Cargo.toml` (root) — added `[workspace.package]` with `version = "0.1.0"`, `edition = "2024"`, `license = "MIT"`, `authors = ["@0FL01"]`.
+  - Evidence: `cargo check --workspace --no-default-features --features profile-full` passes (30.58s). No crate changes yet.
+  - Audit IDs updated: G1 → completed.
+  - Next: Checkpoint 1 — `oxide-agent-core`.
 
 ## Risks and Blockers
 
