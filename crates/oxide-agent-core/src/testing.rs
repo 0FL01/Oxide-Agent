@@ -1,6 +1,7 @@
 //! Testing helpers and mock utilities.
 //!
-//! Provides convenient constructors for mocked LLM and storage providers.
+//! Provides convenient constructors for mocked LLM and storage providers,
+//! and centralized wrappers for `unsafe` env operations in Rust 2024.
 
 // ---------------------------------------------------------------------------
 // Env helpers (Rust 2024: set_var/remove_var are unsafe)
@@ -10,6 +11,7 @@
 ///
 /// `std::env::set_var` is `unsafe` in Rust 2024 edition. This helper
 /// centralizes the `unsafe` block so every test call site stays clean.
+/// Accepts `impl AsRef<OsStr>` to work with `&str`, `String`, and `OsString`.
 #[track_caller]
 pub fn test_set_env(key: impl AsRef<std::ffi::OsStr>, value: impl AsRef<std::ffi::OsStr>) {
     unsafe { std::env::set_var(key, value) };
@@ -19,6 +21,7 @@ pub fn test_set_env(key: impl AsRef<std::ffi::OsStr>, value: impl AsRef<std::ffi
 ///
 /// `std::env::remove_var` is `unsafe` in Rust 2024 edition. This helper
 /// centralizes the `unsafe` block so every test call site stays clean.
+/// Accepts `impl AsRef<OsStr>` to work with `&str`, `String`, and `OsString`.
 #[track_caller]
 pub fn test_remove_env(key: impl AsRef<std::ffi::OsStr>) {
     unsafe { std::env::remove_var(key) };

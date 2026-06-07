@@ -54,7 +54,7 @@ Out of scope:
   - Acceptance: `rg 'std::env::(set_var|remove_var)' crates/ --glob '*.rs'` returns zero hits in test code. Only the `testing.rs` helpers themselves contain the raw `unsafe` calls.
   - Evidence required: `rg` command returning zero results outside `testing.rs`.
   - Status: in_progress
-  - Evidence collected: Batch A complete (6 core files, 304 calls replaced). Batch B pending (4 files, ~25 calls).
+  - Evidence collected: Batch A complete (6 core files, 304 calls replaced). Batch B complete (4 core files, 4 calls; transport-web 23 calls + local wrappers; web_console_dev 1 inline unsafe). Core crate env helpers in `testing.rs` (cfg-test). Transport-web has local wrappers (forbid unsafe_code in lib prevents cross-crate sharing).
 
 - G3: Missing `reasoning_effort` field in `ChatWithToolsRequest` fixed
   - Source: RECON — 16 call sites in 3 integration test files.
@@ -210,6 +210,8 @@ Out of scope:
 - 2026-06-07: No new dependencies — helpers use only `std::env`.
 - 2026-06-07: Each batch is committed separately for clear bisect and review.
 - 2026-06-07: No regex/sed bulk replacements — all edits are manual via Read + Edit tool.
+- 2026-06-07: Transport-web crate cannot import from `oxide-agent-core::testing` (cfg-test gated) and core has `forbid(unsafe_code)` in lib. Transport-web gets local wrapper functions in its test file instead of cross-crate dependency.
+- 2026-06-07: `web_console_dev.rs` example uses inline `unsafe {}` block — not test code, no access to testing module.
 
 ## Progress Log
 
@@ -236,6 +238,17 @@ Out of scope:
   - Evidence: `rg` returns zero unsafe env calls in all 6 files. Core compilation passes (remaining errors are Batch B + API drift from Checkpoints 3-4).
   - Audit IDs updated: G2 → in_progress (Batch A done, Batch B pending).
   - Next: Checkpoint 3 — Batch B (transport + remaining files, ~25 calls).
+
+- 2026-06-07: Checkpoint 3 — Batch B complete.
+  - Changed:
+    - `file_delivery.rs`: 2 replacements, added import.
+    - `tts/client.rs`: 1 replacement, added import.
+    - `silero_tts/client.rs`: 1 replacement, added import.
+    - `transport-web/tests.rs`: 23 replacements, added local wrapper functions (cross-crate import blocked by cfg-test + forbid unsafe).
+    - `web_console_dev.rs`: 1 inline `unsafe {}` wrap in example function.
+  - Evidence: `rg` returns zero direct `set_var`/`remove_var` call sites outside wrappers. `cargo test -p oxide-agent-core` and `cargo test -p oxide-agent-transport-web` compile (remaining errors are API drift from Checkpoint 4).
+  - Audit IDs updated: G2 → in_progress (all env calls replaced; wrappers in 2 locations: core testing.rs + transport-web tests.rs).
+  - Next: Checkpoint 4 — API drift (`reasoning_effort`, `before_seq`, `AgentEventSource`).
 
 ## Risks and Blockers
 

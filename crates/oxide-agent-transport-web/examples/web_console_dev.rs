@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn default_dev_env(key: &str, value: &str) {
     if env::var_os(key).is_none() {
-        env::set_var(key, value);
+        unsafe { env::set_var(key, value) };
     }
 }
 

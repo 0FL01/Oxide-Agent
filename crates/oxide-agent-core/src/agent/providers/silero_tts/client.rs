@@ -121,6 +121,7 @@ impl SileroClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::test_remove_env;
 
     #[test]
     fn client_creation() {
@@ -134,7 +135,7 @@ mod tests {
         let _guard = crate::config::test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::remove_var("SILERO_TTS_URL");
+        test_remove_env("SILERO_TTS_URL");
 
         let client = SileroClient::from_env();
         assert_eq!(client.base_url(), "http://127.0.0.1:8001");

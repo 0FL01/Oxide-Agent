@@ -199,6 +199,7 @@ pub(crate) fn format_generic_delivery_report(report: &FileDeliveryReport) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{test_remove_env, test_set_env};
 
     #[tokio::test]
     async fn deliver_file_returns_success_only_after_confirmation() {
@@ -306,7 +307,7 @@ mod tests {
 
     #[tokio::test]
     async fn deliver_file_rejects_oversized_payload() {
-        std::env::set_var("OXIDE_CHAT_DELIVERY_MAX_FILE_SIZE_BYTES", "3");
+        test_set_env("OXIDE_CHAT_DELIVERY_MAX_FILE_SIZE_BYTES", "3");
         let report = deliver_file_via_progress(
             None,
             FileDeliveryRequest {
@@ -320,6 +321,6 @@ mod tests {
 
         assert!(matches!(report.status, FileDeliveryStatus::TooLarge { .. }));
         assert!(report.receipt.is_none());
-        std::env::remove_var("OXIDE_CHAT_DELIVERY_MAX_FILE_SIZE_BYTES");
+        test_remove_env("OXIDE_CHAT_DELIVERY_MAX_FILE_SIZE_BYTES");
     }
 }

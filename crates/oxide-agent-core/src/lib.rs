@@ -18,5 +18,6 @@ pub mod storage;
 /// Utility functions.
 pub mod utils;
 
+/// Testing helpers: mock providers and env wrappers.
 #[cfg(test)]
 pub mod testing;

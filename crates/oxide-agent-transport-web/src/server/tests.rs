@@ -8,9 +8,21 @@ use std::time::Duration;
 use std::time::Instant;
 
 use oxide_agent_core::agent::AgentMemory;
+use oxide_agent_core::config::{AgentSettings, ModelInfo};
+
+/// Wraps `unsafe { std::env::set_var }` for test code (Rust 2024).
+#[track_caller]
+fn test_set_env(key: impl AsRef<std::ffi::OsStr>, value: impl AsRef<std::ffi::OsStr>) {
+    unsafe { std::env::set_var(key, value) };
+}
+
+/// Wraps `unsafe { std::env::remove_var }` for test code (Rust 2024).
+#[track_caller]
+fn test_remove_env(key: impl AsRef<std::ffi::OsStr>) {
+    unsafe { std::env::remove_var(key) };
+}
 use oxide_agent_core::agent::progress::{FileDeliveryKind, LlmRetryState, ProgressState};
 use oxide_agent_core::agent::{TodoItem, TodoList, TodoStatus};
-use oxide_agent_core::config::{AgentSettings, ModelInfo};
 #[cfg(feature = "profile-lite")]
 use oxide_agent_core::llm::{ChatResponse, ChatWithToolsRequest, LlmError, Message};
 use oxide_agent_core::llm::{LlmClient, LlmProvider};
@@ -522,7 +534,7 @@ async fn api_login_rate_limits_by_ip_and_login_key() {
 async fn api_register_failures_are_rate_limited() {
     let _lock = web_env_mutex().lock().await;
     let _guard = EnvGuard::capture(&["OXIDE_WEB_REGISTRATION_ENABLED"]);
-    std::env::set_var("OXIDE_WEB_REGISTRATION_ENABLED", "false");
+    test_set_env("OXIDE_WEB_REGISTRATION_ENABLED", "false");
 
     let state = test_app_state();
     let mut headers = HeaderMap::new();
@@ -560,7 +572,7 @@ async fn api_register_failures_are_rate_limited() {
 async fn api_register_starts_browser_auth_session() {
     let _lock = web_env_mutex().lock().await;
     let _guard = EnvGuard::capture(&["OXIDE_WEB_REGISTRATION_ENABLED"]);
-    std::env::set_var("OXIDE_WEB_REGISTRATION_ENABLED", "true");
+    test_set_env("OXIDE_WEB_REGISTRATION_ENABLED", "true");
 
     let state = test_app_state();
     let (response_headers, axum::Json(response)) = super::api_register(
@@ -644,12 +656,12 @@ async fn api_list_model_routes_returns_empty_models_when_discovery_is_unavailabl
         "OPENCODE_ZEN_MODELS_URL",
         "LLM_HTTP_TIMEOUT_SECS",
     ]);
-    std::env::set_var("OPENCODE_API_KEY", "test-opencode-key");
-    std::env::remove_var("OPENCODE_ZEN_API_KEY");
-    std::env::remove_var("OPENCODE_GO_API_KEY");
-    std::env::set_var("OPENCODE_GO_MODELS_URL", "http://127.0.0.1:9/models");
-    std::env::set_var("OPENCODE_ZEN_MODELS_URL", "http://127.0.0.1:9/models");
-    std::env::set_var("LLM_HTTP_TIMEOUT_SECS", "1");
+    test_set_env("OPENCODE_API_KEY", "test-opencode-key");
+    test_remove_env("OPENCODE_ZEN_API_KEY");
+    test_remove_env("OPENCODE_GO_API_KEY");
+    test_set_env("OPENCODE_GO_MODELS_URL", "http://127.0.0.1:9/models");
+    test_set_env("OPENCODE_ZEN_MODELS_URL", "http://127.0.0.1:9/models");
+    test_set_env("LLM_HTTP_TIMEOUT_SECS", "1");
 
     let state = test_app_state();
     let now = chrono::Utc::now();
@@ -1048,10 +1060,10 @@ async fn startup_guard_requires_explicit_in_memory_for_web_enabled_mode() {
         "OXIDE_WEB_REQUIRE_DURABLE_STORAGE",
         "OXIDE_WEB_ALLOW_IN_MEMORY_STORE",
     ]);
-    std::env::remove_var("RUN_MODE");
-    std::env::set_var("OXIDE_WEB_ENABLED", "true");
-    std::env::remove_var("OXIDE_WEB_REQUIRE_DURABLE_STORAGE");
-    std::env::remove_var("OXIDE_WEB_ALLOW_IN_MEMORY_STORE");
+    test_remove_env("RUN_MODE");
+    test_set_env("OXIDE_WEB_ENABLED", "true");
+    test_remove_env("OXIDE_WEB_REQUIRE_DURABLE_STORAGE");
+    test_remove_env("OXIDE_WEB_ALLOW_IN_MEMORY_STORE");
 
     let state = test_app_state();
     assert_eq!(
@@ -1059,7 +1071,7 @@ async fn startup_guard_requires_explicit_in_memory_for_web_enabled_mode() {
         Err(WebStartupError::InMemoryStoreNotAllowed)
     );
 
-    std::env::set_var("OXIDE_WEB_ALLOW_IN_MEMORY_STORE", "true");
+    test_set_env("OXIDE_WEB_ALLOW_IN_MEMORY_STORE", "true");
     assert!(state.validate_web_store_for_startup().is_ok());
 }
 
@@ -1067,7 +1079,7 @@ async fn startup_guard_requires_explicit_in_memory_for_web_enabled_mode() {
 async fn static_assets_startup_requires_index_when_configured() {
     let _lock = web_env_mutex().lock().await;
     let _guard = EnvGuard::capture(&["OXIDE_WEB_ALLOW_IN_MEMORY_STORE"]);
-    std::env::set_var("OXIDE_WEB_ALLOW_IN_MEMORY_STORE", "true");
+    test_set_env("OXIDE_WEB_ALLOW_IN_MEMORY_STORE", "true");
 
     let asset_dir = unique_test_asset_dir("missing-index");
     std::fs::create_dir_all(&asset_dir).expect("create asset dir");
@@ -1172,8 +1184,8 @@ async fn router_serves_frontend_assets_and_security_headers() {
 async fn sqlx_backed_app_state_builder_requires_database_config() {
     let _lock = web_env_mutex().lock().await;
     let _guard = EnvGuard::capture(&["OXIDE_DATABASE_URL", "DATABASE_URL"]);
-    std::env::remove_var("OXIDE_DATABASE_URL");
-    std::env::remove_var("DATABASE_URL");
+    test_remove_env("OXIDE_DATABASE_URL");
+    test_remove_env("DATABASE_URL");
 
     let settings = Arc::new(AgentSettings::default());
     let llm = Arc::new(LlmClient::new(settings.as_ref()));
@@ -1204,16 +1216,16 @@ async fn sqlx_backed_app_state_uses_sqlx_store_when_database_configured() {
         "OXIDE_DATABASE_MIGRATIONS_DIR",
         "OXIDE_WEB_REQUIRE_STATIC_ASSETS",
     ]);
-    std::env::set_var("OXIDE_DATABASE_URL", database_url);
-    std::env::remove_var("DATABASE_URL");
-    std::env::set_var("OXIDE_DATABASE_MIGRATE_ON_STARTUP", "true");
-    std::env::set_var(
+    test_set_env("OXIDE_DATABASE_URL", database_url);
+    test_remove_env("DATABASE_URL");
+    test_set_env("OXIDE_DATABASE_MIGRATE_ON_STARTUP", "true");
+    test_set_env(
         "OXIDE_DATABASE_MIGRATIONS_DIR",
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("migrations"),
     );
-    std::env::remove_var("OXIDE_WEB_REQUIRE_STATIC_ASSETS");
+    test_remove_env("OXIDE_WEB_REQUIRE_STATIC_ASSETS");
 
     let settings = Arc::new(AgentSettings::default());
     let llm = Arc::new(LlmClient::new(settings.as_ref()));
@@ -3570,9 +3582,9 @@ impl Drop for EnvGuard {
     fn drop(&mut self) {
         for (key, value) in &self.values {
             if let Some(value) = value {
-                std::env::set_var(key, value);
+                test_set_env(key, value);
             } else {
-                std::env::remove_var(key);
+                test_remove_env(key);
             }
         }
     }

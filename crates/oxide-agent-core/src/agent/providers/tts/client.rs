@@ -142,6 +142,7 @@ impl KokoroClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::test_remove_env;
 
     #[test]
     fn client_creation() {
@@ -155,7 +156,7 @@ mod tests {
         let _guard = crate::config::test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::remove_var("KOKORO_TTS_URL");
+        test_remove_env("KOKORO_TTS_URL");
 
         // Should use defaults when env vars not set
         let client = KokoroClient::from_env();
