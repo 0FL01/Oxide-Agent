@@ -6,7 +6,6 @@ license.workspace = true
 authors.workspace = true
 
 [lints.rust]
-unsafe_code = "forbid"
 
 [lints.clippy]
 unwrap_used = "forbid"

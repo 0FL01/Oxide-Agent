@@ -1,3 +1,5 @@
+// Production: forbid unsafe. Tests: no lint (allows test helpers to wrap unsafe env ops).
+#![cfg_attr(not(test), forbid(unsafe_code))]
 //! Web transport for Oxide Agent — HTTP API for Agent Mode execution.
 //!
 //! ## Overview

@@ -1,4 +1,6 @@
 #![deny(missing_docs)]
+// Production: forbid unsafe. Tests: no lint (allows test helpers to wrap unsafe env ops).
+#![cfg_attr(not(test), forbid(unsafe_code))]
 //! Oxide Agent core library.
 //!
 //! Shared logic for agent execution, providers, sandboxing, and storage.
