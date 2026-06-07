@@ -177,10 +177,8 @@ pub async fn run_progress_loop<T: AgentTransport>(
         }
     }
 
-    if needs_update {
-        if let Err(e) = transport.update_progress(&state).await {
-            warn!(error = %e, "Final progress update failed");
-        }
+    if needs_update && let Err(e) = transport.update_progress(&state).await {
+        warn!(error = %e, "Final progress update failed");
     }
 
     state

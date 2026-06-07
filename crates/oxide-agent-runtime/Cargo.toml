@@ -1,9 +1,9 @@
 [package]
 name = "oxide-agent-runtime"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-authors = ["@0FL01"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
