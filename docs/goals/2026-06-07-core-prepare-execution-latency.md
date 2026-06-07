@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-core-prepare-execution-latency.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after web first-message latency was reduced from `1482ms` to `~0.55ms`; remaining first-LLM delay is now inside core `prepare_execution` and pre-LLM runner work.
 Goal doc owner: Codex
-Last updated: 2026-06-07 15:25
+Last updated: 2026-06-07 15:42
 
 ## Objective
 
@@ -44,6 +44,7 @@ Out of scope:
   - `Starting agent task -> first LLM call`: `~617ms`.
 - Existing aggregate core log was `prepare_ms=601`; after Core-1 runtime verification the current sample showed `prepare_ms=688`.
 - Core-1 runtime evidence showed `wiki_context_rendered=617ms` out of `prepare_ms=688`, while `wiki_context_available=false` and `wiki_context_chars=0`.
+- Core-2 runtime evidence showed `wiki_context_rendered=589ms` out of `prepare_ms=657`, split into three remote wiki storage reads: global index `219ms`, context index `188ms`, and missing `overview.md` candidate `181ms`; render itself was `0ms`.
 - Current aggregate prepare log is emitted in `crates/oxide-agent-core/src/agent/executor/execution.rs:227`.
 - `prepare_execution` starts at `crates/oxide-agent-core/src/agent/executor/execution.rs:393` and includes tool registry/spec collection, wiki context, prompt assembly, memory conversion, and runner config.
 - Wiki context assembly starts at `crates/oxide-agent-core/src/agent/executor/execution.rs:466`, calls `WikiContextAssembler::assemble_for_context` in `crates/oxide-agent-core/src/agent/wiki_memory/context.rs:61`, and creates a fresh `WikiSessionCache` per prepare.
@@ -62,22 +63,22 @@ Out of scope:
   - Source: RECON found `render_wiki_context_for_task` is the most likely source of `~601ms`, because it performs multiple storage reads and currently has no INFO sub-phase logs.
   - Acceptance: Runtime logs show whether wiki is skipped, empty, successful, or failed, plus duration, rendered byte count, and candidate/page counts or enough sub-phase markers to identify storage read cost.
   - Evidence required: code diff, runtime logs from a first-message run, and updated analysis in this document.
-  - Status: in_progress
-  - Evidence collected: Core-1 runtime log isolated the aggregate wiki context wrapper as the dominant prepare sub-phase: `wiki_context_rendered=617ms`, `wiki_context_available=false`, and `wiki_context_chars=0`. Core-2 implementation adds wiki assembly sub-phase logs for global index load, context index load, candidate selection, individual candidate page loads, render completion, and cache/backend metrics. Runtime log evidence for these new sub-phases is pending after rebuild.
+  - Status: verified
+  - Evidence collected: Core-1 runtime log isolated the aggregate wiki context wrapper as the dominant prepare sub-phase: `wiki_context_rendered=617ms`, `wiki_context_available=false`, and `wiki_context_chars=0`. Core-2 implementation adds wiki assembly sub-phase logs for global index load, context index load, candidate selection, individual candidate page loads, render completion, and cache/backend metrics. User runtime log after rebuild showed `wiki_global_index_loaded=219ms`, `wiki_context_index_loaded=188ms`, `wiki_candidate_loaded=181ms` for missing `overview.md`, `wiki_context_render_completed=0ms`, `cache_misses=3`, `backend_gets=3`, and `rendered_empty=true`.
 
 - G3: Dominant core bottleneck is identified from real logs
   - Source: User wants the next action based on truth, not assumptions.
   - Acceptance: This document records runtime timings after Core-1/Core-2 logs and names the dominant sub-phase by measured evidence.
   - Evidence required: user or local runtime log excerpt with phase timings and before/after comparison against the `prepare_ms=601` sample.
-  - Status: in_progress
-  - Evidence collected: Core-1 runtime log shows wiki context wrapper dominates current prepare latency: `617ms` of `688ms` (`~89.7%`). Core-2 sub-phase logs are needed to decide whether to cache, skip, or otherwise optimize specific wiki storage reads.
+  - Status: verified
+  - Evidence collected: Core-1 runtime log shows wiki context wrapper dominates current prepare latency: `617ms` of `688ms` (`~89.7%`). Core-2 runtime log shows the cost is not rendering or prompt work; it is three wiki backend GETs totaling `589ms` (`global index=219ms`, `context index=188ms`, missing candidate page=181ms`) to produce empty context.
 
 - G4: Selected core optimization is implemented only after measurement
   - Source: Repository guidance forbids over-engineering; current evidence supports logging first, then the smallest fix.
   - Acceptance: The fix targets the measured bottleneck only, preserves agent semantics, and avoids new dependencies/services. Candidate fixes include reusing/caching wiki session context, caching stable tool specs/prompt blocks, or moving safe wiki work out of the hot path if evidence supports it.
   - Evidence required: implementation diff, validation commands, runtime before/after measurement, and updated decision record.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Measurement selected the smallest fix: a bounded in-process read-through/negative cache for deterministic wiki pages. Implementation adds a shared Moka cache for clean wiki pages and missing objects across per-run `WikiSessionCache` instances, caches bootstrapped index pages and missing optional pages, invalidates shared entries when local dirty pages are staged, and refreshes the shared cache after dirty pages flush. Runtime before/after evidence is pending after rebuild.
 
 - Q1: Existing architecture and cache-hit invariants are preserved
   - Source: `AGENTS.md` architecture and prompt-cache guidance.
@@ -91,7 +92,7 @@ Out of scope:
   - Must preserve: Avoid reopening web task create persistence/caching unless new core logs prove a web interaction is still on the hot path.
   - Evidence required: diff scope review.
   - Status: in_progress
-  - Evidence collected: Core-1 diff scope is limited to core executor logging and this goal doc; no web transport files are touched.
+  - Evidence collected: Core-1 diff scope is limited to core executor logging and this goal doc; Core-2 diff scope is limited to core wiki context logging and this goal doc. Core-4 cache implementation is limited to core wiki memory cache and this goal doc. No web transport hot-path files are touched.
 
 ## Implementation Plan
 
@@ -115,7 +116,7 @@ Out of scope:
 
 4. Core-4: Implement the measured optimization
    - Audit IDs: G4, Q1, N1
-   - Expected changes: Depends on Core-3 evidence. Likely options: reuse/carry `WikiSessionCache` across prepares, cache rendered wiki context for the same session/context/task keywords, cache stable tool specs/prompt blocks, or make non-critical wiki context asynchronous/background.
+   - Expected changes: Add a bounded in-process read-through and negative cache for deterministic wiki pages so fresh per-run `WikiSessionCache` instances do not repeat the same remote storage reads for global index, context index, and known-missing optional pages.
    - Validation: Rust validation commands plus runtime before/after logs.
    - Exit condition: Measured `prepare_execution` latency improves materially while behavior and architectural constraints remain intact.
 
@@ -138,6 +139,7 @@ Out of scope:
 - 2026-06-07: Start with observability, not optimization. `prepare_ms=601` is aggregate and several plausible contributors exist; optimizing without sub-phase logs risks changing the wrong subsystem.
 - 2026-06-07: Prefer the smallest measured fix. No new crates/services/queues are justified.
 - 2026-06-07: Core-1 runtime evidence identifies the wiki context wrapper as the dominant sub-phase (`617ms` of `688ms`) even when rendered wiki context is empty. Do not optimize broadly yet; first split wiki assembly into storage and render sub-phases.
+- 2026-06-07: Core-2 runtime evidence identifies three repeated wiki backend GETs as the measured bottleneck. Implement a bounded read-through/negative cache for deterministic wiki pages instead of changing prompt assembly or tool registry behavior.
 
 ## Progress Log
 
@@ -158,9 +160,16 @@ Out of scope:
 - 2026-06-07 15:25: Core-2 wiki context sub-phase logging implemented
   - Changed: Added INFO timing in `crates/oxide-agent-core/src/agent/wiki_memory/context.rs` around wiki assembly start, global index load, context index load, candidate selection, per-candidate page loads, render completion, and cache/backend metrics.
   - Evidence: Core-1 runtime log from user showed `wiki_context_rendered=617ms` of `prepare_assembled=688ms`, with `wiki_context_available=false`; Core-2 code now exposes the internal sub-phases needed to select the measured optimization.
-  - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local shared_cache_avoids_repeated_backend_gets_for_bootstrap_and_missing_pages`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
   - Audit IDs updated: G1 verified, G2 in progress, G3 in progress, Q1 in progress.
   - Next: Collect runtime logs after rebuild to determine whether the cost is global index load, context index load, candidate page loads, or render.
+
+- 2026-06-07 15:42: Core-4 shared wiki page cache implemented
+  - Changed: Added a bounded Moka read-through/negative cache in `crates/oxide-agent-core/src/agent/wiki_memory/cache.rs` for clean deterministic wiki pages and missing optional pages across per-run `WikiSessionCache` instances.
+  - Evidence: Core-2 runtime log from user showed `wiki_context_rendered=589ms` with `cache_misses=3`, `backend_gets=3`, and empty rendered context. The three backend reads were `wiki_global_index_loaded=219ms`, `wiki_context_index_loaded=188ms`, and missing `overview.md` candidate load `181ms`.
+  - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
+  - Audit IDs updated: G2 verified, G3 verified, G4 in progress, Q1 in progress, N1 in progress.
+  - Next: Finish validation, commit, then collect runtime logs after rebuild to verify `backend_gets=0` or reduced wiki phase on warm path.
 
 ## Risks and Blockers
 
