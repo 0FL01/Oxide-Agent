@@ -45,6 +45,12 @@ struct TaskSessionCacheKey {
     session_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SessionCacheKey {
+    user_id: i64,
+    session_id: String,
+}
+
 impl TaskCacheKey {
     fn new(user_id: i64, session_id: &str, task_id: &str) -> Self {
         Self {
@@ -68,6 +74,19 @@ impl TaskSessionCacheKey {
     }
 
     fn from_record(record: &WebTaskRecord) -> Self {
+        Self::new(record.user_id, &record.session_id)
+    }
+}
+
+impl SessionCacheKey {
+    fn new(user_id: i64, session_id: &str) -> Self {
+        Self {
+            user_id,
+            session_id: session_id.to_owned(),
+        }
+    }
+
+    fn from_record(record: &WebSessionRecord) -> Self {
         Self::new(record.user_id, &record.session_id)
     }
 }
@@ -134,6 +153,24 @@ fn log_task_cache(
     );
 }
 
+fn log_session_cache(
+    operation: &'static str,
+    started_at: Instant,
+    user_id: i64,
+    session_id: &str,
+    hit: bool,
+) {
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        operation,
+        user_id,
+        session_id,
+        hit,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web session cache latency"
+    );
+}
+
 fn is_initial_task_without_progress(record: &WebTaskRecord) -> bool {
     record.status == TaskStatus::Running
         && record.last_event_seq == 0
@@ -142,6 +179,18 @@ fn is_initial_task_without_progress(record: &WebTaskRecord) -> bool {
         && record.final_response_markdown.is_none()
         && record.error_message.is_none()
         && record.pending_user_input.is_none()
+        && record.last_progress.is_none()
+}
+
+fn session_record_task_existence(record: &WebSessionRecord) -> Option<bool> {
+    if record.active_task_id.is_some()
+        || record.last_task_status.is_some()
+        || record.last_preview.is_some()
+    {
+        return Some(true);
+    }
+
+    (record.created_at == record.updated_at).then_some(false)
 }
 
 fn task_write_front_cache() -> Cache<TaskCacheKey, WebTaskRecord> {
@@ -151,7 +200,21 @@ fn task_write_front_cache() -> Cache<TaskCacheKey, WebTaskRecord> {
         .build()
 }
 
-fn task_session_write_front_cache() -> Cache<TaskSessionCacheKey, ()> {
+fn task_session_write_front_cache() -> Cache<TaskSessionCacheKey, bool> {
+    Cache::builder()
+        .max_capacity(TASK_WRITE_FRONT_CACHE_MAX_CAPACITY)
+        .time_to_live(TASK_WRITE_FRONT_CACHE_TTL)
+        .build()
+}
+
+fn session_write_front_cache() -> Cache<SessionCacheKey, WebSessionRecord> {
+    Cache::builder()
+        .max_capacity(TASK_WRITE_FRONT_CACHE_MAX_CAPACITY)
+        .time_to_live(TASK_WRITE_FRONT_CACHE_TTL)
+        .build()
+}
+
+fn initial_task_flush_cache() -> Cache<TaskCacheKey, ()> {
     Cache::builder()
         .max_capacity(TASK_WRITE_FRONT_CACHE_MAX_CAPACITY)
         .time_to_live(TASK_WRITE_FRONT_CACHE_TTL)
@@ -164,7 +227,9 @@ pub struct SqlxWebUiStore {
     storage: Arc<SqlxStorage>,
     max_task_file_bytes: u64,
     task_cache: Cache<TaskCacheKey, WebTaskRecord>,
-    task_session_cache: Cache<TaskSessionCacheKey, ()>,
+    task_session_cache: Cache<TaskSessionCacheKey, bool>,
+    session_cache: Cache<SessionCacheKey, WebSessionRecord>,
+    initial_task_flush_cache: Cache<TaskCacheKey, ()>,
 }
 
 /// Row counts removed by one bounded SQLx web retention cleanup pass.
@@ -190,6 +255,8 @@ impl SqlxWebUiStore {
             max_task_file_bytes,
             task_cache: task_write_front_cache(),
             task_session_cache: task_session_write_front_cache(),
+            session_cache: session_write_front_cache(),
+            initial_task_flush_cache: initial_task_flush_cache(),
         }
     }
 
@@ -507,14 +574,42 @@ impl SqlxWebUiStore {
             .insert(TaskCacheKey::from_record(record), record.clone())
             .await;
         self.task_session_cache
-            .insert(TaskSessionCacheKey::from_record(record), ())
+            .insert(TaskSessionCacheKey::from_record(record), true)
             .await;
+    }
+
+    async fn cache_session_record(&self, record: &WebSessionRecord) {
+        self.session_cache
+            .insert(SessionCacheKey::from_record(record), record.clone())
+            .await;
+        if let Some(exists) = session_record_task_existence(record) {
+            self.task_session_cache
+                .insert(
+                    TaskSessionCacheKey::new(record.user_id, &record.session_id),
+                    exists,
+                )
+                .await;
+        }
     }
 
     async fn save_initial_task_write_front(&self, record: WebTaskRecord) -> WebUiStoreResult<()> {
         record.validate_web_record()?;
         let started_at = Instant::now();
+        let key = TaskCacheKey::from_record(&record);
         self.cache_task_record(&record).await;
+
+        if self.initial_task_flush_cache.get(&key).await.is_some() {
+            log_task_write_front(
+                "save_task.write_front_coalesced",
+                started_at,
+                record.user_id,
+                &record.session_id,
+                &record.task_id,
+            );
+            return Ok(());
+        }
+
+        self.initial_task_flush_cache.insert(key, ()).await;
         log_task_write_front(
             "save_task.write_front_cached",
             started_at,
@@ -532,6 +627,7 @@ impl SqlxWebUiStore {
     }
 
     async fn flush_initial_task_with_retry(&self, record: WebTaskRecord) {
+        let key = TaskCacheKey::from_record(&record);
         for attempt in 1..=TASK_WRITE_BEHIND_MAX_ATTEMPTS {
             let started_at = Instant::now();
             let result = self.insert_initial_task_record(&record).await;
@@ -564,6 +660,7 @@ impl SqlxWebUiStore {
                     tokio::time::sleep(TASK_WRITE_BEHIND_RETRY_DELAY).await;
                 }
                 Err(error) => {
+                    self.initial_task_flush_cache.invalidate(&key).await;
                     tracing::warn!(
                         target: WEB_LATENCY_TARGET,
                         operation = "save_task.write_behind_failed",
@@ -981,6 +1078,7 @@ impl WebUiStore for SqlxWebUiStore {
             None,
             None,
         );
+        self.cache_session_record(&record).await;
         Ok(())
     }
 
@@ -989,6 +1087,29 @@ impl WebUiStore for SqlxWebUiStore {
         user_id: i64,
         session_id: &str,
     ) -> WebUiStoreResult<Option<WebSessionRecord>> {
+        let cache_started_at = Instant::now();
+        if let Some(record) = self
+            .session_cache
+            .get(&SessionCacheKey::new(user_id, session_id))
+            .await
+        {
+            log_session_cache(
+                "load_session.cache",
+                cache_started_at,
+                user_id,
+                session_id,
+                true,
+            );
+            return Ok(Some(record));
+        }
+        log_session_cache(
+            "load_session.cache",
+            cache_started_at,
+            user_id,
+            session_id,
+            false,
+        );
+
         let started_at = Instant::now();
         let row = query::<Postgres>(
             r#"
@@ -1018,7 +1139,11 @@ impl WebUiStore for SqlxWebUiStore {
             Some(row.is_some()),
         );
 
-        row.as_ref().map(row_to_session).transpose()
+        let record = row.as_ref().map(row_to_session).transpose()?;
+        if let Some(record) = &record {
+            self.cache_session_record(record).await;
+        }
+        Ok(record)
     }
 
     async fn list_sessions(&self, user_id: i64) -> WebUiStoreResult<Vec<WebSessionRecord>> {
@@ -1040,7 +1165,14 @@ impl WebUiStore for SqlxWebUiStore {
         .await
         .map_err(db_error)?;
 
-        rows.iter().map(row_to_session).collect()
+        let records = rows
+            .iter()
+            .map(row_to_session)
+            .collect::<WebUiStoreResult<Vec<_>>>()?;
+        for record in &records {
+            self.cache_session_record(record).await;
+        }
+        Ok(records)
     }
 
     async fn list_session_summaries(&self, user_id: i64) -> WebUiStoreResult<Vec<SessionSummary>> {
@@ -1123,6 +1255,12 @@ impl WebUiStore for SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(db_error)?;
+        self.session_cache
+            .invalidate(&SessionCacheKey::new(user_id, session_id))
+            .await;
+        self.task_session_cache
+            .invalidate(&TaskSessionCacheKey::new(user_id, session_id))
+            .await;
         Ok(result.rows_affected() > 0)
     }
 
@@ -1197,11 +1335,10 @@ impl WebUiStore for SqlxWebUiStore {
 
     async fn task_exists(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
         let cache_started_at = Instant::now();
-        if self
+        if let Some(exists) = self
             .task_session_cache
             .get(&TaskSessionCacheKey::new(user_id, session_id))
             .await
-            .is_some()
         {
             log_task_cache(
                 "task_exists.cache",
@@ -1211,7 +1348,7 @@ impl WebUiStore for SqlxWebUiStore {
                 None,
                 true,
             );
-            return Ok(true);
+            return Ok(exists);
         }
         log_task_cache(
             "task_exists.cache",
@@ -1248,11 +1385,9 @@ impl WebUiStore for SqlxWebUiStore {
         );
 
         let exists = row.is_some();
-        if exists {
-            self.task_session_cache
-                .insert(TaskSessionCacheKey::new(user_id, session_id), ())
-                .await;
-        }
+        self.task_session_cache
+            .insert(TaskSessionCacheKey::new(user_id, session_id), exists)
+            .await;
         Ok(exists)
     }
 
@@ -1644,6 +1779,7 @@ impl WebUiStore for SqlxWebUiStore {
             .map(row_to_task)
             .collect::<WebUiStoreResult<Vec<_>>>()?;
         for task in &interrupted {
+            self.cache_task_record(task).await;
             self.clear_interrupted_session_task(task, now).await?;
         }
         Ok(interrupted)
@@ -1674,6 +1810,9 @@ impl SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(db_error)?;
+        self.session_cache
+            .invalidate(&SessionCacheKey::new(task.user_id, &task.session_id))
+            .await;
         Ok(())
     }
 }
