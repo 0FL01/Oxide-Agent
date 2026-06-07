@@ -82,8 +82,8 @@ async fn extract_agent_input_inner(
     }
 
     // Photo
-    if let Some(photos) = msg.photo() {
-        if let Some(photo) = photos.last() {
+    if let Some(photos) = msg.photo()
+        && let Some(photo) = photos.last() {
             let buffer = download_telegram_file(bot, photo.file.id.clone()).await?;
             if preserve_binary_uploads {
                 return Ok(build_uploaded_file_input(
@@ -99,7 +99,6 @@ async fn extract_agent_input_inner(
                 context: caption,
             });
         }
-    }
 
     // Video
     if let Some(video) = msg.video() {

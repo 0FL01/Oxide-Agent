@@ -1,5 +1,5 @@
 use oxide_agent_core::agent::progress::{
-    AgentEventSource, LlmRetryState, ProgressState, Step, StepStatus,
+    LlmRetryState, ProgressState, Step, StepStatus,
 };
 
 /// Render a progress state into Telegram-ready HTML.

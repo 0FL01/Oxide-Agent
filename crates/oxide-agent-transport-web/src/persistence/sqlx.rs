@@ -2172,13 +2172,12 @@ fn db_error(error: sqlx_core::error::Error) -> WebUiStoreError {
 }
 
 fn login_conflict_error(error: sqlx_core::error::Error, normalized_login: &str) -> WebUiStoreError {
-    if let sqlx_core::error::Error::Database(database_error) = &error {
-        if database_error.is_unique_violation() {
+    if let sqlx_core::error::Error::Database(database_error) = &error
+        && database_error.is_unique_violation() {
             return WebUiStoreError::Conflict(format!(
                 "login {normalized_login} already belongs to another user"
             ));
         }
-    }
     db_error(error)
 }
 

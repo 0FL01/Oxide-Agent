@@ -563,11 +563,10 @@ pub async fn collect_events(
         }
 
         // Track named milestones from the agent core.
-        if let AgentEvent::Milestone { name, timestamp_ms } = &event {
-            if let Some(ts) = chrono::DateTime::from_timestamp_millis(*timestamp_ms) {
+        if let AgentEvent::Milestone { name, timestamp_ms } = &event
+            && let Some(ts) = chrono::DateTime::from_timestamp_millis(*timestamp_ms) {
                 timestamps.named_milestones.insert(name.clone(), ts);
             }
-        }
 
         match &event {
             AgentEvent::ToolCall { id, name, .. } => {
@@ -583,11 +582,10 @@ pub async fn collect_events(
             }
             AgentEvent::ToolResult { id, name, .. } => {
                 let key = tool_event_pairing_key(id, name);
-                if let Some(idx) = active_tool_calls.remove(&key) {
-                    if let Some(tool_call) = tool_calls.get_mut(idx) {
+                if let Some(idx) = active_tool_calls.remove(&key)
+                    && let Some(tool_call) = tool_calls.get_mut(idx) {
                         tool_call.finished_at = Some(chrono::Utc::now());
                     }
-                }
             }
             _ => {}
         }
@@ -598,8 +596,8 @@ pub async fn collect_events(
             event_log.push(&event).await;
         }
 
-        if let Some(scope) = browser_event_scope.as_ref() {
-            if should_persist_browser_event(&event) {
+        if let Some(scope) = browser_event_scope.as_ref()
+            && should_persist_browser_event(&event) {
                 let persisted_event = persisted_event_from_agent_event(
                     scope,
                     next_seq,
@@ -614,7 +612,6 @@ pub async fn collect_events(
                 persisted_events.push(persisted_event);
                 next_seq += 1;
             }
-        }
 
         match event {
             AgentEvent::FileToSendWithConfirmation {
@@ -1264,11 +1261,10 @@ fn stream_text_from_output(output: &Value, stream_name: &str) -> Option<String> 
         return None;
     }
 
-    if let Some(text) = stream.get("text").and_then(Value::as_str) {
-        if !text.is_empty() {
+    if let Some(text) = stream.get("text").and_then(Value::as_str)
+        && !text.is_empty() {
             return Some(text.to_string());
         }
-    }
 
     let head = stream.get("head").and_then(Value::as_str);
     let tail = stream.get("tail").and_then(Value::as_str);

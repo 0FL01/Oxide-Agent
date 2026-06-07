@@ -66,13 +66,12 @@ impl WebUiStore for InMemoryWebUiStore {
 
         {
             let login_index = self.login_index.read().await;
-            if let Some(existing) = login_index.get(&normalized_login) {
-                if existing.user_id != user_id {
+            if let Some(existing) = login_index.get(&normalized_login)
+                && existing.user_id != user_id {
                     return Err(WebUiStoreError::Conflict(format!(
                         "login {normalized_login} already belongs to another user"
                     )));
                 }
-            }
         }
 
         self.users.write().await.insert(user_id, record);

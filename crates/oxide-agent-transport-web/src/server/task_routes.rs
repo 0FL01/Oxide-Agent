@@ -1254,11 +1254,10 @@ pub(crate) async fn api_cancel_task(
         tokio::spawn(async move {
             tokio::time::sleep(super::EVENT_LOG_RETENTION_AFTER_CLOSE).await;
             let mut logs = EVENT_LOGS.lock().await;
-            if let Some(current) = logs.get(&task_id_for_cleanup) {
-                if current.closed_at().await == Some(closed_at) {
+            if let Some(current) = logs.get(&task_id_for_cleanup)
+                && current.closed_at().await == Some(closed_at) {
                     logs.remove(&task_id_for_cleanup);
                 }
-            }
         });
     }
 

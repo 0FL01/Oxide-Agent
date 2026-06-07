@@ -110,8 +110,7 @@ async fn check_state_and_redirect(
 
     if let Some(state_str) =
         current_or_default_context_state(storage, settings, user_id, msg, thread_spec).await?
-    {
-        if state_str == "agent_mode" {
+        && state_str == "agent_mode" {
             info!("Restoring agent mode for user {user_id} based on persisted state.");
             dialogue
                 .update(State::AgentMode)
@@ -130,7 +129,6 @@ async fn check_state_and_redirect(
 
             return Ok(true);
         }
-    }
     Ok(false)
 }
 

@@ -360,15 +360,14 @@ fn spawn_event_collector(
             } else {
                 persist_task_events(&web_task, collected.persisted_events).await;
             }
-            if let Some(handle) = live_progress_persister_handle {
-                if let Err(error) = handle.await {
+            if let Some(handle) = live_progress_persister_handle
+                && let Err(error) = handle.await {
                     warn!(
                         task_id = %web_task.task_id,
                         error = %error,
                         "Live web progress persistence task failed"
                     );
                 }
-            }
             persist_task_progress(&web_task, progress).await;
         }
     })
@@ -603,11 +602,10 @@ fn spawn_event_log_cleanup(task_id: String, closed_at: std::time::Instant) {
         // Only evict if the entry in the map is still the same closed
         // log. A fresh task that re-used the same id would have a
         // different `closed_at` (or `None`), and we must not touch it.
-        if let Some(current) = logs.get(&task_id) {
-            if current.closed_at().await == Some(closed_at) {
+        if let Some(current) = logs.get(&task_id)
+            && current.closed_at().await == Some(closed_at) {
                 logs.remove(&task_id);
             }
-        }
     });
 }
 

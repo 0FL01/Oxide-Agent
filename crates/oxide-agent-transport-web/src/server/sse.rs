@@ -170,8 +170,8 @@ fn task_sse_stream(
         // when it covers the requested gap; otherwise paginate from DB.
         if stream_state.last_seq < stream_state.task.last_event_seq {
             // Drain the in-memory snapshot first if it covers the gap.
-            if let Some(log) = stream_state.event_log.as_ref() {
-                if log_latest_seq >= stream_state.last_seq {
+            if let Some(log) = stream_state.event_log.as_ref()
+                && log_latest_seq >= stream_state.last_seq {
                     let snapshot = log.persisted_snapshot().await;
                     for event in snapshot {
                         if event.seq <= stream_state.last_seq {
@@ -184,7 +184,6 @@ fn task_sse_stream(
                         yield Ok(sse_persisted_task_event(&event));
                     }
                 }
-            }
 
             // Continue with DB pages if the task persisted more events than
             // the in-memory log holds (e.g. task already closed or restarted
