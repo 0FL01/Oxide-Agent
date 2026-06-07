@@ -743,10 +743,10 @@ async fn parse_final_url(result: &Value) -> Result<Option<Url>> {
 }
 
 fn select_markdown(result: &Value) -> Result<MarkdownSelection> {
-    if let Some(markdown) = result.get("markdown") {
-        if let Some(selection) = select_crawl4ai_markdown(markdown)? {
-            return Ok(selection);
-        }
+    if let Some(markdown) = result.get("markdown")
+        && let Some(selection) = select_crawl4ai_markdown(markdown)?
+    {
+        return Ok(selection);
     }
 
     if let Some(html) = result.get("html").and_then(Value::as_str) {
@@ -778,13 +778,13 @@ fn select_crawl4ai_markdown(markdown: &Value) -> Result<Option<MarkdownSelection
         ("markdown_with_citations", "markdown_with_citations"),
         ("fit_markdown", "fit_markdown"),
     ] {
-        if let Some(text) = object.get(field).and_then(Value::as_str) {
-            if !text.trim().is_empty() {
-                return Ok(Some(MarkdownSelection {
-                    kind,
-                    text: text.to_string(),
-                }));
-            }
+        if let Some(text) = object.get(field).and_then(Value::as_str)
+            && !text.trim().is_empty()
+        {
+            return Ok(Some(MarkdownSelection {
+                kind,
+                text: text.to_string(),
+            }));
         }
     }
 

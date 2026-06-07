@@ -151,7 +151,7 @@ pub enum TaskEventLogMessage {
         last_seq: u64,
     },
     Progress {
-        snapshot: ProgressSnapshot,
+        snapshot: Box<ProgressSnapshot>,
         last_seq: u64,
     },
     Closed,
@@ -252,7 +252,7 @@ impl TaskEventLog {
         *self.last_progress_snapshot.write().await = Some(snapshot.clone());
         let _ = self
             .broadcast_tx
-            .send(TaskEventLogMessage::Progress { snapshot, last_seq });
+            .send(TaskEventLogMessage::Progress { snapshot: Box::new(snapshot), last_seq });
     }
 
     /// Returns the latest status broadcast via `notify_status`, or `None`

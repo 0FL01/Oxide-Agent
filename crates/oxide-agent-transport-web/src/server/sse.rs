@@ -317,12 +317,12 @@ fn task_sse_stream(
                             ));
                         }
                         Ok(TaskEventLogMessage::Progress { snapshot, .. }) => {
-                            stream_state.task.last_progress = Some(snapshot.clone());
+                            stream_state.task.last_progress = Some((*snapshot).clone());
                             yield Ok(sse_json_event(
                                 "progress",
                                 &TaskSseProgress {
                                     task_id: stream_state.task_id.clone(),
-                                    progress: snapshot,
+                                    progress: (*snapshot).clone(),
                                 },
                             ));
                         }
