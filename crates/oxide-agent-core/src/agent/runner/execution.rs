@@ -40,11 +40,10 @@ impl AgentRunner {
                 return Err(self.cancelled_error(ctx).await);
             }
 
-            if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs {
-                if let Some(res) = self.apply_timeout_hook(ctx, &mut state)? {
+            if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs
+                && let Some(res) = self.apply_timeout_hook(ctx, &mut state)? {
                     return Ok(AgentRunResult::Final(res));
                 }
-            }
 
             self.apply_pending_runtime_context(ctx, &mut state).await;
 

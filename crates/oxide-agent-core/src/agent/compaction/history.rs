@@ -288,11 +288,10 @@ fn completed_tool_batch_indices(
     while cursor < messages.len()
         && messages[cursor].resolved_kind() == AgentMessageKind::ToolResult
     {
-        if let Some(invocation_id) = tool_result_invocation_id(&messages[cursor]) {
-            if expected_set.contains(&invocation_id) && seen_ids.insert(invocation_id) {
+        if let Some(invocation_id) = tool_result_invocation_id(&messages[cursor])
+            && expected_set.contains(&invocation_id) && seen_ids.insert(invocation_id) {
                 indices.push(cursor);
             }
-        }
         cursor += 1;
     }
 

@@ -184,15 +184,14 @@ impl WebFetchMdProvider {
             .unwrap_or_default()
             .to_ascii_lowercase();
 
-        if let Some(content_length) = response.content_length() {
-            if content_length > MAX_RESPONSE_BYTES as u64 {
+        if let Some(content_length) = response.content_length()
+            && content_length > MAX_RESPONSE_BYTES as u64 {
                 bail!(
                     "response too large by content-length: {} bytes; max is {}",
                     content_length,
                     MAX_RESPONSE_BYTES
                 );
             }
-        }
 
         let body = read_limited_body(response, cancellation_token).await?;
         let bytes_read = body.len();

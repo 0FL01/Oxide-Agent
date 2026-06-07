@@ -481,12 +481,11 @@ pub fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
         };
 
         // Parse JSON to check structure
-        if let Ok(parsed) = serde_json::from_str::<Value>(&json_str) {
-            if parsed.is_object() && parsed.get("todos").is_some() {
+        if let Ok(parsed) = serde_json::from_str::<Value>(&json_str)
+            && parsed.is_object() && parsed.get("todos").is_some() {
                 warn!("Correcting malformed tool call to 'write_todos' with extracted arguments");
                 return ("write_todos".to_string(), json_str);
             }
-        }
     }
 
     // PATTERN 2: Check if name contains "todos" followed by JSON array
@@ -510,8 +509,8 @@ pub fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
                 );
 
                 // Try to parse the JSON array part and wrap it in the expected structure
-                if let Ok(parsed_array) = serde_json::from_str::<Value>(json_part) {
-                    if parsed_array.is_array() {
+                if let Ok(parsed_array) = serde_json::from_str::<Value>(json_part)
+                    && parsed_array.is_array() {
                         // Construct the proper arguments structure: {"todos": [...]}
                         let corrected_args = serde_json::json!({
                             "todos": parsed_array
@@ -525,7 +524,6 @@ pub fn sanitize_tool_call(name: &str, arguments: &str) -> (String, String) {
                             return ("write_todos".to_string(), args_str);
                         }
                     }
-                }
 
                 // If JSON parsing failed, log and fall back
                 warn!(
@@ -585,8 +583,8 @@ pub fn extract_first_json(input: &str) -> Option<String> {
                 depth += 1;
             }
             '}' if !in_string => {
-                if depth == 1 {
-                    if let Some(start) = start_idx {
+                if depth == 1
+                    && let Some(start) = start_idx {
                         // Found complete object
                         let json_str = input[start..=i].trim();
                         // Validate it's actually JSON
@@ -594,7 +592,6 @@ pub fn extract_first_json(input: &str) -> Option<String> {
                             return Some(json_str.to_string());
                         }
                     }
-                }
                 depth -= 1;
                 if depth == 0 {
                     start_idx = None;

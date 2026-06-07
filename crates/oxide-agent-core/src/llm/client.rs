@@ -647,8 +647,8 @@ impl LlmClient {
                         "Tool-enabled LLM request failed"
                     );
 
-                    if attempt < Self::MAX_RETRIES {
-                        if let Some(backoff) = Self::get_retry_delay(&e, attempt) {
+                    if attempt < Self::MAX_RETRIES
+                        && let Some(backoff) = Self::get_retry_delay(&e, attempt) {
                             info!(
                                 model = model_name,
                                 backoff_ms = backoff.as_millis(),
@@ -660,7 +660,6 @@ impl LlmClient {
                             tokio::time::sleep(backoff).await;
                             continue;
                         }
-                    }
 
                     return Err(e);
                 }
@@ -869,8 +868,8 @@ impl LlmClient {
                     return Ok(result);
                 }
                 Err(e) => {
-                    if attempt < Self::MAX_RETRIES {
-                        if let Some(backoff) = support::backoff::get_retry_delay_with_initial(
+                    if attempt < Self::MAX_RETRIES
+                        && let Some(backoff) = support::backoff::get_retry_delay_with_initial(
                             &e,
                             attempt,
                             initial_backoff_ms,
@@ -886,7 +885,6 @@ impl LlmClient {
                             tokio::time::sleep(backoff).await;
                             continue;
                         }
-                    }
                     warn!("{} failed after {} attempts: {}", context, attempt, e);
                     return Err(e);
                 }

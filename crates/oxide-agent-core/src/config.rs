@@ -765,26 +765,23 @@ impl AgentSettings {
     }
 
     fn apply_tool_provider_env_fallbacks(&mut self) {
-        if self.tavily_api_key.is_none() {
-            if let Ok(val) = std::env::var("TAVILY_API_KEY") {
-                if !val.is_empty() {
+        if self.tavily_api_key.is_none()
+            && let Ok(val) = std::env::var("TAVILY_API_KEY")
+                && !val.is_empty() {
                     self.tavily_api_key = Some(val);
                 }
-            }
-        }
 
         if self.tavily_enabled.is_none() {
             self.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
         }
 
-        if self.brave_search_api_key.is_none() {
-            if let Ok(val) = std::env::var("BRAVE_SEARCH_API_KEY") {
+        if self.brave_search_api_key.is_none()
+            && let Ok(val) = std::env::var("BRAVE_SEARCH_API_KEY") {
                 let val = val.trim();
                 if !val.is_empty() {
                     self.brave_search_api_key = Some(val.to_string());
                 }
             }
-        }
 
         if self.brave_search_enabled.is_none() {
             self.brave_search_enabled = parse_optional_env_bool("BRAVE_SEARCH_ENABLED");
@@ -794,44 +791,36 @@ impl AgentSettings {
             self.duckduckgo_enabled = parse_optional_env_bool("DUCKDUCKGO_ENABLED");
         }
 
-        if self.duckduckgo_user_agent.is_none() {
-            if let Ok(val) = std::env::var("DUCKDUCKGO_USER_AGENT") {
-                if !val.is_empty() {
+        if self.duckduckgo_user_agent.is_none()
+            && let Ok(val) = std::env::var("DUCKDUCKGO_USER_AGENT")
+                && !val.is_empty() {
                     self.duckduckgo_user_agent = Some(val);
                 }
-            }
-        }
 
-        if self.duckduckgo_proxy_url.is_none() {
-            if let Ok(val) =
+        if self.duckduckgo_proxy_url.is_none()
+            && let Ok(val) =
                 std::env::var("DUCKDUCKGO_PROXY_URL").or_else(|_| std::env::var("DUCKDUCKGO_PROXY"))
-            {
-                if !val.is_empty() {
+                && !val.is_empty() {
                     self.duckduckgo_proxy_url = Some(val);
                 }
-            }
-        }
 
-        if self.searxng_url.is_none() {
-            if let Ok(val) = std::env::var("SEARXNG_URL") {
-                if !val.is_empty() {
+        if self.searxng_url.is_none()
+            && let Ok(val) = std::env::var("SEARXNG_URL")
+                && !val.is_empty() {
                     self.searxng_url = Some(val);
                 }
-            }
-        }
 
         if self.searxng_enabled.is_none() {
             self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
         }
 
-        if self.searxng_bearer_token.is_none() {
-            if let Ok(val) = std::env::var("SEARXNG_BEARER_TOKEN") {
+        if self.searxng_bearer_token.is_none()
+            && let Ok(val) = std::env::var("SEARXNG_BEARER_TOKEN") {
                 let val = val.trim();
                 if !val.is_empty() {
                     self.searxng_bearer_token = Some(val.to_string());
                 }
             }
-        }
     }
 
     fn parse_model_routes_from_env(prefix: &str) -> Option<Vec<ModelInfo>> {
@@ -1021,11 +1010,10 @@ impl AgentSettings {
     }
 
     fn resolve_execution_model(&self, prefer_sub_agent: bool) -> ModelInfo {
-        if prefer_sub_agent {
-            if let Some((_, info)) = self.sub_agent_model_spec() {
+        if prefer_sub_agent
+            && let Some((_, info)) = self.sub_agent_model_spec() {
                 return info;
             }
-        }
         if let Some((_, info)) = self.agent_model_spec() {
             return info;
         }

@@ -88,12 +88,11 @@ fn escape_angle_brackets(text: &str) -> String {
                 let mut peeked_chars = Vec::new();
 
                 // Check for closing tag: </
-                if let Some('/') = chars.peek() {
-                    if let Some(ch) = chars.next() {
+                if let Some('/') = chars.peek()
+                    && let Some(ch) = chars.next() {
                         peeked_chars.push(ch);
                         lookahead.push('/');
                     }
-                }
 
                 // Extract tag name (alphanumeric only, stops at space or >)
                 while let Some(&next_char) = chars.peek() {

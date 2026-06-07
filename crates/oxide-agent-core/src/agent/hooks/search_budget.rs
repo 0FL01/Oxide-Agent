@@ -155,9 +155,9 @@ impl Hook for SearchBudgetHook {
                     };
                 }
 
-                if tool_name == "web_markdown" {
-                    if let Some(host) = Self::web_markdown_host_from_arguments(arguments) {
-                        if self
+                if tool_name == "web_markdown"
+                    && let Some(host) = Self::web_markdown_host_from_arguments(arguments)
+                        && self
                             .blocked_web_markdown_hosts
                             .lock()
                             .expect("blocked_web_markdown_hosts poisoned")
@@ -169,8 +169,6 @@ impl Hook for SearchBudgetHook {
                                 ),
                             };
                         }
-                    }
-                }
 
                 if self.is_search_tool(tool_name) {
                     let limit = context.search_limit.unwrap_or(self.limit).max(self.limit);

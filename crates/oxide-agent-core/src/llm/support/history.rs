@@ -208,8 +208,8 @@ pub(crate) fn validate_tool_history(
     while index < messages.len() {
         let message = &messages[index];
 
-        if message.role == "assistant" {
-            if let Some(tool_calls) = &message.tool_calls {
+        if message.role == "assistant"
+            && let Some(tool_calls) = &message.tool_calls {
                 if tool_calls.is_empty() {
                     return Err(LlmError::RepairableHistory(
                         "assistant tool call batch is empty".to_string(),
@@ -230,7 +230,6 @@ pub(crate) fn validate_tool_history(
                 index = cursor;
                 continue;
             }
-        }
 
         if message.role == "tool" {
             return Err(orphaned_tool_result_error(message));

@@ -74,8 +74,8 @@ where
                 return Ok(result);
             }
             Err(e) => {
-                if attempt < MAX_RETRIES {
-                    if let Some(backoff) = get_retry_delay(&e, attempt) {
+                if attempt < MAX_RETRIES
+                    && let Some(backoff) = get_retry_delay(&e, attempt) {
                         warn!(
                             "{} failed (attempt {}/{}): {}, retrying after {:?}",
                             context, attempt, MAX_RETRIES, e, backoff
@@ -83,7 +83,6 @@ where
                         sleep(backoff).await;
                         continue;
                     }
-                }
                 warn!("{} failed after {} attempts: {}", context, attempt, e);
                 return Err(e);
             }

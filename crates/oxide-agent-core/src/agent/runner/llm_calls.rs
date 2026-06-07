@@ -549,8 +549,8 @@ impl AgentRunner {
                     Self::opencode_go_unbounded_retry_allowed(metadata.provider_name, &error);
                 let retry_budget_remaining =
                     metadata.attempt < metadata.max_retries || unbounded_retry;
-                if retry_budget_remaining {
-                    if let Some(backoff) = LlmClient::get_retry_delay(&error, metadata.attempt) {
+                if retry_budget_remaining
+                    && let Some(backoff) = LlmClient::get_retry_delay(&error, metadata.attempt) {
                         debug!(
                             error = %error,
                             error_class = Self::error_class(&error),
@@ -613,7 +613,6 @@ impl AgentRunner {
                         tokio::time::sleep(backoff).await;
                         return Ok(AttemptOutcome::RetrySameRoute);
                     }
-                }
 
                 if LlmClient::is_rate_limit_error(&error) && !ctx.config.model_routes.is_empty() {
                     return Ok(AttemptOutcome::FailoverToNextRoute(error));

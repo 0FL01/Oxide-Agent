@@ -210,11 +210,10 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
-        if let Some(tx) = ctx.progress_tx {
-            if !ctx.config.is_sub_agent {
+        if let Some(tx) = ctx.progress_tx
+            && !ctx.config.is_sub_agent {
                 let _ = tx.send(AgentEvent::Finished).await;
             }
-        }
         Ok(Some(AgentRunResult::Final(final_response)))
     }
 

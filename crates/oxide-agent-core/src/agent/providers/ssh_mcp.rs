@@ -637,11 +637,10 @@ impl Drop for UpstreamSshMcpSession {
         if let Ok(mut client) = self.client.try_lock() {
             client.take();
         }
-        if let Ok(mut stderr_task) = self.stderr_task.try_lock() {
-            if let Some(task) = stderr_task.take() {
+        if let Ok(mut stderr_task) = self.stderr_task.try_lock()
+            && let Some(task) = stderr_task.take() {
                 task.abort();
             }
-        }
     }
 }
 
@@ -1401,11 +1400,10 @@ impl SshMcpProvider {
             ssh_delivery_result(&download_path, &path, &delivered_file_name, progress_tx).await;
 
         let cleanup_result = tokio::fs::remove_file(&download_path).await;
-        if let Err(error) = cleanup_result {
-            if error.kind() != std::io::ErrorKind::NotFound {
+        if let Err(error) = cleanup_result
+            && error.kind() != std::io::ErrorKind::NotFound {
                 tracing::warn!(path = %download_path.display(), error = %error, "Failed to cleanup transferred SSH file");
             }
-        }
 
         let (payload, report, ok) = delivery_result.map_err(ssh_runtime_failure)?;
         Ok(typed_ssh_payload_output(
@@ -2213,7 +2211,9 @@ async fn validate_ssh_private_key(
     public_command.arg("-y").arg("-f").arg(key_path);
     let public_result = run_command_with_timeout(public_command, KEY_PROBE_TIMEOUT_SECS).await;
 
-    let report = match public_result {
+    
+
+    match public_result {
         Ok(output) if output.exit_code == 0 => {
             let mut listing_command = Command::new("ssh-keygen");
             listing_command.arg("-l").arg("-f").arg(key_path);
@@ -2268,9 +2268,7 @@ async fn validate_ssh_private_key(
             SecretProbeKind::SshPrivateKey,
             format!("ssh-keygen -y failed: {error}"),
         ),
-    };
-
-    report
+    }
 }
 
 fn format_stderr_suffix(stderr: &str) -> String {

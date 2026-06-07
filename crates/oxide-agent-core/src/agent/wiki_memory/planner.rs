@@ -157,14 +157,13 @@ pub(crate) fn extract_explicit_remember_payload(task: &str) -> Option<String> {
         return None;
     }
 
-    if let Some((prefix, suffix)) = trimmed.split_once(':') {
-        if has_explicit_remember_intent(prefix) {
+    if let Some((prefix, suffix)) = trimmed.split_once(':')
+        && has_explicit_remember_intent(prefix) {
             let cleaned = cleanup_explicit_payload(suffix);
             if !cleaned.is_empty() {
                 return Some(cleaned);
             }
         }
-    }
 
     for prefix in [
         "Remember this",

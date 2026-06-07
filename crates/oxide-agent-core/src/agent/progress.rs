@@ -681,20 +681,18 @@ impl ProgressState {
 
     /// Helper: Complete the last in-progress step
     fn complete_last_step(&mut self) {
-        if let Some(last) = self.steps.last_mut() {
-            if last.status == StepStatus::InProgress {
+        if let Some(last) = self.steps.last_mut()
+            && last.status == StepStatus::InProgress {
                 last.status = StepStatus::Completed;
             }
-        }
     }
 
     /// Helper: Mark the last in-progress step as failed
     fn fail_last_step(&mut self) {
-        if let Some(last) = self.steps.last_mut() {
-            if last.status == StepStatus::InProgress {
+        if let Some(last) = self.steps.last_mut()
+            && last.status == StepStatus::InProgress {
                 last.status = StepStatus::Failed;
             }
-        }
     }
 
     fn handle_thinking(&mut self, snapshot: TokenSnapshot) {
@@ -764,8 +762,8 @@ impl ProgressState {
     }
 
     fn handle_tool_result(&mut self, id: &str, success: bool) {
-        if !id.is_empty() {
-            if let Some(step) = self.steps.iter_mut().rev().find(|step| {
+        if !id.is_empty()
+            && let Some(step) = self.steps.iter_mut().rev().find(|step| {
                 step.status == StepStatus::InProgress && step.tool_id.as_deref() == Some(id)
             }) {
                 step.status = if success {
@@ -775,7 +773,6 @@ impl ProgressState {
                 };
                 return;
             }
-        }
 
         if success {
             self.complete_last_step();
@@ -833,8 +830,8 @@ impl ProgressState {
 
         if let Some((task, blocked_on_user)) = current_task {
             // Update step description with current task
-            if let Some(last) = self.steps.last_mut() {
-                if last.status == StepStatus::InProgress {
+            if let Some(last) = self.steps.last_mut()
+                && last.status == StepStatus::InProgress {
                     let prefix = if blocked_on_user {
                         "📋 Waiting on user"
                     } else {
@@ -842,7 +839,6 @@ impl ProgressState {
                     };
                     last.description = format!("{prefix} {task} ({completed}/{total})");
                 }
-            }
         }
     }
 

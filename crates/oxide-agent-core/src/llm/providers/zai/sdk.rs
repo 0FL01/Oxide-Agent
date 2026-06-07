@@ -584,8 +584,7 @@ pub fn parse_zai_flush_time(message: &str) -> Option<u64> {
     if let Some(caps) = regex::Regex::new(r"\b(\d{10,13})\b")
         .ok()
         .and_then(|r| r.captures(&message_lower))
-    {
-        if let Some(ts_str) = caps.get(1) {
+        && let Some(ts_str) = caps.get(1) {
             let ts = ts_str.as_str();
             // Determine if seconds or milliseconds
             let ts_value: i64 = ts.parse().ok()?;
@@ -601,24 +600,20 @@ pub fn parse_zai_flush_time(message: &str) -> Option<u64> {
                 return Some(wait_secs as u64);
             }
         }
-    }
 
     // Pattern 2: ISO datetime string (look for it in the message)
     if let Some(caps) =
         regex::Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)")
             .ok()
             .and_then(|r| r.captures(message))
-    {
-        if let Some(dt_str) = caps.get(1) {
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str.as_str()) {
+        && let Some(dt_str) = caps.get(1)
+            && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(dt_str.as_str()) {
                 let now = chrono::Utc::now();
                 let duration = dt.signed_duration_since(now);
                 if duration.num_seconds() > 0 {
                     return Some(duration.num_seconds() as u64);
                 }
             }
-        }
-    }
 
     None
 }

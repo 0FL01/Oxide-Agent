@@ -170,9 +170,9 @@ fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<Failure
             ));
         }
 
-        if error_kind == Some("http_status") {
-            if let Some(status_code) = payload.get("status_code").and_then(Value::as_u64) {
-                if matches!(status_code, 404 | 410)
+        if error_kind == Some("http_status")
+            && let Some(status_code) = payload.get("status_code").and_then(Value::as_u64)
+                && matches!(status_code, 404 | 410)
                     && payload.get("retryable").and_then(Value::as_bool) != Some(true)
                 {
                     return Some(web_markdown_exact_url_dead_end(
@@ -180,8 +180,6 @@ fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<Failure
                         string_field(payload, "url"),
                     ));
                 }
-            }
-        }
     }
 
     let provider_unavailable = payload
@@ -215,19 +213,16 @@ fn classify_text_failure(tool_name: &str, content: &str) -> Option<FailureSignal
             ));
         }
 
-        if let Some(captures) = RE_HTTP_STATUS.captures(content) {
-            if let Some(status_code) = captures
+        if let Some(captures) = RE_HTTP_STATUS.captures(content)
+            && let Some(status_code) = captures
                 .get(1)
                 .and_then(|value| value.as_str().parse::<u64>().ok())
-            {
-                if matches!(status_code, 404 | 410) {
+                && matches!(status_code, 404 | 410) {
                     return Some(web_markdown_exact_url_dead_end(
                         status_code,
                         first_url(content).as_deref(),
                     ));
                 }
-            }
-        }
     }
 
     None

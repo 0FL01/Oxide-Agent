@@ -736,8 +736,7 @@ impl WikiMemoryProvider {
                 let previous_hash = existing.as_ref().map(|page| page.content_hash.clone());
                 if let (Some(expected), Some(actual)) =
                     (args.expected_hash.as_deref(), previous_hash.as_deref())
-                {
-                    if expected != actual {
+                    && expected != actual {
                         return Err(anyhow!(
                             "wiki memory hash mismatch for {}: expected {}, actual {}",
                             target.id(),
@@ -745,7 +744,6 @@ impl WikiMemoryProvider {
                             actual
                         ));
                     }
-                }
                 let key = existing
                     .as_ref()
                     .map(|page| page.key.clone())
@@ -763,8 +761,7 @@ impl WikiMemoryProvider {
                 let previous_hash = existing.as_ref().map(|page| page.content_hash.clone());
                 if let (Some(expected), Some(actual)) =
                     (args.expected_hash.as_deref(), previous_hash.as_deref())
-                {
-                    if expected != actual {
+                    && expected != actual {
                         return Err(anyhow!(
                             "wiki memory hash mismatch for {}: expected {}, actual {}",
                             target.id(),
@@ -772,7 +769,6 @@ impl WikiMemoryProvider {
                             actual
                         ));
                     }
-                }
                 let key = existing
                     .as_ref()
                     .map(|page| page.key.clone())

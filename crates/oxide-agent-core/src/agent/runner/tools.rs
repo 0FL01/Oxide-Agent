@@ -229,8 +229,8 @@ impl AgentRunner {
             .await;
         result.map_err(|error| anyhow::anyhow!("typed tool runtime failed: {error}"))?;
 
-        if finish_after_todo_update {
-            if let Some(final_answer) = final_response_candidate {
+        if finish_after_todo_update
+            && let Some(final_answer) = final_response_candidate {
                 let todos_arc = Arc::clone(ctx.todos_arc);
                 let todos_complete = todos_arc.lock().await.is_complete();
                 if todos_complete {
@@ -256,7 +256,6 @@ impl AgentRunner {
                         .await;
                 }
             }
-        }
 
         Self::emit_token_snapshot_update(
             ctx.progress_tx,

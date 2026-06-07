@@ -83,11 +83,10 @@ fn map_usage(usage: Usage) -> TokenUsage {
 
 fn apply_tool_call_delta(tool_calls: &[ToolCallMessage], pending: &mut Vec<PendingToolCall>) {
     for call in tool_calls {
-        if let Some(call_type) = call.type_.as_deref() {
-            if call_type != "function" {
+        if let Some(call_type) = call.type_.as_deref()
+            && call_type != "function" {
                 continue;
             }
-        }
 
         let is_new_id = if let Some(id) = &call.id {
             pending.last().and_then(|p| p.id.as_ref()) != Some(id)

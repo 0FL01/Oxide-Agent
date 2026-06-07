@@ -133,8 +133,8 @@ pub fn parse_structured_output(
     // Prose wrapper: if the response contains no JSON at all but looks like
     // meaningful prose, wrap it as a structured final answer. This catches
     // models that ignore structured output instructions and return plain text.
-    if !sanitized.contains('{') && looks_like_prose(&sanitized) {
-        if let Ok(escaped) = serde_json::to_string(&sanitized) {
+    if !sanitized.contains('{') && looks_like_prose(&sanitized)
+        && let Ok(escaped) = serde_json::to_string(&sanitized) {
             let wrapped = format!(
                 r#"{{"thought":"Model provided direct response","tool_call":null,"final_answer":{escaped},"awaiting_user_input":null}}"#
             );
@@ -146,7 +146,6 @@ pub fn parse_structured_output(
                 return Ok(parsed);
             }
         }
-    }
 
     for recovered in recovery_candidates(&sanitized) {
         match try_parse_structured_output(&recovered, tools) {
@@ -210,11 +209,10 @@ fn recovery_candidates(input: &str) -> Vec<String> {
         candidates.push(fenced);
     }
 
-    if let Some(extracted) = extract_first_json(input) {
-        if !candidates.contains(&extracted) {
+    if let Some(extracted) = extract_first_json(input)
+        && !candidates.contains(&extracted) {
             candidates.push(extracted);
         }
-    }
 
     candidates
 }
@@ -250,13 +248,12 @@ fn validate_structured_output(
         ));
     }
 
-    if let Some(ref final_answer) = output.final_answer {
-        if final_answer.trim().is_empty() {
+    if let Some(ref final_answer) = output.final_answer
+        && final_answer.trim().is_empty() {
             return Err(StructuredOutputError::new(
                 "Field 'final_answer' must be a non-empty string when provided",
             ));
         }
-    }
 
     let has_tool_call = output.tool_call.is_some();
     let has_final_answer = output.final_answer.is_some();

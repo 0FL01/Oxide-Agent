@@ -266,8 +266,8 @@ pub fn dm_tool_policy() -> ToolAccessPolicy {
     policy = policy.with_additional_blocked_tools(dm_default_blocked_tools());
 
     // Check for admin override via DM_ALLOWED_TOOLS (allowlist mode)
-    if let Ok(allowed) = std::env::var(DM_ALLOWED_TOOLS_ENV) {
-        if !allowed.is_empty() {
+    if let Ok(allowed) = std::env::var(DM_ALLOWED_TOOLS_ENV)
+        && !allowed.is_empty() {
             let tools: HashSet<String> = allowed
                 .split(',')
                 .map(str::trim)
@@ -279,11 +279,10 @@ pub fn dm_tool_policy() -> ToolAccessPolicy {
                 return ToolAccessPolicy::new(Some(tools), HashSet::new());
             }
         }
-    }
 
     // Check for additional blocked tools via DM_BLOCKED_TOOLS env var
-    if let Ok(blocked) = std::env::var(DM_BLOCKED_TOOLS_ENV) {
-        if !blocked.is_empty() {
+    if let Ok(blocked) = std::env::var(DM_BLOCKED_TOOLS_ENV)
+        && !blocked.is_empty() {
             let additional: Vec<String> = blocked
                 .split(',')
                 .map(str::trim)
@@ -292,7 +291,6 @@ pub fn dm_tool_policy() -> ToolAccessPolicy {
                 .collect();
             policy = policy.with_additional_blocked_tools(additional);
         }
-    }
 
     policy
 }

@@ -35,8 +35,8 @@ pub fn prepare_structured_messages(
                     "content": content
                 });
 
-                if let Some(calls) = tool_calls {
-                    if !calls.is_empty() {
+                if let Some(calls) = tool_calls
+                    && !calls.is_empty() {
                         let mistral_tool_calls: Vec<Value> = calls
                             .iter()
                             .filter_map(|tc| {
@@ -59,7 +59,6 @@ pub fn prepare_structured_messages(
                             .collect();
                         msg_obj["tool_calls"] = json!(mistral_tool_calls);
                     }
-                }
                 other_messages.push(msg_obj);
             }
             "tool" => {

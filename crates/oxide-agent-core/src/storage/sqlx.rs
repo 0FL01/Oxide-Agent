@@ -2717,15 +2717,14 @@ async fn ensure_topic_prompt_not_duplicated_in_tx(
     let existing_content = row
         .map(|row| row_value::<String>(&row, "content"))
         .transpose()?;
-    if let Some(existing_content) = existing_content {
-        if normalize_topic_prompt_payload(&existing_content) == normalized_candidate {
+    if let Some(existing_content) = existing_content
+        && normalize_topic_prompt_payload(&existing_content) == normalized_candidate {
             return Err(StorageError::DuplicateTopicPromptContent {
                 topic_id: topic_id.to_string(),
                 existing_kind: existing_kind.as_str().to_string(),
                 attempted_kind: attempted_kind.as_str().to_string(),
             });
         }
-    }
 
     Ok(())
 }

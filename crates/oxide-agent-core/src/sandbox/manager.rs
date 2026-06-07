@@ -1161,13 +1161,12 @@ impl DockerSandboxManager {
         since: Option<DateTime<Utc>>,
         until: Option<DateTime<Utc>>,
     ) -> Result<()> {
-        if let (Some(since), Some(until)) = (since, until) {
-            if since > until {
+        if let (Some(since), Some(until)) = (since, until)
+            && since > until {
                 return Err(anyhow!(
                     "Invalid stack log time window: 'since' must be earlier than or equal to 'until'"
                 ));
             }
-        }
 
         Ok(())
     }
@@ -1435,12 +1434,11 @@ impl DockerSandboxManager {
                 continue;
             }
 
-            if let Some(previous) = last_kept {
-                if Self::is_stack_log_exact_duplicate_burst(previous, &entry) {
+            if let Some(previous) = last_kept
+                && Self::is_stack_log_exact_duplicate_burst(previous, &entry) {
                     Self::record_stack_log_suppression(&mut suppressed, "exact_duplicate_burst", 1);
                     continue;
                 }
-            }
 
             filtered.push(entry);
             last_kept = filtered.last();
@@ -2481,15 +2479,14 @@ impl DockerSandboxManager {
         // Reuse the existing size check to self-heal stale container IDs and verify the path exists.
         let file_size = self.file_size_bytes(container_path, None).await?;
 
-        if let Some(max_file_size) = max_file_size {
-            if file_size > max_file_size {
+        if let Some(max_file_size) = max_file_size
+            && file_size > max_file_size {
                 anyhow::bail!(
                     "File too large: {} bytes (max {} MB)",
                     file_size,
                     max_file_size / 1024 / 1024
                 );
             }
-        }
 
         let container_id = self
             .container_id

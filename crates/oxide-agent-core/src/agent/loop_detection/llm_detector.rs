@@ -298,12 +298,11 @@ impl LlmLoopDetector {
             prompt.push_str(&message.role);
             prompt.push_str(": ");
             prompt.push_str(message.content.trim());
-            if let Some(reasoning) = message.reasoning_content.as_deref() {
-                if !reasoning.trim().is_empty() {
+            if let Some(reasoning) = message.reasoning_content.as_deref()
+                && !reasoning.trim().is_empty() {
                     prompt.push_str("\n  reasoning: ");
                     prompt.push_str(reasoning.trim());
                 }
-            }
             prompt.push('\n');
         }
         prompt
@@ -353,11 +352,10 @@ impl LlmLoopDetector {
                 }
                 '}' if !in_string => {
                     depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        if let Some(start) = start_idx {
+                    if depth == 0
+                        && let Some(start) = start_idx {
                             return Some(input[start..=idx].to_string());
                         }
-                    }
                 }
                 _ => {
                     escaped = false;

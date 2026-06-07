@@ -951,14 +951,13 @@ impl KokoroTtsToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<KokoroTtsProvider> {
         let config = TtsConfig::from_env();
 
-        if let Ok(url) = std::env::var("KOKORO_TTS_URL") {
-            if url.trim().is_empty() {
+        if let Ok(url) = std::env::var("KOKORO_TTS_URL")
+            && url.trim().is_empty() {
                 tracing::debug!(
                     "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
                 );
                 return None;
             }
-        }
 
         tracing::debug!(url = %config.base_url, "Registering TTS provider");
         let mut provider =
@@ -995,14 +994,13 @@ impl SileroTtsToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<SileroTtsProvider> {
         let config = SileroTtsConfig::from_env();
 
-        if let Ok(url) = std::env::var("SILERO_TTS_URL") {
-            if url.trim().is_empty() {
+        if let Ok(url) = std::env::var("SILERO_TTS_URL")
+            && url.trim().is_empty() {
                 tracing::debug!(
                     "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
                 );
                 return None;
             }
-        }
 
         tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");
         let mut provider =

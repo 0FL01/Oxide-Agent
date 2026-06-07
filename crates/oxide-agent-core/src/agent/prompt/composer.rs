@@ -637,12 +637,11 @@ Use only available tools if necessary.\n\
 Do not spawn, wait for, or cancel sub-agents and do not send files to the user."
         .to_string();
 
-    if let Some(extra) = extra_context {
-        if !extra.trim().is_empty() {
+    if let Some(extra) = extra_context
+        && !extra.trim().is_empty() {
             base_prompt.push_str("\n\nAdditional context:\n");
             base_prompt.push_str(extra.trim());
         }
-    }
 
     let base_prompt = if structured_output {
         base_prompt

@@ -319,11 +319,10 @@ fn explicit_remember_content(task: &str, response: &str, evidence: &[String]) ->
     if !response_is_generic_confirmation(response) {
         return response.trim().to_string();
     }
-    if let Some(payload) = extract_explicit_remember_payload(task) {
-        if !payload.trim().is_empty() {
+    if let Some(payload) = extract_explicit_remember_payload(task)
+        && !payload.trim().is_empty() {
             return payload;
         }
-    }
     if let Some(first_evidence) = evidence.first() {
         return format!(
             "Verified memory candidate for '{}'. See evidence: {}",
