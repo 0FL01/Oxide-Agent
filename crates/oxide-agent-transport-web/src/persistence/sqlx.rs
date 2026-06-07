@@ -1,10 +1,11 @@
 //! SQLx/Postgres web console persistence.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use moka::future::Cache;
 use oxide_agent_core::storage::SqlxStorage;
 use oxide_agent_web_contracts::{
     PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
@@ -25,7 +26,51 @@ use super::{
 
 const DEFAULT_TASK_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const TASK_FILE_MAX_BYTES_ENV: &str = "OXIDE_WEB_TASK_FILE_MAX_BYTES";
+const TASK_WRITE_FRONT_CACHE_MAX_CAPACITY: u64 = 4_096;
+const TASK_WRITE_FRONT_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const TASK_WRITE_BEHIND_MAX_ATTEMPTS: u32 = 3;
+const TASK_WRITE_BEHIND_RETRY_DELAY: Duration = Duration::from_millis(250);
 const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TaskCacheKey {
+    user_id: i64,
+    session_id: String,
+    task_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TaskSessionCacheKey {
+    user_id: i64,
+    session_id: String,
+}
+
+impl TaskCacheKey {
+    fn new(user_id: i64, session_id: &str, task_id: &str) -> Self {
+        Self {
+            user_id,
+            session_id: session_id.to_owned(),
+            task_id: task_id.to_owned(),
+        }
+    }
+
+    fn from_record(record: &WebTaskRecord) -> Self {
+        Self::new(record.user_id, &record.session_id, &record.task_id)
+    }
+}
+
+impl TaskSessionCacheKey {
+    fn new(user_id: i64, session_id: &str) -> Self {
+        Self {
+            user_id,
+            session_id: session_id.to_owned(),
+        }
+    }
+
+    fn from_record(record: &WebTaskRecord) -> Self {
+        Self::new(record.user_id, &record.session_id)
+    }
+}
 
 fn log_store_query(
     operation: &'static str,
@@ -51,6 +96,44 @@ fn log_store_query(
     );
 }
 
+fn log_task_write_front(
+    operation: &'static str,
+    started_at: Instant,
+    user_id: i64,
+    session_id: &str,
+    task_id: &str,
+) {
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        operation,
+        user_id,
+        session_id,
+        task_id,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web task write-front latency"
+    );
+}
+
+fn log_task_cache(
+    operation: &'static str,
+    started_at: Instant,
+    user_id: i64,
+    session_id: &str,
+    task_id: Option<&str>,
+    hit: bool,
+) {
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        operation,
+        user_id,
+        session_id,
+        task_id = ?task_id,
+        hit,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web task cache latency"
+    );
+}
+
 fn is_initial_task_without_progress(record: &WebTaskRecord) -> bool {
     record.status == TaskStatus::Running
         && record.last_event_seq == 0
@@ -61,11 +144,27 @@ fn is_initial_task_without_progress(record: &WebTaskRecord) -> bool {
         && record.pending_user_input.is_none()
 }
 
+fn task_write_front_cache() -> Cache<TaskCacheKey, WebTaskRecord> {
+    Cache::builder()
+        .max_capacity(TASK_WRITE_FRONT_CACHE_MAX_CAPACITY)
+        .time_to_live(TASK_WRITE_FRONT_CACHE_TTL)
+        .build()
+}
+
+fn task_session_write_front_cache() -> Cache<TaskSessionCacheKey, ()> {
+    Cache::builder()
+        .max_capacity(TASK_WRITE_FRONT_CACHE_MAX_CAPACITY)
+        .time_to_live(TASK_WRITE_FRONT_CACHE_TTL)
+        .build()
+}
+
 /// SQLx-backed implementation of [`WebUiStore`].
 #[derive(Clone)]
 pub struct SqlxWebUiStore {
     storage: Arc<SqlxStorage>,
     max_task_file_bytes: u64,
+    task_cache: Cache<TaskCacheKey, WebTaskRecord>,
+    task_session_cache: Cache<TaskSessionCacheKey, ()>,
 }
 
 /// Row counts removed by one bounded SQLx web retention cleanup pass.
@@ -80,10 +179,7 @@ impl SqlxWebUiStore {
     /// Creates a web store from the shared SQLx storage handle.
     #[must_use]
     pub fn new(storage: Arc<SqlxStorage>) -> Self {
-        Self {
-            storage,
-            max_task_file_bytes: max_task_file_bytes_from_env(),
-        }
+        Self::with_max_task_file_bytes(storage, max_task_file_bytes_from_env())
     }
 
     /// Creates a web store with an explicit task-file size limit.
@@ -92,6 +188,8 @@ impl SqlxWebUiStore {
         Self {
             storage,
             max_task_file_bytes,
+            task_cache: task_write_front_cache(),
+            task_session_cache: task_session_write_front_cache(),
         }
     }
 
@@ -401,6 +499,218 @@ impl SqlxWebUiStore {
             None,
             None,
         );
+        Ok(())
+    }
+
+    async fn cache_task_record(&self, record: &WebTaskRecord) {
+        self.task_cache
+            .insert(TaskCacheKey::from_record(record), record.clone())
+            .await;
+        self.task_session_cache
+            .insert(TaskSessionCacheKey::from_record(record), ())
+            .await;
+    }
+
+    async fn save_initial_task_write_front(&self, record: WebTaskRecord) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
+        let started_at = Instant::now();
+        self.cache_task_record(&record).await;
+        log_task_write_front(
+            "save_task.write_front_cached",
+            started_at,
+            record.user_id,
+            &record.session_id,
+            &record.task_id,
+        );
+
+        let store = self.clone();
+        tokio::spawn(async move {
+            store.flush_initial_task_with_retry(record).await;
+        });
+
+        Ok(())
+    }
+
+    async fn flush_initial_task_with_retry(&self, record: WebTaskRecord) {
+        for attempt in 1..=TASK_WRITE_BEHIND_MAX_ATTEMPTS {
+            let started_at = Instant::now();
+            let result = self.insert_initial_task_record(&record).await;
+            match result {
+                Ok(()) => {
+                    tracing::info!(
+                        target: WEB_LATENCY_TARGET,
+                        operation = "save_task.write_behind_flushed",
+                        user_id = record.user_id,
+                        session_id = %record.session_id,
+                        task_id = %record.task_id,
+                        attempt,
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "web task write-behind flush completed"
+                    );
+                    return;
+                }
+                Err(error) if attempt < TASK_WRITE_BEHIND_MAX_ATTEMPTS => {
+                    tracing::warn!(
+                        target: WEB_LATENCY_TARGET,
+                        operation = "save_task.write_behind_retry",
+                        user_id = record.user_id,
+                        session_id = %record.session_id,
+                        task_id = %record.task_id,
+                        attempt,
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        error = %error,
+                        "web task write-behind flush failed; retrying"
+                    );
+                    tokio::time::sleep(TASK_WRITE_BEHIND_RETRY_DELAY).await;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: WEB_LATENCY_TARGET,
+                        operation = "save_task.write_behind_failed",
+                        user_id = record.user_id,
+                        session_id = %record.session_id,
+                        task_id = %record.task_id,
+                        attempt,
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        error = %error,
+                        "web task write-behind flush failed permanently"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn insert_initial_task_record(&self, record: &WebTaskRecord) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
+        let status = enum_to_sql(&record.status, "task status")?;
+        let attachments = json_value(&record.attachments, "task attachments")?;
+        let pending_user_input = optional_json(&record.pending_user_input, "pending user input")?;
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
+            r#"
+            INSERT INTO web_tasks (
+                user_id, session_id, task_id, version_group_id, version_index,
+                parent_task_id, status, input_markdown, attachments, input_edited_at,
+                final_response_markdown, error_message, pending_user_input, last_event_seq,
+                schema_version, created_at, started_at, updated_at, finished_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            ON CONFLICT (user_id, session_id, task_id) DO NOTHING
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.session_id)
+        .bind(&record.task_id)
+        .bind(&record.version_group_id)
+        .bind(u32_to_i32(record.version_index, "task version_index")?)
+        .bind(&record.parent_task_id)
+        .bind(status)
+        .bind(&record.input_markdown)
+        .bind(attachments)
+        .bind(record.input_edited_at)
+        .bind(&record.final_response_markdown)
+        .bind(&record.error_message)
+        .bind(pending_user_input)
+        .bind(u64_to_i64(record.last_event_seq, "last_event_seq")?)
+        .bind(u32_to_i32(
+            record.schema_version,
+            "web task schema_version",
+        )?)
+        .bind(record.created_at)
+        .bind(record.started_at)
+        .bind(record.updated_at)
+        .bind(record.finished_at)
+        .execute(self.pool())
+        .await
+        .map_err(db_error)?;
+        log_store_query(
+            "save_task.write_behind_insert_initial",
+            started_at,
+            Some(record.user_id),
+            Some(&record.session_id),
+            Some(&record.task_id),
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
+
+        self.save_task_progress(record).await
+    }
+
+    async fn upsert_task_record(&self, record: &WebTaskRecord) -> WebUiStoreResult<()> {
+        record.validate_web_record()?;
+        let status = enum_to_sql(&record.status, "task status")?;
+        let attachments = json_value(&record.attachments, "task attachments")?;
+        let pending_user_input = optional_json(&record.pending_user_input, "pending user input")?;
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
+            r#"
+            INSERT INTO web_tasks (
+                user_id, session_id, task_id, version_group_id, version_index,
+                parent_task_id, status, input_markdown, attachments, input_edited_at,
+                final_response_markdown, error_message, pending_user_input, last_event_seq,
+                schema_version, created_at, started_at, updated_at, finished_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            ON CONFLICT (user_id, session_id, task_id) DO UPDATE SET
+                version_group_id = EXCLUDED.version_group_id,
+                version_index = EXCLUDED.version_index,
+                parent_task_id = EXCLUDED.parent_task_id,
+                status = EXCLUDED.status,
+                input_markdown = EXCLUDED.input_markdown,
+                attachments = EXCLUDED.attachments,
+                input_edited_at = EXCLUDED.input_edited_at,
+                final_response_markdown = EXCLUDED.final_response_markdown,
+                error_message = EXCLUDED.error_message,
+                pending_user_input = EXCLUDED.pending_user_input,
+                last_event_seq = GREATEST(web_tasks.last_event_seq, EXCLUDED.last_event_seq),
+                schema_version = EXCLUDED.schema_version,
+                started_at = EXCLUDED.started_at,
+                updated_at = EXCLUDED.updated_at,
+                finished_at = EXCLUDED.finished_at
+            "#,
+        )
+        .bind(record.user_id)
+        .bind(&record.session_id)
+        .bind(&record.task_id)
+        .bind(&record.version_group_id)
+        .bind(u32_to_i32(record.version_index, "task version_index")?)
+        .bind(&record.parent_task_id)
+        .bind(status)
+        .bind(&record.input_markdown)
+        .bind(attachments)
+        .bind(record.input_edited_at)
+        .bind(&record.final_response_markdown)
+        .bind(&record.error_message)
+        .bind(pending_user_input)
+        .bind(u64_to_i64(record.last_event_seq, "last_event_seq")?)
+        .bind(u32_to_i32(
+            record.schema_version,
+            "web task schema_version",
+        )?)
+        .bind(record.created_at)
+        .bind(record.started_at)
+        .bind(record.updated_at)
+        .bind(record.finished_at)
+        .execute(self.pool())
+        .await
+        .map_err(db_error)?;
+        log_store_query(
+            "save_task",
+            started_at,
+            Some(record.user_id),
+            Some(&record.session_id),
+            Some(&record.task_id),
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
+
+        self.save_task_progress(record).await?;
+        self.cache_task_record(record).await;
         Ok(())
     }
 }
@@ -817,76 +1127,11 @@ impl WebUiStore for SqlxWebUiStore {
     }
 
     async fn save_task(&self, record: WebTaskRecord) -> WebUiStoreResult<()> {
-        record.validate_web_record()?;
-        let status = enum_to_sql(&record.status, "task status")?;
-        let attachments = json_value(&record.attachments, "task attachments")?;
-        let pending_user_input = optional_json(&record.pending_user_input, "pending user input")?;
-        let started_at = Instant::now();
-        let result = query::<Postgres>(
-            r#"
-            INSERT INTO web_tasks (
-                user_id, session_id, task_id, version_group_id, version_index,
-                parent_task_id, status, input_markdown, attachments, input_edited_at,
-                final_response_markdown, error_message, pending_user_input, last_event_seq,
-                schema_version, created_at, started_at, updated_at, finished_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                    $11, $12, $13, $14, $15, $16, $17, $18, $19)
-            ON CONFLICT (user_id, session_id, task_id) DO UPDATE SET
-                version_group_id = EXCLUDED.version_group_id,
-                version_index = EXCLUDED.version_index,
-                parent_task_id = EXCLUDED.parent_task_id,
-                status = EXCLUDED.status,
-                input_markdown = EXCLUDED.input_markdown,
-                attachments = EXCLUDED.attachments,
-                input_edited_at = EXCLUDED.input_edited_at,
-                final_response_markdown = EXCLUDED.final_response_markdown,
-                error_message = EXCLUDED.error_message,
-                pending_user_input = EXCLUDED.pending_user_input,
-                last_event_seq = GREATEST(web_tasks.last_event_seq, EXCLUDED.last_event_seq),
-                schema_version = EXCLUDED.schema_version,
-                started_at = EXCLUDED.started_at,
-                updated_at = EXCLUDED.updated_at,
-                finished_at = EXCLUDED.finished_at
-            "#,
-        )
-        .bind(record.user_id)
-        .bind(&record.session_id)
-        .bind(&record.task_id)
-        .bind(&record.version_group_id)
-        .bind(u32_to_i32(record.version_index, "task version_index")?)
-        .bind(&record.parent_task_id)
-        .bind(status)
-        .bind(&record.input_markdown)
-        .bind(attachments)
-        .bind(record.input_edited_at)
-        .bind(&record.final_response_markdown)
-        .bind(&record.error_message)
-        .bind(pending_user_input)
-        .bind(u64_to_i64(record.last_event_seq, "last_event_seq")?)
-        .bind(u32_to_i32(
-            record.schema_version,
-            "web task schema_version",
-        )?)
-        .bind(record.created_at)
-        .bind(record.started_at)
-        .bind(record.updated_at)
-        .bind(record.finished_at)
-        .execute(self.pool())
-        .await
-        .map_err(db_error)?;
-        log_store_query(
-            "save_task",
-            started_at,
-            Some(record.user_id),
-            Some(&record.session_id),
-            Some(&record.task_id),
-            Some(result.rows_affected()),
-            None,
-            None,
-        );
+        if is_initial_task_without_progress(&record) {
+            return self.save_initial_task_write_front(record).await;
+        }
 
-        self.save_task_progress(&record).await
+        self.upsert_task_record(&record).await
     }
 
     async fn load_task(
@@ -895,10 +1140,36 @@ impl WebUiStore for SqlxWebUiStore {
         session_id: &str,
         task_id: &str,
     ) -> WebUiStoreResult<Option<WebTaskRecord>> {
+        let cache_started_at = Instant::now();
+        if let Some(record) = self
+            .task_cache
+            .get(&TaskCacheKey::new(user_id, session_id, task_id))
+            .await
+        {
+            log_task_cache(
+                "load_task.cache",
+                cache_started_at,
+                user_id,
+                session_id,
+                Some(task_id),
+                true,
+            );
+            return Ok(Some(record));
+        }
+        log_task_cache(
+            "load_task.cache",
+            cache_started_at,
+            user_id,
+            session_id,
+            Some(task_id),
+            false,
+        );
+
         let sql = task_select_sql(
             "WHERE t.user_id = $1 AND t.session_id = $2 AND t.task_id = $3",
             "",
         );
+        let started_at = Instant::now();
         let row = query::<Postgres>(&sql)
             .bind(user_id)
             .bind(session_id)
@@ -906,11 +1177,51 @@ impl WebUiStore for SqlxWebUiStore {
             .fetch_optional(self.pool())
             .await
             .map_err(db_error)?;
+        log_store_query(
+            "load_task",
+            started_at,
+            Some(user_id),
+            Some(session_id),
+            Some(task_id),
+            None,
+            None,
+            Some(row.is_some()),
+        );
 
-        row.as_ref().map(row_to_task).transpose()
+        let record = row.as_ref().map(row_to_task).transpose()?;
+        if let Some(record) = &record {
+            self.cache_task_record(record).await;
+        }
+        Ok(record)
     }
 
     async fn task_exists(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
+        let cache_started_at = Instant::now();
+        if self
+            .task_session_cache
+            .get(&TaskSessionCacheKey::new(user_id, session_id))
+            .await
+            .is_some()
+        {
+            log_task_cache(
+                "task_exists.cache",
+                cache_started_at,
+                user_id,
+                session_id,
+                None,
+                true,
+            );
+            return Ok(true);
+        }
+        log_task_cache(
+            "task_exists.cache",
+            cache_started_at,
+            user_id,
+            session_id,
+            None,
+            false,
+        );
+
         let started_at = Instant::now();
         let row = query::<Postgres>(
             r#"
@@ -936,7 +1247,13 @@ impl WebUiStore for SqlxWebUiStore {
             Some(row.is_some()),
         );
 
-        Ok(row.is_some())
+        let exists = row.is_some();
+        if exists {
+            self.task_session_cache
+                .insert(TaskSessionCacheKey::new(user_id, session_id), ())
+                .await;
+        }
+        Ok(exists)
     }
 
     async fn load_task_event_state(
@@ -945,6 +1262,34 @@ impl WebUiStore for SqlxWebUiStore {
         session_id: &str,
         task_id: &str,
     ) -> WebUiStoreResult<Option<WebTaskEventState>> {
+        let cache_started_at = Instant::now();
+        if let Some(record) = self
+            .task_cache
+            .get(&TaskCacheKey::new(user_id, session_id, task_id))
+            .await
+        {
+            log_task_cache(
+                "load_task_event_state.cache",
+                cache_started_at,
+                user_id,
+                session_id,
+                Some(task_id),
+                true,
+            );
+            return Ok(Some(WebTaskEventState {
+                status: record.status,
+                last_event_seq: record.last_event_seq,
+            }));
+        }
+        log_task_cache(
+            "load_task_event_state.cache",
+            cache_started_at,
+            user_id,
+            session_id,
+            Some(task_id),
+            false,
+        );
+
         let started_at = Instant::now();
         let row = query::<Postgres>(
             r#"

@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-web-first-message-write-behind.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after web transport RECON to reduce first-message latency; container crash data loss is acceptable, low latency is the priority, and DB can catch up asynchronously.
 Goal doc owner: Codex
-Last updated: 2026-06-07 13:48
+Last updated: 2026-06-07 14:12
 
 ## Objective
 
@@ -65,50 +65,50 @@ Out of scope:
   - Source: User accepted lower latency over strict immediate DB durability.
   - Acceptance: The task executor is spawned after the minimum required in-memory/task state is available; `save_session_task_update` or equivalent durable session update happens in background without blocking agent runtime entry.
   - Evidence required: code diff, runtime logs showing `core_executor_call_started` before background `save_session`, cargo check/clippy, and measured spawn latency.
-  - Status: in_progress
-  - Evidence collected: Checkpoint 3 implementation spawns the registered task immediately after `save_task`, then enqueues `save_session_task_update` in a background task with `session_task_update_background_*` latency logs. `reject_active_task` now checks in-memory runtime tasks first to cover the short window before durable `active_task_id` persistence. Runtime measurement after rebuild is still required before marking G3 verified.
+  - Status: verified
+  - Evidence collected: Checkpoint 3 implementation spawns the registered task immediately after `save_task`, then enqueues `save_session_task_update` in a background task with `session_task_update_background_*` latency logs. `reject_active_task` checks in-memory runtime tasks first to cover the short window before durable `active_task_id` persistence. User runtime log after rebuild showed `task_saved elapsed=587ms`, `task_spawned elapsed=588ms`, `core_executor_call_started` before `session_task_update_background_saved elapsed=718ms`, and `create_task total=588ms`.
 
 - G4: Moka-backed write-front cache and background DB flush exist for selected task/session writes
   - Source: User asked whether Moka can save results in RAM and asynchronously send to the DB later; user explicitly accepts crash loss.
   - Acceptance: The selected task/session records are inserted/updated in a bounded in-process cache first, queued for background Postgres flush, and readable by the web transport before flush completes. Flush errors are logged and retried or left visible in a simple pending state without blocking the agent hot path.
   - Evidence required: implementation diff, cache/queue latency logs, flush success/failure logs, focused tests or route/store tests, and runtime measurement.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 4 implementation adds Moka write-front caching for initial no-progress `save_task` records in SQLx web persistence, with background Postgres insert retries and cache reads for `load_task`, `load_task_event_state`, and session-level `task_exists` after cache warm-up. Runtime measurement after rebuild is still required before marking G4 verified.
 
 - G5: Before/after latency is documented with current logs
   - Source: User asks “что по цифрам будет?” and expects measured improvement.
   - Acceptance: This document records baseline and post-change timings for first-message create/spawn, including breakdown by phase.
   - Evidence required: summarized runtime logs without secrets, command outputs, and a before/after table.
   - Status: in_progress
-  - Evidence collected: Baseline and checkpoint 2 runtime numbers are recorded below. Checkpoint 3 runtime numbers are pending rebuild/run.
+  - Evidence collected: Baseline, checkpoint 2, and checkpoint 3 runtime numbers are recorded below. Checkpoint 4 runtime numbers are pending rebuild/run.
 
 - Q1: Prefer simple local changes
   - Source: Repository over-engineering guardrails and target personal use up to 2-3 users / 5 RPS.
   - Acceptance: No external queue/cache/service is introduced; solution uses existing Moka and tokio primitives only.
   - Evidence required: dependency diff review and implementation review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 4 uses existing `moka` plus `tokio::spawn` in the SQLx web store; no new dependency, service, queue, or storage backend was added.
 
 - Q2: Write-behind durability tradeoff is explicit
   - Source: User said container crash data loss is acceptable and DB can catch up later.
   - Acceptance: Code and docs do not pretend write-behind is crash-durable; user-visible behavior remains coherent for the running process, and logs make pending/background persistence observable.
   - Evidence required: implementation notes, runtime logs, and final documentation in this goal.
   - Status: in_progress
-  - Evidence collected: Checkpoint 3 makes session active-task persistence asynchronous after task spawn; this can lose the durable session marker if the container crashes before background save completes. In-process coherence is preserved by checking runtime running tasks before relying on the persisted session marker.
+  - Evidence collected: Checkpoint 3 makes session active-task persistence asynchronous after task spawn; this can lose the durable session marker if the container crashes before background save completes. In-process coherence is preserved by checking runtime running tasks before relying on the persisted session marker. Checkpoint 4 extends the accepted tradeoff to initial task records: the task is available from in-process Moka before the background DB insert completes, but a container crash before flush may lose that durable task row.
 
 - V1: Web profile validates
   - Source: Repository validation convention.
   - Acceptance: `cargo fmt`, `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`, and `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local` succeed after each checkpoint.
   - Evidence required: command output summary in Progress Log.
   - Status: verified
-  - Evidence collected: Commands passed on 2026-06-07 after observability and clippy config updates. Re-ran after checkpoint 2 SQLx hot-path changes and checkpoint 3 spawn-order changes: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
+  - Evidence collected: Commands passed on 2026-06-07 after observability and clippy config updates. Re-ran after checkpoint 2 SQLx hot-path changes and checkpoint 3 spawn-order changes: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`. Checkpoint 4 passed the same command suite plus `git diff --check`.
 
 - N1: Do not change unrelated transports or provider behavior
   - Source: User scoped the work to web transport focus.
   - Must preserve: Telegram transport behavior, provider behavior, sandbox backends, manager control plane, wiki memory semantics, and direct Gemini absence.
   - Evidence required: `git diff --name-only` review before each commit.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 code change is limited to `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`. Checkpoint 3 code change is limited to `crates/oxide-agent-transport-web/src/server/task_routes.rs` and `crates/oxide-agent-transport-web/src/session.rs`; docs update is limited to this goal document. `git diff --name-only` reviewed before commit.
+  - Evidence collected: Checkpoint 2 code change is limited to `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`. Checkpoint 3 code change is limited to `crates/oxide-agent-transport-web/src/server/task_routes.rs` and `crates/oxide-agent-transport-web/src/session.rs`. Checkpoint 4 code change is limited to `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`; docs update is limited to this goal document. `git diff --name-only` reviewed before commit.
 
 ## Baseline Numbers
 
@@ -142,6 +142,20 @@ Checkpoint 2 runtime sample after removing redundant hot DB calls:
 | `task_spawned` | 0 ms | -217 ms |
 | hot `ensure_user_row` before `save_task`/`save_session` | absent | removed |
 | initial `save_task_progress.delete_empty` | absent | removed |
+
+Checkpoint 3 runtime sample after spawning before background session update:
+
+| Segment | After checkpoint 3 | Delta from checkpoint 2 | Delta from baseline |
+|---|---:|---:|---:|
+| `create_task` total until response | 588 ms | -183 ms | -894 ms |
+| `session_loaded` | 198 ms | -15 ms | +14 ms |
+| `task_exists` | 183 ms | -27 ms | -4 ms |
+| `task_saved` route phase | 205 ms | -14 ms | -310 ms |
+| `session_task_update_saved` blocking phase | absent | removed | removed |
+| `session_task_update_background_saved` | 718 ms total / 130 ms phase | moved behind response | moved behind response |
+| `core_executor_call_started` | ~588 ms | ~-183 ms | ~-677 ms |
+| core `Starting agent task` | ~701 ms | ~-192 ms | ~-704 ms |
+| first LLM call start | ~1413 ms | ~-204 ms | ~-635 ms |
 
 Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains stable:
 
@@ -209,6 +223,7 @@ Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains s
 - 2026-06-07: Use existing `moka` in `oxide-agent-transport-web`; no new dependency or external cache service is justified.
 - 2026-06-07: Preserve explicit progress clearing for non-initial no-progress task saves while skipping the first-message no-op progress delete. This removes the hot round trip without broadening the semantic change more than needed.
 - 2026-06-07: When moving `active_task_id` persistence behind task spawn, preserve in-process busy-session behavior by checking runtime running tasks before the durable session marker. This avoids a duplicate-task race without reintroducing synchronous DB latency.
+- 2026-06-07: Start write-front at the narrowest hot write: initial no-progress `save_task`. Use cache-read-before-flush for task reads, but keep auth and unrelated persistence synchronous. Initial background insert uses `ON CONFLICT DO NOTHING` so a later synchronous task update cannot be overwritten by a delayed initial flush.
 
 ## Progress Log
 
@@ -228,10 +243,17 @@ Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains s
 
 - 2026-06-07 13:48: Checkpoint 3 code path implemented.
   - Changed: `api_create_task` now spawns the registered task immediately after `save_task`; `save_session_task_update` runs in a background task with explicit `session_task_update_background_*` logs; `reject_active_task` checks runtime running tasks before relying on persisted `active_task_id`.
-  - Evidence: Code and validation are complete. Runtime measurement is still pending after container rebuild; expected first-message response and agent-start latency should drop by roughly one remaining `save_session` DB round trip from the checkpoint 2 sample.
+  - Evidence: User runtime log after container rebuild showed `create_task total=588ms`, down from checkpoint 2 `771ms`; `task_spawned`/`core_executor_call_started` happened at `588ms`, before `session_task_update_background_saved` at `718ms`.
   - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
-  - Audit IDs updated: G3 in progress, Q2 in progress, V1 verified, N1 in progress.
-  - Next: Rebuild/run web stack and verify logs show `task_spawned`/`core_executor_call_started` before `session_task_update_background_saved`.
+  - Audit IDs updated: G3 verified, Q2 in progress, V1 verified, N1 in progress.
+  - Next: Checkpoint 4 — write-front initial task persistence with Moka and background DB flush.
+
+- 2026-06-07 14:12: Checkpoint 4 initial task write-front implemented.
+  - Changed: SQLx `save_task` now writes initial no-progress task records into bounded Moka caches and returns immediately; a background flush inserts the durable task row with up to three attempts. `load_task`, `load_task_event_state`, and warmed `task_exists` consult the task caches before Postgres. Non-initial task saves remain synchronous and refresh the cache.
+  - Evidence: Checkpoint 3 runtime log verified `create_task total=588ms`, `core_executor_call_started` before background `save_session`, and background session save at `718ms`; G3 is verified. Checkpoint 4 implementation evidence is code-level; runtime measurement is pending after rebuild.
+  - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
+  - Audit IDs updated: G3 verified, G4 in progress, G5 in progress, Q1 in progress, Q2 in progress, V1 verified, N1 in progress.
+  - Next: Commit checkpoint 4, then rebuild/run to verify `save_task.write_front_cached` replaces blocking `save_task` on first-message path.
 
 ## Risks and Blockers
 
