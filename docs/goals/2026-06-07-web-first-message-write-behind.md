@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-web-first-message-write-behind.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after web transport RECON to reduce first-message latency; container crash data loss is acceptable, low latency is the priority, and DB can catch up asynchronously.
 Goal doc owner: Codex
-Last updated: 2026-06-07 14:36
+Last updated: 2026-06-07 17:03
 
 ## Objective
 
@@ -73,7 +73,7 @@ Out of scope:
   - Acceptance: The selected task/session records are inserted/updated in a bounded in-process cache first, queued for background Postgres flush, and readable by the web transport before flush completes. Flush errors are logged and retried or left visible in a simple pending state without blocking the agent hot path.
   - Evidence required: implementation diff, cache/queue latency logs, flush success/failure logs, focused tests or route/store tests, and runtime measurement.
   - Status: in_progress
-  - Evidence collected: Checkpoint 4 implementation adds Moka write-front caching for initial no-progress `save_task` records in SQLx web persistence, with background Postgres insert retries and cache reads for `load_task`, `load_task_event_state`, and session-level `task_exists` after cache warm-up. User runtime log after rebuild showed `create_task total=393ms`, `save_task.write_front_cached=0ms`, cache hits for `load_task`/`load_task_event_state`, and background `save_task.write_behind_flushed` after response. Checkpoint 5 implementation adds session cache, `task_exists=false` cache for new sessions, and coalesces repeated initial write-front saves; runtime measurement is pending.
+  - Evidence collected: Checkpoint 4 implementation adds Moka write-front caching for initial no-progress `save_task` records in SQLx web persistence, with background Postgres insert retries and cache reads for `load_task`, `load_task_event_state`, and session-level `task_exists` after cache warm-up. User runtime log after rebuild showed `create_task total=393ms`, `save_task.write_front_cached=0ms`, cache hits for `load_task`/`load_task_event_state`, and background `save_task.write_behind_flushed` after response. Checkpoint 5 implementation adds session cache, `task_exists=false` cache for new sessions, and coalesces repeated initial write-front saves. Checkpoint 6 skips impossible durable memory/topic-AGENTS reads for freshly created `web-session-*` runtime sessions.
 
 - G5: Before/after latency is documented with current logs
   - Source: User asks “что по цифрам будет?” and expects measured improvement.
@@ -108,7 +108,7 @@ Out of scope:
   - Must preserve: Telegram transport behavior, provider behavior, sandbox backends, manager control plane, wiki memory semantics, and direct Gemini absence.
   - Evidence required: `git diff --name-only` review before each commit.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 code change is limited to `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`. Checkpoint 3 code change is limited to `crates/oxide-agent-transport-web/src/server/task_routes.rs` and `crates/oxide-agent-transport-web/src/session.rs`. Checkpoint 4 and checkpoint 5 code changes are limited to `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`; docs updates are limited to this goal document. `git diff --name-only` reviewed before commit.
+  - Evidence collected: Checkpoint 2 code change is limited to `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`. Checkpoint 3 code change is limited to `crates/oxide-agent-transport-web/src/server/task_routes.rs` and `crates/oxide-agent-transport-web/src/session.rs`. Checkpoint 4 and checkpoint 5 code changes are limited to `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`. Checkpoint 6 touches only web session runtime bootstrap and session create/materialization call sites. `git diff --name-only` reviewed before commit.
 
 ## Baseline Numbers
 
@@ -214,7 +214,13 @@ Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains s
    - Validation: runtime logs show `load_session.cache hit=true`, `task_exists.cache hit=true` returning the cached false value for a new session before the first task, no duplicate `save_task.write_behind_insert_initial` bursts, and `create_task` total in the expected warm `10-80ms` band.
    - Exit condition: first-message create/spawn path no longer blocks on Postgres when the session was created in the same process.
 
-6. Final measurement and audit
+6. Skip impossible fresh web-session durable bootstrap reads
+   - Audit IDs: G4, G5, Q1, V1, N1.
+   - Expected changes: when the API creates a brand-new `web-session-*`, skip the synchronous durable `load_agent_memory_for_flow` and `get_topic_agents_md` reads because no durable memory or topic AGENTS.md can exist for the just-generated context; keep normal hydration for runtime materialization after restart.
+   - Validation: focused tests for the skip path and restart hydration regression; runtime logs showing `durable_load_skipped=true` and near-zero `agent_memory_hydrated` / `topic_agents_md_injected` phases.
+   - Exit condition: cold session creation no longer spends `~428ms` on the two bootstrap reads.
+
+7. Final measurement and audit
    - Audit IDs: G5, Q1, Q2, V1, N1.
    - Expected changes: update this doc with before/after logs, final decisions, and remaining tradeoffs.
    - Validation: final command suite and `git diff --name-only` scope review.
@@ -247,6 +253,7 @@ Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains s
 - 2026-06-07: Start write-front at the narrowest hot write: initial no-progress `save_task`. Use cache-read-before-flush for task reads, but keep auth and unrelated persistence synchronous. Initial background insert uses `ON CONFLICT DO NOTHING` so a later synchronous task update cannot be overwritten by a delayed initial flush.
 - 2026-06-07: After checkpoint 4 runtime logs showed duplicate initial write-front flushes, keep the broad RAM-first behavior but add a per-task coalescing marker so repeated no-progress saves update cache without spawning more background inserts.
 - 2026-06-07: Cache `task_exists=false` only from known new-session state or direct SQL fallback; do not infer no tasks from arbitrary later session records with no active task marker.
+- 2026-06-07: For freshly generated `web-session-*` scopes, skip durable memory and topic AGENTS.md reads during initial runtime creation. Existing-session materialization must keep normal hydration so restart recovery remains correct.
 
 ## Progress Log
 
@@ -284,6 +291,13 @@ Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains s
   - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
   - Audit IDs updated: G4 in progress, G5 in progress, Q1 in progress, Q2 in progress, N1 in progress.
   - Next: Commit checkpoint 5, then rebuild/run to verify `load_session` and `task_exists` leave the blocking first-message path.
+
+- 2026-06-07 17:03: Checkpoint 6 fresh web-session durable bootstrap skip implemented.
+  - Changed: API-created fresh `web-session-*` runtime sessions now skip initial durable memory and topic AGENTS.md reads, while runtime materialization after restart keeps the normal hydration path. Latency logs include `durable_load_skipped` on `agent_memory_hydrated` and `topic_agents_md_injected` phases.
+  - Evidence: User cold-start runtime log after Core-5 showed `runtime create total=428ms`, split into `agent_memory_hydrated=219ms` and `topic_agents_md_injected=208ms`, before the task hot path. Checkpoint 6 targets those two cold reads only.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local fresh_web_session_can_skip_initial_durable_bootstrap_reads`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local web_session_hydrates_agent_memory_after_manager_restart`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local create_session_bootstraps_topic_agents_md_into_memory`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
+  - Audit IDs updated: G4 in progress pending runtime after rebuild, G5 in progress, Q1 in progress, V1 verified, N1 in progress.
+  - Next: Rebuild/run and verify fresh session runtime creation drops from `428ms` to near-zero for the skipped phases.
 
 ## Risks and Blockers
 

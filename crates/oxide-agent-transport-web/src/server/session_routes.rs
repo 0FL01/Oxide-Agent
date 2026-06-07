@@ -320,6 +320,7 @@ async fn create_session_for_request(
                 model_selection: model_selection.clone(),
                 agent_profile_id: agent_profile_id.clone(),
                 execution_profile,
+                skip_fresh_durable_bootstrap: true,
             },
         )
         .await;

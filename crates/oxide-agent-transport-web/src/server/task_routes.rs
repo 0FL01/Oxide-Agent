@@ -1422,6 +1422,7 @@ async fn materialize_runtime_session(state: &AppState, user_id: i64, session: &W
                     .or_else(|| Some(default_session_model_selection(state))),
                 agent_profile_id: session.agent_profile_id.clone(),
                 execution_profile,
+                skip_fresh_durable_bootstrap: false,
             },
         )
         .await;

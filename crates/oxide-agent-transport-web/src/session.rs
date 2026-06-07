@@ -104,6 +104,7 @@ pub struct WebSessionRuntimeOptions {
     pub model_selection: Option<ModelSelection>,
     pub agent_profile_id: Option<String>,
     pub execution_profile: Option<AgentExecutionProfile>,
+    pub skip_fresh_durable_bootstrap: bool,
 }
 
 /// Task metadata.
@@ -450,7 +451,8 @@ impl WebSessionManager {
     /// ## Initialization order
     ///
     /// 1. Create an empty `AgentSession` with stable scopes.
-    /// 2. Hydrate `AgentMemory` from durable storage (if available).
+    /// 2. Hydrate `AgentMemory` from durable storage (if available), except
+    ///    for newly-created fresh web sessions where no durable key can exist yet.
     /// 3. Restore volatile execution metadata derived from persisted memory.
     /// 4. Inject topic `AGENTS.md` only if the restored memory does not already
     ///    contain a pinned copy.
@@ -488,8 +490,11 @@ impl WebSessionManager {
             model_selection,
             agent_profile_id,
             execution_profile,
+            skip_fresh_durable_bootstrap,
         } = options;
         let has_execution_profile = execution_profile.is_some();
+        let skip_fresh_durable_bootstrap =
+            skip_fresh_durable_bootstrap && is_fresh_web_session_context(&context_key);
 
         let session_id_i64 = {
             use std::collections::hash_map::DefaultHasher;
@@ -530,15 +535,19 @@ impl WebSessionManager {
         phase_started_at = Instant::now();
 
         // 1. Hydrate persisted AgentMemory from durable storage.
-        //    This restores conversation history across backend restarts.
-        self.hydrate_agent_memory(
-            &mut session,
-            user_id,
-            &session_id,
-            &context_key,
-            &agent_flow_id,
-        )
-        .await;
+        //    This restores conversation history across backend restarts. Fresh
+        //    web sessions skip this read because their scoped memory key was
+        //    just created and cannot have a persisted snapshot yet.
+        if !skip_fresh_durable_bootstrap {
+            self.hydrate_agent_memory(
+                &mut session,
+                user_id,
+                &session_id,
+                &context_key,
+                &agent_flow_id,
+            )
+            .await;
+        }
         let hydrated_message_count = session.memory.get_messages().len();
         tracing::info!(
             target: WEB_LATENCY_TARGET,
@@ -547,6 +556,7 @@ impl WebSessionManager {
             context_key = %context_key,
             agent_flow_id = %agent_flow_id,
             message_count = hydrated_message_count,
+            durable_load_skipped = skip_fresh_durable_bootstrap,
             phase = "agent_memory_hydrated",
             phase_ms = phase_started_at.elapsed().as_millis(),
             elapsed_ms = started_at.elapsed().as_millis(),
@@ -555,22 +565,29 @@ impl WebSessionManager {
         phase_started_at = Instant::now();
 
         // 2. Inject topic AGENTS.md only if the restored memory does not
-        //    already contain a pinned copy from durable storage.
-        inject_topic_agents_md_for_session(
-            self.storage(),
+        //    already contain a pinned copy from durable storage. Fresh web
+        //    sessions skip this read because their unique context has no
+        //    topic-scoped AGENTS.md yet.
+        if !skip_fresh_durable_bootstrap {
+            inject_topic_agents_md_for_session(
+                self.storage(),
+                user_id,
+                context_key.clone(),
+                &mut session,
+            )
+            .await;
+        }
+        tracing::info!(
+            target: WEB_LATENCY_TARGET,
             user_id,
-            context_key.clone(),
-            &mut session,
-        )
-        .await;
-        log_session_create_phase(
-            user_id,
-            &session_id,
-            &context_key,
-            &agent_flow_id,
-            "topic_agents_md_injected",
-            started_at,
-            phase_started_at,
+            session_id = %session_id,
+            context_key = %context_key,
+            agent_flow_id = %agent_flow_id,
+            durable_load_skipped = skip_fresh_durable_bootstrap,
+            phase = "topic_agents_md_injected",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "web session runtime create latency"
         );
         phase_started_at = Instant::now();
 
@@ -1018,6 +1035,10 @@ fn derive_web_session_id(user_id: i64, session_id: &str) -> SessionId {
     SessionId::from(h.finish() as i64)
 }
 
+fn is_fresh_web_session_context(context_key: &str) -> bool {
+    context_key.starts_with("web-session-")
+}
+
 /// Agent memory checkpoint that delegates to the configured storage provider.
 struct StorageFlowCheckpoint {
     storage: Arc<dyn StorageProvider>,
@@ -1143,6 +1164,55 @@ mod tests {
             .get_messages()
             .iter()
             .any(|message| message.content.contains("Bootstrap instructions")));
+    }
+
+    #[tokio::test]
+    async fn fresh_web_session_can_skip_initial_durable_bootstrap_reads() {
+        let storage: Arc<dyn StorageProvider> = Arc::new(InMemoryStorage::new());
+        let manager = make_manager_with_storage(storage.clone());
+        let user_id = 78;
+        let session_id = "fresh-skip".to_string();
+        let context_key = "web-session-fresh-skip".to_string();
+        let agent_flow_id = "main".to_string();
+
+        let mut memory = AgentMemory::new(usize::MAX);
+        memory.add_message(AgentMessage::user_task("persisted task should not load"));
+        storage
+            .save_agent_memory_for_flow(
+                user_id,
+                context_key.clone(),
+                agent_flow_id.clone(),
+                &memory,
+            )
+            .await
+            .expect("memory should be saved");
+        storage
+            .upsert_topic_agents_md(UpsertTopicAgentsMdOptions {
+                user_id,
+                topic_id: context_key.clone(),
+                agents_md: "# Topic AGENTS\nShould not inject".to_string(),
+            })
+            .await
+            .expect("topic AGENTS.md should be stored");
+
+        manager
+            .create_session_with_model_selection(
+                user_id,
+                session_id.clone(),
+                context_key,
+                agent_flow_id,
+                WebSessionRuntimeOptions {
+                    skip_fresh_durable_bootstrap: true,
+                    ..WebSessionRuntimeOptions::default()
+                },
+            )
+            .await;
+
+        let executor_arc = resolve_executor_arc(&manager, &session_id).await;
+        let executor = executor_arc.read().await;
+
+        assert!(executor.session().memory.get_messages().is_empty());
+        assert!(executor.session().last_task.is_none());
     }
 
     #[tokio::test]
