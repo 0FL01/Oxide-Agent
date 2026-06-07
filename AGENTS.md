@@ -115,9 +115,10 @@ Default branch: `dev`.
 - LLM providers in `llm/providers/`; shared orchestration: `llm/client.rs`, `llm/capabilities.rs`, `llm/support/` (backoff, HTTP pooling, OpenAI compat), `llm/types.rs`.
 - Route failover: weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
-
 ### Tool providers
+
 - Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, crawl4ai-markdown, searxng, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- `webfetch_md` and `crawl4ai_markdown` are mutually exclusive at runtime: if `OXIDE_CRAWL4AI_BASE_URL` is set (or `OXIDE_CRAWL4AI_ENABLED=true`), only `crawl4ai_markdown` is registered; otherwise only `webfetch_md` is registered. Override with `WEBFETCH_MD_ENABLED=false` as a belt-and-braces disable.
 
 ## Configuration
 

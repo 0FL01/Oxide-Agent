@@ -723,13 +723,28 @@ impl ToolModule for StackLogsToolModule {
 pub struct WebFetchMdToolModule;
 
 #[cfg(feature = "tool-webfetch-md")]
+impl WebFetchMdToolModule {
+    fn provider(&self) -> Option<WebFetchMdProvider> {
+        if !crate::config::is_webfetch_md_enabled() {
+            tracing::debug!(
+                "webfetch_md disabled: Crawl4AI is configured or WEBFETCH_MD_ENABLED=false"
+            );
+            return None;
+        }
+        Some(WebFetchMdProvider::new())
+    }
+}
+
+#[cfg(feature = "tool-webfetch-md")]
 impl ToolModule for WebFetchMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/webfetch-md")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Arc::new(WebFetchMdProvider::new()).tool_runtime_executors()
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
@@ -738,13 +753,28 @@ impl ToolModule for WebFetchMdToolModule {
 pub struct Crawl4AiMarkdownToolModule;
 
 #[cfg(feature = "tool-crawl4ai-markdown")]
+impl Crawl4AiMarkdownToolModule {
+    fn provider(&self) -> Option<Crawl4AiMarkdownProvider> {
+        if !crate::config::is_crawl4ai_markdown_enabled() {
+            tracing::debug!(
+                "crawl4ai_markdown disabled: OXIDE_CRAWL4AI_BASE_URL is not set and OXIDE_CRAWL4AI_ENABLED is not true"
+            );
+            return None;
+        }
+        Some(Crawl4AiMarkdownProvider::new())
+    }
+}
+
+#[cfg(feature = "tool-crawl4ai-markdown")]
 impl ToolModule for Crawl4AiMarkdownToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/crawl4ai-markdown")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Arc::new(Crawl4AiMarkdownProvider::new()).tool_runtime_executors()
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
