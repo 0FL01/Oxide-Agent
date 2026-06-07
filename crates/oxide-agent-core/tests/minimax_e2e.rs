@@ -79,6 +79,7 @@ async fn test_minimax_simple_chat() -> Result<()> {
             max_tokens: 50,
             temperature: None,
             json_mode: false,
+            reasoning_effort: None,
         })
         .await;
 
@@ -153,6 +154,7 @@ async fn test_minimax_single_tool_call() -> Result<()> {
             max_tokens: 1024,
             temperature: None,
             json_mode: false,
+            reasoning_effort: None,
         })
         .await;
 
@@ -236,6 +238,7 @@ async fn test_minimax_tool_call_with_result() -> Result<()> {
             max_tokens: 1024,
             temperature: None,
             json_mode: false,
+            reasoning_effort: None,
         })
         .await;
 
@@ -294,6 +297,7 @@ async fn test_minimax_tool_call_with_result() -> Result<()> {
             max_tokens: 1024,
             temperature: None,
             json_mode: false,
+            reasoning_effort: None,
         })
         .await;
 
@@ -370,6 +374,7 @@ async fn test_minimax_multiple_tool_calls_parallel() -> Result<()> {
             max_tokens: 1024,
             temperature: None,
             json_mode: false,
+            reasoning_effort: None,
         })
         .await;
 
@@ -432,6 +437,7 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
             max_tokens: 1024,
             temperature: None,
             json_mode: false,
+            reasoning_effort: None,
         })
         .await;
 
@@ -482,6 +488,7 @@ async fn test_minimax_parallel_tool_results() -> Result<()> {
             max_tokens: 1024,
             temperature: None,
             json_mode: false,
+            reasoning_effort: None,
         })
         .await;
 

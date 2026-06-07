@@ -1223,6 +1223,7 @@ mod tests {
         let response = llm
             .chat_with_tools_single_attempt_for_model_info(
                 "You are helpful.",
+                "",
                 &[],
                 &[],
                 &model,

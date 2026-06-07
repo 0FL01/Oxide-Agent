@@ -89,6 +89,7 @@ async fn test_zai_tool_calling_integration() -> Result<()> {
             max_tokens: 1024,
             temperature: None,
             json_mode: false,
+            reasoning_effort: None,
         })
         .await;
 

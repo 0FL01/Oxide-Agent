@@ -2842,6 +2842,7 @@ async fn api_tasks_are_auth_scoped_and_persist_final_response() {
         axum::extract::Path((session_id.clone(), task_id.clone())),
         axum::extract::Query(TaskEventsQuery {
             after_seq: Some(0),
+            before_seq: None,
             limit: Some(200),
         }),
     )
