@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-core-prepare-execution-latency.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after web first-message latency was reduced from `1482ms` to `~0.55ms`; remaining first-LLM delay is now inside core `prepare_execution` and pre-LLM runner work.
 Goal doc owner: Codex
-Last updated: 2026-06-07 15:09
+Last updated: 2026-06-07 15:25
 
 ## Objective
 
@@ -42,7 +42,8 @@ Out of scope:
 - Remaining measured path from the same runtime sample:
   - `core_executor_call_started -> Starting agent task`: `~113ms`.
   - `Starting agent task -> first LLM call`: `~617ms`.
-  - Existing aggregate core log: `prepare_ms=601`.
+- Existing aggregate core log was `prepare_ms=601`; after Core-1 runtime verification the current sample showed `prepare_ms=688`.
+- Core-1 runtime evidence showed `wiki_context_rendered=617ms` out of `prepare_ms=688`, while `wiki_context_available=false` and `wiki_context_chars=0`.
 - Current aggregate prepare log is emitted in `crates/oxide-agent-core/src/agent/executor/execution.rs:227`.
 - `prepare_execution` starts at `crates/oxide-agent-core/src/agent/executor/execution.rs:393` and includes tool registry/spec collection, wiki context, prompt assembly, memory conversion, and runner config.
 - Wiki context assembly starts at `crates/oxide-agent-core/src/agent/executor/execution.rs:466`, calls `WikiContextAssembler::assemble_for_context` in `crates/oxide-agent-core/src/agent/wiki_memory/context.rs:61`, and creates a fresh `WikiSessionCache` per prepare.
@@ -54,22 +55,22 @@ Out of scope:
   - Source: User asked for RECON and a plan because `prepare_execution: 601ms` is now the dominant delay before first LLM call.
   - Acceptance: INFO logs under `oxide_agent_core::agent_latency` show phase-level timings for model route resolution, tool runtime registry build, tool specs collection, wiki context rendering, prompt assembly, memory conversion, and final prepare completion.
   - Evidence required: code diff, successful Rust validation, and runtime log showing the new phase logs with `phase_ms` and `elapsed_ms`.
-  - Status: in_progress
-  - Evidence collected: Core-1 implementation adds `oxide_agent_core::agent_latency` INFO phase logs inside `prepare_execution` for `prepare_started`, `todos_snapshot_created`, `model_routes_resolved`, `tool_runtime_registry_built`, `tool_specs_collected`, `structured_output_resolved`, `wiki_context_rendered`, `prompt_instructions_resolved`, `system_prompt_assembled`, `memory_messages_converted`, `runner_limits_resolved`, and `prepare_assembled`. Validation passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`. Runtime log evidence is still pending after rebuild.
+  - Status: verified
+  - Evidence collected: Core-1 implementation adds `oxide_agent_core::agent_latency` INFO phase logs inside `prepare_execution` for `prepare_started`, `todos_snapshot_created`, `model_routes_resolved`, `tool_runtime_registry_built`, `tool_specs_collected`, `structured_output_resolved`, `wiki_context_rendered`, `prompt_instructions_resolved`, `system_prompt_assembled`, `memory_messages_converted`, `runner_limits_resolved`, and `prepare_assembled`. Validation passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`. User runtime log after rebuild showed `tool_runtime_registry_built=65ms`, `wiki_context_rendered=617ms`, `system_prompt_assembled=4ms`, `prepare_assembled=688ms`, and first LLM call at `~811ms` after web task creation.
 
 - G2: Wiki context latency is isolated
   - Source: RECON found `render_wiki_context_for_task` is the most likely source of `~601ms`, because it performs multiple storage reads and currently has no INFO sub-phase logs.
   - Acceptance: Runtime logs show whether wiki is skipped, empty, successful, or failed, plus duration, rendered byte count, and candidate/page counts or enough sub-phase markers to identify storage read cost.
   - Evidence required: code diff, runtime logs from a first-message run, and updated analysis in this document.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Core-1 runtime log isolated the aggregate wiki context wrapper as the dominant prepare sub-phase: `wiki_context_rendered=617ms`, `wiki_context_available=false`, and `wiki_context_chars=0`. Core-2 implementation adds wiki assembly sub-phase logs for global index load, context index load, candidate selection, individual candidate page loads, render completion, and cache/backend metrics. Runtime log evidence for these new sub-phases is pending after rebuild.
 
 - G3: Dominant core bottleneck is identified from real logs
   - Source: User wants the next action based on truth, not assumptions.
   - Acceptance: This document records runtime timings after Core-1/Core-2 logs and names the dominant sub-phase by measured evidence.
   - Evidence required: user or local runtime log excerpt with phase timings and before/after comparison against the `prepare_ms=601` sample.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Core-1 runtime log shows wiki context wrapper dominates current prepare latency: `617ms` of `688ms` (`~89.7%`). Core-2 sub-phase logs are needed to decide whether to cache, skip, or otherwise optimize specific wiki storage reads.
 
 - G4: Selected core optimization is implemented only after measurement
   - Source: Repository guidance forbids over-engineering; current evidence supports logging first, then the smallest fix.
@@ -83,7 +84,7 @@ Out of scope:
   - Acceptance: Core/runtime remain transport-agnostic; prompt dynamic blocks stay at the end; no direct Google Gemini provider is introduced; no new external infrastructure is added.
   - Evidence required: diff review and validation commands.
   - Status: in_progress
-  - Evidence collected: Core-1 only adds INFO latency logging in `crates/oxide-agent-core/src/agent/executor/execution.rs`; it does not change prompt assembly order, tool registration, wiki behavior, provider routing, transport boundaries, or add dependencies. Validation passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
+  - Evidence collected: Core-1 only adds INFO latency logging in `crates/oxide-agent-core/src/agent/executor/execution.rs`; it does not change prompt assembly order, tool registration, wiki behavior, provider routing, transport boundaries, or add dependencies. Core-2 adds INFO timing inside wiki context assembly without changing candidate selection, page loading, rendering, prompt assembly order, or storage semantics. Core-1 and Core-2 validation passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
 
 - N1: Web transport checkpoint remains closed
   - Source: CP5 runtime evidence proved web task creation is no longer bottleneck.
@@ -136,6 +137,7 @@ Out of scope:
 - 2026-06-07: Treat web first-message optimization as complete for this goal. CP5 reduced `create_task` from `1482ms` to `~0.55ms`; remaining delay is core-side.
 - 2026-06-07: Start with observability, not optimization. `prepare_ms=601` is aggregate and several plausible contributors exist; optimizing without sub-phase logs risks changing the wrong subsystem.
 - 2026-06-07: Prefer the smallest measured fix. No new crates/services/queues are justified.
+- 2026-06-07: Core-1 runtime evidence identifies the wiki context wrapper as the dominant sub-phase (`617ms` of `688ms`) even when rendered wiki context is empty. Do not optimize broadly yet; first split wiki assembly into storage and render sub-phases.
 
 ## Progress Log
 
@@ -152,6 +154,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
   - Audit IDs updated: G1 in progress, Q1 in progress, N1 in progress.
   - Next: Collect runtime logs after rebuild to verify G1 and decide whether Core-2 wiki sub-phase logging is still needed.
+
+- 2026-06-07 15:25: Core-2 wiki context sub-phase logging implemented
+  - Changed: Added INFO timing in `crates/oxide-agent-core/src/agent/wiki_memory/context.rs` around wiki assembly start, global index load, context index load, candidate selection, per-candidate page loads, render completion, and cache/backend metrics.
+  - Evidence: Core-1 runtime log from user showed `wiki_context_rendered=617ms` of `prepare_assembled=688ms`, with `wiki_context_available=false`; Core-2 code now exposes the internal sub-phases needed to select the measured optimization.
+  - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
+  - Audit IDs updated: G1 verified, G2 in progress, G3 in progress, Q1 in progress.
+  - Next: Collect runtime logs after rebuild to determine whether the cost is global index load, context index load, candidate page loads, or render.
 
 ## Risks and Blockers
 

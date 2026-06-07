@@ -4,6 +4,10 @@ use super::CachedWikiPage;
 use crate::storage::StorageError;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
+use tracing::{info, warn};
+
+const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
 
 const CORE_CONTEXT_FILES: &[&str] = &[
     "overview.md",
@@ -64,38 +68,247 @@ impl WikiContextAssembler {
         context_key: &str,
         task: &str,
     ) -> Result<WikiRenderedContext, StorageError> {
+        let assembly_started_at = Instant::now();
+        let mut phase_started_at = assembly_started_at;
         let context_id = wiki_context_id(user_id, context_key);
-        let global_index = self.cache.load_global_index().await?;
-        let context_index = self.cache.load_context_index(&context_id).await?;
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            user_id,
+            context_key = %context_key,
+            context_id = %context_id,
+            task_chars = task.len(),
+            max_pages = self.config.max_pages,
+            max_context_bytes = self.config.max_context_bytes,
+            phase = "wiki_context_assembly_started",
+            elapsed_ms = assembly_started_at.elapsed().as_millis(),
+            "Agent wiki context latency"
+        );
+
+        let global_index = match self.cache.load_global_index().await {
+            Ok(page) => {
+                info!(
+                    target: AGENT_LATENCY_TARGET,
+                    user_id,
+                    context_key = %context_key,
+                    context_id = %context_id,
+                    page_chars = page.content.len(),
+                    phase = "wiki_global_index_loaded",
+                    phase_ms = phase_started_at.elapsed().as_millis(),
+                    elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                    "Agent wiki context latency"
+                );
+                page
+            }
+            Err(error) => {
+                warn!(
+                    target: AGENT_LATENCY_TARGET,
+                    user_id,
+                    context_key = %context_key,
+                    context_id = %context_id,
+                    error = %error,
+                    phase = "wiki_global_index_failed",
+                    phase_ms = phase_started_at.elapsed().as_millis(),
+                    elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                    "Agent wiki context latency"
+                );
+                return Err(error);
+            }
+        };
+        phase_started_at = Instant::now();
+
+        let context_index = match self.cache.load_context_index(&context_id).await {
+            Ok(page) => {
+                info!(
+                    target: AGENT_LATENCY_TARGET,
+                    user_id,
+                    context_key = %context_key,
+                    context_id = %context_id,
+                    page_chars = page.content.len(),
+                    phase = "wiki_context_index_loaded",
+                    phase_ms = phase_started_at.elapsed().as_millis(),
+                    elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                    "Agent wiki context latency"
+                );
+                page
+            }
+            Err(error) => {
+                warn!(
+                    target: AGENT_LATENCY_TARGET,
+                    user_id,
+                    context_key = %context_key,
+                    context_id = %context_id,
+                    error = %error,
+                    phase = "wiki_context_index_failed",
+                    phase_ms = phase_started_at.elapsed().as_millis(),
+                    elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                    "Agent wiki context latency"
+                );
+                return Err(error);
+            }
+        };
+        phase_started_at = Instant::now();
+
         let keywords = keywords(task);
         let candidates =
             select_candidates(&global_index.content, &context_index.content, &keywords);
+        let global_file_candidates = candidates
+            .iter()
+            .filter(|candidate| matches!(candidate, WikiCandidate::GlobalFile(_)))
+            .count();
+        let context_file_candidates = candidates
+            .iter()
+            .filter(|candidate| matches!(candidate, WikiCandidate::ContextFile(_)))
+            .count();
+        let context_page_candidates = candidates
+            .iter()
+            .filter(|candidate| matches!(candidate, WikiCandidate::ContextPage(_)))
+            .count();
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            user_id,
+            context_key = %context_key,
+            context_id = %context_id,
+            keyword_count = keywords.len(),
+            candidate_count = candidates.len(),
+            global_file_candidates,
+            context_file_candidates,
+            context_page_candidates,
+            phase = "wiki_candidates_selected",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = assembly_started_at.elapsed().as_millis(),
+            "Agent wiki context latency"
+        );
+        phase_started_at = Instant::now();
 
         let mut pages = Vec::new();
         let mut loaded_keys = Vec::new();
 
         for candidate in candidates.into_iter().take(self.config.max_pages) {
-            let page = match candidate {
-                WikiCandidate::GlobalFile(file) => self.cache.load_global_file(file).await?,
+            let page_started_at = Instant::now();
+            let (candidate_kind, candidate_name, page) = match candidate {
+                WikiCandidate::GlobalFile(file) => {
+                    let page = match self.cache.load_global_file(file).await {
+                        Ok(page) => page,
+                        Err(error) => {
+                            warn!(
+                                target: AGENT_LATENCY_TARGET,
+                                user_id,
+                                context_key = %context_key,
+                                context_id = %context_id,
+                                candidate_kind = "global_file",
+                                candidate_name = file,
+                                error = %error,
+                                phase = "wiki_candidate_load_failed",
+                                phase_ms = page_started_at.elapsed().as_millis(),
+                                elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                                "Agent wiki context latency"
+                            );
+                            return Err(error);
+                        }
+                    };
+                    ("global_file", file.to_string(), page)
+                }
                 WikiCandidate::ContextFile(file) => {
-                    self.cache.load_context_file(&context_id, file).await?
+                    let page = match self.cache.load_context_file(&context_id, file).await {
+                        Ok(page) => page,
+                        Err(error) => {
+                            warn!(
+                                target: AGENT_LATENCY_TARGET,
+                                user_id,
+                                context_key = %context_key,
+                                context_id = %context_id,
+                                candidate_kind = "context_file",
+                                candidate_name = file,
+                                error = %error,
+                                phase = "wiki_candidate_load_failed",
+                                phase_ms = page_started_at.elapsed().as_millis(),
+                                elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                                "Agent wiki context latency"
+                            );
+                            return Err(error);
+                        }
+                    };
+                    ("context_file", file.to_string(), page)
                 }
                 WikiCandidate::ContextPage(slug) => {
-                    self.cache.load_context_page(&context_id, &slug).await?
+                    let page = match self.cache.load_context_page(&context_id, &slug).await {
+                        Ok(page) => page,
+                        Err(error) => {
+                            warn!(
+                                target: AGENT_LATENCY_TARGET,
+                                user_id,
+                                context_key = %context_key,
+                                context_id = %context_id,
+                                candidate_kind = "context_page",
+                                candidate_name = %slug,
+                                error = %error,
+                                phase = "wiki_candidate_load_failed",
+                                phase_ms = page_started_at.elapsed().as_millis(),
+                                elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                                "Agent wiki context latency"
+                            );
+                            return Err(error);
+                        }
+                    };
+                    ("context_page", slug, page)
                 }
             };
+
+            info!(
+                target: AGENT_LATENCY_TARGET,
+                user_id,
+                context_key = %context_key,
+                context_id = %context_id,
+                candidate_kind,
+                candidate_name = %candidate_name,
+                found = page.is_some(),
+                page_chars = page.as_ref().map_or(0, |page| page.content.len()),
+                phase = "wiki_candidate_loaded",
+                phase_ms = page_started_at.elapsed().as_millis(),
+                elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                "Agent wiki context latency"
+            );
 
             if let Some(page) = page {
                 loaded_keys.push(page.key.clone());
                 pages.push(page);
             }
         }
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            user_id,
+            context_key = %context_key,
+            context_id = %context_id,
+            loaded_page_count = pages.len(),
+            loaded_key_count = loaded_keys.len(),
+            phase = "wiki_candidate_loads_completed",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = assembly_started_at.elapsed().as_millis(),
+            "Agent wiki context latency"
+        );
+        phase_started_at = Instant::now();
 
-        Ok(render_context(
-            pages,
-            loaded_keys,
-            self.config.max_context_bytes,
-        ))
+        let rendered = render_context(pages, loaded_keys, self.config.max_context_bytes);
+        let metrics = self.cache.metrics().await;
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            user_id,
+            context_key = %context_key,
+            context_id = %context_id,
+            rendered_empty = rendered.is_empty,
+            rendered_chars = rendered.text.len(),
+            rendered_key_count = rendered.loaded_keys.len(),
+            cache_hits = metrics.cache_hits,
+            cache_misses = metrics.cache_misses,
+            backend_gets = metrics.backend_gets,
+            bootstrap_pages = metrics.bootstrap_pages,
+            phase = "wiki_context_render_completed",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = assembly_started_at.elapsed().as_millis(),
+            "Agent wiki context latency"
+        );
+
+        Ok(rendered)
     }
 }
 
