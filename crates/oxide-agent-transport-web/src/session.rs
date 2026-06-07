@@ -901,6 +901,23 @@ impl WebSessionManager {
         self.running_tasks.read().await.get(task_id).cloned()
     }
 
+    /// Return an active in-memory running task for a session, if one exists.
+    pub async fn running_task_for_session(&self, session_id: &str) -> Option<String> {
+        let running_task_ids = self
+            .running_tasks
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let tasks = self.tasks.read().await;
+        running_task_ids.into_iter().find(|task_id| {
+            tasks.get(task_id).is_some_and(|meta| {
+                meta.session_id == session_id && meta.status == TaskStatus::Running
+            })
+        })
+    }
+
     /// Get task metadata.
     pub async fn get_task(&self, task_id: &str) -> Option<TaskMeta> {
         self.tasks.read().await.get(task_id).cloned()

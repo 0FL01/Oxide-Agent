@@ -377,6 +377,93 @@ async fn save_cancelled_session_task_status(
     save_session_record(state, session).await
 }
 
+struct BackgroundSessionTaskUpdate {
+    state: AppState,
+    user_id: i64,
+    session_id: String,
+    session: WebSessionRecord,
+    now: chrono::DateTime<chrono::Utc>,
+    task_id: String,
+    status: ApiTaskStatus,
+    preview: String,
+    should_auto_title: bool,
+    request_started_at: Instant,
+}
+
+fn spawn_session_task_update(update: BackgroundSessionTaskUpdate) {
+    let BackgroundSessionTaskUpdate {
+        state,
+        user_id,
+        session_id,
+        session,
+        now,
+        task_id,
+        status,
+        preview,
+        should_auto_title,
+        request_started_at,
+    } = update;
+
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "session_task_update_background_enqueued",
+        elapsed_ms = request_started_at.elapsed().as_millis(),
+        "web task create latency"
+    );
+
+    tokio::spawn(async move {
+        let phase_started_at = Instant::now();
+        tracing::info!(
+            target: WEB_LATENCY_TARGET,
+            user_id,
+            session_id = %session_id,
+            task_id = %task_id,
+            phase = "session_task_update_background_started",
+            elapsed_ms = request_started_at.elapsed().as_millis(),
+            "web task create latency"
+        );
+
+        let result =
+            save_session_task_update(&state, session, now, task_id.clone(), status, preview).await;
+
+        match result {
+            Ok(()) => {
+                tracing::info!(
+                    target: WEB_LATENCY_TARGET,
+                    user_id,
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    phase = "session_task_update_background_saved",
+                    phase_ms = phase_started_at.elapsed().as_millis(),
+                    elapsed_ms = request_started_at.elapsed().as_millis(),
+                    "web task create latency"
+                );
+                if should_auto_title && state.auto_title_enabled {
+                    auto_title::spawn_background_auto_title(state, user_id, session_id);
+                }
+            }
+            Err((status_code, Json(error))) => {
+                tracing::warn!(
+                    target: WEB_LATENCY_TARGET,
+                    user_id,
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    phase = "session_task_update_background_failed",
+                    status_code = status_code.as_u16(),
+                    error_code = ?error.error.code,
+                    error_message = %error.error.message,
+                    phase_ms = phase_started_at.elapsed().as_millis(),
+                    elapsed_ms = request_started_at.elapsed().as_millis(),
+                    "web task create latency"
+                );
+            }
+        }
+    });
+}
+
 async fn spawn_persisted_registered_task(
     state: &AppState,
     user_id: i64,
@@ -603,25 +690,6 @@ pub(crate) async fn api_create_task(
             now,
         );
     }
-    save_session_task_update(
-        &state,
-        session,
-        now,
-        task_id.clone(),
-        ApiTaskStatus::Running,
-        preview.clone(),
-    )
-    .await?;
-    log_create_task_phase(
-        user.user_id,
-        &session_id,
-        Some(&task_id),
-        "session_task_update_saved",
-        request_started_at,
-        phase_started_at,
-    );
-    phase_started_at = Instant::now();
-
     spawn_persisted_registered_task(
         &state,
         user.user_id,
@@ -643,9 +711,18 @@ pub(crate) async fn api_create_task(
         phase_started_at,
     );
 
-    if should_auto_title && state.auto_title_enabled {
-        auto_title::spawn_background_auto_title(state.clone(), user.user_id, session_id.clone());
-    }
+    spawn_session_task_update(BackgroundSessionTaskUpdate {
+        state: state.clone(),
+        user_id: user.user_id,
+        session_id: session_id.clone(),
+        session,
+        now,
+        task_id: task_id.clone(),
+        status: ApiTaskStatus::Running,
+        preview,
+        should_auto_title: should_auto_title && state.auto_title_enabled,
+        request_started_at,
+    });
 
     tracing::info!(
         target: WEB_LATENCY_TARGET,
@@ -1197,6 +1274,26 @@ pub(crate) async fn reject_active_task(
     session: &WebSessionRecord,
 ) -> Result<(), (StatusCode, Json<ErrorEnvelope>)> {
     let session_id = &session.session_id;
+    if let Some(active_task_id) = state
+        .session_manager
+        .running_task_for_session(session_id)
+        .await
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(
+                ErrorEnvelope::new(
+                    ErrorCode::SessionBusy,
+                    "The session already has an active runtime task.",
+                    false,
+                )
+                .with_details(
+                    serde_json::json!({ "task_id": active_task_id, "source": "runtime" }),
+                ),
+            ),
+        ));
+    }
+
     let Some(active_task_id) = session.active_task_id.clone() else {
         return Ok(());
     };
