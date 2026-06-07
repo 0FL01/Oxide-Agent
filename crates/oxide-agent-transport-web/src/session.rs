@@ -59,7 +59,7 @@ fn log_session_create_phase(
     started_at: Instant,
     phase_started_at: Instant,
 ) {
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id,
         session_id = %session_id,
@@ -549,7 +549,7 @@ impl WebSessionManager {
             .await;
         }
         let hydrated_message_count = session.memory.get_messages().len();
-        tracing::info!(
+        tracing::debug!(
             target: WEB_LATENCY_TARGET,
             user_id,
             session_id = %session_id,
@@ -577,7 +577,7 @@ impl WebSessionManager {
             )
             .await;
         }
-        tracing::info!(
+        tracing::debug!(
             target: WEB_LATENCY_TARGET,
             user_id,
             session_id = %session_id,
@@ -663,7 +663,7 @@ impl WebSessionManager {
         }
 
         self.registry.insert(sid, executor).await;
-        tracing::info!(
+        tracing::debug!(
             target: WEB_LATENCY_TARGET,
             user_id,
             session_id = %session_id,
@@ -701,7 +701,7 @@ impl WebSessionManager {
             started_at,
             phase_started_at,
         );
-        tracing::info!(
+        tracing::debug!(
             target: WEB_LATENCY_TARGET,
             user_id,
             session_id = %session_id,

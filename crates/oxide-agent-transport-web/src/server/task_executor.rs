@@ -22,7 +22,7 @@ use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
 
@@ -155,7 +155,7 @@ pub(crate) async fn spawn_registered_task(
         handles.insert(task_id, Arc::new(handle));
     }
 
-    info!(
+    debug!(
         target: WEB_LATENCY_TARGET,
         session_id = %session_id_for_log,
         task_id = %task_id_for_log,
@@ -175,7 +175,7 @@ async fn execute_agent_task(
     ctx: TaskExecutorCtx,
 ) {
     let executor_started_at = Instant::now();
-    info!(
+    debug!(
         target: WEB_LATENCY_TARGET,
         session_id = %session_id,
         task_id = %task_id,
@@ -208,7 +208,7 @@ async fn execute_agent_task(
             return;
         }
     };
-    info!(
+    debug!(
         target: WEB_LATENCY_TARGET,
         session_id = %session_id,
         task_id = %task_id,
@@ -227,7 +227,7 @@ async fn execute_agent_task(
             return;
         }
     };
-    info!(
+    debug!(
         target: WEB_LATENCY_TARGET,
         session_id = %session_id,
         task_id = %task_id,
@@ -241,7 +241,7 @@ async fn execute_agent_task(
         let lock_started_at = Instant::now();
         let mut executor = executor_arc.write().await;
         executor.session_mut().cancellation_token = (*cancellation_token).clone();
-        info!(
+        debug!(
             target: WEB_LATENCY_TARGET,
             session_id = %session_id,
             task_id = %task_id,
@@ -276,7 +276,7 @@ async fn execute_agent_task(
         agent_started_at_chrono,
         ctx.web_task.clone(),
     );
-    info!(
+    debug!(
         target: WEB_LATENCY_TARGET,
         session_id = %session_id,
         task_id = %task_id,
@@ -414,7 +414,7 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
 
         let result = {
             let executor_lock_started_at = Instant::now();
-            info!(
+            debug!(
                 target: WEB_LATENCY_TARGET,
                 session_id = %session_id,
                 task_id = %task_id,
@@ -426,7 +426,7 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
             let mut executor = executor_arc.write().await;
             let executor_lock_acquired_ms = Some(agent_started_at.elapsed().as_millis() as i64);
             record_executor_lock_acquired(&timeline_map, &task_id, executor_lock_acquired_ms).await;
-            info!(
+            debug!(
                 target: WEB_LATENCY_TARGET,
                 session_id = %session_id,
                 task_id = %task_id,
@@ -442,7 +442,7 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
                     effort,
                 } => {
                     let options = execution_options_from_effort(effort);
-                    info!(
+                    debug!(
                         target: WEB_LATENCY_TARGET,
                         session_id = %session_id,
                         task_id = %task_id,
@@ -458,7 +458,7 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
                 }
                 TaskRunRequest::ResumeUserInput { input, effort } => {
                     let options = execution_options_from_effort(effort);
-                    info!(
+                    debug!(
                         target: WEB_LATENCY_TARGET,
                         session_id = %session_id,
                         task_id = %task_id,

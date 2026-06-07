@@ -224,7 +224,7 @@ impl AgentExecutor {
         let mut prepared = self
             .prepare_execution(&task, progress_tx.as_ref(), options)
             .await;
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id = %task_id,
             model = %prepared.runner_config.model_name,
@@ -247,7 +247,7 @@ impl AgentExecutor {
                 compaction_controller: &self.compaction_controller,
             },
         );
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id = %task_id,
             timeout_secs = timeout_duration.as_secs(),
@@ -403,7 +403,7 @@ impl AgentExecutor {
             .current_task_id
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             memory_messages = self.session.memory.get_messages().len(),
@@ -414,7 +414,7 @@ impl AgentExecutor {
         );
 
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             phase = "todos_snapshot_created",
@@ -432,7 +432,7 @@ impl AgentExecutor {
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             model = %model.id,
@@ -447,7 +447,7 @@ impl AgentExecutor {
 
         let tool_runtime_registry =
             Arc::new(self.build_tool_runtime_registry(Arc::clone(&todos_arc), progress_tx));
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             phase = "tool_runtime_registry_built",
@@ -458,7 +458,7 @@ impl AgentExecutor {
         phase_started_at = Instant::now();
 
         let tools = tool_runtime_registry.specs();
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             tool_count = tools.len(),
@@ -470,7 +470,7 @@ impl AgentExecutor {
         phase_started_at = Instant::now();
 
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             structured_output,
@@ -482,7 +482,7 @@ impl AgentExecutor {
         phase_started_at = Instant::now();
 
         let wiki_context = self.render_wiki_context_for_task(task).await;
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             wiki_context_available = wiki_context.is_some(),
@@ -496,7 +496,7 @@ impl AgentExecutor {
 
         let prompt_instructions =
             effort_prompt_instructions(self.execution_profile.prompt_instructions(), options);
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             prompt_instructions_chars = prompt_instructions.as_ref().map_or(0, String::len),
@@ -516,7 +516,7 @@ impl AgentExecutor {
             wiki_context.as_deref(),
         )
         .await;
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             system_prompt_chars = system_prompt.base.len(),
@@ -530,7 +530,7 @@ impl AgentExecutor {
         phase_started_at = Instant::now();
 
         let messages = AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             source_message_count = self.session.memory.get_messages().len(),
@@ -561,7 +561,7 @@ impl AgentExecutor {
             .map_or_else(get_agent_search_limit, |minimum| {
                 get_agent_search_limit().max(minimum)
             });
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             max_iterations,
@@ -574,7 +574,7 @@ impl AgentExecutor {
             "Agent prepare execution latency"
         );
 
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id,
             model = %model.id,

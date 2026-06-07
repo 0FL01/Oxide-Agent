@@ -62,7 +62,7 @@ fn log_create_task_phase(
     request_started_at: Instant,
     phase_started_at: Instant,
 ) {
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id,
         session_id = %session_id,
@@ -404,7 +404,7 @@ fn spawn_session_task_update(update: BackgroundSessionTaskUpdate) {
         request_started_at,
     } = update;
 
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id,
         session_id = %session_id,
@@ -416,7 +416,7 @@ fn spawn_session_task_update(update: BackgroundSessionTaskUpdate) {
 
     tokio::spawn(async move {
         let phase_started_at = Instant::now();
-        tracing::info!(
+        tracing::debug!(
             target: WEB_LATENCY_TARGET,
             user_id,
             session_id = %session_id,
@@ -431,7 +431,7 @@ fn spawn_session_task_update(update: BackgroundSessionTaskUpdate) {
 
         match result {
             Ok(()) => {
-                tracing::info!(
+                tracing::debug!(
                     target: WEB_LATENCY_TARGET,
                     user_id,
                     session_id = %session_id,
@@ -592,7 +592,7 @@ pub(crate) async fn api_create_task(
     phase_started_at = Instant::now();
 
     let runtime_session_result = ensure_runtime_session(&state, user.user_id, &session).await;
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id = user.user_id,
         session_id = %session_id,
@@ -638,7 +638,7 @@ pub(crate) async fn api_create_task(
         .await
         .map_err(store_error_response)?;
     let is_first_task = !has_existing_tasks;
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id = user.user_id,
         session_id = %session_id,
@@ -724,7 +724,7 @@ pub(crate) async fn api_create_task(
         request_started_at,
     });
 
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id = user.user_id,
         session_id = %session_id,
@@ -1345,7 +1345,7 @@ async fn ensure_runtime_session(
         .await
         .is_some()
     {
-        tracing::info!(
+        tracing::debug!(
             target: WEB_LATENCY_TARGET,
             user_id,
             session_id = %session.session_id,
@@ -1358,7 +1358,7 @@ async fn ensure_runtime_session(
     }
 
     materialize_runtime_session(state, user_id, session).await;
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id,
         session_id = %session.session_id,
@@ -1395,7 +1395,7 @@ async fn materialize_runtime_session(state: &AppState, user_id: i64, session: &W
             None
         }
     };
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id,
         session_id = %session.session_id,
@@ -1426,7 +1426,7 @@ async fn materialize_runtime_session(state: &AppState, user_id: i64, session: &W
             },
         )
         .await;
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id,
         session_id = %session.session_id,

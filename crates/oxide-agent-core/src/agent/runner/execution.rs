@@ -8,14 +8,14 @@ use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_failure_summary::rewrite_tool_failure_messages;
 use anyhow::{anyhow, Result};
 use std::future::Future;
-use tracing::{debug, info};
+use tracing::debug;
 
 const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
 
 impl AgentRunner {
     /// Execute the agent loop until completion or error.
     pub async fn run(&mut self, ctx: &mut AgentRunnerContext<'_>) -> Result<AgentRunResult> {
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             task_id = %ctx.task_id,
             session_id = ?ctx.session_id,
@@ -52,7 +52,7 @@ impl AgentRunner {
                 .await?;
 
             if iteration == 0 {
-                info!(
+                debug!(
                     target: AGENT_LATENCY_TARGET,
                     task_id = %ctx.task_id,
                     iteration,

@@ -213,7 +213,7 @@ impl AgentRunner {
     ) -> Result<ChatResponse> {
         // Emit milestone on first LLM call of first iteration.
         if state.iteration == 0 {
-            info!(
+            debug!(
                 target: AGENT_LATENCY_TARGET,
                 task_id = %ctx.task_id,
                 iteration,

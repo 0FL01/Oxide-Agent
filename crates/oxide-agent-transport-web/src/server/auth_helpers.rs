@@ -281,7 +281,7 @@ pub(crate) async fn current_user_for_token_cached(
     let store_started_at = Instant::now();
     let (user, auth_session) =
         current_user_for_token(state.web_store.as_ref(), raw_session_token, now).await?;
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id = user.user_id,
         phase = "auth_cache_miss_store_load",
@@ -368,7 +368,7 @@ pub(crate) async fn load_owned_session(
         .await
         .map_err(store_error_response)?
         .ok_or_else(not_found_response)?;
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         user_id,
         session_id = %session_id,

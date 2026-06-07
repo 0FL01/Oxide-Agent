@@ -26,7 +26,7 @@ pub const AUTH_SESSION_TTL_SECS: i64 = 60 * 60 * 24 * 14;
 const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
 
 fn log_auth_store_phase(phase: &'static str, started_at: Instant, user_id: Option<i64>) {
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         phase,
         user_id = ?user_id,

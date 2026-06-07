@@ -101,7 +101,7 @@ fn log_store_query(
     row_count: Option<usize>,
     found: Option<bool>,
 ) {
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         operation,
         user_id = ?user_id,
@@ -122,7 +122,7 @@ fn log_task_write_front(
     session_id: &str,
     task_id: &str,
 ) {
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         operation,
         user_id,
@@ -141,7 +141,7 @@ fn log_task_cache(
     task_id: Option<&str>,
     hit: bool,
 ) {
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         operation,
         user_id,
@@ -160,7 +160,7 @@ fn log_session_cache(
     session_id: &str,
     hit: bool,
 ) {
-    tracing::info!(
+    tracing::debug!(
         target: WEB_LATENCY_TARGET,
         operation,
         user_id,
@@ -633,7 +633,7 @@ impl SqlxWebUiStore {
             let result = self.insert_initial_task_record(&record).await;
             match result {
                 Ok(()) => {
-                    tracing::info!(
+                    tracing::debug!(
                         target: WEB_LATENCY_TARGET,
                         operation = "save_task.write_behind_flushed",
                         user_id = record.user_id,

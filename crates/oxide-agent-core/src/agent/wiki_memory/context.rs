@@ -5,7 +5,7 @@ use crate::storage::StorageError;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
 
@@ -74,7 +74,7 @@ impl WikiContextAssembler {
         let assembly_started_at = Instant::now();
         let mut phase_started_at = assembly_started_at;
         let context_id = wiki_context_id(user_id, context_key);
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             user_id,
             context_key = %context_key,
@@ -93,7 +93,7 @@ impl WikiContextAssembler {
             if skip_reason == "fresh_web_session" {
                 self.cache.mark_context_empty(&context_id).await;
             }
-            info!(
+            debug!(
                 target: AGENT_LATENCY_TARGET,
                 user_id,
                 context_key = %context_key,
@@ -107,7 +107,7 @@ impl WikiContextAssembler {
                 elapsed_ms = assembly_started_at.elapsed().as_millis(),
                 "Agent wiki context latency"
             );
-            info!(
+            debug!(
                 target: AGENT_LATENCY_TARGET,
                 user_id,
                 context_key = %context_key,
@@ -129,7 +129,7 @@ impl WikiContextAssembler {
 
         let global_index = match self.cache.load_global_index().await {
             Ok(page) => {
-                info!(
+                debug!(
                     target: AGENT_LATENCY_TARGET,
                     user_id,
                     context_key = %context_key,
@@ -161,7 +161,7 @@ impl WikiContextAssembler {
 
         let context_index = match self.cache.load_context_index(&context_id).await {
             Ok(page) => {
-                info!(
+                debug!(
                     target: AGENT_LATENCY_TARGET,
                     user_id,
                     context_key = %context_key,
@@ -211,7 +211,7 @@ impl WikiContextAssembler {
             .iter()
             .filter(|candidate| matches!(candidate, WikiCandidate::ContextPage(_)))
             .count();
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             user_id,
             context_key = %context_key,
@@ -302,7 +302,7 @@ impl WikiContextAssembler {
                 }
             };
 
-            info!(
+            debug!(
                 target: AGENT_LATENCY_TARGET,
                 user_id,
                 context_key = %context_key,
@@ -322,7 +322,7 @@ impl WikiContextAssembler {
                 pages.push(page);
             }
         }
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             user_id,
             context_key = %context_key,
@@ -344,7 +344,7 @@ impl WikiContextAssembler {
         {
             self.cache.mark_context_empty(&context_id).await;
         }
-        info!(
+        debug!(
             target: AGENT_LATENCY_TARGET,
             user_id,
             context_key = %context_key,
