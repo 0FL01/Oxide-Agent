@@ -146,9 +146,10 @@ Default branch: `dev`.
 - `cargo clippy` before finishing. `cargo fmt` before committing.
 
 ### Testing
-- Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`).
+- Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`, `test_set_env()`, `test_remove_env()`).
 - Categories: hermetic, integration, snapshot (`insta`), property/fuzz (`proptest`).
 - E2E: `crates/oxide-agent-transport-web/tests/e2e.rs`.
+- Transport-specific profiles (e.g. `profile-web-embedded-opencode-local`) do not activate features in unrelated crates. `cargo test --workspace` will fail on crates whose modules are behind different feature gates. Use scoped `-p` for such profiles: `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`. Full and lite profiles work with `--workspace`.
 - The legacy modular shell guard layer was removed; use focused `cargo check`, `cargo test`, and Docker build checks for touched areas.
 
 ### Bwrap rootfs
