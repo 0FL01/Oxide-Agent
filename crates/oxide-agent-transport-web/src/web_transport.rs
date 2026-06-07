@@ -250,9 +250,10 @@ impl TaskEventLog {
     /// snapshot so late subscribers can read it via `last_progress_snapshot`.
     pub async fn notify_progress(&self, snapshot: ProgressSnapshot, last_seq: u64) {
         *self.last_progress_snapshot.write().await = Some(snapshot.clone());
-        let _ = self
-            .broadcast_tx
-            .send(TaskEventLogMessage::Progress { snapshot: Box::new(snapshot), last_seq });
+        let _ = self.broadcast_tx.send(TaskEventLogMessage::Progress {
+            snapshot: Box::new(snapshot),
+            last_seq,
+        });
     }
 
     /// Returns the latest status broadcast via `notify_status`, or `None`

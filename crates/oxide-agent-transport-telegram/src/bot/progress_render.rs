@@ -276,7 +276,9 @@ fn budget_state_label(state: oxide_agent_core::agent::compaction::BudgetState) -
 mod tests {
     use oxide_agent_core::agent::compaction::BudgetState;
     use oxide_agent_core::agent::loop_detection::LoopType;
-    use oxide_agent_core::agent::progress::{AgentEvent, AgentEventSource, ProgressState, TokenSnapshot};
+    use oxide_agent_core::agent::progress::{
+        AgentEvent, AgentEventSource, ProgressState, TokenSnapshot,
+    };
     use oxide_agent_core::agent::providers::{TodoItem, TodoList, TodoStatus};
     use oxide_agent_core::llm::TokenUsage;
 
