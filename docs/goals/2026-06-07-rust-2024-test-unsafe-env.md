@@ -46,8 +46,8 @@ Out of scope:
   - Source: RECON — need centralized unsafe wrappers.
   - Acceptance: `crates/oxide-agent-core/src/testing.rs` exports `pub fn test_set_env(key: &str, value: &str)` and `pub fn test_remove_env(key: &str)` with `#[track_caller]`, wrapping `unsafe { std::env::set_var/remove_var }`.
   - Evidence required: file read showing both functions with correct signatures and `#[track_caller]`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Both functions added at top of `testing.rs` with `#[track_caller]`, doc comments, `unsafe` wrappers. `cargo check -p oxide-agent-core --features profile-full` passes.
 
 - G2: All `std::env::set_var` / `std::env::remove_var` calls in test code replaced with helpers
   - Source: RECON — 249 call sites across 10 files.
@@ -217,6 +217,12 @@ Out of scope:
   - Evidence: RECON identified 249 unsafe env calls in 10 files, 16 missing `reasoning_effort` fields in 3 files, 1 wrong arg count, 1 missing import, 1 missing struct field.
   - Audit IDs updated: all pending.
   - Next: Checkpoint 1 — add helpers to `testing.rs`.
+
+- 2026-06-07: Checkpoint 1 — `test_set_env` / `test_remove_env` added to `testing.rs`.
+  - Changed: `crates/oxide-agent-core/src/testing.rs` — added two `#[track_caller]` pub functions wrapping `unsafe { std::env::set_var/remove_var }`.
+  - Evidence: `cargo check -p oxide-agent-core --features profile-full` passes.
+  - Audit IDs updated: G1 → verified.
+  - Next: Checkpoint 2 — Batch A (core crate test files, ~214 calls).
 
 ## Risks and Blockers
 

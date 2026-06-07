@@ -2,6 +2,32 @@
 //!
 //! Provides convenient constructors for mocked LLM and storage providers.
 
+// ---------------------------------------------------------------------------
+// Env helpers (Rust 2024: set_var/remove_var are unsafe)
+// ---------------------------------------------------------------------------
+
+/// Set an environment variable for a test.
+///
+/// `std::env::set_var` is `unsafe` in Rust 2024 edition. This helper
+/// centralizes the `unsafe` block so every test call site stays clean.
+#[track_caller]
+pub fn test_set_env(key: &str, value: &str) {
+    unsafe { std::env::set_var(key, value) };
+}
+
+/// Remove an environment variable for a test.
+///
+/// `std::env::remove_var` is `unsafe` in Rust 2024 edition. This helper
+/// centralizes the `unsafe` block so every test call site stays clean.
+#[track_caller]
+pub fn test_remove_env(key: &str) {
+    unsafe { std::env::remove_var(key) };
+}
+
+// ---------------------------------------------------------------------------
+// Mock providers
+// ---------------------------------------------------------------------------
+
 use crate::llm::LlmError;
 use crate::storage::{
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
