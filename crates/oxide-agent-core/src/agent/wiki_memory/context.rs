@@ -26,6 +26,8 @@ pub struct WikiContextAssemblerConfig {
     pub max_context_bytes: usize,
     /// Maximum non-index pages to load for one assembly.
     pub max_pages: usize,
+    /// Skip synchronous wiki reads for the first task in a fresh web session.
+    pub fast_skip_fresh_web_session: bool,
 }
 
 impl Default for WikiContextAssemblerConfig {
@@ -33,6 +35,7 @@ impl Default for WikiContextAssemblerConfig {
         Self {
             max_context_bytes: 12 * 1024,
             max_pages: 6,
+            fast_skip_fresh_web_session: false,
         }
     }
 }
@@ -83,6 +86,46 @@ impl WikiContextAssembler {
             elapsed_ms = assembly_started_at.elapsed().as_millis(),
             "Agent wiki context latency"
         );
+
+        if let Some(skip_reason) = self.fast_skip_reason(context_key, &context_id).await {
+            let rendered = empty_rendered_context();
+            let metrics = self.cache.metrics().await;
+            if skip_reason == "fresh_web_session" {
+                self.cache.mark_context_empty(&context_id).await;
+            }
+            info!(
+                target: AGENT_LATENCY_TARGET,
+                user_id,
+                context_key = %context_key,
+                context_id = %context_id,
+                skip_reason,
+                cache_hits = metrics.cache_hits,
+                cache_misses = metrics.cache_misses,
+                backend_gets = metrics.backend_gets,
+                bootstrap_pages = metrics.bootstrap_pages,
+                phase = "wiki_context_fast_skipped",
+                elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                "Agent wiki context latency"
+            );
+            info!(
+                target: AGENT_LATENCY_TARGET,
+                user_id,
+                context_key = %context_key,
+                context_id = %context_id,
+                rendered_empty = rendered.is_empty,
+                rendered_chars = rendered.text.len(),
+                rendered_key_count = rendered.loaded_keys.len(),
+                cache_hits = metrics.cache_hits,
+                cache_misses = metrics.cache_misses,
+                backend_gets = metrics.backend_gets,
+                bootstrap_pages = metrics.bootstrap_pages,
+                phase = "wiki_context_render_completed",
+                phase_ms = assembly_started_at.elapsed().as_millis(),
+                elapsed_ms = assembly_started_at.elapsed().as_millis(),
+                "Agent wiki context latency"
+            );
+            return Ok(rendered);
+        }
 
         let global_index = match self.cache.load_global_index().await {
             Ok(page) => {
@@ -151,6 +194,11 @@ impl WikiContextAssembler {
         let keywords = keywords(task);
         let candidates =
             select_candidates(&global_index.content, &context_index.content, &keywords);
+        let only_default_overview_candidate = candidates.len() == 1
+            && matches!(
+                candidates.first(),
+                Some(WikiCandidate::ContextFile("overview.md"))
+            );
         let global_file_candidates = candidates
             .iter()
             .filter(|candidate| matches!(candidate, WikiCandidate::GlobalFile(_)))
@@ -290,6 +338,12 @@ impl WikiContextAssembler {
 
         let rendered = render_context(pages, loaded_keys, self.config.max_context_bytes);
         let metrics = self.cache.metrics().await;
+        if is_web_session_context(context_key)
+            && rendered.is_empty
+            && only_default_overview_candidate
+        {
+            self.cache.mark_context_empty(&context_id).await;
+        }
         info!(
             target: AGENT_LATENCY_TARGET,
             user_id,
@@ -309,6 +363,19 @@ impl WikiContextAssembler {
         );
 
         Ok(rendered)
+    }
+
+    async fn fast_skip_reason(&self, context_key: &str, context_id: &str) -> Option<&'static str> {
+        if !is_web_session_context(context_key) {
+            return None;
+        }
+        if self.config.fast_skip_fresh_web_session {
+            return Some("fresh_web_session");
+        }
+        if self.cache.is_context_marked_empty(context_id).await {
+            return Some("empty_context_marker");
+        }
+        None
     }
 }
 
@@ -466,6 +533,18 @@ fn render_context(
     }
 }
 
+fn empty_rendered_context() -> WikiRenderedContext {
+    WikiRenderedContext {
+        text: String::new(),
+        loaded_keys: Vec::new(),
+        is_empty: true,
+    }
+}
+
+fn is_web_session_context(context_key: &str) -> bool {
+    context_key.starts_with("web-session-")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +690,7 @@ mod tests {
             WikiContextAssemblerConfig {
                 max_context_bytes: 16,
                 max_pages: 6,
+                ..WikiContextAssemblerConfig::default()
             },
         );
 
@@ -621,5 +701,51 @@ mod tests {
 
         assert!(rendered.is_empty);
         assert!(rendered.text.contains("Durable Wiki Memory"));
+    }
+
+    #[tokio::test]
+    async fn assembler_fast_skips_fresh_web_session_and_reuses_empty_marker() {
+        let backend = Arc::new(InMemoryWikiBackend::default());
+        let prefix = format!("fresh-web-session-skip-{}", uuid::Uuid::new_v4());
+        let context_key = format!("web-session-{}", uuid::Uuid::new_v4());
+        let context_id = wiki_context_id(42, &context_key);
+
+        let first_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let first_cache = Arc::new(WikiSessionCache::new(WikiStore::new(
+            first_backend,
+            prefix.clone(),
+        )));
+        let first_assembler = WikiContextAssembler::new(
+            Arc::clone(&first_cache),
+            WikiContextAssemblerConfig {
+                fast_skip_fresh_web_session: true,
+                ..WikiContextAssemblerConfig::default()
+            },
+        );
+
+        let rendered = first_assembler
+            .assemble_for_context(42, &context_key, "hello")
+            .await
+            .expect("fresh web session assembly should fast-skip");
+
+        assert!(rendered.is_empty);
+        assert!(first_cache.is_context_marked_empty(&context_id).await);
+        assert!(backend.get_keys.lock().await.is_empty());
+
+        let second_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let second_cache = Arc::new(WikiSessionCache::new(WikiStore::new(
+            second_backend,
+            prefix,
+        )));
+        let second_assembler =
+            WikiContextAssembler::new(second_cache, WikiContextAssemblerConfig::default());
+
+        let rendered = second_assembler
+            .assemble_for_context(42, &context_key, "hello again")
+            .await
+            .expect("marked empty web session should fast-skip");
+
+        assert!(rendered.is_empty);
+        assert!(backend.get_keys.lock().await.is_empty());
     }
 }

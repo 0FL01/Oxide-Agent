@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-07-core-prepare-execution-latency.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: User request after web first-message latency was reduced from `1482ms` to `~0.55ms`; remaining first-LLM delay is now inside core `prepare_execution` and pre-LLM runner work.
 Goal doc owner: Codex
-Last updated: 2026-06-07 15:42
+Last updated: 2026-06-07 16:11
 
 ## Objective
 
@@ -78,21 +78,21 @@ Out of scope:
   - Acceptance: The fix targets the measured bottleneck only, preserves agent semantics, and avoids new dependencies/services. Candidate fixes include reusing/caching wiki session context, caching stable tool specs/prompt blocks, or moving safe wiki work out of the hot path if evidence supports it.
   - Evidence required: implementation diff, validation commands, runtime before/after measurement, and updated decision record.
   - Status: in_progress
-  - Evidence collected: Measurement selected the smallest fix: a bounded in-process read-through/negative cache for deterministic wiki pages. Implementation adds a shared Moka cache for clean wiki pages and missing objects across per-run `WikiSessionCache` instances, caches bootstrapped index pages and missing optional pages, invalidates shared entries when local dirty pages are staged, and refreshes the shared cache after dirty pages flush. Runtime before/after evidence is pending after rebuild.
+  - Evidence collected: Measurement selected the smallest fix: a bounded in-process read-through/negative cache for deterministic wiki pages. Implementation adds a shared Moka cache for clean wiki pages and missing objects across per-run `WikiSessionCache` instances, caches bootstrapped index pages and missing optional pages, invalidates shared entries when local dirty pages are staged, and refreshes the shared cache after dirty pages flush. Follow-up runtime log showed the cache does not help a first request in a brand-new `web-session-*` context: `wiki_global_index_loaded=212ms`, `wiki_context_index_loaded=202ms`, missing `overview.md` candidate `140ms`, `backend_gets=3`, and `prepare_execution=626ms`. Core-5 therefore adds a narrower fast-skip for fresh web-session contexts and a shared empty-context marker for repeated empty web-session contexts. Runtime before/after evidence for Core-5 is pending after rebuild.
 
 - Q1: Existing architecture and cache-hit invariants are preserved
   - Source: `AGENTS.md` architecture and prompt-cache guidance.
   - Acceptance: Core/runtime remain transport-agnostic; prompt dynamic blocks stay at the end; no direct Google Gemini provider is introduced; no new external infrastructure is added.
   - Evidence required: diff review and validation commands.
   - Status: in_progress
-  - Evidence collected: Core-1 only adds INFO latency logging in `crates/oxide-agent-core/src/agent/executor/execution.rs`; it does not change prompt assembly order, tool registration, wiki behavior, provider routing, transport boundaries, or add dependencies. Core-2 adds INFO timing inside wiki context assembly without changing candidate selection, page loading, rendering, prompt assembly order, or storage semantics. Core-1 and Core-2 validation passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
+  - Evidence collected: Core-1 only adds INFO latency logging in `crates/oxide-agent-core/src/agent/executor/execution.rs`; it does not change prompt assembly order, tool registration, wiki behavior, provider routing, transport boundaries, or add dependencies. Core-2 adds INFO timing inside wiki context assembly without changing candidate selection, page loading, rendering, prompt assembly order, or storage semantics. Core-4 and Core-5 keep the optimization in-process, bounded, and dependency-free beyond the existing Moka usage; prompt assembly order and provider routing are unchanged. Validation passed: `cargo fmt`; targeted core tests; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
 
 - N1: Web transport checkpoint remains closed
   - Source: CP5 runtime evidence proved web task creation is no longer bottleneck.
   - Must preserve: Avoid reopening web task create persistence/caching unless new core logs prove a web interaction is still on the hot path.
   - Evidence required: diff scope review.
   - Status: in_progress
-  - Evidence collected: Core-1 diff scope is limited to core executor logging and this goal doc; Core-2 diff scope is limited to core wiki context logging and this goal doc. Core-4 cache implementation is limited to core wiki memory cache and this goal doc. No web transport hot-path files are touched.
+  - Evidence collected: Core-1 diff scope is limited to core executor logging and this goal doc; Core-2 diff scope is limited to core wiki context logging and this goal doc. Core-4 cache implementation is limited to core wiki memory cache and this goal doc. Core-5 touches core executor/wiki memory only, using the existing `web-session-*` context key convention without changing web transport hot-path persistence. No web transport hot-path files are touched.
 
 ## Implementation Plan
 
@@ -120,6 +120,12 @@ Out of scope:
    - Validation: Rust validation commands plus runtime before/after logs.
    - Exit condition: Measured `prepare_execution` latency improves materially while behavior and architectural constraints remain intact.
 
+5. Core-5: Fast-skip fresh empty web-session wiki context
+   - Audit IDs: G4, Q1, N1
+   - Expected changes: Skip synchronous wiki context reads for the first task in a fresh `web-session-*` context, mark that context empty in-process, reuse the marker for repeated empty web-session contexts, and invalidate it when a wiki patch stages/writes context pages.
+   - Validation: Rust validation commands plus runtime before/after logs.
+   - Exit condition: First-message web-session logs show `wiki_context_fast_skipped`, `backend_gets=0`, and `wiki_context_rendered` near-zero; later sessions with wiki writes still invalidate the empty marker.
+
 ## Validation Contract
 
 - Static checks:
@@ -140,6 +146,7 @@ Out of scope:
 - 2026-06-07: Prefer the smallest measured fix. No new crates/services/queues are justified.
 - 2026-06-07: Core-1 runtime evidence identifies the wiki context wrapper as the dominant sub-phase (`617ms` of `688ms`) even when rendered wiki context is empty. Do not optimize broadly yet; first split wiki assembly into storage and render sub-phases.
 - 2026-06-07: Core-2 runtime evidence identifies three repeated wiki backend GETs as the measured bottleneck. Implement a bounded read-through/negative cache for deterministic wiki pages instead of changing prompt assembly or tool registry behavior.
+- 2026-06-07: Core-4 cache helps repeated reads for the same deterministic wiki keys, but does not solve brand-new `web-session-*` contexts whose keys are new on first message. Implement a narrower Core-5 fast-skip for fresh web-session contexts and invalidate the empty-context marker on wiki writes.
 
 ## Progress Log
 
@@ -170,6 +177,13 @@ Out of scope:
   - Commands: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
   - Audit IDs updated: G2 verified, G3 verified, G4 in progress, Q1 in progress, N1 in progress.
   - Next: Finish validation, commit, then collect runtime logs after rebuild to verify `backend_gets=0` or reduced wiki phase on warm path.
+
+- 2026-06-07 16:11: Core-5 fresh web-session wiki fast-skip implemented
+  - Changed: Added a `fast_skip_fresh_web_session` assembler option, executor predicate for first-message `web-session-*` contexts, shared empty-context marker reuse, and marker invalidation when context wiki pages are patched/staged.
+  - Evidence: Follow-up runtime sample after Core-4 still showed a cold brand-new web-session path with `backend_gets=3` and `prepare_execution=626ms`, so the measured remaining bottleneck is first-message empty wiki lookup, not repeated-key caching. Focused tests verify first-message fast-skip performs zero backend reads, repeated empty web-session contexts reuse the marker, the marker is prefix-scoped, and wiki patches invalidate it.
+  - Commands: `cargo fmt`; `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local assembler_fast_skips_fresh_web_session_and_reuses_empty_marker`; `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local empty_context_marker_is_prefix_scoped_and_invalidated_by_patch`; `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local fresh_web_session_wiki_context_skip_is_limited_to_first_message`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`; `git diff --check`.
+  - Audit IDs updated: G4 in progress pending runtime after rebuild, Q1 in progress, N1 in progress.
+  - Next: Rebuild/run web profile and confirm `wiki_context_fast_skipped`, `backend_gets=0`, and near-zero `wiki_context_rendered` on the first fresh web-session task.
 
 ## Risks and Blockers
 

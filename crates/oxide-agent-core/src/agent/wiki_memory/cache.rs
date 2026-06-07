@@ -10,6 +10,8 @@ use tokio::sync::Mutex;
 
 const SHARED_WIKI_PAGE_CACHE_MAX_CAPACITY: u64 = 4096;
 const SHARED_WIKI_PAGE_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const SHARED_WIKI_EMPTY_CONTEXT_CACHE_MAX_CAPACITY: u64 = 4096;
+const SHARED_WIKI_EMPTY_CONTEXT_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 
 static SHARED_WIKI_PAGE_CACHE: LazyLock<Cache<String, SharedWikiPageCacheEntry>> =
     LazyLock::new(|| {
@@ -18,6 +20,13 @@ static SHARED_WIKI_PAGE_CACHE: LazyLock<Cache<String, SharedWikiPageCacheEntry>>
             .time_to_live(SHARED_WIKI_PAGE_CACHE_TTL)
             .build()
     });
+
+static SHARED_WIKI_EMPTY_CONTEXT_CACHE: LazyLock<Cache<String, ()>> = LazyLock::new(|| {
+    Cache::builder()
+        .max_capacity(SHARED_WIKI_EMPTY_CONTEXT_CACHE_MAX_CAPACITY)
+        .time_to_live(SHARED_WIKI_EMPTY_CONTEXT_CACHE_TTL)
+        .build()
+});
 
 /// Cached wiki page plus original hash metadata for future dirty-page tracking.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +128,21 @@ impl WikiSessionCache {
     /// Return a snapshot of cache metrics.
     pub async fn metrics(&self) -> WikiCacheMetrics {
         self.state.lock().await.metrics
+    }
+
+    /// Returns true when this process has recently proven the context has no renderable pages.
+    pub async fn is_context_marked_empty(&self, context_id: &str) -> bool {
+        let Some(key) = self.empty_context_marker_key(context_id) else {
+            return false;
+        };
+        SHARED_WIKI_EMPTY_CONTEXT_CACHE.get(&key).await.is_some()
+    }
+
+    /// Mark a context as empty so latency-sensitive callers can skip repeated cold reads.
+    pub async fn mark_context_empty(&self, context_id: &str) {
+        if let Some(key) = self.empty_context_marker_key(context_id) {
+            SHARED_WIKI_EMPTY_CONTEXT_CACHE.insert(key, ()).await;
+        }
     }
 
     /// Load global `index.md`, bootstrapping it in memory when absent.
@@ -229,9 +253,15 @@ impl WikiSessionCache {
             applied += 1;
         }
 
+        let invalidated_empty_context_keys = invalidated_keys
+            .iter()
+            .filter_map(|key| empty_context_marker_key_from_page_key(key))
+            .collect::<Vec<_>>();
+
         state.metrics.dirty_pages += applied;
         drop(state);
         invalidate_shared_pages(invalidated_keys).await;
+        invalidate_shared_empty_contexts(invalidated_empty_context_keys).await;
         Ok(applied)
     }
 
@@ -404,6 +434,7 @@ impl WikiSessionCache {
     }
 
     async fn stage_dirty_page(&self, key: String, content: String) {
+        let empty_context_key = empty_context_marker_key_from_page_key(&key);
         let mut state = self.state.lock().await;
         let content_hash = wiki_content_hash(&content);
         let original_content_hash = state
@@ -424,6 +455,16 @@ impl WikiSessionCache {
         state.metrics.dirty_pages += 1;
         drop(state);
         invalidate_shared_page(&key).await;
+        if let Some(empty_context_key) = empty_context_key {
+            invalidate_shared_empty_context(&empty_context_key).await;
+        }
+    }
+
+    fn empty_context_marker_key(&self, context_id: &str) -> Option<String> {
+        self.store
+            .context_file_key(context_id, "index.md")
+            .ok()
+            .map(|key| format!("{key}#empty"))
     }
 
     async fn record_backend_get(&self, _key: &str) {
@@ -476,6 +517,23 @@ async fn invalidate_shared_pages(keys: Vec<String>) {
     for key in keys {
         invalidate_shared_page(&key).await;
     }
+}
+
+async fn invalidate_shared_empty_context(marker_key: &str) {
+    SHARED_WIKI_EMPTY_CONTEXT_CACHE.invalidate(marker_key).await;
+}
+
+async fn invalidate_shared_empty_contexts(marker_keys: Vec<String>) {
+    for marker_key in marker_keys {
+        invalidate_shared_empty_context(&marker_key).await;
+    }
+}
+
+fn empty_context_marker_key_from_page_key(key: &str) -> Option<String> {
+    let (prefix, rest) = key.split_once("/wiki/v1/contexts/")?;
+    let context_id = rest.split('/').next()?;
+    (!context_id.is_empty())
+        .then(|| format!("{prefix}/wiki/v1/contexts/{context_id}/index.md#empty"))
 }
 
 fn clean_shared_page(page: &CachedWikiPage) -> CachedWikiPage {
@@ -844,5 +902,30 @@ mod tests {
 
         assert_eq!(backend.get_keys.lock().await.len(), 3);
         assert_eq!(second_cache.metrics().await.backend_gets, 0);
+    }
+
+    #[tokio::test]
+    async fn empty_context_marker_is_prefix_scoped_and_invalidated_by_patch() {
+        let backend = Arc::new(InMemoryWikiBackend::default());
+        let prefix = format!("empty-marker-{}", uuid::Uuid::new_v4());
+        let other_prefix = format!("empty-marker-other-{}", uuid::Uuid::new_v4());
+        let context_id = "ctx-empty-marker";
+        let key = format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md");
+
+        let cache_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let cache = WikiSessionCache::new(WikiStore::new(cache_backend, &prefix));
+        cache.mark_context_empty(context_id).await;
+        assert!(cache.is_context_marked_empty(context_id).await);
+
+        let other_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let other_cache = WikiSessionCache::new(WikiStore::new(other_backend, &other_prefix));
+        assert!(!other_cache.is_context_marked_empty(context_id).await);
+
+        cache
+            .apply_validated_patch(&validated_patch(&key, "# Overview"))
+            .await
+            .expect("patch should apply");
+
+        assert!(!cache.is_context_marked_empty(context_id).await);
     }
 }
