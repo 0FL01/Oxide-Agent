@@ -5,18 +5,23 @@
 //! The generated title is persisted only if the user has not manually renamed
 //! the session.
 
-use crate::server::types::{AppState, MAX_SESSION_TITLE_CHARS};
+use crate::server::{
+    session_routes::invalidate_session_summaries_cache,
+    types::{AppState, MAX_SESSION_TITLE_CHARS},
+};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use oxide_agent_core::config::ModelInfo;
 use oxide_agent_core::llm::Message;
 use oxide_agent_web_contracts::WebSessionRecord;
+use serde::Deserialize;
 use std::{sync::Arc, time::Duration, time::Instant};
 use tracing::{info, warn};
 
-const AUTO_TITLE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
+const AUTO_TITLE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(120);
 const AUTO_TITLE_WORKER_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const AUTO_TITLE_DUE_BATCH_LIMIT: usize = 16;
 const MAX_AUTO_TITLE_ERROR_CHARS: usize = 512;
+const AUTO_TITLE_MAX_INTERNAL_ATTEMPTS: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -217,6 +222,7 @@ async fn attempt_auto_title_for_session(
         .save_session(session)
         .await
         .map_err(|e| e.to_string())?;
+    invalidate_session_summaries_cache(&state, user_id).await;
 
     info!(session_id = %session_id, title_chars = saved_title_chars, "auto title saved");
 
@@ -294,11 +300,9 @@ async fn schedule_auto_title_retry(
 
 fn retry_delay(attempts: u32) -> ChronoDuration {
     let seconds = match attempts {
-        0 | 1 => 60,
-        2 => 5 * 60,
-        3 => 15 * 60,
-        4 => 60 * 60,
-        _ => 6 * 60 * 60,
+        0 | 1 => 5,
+        2 => 10,
+        _ => 30,
     };
     ChronoDuration::seconds(seconds)
 }
@@ -325,86 +329,187 @@ fn title_reasoning_effort(model: &ModelInfo) -> Option<&'static str> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TitleAttemptConfig {
+    max_output_tokens: u32,
+    reasoning_effort: Option<&'static str>,
+}
+
+fn title_attempt_configs(
+    model: &ModelInfo,
+) -> [TitleAttemptConfig; AUTO_TITLE_MAX_INTERNAL_ATTEMPTS] {
+    let preferred_effort = title_reasoning_effort(model);
+    let alternate_effort = if preferred_effort == Some("none") {
+        Some("low")
+    } else {
+        Some("none")
+    };
+
+    [
+        TitleAttemptConfig {
+            max_output_tokens: 2_048,
+            reasoning_effort: preferred_effort,
+        },
+        TitleAttemptConfig {
+            max_output_tokens: 4_096,
+            reasoning_effort: alternate_effort,
+        },
+        TitleAttemptConfig {
+            max_output_tokens: 8_192,
+            reasoning_effort: preferred_effort,
+        },
+        TitleAttemptConfig {
+            max_output_tokens: 16_384,
+            reasoning_effort: alternate_effort,
+        },
+    ]
+}
+
+#[derive(Debug, Deserialize)]
+struct AutoTitleJsonResponse {
+    title: String,
+}
+
 async fn generate_title(
     llm: Arc<oxide_agent_core::llm::LlmClient>,
-    mut model: ModelInfo,
+    model: ModelInfo,
     first_user_message: &str,
     session_id: &str,
 ) -> Result<String, String> {
-    // Reasoning-capable routes can spend the first ~64 tokens entirely on
-    // reasoning and return `finish_reason=length` with empty content. Keep the
-    // title call small, but leave enough room for both reasoning and answer.
-    model.max_output_tokens = model.max_output_tokens.clamp(512, 1024);
-
     let system = "\
 You generate short chat titles from the user's first message.
 Summarize the topic; do not copy the first words of the question.
-Return only the title.
-No quotes.
-No markdown.
-No trailing period.
+Return only a valid JSON object matching this schema: {\"title\": string}.
+Do not include markdown, prose, code fences, or extra keys.
+The title value must not contain quotes or a trailing period.
 Use the same language as the user.
 Prefer a noun phrase, 2-5 words.
 For URLs, omit the raw URL and use the site or product name when obvious.
 
 Examples:
-Авторизация для сервисов
-Запуск модели на Fedora
-Effort в веб-версии GPT
-Политика данных CrofAI";
+{\"title\":\"Авторизация для сервисов\"}
+{\"title\":\"Запуск модели на Fedora\"}
+{\"title\":\"Effort в веб-версии GPT\"}
+{\"title\":\"Политика данных CrofAI\"}";
 
     let user = format!("Create a concise title for this new chat:\n\n{first_user_message}");
 
     let provider = model.provider.clone();
     let model_id = model.id.clone();
-    let started_at = Instant::now();
-    let response = llm
-        .chat_with_tools_single_attempt_for_model_info(
-            system,
-            "",
-            &[Message::user(&user)],
-            &[],
-            &model,
-            None,
-            false,
-            title_reasoning_effort(&model),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut last_error = None;
 
-    let content = response.content.unwrap_or_default();
-    let reasoning_chars = response
-        .reasoning_content
-        .as_deref()
-        .map(str::chars)
-        .map(Iterator::count)
-        .unwrap_or(0);
-    let tool_names = response
-        .tool_calls
-        .iter()
-        .map(|tool_call| tool_call.function.name.as_str())
-        .collect::<Vec<_>>()
-        .join(",");
-    let usage_total_tokens = response.usage.as_ref().map(|usage| usage.total_tokens);
-    info!(
-        session_id = %session_id,
-        provider = %provider,
-        model = %model_id,
-        elapsed_ms = started_at.elapsed().as_millis(),
-        finish_reason = %response.finish_reason,
-        content_chars = content.chars().count(),
-        reasoning_chars,
-        tool_calls = response.tool_calls.len(),
-        tool_names = %tool_names,
-        usage_total_tokens,
-        "auto title LLM response received"
-    );
+    for (attempt_index, attempt_config) in title_attempt_configs(&model).into_iter().enumerate() {
+        let mut attempt_model = model.clone();
+        attempt_model.max_output_tokens = attempt_config.max_output_tokens;
 
-    if response.finish_reason.eq_ignore_ascii_case("length") {
-        return Err("auto title LLM response stopped because output limit was reached".to_string());
+        let started_at = Instant::now();
+        let response = llm
+            .chat_with_tools_single_attempt_for_model_info(
+                system,
+                "",
+                &[Message::user(&user)],
+                &[],
+                &attempt_model,
+                Some(0.0),
+                true,
+                attempt_config.reasoning_effort,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let content = response.content.unwrap_or_default();
+        let reasoning_chars = response
+            .reasoning_content
+            .as_deref()
+            .map(str::chars)
+            .map(Iterator::count)
+            .unwrap_or(0);
+        let tool_names = response
+            .tool_calls
+            .iter()
+            .map(|tool_call| tool_call.function.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let usage_total_tokens = response.usage.as_ref().map(|usage| usage.total_tokens);
+        info!(
+            session_id = %session_id,
+            provider = %provider,
+            model = %model_id,
+            internal_attempt = attempt_index + 1,
+            max_output_tokens = attempt_config.max_output_tokens,
+            reasoning_effort = attempt_config.reasoning_effort.unwrap_or("unset"),
+            json_mode = true,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            finish_reason = %response.finish_reason,
+            content_chars = content.chars().count(),
+            reasoning_chars,
+            tool_calls = response.tool_calls.len(),
+            tool_names = %tool_names,
+            usage_total_tokens,
+            "auto title LLM response received"
+        );
+
+        match extract_title_from_response(&content) {
+            Ok(title) => return Ok(title),
+            Err(error) => {
+                let length_exhausted = response.finish_reason.eq_ignore_ascii_case("length");
+                let reasoning_only_length =
+                    length_exhausted && content.trim().is_empty() && reasoning_chars > 0;
+                let retryable =
+                    reasoning_only_length || length_exhausted || content.trim().is_empty();
+                last_error = Some(if reasoning_only_length {
+                    format!(
+                        "auto title LLM spent output budget on reasoning without content; {error}"
+                    )
+                } else if length_exhausted {
+                    format!(
+                        "auto title LLM response stopped because output limit was reached; {error}"
+                    )
+                } else {
+                    error
+                });
+                if retryable && attempt_index + 1 < AUTO_TITLE_MAX_INTERNAL_ATTEMPTS {
+                    warn!(
+                        session_id = %session_id,
+                        internal_attempt = attempt_index + 1,
+                        next_internal_attempt = attempt_index + 2,
+                        error = %last_error.as_deref().unwrap_or("unknown auto title error"),
+                        "auto title internal retry scheduled"
+                    );
+                    continue;
+                }
+                break;
+            }
+        }
     }
 
-    Ok(content)
+    Err(last_error.unwrap_or_else(|| "auto title LLM returned no usable title".to_string()))
+}
+
+fn extract_title_from_response(content: &str) -> Result<String, String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err("auto title LLM returned empty content".to_string());
+    }
+
+    match serde_json::from_str::<AutoTitleJsonResponse>(trimmed) {
+        Ok(response) => Ok(response.title),
+        Err(json_error) => {
+            let fallback_title = sanitize_auto_title(trimmed);
+            if fallback_title.is_empty() {
+                Err(format!(
+                    "auto title LLM returned invalid JSON and no fallback title; json_error={json_error}"
+                ))
+            } else {
+                warn!(
+                    error = %json_error,
+                    content_chars = trimmed.chars().count(),
+                    "auto title LLM returned non-JSON title; using sanitized fallback"
+                );
+                Ok(fallback_title)
+            }
+        }
+    }
 }
 
 fn sanitize_auto_title(raw: &str) -> String {
@@ -508,8 +613,24 @@ mod tests {
 
     #[test]
     fn retry_delay_increases_after_repeated_failures() {
-        assert_eq!(retry_delay(1), ChronoDuration::seconds(60));
-        assert_eq!(retry_delay(2), ChronoDuration::seconds(5 * 60));
-        assert_eq!(retry_delay(5), ChronoDuration::seconds(6 * 60 * 60));
+        assert_eq!(retry_delay(1), ChronoDuration::seconds(5));
+        assert_eq!(retry_delay(2), ChronoDuration::seconds(10));
+        assert_eq!(retry_delay(3), ChronoDuration::seconds(30));
+    }
+
+    #[test]
+    fn extract_title_reads_json_title() {
+        assert_eq!(
+            extract_title_from_response(r#"{"title":"Политика данных CrofAI"}"#).unwrap(),
+            "Политика данных CrofAI"
+        );
+    }
+
+    #[test]
+    fn extract_title_falls_back_to_plain_title() {
+        assert_eq!(
+            extract_title_from_response("Title: Docker networking").unwrap(),
+            "Docker networking"
+        );
     }
 }

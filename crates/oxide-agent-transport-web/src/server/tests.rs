@@ -178,7 +178,7 @@ impl WebSandboxControl for FakeSandboxControl {
 
 #[cfg(feature = "profile-lite")]
 struct AutoTitleTestLlmProvider {
-    title_responses: Mutex<VecDeque<String>>,
+    title_responses: Mutex<VecDeque<ChatResponse>>,
     agent_response: String,
     block_title: bool,
     title_started: Arc<Notify>,
@@ -197,7 +197,12 @@ impl AutoTitleTestLlmProvider {
         agent_response: impl Into<String>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            title_responses: Mutex::new(title_responses.into_iter().map(Into::into).collect()),
+            title_responses: Mutex::new(
+                title_responses
+                    .into_iter()
+                    .map(Self::title_chat_response)
+                    .collect(),
+            ),
             agent_response: agent_response.into(),
             block_title: false,
             title_started: Arc::new(Notify::new()),
@@ -219,7 +224,9 @@ impl AutoTitleTestLlmProvider {
         block_title: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
-            title_responses: Mutex::new(VecDeque::from([title_response.into()])),
+            title_responses: Mutex::new(VecDeque::from([Self::title_chat_response(
+                title_response,
+            )])),
             agent_response: agent_response.into(),
             block_title,
             title_started: Arc::new(Notify::new()),
@@ -244,6 +251,39 @@ impl AutoTitleTestLlmProvider {
         request
             .system_prompt
             .contains("You generate short chat titles")
+    }
+
+    fn title_chat_response(content: impl Into<String>) -> ChatResponse {
+        ChatResponse {
+            content: Some(content.into()),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: None,
+            usage: None,
+        }
+    }
+
+    fn reasoning_length_then_title(
+        title_response: impl Into<String>,
+        agent_response: impl Into<String>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            title_responses: Mutex::new(VecDeque::from([
+                ChatResponse {
+                    content: Some(String::new()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "length".to_string(),
+                    reasoning_content: Some("thinking without final title".to_string()),
+                    usage: None,
+                },
+                Self::title_chat_response(title_response),
+            ])),
+            agent_response: agent_response.into(),
+            block_title: false,
+            title_started: Arc::new(Notify::new()),
+            title_release: Arc::new(Notify::new()),
+            title_returned: Arc::new(Notify::new()),
+        })
     }
 
     fn agent_response(&self) -> ChatResponse {
@@ -292,14 +332,8 @@ impl LlmProvider for AutoTitleTestLlmProvider {
                 .lock()
                 .expect("title responses")
                 .pop_front()
-                .unwrap_or_default();
-            return Ok(ChatResponse {
-                content: Some(title_response),
-                tool_calls: Vec::new(),
-                finish_reason: "stop".to_string(),
-                reasoning_content: None,
-                usage: None,
-            });
+                .unwrap_or_else(|| Self::title_chat_response(""));
+            return Ok(title_response);
         }
 
         Ok(self.agent_response())
@@ -3142,6 +3176,71 @@ async fn api_auto_title_retries_empty_llm_response_and_saves_later_title() {
         .await
         .expect("process due auto title");
     assert_eq!(processed, 1);
+
+    wait_for_session_title(&state, user.user_id, &session_id, "Политика данных CrofAI").await;
+    let saved_session = state
+        .web_store
+        .load_session(user.user_id, &session_id)
+        .await
+        .expect("load saved session")
+        .expect("session exists");
+    assert!(saved_session.auto_title_source_message.is_none());
+    assert_eq!(saved_session.auto_title_attempts, 0);
+}
+
+#[cfg(feature = "profile-lite")]
+#[tokio::test]
+async fn api_auto_title_retries_reasoning_only_length_response_immediately() {
+    let llm = AutoTitleTestLlmProvider::reasoning_length_then_title(
+        "{\"title\":\"Политика данных CrofAI\"}",
+        "ok",
+    );
+    let (mut state, _) = test_app_state_with_llm_provider(llm.clone());
+    state.auto_title_enabled = true;
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, auth_session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let axum::Json(created_session) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created_session.session.session_id;
+
+    let _ = api_create_task(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&auth_session.csrf_token)),
+        axum::extract::Path(session_id.clone()),
+        axum::Json(ApiCreateTaskRequest {
+            input_markdown: "Какая политика данных у https://crof.ai/ при инференсе моделей?"
+                .to_string(),
+            attachments: Vec::new(),
+            effort: None,
+        }),
+    )
+    .await
+    .expect("create task");
 
     wait_for_session_title(&state, user.user_id, &session_id, "Политика данных CrofAI").await;
     let saved_session = state
