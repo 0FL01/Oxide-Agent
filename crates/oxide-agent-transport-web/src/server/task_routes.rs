@@ -22,6 +22,7 @@ use oxide_agent_web_contracts::{
     UserMessageEventPayload, WebSessionRecord, WebTaskRecord,
 };
 use serde::Deserialize;
+use std::time::Instant;
 
 use crate::session::{RunningTask, WebSessionRuntimeOptions};
 
@@ -35,6 +36,43 @@ use super::{
     validate_task_input_with_attachments, AppState, TaskEventsQuery, DEFAULT_TASK_EVENTS_LIMIT,
     EVENT_LOGS, MAX_TASK_EVENTS_LIMIT, WEB_SESSION_DEFAULT_TITLE, WEB_TASK_SCHEMA_VERSION,
 };
+
+const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
+
+#[derive(Clone, Copy, Debug)]
+enum RuntimeSessionEnsureResult {
+    Cached,
+    Materialized,
+}
+
+impl RuntimeSessionEnsureResult {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cached => "cached",
+            Self::Materialized => "materialized",
+        }
+    }
+}
+
+fn log_create_task_phase(
+    user_id: i64,
+    session_id: &str,
+    task_id: Option<&str>,
+    phase: &str,
+    request_started_at: Instant,
+    phase_started_at: Instant,
+) {
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id,
+        session_id = %session_id,
+        task_id = ?task_id,
+        phase,
+        phase_ms = phase_started_at.elapsed().as_millis(),
+        elapsed_ms = request_started_at.elapsed().as_millis(),
+        "web task create latency"
+    );
+}
 
 pub(crate) async fn abort_task_handle(state: &AppState, task_id: &str) {
     let handle = {
@@ -417,15 +455,68 @@ pub(crate) async fn api_create_task(
     Path(session_id): Path<String>,
     Json(request): Json<ApiCreateTaskRequest>,
 ) -> Result<Json<ApiCreateTaskResponse>, (StatusCode, Json<ErrorEnvelope>)> {
+    let request_started_at = Instant::now();
+    let mut phase_started_at = request_started_at;
     let user = authenticated_user_with_csrf(&state, &headers).await?;
+    log_create_task_phase(
+        user.user_id,
+        &session_id,
+        None,
+        "auth_and_csrf_checked",
+        request_started_at,
+        phase_started_at,
+    );
+    phase_started_at = Instant::now();
+
     let mut session = load_owned_session(&state, user.user_id, &session_id).await?;
+    log_create_task_phase(
+        user.user_id,
+        &session_id,
+        None,
+        "session_loaded",
+        request_started_at,
+        phase_started_at,
+    );
+    phase_started_at = Instant::now();
+
     let attachments = validate_task_attachments(&request.attachments)?;
     let input_markdown =
         validate_task_input_with_attachments(&request.input_markdown, !attachments.is_empty())?;
     let execution_input = build_task_agent_user_input(&input_markdown, &attachments);
-    reject_active_task(&state, user.user_id, &session).await?;
+    log_create_task_phase(
+        user.user_id,
+        &session_id,
+        None,
+        "input_validated",
+        request_started_at,
+        phase_started_at,
+    );
+    phase_started_at = Instant::now();
 
-    ensure_runtime_session(&state, user.user_id, &session).await;
+    reject_active_task(&state, user.user_id, &session).await?;
+    log_create_task_phase(
+        user.user_id,
+        &session_id,
+        None,
+        "active_task_checked",
+        request_started_at,
+        phase_started_at,
+    );
+    phase_started_at = Instant::now();
+
+    let runtime_session_result = ensure_runtime_session(&state, user.user_id, &session).await;
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id = user.user_id,
+        session_id = %session_id,
+        runtime_session = runtime_session_result.as_str(),
+        phase = "runtime_session_ensured",
+        phase_ms = phase_started_at.elapsed().as_millis(),
+        elapsed_ms = request_started_at.elapsed().as_millis(),
+        "web task create latency"
+    );
+    phase_started_at = Instant::now();
+
     let Some(running_task) = state
         .session_manager
         .register_task(&session_id, execution_input.text_projection().to_string())
@@ -438,9 +529,18 @@ pub(crate) async fn api_create_task(
             true,
         ));
     };
+    log_create_task_phase(
+        user.user_id,
+        &session_id,
+        Some(&running_task.task_id),
+        "runtime_task_registered",
+        request_started_at,
+        phase_started_at,
+    );
 
     let now = chrono::Utc::now();
     let task_id = running_task.task_id.clone();
+    phase_started_at = Instant::now();
 
     // Check whether this is the first task BEFORE saving the new one,
     // otherwise list_tasks would already include it and is_empty()
@@ -451,6 +551,18 @@ pub(crate) async fn api_create_task(
         .await
         .map_err(store_error_response)?;
     let is_first_task = !has_existing_tasks;
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id = user.user_id,
+        session_id = %session_id,
+        task_id = %task_id,
+        is_first_task,
+        phase = "existing_tasks_checked",
+        phase_ms = phase_started_at.elapsed().as_millis(),
+        elapsed_ms = request_started_at.elapsed().as_millis(),
+        "web task create latency"
+    );
+    phase_started_at = Instant::now();
 
     let task_record = new_running_web_task_record(RunningWebTaskRecordInput {
         task_id: task_id.clone(),
@@ -469,6 +581,15 @@ pub(crate) async fn api_create_task(
         .save_task(task_record.clone())
         .await
         .map_err(store_error_response)?;
+    log_create_task_phase(
+        user.user_id,
+        &session_id,
+        Some(&task_id),
+        "task_saved",
+        request_started_at,
+        phase_started_at,
+    );
+    phase_started_at = Instant::now();
 
     let preview_source = task_preview_source(&input_markdown, &attachments);
     let preview = markdown_preview(&preview_source);
@@ -491,6 +612,15 @@ pub(crate) async fn api_create_task(
         preview.clone(),
     )
     .await?;
+    log_create_task_phase(
+        user.user_id,
+        &session_id,
+        Some(&task_id),
+        "session_task_update_saved",
+        request_started_at,
+        phase_started_at,
+    );
+    phase_started_at = Instant::now();
 
     spawn_persisted_registered_task(
         &state,
@@ -504,10 +634,29 @@ pub(crate) async fn api_create_task(
         },
     )
     .await;
+    log_create_task_phase(
+        user.user_id,
+        &session_id,
+        Some(&task_id),
+        "task_spawned",
+        request_started_at,
+        phase_started_at,
+    );
 
     if should_auto_title && state.auto_title_enabled {
-        auto_title::spawn_background_auto_title(state.clone(), user.user_id, session_id);
+        auto_title::spawn_background_auto_title(state.clone(), user.user_id, session_id.clone());
     }
+
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id = user.user_id,
+        session_id = %session_id,
+        task_id = %task_id,
+        is_first_task,
+        runtime_session = runtime_session_result.as_str(),
+        elapsed_ms = request_started_at.elapsed().as_millis(),
+        "web task create completed"
+    );
 
     Ok(Json(ApiCreateTaskResponse {
         task: task_summary_from_record(task_record),
@@ -1087,17 +1236,41 @@ pub(crate) async fn reject_active_task(
     Ok(())
 }
 
-async fn ensure_runtime_session(state: &AppState, user_id: i64, session: &WebSessionRecord) {
+async fn ensure_runtime_session(
+    state: &AppState,
+    user_id: i64,
+    session: &WebSessionRecord,
+) -> RuntimeSessionEnsureResult {
+    let started_at = Instant::now();
     if state
         .session_manager
         .get_session(&session.session_id)
         .await
         .is_some()
     {
-        return;
+        tracing::info!(
+            target: WEB_LATENCY_TARGET,
+            user_id,
+            session_id = %session.session_id,
+            context_key = %session.context_key,
+            phase = "runtime_session_cache_hit",
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "web runtime session ensured"
+        );
+        return RuntimeSessionEnsureResult::Cached;
     }
 
     materialize_runtime_session(state, user_id, session).await;
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id,
+        session_id = %session.session_id,
+        context_key = %session.context_key,
+        phase = "runtime_session_materialized",
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web runtime session ensured"
+    );
+    RuntimeSessionEnsureResult::Materialized
 }
 
 async fn recreate_runtime_session(state: &AppState, user_id: i64, session: &WebSessionRecord) {
@@ -1105,6 +1278,8 @@ async fn recreate_runtime_session(state: &AppState, user_id: i64, session: &WebS
 }
 
 async fn materialize_runtime_session(state: &AppState, user_id: i64, session: &WebSessionRecord) {
+    let started_at = Instant::now();
+    let mut phase_started_at = started_at;
     let execution_profile = match load_execution_profile_for_agent_profile_id(
         state,
         user_id,
@@ -1123,6 +1298,18 @@ async fn materialize_runtime_session(state: &AppState, user_id: i64, session: &W
             None
         }
     };
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id,
+        session_id = %session.session_id,
+        agent_profile_id = ?session.agent_profile_id,
+        has_execution_profile = execution_profile.is_some(),
+        phase = "execution_profile_loaded",
+        phase_ms = phase_started_at.elapsed().as_millis(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web runtime session materialization latency"
+    );
+    phase_started_at = Instant::now();
 
     state
         .session_manager
@@ -1141,6 +1328,17 @@ async fn materialize_runtime_session(state: &AppState, user_id: i64, session: &W
             },
         )
         .await;
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id,
+        session_id = %session.session_id,
+        context_key = %session.context_key,
+        agent_flow_id = %session.agent_flow_id,
+        phase = "runtime_session_created",
+        phase_ms = phase_started_at.elapsed().as_millis(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web runtime session materialization latency"
+    );
 }
 
 fn web_task_version_context_key(session_id: &str) -> String {

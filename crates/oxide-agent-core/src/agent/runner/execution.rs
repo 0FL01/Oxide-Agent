@@ -8,11 +8,23 @@ use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_failure_summary::rewrite_tool_failure_messages;
 use anyhow::{anyhow, Result};
 use std::future::Future;
-use tracing::debug;
+use tracing::{debug, info};
+
+const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
 
 impl AgentRunner {
     /// Execute the agent loop until completion or error.
     pub async fn run(&mut self, ctx: &mut AgentRunnerContext<'_>) -> Result<AgentRunResult> {
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id = %ctx.task_id,
+            session_id = ?ctx.session_id,
+            model = %ctx.config.model_name,
+            provider = ?ctx.config.model_provider,
+            max_iterations = ctx.config.max_iterations,
+            timeout_secs = ctx.config.timeout_secs,
+            "Agent runner entered"
+        );
         self.reset_loop_detector(ctx).await;
         self.apply_before_agent_hooks(ctx)?;
         self.run_loop(ctx).await
@@ -39,7 +51,16 @@ impl AgentRunner {
             self.run_pre_llm_maintenance(ctx, &mut state, iteration)
                 .await?;
 
-            debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
+            if iteration == 0 {
+                info!(
+                    target: AGENT_LATENCY_TARGET,
+                    task_id = %ctx.task_id,
+                    iteration,
+                    "Agent first loop iteration started"
+                );
+            } else {
+                debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
+            }
 
             let snapshot_trigger = if iteration == 0 {
                 CompactionTrigger::PreRun

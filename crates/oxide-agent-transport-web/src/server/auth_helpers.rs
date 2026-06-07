@@ -14,6 +14,8 @@ use oxide_agent_web_contracts::{
 };
 use std::time::Instant;
 
+const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
+
 // ---------------------------------------------------------------------------
 // Auth error mapping
 // ---------------------------------------------------------------------------
@@ -276,8 +278,16 @@ pub(crate) async fn current_user_for_token_cached(
         return Ok((entry.user, entry.auth_session));
     }
 
+    let store_started_at = Instant::now();
     let (user, auth_session) =
         current_user_for_token(state.web_store.as_ref(), raw_session_token, now).await?;
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id = user.user_id,
+        phase = "auth_cache_miss_store_load",
+        elapsed_ms = store_started_at.elapsed().as_millis(),
+        "web auth helper latency"
+    );
     state
         .auth_cache
         .insert(
@@ -351,12 +361,23 @@ pub(crate) async fn load_owned_session(
     user_id: i64,
     session_id: &str,
 ) -> Result<WebSessionRecord, (StatusCode, Json<ErrorEnvelope>)> {
-    state
+    let started_at = Instant::now();
+    let session = state
         .web_store
         .load_session(user_id, session_id)
         .await
         .map_err(store_error_response)?
-        .ok_or_else(not_found_response)
+        .ok_or_else(not_found_response)?;
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id,
+        session_id = %session_id,
+        active_task_id = ?session.active_task_id,
+        phase = "load_owned_session",
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web auth helper latency"
+    );
+    Ok(session)
 }
 
 pub(crate) async fn load_owned_task(

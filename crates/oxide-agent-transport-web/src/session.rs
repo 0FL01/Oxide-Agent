@@ -44,8 +44,33 @@ use oxide_agent_web_contracts::ModelSelection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
+
+fn log_session_create_phase(
+    user_id: i64,
+    session_id: &str,
+    context_key: &str,
+    agent_flow_id: &str,
+    phase: &str,
+    started_at: Instant,
+    phase_started_at: Instant,
+) {
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        user_id,
+        session_id = %session_id,
+        context_key = %context_key,
+        agent_flow_id = %agent_flow_id,
+        phase,
+        phase_ms = phase_started_at.elapsed().as_millis(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web session runtime create latency"
+    );
+}
 
 /// Session metadata returned via HTTP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -457,11 +482,14 @@ impl WebSessionManager {
         agent_flow_id: String,
         options: WebSessionRuntimeOptions,
     ) -> String {
+        let started_at = Instant::now();
+        let mut phase_started_at = started_at;
         let WebSessionRuntimeOptions {
             model_selection,
             agent_profile_id,
             execution_profile,
         } = options;
+        let has_execution_profile = execution_profile.is_some();
 
         let session_id_i64 = {
             use std::collections::hash_map::DefaultHasher;
@@ -474,12 +502,32 @@ impl WebSessionManager {
 
         let sid = SessionId::from(session_id_i64);
         let sandbox_scope = web_session_sandbox_scope(user_id, &context_key);
+        log_session_create_phase(
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+            "runtime_ids_prepared",
+            started_at,
+            phase_started_at,
+        );
+        phase_started_at = Instant::now();
 
         let mut session = AgentSession::new_with_scopes(
             sid,
             sandbox_scope,
             AgentMemoryScope::new(user_id, context_key.clone(), agent_flow_id.clone()),
         );
+        log_session_create_phase(
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+            "agent_session_created",
+            started_at,
+            phase_started_at,
+        );
+        phase_started_at = Instant::now();
 
         // 1. Hydrate persisted AgentMemory from durable storage.
         //    This restores conversation history across backend restarts.
@@ -491,6 +539,20 @@ impl WebSessionManager {
             &agent_flow_id,
         )
         .await;
+        let hydrated_message_count = session.memory.get_messages().len();
+        tracing::info!(
+            target: WEB_LATENCY_TARGET,
+            user_id,
+            session_id = %session_id,
+            context_key = %context_key,
+            agent_flow_id = %agent_flow_id,
+            message_count = hydrated_message_count,
+            phase = "agent_memory_hydrated",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "web session runtime create latency"
+        );
+        phase_started_at = Instant::now();
 
         // 2. Inject topic AGENTS.md only if the restored memory does not
         //    already contain a pinned copy from durable storage.
@@ -501,6 +563,16 @@ impl WebSessionManager {
             &mut session,
         )
         .await;
+        log_session_create_phase(
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+            "topic_agents_md_injected",
+            started_at,
+            phase_started_at,
+        );
+        phase_started_at = Instant::now();
 
         // 3. Attach a checkpoint backed by the manager storage so memory
         //    survives across tasks and follows the configured durable backend.
@@ -512,6 +584,16 @@ impl WebSessionManager {
             context_key: context_key.clone(),
             agent_flow_id: agent_flow_id.clone(),
         }));
+        log_session_create_phase(
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+            "memory_checkpoint_installed",
+            started_at,
+            phase_started_at,
+        );
+        phase_started_at = Instant::now();
 
         // 4. Create executor only after the session is fully hydrated.
         let mut executor =
@@ -531,23 +613,60 @@ impl WebSessionManager {
             thread_kind: ReminderThreadKind::None,
             notifier: None,
         });
+        log_session_create_phase(
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+            "agent_executor_created",
+            started_at,
+            phase_started_at,
+        );
+        phase_started_at = Instant::now();
+
         if let Some(model_routes) = self
             .model_routes_override_for_selection(model_selection.as_ref())
             .await
         {
             executor.set_model_routes_override(model_routes);
         }
+        log_session_create_phase(
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+            "model_routes_resolved",
+            started_at,
+            phase_started_at,
+        );
+        phase_started_at = Instant::now();
+
         if let Some(execution_profile) = execution_profile {
             executor.set_execution_profile(execution_profile);
         }
 
         self.registry.insert(sid, executor).await;
+        tracing::info!(
+            target: WEB_LATENCY_TARGET,
+            user_id,
+            session_id = %session_id,
+            context_key = %context_key,
+            agent_flow_id = %agent_flow_id,
+            agent_profile_id = ?agent_profile_id,
+            has_model_selection = model_selection.is_some(),
+            has_execution_profile,
+            phase = "runtime_registry_inserted",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "web session runtime create latency"
+        );
+        phase_started_at = Instant::now();
 
         let meta = SessionMeta {
             session_id: session_id.clone(),
             user_id,
-            context_key,
-            agent_flow_id,
+            context_key: context_key.clone(),
+            agent_flow_id: agent_flow_id.clone(),
             model_selection,
             agent_profile_id,
             status: SessionStatus::Idle,
@@ -556,6 +675,24 @@ impl WebSessionManager {
         };
 
         self.sessions.write().await.insert(session_id.clone(), meta);
+        log_session_create_phase(
+            user_id,
+            &session_id,
+            &context_key,
+            &agent_flow_id,
+            "web_session_meta_inserted",
+            started_at,
+            phase_started_at,
+        );
+        tracing::info!(
+            target: WEB_LATENCY_TARGET,
+            user_id,
+            session_id = %session_id,
+            context_key = %context_key,
+            agent_flow_id = %agent_flow_id,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "web session runtime create completed"
+        );
         session_id
     }
 

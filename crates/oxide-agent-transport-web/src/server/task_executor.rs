@@ -24,11 +24,14 @@ use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
 
+const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
+
 /// Shared state needed by the task executor.
 struct TaskExecutorCtx {
     task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     web_task: Option<WebTaskPersistence>,
+    queued_at: Instant,
 }
 
 #[derive(Clone)]
@@ -51,6 +54,7 @@ struct ExecutorTaskCtx {
     tx: mpsc::Sender<oxide_agent_core::agent::AgentEvent>,
     timeline_map: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     agent_started_at: Instant,
+    queued_at: Instant,
     web_task: Option<WebTaskPersistence>,
     event_collector_handle: tokio::task::JoinHandle<()>,
 }
@@ -85,6 +89,7 @@ pub(crate) async fn spawn_registered_task(
     run_request: TaskRunRequest,
     web_task: Option<WebTaskPersistence>,
 ) {
+    let queued_at = Instant::now();
     let task_id = running_task.task_id.clone();
     let task_progress = state.task_progress.clone();
     let task_timeline = state.task_timeline.clone();
@@ -123,10 +128,13 @@ pub(crate) async fn spawn_registered_task(
         task_progress,
         task_timeline,
         web_task,
+        queued_at,
     };
     let task_handles = state.task_handles.clone();
     let tid_for_cleanup = task_id.clone();
     let session_id_for_task = session_id.clone();
+    let task_id_for_log = tid_for_cleanup.clone();
+    let session_id_for_log = session_id_for_task.clone();
 
     let handle = tokio::spawn(async move {
         execute_agent_task(
@@ -147,6 +155,15 @@ pub(crate) async fn spawn_registered_task(
         handles.insert(task_id, Arc::new(handle));
     }
 
+    info!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id_for_log,
+        task_id = %task_id_for_log,
+        phase = "task_tokio_spawned",
+        elapsed_ms = queued_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
+
     tokio::task::yield_now().await;
 }
 
@@ -157,6 +174,16 @@ async fn execute_agent_task(
     run_request: TaskRunRequest,
     ctx: TaskExecutorCtx,
 ) {
+    let executor_started_at = Instant::now();
+    info!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "execute_agent_task_started",
+        queue_wait_ms = ctx.queued_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
+
     let registry = session_manager.session_registry();
     let sid = derive_session_id(&session_manager, session_id).await;
     let Some(sid) = sid else {
@@ -181,6 +208,15 @@ async fn execute_agent_task(
             return;
         }
     };
+    info!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "runtime_executor_resolved",
+        queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
+        executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
     let cancellation_token = match registry.get_cancellation_token(&sid).await {
         Some(token) => token,
         None => {
@@ -191,10 +227,30 @@ async fn execute_agent_task(
             return;
         }
     };
+    info!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "runtime_cancellation_token_resolved",
+        queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
+        executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
 
     {
+        let lock_started_at = Instant::now();
         let mut executor = executor_arc.write().await;
         executor.session_mut().cancellation_token = (*cancellation_token).clone();
+        info!(
+            target: WEB_LATENCY_TARGET,
+            session_id = %session_id,
+            task_id = %task_id,
+            phase = "cancellation_token_installed",
+            executor_lock_wait_ms = lock_started_at.elapsed().as_millis(),
+            queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
+            executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
+            "web task executor latency"
+        );
     }
 
     // Capture chrono timestamp for calculating offsets from named milestones.
@@ -220,6 +276,15 @@ async fn execute_agent_task(
         agent_started_at_chrono,
         ctx.web_task.clone(),
     );
+    info!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "event_collector_spawned",
+        queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
+        executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
     spawn_executor_task(ExecutorTaskCtx {
         session_manager,
         session_id: session_id.to_string(),
@@ -229,6 +294,7 @@ async fn execute_agent_task(
         tx,
         timeline_map: ctx.task_timeline.clone(),
         agent_started_at,
+        queued_at: ctx.queued_at,
         web_task: ctx.web_task,
         event_collector_handle,
     });
@@ -341,26 +407,67 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
             tx,
             timeline_map,
             agent_started_at,
+            queued_at,
             web_task,
             event_collector_handle,
         } = ctx;
 
         let result = {
+            let executor_lock_started_at = Instant::now();
+            info!(
+                target: WEB_LATENCY_TARGET,
+                session_id = %session_id,
+                task_id = %task_id,
+                phase = "executor_lock_wait_started",
+                queue_elapsed_ms = queued_at.elapsed().as_millis(),
+                agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
+                "web task executor latency"
+            );
             let mut executor = executor_arc.write().await;
             let executor_lock_acquired_ms = Some(agent_started_at.elapsed().as_millis() as i64);
             record_executor_lock_acquired(&timeline_map, &task_id, executor_lock_acquired_ms).await;
+            info!(
+                target: WEB_LATENCY_TARGET,
+                session_id = %session_id,
+                task_id = %task_id,
+                phase = "executor_lock_acquired",
+                executor_lock_wait_ms = executor_lock_started_at.elapsed().as_millis(),
+                queue_elapsed_ms = queued_at.elapsed().as_millis(),
+                agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
+                "web task executor latency"
+            );
             match run_request {
                 TaskRunRequest::Execute {
                     input: task_text,
                     effort,
                 } => {
                     let options = execution_options_from_effort(effort);
+                    info!(
+                        target: WEB_LATENCY_TARGET,
+                        session_id = %session_id,
+                        task_id = %task_id,
+                        run_kind = "execute",
+                        phase = "core_executor_call_started",
+                        queue_elapsed_ms = queued_at.elapsed().as_millis(),
+                        agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
+                        "web task executor latency"
+                    );
                     executor
                         .execute_user_input_with_options(task_text, Some(tx), options)
                         .await
                 }
                 TaskRunRequest::ResumeUserInput { input, effort } => {
                     let options = execution_options_from_effort(effort);
+                    info!(
+                        target: WEB_LATENCY_TARGET,
+                        session_id = %session_id,
+                        task_id = %task_id,
+                        run_kind = "resume_user_input",
+                        phase = "core_executor_call_started",
+                        queue_elapsed_ms = queued_at.elapsed().as_millis(),
+                        agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
+                        "web task executor latency"
+                    );
                     executor
                         .resume_user_input_with_options(input, Some(tx), options)
                         .await

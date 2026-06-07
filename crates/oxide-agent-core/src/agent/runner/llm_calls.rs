@@ -18,6 +18,8 @@ use anyhow::{anyhow, Result};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
+
 enum AttemptOutcome {
     Return(ChatResponse),
     RetrySameRoute,
@@ -211,6 +213,15 @@ impl AgentRunner {
     ) -> Result<ChatResponse> {
         // Emit milestone on first LLM call of first iteration.
         if state.iteration == 0 {
+            info!(
+                target: AGENT_LATENCY_TARGET,
+                task_id = %ctx.task_id,
+                iteration,
+                model = %ctx.config.model_name,
+                provider = ?ctx.config.model_provider,
+                route_count = ctx.config.model_routes.len(),
+                "Agent first LLM call starting"
+            );
             if let Some(tx) = ctx.progress_tx {
                 let timestamp_ms = chrono::Utc::now().timestamp_millis();
                 let _ = tx

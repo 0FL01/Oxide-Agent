@@ -29,8 +29,11 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
+
+const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
 
 static WIKI_MEMORY_BACKGROUND_WRITER_SEMAPHORE: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(1);
@@ -217,9 +220,20 @@ impl AgentExecutor {
             "Starting agent task"
         );
 
+        let prepare_started_at = Instant::now();
         let mut prepared = self
             .prepare_execution(&task, progress_tx.as_ref(), options)
             .await;
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id = %task_id,
+            model = %prepared.runner_config.model_name,
+            provider = ?prepared.runner_config.model_provider,
+            tool_count = prepared.tools.len(),
+            message_count = prepared.messages.len(),
+            prepare_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent execution prepared"
+        );
         Self::emit_milestone(progress_tx.as_ref(), "prepare_execution_done").await;
 
         let timeout_duration = self.agent_timeout_duration(options);
@@ -232,6 +246,12 @@ impl AgentExecutor {
             RunnerContextServices {
                 compaction_controller: &self.compaction_controller,
             },
+        );
+        info!(
+            target: AGENT_LATENCY_TARGET,
+            task_id = %task_id,
+            timeout_secs = timeout_duration.as_secs(),
+            "Dispatching agent runner"
         );
 
         Ok(

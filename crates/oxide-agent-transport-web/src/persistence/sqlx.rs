@@ -1,6 +1,7 @@
 //! SQLx/Postgres web console persistence.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -23,6 +24,31 @@ use super::{
 
 const DEFAULT_TASK_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const TASK_FILE_MAX_BYTES_ENV: &str = "OXIDE_WEB_TASK_FILE_MAX_BYTES";
+const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
+
+fn log_store_query(
+    operation: &'static str,
+    started_at: Instant,
+    user_id: Option<i64>,
+    session_id: Option<&str>,
+    task_id: Option<&str>,
+    rows_affected: Option<u64>,
+    row_count: Option<usize>,
+    found: Option<bool>,
+) {
+    tracing::info!(
+        target: WEB_LATENCY_TARGET,
+        operation,
+        user_id = ?user_id,
+        session_id = ?session_id,
+        task_id = ?task_id,
+        rows_affected = ?rows_affected,
+        row_count = ?row_count,
+        found = ?found,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web sqlx store latency"
+    );
+}
 
 /// SQLx-backed implementation of [`WebUiStore`].
 #[derive(Clone)]
@@ -149,7 +175,8 @@ impl SqlxWebUiStore {
         user_id: i64,
         timestamp: DateTime<Utc>,
     ) -> WebUiStoreResult<()> {
-        query::<Postgres>(
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
             r#"
             INSERT INTO users (user_id, created_at, updated_at)
             VALUES ($1, $2, $2)
@@ -162,6 +189,16 @@ impl SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "ensure_user_row",
+            started_at,
+            Some(user_id),
+            None,
+            None,
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
         Ok(())
     }
 
@@ -214,7 +251,8 @@ impl SqlxWebUiStore {
     }
 
     async fn upsert_password_identity(&self, record: &WebUserRecord) -> WebUiStoreResult<()> {
-        query::<Postgres>(
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
             r#"
             DELETE FROM login_identities
             WHERE user_id = $1
@@ -227,8 +265,19 @@ impl SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "upsert_password_identity.delete_stale",
+            started_at,
+            Some(record.user_id),
+            None,
+            None,
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
 
-        query::<Postgres>(
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
             r#"
             INSERT INTO login_identities (
                 identity_id, user_id, provider, provider_subject,
@@ -251,12 +300,23 @@ impl SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(|error| login_conflict_error(error, &record.normalized_login))?;
+        log_store_query(
+            "upsert_password_identity.upsert",
+            started_at,
+            Some(record.user_id),
+            None,
+            None,
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
         Ok(())
     }
 
     async fn save_task_progress(&self, record: &WebTaskRecord) -> WebUiStoreResult<()> {
         let Some(progress) = &record.last_progress else {
-            query::<Postgres>(
+            let started_at = Instant::now();
+            let result = query::<Postgres>(
                 r#"
                 DELETE FROM web_task_progress
                 WHERE user_id = $1 AND session_id = $2 AND task_id = $3
@@ -268,11 +328,22 @@ impl SqlxWebUiStore {
             .execute(self.pool())
             .await
             .map_err(db_error)?;
+            log_store_query(
+                "save_task_progress.delete_empty",
+                started_at,
+                Some(record.user_id),
+                Some(&record.session_id),
+                Some(&record.task_id),
+                Some(result.rows_affected()),
+                None,
+                None,
+            );
             return Ok(());
         };
 
         let progress_payload = json_value(progress, "task progress")?;
-        query::<Postgres>(
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
             r#"
             INSERT INTO web_task_progress (
                 user_id, session_id, task_id, current_iteration, max_iterations,
@@ -305,6 +376,16 @@ impl SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "save_task_progress.upsert",
+            started_at,
+            Some(record.user_id),
+            Some(&record.session_id),
+            Some(&record.task_id),
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
         Ok(())
     }
 }
@@ -328,6 +409,7 @@ impl WebUiStore for SqlxWebUiStore {
     }
 
     async fn load_user(&self, user_id: i64) -> WebUiStoreResult<Option<WebUserRecord>> {
+        let started_at = Instant::now();
         let row = query::<Postgres>(
             r#"
             SELECT user_id, login, normalized_login, password_hash, role, status,
@@ -341,6 +423,16 @@ impl WebUiStore for SqlxWebUiStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "load_user",
+            started_at,
+            Some(user_id),
+            None,
+            None,
+            None,
+            None,
+            Some(row.is_some()),
+        );
 
         row.as_ref().map(row_to_user).transpose()
     }
@@ -368,7 +460,8 @@ impl WebUiStore for SqlxWebUiStore {
         record.validate_web_record()?;
         self.ensure_user_row(record.user_id, record.created_at)
             .await?;
-        query::<Postgres>(
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
             r#"
             INSERT INTO auth_sessions (
                 session_token_hash, user_id, csrf_token, created_at,
@@ -399,6 +492,16 @@ impl WebUiStore for SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "save_auth_session",
+            started_at,
+            Some(record.user_id),
+            None,
+            None,
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
         Ok(())
     }
 
@@ -406,6 +509,7 @@ impl WebUiStore for SqlxWebUiStore {
         &self,
         session_token_hash: &str,
     ) -> WebUiStoreResult<Option<WebAuthSessionRecord>> {
+        let started_at = Instant::now();
         let row = query::<Postgres>(
             r#"
             SELECT session_token_hash, user_id, csrf_token, created_at,
@@ -418,6 +522,19 @@ impl WebUiStore for SqlxWebUiStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db_error)?;
+        let user_id = row
+            .as_ref()
+            .and_then(|row| row.try_get::<i64, _>("user_id").ok());
+        log_store_query(
+            "load_auth_session",
+            started_at,
+            user_id,
+            None,
+            None,
+            None,
+            None,
+            Some(row.is_some()),
+        );
 
         row.as_ref().map(row_to_auth_session).transpose()
     }
@@ -473,7 +590,8 @@ impl WebUiStore for SqlxWebUiStore {
         let model_selection = optional_json(&record.model_selection, "model selection")?;
         let last_task_status = optional_enum_to_sql(&record.last_task_status, "task status")?;
         let auto_title_attempts = u32_to_i32(record.auto_title_attempts, "auto title attempts")?;
-        query::<Postgres>(
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
             r#"
             INSERT INTO web_sessions (
                 user_id, session_id, title, context_key, context_keys, agent_flow_id,
@@ -530,6 +648,16 @@ impl WebUiStore for SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "save_session",
+            started_at,
+            Some(record.user_id),
+            Some(&record.session_id),
+            record.active_task_id.as_deref(),
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
         Ok(())
     }
 
@@ -538,6 +666,7 @@ impl WebUiStore for SqlxWebUiStore {
         user_id: i64,
         session_id: &str,
     ) -> WebUiStoreResult<Option<WebSessionRecord>> {
+        let started_at = Instant::now();
         let row = query::<Postgres>(
             r#"
             SELECT user_id, session_id, title, context_key, context_keys, agent_flow_id,
@@ -555,6 +684,16 @@ impl WebUiStore for SqlxWebUiStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "load_session",
+            started_at,
+            Some(user_id),
+            Some(session_id),
+            None,
+            None,
+            None,
+            Some(row.is_some()),
+        );
 
         row.as_ref().map(row_to_session).transpose()
     }
@@ -671,7 +810,8 @@ impl WebUiStore for SqlxWebUiStore {
         let status = enum_to_sql(&record.status, "task status")?;
         let attachments = json_value(&record.attachments, "task attachments")?;
         let pending_user_input = optional_json(&record.pending_user_input, "pending user input")?;
-        query::<Postgres>(
+        let started_at = Instant::now();
+        let result = query::<Postgres>(
             r#"
             INSERT INTO web_tasks (
                 user_id, session_id, task_id, version_group_id, version_index,
@@ -724,6 +864,16 @@ impl WebUiStore for SqlxWebUiStore {
         .execute(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "save_task",
+            started_at,
+            Some(record.user_id),
+            Some(&record.session_id),
+            Some(&record.task_id),
+            Some(result.rows_affected()),
+            None,
+            None,
+        );
 
         self.save_task_progress(&record).await
     }
@@ -750,6 +900,7 @@ impl WebUiStore for SqlxWebUiStore {
     }
 
     async fn task_exists(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
+        let started_at = Instant::now();
         let row = query::<Postgres>(
             r#"
             SELECT 1
@@ -763,6 +914,16 @@ impl WebUiStore for SqlxWebUiStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "task_exists",
+            started_at,
+            Some(user_id),
+            Some(session_id),
+            None,
+            None,
+            None,
+            Some(row.is_some()),
+        );
 
         Ok(row.is_some())
     }
@@ -773,6 +934,7 @@ impl WebUiStore for SqlxWebUiStore {
         session_id: &str,
         task_id: &str,
     ) -> WebUiStoreResult<Option<WebTaskEventState>> {
+        let started_at = Instant::now();
         let row = query::<Postgres>(
             r#"
             SELECT status, last_event_seq
@@ -786,6 +948,16 @@ impl WebUiStore for SqlxWebUiStore {
         .fetch_optional(self.pool())
         .await
         .map_err(db_error)?;
+        log_store_query(
+            "load_task_event_state",
+            started_at,
+            Some(user_id),
+            Some(session_id),
+            Some(task_id),
+            None,
+            None,
+            Some(row.is_some()),
+        );
 
         row.as_ref().map(row_to_task_event_state).transpose()
     }

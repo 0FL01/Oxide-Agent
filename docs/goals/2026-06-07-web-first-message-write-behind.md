@@ -1,0 +1,230 @@
+# Goal: Web First Message Write-Behind Latency
+
+Date started: 2026-06-07
+Status: active
+Codex goal: `/goal Implement docs/goals/2026-06-07-web-first-message-write-behind.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
+Source spec: User request after web transport RECON to reduce first-message latency; container crash data loss is acceptable, low latency is the priority, and DB can catch up asynchronously.
+Goal doc owner: Codex
+Last updated: 2026-06-07 10:30
+
+## Objective
+
+Reduce web transport first-message latency by removing sequential remote-Postgres round trips from the task creation hot path and moving low-priority persistence to local RAM plus background write-behind where safe for personal-use constraints.
+
+Done when the first-message path starts the agent with measured low latency, the selected write-behind behavior is explicitly documented, validation commands pass, and every required Completion Audit item is verified by current evidence.
+
+## Scope
+
+In scope:
+- `crates/oxide-agent-transport-web/src/server/task_routes.rs` task creation flow and first-message spawn ordering.
+- `crates/oxide-agent-transport-web/src/server/task_executor.rs` task execution boundary logging and any enqueue metadata needed for latency evidence.
+- `crates/oxide-agent-transport-web/src/session.rs` runtime-session materialization and session-local cache integration.
+- `crates/oxide-agent-transport-web/src/persistence/` SQLx web store hot writes, optional write-behind wrapper/queue, and local cache state.
+- `crates/oxide-agent-transport-web/src/server/types.rs` only for AppState cache/queue fields.
+- Focused tests, tracing logs, this goal document, and clippy config needed for current repository gates.
+
+Out of scope:
+- Telegram transport behavior.
+- Core LLM/provider/tool semantics except already-added runtime-entry observability.
+- New external services, databases, brokers, distributed queues, HA, or sharding.
+- Direct Google Gemini provider work.
+- Strong crash-durability guarantees for write-behind task/session state; user explicitly accepts possible data loss on container failure before flush.
+
+## Missing Inputs
+
+- Target latency is not yet given as a hard SLO.
+  - Impact: success must initially use measured relative improvement instead of a fixed contract.
+  - Low-risk assumption or fallback: target agent spawn under 100 ms on warm cache, under 250 ms when only session load misses cache.
+  - User/external action needed: provide a stricter target only if these bounds are insufficient.
+
+## Repository Context
+
+- Web backend route slices live under `crates/oxide-agent-transport-web/src/server/`.
+- Web SQLx persistence is in `crates/oxide-agent-transport-web/src/persistence/sqlx.rs`.
+- Moka is already available in `oxide-agent-transport-web`; no new dependency is required for local in-process caches.
+- Current `docker-compose.web.yml` logs `oxide_agent_core=info` and `oxide_agent_transport_web=info`, so new `INFO` latency targets are visible in `docker logs oxide_agent_web -f`.
+- Validation convention for this work: `cargo fmt`, `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`, and `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
+
+## Completion Audit
+
+- G1: First-message latency observability is present
+  - Source: User asked to add INFO logs visible through `docker-compose.web.yml` and use them to find the bottleneck.
+  - Acceptance: Logs show phase-level timing from HTTP task creation through task executor and core runner entry, plus SQLx operation timings for auth/session/task hot calls.
+  - Evidence required: code diff, successful cargo checks, and user runtime log showing per-phase/per-SQL latency.
+  - Status: verified
+  - Evidence collected: Added `oxide_agent_transport_web::web_latency` logs in task creation, task executor, session materialization, auth helpers, and SQLx store; added `oxide_agent_core::agent_latency` logs for prepare/runner/LLM start. User runtime log on 2026-06-07 showed `create_task total=1482ms`, `task_exists=187ms`, `save_task path=515ms`, `save_session update=375ms`, and executor/runtime waits at `0ms`. Commands passed: `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
+
+- G2: Hot-path redundant DB writes are removed
+  - Source: User accepted plan item 1 and 2: remove redundant `ensure_user_row` and no-op `save_task_progress.delete_empty`.
+  - Acceptance: `save_task`/`save_session` no longer pay `ensure_user_row` on the authenticated hot path, and initial task creation with no progress does not issue a `DELETE FROM web_task_progress` round trip.
+  - Evidence required: code diff, SQLx latency logs before/after, cargo check/clippy, and a measured create-task latency reduction.
+  - Status: pending
+  - Evidence collected:
+
+- G3: Agent spawn is moved before non-critical session update persistence
+  - Source: User accepted lower latency over strict immediate DB durability.
+  - Acceptance: The task executor is spawned after the minimum required in-memory/task state is available; `save_session_task_update` or equivalent durable session update happens in background without blocking agent runtime entry.
+  - Evidence required: code diff, runtime logs showing `core_executor_call_started` before background `save_session`, cargo check/clippy, and measured spawn latency.
+  - Status: pending
+  - Evidence collected:
+
+- G4: Moka-backed write-front cache and background DB flush exist for selected task/session writes
+  - Source: User asked whether Moka can save results in RAM and asynchronously send to the DB later; user explicitly accepts crash loss.
+  - Acceptance: The selected task/session records are inserted/updated in a bounded in-process cache first, queued for background Postgres flush, and readable by the web transport before flush completes. Flush errors are logged and retried or left visible in a simple pending state without blocking the agent hot path.
+  - Evidence required: implementation diff, cache/queue latency logs, flush success/failure logs, focused tests or route/store tests, and runtime measurement.
+  - Status: pending
+  - Evidence collected:
+
+- G5: Before/after latency is documented with current logs
+  - Source: User asks “что по цифрам будет?” and expects measured improvement.
+  - Acceptance: This document records baseline and post-change timings for first-message create/spawn, including breakdown by phase.
+  - Evidence required: summarized runtime logs without secrets, command outputs, and a before/after table.
+  - Status: pending
+  - Evidence collected: Baseline recorded below; after numbers pending implementation checkpoints.
+
+- Q1: Prefer simple local changes
+  - Source: Repository over-engineering guardrails and target personal use up to 2-3 users / 5 RPS.
+  - Acceptance: No external queue/cache/service is introduced; solution uses existing Moka and tokio primitives only.
+  - Evidence required: dependency diff review and implementation review.
+  - Status: pending
+  - Evidence collected:
+
+- Q2: Write-behind durability tradeoff is explicit
+  - Source: User said container crash data loss is acceptable and DB can catch up later.
+  - Acceptance: Code and docs do not pretend write-behind is crash-durable; user-visible behavior remains coherent for the running process, and logs make pending/background persistence observable.
+  - Evidence required: implementation notes, runtime logs, and final documentation in this goal.
+  - Status: pending
+  - Evidence collected:
+
+- V1: Web profile validates
+  - Source: Repository validation convention.
+  - Acceptance: `cargo fmt`, `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`, and `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local` succeed after each checkpoint.
+  - Evidence required: command output summary in Progress Log.
+  - Status: verified
+  - Evidence collected: Commands passed on 2026-06-07 after observability and clippy config updates.
+
+- N1: Do not change unrelated transports or provider behavior
+  - Source: User scoped the work to web transport focus.
+  - Must preserve: Telegram transport behavior, provider behavior, sandbox backends, manager control plane, wiki memory semantics, and direct Gemini absence.
+  - Evidence required: `git diff --name-only` review before each commit.
+  - Status: pending
+  - Evidence collected:
+
+## Baseline Numbers
+
+Runtime log sample from 2026-06-07 first task creation with remote Postgres-like latency:
+
+| Segment | Baseline |
+|---|---:|
+| `create_task` total until response | 1482 ms |
+| `session_loaded` | 184 ms |
+| `task_exists` | 187-188 ms |
+| `task_saved` route phase | 515 ms |
+| `save_task.ensure_user_row` | 122 ms |
+| `save_task` SQL | 193 ms |
+| `save_task_progress.delete_empty` | 199 ms |
+| `session_task_update_saved` route phase | 375 ms |
+| `save_session.ensure_user_row` | 186 ms |
+| `save_session` SQL | 189 ms |
+| executor queue/lock/runtime registry wait | 0 ms |
+| core `Starting agent task` after core call boundary | ~140 ms |
+| core `prepare_execution` | ~632 ms |
+
+Expected by checkpoint, assuming the observed 120-200 ms DB round trip remains stable:
+
+| Stage | Expected agent-spawn latency |
+|---|---:|
+| Baseline | ~1480 ms |
+| Remove redundant hot DB calls | ~950-1050 ms |
+| Spawn before background session update | ~550-650 ms |
+| Moka write-front warm path | ~10-80 ms |
+| Moka write-front with session cache miss | ~150-250 ms |
+
+## Implementation Plan
+
+1. Observability checkpoint
+   - Audit IDs: G1, V1.
+   - Expected changes: INFO latency logs across task creation, runtime session creation, task executor, core runner entry, auth, and SQLx store operations.
+   - Validation: `cargo fmt`; web profile `cargo check`; web profile `cargo clippy`; runtime log review.
+   - Exit condition: exact pre-runtime bottleneck is visible in `docker logs oxide_agent_web -f`.
+
+2. Remove redundant hot DB calls
+   - Audit IDs: G2, G5, V1, Q1, N1.
+   - Expected changes: skip `ensure_user_row` for authenticated hot `save_task`/`save_session` paths or introduce explicit hot-path variants; skip empty progress deletion for new tasks with no progress.
+   - Validation: cargo checks, clippy, runtime log showing removed SQL operations and lower `task_saved`/`session_task_update_saved` timings.
+   - Exit condition: first-message path no longer logs `ensure_user_row` before hot `save_task`/`save_session`, and no initial `save_task_progress.delete_empty` appears for new tasks.
+
+3. Reorder spawn before non-critical session persistence
+   - Audit IDs: G3, G5, V1, Q2, N1.
+   - Expected changes: spawn task executor as soon as task is registered and minimal task state is available; move session active-task persistence to background with logging.
+   - Validation: runtime logs prove agent starts before background session save completes; cargo checks and clippy pass.
+   - Exit condition: agent spawn latency is dominated only by required pre-spawn state, not by durable session update.
+
+4. Add Moka write-front cache and background flush
+   - Audit IDs: G4, G5, Q1, Q2, V1, N1.
+   - Expected changes: add bounded task/session caches and a simple tokio background flusher for selected writes; coalesce obvious duplicate writes by key if simple; expose pending/flush logs under `oxide_agent_transport_web::web_latency`.
+   - Validation: tests or focused route/store checks for cache-read-before-flush; runtime logs showing cache enqueue under a few ms and later DB flush; cargo checks and clippy pass.
+   - Exit condition: warm first-message path starts agent without blocking on Postgres task/session writes.
+
+5. Final measurement and audit
+   - Audit IDs: G5, Q1, Q2, V1, N1.
+   - Expected changes: update this doc with before/after logs, final decisions, and remaining tradeoffs.
+   - Validation: final command suite and `git diff --name-only` scope review.
+   - Exit condition: Completion Audit is verified or remaining gaps are explicitly blocked/dropped by user.
+
+## Validation Contract
+
+- Static checks:
+  - `git diff --check`
+  - `git diff --name-only`
+- Rust checks:
+  - `cargo fmt`
+  - `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`
+  - `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`
+- Runtime/manual verification:
+  - Rebuild and run `docker-compose.web.yml`.
+  - Send a first message in a new web session.
+  - Capture `oxide_agent_transport_web::web_latency` and `oxide_agent_core::agent_latency` logs from `docker logs oxide_agent_web -f`.
+  - Record `create_task`, `core_executor_call_started`, `Starting agent task`, and SQLx operation timings.
+- Done when: all non-dropped Completion Audit items are verified with current evidence.
+
+## Decisions
+
+- 2026-06-07: Create a separate goal doc instead of reopening the completed broader web performance goal because this objective is narrower: first-message write-behind latency, not general chat/page load performance.
+- 2026-06-07: Treat remote Postgres round-trip latency as the proven bottleneck; executor queue, runtime registry, and executor lock all measured at `0ms` on the sampled first-message path.
+- 2026-06-07: Accept non-crash-durable write-behind for selected web task/session state because the user explicitly prioritizes latency and says container crash data loss is acceptable.
+- 2026-06-07: Use existing `moka` in `oxide-agent-transport-web`; no new dependency or external cache service is justified.
+
+## Progress Log
+
+- 2026-06-07 10:30: Goal document created after first-message latency RECON and observability checkpoint.
+  - Changed: Added this goal contract with baseline numbers, write-behind plan, validation contract, and completion audit.
+  - Evidence: User runtime logs show every SQLx round trip costs roughly `120-200ms`, while task executor queue/lock/runtime wait is `0ms`. Current observability code and clippy config changes validate with `cargo fmt`, `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`, and `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
+  - Commands: `git status --short`; `git log --oneline -5`; `cargo fmt`; `cargo check --workspace --no-default-features --features profile-web-embedded-opencode-local`; `cargo clippy --workspace --no-default-features --features profile-web-embedded-opencode-local`.
+  - Audit IDs updated: G1 verified, V1 verified, G5 baseline recorded.
+  - Next: Checkpoint 2 — remove redundant hot DB calls before introducing write-behind.
+
+## Risks and Blockers
+
+- Write-behind can lose unflushed task/session updates on container crash.
+  - Impact: after restart, recent task metadata or session active-task marker may be missing/stale.
+  - Evidence: User explicitly accepted this risk for low latency.
+  - Mitigation or requested decision: keep the behavior local, logged, and limited to selected web task/session writes; do not apply to auth/security-critical writes.
+  - Audit IDs affected: G4, Q2.
+
+- Auth and settings writes should not be blindly write-behind.
+  - Impact: stale auth/session security state could survive longer than intended.
+  - Evidence: Existing auth cache uses bounded TTL and explicit invalidation; this goal targets first-message task/session persistence, not auth durability.
+  - Mitigation or requested decision: keep auth writes synchronous unless separately approved.
+  - Audit IDs affected: Q2, N1.
+
+## Final Verification
+
+Filled only when complete.
+
+- Completion Audit result:
+- Commands run:
+- Artifacts inspected:
+- Remaining gaps:
+- User-accepted exceptions:
+- Final status:
