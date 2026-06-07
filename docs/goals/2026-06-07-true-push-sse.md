@@ -313,6 +313,19 @@ Filled only when complete.
   - Audit IDs updated: all set to pending.
   - Next: Checkpoint 1 — extend `TaskEventLog` to carry `PersistedTaskEvent` payloads.
 
+- 2026-06-07 04:30: Checkpoint 1 completed.
+  - Changed: Extended `TaskEventLog` to carry full `PersistedTaskEvent` payloads. Added `TaskEventLogMessage` enum with `Persisted` and `Closed` variants, switched `broadcast_tx` to `Sender<TaskEventLogMessage>`, added `persisted: Arc<RwLock<Vec<PersistedTaskEvent>>>` snapshot, added `push_persisted` (dedupes by `seq` and broadcasts), `latest_seq`, `persisted_snapshot` methods, bumped `TASK_EVENT_BROADCAST_CAPACITY` from 100 to 256. Removed the dead `push(&AgentEvent)` broadcast that was synthesizing fake events. Updated `close()` to send a `Closed` sentinel. Added 4 focused tests in `web_transport::tests` for the new behavior.
+  - Evidence: 4 new unit tests pass; 17 total web_transport tests pass; cargo check + cargo fmt clean; no new warnings.
+  - Audit IDs updated: G1 in progress (data path ready, SSE handler not yet wired).
+  - Next: Checkpoint 2 — replace SSE polling loop with broadcast-driven loop.
+
+- 2026-06-07 05:00: Checkpoint 2 completed.
+  - Changed: Wired the SSE handler to the in-process broadcast. Persister side: added `event_log: Option<TaskEventLog>` to `WebTaskPersistence`, hooked `persist_task_events` to call `event_log.push_persisted` after successful DB write, called `event_log.close()` from the terminal-state helpers (`persist_task_completed`, `persist_task_waiting_for_user_input`, `persist_task_failed`). SSE side: replaced the 1Hz polling loop in `task_sse_stream` with `tokio::select!` over `event_log.subscribe()` and a 15s keepalive timer. Replay path is inlined into the `async_stream!` block: in-memory snapshot for active tasks, DB fallback for restart/overflow. Slow-consumer `RecvError::Lagged` triggers snapshot drain and a single DB page before resuming the live loop. Status is emitted unconditionally on initial connect so a client that opens after a task finished still sees the terminal state.
+  - Evidence: New test `api_sse_stream_delivers_live_events_via_in_process_broadcast` passes (asserts snapshot, task_status, and a live `task_event` with `seq:1` are all delivered without DB polling). Existing `api_task_stream_replays_persisted_events_after_seq` still passes. 78 of 79 lib tests pass; the 1 failure (`api_task_events_are_auth_scoped_and_replay_after_seq`) is the pre-existing REST-endpoint failure on the base branch (verified via `git stash`).
+  - Commands: `cargo check -p oxide-agent-transport-web` clean; `cargo test -p oxide-agent-transport-web --lib` shows 78 passed, 1 pre-existing failure; `cargo fmt -p oxide-agent-transport-web` clean.
+  - Audit IDs updated: G1 in progress (handler wired, status/progress/resume broadcasts still pending in checkpoint 3); G4 in progress (contract preserved — existing SSE test still passes).
+  - Next: Checkpoint 3 — broadcast on status, progress, and resume paths so subscribers see updates that do not flow through `collect_events`.
+
 - 2026-06-07 04:35: Checkpoint 1 completed.
   - Changed: Added `TaskEventLogMessage::{Persisted, Closed}` enum, added `persisted: Arc<RwLock<Vec<PersistedTaskEvent>>>` snapshot vec, added `push_persisted`/`latest_seq`/`persisted_snapshot` methods, switched `broadcast_tx` to the new message type, bumped capacity from 100 to 256 (`TASK_EVENT_BROADCAST_CAPACITY`), and updated `close()` to broadcast a typed `Closed` sentinel. Removed the dead `push(&AgentEvent)` broadcast (it had no subscribers and was synthesizing fake `PersistedTaskEvent` rows). Added 4 focused tests covering broadcast receipt, seq dedup, `latest_seq`, and `Closed` sentinel.
   - Evidence: All 17 `web_transport::tests` pass, including the 4 new ones; `cargo check -p oxide-agent-transport-web` is clean. Pre-existing failure of `api_task_events_are_auth_scoped_and_replay_after_seq` reproduces on the base branch and is unrelated.

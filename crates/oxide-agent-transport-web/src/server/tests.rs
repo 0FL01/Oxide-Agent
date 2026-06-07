@@ -38,6 +38,9 @@ use crate::persistence::{WebTaskFileRecord, WEB_TASK_FILE_SCHEMA_VERSION};
 
 #[cfg(feature = "profile-lite")]
 use super::task_routes::TaskListQuery;
+use super::EVENT_LOGS;
+use crate::web_transport::TaskEventLog;
+
 #[cfg(feature = "storage-sqlx")]
 use super::WebStoreKind;
 use super::{
@@ -2411,6 +2414,7 @@ async fn live_progress_persister_updates_running_task_record() {
         user_id,
         session_id: session_id.to_string(),
         task_id: task_id.to_string(),
+        event_log: None,
     };
     let (tx, rx) = mpsc::unbounded_channel();
     let handle = super::task_executor::spawn_live_progress_persister(web_task, rx);
@@ -2571,6 +2575,126 @@ async fn api_task_stream_replays_persisted_events_after_seq() {
         .await
         .expect("foreign sse response");
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn api_sse_stream_delivers_live_events_via_in_process_broadcast() {
+    use std::time::Duration;
+    let state = test_app_state();
+    let now = chrono::Utc::now();
+    let user = register_user(
+        state.web_store.as_ref(),
+        RegisterRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        true,
+        now,
+    )
+    .await
+    .expect("register user");
+    let (_, session, token) = login_user(
+        state.web_store.as_ref(),
+        LoginRequest {
+            login: "alice".to_string(),
+            password: "correct horse battery staple".to_string(),
+        },
+        now,
+    )
+    .await
+    .expect("login user");
+
+    let axum::Json(created) = api_create_session(
+        axum::extract::State(state.clone()),
+        auth_headers(&token, Some(&session.csrf_token)),
+    )
+    .await
+    .expect("create session");
+    let session_id = created.session.session_id;
+
+    // Task in `Running` state so the SSE stream enters the live loop
+    // (it short-circuits for terminal tasks).
+    let mut task = task_record(
+        user.user_id,
+        &session_id,
+        "live-task",
+        ApiTaskStatus::Running,
+        "Prompt",
+        now,
+    );
+    task.last_event_seq = 0;
+    state.web_store.save_task(task).await.expect("save task");
+
+    // Register an in-process TaskEventLog so the SSE handler subscribes to
+    // it for live delivery. This mirrors what the task executor does.
+    let event_log = TaskEventLog::new();
+    {
+        let mut logs = EVENT_LOGS.lock().await;
+        logs.insert("live-task".to_string(), event_log.clone());
+    }
+
+    let mut app = super::build_router(state.clone());
+    use tower::Service as _;
+    let response = app
+        .call(sse_request(&session_id, "live-task", &token, Some(0)))
+        .await
+        .expect("sse response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = response.into_body();
+
+    // Read the body to completion. The live loop will keep the body open
+    // until we close the event log, so the read finishes once the
+    // `Closed` sentinel is processed.
+    let read_body = async {
+        axum::body::to_bytes(body, usize::MAX)
+            .await
+            .expect("sse body")
+    };
+    let read_handle = tokio::spawn(read_body);
+
+    // Give the stream a moment to subscribe, then push a live event.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    event_log
+        .push_persisted(persisted_event(
+            user.user_id,
+            &session_id,
+            "live-task",
+            1,
+            TaskEventKind::ToolCall,
+        ))
+        .await;
+
+    // Close the log so the live loop returns and the body ends.
+    event_log.close().await;
+
+    // Bound the read to avoid hanging the test on regressions.
+    let buf = tokio::time::timeout(Duration::from_secs(2), read_handle)
+        .await
+        .expect("sse body read timed out")
+        .expect("body task panicked");
+    let body_str = String::from_utf8(buf.to_vec()).expect("sse body utf8");
+    assert!(
+        body_str.contains("event: snapshot"),
+        "missing snapshot in: {body_str}"
+    );
+    assert!(
+        body_str.contains("event: task_status"),
+        "missing task_status in: {body_str}"
+    );
+    assert!(
+        body_str.contains("event: task_event"),
+        "missing live task_event in: {body_str}"
+    );
+    assert!(
+        body_str.contains("\"seq\":1"),
+        "missing live event payload in: {body_str}"
+    );
+
+    // Cleanup: remove the log so other tests are not affected.
+    {
+        let mut logs = EVENT_LOGS.lock().await;
+        logs.remove("live-task");
+    }
 }
 
 #[cfg(feature = "profile-lite")]

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
-use crate::web_transport::{collect_events, BrowserEventScope};
+use crate::web_transport::{collect_events, BrowserEventScope, TaskEventLog};
 use oxide_agent_core::agent::{
     AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentUserInput,
     PendingUserInput,
@@ -36,6 +36,9 @@ pub(crate) struct WebTaskPersistence {
     pub(crate) user_id: i64,
     pub(crate) session_id: String,
     pub(crate) task_id: String,
+    /// In-process event log for live SSE subscribers. `None` for tasks that
+    /// run without a browser-visible session (tests, internal jobs).
+    pub(crate) event_log: Option<TaskEventLog>,
 }
 
 struct ExecutorTaskCtx {
@@ -421,6 +424,7 @@ async fn persist_task_completed(web_task: &WebTaskPersistence, final_response: S
         update_web_session_for_task(web_task, ApiTaskStatus::Completed, None, Some(preview), now)
             .await;
     }
+    close_event_log_if_present(web_task).await;
 }
 
 async fn persist_task_waiting_for_user_input(
@@ -446,6 +450,7 @@ async fn persist_task_waiting_for_user_input(
         )
         .await;
     }
+    close_event_log_if_present(web_task).await;
 }
 
 async fn persist_task_failed(web_task: &WebTaskPersistence, message: impl Into<String>) {
@@ -461,6 +466,13 @@ async fn persist_task_failed(web_task: &WebTaskPersistence, message: impl Into<S
     .await;
     if updated {
         update_web_session_for_task(web_task, ApiTaskStatus::Failed, None, None, now).await;
+    }
+    close_event_log_if_present(web_task).await;
+}
+
+async fn close_event_log_if_present(web_task: &WebTaskPersistence) {
+    if let Some(event_log) = web_task.event_log.as_ref() {
+        event_log.close().await;
     }
 }
 
@@ -491,7 +503,7 @@ async fn persist_task_events(
             web_task.user_id,
             &web_task.session_id,
             &web_task.task_id,
-            events,
+            events.clone(),
         )
         .await
     {
@@ -501,6 +513,12 @@ async fn persist_task_events(
             "Failed to persist web task events"
         );
         return;
+    }
+
+    if let Some(event_log) = web_task.event_log.as_ref() {
+        for event in &events {
+            event_log.push_persisted(event.clone()).await;
+        }
     }
 
     let now = chrono::Utc::now();

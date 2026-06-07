@@ -352,6 +352,7 @@ async fn spawn_persisted_registered_task(
         user_id,
         session_id: session_id.clone(),
         task_id,
+        event_log: Some(running_task.event_log.clone()),
     };
     task_executor::spawn_registered_task(
         state.clone(),
