@@ -1,7 +1,7 @@
 # Goal: SSH YOLO mode and dead-code cleanup
 
 Date started: 2026-06-08
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-08-ssh-yolo-dead-code-cleanup.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user request after RECON
 Goal doc owner: Codex
@@ -85,15 +85,15 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Source: AGENTS.md architectural invariants
   - Acceptance: core/runtime remain transport-agnostic; teloxide stays transport-only; direct Gemini provider remains absent; SQLx durable storage invariant unaffected.
   - Evidence required: diff review and scoped checks.
-  - Status: in_progress
-  - Evidence collected: 2026-06-08 Checkpoint 2 changed only core storage/control-plane/docs surfaces and kept SQLx compatibility by ignoring the legacy column instead of adding a new storage backend or migration requirement.
+  - Status: verified
+  - Evidence collected: 2026-06-08 final validation kept changes within core storage/control-plane/provider cleanup, Telegram/web transport approval removal, web UI lint fixes, and docs. No new transport dependency, direct Gemini provider, storage backend, or runtime service was added. SQLx compatibility remains via ignored legacy column.
 
 - V1: Formatting and lint validation completed
   - Source: AGENTS.md format/lint rules
   - Acceptance: relevant check/clippy/fmt commands pass before completion.
   - Evidence required: command output summaries recorded in Progress Log and Final Verification.
-  - Status: in_progress
-  - Evidence collected: 2026-06-08 Checkpoint 3 targeted clippy and `cargo fmt --all -- --check` passed; final audit still needs one last verification pass.
+  - Status: verified
+  - Evidence collected: 2026-06-08 final validation passed every command in the Validation Contract and both targeted approval `rg` checks returned no matches outside this goal document.
 
 - N1: No SSH behavior expansion
   - Source: user request to keep ordinary YOLO SSH, not redesign it
@@ -196,6 +196,13 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Audit IDs updated: G4 and Q1 verified; V1 evidence added.
   - Next: Checkpoint 4 — final validation and completion audit.
 
+- 2026-06-08: Checkpoint 4 final audit completed
+  - Changed: updated completion audit statuses and final verification evidence in this goal document.
+  - Evidence: all Validation Contract checks passed; approval runtime/config targeted searches returned no live-code or active-doc matches.
+  - Commands: `cargo check -p oxide-agent-core --no-default-features --features integration-ssh-mcp,manager-control-plane`; `cargo check -p oxide-agent-core --no-default-features --features manager-control-plane,integration-ssh-mcp,storage-sqlx`; `cargo clippy -p oxide-agent-core --no-default-features --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings`; `cargo fmt --all -- --check`; targeted approval `rg` checks.
+  - Audit IDs updated: Q2 and V1 verified; final audit complete.
+  - Next: Goal complete; optional follow-up is a separate goal for remaining RECON findings not included in this cleanup.
+
 ## Risks and Blockers
 
 - Storage compatibility for `approval_required_modes`
@@ -207,9 +214,14 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
 - Clippy may reveal additional failures after first blockers are fixed
   - Impact: `-D warnings` can stop early and mask later issues.
   - Evidence: resolved in Checkpoint 3; rerun targeted clippy commands passed after fixes.
-  - Mitigation: final checkpoint will repeat required validation before completion audit.
-  - Audit IDs affected: G4 verified; V1 in progress.
+  - Mitigation: final checkpoint repeated required validation before completion audit.
+  - Audit IDs affected: G4 and V1 verified.
 
 ## Final Verification
 
-Filled only when complete.
+- Completion Audit result: all items verified (`G1`, `G2`, `G3`, `G4`, `Q1`, `Q2`, `V1`, `N1`).
+- Commands run: full Validation Contract listed in the Checkpoint 4 progress log.
+- Artifacts inspected: approval runtime/config targeted search results, goal audit ledger, and final `git diff` before commit.
+- Remaining gaps: none for this goal. The legacy SQLx `topic_infra_configs.approval_required_modes` column is intentionally ignored for compatibility and can be dropped later by a separate migration if needed.
+- User-accepted exceptions: none.
+- Final status: complete.
