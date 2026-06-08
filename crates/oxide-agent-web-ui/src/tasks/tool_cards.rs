@@ -1505,6 +1505,9 @@ fn tool_result_summary(event: &PersistedTaskEvent, output: Option<&Value>) -> Op
                 let status_code = payload.get("status_code").and_then(Value::as_i64);
 
                 Some(match error_kind {
+                    "anti_bot" => host
+                        .map(|host| format!("anti_bot at {host}"))
+                        .unwrap_or_else(|| "anti_bot".to_string()),
                     "crawl4ai_http_status" => status_code
                         .map(|code| format!("http_status {code}"))
                         .unwrap_or_else(|| "http_status".to_string()),

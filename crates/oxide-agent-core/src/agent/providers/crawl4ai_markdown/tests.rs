@@ -1,10 +1,10 @@
-use super::*;
 use super::reddit_rss::{reddit_atom_to_crawl_result, reddit_thread_rss_url};
+use super::*;
 
 use crate::agent::identity::SessionId;
 use crate::agent::tool_runtime::{
-    ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
-    ToolInvocation, ToolName, ToolOutputStatus, ToolTimeoutConfig, TurnId,
+    ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext, ToolInvocation,
+    ToolName, ToolOutputStatus, ToolTimeoutConfig, TurnId,
 };
 use crate::llm::InvocationId;
 use anyhow::anyhow;
@@ -266,8 +266,7 @@ async fn typed_runtime_executor_posts_expected_crawl_contract() {
         observed[1].headers.get("authorization"),
         Some(&"Bearer test-token".to_string())
     );
-    let crawl_request: Value =
-        serde_json::from_str(&observed[1].body).expect("crawl request json");
+    let crawl_request: Value = serde_json::from_str(&observed[1].body).expect("crawl request json");
     assert_eq!(crawl_request["urls"], json!([PUBLIC_TEST_URL]));
     assert_eq!(
         crawl_request["browser_config"]["params"]["browser_type"],
@@ -535,8 +534,8 @@ fn reddit_atom_feed_converts_to_compact_markdown() {
         </feed>
     "#;
 
-    let result = reddit_atom_to_crawl_result(&target_url, &rss_url, 200, atom)
-        .expect("reddit atom parsed");
+    let result =
+        reddit_atom_to_crawl_result(&target_url, &rss_url, 200, atom).expect("reddit atom parsed");
 
     assert_eq!(result.content_mode, "reddit_rss_fallback");
     assert_eq!(result.source_kind, "reddit_thread");
@@ -558,8 +557,8 @@ fn reddit_rss_fallback_output_respects_max_chars() {
           <entry><title>Original title</title><author><name>op_user</name></author><content type="html">&lt;p&gt;This is a deliberately long Reddit post body with enough text to exceed the tiny test cap.&lt;/p&gt;</content></entry>
         </feed>
     "#;
-    let result = reddit_atom_to_crawl_result(&target_url, &rss_url, 200, atom)
-        .expect("reddit atom parsed");
+    let result =
+        reddit_atom_to_crawl_result(&target_url, &rss_url, 200, atom).expect("reddit atom parsed");
     let provider = Crawl4AiMarkdownProvider::with_config(test_config(
         Url::parse(DEFAULT_BASE_URL).expect("base url"),
     ));
@@ -632,4 +631,75 @@ fn classifies_provider_unavailable_without_leaking_token() {
     assert_eq!(payload["provider_unavailable"], json!(true));
     assert_eq!(payload["retryable"], json!(true));
     assert!(!payload.to_string().contains("secret-token"));
+}
+
+#[tokio::test]
+async fn anti_bot_500_returns_structured_failure() {
+    let (addr, observed) = serve_crawl4ai_sequence(vec![
+        MockResponse {
+            status: 200,
+            body: r#"{"status":"ok"}"#,
+        },
+        MockResponse {
+            status: 500,
+            body: r#"{"detail":"Blocked by anti-bot protection: Cloudflare JS challenge"}"#,
+        },
+    ])
+    .await;
+    let config = test_config(Url::parse(&format!("http://{addr}")).expect("base url"));
+    let provider = Arc::new(Crawl4AiMarkdownProvider::with_config(config));
+    let executor = provider
+        .tool_runtime_executors()
+        .into_iter()
+        .next()
+        .expect("executor");
+
+    let output = executor
+        .execute(runtime_invocation(&format!(
+            r#"{{"url":"{PUBLIC_TEST_URL}"}}"#
+        )))
+        .await
+        .expect("structured failure output");
+
+    assert_eq!(output.status, ToolOutputStatus::Failure);
+    let payload = output.structured_payload.expect("failure payload");
+    assert_eq!(payload["error_kind"], json!("anti_bot"));
+    assert_eq!(payload["provider_unavailable"], json!(true));
+    assert_eq!(payload["retryable"], json!(false));
+    let message = payload["message"].as_str().expect("message");
+    assert!(
+        message.contains("anti-bot protection"),
+        "message should mention anti-bot: {message}"
+    );
+    assert!(
+        message.contains("Cloudflare JS challenge"),
+        "message should contain detail: {message}"
+    );
+    assert!(
+        message.contains("Do not retry"),
+        "message should instruct not to retry: {message}"
+    );
+    let observed = observed.lock().expect("observed request lock");
+    assert_eq!(observed.len(), 2); // health + crawl
+    assert_eq!(observed[0].path, "/health");
+    assert_eq!(observed[1].path, "/crawl");
+}
+
+#[test]
+fn anti_bot_error_classification_unit() {
+    // Anti-bot in response tail is classified as anti_bot, not crawl4ai_http_status.
+    let error = anyhow::anyhow!(
+        "crawl4ai returned non-success status: 500; response_tail: {{\"detail\":\"Blocked by anti-bot protection: Cloudflare JS challenge\"}}"
+    );
+    let kind = crawl4ai_error_kind(&error);
+    assert_eq!(kind, "anti_bot");
+    assert!(!crawl4ai_error_retryable(kind, &error));
+
+    // Non-anti-bot 500 stays as crawl4ai_http_status.
+    let generic_error = anyhow::anyhow!(
+        "crawl4ai returned non-success status: 500; response_tail: {{\"error\":\"internal\"}}"
+    );
+    let generic_kind = crawl4ai_error_kind(&generic_error);
+    assert_eq!(generic_kind, "crawl4ai_http_status");
+    assert!(crawl4ai_error_retryable(generic_kind, &generic_error));
 }

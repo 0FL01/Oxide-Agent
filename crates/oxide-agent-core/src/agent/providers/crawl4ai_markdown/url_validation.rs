@@ -1,6 +1,6 @@
 //! URL validation, SSRF protection, wait-for normalization, and cancellation guards.
 
-use anyhow::{Result, anyhow, bail, Context};
+use anyhow::{Context, Result, anyhow, bail};
 use reqwest::Url;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tokio_util::sync::CancellationToken;

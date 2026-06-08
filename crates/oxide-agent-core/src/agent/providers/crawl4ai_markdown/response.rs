@@ -1,6 +1,6 @@
 //! Crawl4AI response parsing: JSON extraction, markdown selection, HTML fallback.
 
-use anyhow::{Result, anyhow, bail, Context};
+use anyhow::{Context, Result, anyhow, bail};
 use reqwest::Url;
 use serde_json::Value;
 

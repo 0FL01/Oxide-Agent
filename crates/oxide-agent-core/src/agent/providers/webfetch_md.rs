@@ -197,7 +197,10 @@ impl WebFetchMdProvider {
             .get(rss_url.clone())
             .timeout(Duration::from_secs(timeout_secs))
             .header(USER_AGENT, BROWSER_USER_AGENT)
-            .header(ACCEPT, "application/atom+xml, application/xml, text/xml, */*;q=0.1")
+            .header(
+                ACCEPT,
+                "application/atom+xml, application/xml, text/xml, */*;q=0.1",
+            )
             .send()
             .await
             .context("reddit rss request failed")?;
@@ -217,7 +220,11 @@ impl WebFetchMdProvider {
             bail!("reddit rss parse error: empty Atom entries");
         }
 
-        Ok(render_reddit_atom_markdown(target_url, &feed_title, &entries))
+        Ok(render_reddit_atom_markdown(
+            target_url,
+            &feed_title,
+            &entries,
+        ))
     }
 
     async fn fetch_text(
@@ -815,8 +822,7 @@ fn render_reddit_atom_markdown(
 
 /// Extract the decoded text content of the first `<tag>...</tag>` occurrence.
 fn xml_tag_text(input: &str, tag: &str) -> Option<String> {
-    xml_tag_block(input, tag)
-        .map(|text| html_escape::decode_html_entities(text).trim().to_string())
+    xml_tag_block(input, tag).map(|text| html_escape::decode_html_entities(text).trim().to_string())
 }
 
 /// Extract the raw inner content of the first `<tag>...</tag>` occurrence.
@@ -1211,9 +1217,8 @@ mod tests {
 
     #[test]
     fn builds_rss_url_from_reddit_thread() {
-        let url =
-            Url::parse("https://old.reddit.com/r/rust/comments/abc123/some_title/?sort=top")
-                .expect("url");
+        let url = Url::parse("https://old.reddit.com/r/rust/comments/abc123/some_title/?sort=top")
+            .expect("url");
         let rss = reddit_thread_rss_url(&url).expect("rss url");
         assert_eq!(
             rss.as_str(),
@@ -1223,8 +1228,8 @@ mod tests {
 
     #[test]
     fn strips_query_and_fragment_from_rss_url() {
-        let url = Url::parse("https://www.reddit.com/r/rust/comments/abc123/t/#comment1")
-            .expect("url");
+        let url =
+            Url::parse("https://www.reddit.com/r/rust/comments/abc123/t/#comment1").expect("url");
         let rss = reddit_thread_rss_url(&url).expect("rss url");
         assert_eq!(rss.query(), None);
         assert_eq!(rss.fragment(), None);
