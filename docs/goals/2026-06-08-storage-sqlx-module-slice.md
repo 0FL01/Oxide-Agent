@@ -169,6 +169,13 @@ None.
   - Audit IDs updated: G2 (partial)
   - Next: Checkpoint 2 (extract wiki.rs)
 
+- 2026-06-08: CP2 — extract wiki.rs
+  - Changed: wiki.rs (197 lines): WIKI_SCHEMA_VERSION, WIKI_DEFAULT_MAX_BYTES, WIKI_INBOX_MAX_BYTES, WikiScopeKind, WikiItemKind, WikiAddress, parse_wiki_storage_key, validate_wiki_context_id, validate_wiki_markdown_leaf, validate_wiki_year_month, validate_wiki_content_size
+  - mod.rs=3333, wiki.rs=197, helpers.rs=184. Total=3714
+  - Evidence: cargo check zero warnings, cargo clippy clean
+  - Audit IDs updated: G2 (partial)
+  - Next: Checkpoint 3 (extract rows.rs)
+
 ## Risks and Blockers
 
 None identified. All slice boundaries are clean (free functions and private types).
@@ -181,11 +188,11 @@ Filled only when complete.
 
 ```
 sqlx/
-  mod.rs         ~1615  struct SqlxStorage + impl + impl StorageProvider
-  helpers.rs     ~146   db_error, row_value, enum conversions, int casts
-  wiki.rs        ~188   WikiAddress, parse/validate wiki storage keys
-  rows.rs        ~195   row_to_* mapper functions
-  reminder_tx.rs ~172   reminder job tx helpers
-  topic_tx.rs    ~211   topic record tx helpers + dedup
-  tests.rs       ~934   integration tests
+  mod.rs         ~3333  struct SqlxStorage + impl + impl StorageProvider
+  helpers.rs     ~184   db_error, row_value, enum conversions, int casts
+  wiki.rs        ~197   WikiAddress, parse/validate wiki storage keys
+  rows.rs        ~195   row_to_* mapper functions (pending)
+  reminder_tx.rs ~172   reminder job tx helpers (pending)
+  topic_tx.rs    ~211   topic record tx helpers + dedup (pending)
+  tests.rs       ~934   integration tests (pending)
 ```
