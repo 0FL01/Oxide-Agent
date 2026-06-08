@@ -198,6 +198,13 @@ None.
   - Audit IDs updated: G2 (partial)
   - Next: Checkpoint 6 (extract tests.rs)
 
+- 2026-06-08: CP6 — extract tests.rs
+  - Changed: tests.rs (933 lines): 11 integration tests + helpers (sqlx_test_storage, sqlx_test_storage_with_connections, unique_user_id, user_context_version, wiki_page_version, assert_memory_eq)
+  - mod.rs=1836, tests.rs=933, topic_tx.rs=226, reminder_tx.rs=179, rows.rs=209, wiki.rs=197, helpers.rs=184. Total=3764
+  - Evidence: cargo check + clippy zero warnings
+  - Audit IDs updated: G3 (verified), G2 (verified — all slices extracted)
+  - Next: Checkpoint 7 (completion audit)
+
 ## Risks and Blockers
 
 None identified. All slice boundaries are clean (free functions and private types).
@@ -210,11 +217,11 @@ Filled only when complete.
 
 ```
 sqlx/
-  mod.rs         ~2767  struct SqlxStorage + impl + impl StorageProvider
-  helpers.rs     ~184   db_error, row_value, enum conversions, int casts
-  wiki.rs        ~197   WikiAddress, parse/validate wiki storage keys
-  rows.rs        ~209   row_to_* mapper functions
-  reminder_tx.rs ~179   reminder job tx helpers
-  topic_tx.rs    ~226   topic record tx helpers + dedup
-  tests.rs       ~934   integration tests (pending)
+  mod.rs         1836  struct SqlxStorage + impl + impl StorageProvider
+  helpers.rs      184  db_error, row_value, enum conversions, int casts
+  wiki.rs         197  WikiAddress, parse/validate wiki storage keys
+  rows.rs         209  row_to_* mapper functions
+  reminder_tx.rs  179  reminder job tx helpers
+  topic_tx.rs     226  topic record tx helpers + dedup
+  tests.rs        933  integration tests
 ```
