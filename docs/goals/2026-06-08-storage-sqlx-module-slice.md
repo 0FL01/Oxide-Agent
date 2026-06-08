@@ -155,6 +155,13 @@ None.
   - Audit IDs updated: none yet
   - Next: Checkpoint 0 (folder-ize)
 
+- 2026-06-08: CP0 — folder-ize
+  - Changed: sqlx.rs → sqlx/mod.rs (3667 lines, identical content)
+  - Evidence: `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx` green
+  - Commands: `mkdir -p storage/sqlx && mv sqlx.rs sqlx/mod.rs`, cargo check
+  - Audit IDs updated: G1 (verified)
+  - Next: Checkpoint 1 (extract helpers.rs)
+
 ## Risks and Blockers
 
 None identified. All slice boundaries are clean (free functions and private types).
