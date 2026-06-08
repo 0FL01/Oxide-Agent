@@ -183,6 +183,13 @@ None.
   - Audit IDs updated: G2 (partial)
   - Next: Checkpoint 4 (extract reminder_tx.rs)
 
+- 2026-06-08: CP4 — extract reminder_tx.rs
+  - Changed: reminder_tx.rs (179 lines): insert_reminder_job_in_tx, update_reminder_job_in_tx, get_reminder_job_for_update, mutate_reminder_job
+  - mod.rs=2972, reminder_tx.rs=179, rows.rs=209, wiki.rs=197, helpers.rs=184. Total=3741
+  - Evidence: cargo check + clippy zero warnings
+  - Audit IDs updated: G2 (partial)
+  - Next: Checkpoint 5 (extract topic_tx.rs)
+
 ## Risks and Blockers
 
 None identified. All slice boundaries are clean (free functions and private types).
@@ -195,11 +202,11 @@ Filled only when complete.
 
 ```
 sqlx/
-  mod.rs         ~3142  struct SqlxStorage + impl + impl StorageProvider
+  mod.rs         ~2972  struct SqlxStorage + impl + impl StorageProvider
   helpers.rs     ~184   db_error, row_value, enum conversions, int casts
   wiki.rs        ~197   WikiAddress, parse/validate wiki storage keys
   rows.rs        ~209   row_to_* mapper functions
-  reminder_tx.rs ~172   reminder job tx helpers (pending)
+  reminder_tx.rs ~179   reminder job tx helpers
   topic_tx.rs    ~211   topic record tx helpers + dedup (pending)
   tests.rs       ~934   integration tests (pending)
 ```
