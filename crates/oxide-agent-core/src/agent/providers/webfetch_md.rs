@@ -128,6 +128,32 @@ impl WebFetchMdProvider {
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .clamp(1, MAX_TIMEOUT_SECS);
 
+        // Reddit thread shortcut: fetch Atom RSS feed directly instead of
+        // hitting the HTML page (which is typically blocked by anti-bot).
+        if let Some(rss_url) = reddit_thread_rss_url(&url) {
+            match self
+                .fetch_reddit_rss(&url, &rss_url, timeout_secs, cancellation_token)
+                .await
+            {
+                Ok(markdown) => {
+                    let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
+                    let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+                    return Ok(format!(
+                        "## Web Markdown\n\nURL: {}\nContent-Type: text/plain\nFetched-Bytes: 0\nTruncated: {}\n\n{}",
+                        url, truncated_label, truncated.text
+                    ));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        url = url.as_str(),
+                        rss_url = rss_url.as_str(),
+                        error = %error,
+                        "reddit rss fallback failed, trying normal fetch"
+                    );
+                }
+            }
+        }
+
         let fetched = self
             .fetch_text(url, timeout_secs, cancellation_token)
             .await
@@ -152,6 +178,46 @@ impl WebFetchMdProvider {
             truncated_label,
             truncated.text
         ))
+    }
+
+    /// Fetch a Reddit thread via its Atom RSS feed and render as Markdown.
+    async fn fetch_reddit_rss(
+        &self,
+        target_url: &Url,
+        rss_url: &Url,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
+            bail!("web_markdown cancelled before reddit rss request");
+        }
+
+        let response = self
+            .client
+            .get(rss_url.clone())
+            .timeout(Duration::from_secs(timeout_secs))
+            .header(USER_AGENT, BROWSER_USER_AGENT)
+            .header(ACCEPT, "application/atom+xml, application/xml, text/xml, */*;q=0.1")
+            .send()
+            .await
+            .context("reddit rss request failed")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            bail!("reddit rss returned non-success status: {status}");
+        }
+
+        let body = read_limited_body(response, cancellation_token).await?;
+        let atom = String::from_utf8_lossy(&body).into_owned();
+
+        let feed_title =
+            xml_tag_text(&atom, "title").unwrap_or_else(|| "Reddit thread".to_string());
+        let entries = parse_reddit_atom_entries(&atom)?;
+        if entries.is_empty() {
+            bail!("reddit rss parse error: empty Atom entries");
+        }
+
+        Ok(render_reddit_atom_markdown(target_url, &feed_title, &entries))
     }
 
     async fn fetch_text(
@@ -606,6 +672,165 @@ fn truncate_chars(input: String, max_chars: usize) -> TruncatedOutput {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reddit Atom RSS shortcut
+// ---------------------------------------------------------------------------
+
+/// Reddit-recognized host variants that serve thread RSS feeds.
+const REDDIT_HOSTS: &[&str] = &[
+    "reddit.com",
+    "www.reddit.com",
+    "old.reddit.com",
+    "new.reddit.com",
+    "sh.reddit.com",
+];
+
+/// Check if a URL is a Reddit thread and return the corresponding `.rss` Atom feed URL.
+fn reddit_thread_rss_url(url: &Url) -> Option<Url> {
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    if !REDDIT_HOSTS.contains(&host.as_str()) {
+        return None;
+    }
+
+    let segments = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.len() < 4 || segments[0] != "r" || segments[2] != "comments" {
+        return None;
+    }
+
+    let mut rss_url = url.clone();
+    rss_url.set_host(Some("www.reddit.com")).ok()?;
+    rss_url.set_query(None);
+    rss_url.set_fragment(None);
+
+    let mut path = rss_url.path().trim_end_matches('/').to_string();
+    if !path.ends_with(".rss") {
+        path.push_str("/.rss");
+    }
+    rss_url.set_path(&path);
+    Some(rss_url)
+}
+
+struct RedditAtomEntry {
+    title: String,
+    author: Option<String>,
+    markdown: String,
+}
+
+/// Parse `<entry>` blocks from a Reddit Atom feed.
+fn parse_reddit_atom_entries(atom: &str) -> Result<Vec<RedditAtomEntry>> {
+    let mut entries = Vec::new();
+    let mut rest = atom;
+    while let Some(start) = rest.find("<entry") {
+        let after_start = &rest[start..];
+        let Some(open_end) = after_start.find('>') else {
+            break;
+        };
+        let entry_body_start = start + open_end + 1;
+        let after_body_start = &rest[entry_body_start..];
+        let Some(end) = after_body_start.find("</entry>") else {
+            break;
+        };
+        let block = &after_body_start[..end];
+        rest = &after_body_start[end + "</entry>".len()..];
+
+        let title =
+            xml_tag_text(block, "title").unwrap_or_else(|| "Untitled Reddit entry".to_string());
+        let author = xml_tag_block(block, "author").and_then(|author| xml_tag_text(author, "name"));
+        let content_html = xml_tag_text(block, "content").unwrap_or_default();
+        let markdown = html_to_markdown(&content_html)
+            .unwrap_or_else(|_| content_html.clone())
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        entries.push(RedditAtomEntry {
+            title,
+            author,
+            markdown,
+        });
+    }
+    Ok(entries)
+}
+
+/// Render parsed Reddit entries into compact Markdown.
+fn render_reddit_atom_markdown(
+    target_url: &Url,
+    feed_title: &str,
+    entries: &[RedditAtomEntry],
+) -> String {
+    let mut output = String::new();
+    output.push_str("# ");
+    output.push_str(feed_title.trim());
+    output.push_str("\n\n");
+    output.push_str("Source: ");
+    output.push_str(target_url.as_str());
+    output.push_str("\nMode: reddit_rss_fallback\nEntries: ");
+    output.push_str(&entries.len().to_string());
+    output.push_str("\n\n");
+
+    for (index, entry) in entries.iter().enumerate() {
+        if index == 0 {
+            output.push_str("## Original post\n\n");
+        } else if index == 1 {
+            output.push_str("## Comments\n\n");
+        }
+
+        if index > 0 {
+            output.push_str("### ");
+            output.push_str(&index.to_string());
+            output.push_str(". ");
+        } else {
+            output.push_str("**");
+        }
+        output.push_str(entry.title.trim());
+        if index == 0 {
+            output.push_str("**");
+        }
+        output.push_str("\n\n");
+
+        if let Some(author) = entry
+            .author
+            .as_deref()
+            .filter(|author| !author.trim().is_empty())
+        {
+            output.push_str("Author: ");
+            output.push_str(author.trim());
+            output.push_str("\n\n");
+        }
+        if !entry.markdown.trim().is_empty() {
+            output.push_str(entry.markdown.trim());
+            output.push_str("\n\n");
+        }
+    }
+
+    output.trim().to_string()
+}
+
+// -- Minimal XML helpers (no dependency on full XML parser) --
+
+/// Extract the decoded text content of the first `<tag>...</tag>` occurrence.
+fn xml_tag_text(input: &str, tag: &str) -> Option<String> {
+    xml_tag_block(input, tag)
+        .map(|text| html_escape::decode_html_entities(text).trim().to_string())
+}
+
+/// Extract the raw inner content of the first `<tag>...</tag>` occurrence.
+fn xml_tag_block<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
+    let start_marker = format!("<{tag}");
+    let start = input.find(&start_marker)?;
+    let after_start = &input[start..];
+    let open_end = after_start.find('>')?;
+    let body_start = start + open_end + 1;
+    let end_marker = format!("</{tag}>");
+    let end = input[body_start..].find(&end_marker)?;
+    Some(&input[body_start..body_start + end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,5 +1163,150 @@ mod tests {
             payload.get("retryable").and_then(|value| value.as_bool()),
             Some(false)
         );
+    }
+
+    // -- Reddit RSS tests --
+
+    #[test]
+    fn detects_reddit_thread_urls() {
+        let cases = [
+            ("https://www.reddit.com/r/rust/comments/abc123/title/", true),
+            ("https://old.reddit.com/r/rust/comments/abc123/title/", true),
+            ("https://new.reddit.com/r/rust/comments/abc123/title/", true),
+            ("https://sh.reddit.com/r/rust/comments/abc123/title/", true),
+            ("https://reddit.com/r/rust/comments/abc123/title/", true),
+        ];
+        for (raw, expected) in cases {
+            let url = Url::parse(raw).expect("url");
+            assert_eq!(
+                reddit_thread_rss_url(&url).is_some(),
+                expected,
+                "expected is_some={expected} for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_thread_reddit_urls() {
+        let cases = [
+            "https://www.reddit.com/r/rust/",
+            "https://www.reddit.com/r/rust/hot/",
+            "https://www.reddit.com/user/example/",
+            "https://www.reddit.com/",
+        ];
+        for raw in cases {
+            let url = Url::parse(raw).expect("url");
+            assert!(
+                reddit_thread_rss_url(&url).is_none(),
+                "expected None for non-thread URL: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_reddit_hosts() {
+        let url = Url::parse("https://example.com/r/rust/comments/abc123/title/").expect("url");
+        assert!(reddit_thread_rss_url(&url).is_none());
+    }
+
+    #[test]
+    fn builds_rss_url_from_reddit_thread() {
+        let url =
+            Url::parse("https://old.reddit.com/r/rust/comments/abc123/some_title/?sort=top")
+                .expect("url");
+        let rss = reddit_thread_rss_url(&url).expect("rss url");
+        assert_eq!(
+            rss.as_str(),
+            "https://www.reddit.com/r/rust/comments/abc123/some_title/.rss"
+        );
+    }
+
+    #[test]
+    fn strips_query_and_fragment_from_rss_url() {
+        let url = Url::parse("https://www.reddit.com/r/rust/comments/abc123/t/#comment1")
+            .expect("url");
+        let rss = reddit_thread_rss_url(&url).expect("rss url");
+        assert_eq!(rss.query(), None);
+        assert_eq!(rss.fragment(), None);
+    }
+
+    #[test]
+    fn parses_reddit_atom_feed() {
+        let atom = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Test Thread : r/rust</title>
+  <entry>
+    <title>Test post title</title>
+    <author><name>test_user</name></author>
+    <content type="html">&lt;p&gt;This is the post body.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>First comment</title>
+    <author><name>commenter</name></author>
+    <content type="html">&lt;p&gt;Comment text here.&lt;/p&gt;</content>
+  </entry>
+</feed>"#;
+
+        let entries = parse_reddit_atom_entries(atom).expect("entries");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "Test post title");
+        assert_eq!(entries[0].author.as_deref(), Some("test_user"));
+        assert!(entries[0].markdown.contains("This is the post body."));
+        assert_eq!(entries[1].title, "First comment");
+        assert!(entries[1].markdown.contains("Comment text here."));
+    }
+
+    #[test]
+    fn renders_reddit_atom_markdown() {
+        let target = Url::parse("https://www.reddit.com/r/rust/comments/abc/test/").expect("url");
+        let entries = vec![
+            RedditAtomEntry {
+                title: "Post title".to_string(),
+                author: Some("op_user".to_string()),
+                markdown: "Post body text".to_string(),
+            },
+            RedditAtomEntry {
+                title: "Comment 1".to_string(),
+                author: Some("commenter".to_string()),
+                markdown: "Comment text".to_string(),
+            },
+            RedditAtomEntry {
+                title: "Comment 2".to_string(),
+                author: None,
+                markdown: "Another comment".to_string(),
+            },
+        ];
+        let md = render_reddit_atom_markdown(&target, "Thread Title", &entries);
+
+        assert!(md.starts_with("# Thread Title"));
+        assert!(md.contains("## Original post"));
+        assert!(md.contains("**Post title**"));
+        assert!(md.contains("Author: op_user"));
+        assert!(md.contains("## Comments"));
+        assert!(md.contains("### 1. Comment 1"));
+        assert!(md.contains("Author: commenter"));
+        assert!(md.contains("### 2. Comment 2"));
+        assert!(!md.contains("Author: \n"));
+        assert!(md.contains(&format!("Source: {target}")));
+        assert!(md.contains("Mode: reddit_rss_fallback"));
+        assert!(md.contains("Entries: 3"));
+    }
+
+    #[test]
+    fn xml_tag_text_decodes_html_entities() {
+        let input = "<title>&amp; &lt;hello&gt;</title>";
+        assert_eq!(xml_tag_text(input, "title").as_deref(), Some("& <hello>"));
+    }
+
+    #[test]
+    fn xml_tag_block_extracts_inner_content() {
+        let input = "<content type=\"html\">hello world</content>";
+        assert_eq!(xml_tag_block(input, "content"), Some("hello world"));
+    }
+
+    #[test]
+    fn xml_tag_returns_none_for_missing_tag() {
+        assert!(xml_tag_text("no tags here", "title").is_none());
+        assert!(xml_tag_block("no tags here", "title").is_none());
     }
 }
