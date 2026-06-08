@@ -143,7 +143,7 @@ Default branch: `dev`.
 - Dependencies: `cargo add`, `cargo remove`, `cargo update`. Metadata: `workspace info`, `cargo info`.
 
 ### Format and lint
-- `cargo clippy` before finishing. `cargo fmt` before committing.
+- `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check` must both pass before finishing. CI enforces both.
 
 ### Testing
 - Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`, `test_set_env()`, `test_remove_env()`).
