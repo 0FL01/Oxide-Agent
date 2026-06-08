@@ -160,7 +160,14 @@ None.
   - Evidence: `cargo check -p oxide-agent-core --no-default-features --features storage-sqlx` green
   - Commands: `mkdir -p storage/sqlx && mv sqlx.rs sqlx/mod.rs`, cargo check
   - Audit IDs updated: G1 (verified)
-  - Next: Checkpoint 1 (extract helpers.rs)
+  - Next: Checkpoint 2 (extract wiki.rs)
+
+- 2026-06-08: CP1 — extract helpers.rs
+  - Changed: helpers.rs (184 lines): db_error, ensure_user_row_in_tx, advisory_xact_lock, advisory_lock_key, row_value, from_json, enum_to_sql, enum_from_sql, enum_vec_to_sql, enum_vec_from_sql, int casts
+  - Removed imports from mod.rs: Serialize, DeserializeOwned, Sha256, Digest, SqlxError, Decode, Row, Type
+  - Evidence: cargo check zero warnings, 638 tests pass (28 pre-existing failures)
+  - Audit IDs updated: G2 (partial)
+  - Next: Checkpoint 2 (extract wiki.rs)
 
 ## Risks and Blockers
 
