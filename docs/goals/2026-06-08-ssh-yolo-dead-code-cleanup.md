@@ -71,15 +71,15 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Source: RECON report
   - Acceptance: remove low-risk dead code and fix current clippy blockers without unrelated refactors.
   - Evidence required: targeted clippy commands in Validation Contract pass or remaining failures are documented as out-of-scope with exact evidence.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-08 Checkpoint 3 fixed core full-profile clippy blockers (`MockStorageProvider` unused re-export, sandbox capability vector setup, sandbox test `unwrap_err`/env-lock await), web transport test unused imports, and wasm UI collapsible-if/map_or warnings. All Checkpoint 3 clippy commands passed.
 
 - Q1: No new abstractions or dependencies
   - Source: AGENTS.md implementation bias
   - Acceptance: no new crates, services, queues, traits, approval replacements, or feature frameworks.
   - Evidence required: no Cargo dependency additions; diff review confirms deletion/simplification only.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-08 Checkpoint 3 changed only tests/imports/local lint shapes and UI condition simplifications; no Cargo manifests changed and no new abstraction/dependency was added.
 
 - Q2: Architecture invariants preserved
   - Source: AGENTS.md architectural invariants
@@ -92,8 +92,8 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Source: AGENTS.md format/lint rules
   - Acceptance: relevant check/clippy/fmt commands pass before completion.
   - Evidence required: command output summaries recorded in Progress Log and Final Verification.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: 2026-06-08 Checkpoint 3 targeted clippy and `cargo fmt --all -- --check` passed; final audit still needs one last verification pass.
 
 - N1: No SSH behavior expansion
   - Source: user request to keep ordinary YOLO SSH, not redesign it
@@ -189,6 +189,13 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Audit IDs updated: G3 verified; Q2 evidence added.
   - Next: Checkpoint 3 — remove confirmed lint blockers and low-risk dead code from RECON.
 
+- 2026-06-08: Checkpoint 3 implemented
+  - Changed: fixed confirmed core/web/UI clippy blockers without broad refactors or dependency changes.
+  - Evidence: no-feature/full-profile core clippy, web transport clippy, wasm UI clippy, and fmt check all passed.
+  - Commands: `cargo clippy -p oxide-agent-core --no-default-features --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-core --no-default-features --features profile-full --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --all-targets -- -D warnings`; `cargo clippy -p oxide-agent-web-ui --target wasm32-unknown-unknown -- -D warnings`; `cargo fmt --all -- --check`.
+  - Audit IDs updated: G4 and Q1 verified; V1 evidence added.
+  - Next: Checkpoint 4 — final validation and completion audit.
+
 ## Risks and Blockers
 
 - Storage compatibility for `approval_required_modes`
@@ -199,9 +206,9 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
 
 - Clippy may reveal additional failures after first blockers are fixed
   - Impact: `-D warnings` can stop early and mask later issues.
-  - Evidence: current RECON clippy already stops at first failure sets.
-  - Mitigation: rerun targeted clippy after each checkpoint and record newly surfaced issues.
-  - Audit IDs affected: G4, V1.
+  - Evidence: resolved in Checkpoint 3; rerun targeted clippy commands passed after fixes.
+  - Mitigation: final checkpoint will repeat required validation before completion audit.
+  - Audit IDs affected: G4 verified; V1 in progress.
 
 ## Final Verification
 

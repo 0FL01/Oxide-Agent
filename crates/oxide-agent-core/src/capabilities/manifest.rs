@@ -953,13 +953,14 @@ mod tests {
             .map(|capability| capability.as_str())
             .collect();
 
-        let mut expected = Vec::new();
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        expected.push("sandbox-backend/docker-direct/exec");
-        #[cfg(feature = "sandbox-backend-sandboxd-client")]
-        expected.push("sandbox-backend/sandboxd-client/exec");
-        #[cfg(feature = "sandbox-backend-bwrap")]
-        expected.push("sandbox-backend/bwrap/exec");
+        let expected = vec![
+            #[cfg(feature = "sandbox-backend-docker-direct")]
+            "sandbox-backend/docker-direct/exec",
+            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            "sandbox-backend/sandboxd-client/exec",
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            "sandbox-backend/bwrap/exec",
+        ];
 
         assert_eq!(requirement_options, expected);
     }

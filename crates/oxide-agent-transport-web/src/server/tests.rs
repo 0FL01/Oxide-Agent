@@ -33,7 +33,7 @@ use oxide_agent_web_contracts::{
     CreateSessionRequest as ApiCreateSessionRequest,
     CreateTaskVersionRequest as ApiCreateTaskVersionRequest, ErrorCode, LoginRequest,
     ModelSelection, PersistedTaskEvent, ProgressSnapshot, RegisterRequest, TaskAttachment,
-    TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest, UpdateSessionRequest,
+    TaskEventKind, TaskStatus as ApiTaskStatus, UpdateSessionProfileRequest,
     UpdateUserSettingsRequest, WebTaskRecord,
 };
 #[cfg(feature = "profile-lite")]
@@ -60,9 +60,8 @@ use super::{
     WebSandboxControl, WebStartupError, api_cancel_task, api_create_agent_profile,
     api_create_session, api_create_session_with_request, api_create_task_version,
     api_delete_session, api_get_session, api_get_settings, api_get_task_events,
-    api_get_task_progress, api_list_agent_profiles, api_list_sessions, api_update_session,
-    api_update_session_profile, api_update_settings, auth_cookie_value, csrf_header_value,
-    parse_web_bool,
+    api_get_task_progress, api_list_agent_profiles, api_list_sessions, api_update_session_profile,
+    api_update_settings, auth_cookie_value, csrf_header_value, parse_web_bool,
 };
 #[cfg(feature = "profile-lite")]
 use super::{api_create_task, api_get_task, api_list_tasks, api_resume_task};

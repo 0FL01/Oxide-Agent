@@ -2725,7 +2725,9 @@ mod backend_selection_tests {
         let previous: Option<OsString> = std::env::var_os("SANDBOX_BACKEND");
 
         test_set_env("SANDBOX_BACKEND", uncompiled_backend);
-        let error = selected_sandbox_backend().unwrap_err().to_string();
+        let error = selected_sandbox_backend()
+            .expect_err("uncompiled SANDBOX_BACKEND must be rejected")
+            .to_string();
 
         assert!(error.contains("SANDBOX_BACKEND="));
         assert!(error.contains(uncompiled_backend));
@@ -2745,22 +2747,26 @@ mod backend_selection_tests {
     }
 
     #[cfg(feature = "tool-stack-logs")]
-    #[tokio::test]
-    async fn stack_logs_report_explicit_unsupported_error_under_bwrap() {
+    #[test]
+    fn stack_logs_report_explicit_unsupported_error_under_bwrap() {
         let _guard = crate::config::test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous: Option<OsString> = std::env::var_os("SANDBOX_BACKEND");
         test_set_env("SANDBOX_BACKEND", "bwrap");
 
-        let list_error =
-            SandboxManager::list_stack_log_sources(StackLogsListSourcesRequest::default())
-                .await
-                .unwrap_err()
-                .to_string();
-        let fetch_error = SandboxManager::fetch_stack_logs(StackLogsFetchRequest::default())
-            .await
-            .unwrap_err()
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
+        let list_error = runtime
+            .block_on(SandboxManager::list_stack_log_sources(
+                StackLogsListSourcesRequest::default(),
+            ))
+            .expect_err("stack log listing must be unsupported under bwrap")
+            .to_string();
+        let fetch_error = runtime
+            .block_on(SandboxManager::fetch_stack_logs(
+                StackLogsFetchRequest::default(),
+            ))
+            .expect_err("stack log fetching must be unsupported under bwrap")
             .to_string();
 
         for error in [list_error, fetch_error] {

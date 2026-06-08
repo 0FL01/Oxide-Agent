@@ -390,10 +390,10 @@ fn close_terminal_unmatched_tools(items: &mut [ActivityItem]) {
         let ActivityItem::Tool { call, result } = item else {
             continue;
         };
-        if result.is_none() {
-            if let Some(call_event) = call.as_ref() {
-                *result = Some(missing_tool_result_event(call_event));
-            }
+        if result.is_none()
+            && let Some(call_event) = call.as_ref()
+        {
+            *result = Some(missing_tool_result_event(call_event));
         }
     }
 }

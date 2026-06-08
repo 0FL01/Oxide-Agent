@@ -346,12 +346,12 @@ async fn handle_keepalive_message(
     // Periodic refresh on keepalive to pick up any missed state.
     // If the task closed while the SSE replay cursor was behind, drain persisted
     // task events before closing the client stream.
-    if let Some((status, task_last_event_seq)) = refresh_task_detail(config).await {
-        if task_status_closes_stream(status) {
-            let target_last_seq = (task_last_event_seq > *last_seq).then_some(task_last_event_seq);
-            let _ = backfill_missed_events_until(config, last_seq, target_last_seq).await;
-            return true;
-        }
+    if let Some((status, task_last_event_seq)) = refresh_task_detail(config).await
+        && task_status_closes_stream(status)
+    {
+        let target_last_seq = (task_last_event_seq > *last_seq).then_some(task_last_event_seq);
+        let _ = backfill_missed_events_until(config, last_seq, target_last_seq).await;
+        return true;
     }
     false
 }
@@ -399,7 +399,7 @@ async fn backfill_missed_events_until(
                     }
                 }
 
-                let target_reached = target_last_seq.map_or(true, |target| *last_seq >= target);
+                let target_reached = target_last_seq.is_none_or(|target| *last_seq >= target);
                 if saw_finished && target_reached {
                     return refresh_task_detail_closes_stream(config).await;
                 }

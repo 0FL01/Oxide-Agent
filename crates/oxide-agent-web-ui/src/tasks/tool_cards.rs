@@ -247,10 +247,8 @@ fn SearchToolCard(
     if let Some(count) = result_count {
         header_metas.push(tool_meta(format!("{count} results")));
     }
-    if !success {
-        if let Some(summary) = result_summary.clone() {
-            header_metas.push(tool_meta_danger(summary));
-        }
+    if !success && let Some(summary) = result_summary.clone() {
+        header_metas.push(tool_meta_danger(summary));
     }
 
     view! {
@@ -416,10 +414,8 @@ fn WebMarkdownToolCard(
     if truncated {
         header_metas.push(tool_meta("truncated"));
     }
-    if !success {
-        if let Some(summary) = result_summary.clone() {
-            header_metas.push(tool_meta_danger(summary));
-        }
+    if !success && let Some(summary) = result_summary.clone() {
+        header_metas.push(tool_meta_danger(summary));
     }
 
     view! {
@@ -705,10 +701,8 @@ fn SpawnSubAgentsToolCard(
     if let Some(label) = active_label {
         header_metas.push(tool_meta(label));
     }
-    if !success {
-        if let Some(summary) = result_summary.clone() {
-            header_metas.push(tool_meta_danger(summary));
-        }
+    if !success && let Some(summary) = result_summary.clone() {
+        header_metas.push(tool_meta_danger(summary));
     }
 
     view! {
@@ -818,10 +812,8 @@ fn WaitSubAgentsToolCard(
     if let Some(label) = failed_label {
         header_metas.push(tool_meta_danger(label));
     }
-    if !success {
-        if let Some(summary) = result_summary.clone() {
-            header_metas.push(tool_meta_danger(summary));
-        }
+    if !success && let Some(summary) = result_summary.clone() {
+        header_metas.push(tool_meta_danger(summary));
     }
 
     view! {
@@ -906,10 +898,8 @@ fn WriteTodosToolCard(
             header_metas.push(tool_meta(label));
         }
     }
-    if !success {
-        if let Some(summary) = result_summary.clone() {
-            header_metas.push(tool_meta_danger(summary));
-        }
+    if !success && let Some(summary) = result_summary.clone() {
+        header_metas.push(tool_meta_danger(summary));
     }
 
     view! {
@@ -983,10 +973,8 @@ fn GenericToolCard(
             header_metas.push(tool_meta(meta));
         }
     }
-    if !success {
-        if let Some(summary) = result_summary.clone() {
-            header_metas.push(tool_meta_danger(summary));
-        }
+    if !success && let Some(summary) = result_summary.clone() {
+        header_metas.push(tool_meta_danger(summary));
     }
 
     view! {
@@ -1311,10 +1299,10 @@ fn parse_spawned_sub_agent_tasks(payload: &Value) -> Option<Vec<SubAgentTaskView
 
 fn sub_agent_task_meta(task: &SubAgentTaskView) -> String {
     let mut parts = Vec::new();
-    if let Some(id) = &task.id {
-        if !id.is_empty() {
-            parts.push(format!("id: {id}"));
-        }
+    if let Some(id) = &task.id
+        && !id.is_empty()
+    {
+        parts.push(format!("id: {id}"));
     }
     if !task.status.is_empty() {
         parts.push(format!("status: {}", task.status));

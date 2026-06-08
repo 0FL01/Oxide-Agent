@@ -67,10 +67,10 @@ pub(super) fn stream_text(output: &Value, stream_name: &str) -> Option<String> {
         return Some("[binary output hidden]".to_string());
     }
 
-    if let Some(text) = stream.get("text").and_then(Value::as_str) {
-        if !text.is_empty() {
-            return Some(text.to_string());
-        }
+    if let Some(text) = stream.get("text").and_then(Value::as_str)
+        && !text.is_empty()
+    {
+        return Some(text.to_string());
     }
 
     let head = stream.get("head").and_then(Value::as_str);

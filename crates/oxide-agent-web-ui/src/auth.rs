@@ -393,10 +393,8 @@ fn ModelSettingsPanel() -> impl IntoView {
                         set_provider_available,
                         set_provider_default_model,
                     );
-                    if should_apply_default {
-                        if let Some(default_model_id) = default_model_id {
-                            set_selected_model.set(default_model_id);
-                        }
+                    if should_apply_default && let Some(default_model_id) = default_model_id {
+                        set_selected_model.set(default_model_id);
                     }
                     set_message.set(Some("Models refreshed.".to_string()));
                 }

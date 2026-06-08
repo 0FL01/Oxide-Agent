@@ -18,8 +18,6 @@ pub(super) use crate::agent::providers::{
 pub(super) use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
 pub(super) use crate::config::AgentSettings;
 pub(super) use crate::llm::LlmClient;
-#[cfg(feature = "manager-control-plane")]
-pub(super) use crate::storage::MockStorageProvider;
 pub(super) use anyhow::Result;
 #[cfg(feature = "manager-control-plane")]
 pub(super) use anyhow::bail;

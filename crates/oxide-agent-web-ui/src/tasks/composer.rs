@@ -245,11 +245,11 @@ pub(super) fn submit_parent_form_on_ctrl_enter(ev: &leptos::ev::KeyboardEvent) {
     };
     use wasm_bindgen::JsCast;
     let el: web_sys::HtmlElement = target.unchecked_into();
-    if let Ok(Some(form_el)) = el.closest("form") {
-        if let Ok(Some(btn)) = form_el.query_selector("button[type=submit]") {
-            let btn: web_sys::HtmlElement = btn.unchecked_into();
-            btn.click();
-        }
+    if let Ok(Some(form_el)) = el.closest("form")
+        && let Ok(Some(btn)) = form_el.query_selector("button[type=submit]")
+    {
+        let btn: web_sys::HtmlElement = btn.unchecked_into();
+        btn.click();
     }
 }
 
