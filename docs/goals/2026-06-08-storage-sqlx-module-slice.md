@@ -176,6 +176,13 @@ None.
   - Audit IDs updated: G2 (partial)
   - Next: Checkpoint 3 (extract rows.rs)
 
+- 2026-06-08: CP3 — extract rows.rs
+  - Changed: rows.rs (209 lines): row_to_user_context, row_to_agent_flow, row_to_agent_profile, row_to_topic_context, row_to_topic_agents_md, row_to_topic_infra_config, row_to_topic_binding, row_to_audit_event, row_to_reminder_job
+  - mod.rs=3142, rows.rs=209, wiki.rs=197, helpers.rs=184. Total=3732
+  - Evidence: cargo check + clippy zero warnings
+  - Audit IDs updated: G2 (partial)
+  - Next: Checkpoint 4 (extract reminder_tx.rs)
+
 ## Risks and Blockers
 
 None identified. All slice boundaries are clean (free functions and private types).
@@ -188,10 +195,10 @@ Filled only when complete.
 
 ```
 sqlx/
-  mod.rs         ~3333  struct SqlxStorage + impl + impl StorageProvider
+  mod.rs         ~3142  struct SqlxStorage + impl + impl StorageProvider
   helpers.rs     ~184   db_error, row_value, enum conversions, int casts
   wiki.rs        ~197   WikiAddress, parse/validate wiki storage keys
-  rows.rs        ~195   row_to_* mapper functions (pending)
+  rows.rs        ~209   row_to_* mapper functions
   reminder_tx.rs ~172   reminder job tx helpers (pending)
   topic_tx.rs    ~211   topic record tx helpers + dedup (pending)
   tests.rs       ~934   integration tests (pending)
