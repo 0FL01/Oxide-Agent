@@ -166,6 +166,13 @@ None. The plan was reviewed and approved by the user before goal creation.
   - Audit IDs updated: G1 (partial), Q1, V1
   - Next: Checkpoint 2 -- extract url_validation.rs
 
+- 2026-06-08 Checkpoint 2: url_validation.rs
+  - Changed: created `url_validation.rs` (161 lines) with 9 functions: parse_public_http_url, dns_preflight_public, reject_unsafe_url_host, reject_unsafe_ip, reject_unsafe_ipv4, reject_unsafe_ipv6, reject_media_url, normalize_wait_for, ensure_not_cancelled; mod.rs reduced from 1871 to 1719 lines; removed unused `std::net` and `url::Host` imports from mod.rs
+  - Evidence: `cargo check -p oxide-agent-core` clean
+  - Commands: `cargo check -p oxide-agent-core` passed
+  - Audit IDs updated: G1 (partial), Q1, V1
+  - Next: Checkpoint 3 -- extract response.rs + errors.rs
+
 ## Risks and Blockers
 
 None identified. Pure structural refactor with zero behavioral change and confirmed zero external blast radius.
