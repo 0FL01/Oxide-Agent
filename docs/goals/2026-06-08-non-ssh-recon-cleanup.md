@@ -64,15 +64,15 @@ None. User approved continuing RECON-cleanup as a separate phase.
   - Source: RECON finding that un-emitted callback/menu actions remain parsed and routed.
   - Acceptance: unused `agent:clear`, `agent:compact`, `agent:recreate`, `agent:exit`, `menu:agent`, `menu:clear`, and `menu:back` parser/routing surface is removed or explicitly justified for compatibility.
   - Evidence required: Telegram transport check/clippy/test compile and targeted callback `rg`.
-  - Status: in_progress
-  - Evidence collected: 2026-06-08 Checkpoint 1 changed only profile/config/docs target files plus this goal doc; no dependencies, services, or abstractions were added.
+  - Status: verified
+  - Evidence collected: 2026-06-08 Checkpoint 2 removed the un-emitted `agent:*` start/exit callback constants and parser/dispatch branches, removed the dead `menu:*` callback handler chain from the runner, simplified the topic inline agent keyboard to a single cancel action, and updated tests. Telegram check/clippy/test compile passed; targeted callback `rg` returned no matches for the removed surface.
 
 - Q1: No broad refactors or new dependencies
   - Source: AGENTS.md implementation bias.
   - Acceptance: changes are local to documented cleanup targets; no new crates, services, or abstractions.
   - Evidence required: diff/Cargo review.
   - Status: in_progress
-  - Evidence collected: 2026-06-08 Checkpoint 1 passed embedded core/bot checks, targeted `rg`, and `cargo fmt --all -- --check`.
+  - Evidence collected: 2026-06-08 Checkpoint 1 passed embedded core/bot checks, targeted `rg`, and `cargo fmt --all -- --check`. 2026-06-08 Checkpoint 2 touched only Telegram callback/view/runner/tests plus this goal doc; no Cargo manifests or dependencies changed.
 
 - V1: Validation completed for affected areas
   - Source: AGENTS.md validation guidance.
@@ -144,12 +144,19 @@ None. User approved continuing RECON-cleanup as a separate phase.
   - Audit IDs updated: G1, G2, G3 verified; Q1 and V1 evidence added.
   - Next: Checkpoint 2 — Telegram callback dead-code cleanup.
 
+- 2026-06-08: Checkpoint 2 implemented
+  - Changed: removed un-emitted `agent:clear`, `agent:compact`, `agent:recreate`, `agent:exit`, `menu:agent`, `menu:clear`, and `menu:back` parser/routing surface; removed the menu callback pre-dispatch from the Telegram runner; simplified the topic inline agent keyboard; updated tests that covered dead callback paths.
+  - Evidence: targeted callback `rg` returned no matches for removed symbols/strings; old persisted inline keyboards now fall through as unrecognized callbacks with no handler side effect.
+  - Commands: `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-full`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features profile-full --all-targets -- -D warnings`; `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-full --no-run`; `cargo fmt --all -- --check`; targeted callback `rg`.
+  - Audit IDs updated: G4 verified; Q1 and V1 evidence added.
+  - Next: Checkpoint 3 — final validation and audit.
+
 ## Risks and Blockers
 
 - Old persisted Telegram inline keyboards may contain removed callback data after Checkpoint 2.
   - Impact: tapping old buttons may no-op instead of executing stale actions.
   - Evidence: current keyboards no longer emit those callback strings.
-  - Mitigation: acceptable if handler falls through without error; document exact behavior during Checkpoint 2.
+  - Mitigation: resolved in Checkpoint 2. Removed callback strings are unrecognized by `handle_agent_callback`, which returns `Ok(())` without executing an action.
   - Audit IDs affected: G4.
 
 ## Final Verification

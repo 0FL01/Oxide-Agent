@@ -8,8 +8,7 @@ use crate::bot::resilient;
 use crate::bot::state::ConfirmationType;
 use crate::bot::views::{
     AgentView, DefaultAgentView, agent_control_markup, agent_flow_inline_keyboard_with_toggle,
-    cancel_task_confirmation_inline_keyboard, empty_inline_keyboard,
-    get_agent_inline_keyboard_with_exit,
+    cancel_task_confirmation_inline_keyboard, empty_inline_keyboard, get_agent_inline_keyboard,
 };
 use crate::bot::{
     OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec, build_outbound_thread_params,
@@ -456,14 +455,7 @@ pub(crate) async fn show_agent_controls(
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let reply_markup = if use_inline_topic_controls(thread_spec) {
-        let (agent_flow_id, _) =
-            ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-        get_agent_inline_keyboard_with_exit(
-            false,
-            Some(&agent_flow_id),
-            settings.telegram.attach_detach_enabled,
-        )
-        .into()
+        get_agent_inline_keyboard().into()
     } else {
         agent_control_markup(false)
     };

@@ -495,12 +495,6 @@ fn inline_cancel_callbacks_are_recognized() {
         Some(AgentCallbackAction::StartCancelTaskConfirmation)
     );
     assert_eq!(
-        parse_agent_callback_action(crate::bot::views::AGENT_CALLBACK_COMPACT_CONTEXT),
-        Some(AgentCallbackAction::StartConfirmation(
-            crate::bot::state::ConfirmationType::CompactContext
-        ))
-    );
-    assert_eq!(
         parse_agent_callback_action(AGENT_CALLBACK_CONFIRM_CANCEL_YES),
         Some(AgentCallbackAction::ResolveCancelTaskConfirmation(true))
     );

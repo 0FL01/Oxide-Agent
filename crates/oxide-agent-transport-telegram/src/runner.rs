@@ -366,21 +366,6 @@ async fn handle_callback(
         .as_ref()
         .map(|message| Dialogue::new(bot_state.clone(), message.chat().id));
 
-    if let Some(dialogue) = &dialogue {
-        match bot::handlers::handle_menu_callback(&bot, &q, &storage, &llm, &settings, dialogue)
-            .await
-        {
-            Ok(true) => {
-                return respond(());
-            }
-            Ok(false) => {}
-            Err(e) => {
-                error!("Menu callback handler error: {}", e);
-                return respond(());
-            }
-        }
-    }
-
     if !settings
         .telegram
         .allowed_users()

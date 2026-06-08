@@ -17,16 +17,12 @@ use teloxide::{
     dispatching::dialogue::InMemStorage,
     prelude::*,
     types::{
-        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup,
-        ParseMode, ReplyMarkup,
+        InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, KeyboardMarkup, ParseMode,
+        ReplyMarkup,
     },
     utils::command::BotCommands,
 };
 use tracing::info;
-
-const MENU_CALLBACK_AGENT_MODE: &str = "menu:agent";
-const MENU_CALLBACK_CLEAR_FLOW: &str = "menu:clear";
-const MENU_CALLBACK_BACK: &str = "menu:back";
 
 // Helper function to get user name from Message
 fn get_user_name(msg: &Message) -> String {
@@ -178,13 +174,6 @@ fn get_main_inline_keyboard() -> InlineKeyboardMarkup {
         "❌ Cancel Task",
         crate::bot::views::AGENT_CALLBACK_CANCEL_TASK,
     )]])
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MenuCallbackData {
-    AgentMode,
-    ClearFlow,
-    Back,
 }
 
 fn use_inline_topic_controls(thread_spec: TelegramThreadSpec) -> bool {
@@ -363,76 +352,6 @@ pub async fn clear(bot: Bot, msg: Message, storage: Arc<dyn StorageProvider>) ->
 
 fn outbound_thread_from_message(msg: &Message) -> OutboundThreadParams {
     build_outbound_thread_params(resolve_thread_spec(msg))
-}
-
-fn parse_menu_callback_data(data: &str) -> Option<MenuCallbackData> {
-    match data {
-        MENU_CALLBACK_AGENT_MODE => Some(MenuCallbackData::AgentMode),
-        MENU_CALLBACK_CLEAR_FLOW => Some(MenuCallbackData::ClearFlow),
-        MENU_CALLBACK_BACK => Some(MenuCallbackData::Back),
-        _ => None,
-    }
-}
-
-/// Handle topic-friendly menu callbacks.
-///
-/// Returns true when callback belongs to topic menu controls.
-pub async fn handle_menu_callback(
-    bot: &Bot,
-    q: &CallbackQuery,
-    storage: &Arc<dyn StorageProvider>,
-    llm: &Arc<LlmClient>,
-    settings: &Arc<BotSettings>,
-    dialogue: &Dialogue<State, InMemStorage<State>>,
-) -> Result<bool> {
-    let Some(data) = q.data.as_deref() else {
-        return Ok(false);
-    };
-
-    let Some(callback_data) = parse_menu_callback_data(data) else {
-        return Ok(false);
-    };
-
-    let Some(msg) = q
-        .message
-        .as_ref()
-        .and_then(|message| message.regular_message())
-    else {
-        bot.answer_callback_query(q.id.clone())
-            .text("Message context unavailable")
-            .await?;
-        return Ok(true);
-    };
-
-    let thread_spec = resolve_thread_spec(msg);
-    let user_id = q.from.id.0.cast_signed();
-
-    match callback_data {
-        MenuCallbackData::AgentMode => {
-            if check_agent_access(bot, msg, settings, user_id).await? {
-                crate::bot::agent_handlers::activate_agent_mode(
-                    bot.clone(),
-                    msg.clone(),
-                    dialogue.clone(),
-                    llm.clone(),
-                    storage.clone(),
-                    settings.clone(),
-                    user_id,
-                )
-                .await?;
-            }
-        }
-        MenuCallbackData::ClearFlow => {
-            clear(bot.clone(), msg.clone(), storage.clone()).await?;
-        }
-        MenuCallbackData::Back => {
-            let outbound_thread = build_outbound_thread_params(thread_spec);
-            handle_back_command(bot, msg.chat.id, dialogue, thread_spec, outbound_thread).await?;
-        }
-    }
-
-    bot.answer_callback_query(q.id.clone()).await?;
-    Ok(true)
 }
 
 /// Healthcheck handler
@@ -928,10 +847,7 @@ pub async fn handle_document(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        MENU_CALLBACK_AGENT_MODE, MENU_CALLBACK_BACK, MenuCallbackData, parse_menu_callback_data,
-        should_default_to_agent_mode,
-    };
+    use super::should_default_to_agent_mode;
     use crate::config::{BotSettings, TelegramSettings};
     use oxide_agent_core::config::AgentSettings;
 
@@ -951,25 +867,6 @@ mod tests {
                 topic_configs: Vec::new(),
             },
         )
-    }
-
-    #[test]
-    fn parse_menu_callback_data_parses_simple_actions() {
-        assert_eq!(
-            parse_menu_callback_data(MENU_CALLBACK_AGENT_MODE),
-            Some(MenuCallbackData::AgentMode)
-        );
-        assert_eq!(
-            parse_menu_callback_data(MENU_CALLBACK_BACK),
-            Some(MenuCallbackData::Back)
-        );
-    }
-
-    #[test]
-    fn parse_menu_callback_data_rejects_removed_chat_controls() {
-        assert_eq!(parse_menu_callback_data("menu:chat"), None);
-        assert_eq!(parse_menu_callback_data("menu:model:3"), None);
-        assert_eq!(parse_menu_callback_data("chat_attach:anything"), None);
     }
 
     #[test]
