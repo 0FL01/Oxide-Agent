@@ -14,9 +14,6 @@
   .sidebar {
     display: none;
   }
-  .events-panel {
-    display: none;
-  }
   .settings-grid {
     grid-template-columns: 1fr;
   }
@@ -51,12 +48,6 @@
 
   .composer {
     padding: 0 14px 14px;
-  }
-
-  .agent-activity,
-  .events-panel {
-    width: auto;
-    border-left: 0;
   }
 
   .activity-drawer.open {

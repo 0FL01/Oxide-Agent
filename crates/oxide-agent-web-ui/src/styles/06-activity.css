@@ -63,14 +63,6 @@
   text-transform: lowercase;
 }
 
-/* === AGENT ACTIVITY (inline in task card) === */
-.agent-activity {
-  display: grid;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-  margin-bottom: var(--space-2);
-}
-
 .agent-event-card,
 .todos-card {
   border: none;
@@ -603,23 +595,6 @@
   display: flex;
   justify-content: center;
   margin: 0 0 12px;
-}
-
-.agent-activity {
-  width: var(--drawer-width);
-  flex: 0 0 var(--drawer-width);
-  overflow-y: auto;
-  border-left: 1px solid var(--border);
-  background: var(--bg);
-  padding: 12px 14px;
-}
-
-.agent-activity {
-  width: auto;
-  max-width: 800px;
-  margin: 0 auto 24px;
-  border-left: 0;
-  padding: 0;
 }
 
 .tool-card,

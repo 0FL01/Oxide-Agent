@@ -92,7 +92,6 @@
 
 /* === EMPTY STATE === */
 .empty-state,
-.console-empty,
 .loading {
   display: flex;
   flex-direction: column;
@@ -507,8 +506,7 @@
   font-family: var(--font-mono);
 }
 
-.empty-state,
-.console-empty {
+.empty-state {
   color: var(--muted);
 }
 
