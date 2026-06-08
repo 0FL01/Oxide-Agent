@@ -72,15 +72,6 @@ pub struct TaskEventsResponse {
     pub has_more: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SseConnectionState {
-    Connected,
-    Disconnected,
-    Reconnecting,
-    TerminalClosed,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{PersistedTaskEvent, TaskEventKind, UserMessageEventPayload};

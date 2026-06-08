@@ -7,9 +7,8 @@ use futures_util::join;
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
     AgentEffort, AgentProfileView, CreateSessionRequest, CreateTaskRequest, ErrorCode,
-    PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, SseConnectionState,
-    TaskDetail, TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest,
-    UserSettingsResponse,
+    PersistedTaskEvent, ProgressSnapshot, ResumeTaskRequest, SessionSummary, TaskDetail,
+    TaskEventsResponse, TaskStatus, TaskSummary, UpdateSessionProfileRequest, UserSettingsResponse,
 };
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap};
 
@@ -156,7 +155,6 @@ pub fn TaskConsole(
     events: ReadSignal<Vec<PersistedTaskEvent>>,
     progress: ReadSignal<Option<ProgressSnapshot>>,
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
-    set_sse_state: WriteSignal<SseConnectionState>,
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
     set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
@@ -167,7 +165,6 @@ pub fn TaskConsole(
                 events=events
                 progress=progress
                 set_events=set_events
-                set_sse_state=set_sse_state
                 set_progress=set_progress
                 set_sessions=set_sessions
             />
@@ -407,12 +404,10 @@ fn SessionWorkspace(
     events: ReadSignal<Vec<PersistedTaskEvent>>,
     progress: ReadSignal<Option<ProgressSnapshot>>,
     set_events: WriteSignal<Vec<PersistedTaskEvent>>,
-    set_sse_state: WriteSignal<SseConnectionState>,
     set_progress: WriteSignal<Option<ProgressSnapshot>>,
     set_sessions: WriteSignal<Vec<SessionSummary>>,
 ) -> impl IntoView {
     let auth = use_auth();
-    let (_session_title, set_session_title) = signal("Session".to_string());
     let (tasks, set_tasks) = signal(Vec::<TaskSummary>::new());
     let (tasks_has_more, set_tasks_has_more) = signal(false);
     let (tasks_next_offset, set_tasks_next_offset) = signal(0_usize);
@@ -426,7 +421,6 @@ fn SessionWorkspace(
     let (active_task, set_active_task) = signal(None::<TaskDetail>);
     let (streaming_task_id, set_streaming_task_id) = signal(None::<String>);
     let (loaded, set_loaded) = signal(false);
-    let (_last_terminal_status, set_last_terminal_status) = signal(None::<TaskStatus>);
     let (selected_versions, set_selected_versions) = signal(HashMap::<String, String>::new());
     let (pending_files, set_pending_files) = signal(Vec::<PendingAttachmentFile>::new());
     let (next_pending_file_id, set_next_pending_file_id) = signal(0_usize);
@@ -478,7 +472,6 @@ fn SessionWorkspace(
 
             match session_result {
                 Ok(response) => {
-                    set_session_title.set(response.session.title.clone());
                     set_selected_profile.set(
                         response
                             .session
@@ -533,15 +526,12 @@ fn SessionWorkspace(
                                 initial_last_seq,
                                 StreamUiSignals {
                                     set_events,
-                                    set_session_title,
                                     set_progress,
                                     set_active_task,
                                     set_tasks,
-                                    set_sse_state,
                                     set_error,
                                     streaming_task_id,
                                     set_streaming_task_id,
-                                    set_last_terminal_status,
                                     set_sessions,
                                 },
                             );
@@ -734,7 +724,6 @@ fn SessionWorkspace(
                     set_input.set(String::new());
                     set_pending_files.set(Vec::new());
                     set_active_task.set(Some(summary_to_detail(&session_id, &task)));
-                    set_last_terminal_status.set(None);
                     set_selected_versions.update(|items| {
                         items.insert(
                             task.effective_version_group_id().to_string(),
@@ -748,15 +737,12 @@ fn SessionWorkspace(
                         0,
                         StreamUiSignals {
                             set_events,
-                            set_session_title,
                             set_progress,
                             set_active_task,
                             set_tasks,
-                            set_sse_state,
                             set_error,
                             streaming_task_id,
                             set_streaming_task_id,
-                            set_last_terminal_status,
                             set_sessions,
                         },
                     );
@@ -876,15 +862,12 @@ fn SessionWorkspace(
                                                     set_drawer_open,
                                                     stream_signals: StreamUiSignals {
                                                         set_events,
-                                                        set_session_title,
                                                         set_progress,
                                                         set_active_task,
                                                         set_tasks,
-                                                        set_sse_state,
                                                         set_error,
                                                         streaming_task_id,
                                                         set_streaming_task_id,
-                                                        set_last_terminal_status,
                                                         set_sessions,
                                                     },
                                                     set_error,

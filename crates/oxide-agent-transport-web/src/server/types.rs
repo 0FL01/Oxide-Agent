@@ -457,10 +457,10 @@ pub async fn build_sqlx_backed_app_state(
     let storage_provider: Arc<dyn StorageProvider> = provider_storage;
     let session_manager =
         WebSessionManager::new_with_storage(registry, llm, agent_settings, storage_provider);
-    let state = AppState::new_with_sqlx_web_store(Arc::new(session_manager), sqlx_storage);
-    state.validate_web_store_for_startup()?;
-    state.reconcile_unfinished_tasks_on_startup().await?;
-    Ok(state)
+    Ok(AppState::new_with_sqlx_web_store(
+        Arc::new(session_manager),
+        sqlx_storage,
+    ))
 }
 
 // ---------------------------------------------------------------------------

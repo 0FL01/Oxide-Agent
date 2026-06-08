@@ -1,6 +1,6 @@
 //! Crawl orchestration: retry loop, HTTP request assembly, response body reading.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use reqwest::Url;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, USER_AGENT};

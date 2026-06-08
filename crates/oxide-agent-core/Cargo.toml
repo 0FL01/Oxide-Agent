@@ -229,12 +229,9 @@ profile-host-bwrap = [
 # Transports
 transport-telegram = []
 transport-web = []
-transport-cli = []
-transport-http-api = []
 
 # Storage
 storage-sqlx = ["dep:sqlx-core", "dep:sqlx-postgres"]
-storage-local-fs = []
 
 # LLM providers
 llm-chatgpt = ["dep:reqwest"]

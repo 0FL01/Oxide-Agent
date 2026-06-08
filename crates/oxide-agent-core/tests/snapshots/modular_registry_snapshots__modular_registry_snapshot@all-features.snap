@@ -715,28 +715,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
-        "id": "transport/cli",
-        "kind": "transport",
-        "cargo_feature": "transport-cli",
-        "provides": [
-          "transport/cli"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "transport/http-api",
-        "kind": "transport",
-        "cargo_feature": "transport-http-api",
-        "provides": [
-          "transport/http-api"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
         "id": "transport/telegram",
         "kind": "transport",
         "cargo_feature": "transport-telegram",
@@ -993,14 +971,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/ytdlp"
       },
       {
-        "id": "transport/cli",
-        "module": "transport/cli"
-      },
-      {
-        "id": "transport/http-api",
-        "module": "transport/http-api"
-      },
-      {
         "id": "transport/telegram",
         "module": "transport/telegram"
       },
@@ -1052,8 +1022,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/webfetch-md",
       "tool/wiki-memory",
       "tool/ytdlp",
-      "transport/cli",
-      "transport/http-api",
       "transport/telegram",
       "transport/web"
     ],
@@ -1116,8 +1084,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/ytdlp-download",
       "tool/ytdlp-metadata",
       "tool/ytdlp-transcript",
-      "transport/cli",
-      "transport/http-api",
       "transport/telegram",
       "transport/web"
     ]
@@ -1126,7 +1092,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "apply_file_edit",
     "cancel_sub_agents",
     "compress",
-    "crawl4ai_markdown",
     "describe_image_file",
     "describe_video_file",
     "duckduckgo_news",

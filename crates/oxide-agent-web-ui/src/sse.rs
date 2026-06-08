@@ -5,8 +5,8 @@ use gloo_net::eventsource::futures::{EventSource, EventSourceBuilder, EventSourc
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, ProgressSnapshot, SessionDetail, SessionSummary, SseConnectionState,
-    TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
+    PersistedTaskEvent, ProgressSnapshot, SessionDetail, SessionSummary, TaskDetail, TaskEventKind,
+    TaskStatus, TaskSummary,
 };
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -17,17 +17,14 @@ pub struct TaskStreamConfig {
     pub session_id: String,
     pub task_id: String,
     pub initial_last_seq: u64,
-    pub set_session_title: WriteSignal<String>,
     pub set_sessions: WriteSignal<Vec<SessionSummary>>,
     pub set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     pub set_progress: WriteSignal<Option<ProgressSnapshot>>,
     pub set_active_task: WriteSignal<Option<TaskDetail>>,
     pub set_tasks: WriteSignal<Vec<TaskSummary>>,
-    pub set_state: WriteSignal<SseConnectionState>,
     pub set_error: WriteSignal<Option<String>>,
     pub streaming_task_id: ReadSignal<Option<String>>,
     pub set_streaming_task_id: WriteSignal<Option<String>>,
-    pub set_last_terminal_status: WriteSignal<Option<TaskStatus>>,
 }
 
 pub fn spawn_task_stream(config: TaskStreamConfig) {
@@ -72,7 +69,6 @@ async fn run_task_stream(config: TaskStreamConfig) {
             return;
         }
 
-        set_state_if_current(&config, SseConnectionState::Reconnecting);
         let url = format!(
             "/api/v1/sessions/{}/tasks/{}/stream?after_seq={last_seq}",
             config.session_id, config.task_id
@@ -83,7 +79,6 @@ async fn run_task_stream(config: TaskStreamConfig) {
                 attempts = attempts.saturating_add(1);
                 set_error_if_current(&config, error.to_string());
                 if attempts >= 3 {
-                    set_state_if_current(&config, SseConnectionState::Disconnected);
                     clear_streaming_task_if_current(&config);
                     return;
                 }
@@ -92,7 +87,6 @@ async fn run_task_stream(config: TaskStreamConfig) {
         };
         let Some(streams) = subscribe_task_streams(&mut source, &config, &mut attempts) else {
             if attempts >= 3 {
-                set_state_if_current(&config, SseConnectionState::Disconnected);
                 clear_streaming_task_if_current(&config);
                 return;
             }
@@ -106,7 +100,6 @@ async fn run_task_stream(config: TaskStreamConfig) {
 
         attempts = attempts.saturating_add(1);
         if attempts >= 3 {
-            set_state_if_current(&config, SseConnectionState::Disconnected);
             clear_streaming_task_if_current(&config);
             return;
         }
@@ -190,7 +183,6 @@ async fn process_stream_messages(
         mut status_events,
         mut keepalive_events,
     } = streams;
-    set_state_if_current(config, SseConnectionState::Connected);
     loop {
         if !stream_is_current(config) {
             return false;
@@ -198,7 +190,6 @@ async fn process_stream_messages(
         futures_util::select! {
             message = task_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
                 if handle_task_event_message(config, message, last_seq).await {
@@ -207,21 +198,18 @@ async fn process_stream_messages(
             }
             message = progress_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
                 handle_progress_message(config, message);
             }
             message = snapshot_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
                 handle_snapshot_message(config, message, last_seq);
             }
             message = status_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
                 if handle_status_message(config, message, last_seq).await {
@@ -231,7 +219,6 @@ async fn process_stream_messages(
             }
             message = keepalive_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
                 if handle_keepalive_message(config, message, last_seq).await {
@@ -248,7 +235,6 @@ async fn handle_task_event_message(
     last_seq: &mut u64,
 ) -> bool {
     let Ok((_event_type, event)) = message else {
-        set_state_if_current(config, SseConnectionState::Disconnected);
         return false;
     };
     let Some(payload) = event.data().as_string() else {
@@ -328,7 +314,6 @@ async fn handle_status_message(
     last_seq: &mut u64,
 ) -> bool {
     let Ok((_event_type, event)) = message else {
-        set_state_if_current(config, SseConnectionState::Disconnected);
         return false;
     };
     let Some(payload) = event.data().as_string() else {
@@ -356,7 +341,6 @@ async fn handle_keepalive_message(
     last_seq: &mut u64,
 ) -> bool {
     if message.is_err() {
-        set_state_if_current(config, SseConnectionState::Disconnected);
         return false;
     }
     // Periodic refresh on keepalive to pick up any missed state.
@@ -479,7 +463,6 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<(TaskStatus, u
             if stream_is_current(config) {
                 config.set_progress.set(detail.last_progress.clone());
                 if detail.status.is_terminal() {
-                    config.set_last_terminal_status.set(Some(status));
                     config.set_active_task.set(None);
                 } else {
                     config.set_active_task.set(Some(detail));
@@ -530,7 +513,6 @@ async fn refresh_session_summary(config: &TaskStreamConfig) {
                 return;
             }
             let summary = session_detail_to_summary(response.session);
-            config.set_session_title.set(summary.title.clone());
             upsert_session_summary(config.set_sessions, summary);
         }
         Err(error) => set_error_if_current(config, error.to_string()),
@@ -548,7 +530,6 @@ async fn poll_session_summary_after_terminal(config: &TaskStreamConfig) {
 }
 
 async fn finish_terminal_stream(config: &TaskStreamConfig) {
-    set_state_if_current(config, SseConnectionState::TerminalClosed);
     poll_session_summary_after_terminal(config).await;
     clear_streaming_task_if_current(config);
 }
@@ -559,12 +540,6 @@ fn stream_is_current(config: &TaskStreamConfig) -> bool {
         .get_untracked()
         .as_deref()
         .is_some_and(|task_id| task_id == config.task_id.as_str())
-}
-
-fn set_state_if_current(config: &TaskStreamConfig, state: SseConnectionState) {
-    if stream_is_current(config) {
-        config.set_state.set(state);
-    }
 }
 
 fn set_error_if_current(config: &TaskStreamConfig, error: String) {

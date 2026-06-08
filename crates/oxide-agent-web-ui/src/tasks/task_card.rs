@@ -603,7 +603,6 @@ fn TaskInputEditForm(target: TaskInputEditTarget, signals: TaskInputEditSignals)
                         stream_signals
                             .set_active_task
                             .set(Some(summary_to_detail(&session_id, &task)));
-                        stream_signals.set_last_terminal_status.set(None);
                         stream_signals
                             .set_tasks
                             .update(|items| upsert_task_summary(items, task.clone()));
