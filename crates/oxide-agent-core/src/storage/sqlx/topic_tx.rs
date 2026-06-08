@@ -3,16 +3,16 @@
 use sqlx_core::{query::query, transaction::Transaction};
 use sqlx_postgres::Postgres;
 
-use super::{
-    AgentFlowRecord, AgentProfileRecord, StorageError, TopicAgentsMdRecord, TopicBindingRecord,
-    TopicContextRecord, TopicInfraConfigRecord,
-};
-use crate::storage::control_plane::normalize_topic_prompt_payload;
 use super::helpers::{db_error, row_value};
 use super::rows::{
     row_to_agent_flow, row_to_agent_profile, row_to_topic_agents_md, row_to_topic_binding,
     row_to_topic_context, row_to_topic_infra_config,
 };
+use super::{
+    AgentFlowRecord, AgentProfileRecord, StorageError, TopicAgentsMdRecord, TopicBindingRecord,
+    TopicContextRecord, TopicInfraConfigRecord,
+};
+use crate::storage::control_plane::normalize_topic_prompt_payload;
 
 pub(super) async fn get_agent_flow_record_for_update(
     tx: &mut Transaction<'_, Postgres>,

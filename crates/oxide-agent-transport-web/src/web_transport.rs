@@ -1668,7 +1668,12 @@ mod tests {
         assert_eq!(display["provider"], "crawl4ai_markdown");
         assert_eq!(display["final_url"], "https://arxiv.org/abs/2602.10604");
         assert_eq!(display["chars"], 6_009);
-        assert!(display["markdown"].as_str().unwrap().starts_with("# Title"));
+        assert!(
+            display["markdown"]
+                .as_str()
+                .expect("markdown display payload should be a string")
+                .starts_with("# Title")
+        );
     }
 
     #[tokio::test]
@@ -2258,7 +2263,12 @@ mod tests {
             other => panic!("expected Progress message, got {other:?}"),
         }
         let stored = log.last_progress_snapshot().await;
-        assert_eq!(stored.unwrap().current_iteration, 3);
+        assert_eq!(
+            stored
+                .expect("progress snapshot should be stored")
+                .current_iteration,
+            3
+        );
     }
 
     #[tokio::test]

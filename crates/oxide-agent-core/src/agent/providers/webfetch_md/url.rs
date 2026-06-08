@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use reqwest::Url;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use url::Host;

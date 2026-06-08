@@ -1,11 +1,11 @@
-use super::*;
-use super::convert::{self, html_to_markdown, truncate_chars};
+use super::convert::{html_to_markdown, truncate_chars};
 use super::error::reject_anti_bot_challenge;
 use super::reddit::{
-    parse_reddit_atom_entries, reddit_thread_rss_url, render_reddit_atom_markdown,
-    xml_tag_block, xml_tag_text, RedditAtomEntry,
+    RedditAtomEntry, parse_reddit_atom_entries, reddit_thread_rss_url, render_reddit_atom_markdown,
+    xml_tag_block, xml_tag_text,
 };
 use super::url::{parse_web_url, reject_media_url, reject_unsafe_url};
+use super::*;
 use crate::agent::identity::SessionId;
 use crate::agent::tool_runtime::{
     ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
@@ -13,9 +13,9 @@ use crate::agent::tool_runtime::{
 };
 use crate::llm::InvocationId;
 use chrono::Utc;
+use reqwest::Url;
 use reqwest::header::HeaderValue;
 use reqwest::header::{HeaderMap, SERVER};
-use reqwest::Url;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -397,8 +397,7 @@ fn builds_rss_url_from_reddit_thread() {
 
 #[test]
 fn strips_query_and_fragment_from_rss_url() {
-    let url =
-        Url::parse("https://www.reddit.com/r/rust/comments/abc123/t/#comment1").expect("url");
+    let url = Url::parse("https://www.reddit.com/r/rust/comments/abc123/t/#comment1").expect("url");
     let rss = reddit_thread_rss_url(&url).expect("rss url");
     assert_eq!(rss.query(), None);
     assert_eq!(rss.fragment(), None);

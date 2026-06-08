@@ -321,11 +321,21 @@ mod tests {
 
         // Stable messages (TopicAgentsMd, Summary) come BEFORE date.
         // Volatile messages (SYSTEM retry, TEMPORAL_CONTEXT) come AFTER date.
-        let stable_idx = result.find("[TOPIC_AGENTS_MD]").unwrap();
-        let summary_idx = result.find("[OXIDE_COMPACTED_SUMMARY_V1]").unwrap();
-        let date_idx = result.find("### CURRENT DATE AND TIME").unwrap();
-        let retry_idx = result.find("[SYSTEM: retry").unwrap();
-        let temporal_idx = result.find("[TEMPORAL_CONTEXT]").unwrap();
+        let stable_idx = result
+            .find("[TOPIC_AGENTS_MD]")
+            .expect("topic AGENTS.md marker should be present");
+        let summary_idx = result
+            .find("[OXIDE_COMPACTED_SUMMARY_V1]")
+            .expect("compacted summary marker should be present");
+        let date_idx = result
+            .find("### CURRENT DATE AND TIME")
+            .expect("date suffix should be present");
+        let retry_idx = result
+            .find("[SYSTEM: retry")
+            .expect("retry system note should be present");
+        let temporal_idx = result
+            .find("[TEMPORAL_CONTEXT]")
+            .expect("temporal context should be present");
 
         assert!(
             stable_idx < date_idx,
@@ -357,8 +367,10 @@ mod tests {
         let (result, _normalized) = fold_system_messages_into_prompt("Base.", "DATE", &messages);
 
         // All system messages are volatile (no stable prefix match) — all after date.
-        let date_idx = result.find("DATE").unwrap();
-        let retry_idx = result.find("[SYSTEM: retry").unwrap();
+        let date_idx = result.find("DATE").expect("date suffix should be present");
+        let retry_idx = result
+            .find("[SYSTEM: retry")
+            .expect("retry system note should be present");
         assert!(
             retry_idx > date_idx,
             "volatile retry should be after date when no stable messages present"

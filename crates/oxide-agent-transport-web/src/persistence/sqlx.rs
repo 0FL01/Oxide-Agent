@@ -2399,7 +2399,7 @@ mod tests {
             Some(user)
         );
         assert!(
-            store.users_count().await.expect("count users") >= users_before + 1,
+            store.users_count().await.expect("count users") > users_before,
             "users_count should include the saved user"
         );
         assert!(
@@ -2803,7 +2803,10 @@ mod tests {
         .fetch_one(store.pool())
         .await
         .expect("event count should load");
-        assert_eq!(row_value::<i64>(&row, "event_count").unwrap(), 1_201);
+        assert_eq!(
+            row_value::<i64>(&row, "event_count").expect("event_count should decode"),
+            1_201
+        );
     }
 
     #[tokio::test]

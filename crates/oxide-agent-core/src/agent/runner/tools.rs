@@ -998,8 +998,8 @@ mod tests {
         let compress_result = memory
             .iter()
             .find(|m| m.tool_name.as_deref() == Some(TOOL_COMPRESS));
-        assert!(compress_result.is_some());
-        assert!(compress_result.unwrap().content.contains("scheduled"));
+        let compress_result = compress_result.expect("compress tool result should be present");
+        assert!(compress_result.content.contains("scheduled"));
     }
 
     #[tokio::test]

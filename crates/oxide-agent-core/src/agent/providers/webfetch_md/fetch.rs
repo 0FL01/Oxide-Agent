@@ -6,9 +6,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use super::convert::{html_to_markdown, truncate_chars};
-use super::error::{
-    display_content_type, is_html_content_type, reject_anti_bot_challenge,
-};
+use super::error::{display_content_type, is_html_content_type, reject_anti_bot_challenge};
 use super::reddit::{
     parse_reddit_atom_entries, reddit_thread_rss_url, render_reddit_atom_markdown, xml_tag_text,
 };

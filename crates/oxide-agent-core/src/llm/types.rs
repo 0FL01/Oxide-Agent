@@ -688,7 +688,6 @@ mod tests {
             total_tokens: 4352,
             cached_tokens: Some(2560),
             cache_creation_tokens: Some(128),
-            ..TokenUsage::default()
         };
         let json = serde_json::to_string(&usage).expect("serialize");
         assert!(json.contains("\"cached_tokens\":2560"));

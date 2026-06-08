@@ -1811,26 +1811,25 @@ use helpers::{
     i64_to_u64, row_value, u16_to_i32, u32_to_i32, u64_to_i64, usize_to_i64,
 };
 
-mod wiki;
 mod rows;
+mod wiki;
 
-use wiki::{parse_wiki_storage_key, validate_wiki_content_size, WIKI_SCHEMA_VERSION};
 use rows::{
     row_to_agent_flow, row_to_agent_profile, row_to_audit_event, row_to_reminder_job,
     row_to_topic_agents_md, row_to_topic_binding, row_to_topic_context, row_to_topic_infra_config,
     row_to_user_context,
 };
+use wiki::{WIKI_SCHEMA_VERSION, parse_wiki_storage_key, validate_wiki_content_size};
 
 mod reminder_tx;
 use reminder_tx::{insert_reminder_job_in_tx, mutate_reminder_job};
 
 mod topic_tx;
 use topic_tx::{
-    ensure_topic_prompt_not_duplicated_in_tx, get_agent_flow_record_for_update,
-    get_agent_profile_for_update, get_topic_agents_md_for_update, get_topic_binding_for_update,
-    get_topic_context_for_update, get_topic_infra_config_for_update, TopicPromptStoreKind,
+    TopicPromptStoreKind, ensure_topic_prompt_not_duplicated_in_tx,
+    get_agent_flow_record_for_update, get_agent_profile_for_update, get_topic_agents_md_for_update,
+    get_topic_binding_for_update, get_topic_context_for_update, get_topic_infra_config_for_update,
 };
-
 
 #[cfg(test)]
 mod tests;

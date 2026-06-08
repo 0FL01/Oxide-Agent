@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use reqwest::Url;
 use reqwest::header::{HeaderMap, SERVER};
 use serde_json::json;
@@ -93,7 +93,10 @@ pub(super) fn webfetch_failure_payload(
     })
 }
 
-pub(super) fn webfetch_failure_message(args: Option<&WebMarkdownArgs>, error: &anyhow::Error) -> String {
+pub(super) fn webfetch_failure_message(
+    args: Option<&WebMarkdownArgs>,
+    error: &anyhow::Error,
+) -> String {
     let error_kind = webfetch_error_kind(error);
     if error_kind == "anti_bot" {
         if let Some(host) = args.and_then(|args| webfetch_host_from_url(&args.url)) {

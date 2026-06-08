@@ -710,7 +710,7 @@ mod tests {
         let context_key = format!("web-session-{}", uuid::Uuid::new_v4());
         let context_id = wiki_context_id(42, &context_key);
 
-        let first_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let first_backend: Arc<dyn WikiObjectBackend> = Arc::<InMemoryWikiBackend>::clone(&backend);
         let first_cache = Arc::new(WikiSessionCache::new(WikiStore::new(
             first_backend,
             prefix.clone(),
@@ -732,7 +732,8 @@ mod tests {
         assert!(first_cache.is_context_marked_empty(&context_id).await);
         assert!(backend.get_keys.lock().await.is_empty());
 
-        let second_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let second_backend: Arc<dyn WikiObjectBackend> =
+            Arc::<InMemoryWikiBackend>::clone(&backend);
         let second_cache = Arc::new(WikiSessionCache::new(WikiStore::new(
             second_backend,
             prefix,

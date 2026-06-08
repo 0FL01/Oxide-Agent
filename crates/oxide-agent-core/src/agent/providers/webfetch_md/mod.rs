@@ -181,7 +181,5 @@ fn webfetch_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests;

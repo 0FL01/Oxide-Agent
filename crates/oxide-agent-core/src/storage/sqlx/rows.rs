@@ -2,14 +2,14 @@
 
 use sqlx_postgres::PgRow;
 
+use super::helpers::{
+    enum_from_sql, enum_vec_from_sql, i32_to_u16, i32_to_u32, i64_to_u32, i64_to_u64, row_value,
+};
 use super::{
     AgentFlowRecord, AgentProfileRecord, AuditEventRecord, ReminderJobRecord, ReminderJobStatus,
     ReminderScheduleKind, ReminderThreadKind, StorageError, TopicAgentsMdRecord, TopicBindingKind,
     TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord,
     TopicInfraToolMode, UserContextConfig,
-};
-use super::helpers::{
-    enum_from_sql, enum_vec_from_sql, i32_to_u16, i32_to_u32, i64_to_u32, i64_to_u64, row_value,
 };
 
 pub(super) fn row_to_user_context(row: &PgRow) -> Result<UserContextConfig, StorageError> {
@@ -88,7 +88,9 @@ pub(super) fn row_to_topic_agents_md(row: &PgRow) -> Result<TopicAgentsMdRecord,
     })
 }
 
-pub(super) fn row_to_topic_infra_config(row: &PgRow) -> Result<TopicInfraConfigRecord, StorageError> {
+pub(super) fn row_to_topic_infra_config(
+    row: &PgRow,
+) -> Result<TopicInfraConfigRecord, StorageError> {
     let auth_mode = enum_from_sql::<TopicInfraAuthMode>(
         &row_value::<String>(row, "auth_mode")?,
         "topic infra auth mode",

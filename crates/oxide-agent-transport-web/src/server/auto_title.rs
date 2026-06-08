@@ -621,7 +621,8 @@ mod tests {
     #[test]
     fn extract_title_reads_json_title() {
         assert_eq!(
-            extract_title_from_response(r#"{"title":"Политика данных CrofAI"}"#).unwrap(),
+            extract_title_from_response(r#"{"title":"Политика данных CrofAI"}"#)
+                .expect("JSON title should parse"),
             "Политика данных CrofAI"
         );
     }
@@ -629,7 +630,8 @@ mod tests {
     #[test]
     fn extract_title_falls_back_to_plain_title() {
         assert_eq!(
-            extract_title_from_response("Title: Docker networking").unwrap(),
+            extract_title_from_response("Title: Docker networking")
+                .expect("plain title should parse"),
             "Docker networking"
         );
     }

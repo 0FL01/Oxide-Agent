@@ -314,12 +314,11 @@ fn deprecated_config_compatibility_surfaces_are_removed() {
 
     let env_example = fs::read_to_string(workspace_root.join(".env.example"))
         .expect("read workspace .env.example");
-    for forbidden in ["OXIDE_CODEX_STYLE_COMPACTION"] {
-        assert!(
-            !env_example.contains(forbidden),
-            ".env.example must not document removed temporary migration switches: {forbidden}"
-        );
-    }
+    let forbidden = "OXIDE_CODEX_STYLE_COMPACTION";
+    assert!(
+        !env_example.contains(forbidden),
+        ".env.example must not document removed temporary migration switches: {forbidden}"
+    );
 
     let executor = fs::read_to_string(manifest_dir.join("src/agent/executor.rs"))
         .expect("read executor module");

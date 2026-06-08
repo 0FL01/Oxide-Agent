@@ -378,7 +378,6 @@ mod tests {
         let config = UserConfig {
             state: Some("dm_state".to_string()),
             contexts,
-            ..UserConfig::default()
         };
         let spec = resolve_thread_spec_from_context(true, true, Some(ThreadId(MessageId(99))));
 

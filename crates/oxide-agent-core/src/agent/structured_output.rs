@@ -495,9 +495,14 @@ mod tests {
             result.is_ok(),
             "Prose should be wrapped as structured output"
         );
-        let parsed = result.unwrap();
-        assert!(parsed.final_answer.is_some());
-        assert!(parsed.final_answer.unwrap().contains("Summary:"));
+        let parsed = result.expect("prose should parse as structured output");
+        assert!(
+            parsed
+                .final_answer
+                .as_deref()
+                .expect("final answer should be present")
+                .contains("Summary:")
+        );
         assert!(parsed.tool_call.is_none());
     }
 
@@ -530,24 +535,20 @@ mod tests {
     #[test]
     fn strips_literal_newlines_in_string_values() {
         // Model puts raw newline inside "thought" value — aggressive stripping should fix it
-        let raw = format!(
-            "{{\"thought\":\"line1\nline2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}}"
-        );
+        let raw = "{\"thought\":\"line1\nline2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}".to_string();
         let result = parse_structured_output(&raw, &tools_fixture());
         assert!(
             result.is_ok(),
             "Should parse after aggressive control char stripping"
         );
-        let parsed = result.unwrap();
+        let parsed = result.expect("control-stripped newline payload should parse");
         assert_eq!(parsed.thought, "line1line2");
         assert_eq!(parsed.final_answer.as_deref(), Some("ok"));
     }
 
     #[test]
     fn strips_literal_tabs_in_string_values() {
-        let raw = format!(
-            "{{\"thought\":\"col1\tcol2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}}"
-        );
+        let raw = "{\"thought\":\"col1\tcol2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}".to_string();
         let result = parse_structured_output(&raw, &tools_fixture());
         assert!(
             result.is_ok(),

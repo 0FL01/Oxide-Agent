@@ -78,20 +78,20 @@ fn strict_tool_history_messages(messages: Vec<AgentMessage>) -> Vec<AgentMessage
             pending_tool_call_ids.extend(tool_calls.iter().map(|tool_call| tool_call.id.clone()));
         }
 
-        if message.role == oxide_agent_core::agent::memory::MessageRole::Tool {
-            if let Some(tool_call_id) = message.tool_call_id.as_deref() {
-                if let Some(position) = pending_tool_call_ids
-                    .iter()
-                    .position(|pending_id| pending_id == tool_call_id)
-                {
-                    pending_tool_call_ids.remove(position);
-                } else {
-                    let tool_name = message.tool_name.as_deref().unwrap_or("unknown_tool");
-                    normalized.push(AgentMessage::assistant_with_tools(
-                        "",
-                        vec![tool_call(tool_call_id, tool_name, serde_json::json!({}))],
-                    ));
-                }
+        if message.role == oxide_agent_core::agent::memory::MessageRole::Tool
+            && let Some(tool_call_id) = message.tool_call_id.as_deref()
+        {
+            if let Some(position) = pending_tool_call_ids
+                .iter()
+                .position(|pending_id| pending_id == tool_call_id)
+            {
+                pending_tool_call_ids.remove(position);
+            } else {
+                let tool_name = message.tool_name.as_deref().unwrap_or("unknown_tool");
+                normalized.push(AgentMessage::assistant_with_tools(
+                    "",
+                    vec![tool_call(tool_call_id, tool_name, serde_json::json!({}))],
+                ));
             }
         }
 

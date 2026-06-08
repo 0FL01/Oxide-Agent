@@ -871,7 +871,7 @@ mod tests {
         let prefix = format!("shared-cache-{}", uuid::Uuid::new_v4());
         let context_id = "ctx-shared-cache";
 
-        let first_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let first_backend: Arc<dyn WikiObjectBackend> = Arc::<InMemoryWikiBackend>::clone(&backend);
         let first_cache = WikiSessionCache::new(WikiStore::new(first_backend, &prefix));
         first_cache
             .load_global_index()
@@ -890,7 +890,8 @@ mod tests {
         );
         assert_eq!(backend.get_keys.lock().await.len(), 3);
 
-        let second_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let second_backend: Arc<dyn WikiObjectBackend> =
+            Arc::<InMemoryWikiBackend>::clone(&backend);
         let second_cache = WikiSessionCache::new(WikiStore::new(second_backend, &prefix));
         second_cache
             .load_global_index()
@@ -920,12 +921,12 @@ mod tests {
         let context_id = "ctx-empty-marker";
         let key = format!("{prefix}/wiki/v1/contexts/{context_id}/overview.md");
 
-        let cache_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let cache_backend: Arc<dyn WikiObjectBackend> = Arc::<InMemoryWikiBackend>::clone(&backend);
         let cache = WikiSessionCache::new(WikiStore::new(cache_backend, &prefix));
         cache.mark_context_empty(context_id).await;
         assert!(cache.is_context_marked_empty(context_id).await);
 
-        let other_backend: Arc<dyn WikiObjectBackend> = backend.clone();
+        let other_backend: Arc<dyn WikiObjectBackend> = Arc::<InMemoryWikiBackend>::clone(&backend);
         let other_cache = WikiSessionCache::new(WikiStore::new(other_backend, &other_prefix));
         assert!(!other_cache.is_context_marked_empty(context_id).await);
 

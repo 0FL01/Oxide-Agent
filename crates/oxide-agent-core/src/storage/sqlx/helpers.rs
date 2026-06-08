@@ -1,12 +1,12 @@
 //! Database helpers: error mapping, advisory locks, row accessors,
 //! JSON/enum conversions, and integer range casts.
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx_core::{
-    decode::Decode, error::Error as SqlxError, query::query, row::Row,
-    transaction::Transaction, types::Type,
+    decode::Decode, error::Error as SqlxError, query::query, row::Row, transaction::Transaction,
+    types::Type,
 };
 use sqlx_postgres::{PgRow, Postgres};
 
