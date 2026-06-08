@@ -337,7 +337,6 @@ fn is_pinned(message: &AgentMessage) -> bool {
         AgentMessageKind::TopicAgentsMd
             | AgentMessageKind::UserTask
             | AgentMessageKind::RuntimeContext
-            | AgentMessageKind::ApprovalReplay
             | AgentMessageKind::InfraStatus
     )
 }
@@ -533,31 +532,6 @@ mod tests {
                 .iter()
                 .any(|message| message.content == "latest request")
         );
-    }
-
-    #[test]
-    fn preserves_approval_replay_messages() {
-        let messages = vec![
-            AgentMessage::user("Resume approved SSH action."),
-            AgentMessage::approval_replay(
-                "Retry exact SSH call with approval_request_id='req-1' and approval_token='token-1'.",
-            ),
-            AgentMessage::assistant("Continuing after approval."),
-        ];
-
-        let replacement = build_compacted_history(BuildCompactedHistoryRequest {
-            messages: &messages,
-            summary_text: "Approval replay is pending and must be preserved.",
-            metadata: &metadata(false),
-            target_token_budget: 10_000,
-        })
-        .expect("history builds with approval replay");
-
-        assert!(replacement.iter().any(|message| {
-            message.resolved_kind() == AgentMessageKind::ApprovalReplay
-                && message.content.contains("approval_request_id='req-1'")
-                && message.content.contains("approval_token='token-1'")
-        }));
     }
 
     #[test]

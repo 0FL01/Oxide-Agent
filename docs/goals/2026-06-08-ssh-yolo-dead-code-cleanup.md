@@ -50,15 +50,15 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Source: user request: "SSH approval - выкинуть из кода, оставить обычный yolo ssh"
   - Acceptance: no production approval registry, pending approval queue, approval token, approval replay injection, or approval system prompt remains in SSH execution paths.
   - Evidence required: `rg -n "SshApproval|approval_request|approval_token|inject_approval|APPROVAL DISABLED|is_dangerous_command|is_sensitive_path" crates/oxide-agent-core/src` shows no live approval pipeline symbols, or only documented migration-safe compatibility if explicitly justified.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-08 Checkpoint 1 removed approval registry/request/token/replay helpers, executor pending/resume APIs, transport approval callbacks/keyboards, approval progress events, and approval replay memory kind. `rg -n "SshApproval|approval_request|approval_token|inject_approval|APPROVAL DISABLED|is_dangerous_command|is_sensitive_path|WaitingForApproval|ApprovalReplay|approval_replay|ssh_approval|agent:ssh|YOLO_APPROVAL" crates/oxide-agent-core/src crates/oxide-agent-transport-telegram/src crates/oxide-agent-transport-web/src` returned no matches.
 
 - G2: YOLO SSH behavior preserved
   - Source: user request and AGENTS SSH invariants
   - Acceptance: existing SSH tools still register/compile under `integration-ssh-mcp`; allowed tool modes and secret refs remain the only access controls.
   - Evidence required: `cargo check -p oxide-agent-core --no-default-features --features integration-ssh-mcp,manager-control-plane`, plus grep/read evidence that `allowed_tool_modes` enforcement remains.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-08 `cargo check -p oxide-agent-core --no-default-features --features integration-ssh-mcp,manager-control-plane` passed. `ssh_mcp.rs` still registers ordinary SSH tools and keeps `allowed_tool_modes` enforcement in `SshRuntimeToolExecutor::ensure_mode_allowed`.
 
 - G3: Approval config/API surface pruned
   - Source: user request to remove approval, RECON finding that `approval_required_modes` is not enforced.
@@ -99,8 +99,8 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Source: user request to keep ordinary YOLO SSH, not redesign it
   - Must preserve: no new prompts, approval UX, queues, tokens, or operator confirmation flow.
   - Evidence required: diff review shows only removal/simplification around approval.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-08 diff removes approval prompts/queues/tokens/callbacks and does not add replacement approval UX or controls.
 
 ## Implementation Plan
 
@@ -173,6 +173,13 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Commands: `git status --short`, `git log --oneline -5`, read existing goal docs and AGENTS.md.
   - Audit IDs updated: none yet.
   - Next: Checkpoint 1 — remove SSH approval execution plumbing.
+
+- 2026-06-08: Checkpoint 1 implemented
+  - Changed: removed SSH approval registry/replay plumbing from core providers, executor, progress, Telegram callbacks/views/task delivery, and web task handling; kept topic infra preflight and ordinary SSH tool paths.
+  - Evidence: approval-symbol `rg` returned no matches; `allowed_tool_modes` remains enforced in `ssh_mcp.rs`; no Cargo dependency changes.
+  - Commands: `cargo check -p oxide-agent-core --no-default-features --features integration-ssh-mcp,manager-control-plane`; `cargo clippy -p oxide-agent-core --no-default-features --features integration-ssh-mcp,manager-control-plane --all-targets -- -D warnings`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`; `cargo fmt --all -- --check`.
+  - Audit IDs updated: G1, G2, N1 verified.
+  - Next: Checkpoint 2 — prune active `approval_required_modes` config/storage/control-plane surface.
 
 ## Risks and Blockers
 

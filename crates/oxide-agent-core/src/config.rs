@@ -1215,6 +1215,12 @@ mod tests {
     use serde_json::json;
     use std::env;
 
+    #[cfg(any(
+        feature = "llm-minimax",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter",
+        feature = "llm-zai"
+    ))]
     fn clear_model_route_env() {
         let keys: Vec<String> = env::vars()
             .map(|(key, _)| key)
@@ -1228,6 +1234,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     fn clear_opencode_go_env() {
         for key in [
             "OPENCODE_API_KEY",

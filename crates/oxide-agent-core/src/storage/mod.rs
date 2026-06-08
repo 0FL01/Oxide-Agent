@@ -19,7 +19,7 @@ mod sqlx;
 #[cfg(feature = "storage-sqlx")]
 mod sqlx_config;
 mod user;
-#[cfg(any(feature = "storage-sqlx", test))]
+#[cfg(feature = "storage-sqlx")]
 mod utils;
 
 #[cfg(test)]

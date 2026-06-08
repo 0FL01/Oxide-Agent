@@ -90,17 +90,13 @@ pub use silero_tts::{
 };
 #[cfg(feature = "integration-ssh-mcp")]
 pub use ssh_mcp::{
-    SecretProbeKind, SecretProbeReport, SshApprovalGrant, SshApprovalRegistry,
-    SshApprovalRequestView, SshMcpProvider, TopicInfraPreflightReport, inject_approval_credentials,
-    inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
-    inspect_topic_infra_config, probe_secret_ref,
+    SecretProbeKind, SecretProbeReport, SshMcpProvider, TopicInfraPreflightReport,
+    inject_topic_infra_preflight_system_message, inspect_topic_infra_config, probe_secret_ref,
 };
 #[cfg(not(feature = "integration-ssh-mcp"))]
 pub use ssh_mcp_stub::{
-    SecretProbeKind, SecretProbeReport, SshApprovalGrant, SshApprovalRegistry,
-    SshApprovalRequestView, TopicInfraPreflightReport, inject_approval_credentials,
-    inject_ssh_approval_system_message, inject_topic_infra_preflight_system_message,
-    inspect_topic_infra_config, probe_secret_ref,
+    SecretProbeKind, SecretProbeReport, TopicInfraPreflightReport,
+    inject_topic_infra_preflight_system_message, inspect_topic_infra_config, probe_secret_ref,
 };
 #[cfg(feature = "tool-stack-logs")]
 pub use stack_logs::StackLogsProvider;

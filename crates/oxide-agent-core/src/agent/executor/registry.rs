@@ -356,7 +356,6 @@ impl AgentExecutor {
                     context.user_id,
                     context.topic_id.clone(),
                     context.config.clone(),
-                    context.approvals.clone(),
                 )
             }),
             #[cfg(feature = "tool-reminder")]

@@ -200,15 +200,12 @@ impl<'a> AgentRunnerContext<'a> {
 pub enum AgentRunResult {
     /// The agent produced a final response for the user.
     Final(String),
-    /// The agent paused because an external approval is required.
-    WaitingForApproval,
     /// The agent paused because it requires additional user input.
     WaitingForUserInput(PendingUserInput),
 }
 
 pub(crate) enum TimedRunResult {
     Final(String),
-    WaitingForApproval,
     WaitingForUserInput(PendingUserInput),
     Failed(Error),
     TimedOut,
@@ -218,7 +215,6 @@ impl From<AgentRunResult> for TimedRunResult {
     fn from(result: AgentRunResult) -> Self {
         match result {
             AgentRunResult::Final(res) => Self::Final(res),
-            AgentRunResult::WaitingForApproval => Self::WaitingForApproval,
             AgentRunResult::WaitingForUserInput(request) => Self::WaitingForUserInput(request),
         }
     }

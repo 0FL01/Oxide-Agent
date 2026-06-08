@@ -482,14 +482,6 @@ impl AgentMessage {
         }
     }
 
-    /// Create a system message instructing the agent to replay an approved action.
-    pub fn approval_replay(content: impl Into<String>) -> Self {
-        Self {
-            kind: AgentMessageKind::ApprovalReplay,
-            ..Self::system_context(content)
-        }
-    }
-
     /// Create a protected infra status message.
     pub fn infra_status(content: impl Into<String>) -> Self {
         Self {

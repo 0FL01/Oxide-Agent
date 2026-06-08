@@ -1134,13 +1134,13 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     ) -> String {
         match outcome {
             TimedRunResult::Final(result) => result,
-            TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
-                warn!(task_id = %task_id, "Sub-agent paused waiting for unsupported approval");
+            TimedRunResult::WaitingForUserInput(_) => {
+                warn!(task_id = %task_id, "Sub-agent paused waiting for unsupported user input");
                 Self::build_sub_agent_error_report_for_settings(
                     settings,
                     task_id,
                     memory,
-                    "sub-agent paused waiting for unsupported external approval".to_string(),
+                    "sub-agent paused waiting for unsupported user input".to_string(),
                 )
             }
             TimedRunResult::Failed(err) => {
@@ -1162,9 +1162,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     const fn status_for_timed_run_result(outcome: &TimedRunResult) -> SubAgentJobStatus {
         match outcome {
             TimedRunResult::Final(_) => SubAgentJobStatus::Completed,
-            TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
-                SubAgentJobStatus::Failed
-            }
+            TimedRunResult::WaitingForUserInput(_) => SubAgentJobStatus::Failed,
             TimedRunResult::Failed(_) => SubAgentJobStatus::Failed,
             TimedRunResult::TimedOut => SubAgentJobStatus::TimedOut,
         }

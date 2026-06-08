@@ -44,6 +44,8 @@ use crate::agent::providers::FileHosterProvider;
 use crate::agent::providers::MediaFileProvider;
 #[cfg(feature = "tool-searxng")]
 use crate::agent::providers::SearxngProvider;
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::SshMcpProvider;
 #[cfg(feature = "tool-stack-logs")]
 use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-tavily")]
@@ -70,8 +72,6 @@ use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
 use crate::agent::providers::{ReminderContext, ReminderProvider};
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
-#[cfg(feature = "integration-ssh-mcp")]
-use crate::agent::providers::{SshApprovalRegistry, SshMcpProvider};
 #[cfg(any(
     feature = "tool-agents-md",
     feature = "manager-control-plane",
@@ -137,7 +137,6 @@ pub struct SshMcpModuleContext {
     user_id: i64,
     topic_id: String,
     config: TopicInfraConfigRecord,
-    approvals: SshApprovalRegistry,
 }
 
 #[cfg(feature = "integration-ssh-mcp")]
@@ -149,14 +148,12 @@ impl SshMcpModuleContext {
         user_id: i64,
         topic_id: String,
         config: TopicInfraConfigRecord,
-        approvals: SshApprovalRegistry,
     ) -> Self {
         Self {
             storage,
             user_id,
             topic_id,
             config,
-            approvals,
         }
     }
 }
@@ -470,7 +467,6 @@ impl SshMcpToolModule {
             ssh.user_id,
             ssh.topic_id,
             ssh.config,
-            ssh.approvals,
         ))
     }
 

@@ -639,17 +639,15 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
 
 #[cfg(test)]
 mod tests {
-    use super::compiled_capability_manifest;
-    use crate::capabilities::CapabilityKind;
-
     #[cfg(feature = "storage-sqlx")]
     #[test]
     fn compiled_manifest_exposes_compiled_durable_storage_backends() {
-        let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
+        let manifest =
+            super::compiled_capability_manifest().expect("compiled manifest should be valid");
         let storage_backend_ids: Vec<_> = manifest
             .modules()
             .iter()
-            .filter(|module| module.kind() == CapabilityKind::StorageBackend)
+            .filter(|module| module.kind() == crate::capabilities::CapabilityKind::StorageBackend)
             .map(|module| module.id().as_str())
             .collect();
         let expected = vec!["storage/sqlx"];
@@ -663,7 +661,8 @@ mod tests {
     #[cfg(feature = "llm-openrouter")]
     #[test]
     fn openrouter_module_declares_provider_config_schema() {
-        let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
+        let manifest =
+            super::compiled_capability_manifest().expect("compiled manifest should be valid");
         let schema = manifest.config_schema();
         let openrouter = &schema["properties"]["modules"]["properties"]["llm-provider/openrouter"];
 

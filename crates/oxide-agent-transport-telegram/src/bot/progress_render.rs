@@ -447,29 +447,6 @@ mod tests {
     }
 
     #[test]
-    fn renders_waiting_for_approval_step() {
-        let mut state = ProgressState::new(10);
-
-        state.update(AgentEvent::ToolCall {
-            id: "tool-1".to_string(),
-            source: Default::default(),
-            name: "ssh_sudo_exec".to_string(),
-            input: "{}".to_string(),
-            command_preview: None,
-        });
-        state.update(AgentEvent::WaitingForApproval {
-            tool_name: "ssh_sudo_exec".to_string(),
-            target_name: "n-de1".to_string(),
-            summary: "sudo exec on n-de1: journalctl -p err -n 10 --no-pager".to_string(),
-        });
-
-        let output = render_progress_html(&state);
-
-        assert!(output.contains("SSH approval pending for n-de1"));
-        assert!(!output.contains("Execution: ssh_sudo_exec"));
-    }
-
-    #[test]
     fn renders_runtime_compaction_status() {
         let mut state = ProgressState::new(10);
 

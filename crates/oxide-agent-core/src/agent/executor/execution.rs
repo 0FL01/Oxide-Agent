@@ -10,7 +10,7 @@ use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_agent_system_prompt;
-use crate::agent::providers::{SshApprovalRequestView, TopicInfraPreflightReport};
+use crate::agent::providers::TopicInfraPreflightReport;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, run_with_timeout};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
 use crate::agent::wiki_memory::planner::{
@@ -109,23 +109,6 @@ impl AgentExecutor {
 
         self.last_topic_infra_preflight_summary = Some(message.clone());
         self.inject_system_message(message);
-    }
-
-    /// Return pending SSH approvals that have not yet been surfaced to the transport.
-    pub async fn take_pending_ssh_approvals(&self) -> Vec<SshApprovalRequestView> {
-        match &self.topic_infra {
-            Some(topic_infra) => topic_infra.approvals.take_unannounced().await,
-            None => Vec::new(),
-        }
-    }
-
-    /// Reject a pending SSH approval request.
-    pub async fn reject_ssh_approval(
-        &mut self,
-        request_id: &str,
-    ) -> Option<SshApprovalRequestView> {
-        let topic_infra = self.topic_infra.as_ref()?;
-        topic_infra.approvals.reject(request_id).await
     }
 
     /// Inject transport-generated system context into the next run.
@@ -270,10 +253,6 @@ impl AgentExecutor {
             ExecutionTransition::Completed(response) => {
                 self.session.complete();
                 Ok(AgentExecutionOutcome::Completed(response))
-            }
-            ExecutionTransition::WaitingForApproval => {
-                self.session.complete();
-                Ok(AgentExecutionOutcome::WaitingForApproval)
             }
             ExecutionTransition::WaitingForUserInput(request) => {
                 self.session.complete();
@@ -942,17 +921,6 @@ impl AgentExecutor {
     ) -> Result<AgentExecutionOutcome> {
         self.run_execution_request(ExecutionRequest::NewTask { input, options }, progress_tx)
             .await
-    }
-
-    /// Deterministically resume a paused SSH tool call after operator approval.
-    pub async fn resume_ssh_approval(
-        &mut self,
-        request_id: &str,
-        _progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> Result<AgentExecutionOutcome> {
-        Err(anyhow!(
-            "SSH approval resume is disabled in typed tool runtime v1; request_id={request_id}"
-        ))
     }
 
     /// Resume a paused task after receiving the user input it requested.

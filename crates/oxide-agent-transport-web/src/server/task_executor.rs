@@ -4,9 +4,8 @@
 //! and tracking timeline milestones.
 
 use super::{
-    AppState, EVENT_LOGS, Milestones, SerializableProgress, TaskTimelineRecord,
-    YOLO_APPROVAL_DIAGNOSTIC, markdown_preview, pending_user_input_view,
-    progress_snapshot_from_serializable,
+    AppState, EVENT_LOGS, Milestones, SerializableProgress, TaskTimelineRecord, markdown_preview,
+    pending_user_input_view, progress_snapshot_from_serializable,
 };
 use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
@@ -498,13 +497,6 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
                 }
                 session_manager.complete_task(&task_id, &session_id).await;
                 info!(task_id = %task_id, "Task paused waiting for user input");
-            }
-            Ok(AgentExecutionOutcome::WaitingForApproval) => {
-                if let Some(web_task) = &web_task {
-                    persist_task_failed(web_task, YOLO_APPROVAL_DIAGNOSTIC).await;
-                }
-                session_manager.fail_task(&task_id, &session_id).await;
-                info!(task_id = %task_id, "Task failed after unexpected approval wait");
             }
             Err(e) => {
                 if let Some(web_task) = &web_task {

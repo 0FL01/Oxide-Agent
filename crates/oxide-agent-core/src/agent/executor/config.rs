@@ -5,7 +5,7 @@ use crate::agent::hooks::{
     CompletionCheckHook, EpisodicExtractHook, HotContextHealthHook, RetrievalAdvisorHook,
     SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
 };
-use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext, SshApprovalRegistry};
+use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext};
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::AgentSession;
 use crate::agent::wiki_memory::WikiStore;
@@ -160,10 +160,6 @@ impl AgentExecutor {
             user_id,
             topic_id,
             config,
-            approvals: self
-                .topic_infra
-                .as_ref()
-                .map_or_else(SshApprovalRegistry::new, |ctx| ctx.approvals.clone()),
         });
     }
 

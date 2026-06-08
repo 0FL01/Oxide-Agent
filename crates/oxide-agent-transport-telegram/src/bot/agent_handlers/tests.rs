@@ -525,18 +525,6 @@ fn inline_cancel_callbacks_are_recognized() {
 }
 
 #[test]
-fn ssh_approval_callbacks_are_recognized() {
-    assert_eq!(
-        parse_agent_callback_action("agent:ssh:approve:req-1"),
-        Some(AgentCallbackAction::ApproveSsh("req-1".to_string()))
-    );
-    assert_eq!(
-        parse_agent_callback_action("agent:ssh:reject:req-1"),
-        Some(AgentCallbackAction::RejectSsh("req-1".to_string()))
-    );
-}
-
-#[test]
 fn session_id_derivation_is_stable_without_thread() {
     let user_id = 12345;
     let first = derive_agent_mode_session_id(user_id, ChatId(-1001), None, "flow-a");

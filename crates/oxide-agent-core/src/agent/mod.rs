@@ -88,7 +88,6 @@ pub use profile::{
     topic_agent_protected_hooks,
 };
 pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
-pub use providers::{SshApprovalGrant, SshApprovalRequestView};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};

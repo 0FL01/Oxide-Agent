@@ -1,6 +1,6 @@
 use crate::agent::compaction::CompactionController;
 use crate::agent::progress::AgentEvent;
-use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
+use crate::agent::providers::{ManagerTopicLifecycle, TodoList};
 use crate::agent::runner::{
     AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
 };
@@ -37,7 +37,6 @@ pub(super) struct TopicInfraContext {
     pub(super) user_id: i64,
     pub(super) topic_id: String,
     pub(super) config: TopicInfraConfigRecord,
-    pub(super) approvals: SshApprovalRegistry,
 }
 
 pub(super) struct PreparedExecution {
@@ -111,7 +110,6 @@ pub(super) struct ResolvedExecutionRequest {
 
 pub(super) enum ExecutionTransition {
     Completed(String),
-    WaitingForApproval,
     WaitingForUserInput(PendingUserInput),
     Failed(Error),
     TimedOut,
@@ -121,7 +119,6 @@ impl From<TimedRunResult> for ExecutionTransition {
     fn from(result: TimedRunResult) -> Self {
         match result {
             TimedRunResult::Final(res) => Self::Completed(res),
-            TimedRunResult::WaitingForApproval => Self::WaitingForApproval,
             TimedRunResult::WaitingForUserInput(request) => Self::WaitingForUserInput(request),
             TimedRunResult::Failed(error) => Self::Failed(error),
             TimedRunResult::TimedOut => Self::TimedOut,

@@ -26,9 +26,6 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::TokenSnapshotUpdated { .. } => "token_snapshot_updated".to_string(),
         AgentEvent::ToolCall { name, .. } => format!("tool_call:{name}"),
         AgentEvent::ToolResult { name, .. } => format!("tool_result:{name}"),
-        AgentEvent::WaitingForApproval { tool_name, .. } => {
-            format!("waiting_for_approval:{tool_name}")
-        }
         AgentEvent::Continuation { .. } => "continuation".to_string(),
         AgentEvent::TodosUpdated { .. } => "todos_updated".to_string(),
         AgentEvent::FileToSend { file_name, .. } => format!("file_to_send:{file_name}"),
@@ -712,24 +709,6 @@ fn browser_event_parts(
             token_event_parts(event)
         }
         AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. } => tool_event_parts(event),
-        AgentEvent::WaitingForApproval {
-            tool_name,
-            target_name,
-            summary,
-        } => {
-            let (summary_preview, truncated) = truncate_text(summary, EVENT_PREVIEW_MAX_CHARS);
-            (
-                TaskEventKind::TaskStatus,
-                format!("waiting_for_approval:{tool_name}"),
-                json!({
-                    "tool_name": tool_name,
-                    "target_name": target_name,
-                    "summary": summary_preview,
-                }),
-                false,
-                truncated,
-            )
-        }
         AgentEvent::Continuation { .. }
         | AgentEvent::Finished
         | AgentEvent::Cancelling { .. }

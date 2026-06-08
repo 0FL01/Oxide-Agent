@@ -235,19 +235,3 @@ async fn continue_after_runtime_context_rejects_sessions_without_queued_context(
 
     assert!(error.to_string().contains("no queued runtime context"));
 }
-
-#[tokio::test]
-async fn resume_ssh_approval_is_disabled_for_typed_runtime_v1() {
-    let mut executor = build_executor();
-
-    let error = match executor.resume_ssh_approval("req-1", None).await {
-        Ok(_) => panic!("resume should be disabled"),
-        Err(error) => error,
-    };
-
-    assert!(
-        error
-            .to_string()
-            .contains("SSH approval resume is disabled in typed tool runtime v1")
-    );
-}

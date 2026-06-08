@@ -42,7 +42,6 @@ pub(crate) const TASK_PREVIEW_CHARS: usize = 96;
 pub(crate) const DEFAULT_TASK_EVENTS_LIMIT: usize = 200;
 pub(crate) const MAX_TASK_EVENTS_LIMIT: usize = 500;
 pub(crate) const DEFAULT_WEB_CHAT_UPLOAD_MAX_MB: u64 = 200;
-pub(crate) const YOLO_APPROVAL_DIAGNOSTIC: &str = "The agent requested approval, but web console runs in YOLO (full permission) mode. Reconfigure the agent or retry without an approval-requiring setup.";
 pub(crate) const AUTH_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub(crate) const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
 pub(crate) const AUTH_CACHE_TTL: Duration = Duration::from_secs(60);

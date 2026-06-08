@@ -147,8 +147,6 @@ pub struct AgentExecutor {
 pub enum AgentExecutionOutcome {
     /// Agent finished and produced a final response.
     Completed(String),
-    /// Agent paused because it is waiting for an external approval.
-    WaitingForApproval,
     /// Agent paused because it is waiting for additional user input.
     WaitingForUserInput(PendingUserInput),
 }

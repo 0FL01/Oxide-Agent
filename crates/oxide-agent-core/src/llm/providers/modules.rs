@@ -218,6 +218,17 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 }
 
 #[cfg(test)]
+#[cfg_attr(
+    not(any(
+        feature = "llm-chatgpt",
+        feature = "llm-mistral",
+        feature = "llm-minimax",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter",
+        feature = "llm-zai"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod tests {
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
