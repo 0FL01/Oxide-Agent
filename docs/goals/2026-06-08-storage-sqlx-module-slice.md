@@ -190,6 +190,14 @@ None.
   - Audit IDs updated: G2 (partial)
   - Next: Checkpoint 5 (extract topic_tx.rs)
 
+- 2026-06-08: CP5 — extract topic_tx.rs
+  - Changed: topic_tx.rs (226 lines): get_agent_flow_record_for_update, get_agent_profile_for_update, get_topic_context_for_update, get_topic_agents_md_for_update, get_topic_infra_config_for_update, get_topic_binding_for_update, TopicPromptStoreKind, ensure_topic_prompt_not_duplicated_in_tx
+  - Removed from mod.rs: normalize_topic_prompt_payload import, Transaction import (moved to topic_tx.rs)
+  - mod.rs=2767, topic_tx.rs=226, reminder_tx.rs=179, rows.rs=209, wiki.rs=197, helpers.rs=184. Total=3762
+  - Evidence: cargo check + clippy zero warnings
+  - Audit IDs updated: G2 (partial)
+  - Next: Checkpoint 6 (extract tests.rs)
+
 ## Risks and Blockers
 
 None identified. All slice boundaries are clean (free functions and private types).
@@ -202,11 +210,11 @@ Filled only when complete.
 
 ```
 sqlx/
-  mod.rs         ~2972  struct SqlxStorage + impl + impl StorageProvider
+  mod.rs         ~2767  struct SqlxStorage + impl + impl StorageProvider
   helpers.rs     ~184   db_error, row_value, enum conversions, int casts
   wiki.rs        ~197   WikiAddress, parse/validate wiki storage keys
   rows.rs        ~209   row_to_* mapper functions
   reminder_tx.rs ~179   reminder job tx helpers
-  topic_tx.rs    ~211   topic record tx helpers + dedup (pending)
+  topic_tx.rs    ~226   topic record tx helpers + dedup
   tests.rs       ~934   integration tests (pending)
 ```

@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use sqlx_core::{migrate::Migrator, query::query, transaction::Transaction};
+use sqlx_core::{migrate::Migrator, query::query};
 use sqlx_postgres::{PgPool, PgPoolOptions, Postgres};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -23,7 +23,6 @@ use super::{
         build_reminder_job_record, build_topic_agents_md_record, build_topic_binding_record,
         build_topic_context_record, build_topic_infra_config_record, with_next_reminder_version,
     },
-    control_plane::normalize_topic_prompt_payload,
     utils::current_timestamp_unix_secs,
     validate_topic_agents_md_content, validate_topic_context_content,
 };
@@ -1825,216 +1824,12 @@ use rows::{
 mod reminder_tx;
 use reminder_tx::{insert_reminder_job_in_tx, mutate_reminder_job};
 
-async fn get_agent_flow_record_for_update(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-    context_key: &str,
-    flow_id: &str,
-) -> Result<Option<AgentFlowRecord>, StorageError> {
-    let row = query::<Postgres>(
-        r#"
-        SELECT user_id, context_key, flow_id, schema_version, created_at, updated_at
-        FROM agent_flows
-        WHERE user_id = $1 AND context_key = $2 AND flow_id = $3
-        FOR UPDATE
-        "#,
-    )
-    .bind(user_id)
-    .bind(context_key)
-    .bind(flow_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db_error)?;
-
-    row.map(|row| row_to_agent_flow(&row)).transpose()
-}
-
-async fn get_agent_profile_for_update(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-    agent_id: &str,
-) -> Result<Option<AgentProfileRecord>, StorageError> {
-    let row = query::<Postgres>(
-        r#"
-        SELECT user_id, agent_id, profile, version, schema_version, created_at, updated_at
-        FROM agent_profiles
-        WHERE user_id = $1 AND agent_id = $2
-        FOR UPDATE
-        "#,
-    )
-    .bind(user_id)
-    .bind(agent_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db_error)?;
-
-    row.map(|row| row_to_agent_profile(&row)).transpose()
-}
-
-async fn get_topic_context_for_update(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-    topic_id: &str,
-) -> Result<Option<TopicContextRecord>, StorageError> {
-    let row = query::<Postgres>(
-        r#"
-        SELECT user_id, topic_id, context, version, schema_version, created_at, updated_at
-        FROM topic_contexts
-        WHERE user_id = $1 AND topic_id = $2
-        FOR UPDATE
-        "#,
-    )
-    .bind(user_id)
-    .bind(topic_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db_error)?;
-
-    row.map(|row| row_to_topic_context(&row)).transpose()
-}
-
-async fn get_topic_agents_md_for_update(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-    topic_id: &str,
-) -> Result<Option<TopicAgentsMdRecord>, StorageError> {
-    let row = query::<Postgres>(
-        r#"
-        SELECT user_id, topic_id, agents_md, version, schema_version, created_at, updated_at
-        FROM topic_agents_md
-        WHERE user_id = $1 AND topic_id = $2
-        FOR UPDATE
-        "#,
-    )
-    .bind(user_id)
-    .bind(topic_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db_error)?;
-
-    row.map(|row| row_to_topic_agents_md(&row)).transpose()
-}
-
-async fn get_topic_infra_config_for_update(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-    topic_id: &str,
-) -> Result<Option<TopicInfraConfigRecord>, StorageError> {
-    let row = query::<Postgres>(
-        r#"
-        SELECT user_id, topic_id, target_name, host, port, remote_user, auth_mode,
-               secret_ref, sudo_secret_ref, environment, tags, allowed_tool_modes,
-               approval_required_modes, version, schema_version, created_at, updated_at
-        FROM topic_infra_configs
-        WHERE user_id = $1 AND topic_id = $2
-        FOR UPDATE
-        "#,
-    )
-    .bind(user_id)
-    .bind(topic_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db_error)?;
-
-    row.map(|row| row_to_topic_infra_config(&row)).transpose()
-}
-
-async fn get_topic_binding_for_update(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-    topic_id: &str,
-) -> Result<Option<TopicBindingRecord>, StorageError> {
-    let row = query::<Postgres>(
-        r#"
-        SELECT user_id, topic_id, agent_id, binding_kind, chat_id, thread_id,
-               expires_at, last_activity_at, version, schema_version, created_at, updated_at
-        FROM topic_bindings
-        WHERE user_id = $1 AND topic_id = $2
-        FOR UPDATE
-        "#,
-    )
-    .bind(user_id)
-    .bind(topic_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(db_error)?;
-
-    row.map(|row| row_to_topic_binding(&row)).transpose()
-}
-
-#[derive(Clone, Copy)]
-enum TopicPromptStoreKind {
-    Context,
-    AgentsMd,
-}
-
-impl TopicPromptStoreKind {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Context => "topic_context",
-            Self::AgentsMd => "topic_agents_md",
-        }
-    }
-}
-
-async fn ensure_topic_prompt_not_duplicated_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-    topic_id: &str,
-    attempted_kind: TopicPromptStoreKind,
-    candidate: &str,
-) -> Result<(), StorageError> {
-    let normalized_candidate = normalize_topic_prompt_payload(candidate);
-    let (existing_kind, row) = match attempted_kind {
-        TopicPromptStoreKind::Context => {
-            let row = query::<Postgres>(
-                r#"
-                SELECT agents_md AS content
-                FROM topic_agents_md
-                WHERE user_id = $1 AND topic_id = $2
-                FOR UPDATE
-                "#,
-            )
-            .bind(user_id)
-            .bind(topic_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db_error)?;
-            (TopicPromptStoreKind::AgentsMd, row)
-        }
-        TopicPromptStoreKind::AgentsMd => {
-            let row = query::<Postgres>(
-                r#"
-                SELECT context AS content
-                FROM topic_contexts
-                WHERE user_id = $1 AND topic_id = $2
-                FOR UPDATE
-                "#,
-            )
-            .bind(user_id)
-            .bind(topic_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(db_error)?;
-            (TopicPromptStoreKind::Context, row)
-        }
-    };
-
-    let existing_content = row
-        .map(|row| row_value::<String>(&row, "content"))
-        .transpose()?;
-    if let Some(existing_content) = existing_content
-        && normalize_topic_prompt_payload(&existing_content) == normalized_candidate
-    {
-        return Err(StorageError::DuplicateTopicPromptContent {
-            topic_id: topic_id.to_string(),
-            existing_kind: existing_kind.as_str().to_string(),
-            attempted_kind: attempted_kind.as_str().to_string(),
-        });
-    }
-
-    Ok(())
-}
+mod topic_tx;
+use topic_tx::{
+    ensure_topic_prompt_not_duplicated_in_tx, get_agent_flow_record_for_update,
+    get_agent_profile_for_update, get_topic_agents_md_for_update, get_topic_binding_for_update,
+    get_topic_context_for_update, get_topic_infra_config_for_update, TopicPromptStoreKind,
+};
 
 #[cfg(test)]
 mod tests {
