@@ -166,6 +166,14 @@ None. The plan was reviewed and approved by the user before goal creation.
   - Line counts: mod.rs=1139, convert.rs=33, reddit.rs=158
   - Next: Checkpoint 2 (extract url.rs)
 
+- 2026-06-08: Checkpoint 2 complete
+  - Changed: extracted `url.rs` (96 lines) — `parse_web_url`, `reject_media_url`, `reject_unsafe_url`, SSRF protection; removed `std::net::*` and `url::Host` imports from mod.rs
+  - Evidence: `cargo check` clean, 23 webfetch tests pass, zero warnings (5 pre-existing failures unrelated)
+  - Commands: `cargo check -p oxide-agent-core`, `cargo test -p oxide-agent-core --no-default-features --features profile-lite`
+  - Audit IDs updated: G1(partial)
+  - Line counts: mod.rs=1047, convert.rs=33, reddit.rs=158, url.rs=96
+  - Next: Checkpoint 3 (extract error.rs)
+
 ## Risks and Blockers
 
 None identified. The refactoring is purely internal with zero blast radius.
