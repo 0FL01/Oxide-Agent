@@ -146,6 +146,7 @@ None. The plan was reviewed and approved by the user before goal creation.
 - 2026-06-08: Tests as single `tests.rs` file (not `tests/mod.rs`) per user preference
 - 2026-06-08: All internal items `pub(super)` visibility -- zero external API change
 - 2026-06-08: Extraction order by dependency -- leaf modules first (url, error, convert, detect), then reddit, then fetch (depends on all), then tests last
+- 2026-06-08: Checkpoints 1 and 4 merged -- reddit.rs depends on html_to_markdown from convert.rs, so both extracted together
 
 ## Progress Log
 
@@ -155,6 +156,15 @@ None. The plan was reviewed and approved by the user before goal creation.
   - Commands: none yet
   - Audit IDs updated: none
   - Next: Checkpoint 0 (folder-ize)
+
+- 2026-06-08: Checkpoints 0-1 complete
+  - Changed: folder-ized `webfetch_md.rs` → `webfetch_md/mod.rs`; extracted `convert.rs` (33 lines) and `reddit.rs` (158 lines)
+  - Evidence: `cargo check` clean, 19 webfetch tests pass, zero warnings
+  - Commands: `cargo check -p oxide-agent-core`, `cargo test -p oxide-agent-core --no-default-features --features profile-lite`
+  - Audit IDs updated: G1(partial), G2(partial)
+  - Decisions: extracted `convert.rs` together with `reddit.rs` (checkpoint 1+4 merged) because reddit.rs depends on `html_to_markdown` from convert.rs; added `xml_tag_text` to mod.rs top-level imports since `fetch_reddit_rss()` in the provider impl calls it directly
+  - Line counts: mod.rs=1139, convert.rs=33, reddit.rs=158
+  - Next: Checkpoint 2 (extract url.rs)
 
 ## Risks and Blockers
 
