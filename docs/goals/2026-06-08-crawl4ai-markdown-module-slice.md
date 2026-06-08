@@ -173,6 +173,13 @@ None. The plan was reviewed and approved by the user before goal creation.
   - Audit IDs updated: G1 (partial), Q1, V1
   - Next: Checkpoint 3 -- extract response.rs + errors.rs
 
+- 2026-06-08 Checkpoint 3: response.rs + errors.rs + types.rs
+  - Changed: created `response.rs` (186 lines) with 7 functions (parse_crawl_response, parse_final_url, select_markdown, select_crawl4ai_markdown, reject_blocked_or_noise_markdown, html_to_markdown); created `errors.rs` (137 lines) with 8 functions (crawl4ai_failure_payload, crawl4ai_failure_message, crawl4ai_error_kind, crawl4ai_error_retryable, crawl4ai_http_status_error, crawl4ai_http_status_code, crawl4ai_response_tail, host_from_url); created `types.rs` (62 lines) with 5 structs (Crawl4AiMarkdownConfig, Crawl4AiMarkdownArgs, CrawlResult, MarkdownSelection, RedditAtomEntry); mod.rs reduced from 1719 to 1361 lines; removed unused `serde::Deserialize` import
+  - Evidence: `cargo check -p oxide-agent-core` clean
+  - Commands: `cargo check -p oxide-agent-core` passed
+  - Audit IDs updated: G1 (partial), Q1, V1
+  - Next: Checkpoint 4 -- extract reddit_rss.rs
+
 ## Risks and Blockers
 
 None identified. Pure structural refactor with zero behavioral change and confirmed zero external blast radius.
