@@ -1,11 +1,11 @@
 # Goal: Non-SSH RECON cleanup
 
 Date started: 2026-06-08
-Status: active
+Status: complete
 Codex goal: `/goal Implement docs/goals/2026-06-08-non-ssh-recon-cleanup.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update the doc after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: user request after RECON
 Goal doc owner: Codex
-Last updated: 2026-06-08
+Last updated: 2026-06-09
 
 ## Objective
 
@@ -71,15 +71,15 @@ None. User approved continuing RECON-cleanup as a separate phase.
   - Source: AGENTS.md implementation bias.
   - Acceptance: changes are local to documented cleanup targets; no new crates, services, or abstractions.
   - Evidence required: diff/Cargo review.
-  - Status: in_progress
-  - Evidence collected: 2026-06-08 Checkpoint 1 passed embedded core/bot checks, targeted `rg`, and `cargo fmt --all -- --check`. 2026-06-08 Checkpoint 2 touched only Telegram callback/view/runner/tests plus this goal doc; no Cargo manifests or dependencies changed.
+  - Status: verified
+  - Evidence collected: 2026-06-09 final audit reviewed the completed checkpoint scope. Changes stayed local to profile/config/docs and Telegram callback cleanup; no new crates, services, or abstractions were added.
 
 - V1: Validation completed for affected areas
   - Source: AGENTS.md validation guidance.
   - Acceptance: checkpoint-specific check/clippy/fmt commands pass before completion.
   - Evidence required: Progress Log records exact commands.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-09 final audit repeated all affected checks: embedded core/bot checks, Telegram transport profile-full check/clippy/test no-run, `cargo fmt --all -- --check`, and targeted profile/doc/callback `rg` searches.
 
 ## Implementation Plan
 
@@ -151,6 +151,13 @@ None. User approved continuing RECON-cleanup as a separate phase.
   - Audit IDs updated: G4 verified; Q1 and V1 evidence added.
   - Next: Checkpoint 3 — final validation and audit.
 
+- 2026-06-09: Checkpoint 3 final validation and audit
+  - Changed: completed this goal document with final audit evidence and completion status.
+  - Evidence: all Completion Audit items are verified; targeted profile/doc/callback searches showed no removed stale strings; affected cargo checks, clippy, test compile, and formatting checks passed.
+  - Commands: `cargo check -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-embedded-opencode-local`; `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-full`; `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features profile-full --all-targets -- -D warnings`; `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-full --no-run`; `cargo fmt --all -- --check`; targeted `rg` checks for `approval flow`, stale embedded sandbox daemon module, expected sandboxd-client/Brave Search profile entries, and removed Telegram callback/menu symbols.
+  - Audit IDs updated: Q1 and V1 verified; final audit complete.
+  - Next: goal complete.
+
 ## Risks and Blockers
 
 - Old persisted Telegram inline keyboards may contain removed callback data after Checkpoint 2.
@@ -161,4 +168,16 @@ None. User approved continuing RECON-cleanup as a separate phase.
 
 ## Final Verification
 
-Filled only when complete.
+- Completion Audit result: complete. G1, G2, G3, G4, Q1, and V1 are verified with current evidence.
+- Commands run:
+  - `cargo check -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local`
+  - `cargo check -p oxide-agent-telegram-bot --bin oxide-agent-telegram-bot --no-default-features --features profile-embedded-opencode-local`
+  - `cargo check -p oxide-agent-transport-telegram --no-default-features --features profile-full`
+  - `cargo clippy -p oxide-agent-transport-telegram --no-default-features --features profile-full --all-targets -- -D warnings`
+  - `cargo test -p oxide-agent-transport-telegram --no-default-features --features profile-full --no-run`
+  - `cargo fmt --all -- --check`
+  - Targeted `rg` checks for stale profile/doc strings and removed Telegram callback/menu surface.
+- Artifacts inspected: `crates/oxide-agent-core/Cargo.toml`, `profiles/*.toml`, `README.md`, `crates/oxide-agent-transport-telegram/src/bot/`, `crates/oxide-agent-transport-telegram/src/runner.rs`.
+- Remaining gaps: none for this goal. Web UI legacy CSS and broader provider feature-gating remain out of scope.
+- User-accepted exceptions: none.
+- Final status: complete.
