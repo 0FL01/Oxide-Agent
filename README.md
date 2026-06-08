@@ -517,7 +517,7 @@ SSML support: set `ssml: true` for SSML markup with `<speak>`, `<break>`, `<pros
 
 ### Infrastructure
 - **Manager Control Plane** (`manager-control-plane`) - topic CRUD, bindings, contexts, RBAC, audit trail
-- **SSH MCP Provider** (`integration-ssh-mcp`) - SSH infrastructure with approval flow
+- **SSH MCP Provider** (`integration-ssh-mcp`) - SSH infrastructure with YOLO full-permission mode
 - **Jira MCP Provider** (`integration-mcp-jira`) - Jira integration
 - **Mattermost MCP Provider** (`integration-mcp-mattermost`) - Mattermost integration
 - **Stack Logs Provider** (`tool-stack-logs`) - Docker Compose log access

@@ -139,6 +139,7 @@ profile-embedded-opencode-local = [
     "tool-sandbox-recreate",
     "sandbox-backend-bwrap",
     "sandbox-backend-docker-direct",
+    "sandbox-backend-sandboxd-client",
 ]
 profile-web-embedded-opencode-local = [
     "transport-web",

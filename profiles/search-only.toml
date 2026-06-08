@@ -8,4 +8,5 @@ cargo_features = ["profile-search-only"]
 "tool/webfetch-md" = { enabled = true }
 "tool/tavily" = { enabled = true }
 "tool/duckduckgo" = { enabled = true }
+"tool/brave-search" = { enabled = true }
 "tool/searxng" = { enabled = true }
