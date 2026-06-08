@@ -159,7 +159,12 @@ None. The plan was reviewed and approved by the user before goal creation.
 
 ## Progress Log
 
-(Empty -- implementation not started)
+- 2026-06-08 Checkpoint 1: Foundation -- constants.rs + env_helpers.rs
+  - Changed: created `crawl4ai_markdown/` directory with `mod.rs` (1871 lines), `constants.rs` (17 lines), `env_helpers.rs` (76 lines); deleted monolithic `crawl4ai_markdown.rs`
+  - Evidence: `cargo check -p oxide-agent-core` clean; `providers/mod.rs` zero diff; `constants.rs` has 15 const items, `env_helpers.rs` has 10 functions + `TruncatedOutput` struct
+  - Commands: `cargo check -p oxide-agent-core` passed
+  - Audit IDs updated: G1 (partial), Q1, V1
+  - Next: Checkpoint 2 -- extract url_validation.rs
 
 ## Risks and Blockers
 

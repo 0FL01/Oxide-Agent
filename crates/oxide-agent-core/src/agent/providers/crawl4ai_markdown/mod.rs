@@ -3,6 +3,12 @@
 //! Provides `crawl4ai_markdown`: one validated public URL, one `POST /crawl`,
 //! bounded Markdown output. Oxide does not manage Crawl4AI lifecycle.
 
+pub(crate) mod constants;
+pub(crate) mod env_helpers;
+
+use constants::*;
+use env_helpers::*;
+
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -21,22 +27,6 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use url::Host;
-
-const TOOL_CRAWL4AI_MARKDOWN: &str = "crawl4ai_markdown";
-const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11235";
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
-const DEFAULT_MAX_TIMEOUT_SECS: u64 = 120;
-const DEFAULT_OUTPUT_CHARS: usize = 20_000;
-const DEFAULT_MAX_OUTPUT_CHARS: usize = 30_000;
-const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 1_500;
-const DEFAULT_JITTER_MIN_MS: u64 = 250;
-const DEFAULT_JITTER_MAX_MS: u64 = 1_500;
-const DEFAULT_MAX_RETRIES: usize = 0;
-const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
-const MAX_WAIT_FOR_CHARS: usize = 256;
-const ERROR_MESSAGE_MAX_CHARS: usize = 1_000;
-const RESPONSE_TAIL_MAX_CHARS: usize = 2_000;
-const LOG_BODY_HEAD_MAX_CHARS: usize = 500;
 
 /// Native provider for browser-rendered Markdown through Crawl4AI REST.
 pub struct Crawl4AiMarkdownProvider {
@@ -1135,7 +1125,7 @@ fn crawl4ai_failure_payload(
 
 fn crawl4ai_failure_message(
     _args: Option<&Crawl4AiMarkdownArgs>,
-    _config: &Crawl4AiMarkdownConfig,
+    _config: Option<&Crawl4AiMarkdownConfig>,
     error: &anyhow::Error,
 ) -> String {
     truncate_for_message(&format!("{error:#}"), ERROR_MESSAGE_MAX_CHARS)
@@ -1246,77 +1236,6 @@ fn ensure_not_cancelled(cancellation_token: Option<&CancellationToken>) -> Resul
         bail!("crawl4ai_markdown cancelled before request");
     }
     Ok(())
-}
-
-fn env_non_empty(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn env_url(name: &str, default: &str) -> Url {
-    let raw = env_non_empty(name).unwrap_or_else(|| default.to_string());
-    Url::parse(&raw)
-        .unwrap_or_else(|_| Url::parse(default).expect("valid default Crawl4AI base URL"))
-}
-
-fn env_u64(name: &str, default: u64) -> u64 {
-    env_non_empty(name)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-fn env_usize(name: &str, default: usize) -> usize {
-    env_non_empty(name)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-fn env_bool(name: &str, default: bool) -> bool {
-    env_non_empty(name)
-        .map(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(default)
-}
-
-struct TruncatedOutput {
-    text: String,
-    was_truncated: bool,
-}
-
-fn truncate_chars(input: String, max_chars: usize) -> TruncatedOutput {
-    if input.chars().count() <= max_chars {
-        return TruncatedOutput {
-            text: input,
-            was_truncated: false,
-        };
-    }
-
-    let mut text = input.chars().take(max_chars).collect::<String>();
-    text.push_str("\n\n... (truncated)");
-    TruncatedOutput {
-        text,
-        was_truncated: true,
-    }
-}
-
-fn truncate_for_message(input: &str, max_chars: usize) -> String {
-    truncate_chars(input.to_string(), max_chars).text
-}
-
-fn response_tail(body: &[u8], max_chars: usize) -> String {
-    let text = String::from_utf8_lossy(body);
-    let total_chars = text.chars().count();
-    if total_chars <= max_chars {
-        return text.into_owned();
-    }
-    text.chars()
-        .skip(total_chars.saturating_sub(max_chars))
-        .collect()
-}
-
-fn millis_u64(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
