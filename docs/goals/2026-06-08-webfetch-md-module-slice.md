@@ -182,6 +182,15 @@ None. The plan was reviewed and approved by the user before goal creation.
   - Line counts: mod.rs=886, error.rs=178, url.rs=96, reddit.rs=158, convert.rs=33
   - Next: Checkpoint 4 (extract detect.rs — already merged into error.rs; next is tests.rs)
 
+- 2026-06-08: Checkpoint 4 complete (detect.rs merged into error.rs at CP3; extracted tests.rs instead)
+  - Changed: moved `#[cfg(test)] mod tests` (480 lines) from mod.rs to `tests.rs`; mod.rs now `#[cfg(test)] mod tests;`
+  - Decision: checkpoint 4 (detect.rs) was already merged into error.rs at CP3; tests.rs extraction was checkpoint 7 in original plan but renumbered to CP4
+  - Evidence: `cargo check` clean, 23 webfetch tests pass, zero warnings
+  - Commands: `cargo check -p oxide-agent-core`, `cargo test -p oxide-agent-core --no-default-features --features profile-lite -- webfetch_md::`
+  - Audit IDs updated: G1(partial), G3(verified)
+  - Line counts: mod.rs=407, tests.rs=480, error.rs=178, url.rs=96, reddit.rs=158, convert.rs=33
+  - Next: Checkpoint 5 (extract fetch.rs)
+
 ## Risks and Blockers
 
 None identified. The refactoring is purely internal with zero blast radius.
