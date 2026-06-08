@@ -174,6 +174,14 @@ None. The plan was reviewed and approved by the user before goal creation.
   - Line counts: mod.rs=1047, convert.rs=33, reddit.rs=158, url.rs=96
   - Next: Checkpoint 3 (extract error.rs)
 
+- 2026-06-08: Checkpoint 3 complete
+  - Changed: extracted `error.rs` (178 lines) — content-type helpers, anti-bot/cloudflare detection, failure payload/message, error kind/retryable, host/status helpers
+  - Evidence: `cargo check` clean, 23 webfetch tests pass, zero warnings
+  - Commands: `cargo check -p oxide-agent-core`, `cargo test -p oxide-agent-core --no-default-features --features profile-lite -- webfetch_md`
+  - Audit IDs updated: G1(partial)
+  - Line counts: mod.rs=886, error.rs=178, url.rs=96, reddit.rs=158, convert.rs=33
+  - Next: Checkpoint 4 (extract detect.rs — already merged into error.rs; next is tests.rs)
+
 ## Risks and Blockers
 
 None identified. The refactoring is purely internal with zero blast radius.
