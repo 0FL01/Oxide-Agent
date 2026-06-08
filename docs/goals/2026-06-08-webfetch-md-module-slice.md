@@ -191,6 +191,15 @@ None. The plan was reviewed and approved by the user before goal creation.
   - Line counts: mod.rs=407, tests.rs=480, error.rs=178, url.rs=96, reddit.rs=158, convert.rs=33
   - Next: Checkpoint 5 (extract fetch.rs)
 
+- 2026-06-08: Checkpoint 5 complete
+  - Changed: extracted `fetch.rs` (231 lines) — `fetch_markdown()`, `fetch_reddit_rss()`, `fetch_text()`, `read_limited_body()`, `FetchResult` struct; `fetch_markdown` is `pub(super)` (called from executor in mod.rs), rest private to fetch.rs; updated tests.rs imports to reference submodules directly instead of relying on `super::*`
+  - Decision: `pub(super) use` re-exports from mod.rs don't work for `pub(super)` items from child modules (E0364 visibility mismatch); tests.rs now imports from submodules explicitly
+  - Evidence: `cargo check` clean, 25 webfetch tests pass, zero warnings
+  - Commands: `cargo check -p oxide-agent-core`, `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local -- webfetch`
+  - Audit IDs updated: G1(partial)
+  - Line counts: mod.rs=187, fetch.rs=231, tests.rs=485, error.rs=178, url.rs=96, reddit.rs=158, convert.rs=33 (total=1368)
+  - Next: done — all slices extracted, mod.rs at 187 lines (hub with provider, executor, constants, arg parsing)
+
 ## Risks and Blockers
 
 None identified. The refactoring is purely internal with zero blast radius.
