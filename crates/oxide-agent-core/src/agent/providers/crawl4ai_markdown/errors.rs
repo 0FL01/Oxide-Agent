@@ -1,6 +1,5 @@
 //! Error classification, failure payloads, and HTTP status helpers for Crawl4AI.
 
-use anyhow::Result;
 use reqwest::Url;
 use serde_json::{Value, json};
 
@@ -23,7 +22,7 @@ pub(crate) fn crawl4ai_failure_payload(
         "status_code": crawl4ai_http_status_code(error),
         "retryable": crawl4ai_error_retryable(error_kind, error),
         "provider_unavailable": error_kind == "crawl4ai_unavailable",
-        "message": crawl4ai_failure_message(args, config, error),
+        "message": crawl4ai_failure_message(args, Some(config), error),
         "response_tail": crawl4ai_response_tail(error)
     })
 }

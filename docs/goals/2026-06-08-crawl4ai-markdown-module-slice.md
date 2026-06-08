@@ -129,7 +129,8 @@ None. The plan was reviewed and approved by the user before goal creation.
 ### Checkpoint 4: reddit_rss.rs
 - Audit IDs: G1, Q1, V1
 - Expected changes:
-  - Extract `RedditAtomEntry`, `reddit_thread_rss_url`, `reddit_atom_to_crawl_result`, `parse_reddit_atom_entries`, `render_reddit_atom_markdown`, `xml_tag_text`, `xml_tag_block` into `reddit_rss.rs`
+  - Extract `reddit_thread_rss_url`, `reddit_atom_to_crawl_result`, `parse_reddit_atom_entries`, `render_reddit_atom_markdown`, `xml_tag_text`, `xml_tag_block` into `reddit_rss.rs`
+  - `RedditAtomEntry` remains in `types.rs` (moved in Checkpoint 3)
 - Validation: `cargo check -p oxide-agent-core`
 - Exit condition: compiles, Reddit RSS domain isolated
 
@@ -155,7 +156,7 @@ None. The plan was reviewed and approved by the user before goal creation.
 
 - 2026-06-08: Split into 10 files (mod.rs, constants.rs, env_helpers.rs, url_validation.rs, response.rs, errors.rs, reddit_rss.rs, crawl.rs, executor.rs, tests.rs) based on domain boundaries identified in RECON. Approved by user before goal creation.
 - 2026-06-08: Checkpoints 1-4 are isolated extractions that can be verified independently. Checkpoint 5 is the final assembly.
-- 2026-06-08: Types (`CrawlResult`, `MarkdownSelection`, `Crawl4AiMarkdownArgs`, `Crawl4AiMarkdownConfig`) live in `mod.rs` since they are shared across submodules.
+- 2026-06-08: Types (`CrawlResult`, `MarkdownSelection`, `Crawl4AiMarkdownArgs`, `Crawl4AiMarkdownConfig`, `RedditAtomEntry`) live in `types.rs` since they are shared across submodules.
 
 ## Progress Log
 
@@ -179,6 +180,13 @@ None. The plan was reviewed and approved by the user before goal creation.
   - Commands: `cargo check -p oxide-agent-core` passed
   - Audit IDs updated: G1 (partial), Q1, V1
   - Next: Checkpoint 4 -- extract reddit_rss.rs
+
+- 2026-06-08 Checkpoint 4: reddit_rss.rs
+  - Changed: created `reddit_rss.rs` (178 lines) with 6 functions: reddit_thread_rss_url (pub), reddit_atom_to_crawl_result (pub), parse_reddit_atom_entries, render_reddit_atom_markdown, xml_tag_text (pub), xml_tag_block (pub); mod.rs reduced from 1361 to 1199 lines; fixed pre-existing compile errors: wrapped `config` args in `Some()` for `crawl4ai_failure_message` calls in both errors.rs and mod.rs; removed unused `anyhow::Result` import from errors.rs
+  - Evidence: `cargo check -p oxide-agent-core --no-default-features --features tool-crawl4ai-markdown` clean (1 pre-existing warning: unused `anyhow` module import in mod.rs)
+  - Commands: `cargo check -p oxide-agent-core --no-default-features --features tool-crawl4ai-markdown` passed
+  - Audit IDs updated: G1 (partial), Q1, V1
+  - Next: Checkpoint 5 -- extract executor.rs + crawl.rs + tests.rs + final mod.rs
 
 ## Risks and Blockers
 
