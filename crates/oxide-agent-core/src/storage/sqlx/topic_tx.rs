@@ -113,7 +113,7 @@ pub(super) async fn get_topic_infra_config_for_update(
         r#"
         SELECT user_id, topic_id, target_name, host, port, remote_user, auth_mode,
                secret_ref, sudo_secret_ref, environment, tags, allowed_tool_modes,
-               approval_required_modes, version, schema_version, created_at, updated_at
+               version, schema_version, created_at, updated_at
         FROM topic_infra_configs
         WHERE user_id = $1 AND topic_id = $2
         FOR UPDATE

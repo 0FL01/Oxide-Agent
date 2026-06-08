@@ -1056,7 +1056,7 @@ impl StorageProvider for SqlxStorage {
             r#"
             SELECT user_id, topic_id, target_name, host, port, remote_user, auth_mode,
                    secret_ref, sudo_secret_ref, environment, tags, allowed_tool_modes,
-                   approval_required_modes, version, schema_version, created_at, updated_at
+                   version, schema_version, created_at, updated_at
             FROM topic_infra_configs
             WHERE user_id = $1 AND topic_id = $2
             "#,
@@ -1088,17 +1088,15 @@ impl StorageProvider for SqlxStorage {
         let auth_mode = enum_to_sql(&record.auth_mode, "topic infra auth mode")?;
         let allowed_tool_modes =
             enum_vec_to_sql(&record.allowed_tool_modes, "topic infra tool mode")?;
-        let approval_required_modes =
-            enum_vec_to_sql(&record.approval_required_modes, "topic infra tool mode")?;
 
         query::<Postgres>(
             r#"
             INSERT INTO topic_infra_configs (
                 user_id, topic_id, target_name, host, port, remote_user, auth_mode,
                 secret_ref, sudo_secret_ref, environment, tags, allowed_tool_modes,
-                approval_required_modes, version, schema_version, created_at, updated_at
+                version, schema_version, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (user_id, topic_id) DO UPDATE
             SET target_name = EXCLUDED.target_name,
                 host = EXCLUDED.host,
@@ -1110,7 +1108,6 @@ impl StorageProvider for SqlxStorage {
                 environment = EXCLUDED.environment,
                 tags = EXCLUDED.tags,
                 allowed_tool_modes = EXCLUDED.allowed_tool_modes,
-                approval_required_modes = EXCLUDED.approval_required_modes,
                 version = EXCLUDED.version,
                 schema_version = EXCLUDED.schema_version,
                 updated_at = EXCLUDED.updated_at
@@ -1128,7 +1125,6 @@ impl StorageProvider for SqlxStorage {
         .bind(&record.environment)
         .bind(&record.tags)
         .bind(&allowed_tool_modes)
-        .bind(&approval_required_modes)
         .bind(u64_to_i64(record.version, "topic infra version")?)
         .bind(u32_to_i32(
             record.schema_version,

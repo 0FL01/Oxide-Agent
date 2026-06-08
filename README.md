@@ -563,21 +563,8 @@ DM_ALLOWED_TOOLS=todos_write,todos_list,spawn_sub_agents,wait_sub_agents,cancel_
 DM_BLOCKED_TOOLS=sandbox_exec  # Additional blocklist
 ```
 
-### SSH Approval Flow
-Sensitive SSH operations require operator approval with single-use tokens.
-
-**Approval Required Modes:**
-- `SudoExec` - Remote commands with sudo
-- `ApplyFileEdit` - In-place file edits
-- Dangerous commands: `rm -rf`, `shutdown`, `reboot`, `systemctl`, `docker compose down`, `kubectl`, `terraform apply/destroy`
-- Sensitive paths: `/etc/`, `/root/`, `/home/`, `.ssh`, `systemd`, `nginx`, `postgresql`
-
-**Approval Flow:**
-1. Agent requests SSH action
-2. If approval required, returns approval request ID
-3. Operator grants approval via `grant_ssh_approval(request_id)`
-4. Agent retries with approval token
-5. Token consumed (single-use), TTL 600s
+### SSH Tool Access
+SSH tools run in YOLO mode for configured topic infra bindings. Restrict access with topic-scoped `allowed_tool_modes`, DM tool restrictions, and secret refs.
 
 </details>
 

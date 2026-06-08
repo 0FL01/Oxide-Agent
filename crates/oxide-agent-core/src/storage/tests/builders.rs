@@ -192,7 +192,6 @@ fn upsert_topic_infra_config_increments_version_and_preserves_created_at() {
         environment: Some("prod".to_string()),
         tags: vec!["prod".to_string()],
         allowed_tool_modes: vec![TopicInfraToolMode::Exec],
-        approval_required_modes: vec![TopicInfraToolMode::SudoExec],
         created_at: 123,
         updated_at: 124,
     };
@@ -211,7 +210,6 @@ fn upsert_topic_infra_config_increments_version_and_preserves_created_at() {
             environment: Some("prod".to_string()),
             tags: vec!["prod".to_string(), "critical".to_string()],
             allowed_tool_modes: vec![TopicInfraToolMode::Exec, TopicInfraToolMode::ReadFile],
-            approval_required_modes: vec![TopicInfraToolMode::Exec],
         },
         Some(existing),
         999,
@@ -240,7 +238,6 @@ fn upsert_topic_infra_config_initial_insert_starts_version_and_sets_timestamps()
             environment: Some("stage".to_string()),
             tags: vec!["stage".to_string()],
             allowed_tool_modes: vec![TopicInfraToolMode::Exec],
-            approval_required_modes: vec![TopicInfraToolMode::SudoExec],
         },
         None,
         777,

@@ -23,8 +23,6 @@ struct TopicInfraUpsertArgs {
     #[serde(default = "super::default_infra_allowed_tool_modes")]
     allowed_tool_modes: Vec<TopicInfraToolMode>,
     #[serde(default)]
-    approval_required_modes: Vec<TopicInfraToolMode>,
-    #[serde(default)]
     dry_run: bool,
 }
 
@@ -71,7 +69,6 @@ impl ManagerControlPlaneProvider {
                         "environment": { "type": "string", "description": "Optional environment label such as prod or stage" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional free-form target tags" },
                         "allowed_tool_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process", "transfer"] }, "description": "Allowlisted SSH tool modes" },
-                        "approval_required_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process", "transfer"] }, "description": "Modes that always require operator approval" },
                         "dry_run": { "type": "boolean", "description": "Validate and preview without persisting" }
                     },
                     "required": ["topic_id", "target_name", "host", "remote_user"]
@@ -147,7 +144,6 @@ impl ManagerControlPlaneProvider {
         if allowed_tool_modes.is_empty() {
             bail!("allowed_tool_modes must not be empty");
         }
-        let approval_required_modes = Self::normalize_tool_modes(args.approval_required_modes);
 
         Ok(TopicInfraUpsertArgs {
             topic_id,
@@ -161,7 +157,6 @@ impl ManagerControlPlaneProvider {
             environment,
             tags: Self::normalize_tags(args.tags),
             allowed_tool_modes,
-            approval_required_modes,
             dry_run: args.dry_run,
         })
     }
@@ -179,7 +174,6 @@ impl ManagerControlPlaneProvider {
             "environment": args.environment,
             "tags": args.tags,
             "allowed_tool_modes": args.allowed_tool_modes,
-            "approval_required_modes": args.approval_required_modes,
         })
     }
 
@@ -199,7 +193,6 @@ impl ManagerControlPlaneProvider {
             "environment": record.environment,
             "tags": record.tags,
             "allowed_tool_modes": record.allowed_tool_modes,
-            "approval_required_modes": record.approval_required_modes,
         })
     }
 
@@ -219,7 +212,6 @@ impl ManagerControlPlaneProvider {
             environment: args.environment.clone(),
             tags: args.tags.clone(),
             allowed_tool_modes: args.allowed_tool_modes.clone(),
-            approval_required_modes: args.approval_required_modes.clone(),
             created_at: 0,
             updated_at: 0,
         }
@@ -245,7 +237,6 @@ impl ManagerControlPlaneProvider {
             environment: plan.environment.clone(),
             tags: plan.tags.clone(),
             allowed_tool_modes: plan.allowed_tool_modes.clone(),
-            approval_required_modes: plan.approval_required_modes.clone(),
             created_at: 0,
             updated_at: 0,
         }
@@ -279,7 +270,6 @@ impl ManagerControlPlaneProvider {
                     environment: previous_infra.environment,
                     tags: previous_infra.tags,
                     allowed_tool_modes: previous_infra.allowed_tool_modes,
-                    approval_required_modes: previous_infra.approval_required_modes,
                 })
                 .await
                 .map(Some)
@@ -351,7 +341,6 @@ impl ManagerControlPlaneProvider {
                 environment: args.environment,
                 tags: args.tags,
                 allowed_tool_modes: args.allowed_tool_modes,
-                approval_required_modes: args.approval_required_modes,
             })
             .await
             .map_err(|err| anyhow!("failed to upsert topic infra config: {err}"))?;

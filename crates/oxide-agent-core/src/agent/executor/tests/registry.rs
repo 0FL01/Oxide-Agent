@@ -63,7 +63,6 @@ fn registry_topic_infra_config() -> crate::storage::TopicInfraConfigRecord {
             crate::storage::TopicInfraToolMode::CheckProcess,
             crate::storage::TopicInfraToolMode::Transfer,
         ],
-        approval_required_modes: Vec::new(),
         created_at: 0,
         updated_at: 0,
     }

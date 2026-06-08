@@ -291,7 +291,6 @@ async fn sqlx_control_plane_records_and_secrets_roundtrip() {
             environment: Some("test".to_string()),
             tags: vec!["local".to_string()],
             allowed_tool_modes: vec![TopicInfraToolMode::Exec, TopicInfraToolMode::ReadFile],
-            approval_required_modes: vec![TopicInfraToolMode::SudoExec],
         })
         .await
         .expect("topic infra should upsert");

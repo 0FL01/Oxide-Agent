@@ -1644,7 +1644,6 @@ create table topic_infra_configs (
     environment jsonb not null default '{}'::jsonb,
     tags text[] not null default '{}',
     allowed_tool_modes text[] not null default '{}',
-    approval_required_modes text[] not null default '{}',
     version bigint not null default 1,
     schema_version integer not null default 1,
     created_at timestamptz not null default now(),

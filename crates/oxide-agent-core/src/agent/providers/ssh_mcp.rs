@@ -2489,7 +2489,6 @@ mod tests {
                 TopicInfraToolMode::SudoExec,
                 TopicInfraToolMode::CheckProcess,
             ],
-            approval_required_modes: Vec::new(),
             created_at: 0,
             updated_at: 0,
         }

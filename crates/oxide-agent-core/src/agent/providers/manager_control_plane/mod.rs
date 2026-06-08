@@ -162,13 +162,6 @@ fn default_infra_allowed_tool_modes() -> Vec<TopicInfraToolMode> {
     ]
 }
 
-fn default_infra_approval_required_modes() -> Vec<TopicInfraToolMode> {
-    vec![
-        TopicInfraToolMode::SudoExec,
-        TopicInfraToolMode::ApplyFileEdit,
-    ]
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PrivateSecretProbeArgs {

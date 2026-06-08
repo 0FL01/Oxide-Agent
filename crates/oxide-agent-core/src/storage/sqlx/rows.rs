@@ -99,10 +99,6 @@ pub(super) fn row_to_topic_infra_config(
         row_value(row, "allowed_tool_modes")?,
         "topic infra tool mode",
     )?;
-    let approval_required_modes = enum_vec_from_sql::<TopicInfraToolMode>(
-        row_value(row, "approval_required_modes")?,
-        "topic infra tool mode",
-    )?;
 
     Ok(TopicInfraConfigRecord {
         schema_version: i32_to_u32(
@@ -122,7 +118,6 @@ pub(super) fn row_to_topic_infra_config(
         environment: row_value(row, "environment")?,
         tags: row_value(row, "tags")?,
         allowed_tool_modes,
-        approval_required_modes,
         created_at: row_value(row, "created_at")?,
         updated_at: row_value(row, "updated_at")?,
     })

@@ -64,8 +64,8 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Source: user request to remove approval, RECON finding that `approval_required_modes` is not enforced.
   - Acceptance: manager-control-plane no longer creates, updates, displays, or documents approval-required modes as active behavior. Storage compatibility is either removed safely or explicitly retained only as ignored legacy input.
   - Evidence required: `rg -n "approval_required_modes|approval required|approval-required" crates/oxide-agent-core docs config profiles README.md` has no active behavior references except compatibility notes if needed.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: 2026-06-08 Checkpoint 2 removed `approval_required_modes` from topic infra records/options, SQLx read/write paths, manager-control-plane tool schemas/args/responses, README security docs, and tests. Persisted SQL column remains ignored for compatibility; serde ignores legacy JSON fields because the storage record does not deny unknown fields. Targeted `rg` now only matches this goal document.
 
 - G4: Confirmed dead code and lint blockers removed
   - Source: RECON report
@@ -85,8 +85,8 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Source: AGENTS.md architectural invariants
   - Acceptance: core/runtime remain transport-agnostic; teloxide stays transport-only; direct Gemini provider remains absent; SQLx durable storage invariant unaffected.
   - Evidence required: diff review and scoped checks.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: 2026-06-08 Checkpoint 2 changed only core storage/control-plane/docs surfaces and kept SQLx compatibility by ignoring the legacy column instead of adding a new storage backend or migration requirement.
 
 - V1: Formatting and lint validation completed
   - Source: AGENTS.md format/lint rules
@@ -164,6 +164,7 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
 - 2026-06-08: Remove SSH approval instead of repairing it. Reason: user explicitly requested YOLO SSH and RECON showed the approval path is disabled/dead.
 - 2026-06-08: Do not replace approval with a new abstraction. Reason: personal-use scale and AGENTS.md forbid unnecessary complexity.
 - 2026-06-08: Dead-code cleanup is limited to confirmed RECON findings and clippy blockers. Reason: avoid broad public API churn.
+- 2026-06-08: Keep the legacy SQLx `topic_infra_configs.approval_required_modes` column ignored instead of requiring an immediate migration. Reason: code no longer reads/writes it, fresh inserts use the existing default, and old databases remain compatible.
 
 ## Progress Log
 
@@ -181,13 +182,20 @@ None. User decision is explicit: remove SSH approval and keep YOLO SSH.
   - Audit IDs updated: G1, G2, N1 verified.
   - Next: Checkpoint 2 — prune active `approval_required_modes` config/storage/control-plane surface.
 
+- 2026-06-08: Checkpoint 2 implemented
+  - Changed: removed active `approval_required_modes` config/API/storage surface from topic infra records/options, SQLx row mapping/upserts, manager-control-plane infra/provision tools, tests, README, and stale PRD schema snippet.
+  - Evidence: targeted `rg` for `approval_required_modes|approval required|approval-required` across `crates/oxide-agent-core docs config profiles README.md` only matches this goal doc; SQLx legacy column is ignored by code and kept compatible through existing column default plus serde unknown-field tolerance for old JSON snapshots.
+  - Commands: `cargo check -p oxide-agent-core --no-default-features --features manager-control-plane,integration-ssh-mcp,storage-sqlx`; `cargo clippy -p oxide-agent-core --no-default-features --features manager-control-plane,integration-ssh-mcp,storage-sqlx --all-targets -- -D warnings`; `cargo fmt --all -- --check`.
+  - Audit IDs updated: G3 verified; Q2 evidence added.
+  - Next: Checkpoint 3 — remove confirmed lint blockers and low-risk dead code from RECON.
+
 ## Risks and Blockers
 
 - Storage compatibility for `approval_required_modes`
   - Impact: deleting a field without checking serde/storage use could break old topic infra records or tests.
-  - Evidence: field exists in `TopicInfraConfigRecord`; exact persistence shape must be checked during Checkpoint 2.
-  - Mitigation: inspect serialization/deserialization paths before deleting; keep ignored legacy compatibility only if required.
-  - Audit IDs affected: G3.
+  - Evidence: resolved in Checkpoint 2 by removing the Rust field and SQL read/write bindings while leaving the old SQLx column ignored for existing databases.
+  - Mitigation: no active mitigation needed unless a future migration intentionally drops the legacy column.
+  - Audit IDs affected: G3 verified.
 
 - Clippy may reveal additional failures after first blockers are fixed
   - Impact: `-D warnings` can stop early and mask later issues.
