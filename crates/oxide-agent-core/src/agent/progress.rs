@@ -188,6 +188,15 @@ pub enum AgentEvent {
         /// Short summary of reasoning
         summary: String,
     },
+    /// Event relayed from a named delegated sub-agent.
+    SubAgent {
+        /// Stable sub-agent job id.
+        sub_agent_id: String,
+        /// Human-readable sub-agent display name.
+        sub_agent_name: String,
+        /// Original sub-agent event.
+        event: Box<AgentEvent>,
+    },
     /// Loop detected during execution
     LoopDetected {
         /// Type of loop detected
@@ -336,7 +345,15 @@ pub enum AgentEvent {
 impl AgentEvent {
     /// Mark visible delegated progress before relaying it into the parent stream.
     #[must_use]
-    pub fn with_sub_agent_source(self) -> Self {
+    pub fn with_sub_agent_source(self, sub_agent_id: String, sub_agent_name: String) -> Self {
+        Self::SubAgent {
+            sub_agent_id,
+            sub_agent_name,
+            event: Box::new(self.with_sub_agent_source_marker()),
+        }
+    }
+
+    fn with_sub_agent_source_marker(self) -> Self {
         match self {
             Self::ToolCall {
                 id,
@@ -516,6 +533,7 @@ impl ProgressState {
     /// Updates the progress state based on an agent event
     pub fn update(&mut self, event: AgentEvent) {
         match event {
+            AgentEvent::SubAgent { event, .. } => self.update(*event),
             AgentEvent::Thinking { snapshot } => self.handle_thinking(snapshot),
             AgentEvent::TokenSnapshotUpdated { snapshot } => {
                 self.handle_token_snapshot_updated(snapshot)

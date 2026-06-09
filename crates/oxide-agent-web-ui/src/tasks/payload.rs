@@ -14,6 +14,15 @@ pub(super) fn is_sub_agent_event(event: &PersistedTaskEvent) -> bool {
     event.payload.get("source").and_then(|value| value.as_str()) == Some("sub_agent")
 }
 
+pub(super) fn sub_agent_event_name(event: &PersistedTaskEvent) -> Option<String> {
+    event
+        .payload
+        .get("source_name")
+        .and_then(|value| value.as_str())
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+}
+
 /// Parse the nested JSON inside `output_preview` for ToolResult events.
 /// The output_preview field contains a JSON string (the ToolOutput encode_model_content).
 pub(super) fn parse_output_json(event: &PersistedTaskEvent) -> Option<Value> {

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 use super::delivered_files::{DeliveredFileEventBody, delivered_file_link};
-use super::payload::{is_sub_agent_event, payload_str_event};
+use super::payload::{is_sub_agent_event, payload_str_event, sub_agent_event_name};
 use super::tool_cards::{
     ToolCard, ToolDetailsWithClass, parse_todo_items_from_value, render_todo_list,
     tool_card_header_with_icon_class, tool_meta, tool_meta_danger, tool_pre_stream,
@@ -451,7 +451,7 @@ fn AgentEventCard(event: PersistedTaskEvent) -> impl IntoView {
             <summary class="agent-event-summary">
                 <span class="agent-event-kind">{event_kind_label(&kind)}</span>
                 <span class="agent-event-title">{title}</span>
-                {is_sub_agent_event(&event).then(|| view! { <span class="agent-event-flag">"sub-agent"</span> })}
+                {is_sub_agent_event(&event).then(|| view! { <span class="agent-event-flag">{sub_agent_label(&event)}</span> })}
                 {event.truncated.then(|| view! { <span class="agent-event-flag">"truncated"</span> })}
                 {event.redacted.then(|| view! { <span class="agent-event-flag danger">"redacted"</span> })}
             </summary>
@@ -481,7 +481,7 @@ fn ReasoningEventCard(event: PersistedTaskEvent) -> impl IntoView {
         header_metas.push(tool_meta_danger("redacted"));
     }
     if is_sub_agent_event(&event) {
-        header_metas.push(tool_meta("sub-agent"));
+        header_metas.push(tool_meta(sub_agent_label(&event)));
     }
     let class = if is_sub_agent_event(&event) {
         "tool-card agent-event-card reasoning-event-card sub-agent"
@@ -505,6 +505,10 @@ fn ReasoningEventCard(event: PersistedTaskEvent) -> impl IntoView {
             })}
         </section>
     }
+}
+
+fn sub_agent_label(event: &PersistedTaskEvent) -> String {
+    sub_agent_event_name(event).unwrap_or_else(|| "sub-agent".to_string())
 }
 
 #[component]

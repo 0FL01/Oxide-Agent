@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 /// Returns the snake_case variant name of an AgentEvent.
 fn event_variant_name(event: &AgentEvent) -> String {
-    match event {
+    match effective_agent_event(event) {
         AgentEvent::Thinking { .. } => "thinking".to_string(),
         AgentEvent::TokenSnapshotUpdated { .. } => "token_snapshot_updated".to_string(),
         AgentEvent::ToolCall { name, .. } => format!("tool_call:{name}"),
@@ -48,6 +48,16 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
         AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
+        AgentEvent::SubAgent { .. } => {
+            unreachable!("effective_agent_event unwraps sub-agent events")
+        }
+    }
+}
+
+fn effective_agent_event(event: &AgentEvent) -> &AgentEvent {
+    match event {
+        AgentEvent::SubAgent { event, .. } => event.as_ref(),
+        other => other,
     }
 }
 
@@ -502,7 +512,7 @@ pub async fn collect_events(
         let event_received_at = chrono::Utc::now();
         // Classify event type once to avoid borrow-after-move.
         let is_thinking = matches!(&event, AgentEvent::Thinking { .. });
-        let is_reasoning = matches!(&event, AgentEvent::Reasoning { .. });
+        let is_reasoning = matches!(effective_agent_event(&event), AgentEvent::Reasoning { .. });
         let is_file_to_send = matches!(
             &event,
             AgentEvent::FileToSend { .. } | AgentEvent::FileToSendWithConfirmation { .. }
@@ -567,7 +577,7 @@ pub async fn collect_events(
             timestamps.named_milestones.insert(name.clone(), ts);
         }
 
-        match &event {
+        match effective_agent_event(&event) {
             AgentEvent::ToolCall { id, name, .. } => {
                 let idx = tool_calls.len();
                 let key = tool_event_pairing_key(id, name);
@@ -705,6 +715,19 @@ fn browser_event_parts(
     file_storage_error: Option<&str>,
 ) -> (TaskEventKind, String, Value, bool, bool) {
     match event {
+        AgentEvent::SubAgent {
+            sub_agent_id,
+            sub_agent_name,
+            event,
+        } => {
+            let (kind, summary, mut payload, redacted, truncated) =
+                browser_event_parts(event, stored_file, file_storage_error);
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("source_id".to_string(), json!(sub_agent_id));
+                object.insert("source_name".to_string(), json!(sub_agent_name));
+            }
+            (kind, summary, payload, redacted, truncated)
+        }
         AgentEvent::Thinking { .. } | AgentEvent::TokenSnapshotUpdated { .. } => {
             token_event_parts(event)
         }
@@ -2009,6 +2032,47 @@ mod tests {
             tool_result.payload["output_preview"],
             super::REDACTED_EVENT_PAYLOAD
         );
+    }
+
+    #[tokio::test]
+    async fn collect_events_persists_named_sub_agent_metadata() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::SubAgent {
+            sub_agent_id: "sub-1".to_string(),
+            sub_agent_name: "debug-bug".to_string(),
+            event: Box::new(AgentEvent::ToolCall {
+                id: "tool-1".to_string(),
+                source: AgentEventSource::SubAgent,
+                name: "execute_command".to_string(),
+                input: r#"{"command":"pwd"}"#.to_string(),
+                command_preview: Some("pwd".to_string()),
+            }),
+        })
+        .await
+        .expect("send sub-agent tool call");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        let event = &result.persisted_events[0];
+        assert_eq!(event.kind, TaskEventKind::ToolCall);
+        assert_eq!(event.payload["source"], "sub_agent");
+        assert_eq!(event.payload["source_id"], "sub-1");
+        assert_eq!(event.payload["source_name"], "debug-bug");
     }
 
     #[tokio::test]

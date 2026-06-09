@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::payload::{
     field_i64, field_str, input_preview_field_str, input_preview_json, is_sub_agent_event,
-    parse_output_json, payload_str_event, raw_output_preview, stream_text,
+    parse_output_json, payload_str_event, raw_output_preview, stream_text, sub_agent_event_name,
 };
 
 // ── Tool Card (groups call + result) ─────────────────────────────────────
@@ -82,6 +82,14 @@ fn tool_event_is_sub_agent(
     result: Option<&PersistedTaskEvent>,
 ) -> bool {
     call.is_some_and(is_sub_agent_event) || result.is_some_and(is_sub_agent_event)
+}
+
+fn tool_event_sub_agent_name(
+    call: Option<&PersistedTaskEvent>,
+    result: Option<&PersistedTaskEvent>,
+) -> Option<String> {
+    call.and_then(sub_agent_event_name)
+        .or_else(|| result.and_then(sub_agent_event_name))
 }
 
 // ── Shell Tool Card (execute_command) ────────────────────────────────────
@@ -250,6 +258,9 @@ fn SearchToolCard(
     if !success && let Some(summary) = result_summary.clone() {
         header_metas.push(tool_meta_danger(summary));
     }
+    if let Some(name) = tool_event_sub_agent_name(call.as_ref(), result.as_ref()) {
+        header_metas.push(tool_meta(name));
+    }
 
     view! {
         {tool_card_header(icon, label, header_metas)}
@@ -416,6 +427,9 @@ fn WebMarkdownToolCard(
     }
     if !success && let Some(summary) = result_summary.clone() {
         header_metas.push(tool_meta_danger(summary));
+    }
+    if let Some(agent_name) = tool_event_sub_agent_name(call.as_ref(), result.as_ref()) {
+        header_metas.push(tool_meta(agent_name));
     }
 
     view! {
@@ -615,6 +629,7 @@ fn CrawlToolCard(
 #[derive(Clone, Default)]
 struct SubAgentTaskView {
     id: Option<String>,
+    name: Option<String>,
     task: String,
     status: String,
     tools: Vec<String>,
@@ -624,6 +639,7 @@ struct SubAgentTaskView {
 #[derive(Clone, Default)]
 struct SubAgentStatusView {
     id: String,
+    name: Option<String>,
     task: Option<String>,
     status: String,
     output: Option<String>,
@@ -713,11 +729,16 @@ fn SpawnSubAgentsToolCard(
                 view! {
                     <ol class="search-result-list">
                         {tasks.into_iter().map(|task| {
+                            let title = sub_agent_task_title(&task);
+                            let task_snippet = task.name.as_ref().and_then(|_| (!task.task.is_empty()).then(|| task.task.clone()));
                             let meta = sub_agent_task_meta(&task);
                             view! {
                                 <li class="search-result-item">
-                                    <div class="search-result-title">{task.task}</div>
+                                    <div class="search-result-title">{title}</div>
                                     <div class="search-result-url">{meta}</div>
+                                    {task_snippet.map(|snippet| view! {
+                                        <p class="search-result-snippet">{snippet}</p>
+                                    })}
                                     {task.context.filter(|context| !context.is_empty()).map(|context| view! {
                                         <p class="search-result-snippet">{context}</p>
                                     })}
@@ -824,12 +845,16 @@ fn WaitSubAgentsToolCard(
                 view! {
                     <ol class="search-result-list">
                         {statuses.into_iter().map(|status| {
-                            let title = status.task.clone().unwrap_or_else(|| status.id.clone());
+                            let title = sub_agent_status_title(&status);
+                            let task_snippet = status.name.as_ref().and_then(|_| status.task.clone());
                             let meta = sub_agent_status_meta(&status);
                             view! {
                                 <li class="search-result-item">
                                     <div class="search-result-title">{title}</div>
                                     <div class="search-result-url">{meta}</div>
+                                    {task_snippet.map(|snippet| view! {
+                                        <p class="search-result-snippet">{snippet}</p>
+                                    })}
                                     {status.output.filter(|output| !output.is_empty()).map(|output| view! {
                                         <div class="tool-stream-content">
                                             <MarkdownContent markdown=output />
@@ -975,6 +1000,9 @@ fn GenericToolCard(
     }
     if !success && let Some(summary) = result_summary.clone() {
         header_metas.push(tool_meta_danger(summary));
+    }
+    if let Some(agent_name) = tool_event_sub_agent_name(call.as_ref(), result.as_ref()) {
+        header_metas.push(tool_meta(agent_name));
     }
 
     view! {
@@ -1249,6 +1277,7 @@ fn parse_sub_agent_tasks_from_call(call: Option<&PersistedTaskEvent>) -> Vec<Sub
 
                         SubAgentTaskView {
                             id: None,
+                            name: None,
                             task: task
                                 .get("task")
                                 .and_then(Value::as_str)
@@ -1278,6 +1307,10 @@ fn parse_spawned_sub_agent_tasks(payload: &Value) -> Option<Vec<SubAgentTaskView
                 .map(|task| SubAgentTaskView {
                     id: task
                         .get("id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    name: task
+                        .get("name")
                         .and_then(Value::as_str)
                         .map(ToString::to_string),
                     task: task
@@ -1317,6 +1350,14 @@ fn sub_agent_task_meta(task: &SubAgentTaskView) -> String {
     }
 }
 
+fn sub_agent_task_title(task: &SubAgentTaskView) -> String {
+    task.name
+        .as_ref()
+        .filter(|name| !name.is_empty())
+        .cloned()
+        .unwrap_or_else(|| task.task.clone())
+}
+
 fn parse_sub_agent_statuses(payload: &Value) -> Option<Vec<SubAgentStatusView>> {
     payload
         .get("statuses")
@@ -1330,6 +1371,10 @@ fn parse_sub_agent_statuses(payload: &Value) -> Option<Vec<SubAgentStatusView>> 
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
+                    name: status
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
                     task: status
                         .get("task")
                         .and_then(Value::as_str)
@@ -1360,6 +1405,7 @@ fn parse_sub_agent_wait_ids_from_call(
                     .filter_map(Value::as_str)
                     .map(|id| SubAgentStatusView {
                         id: id.to_string(),
+                        name: None,
                         task: None,
                         status: "waiting".to_string(),
                         output: None,
@@ -1370,6 +1416,16 @@ fn parse_sub_agent_wait_ids_from_call(
             })
         })
         .unwrap_or_default()
+}
+
+fn sub_agent_status_title(status: &SubAgentStatusView) -> String {
+    status
+        .name
+        .as_ref()
+        .filter(|name| !name.is_empty())
+        .cloned()
+        .or_else(|| status.task.clone())
+        .unwrap_or_else(|| status.id.clone())
 }
 
 fn sub_agent_status_preview(status: &SubAgentStatusView) -> String {
