@@ -232,6 +232,44 @@ pub(super) struct RunState {
     pub compaction_count: usize,
     /// Whether the next pre-LLM turn should run manual compaction.
     pub force_manual_compaction: bool,
+    /// Substantive final-answer draft produced next to a terminal `write_todos` call.
+    pub pending_final_draft: Option<PendingFinalDraft>,
+}
+
+pub(super) struct PendingFinalDraft {
+    pub content: String,
+    pub source_iteration: usize,
+    pub source_tool_name: &'static str,
+}
+
+impl PendingFinalDraft {
+    const MIN_DRAFT_CHARS: usize = 1000;
+    const SHORT_FINAL_CHARS: usize = 800;
+
+    pub(super) fn from_write_todos_content(
+        content: String,
+        source_iteration: usize,
+    ) -> Option<Self> {
+        let trimmed = content.trim();
+        if trimmed.chars().count() < Self::MIN_DRAFT_CHARS {
+            return None;
+        }
+
+        Some(Self {
+            content: trimmed.to_string(),
+            source_iteration,
+            source_tool_name: "write_todos",
+        })
+    }
+
+    pub(super) fn should_replace_final_response(&self, final_response: &str) -> bool {
+        final_response.trim().chars().count() < Self::SHORT_FINAL_CHARS
+            && self.content.chars().count() >= Self::MIN_DRAFT_CHARS
+    }
+
+    pub(super) fn content_len(&self) -> usize {
+        self.content.len()
+    }
 }
 
 impl RunState {
@@ -243,6 +281,7 @@ impl RunState {
             structured_output_failures: 0,
             compaction_count: 0,
             force_manual_compaction: false,
+            pending_final_draft: None,
         }
     }
 

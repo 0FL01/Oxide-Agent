@@ -11,7 +11,7 @@ use crate::agent::providers::TodoList;
 use crate::agent::session::PendingUserInput;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::warn;
+use tracing::{info, warn};
 
 impl AgentRunner {
     /// Handle malformed structured output responses.
@@ -150,7 +150,31 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
             return Err(self.cancelled_error(ctx).await);
         }
 
-        let final_response = input.final_answer;
+        let mut final_response = input.final_answer;
+        let mut reasoning = input.reasoning;
+        if let Some(draft) = state.pending_final_draft.take() {
+            if draft.should_replace_final_response(&final_response) {
+                info!(
+                    task_id = ctx.task_id,
+                    draft_len = draft.content_len(),
+                    short_final_len = final_response.len(),
+                    source_iteration = draft.source_iteration,
+                    source_tool_name = draft.source_tool_name,
+                    "using pending final draft instead of short final response"
+                );
+                final_response = draft.content;
+                reasoning = None;
+            } else {
+                tracing::debug!(
+                    task_id = ctx.task_id,
+                    draft_len = draft.content_len(),
+                    final_response_len = final_response.len(),
+                    source_iteration = draft.source_iteration,
+                    source_tool_name = draft.source_tool_name,
+                    "discarding pending final draft because final response is substantive"
+                );
+            }
+        }
 
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         let hook_result = self.after_agent_hook_result(ctx, state, &final_response);
@@ -206,7 +230,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
             return Ok(None);
         }
 
-        self.save_final_response(ctx, &final_response, input.reasoning);
+        self.save_final_response(ctx, &final_response, reasoning);
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
 
@@ -281,7 +305,7 @@ mod tests {
     use crate::agent::hooks::CompletionCheckHook;
     use crate::agent::providers::{TodoItem, TodoList};
     use crate::agent::runner::test_support::{build_llm_client, single_final_response_provider};
-    use crate::agent::runner::types::{FinalResponseInput, RunState};
+    use crate::agent::runner::types::{FinalResponseInput, PendingFinalDraft, RunState};
     use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -365,5 +389,117 @@ mod tests {
             .expect("undelivered draft should be recorded");
         assert!(draft_message.content.contains("not delivered to the user"));
         assert!(draft_message.content.contains(draft));
+    }
+
+    #[tokio::test]
+    async fn pending_final_draft_replaces_short_final_response() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "pending-final-draft-replace",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
+        };
+        let long_draft = format!(
+            "## Итоговый отчёт\n\n{}",
+            "- Модель: https://huggingface.co/example/model — годна после проверки.\n".repeat(80)
+        );
+        let mut state = RunState::new();
+        state.pending_final_draft =
+            PendingFinalDraft::from_write_todos_content(long_draft.clone(), 18);
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "Ресёрч завершён. Если нужна детализация — спрашивай."
+                        .to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("final response should be handled");
+
+        match result {
+            Some(AgentRunResult::Final(response)) => assert_eq!(response, long_draft.trim()),
+            _ => panic!("expected final response"),
+        }
+        assert!(state.pending_final_draft.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content == long_draft.trim()
+        }));
+    }
+
+    #[tokio::test]
+    async fn pending_final_draft_does_not_replace_substantive_final_response() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "pending-final-draft-keep-stop",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
+        };
+        let draft = format!("## Старый draft\n\n{}", "draft line\n".repeat(120));
+        let final_answer = format!("## Новый финальный ответ\n\n{}", "final line\n".repeat(120));
+        let mut state = RunState::new();
+        state.pending_final_draft = PendingFinalDraft::from_write_todos_content(draft, 18);
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: final_answer.clone(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("final response should be handled");
+
+        match result {
+            Some(AgentRunResult::Final(response)) => assert_eq!(response, final_answer),
+            _ => panic!("expected final response"),
+        }
+        assert!(state.pending_final_draft.is_none());
+        let memory = ctx.agent.memory().get_messages();
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content == final_answer
+        }));
     }
 }

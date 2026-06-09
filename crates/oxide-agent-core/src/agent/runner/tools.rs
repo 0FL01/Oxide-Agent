@@ -1,7 +1,7 @@
 //! Tool execution helpers for the agent runner.
 
 use super::AgentRunner;
-use super::types::{AgentRunResult, AgentRunnerContext, RunState};
+use super::types::{AgentRunResult, AgentRunnerContext, PendingFinalDraft, RunState};
 use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
 use crate::agent::identity::SessionId;
 use crate::agent::memory::AgentMessage;
@@ -199,12 +199,22 @@ impl AgentRunner {
         let finish_after_todo_update = tool_calls
             .iter()
             .all(|tool_call| tool_call.function.name == "write_todos");
+        if let Some(draft) = state.pending_final_draft.take() {
+            tracing::debug!(
+                task_id = ctx.task_id,
+                draft_len = draft.content_len(),
+                source_iteration = draft.source_iteration,
+                source_tool_name = draft.source_tool_name,
+                "clearing pending final draft before another tool-call turn"
+            );
+        }
         let batch = OpenCodeGoToolCallBatch::from_llm_tool_calls(turn_id, tool_calls);
         let runtime_config = ToolRuntimeConfig::default();
         let native_assistant_content = assistant_content.assistant_content();
         let native_assistant_content_len = native_assistant_content
             .as_ref()
             .map_or(0, |content| content.len());
+        let pending_final_draft_content = native_assistant_content.clone();
         let history = Arc::new(BufferedRuntimeHistory::new(
             reasoning_content,
             native_assistant_content,
@@ -240,6 +250,19 @@ impl AgentRunner {
                     assistant_content_len = native_assistant_content_len,
                     "write_todos completed all todos; continuing for explicit final response"
                 );
+                if let Some(content) = pending_final_draft_content
+                    && let Some(draft) =
+                        PendingFinalDraft::from_write_todos_content(content, state.iteration)
+                {
+                    tracing::info!(
+                        task_id = ctx.task_id,
+                        draft_len = draft.content_len(),
+                        source_iteration = draft.source_iteration,
+                        source_tool_name = draft.source_tool_name,
+                        "stored pending final draft from write_todos tool-call content"
+                    );
+                    state.pending_final_draft = Some(draft);
+                }
             }
         }
 
@@ -793,11 +816,113 @@ mod tests {
 
         assert!(result.is_none());
         assert!(todos_arc.lock().await.is_complete());
+        assert!(state.pending_final_draft.is_none());
 
         let memory = ctx.agent.memory().get_messages();
         assert_eq!(memory.len(), 2);
         assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
         assert_eq!(memory[0].content, final_report);
+        assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
+        assert!(
+            !memory
+                .iter()
+                .any(|message| message.kind == AgentMessageKind::AssistantResponse)
+        );
+    }
+
+    #[tokio::test]
+    async fn long_native_todo_completion_content_is_stored_as_pending_final_draft() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+
+        let mut initial_todos = TodoList::new();
+        initial_todos.items.push(TodoItem {
+            description: "write final report".to_string(),
+            status: TodoStatus::InProgress,
+        });
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(initial_todos.clone()));
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(CompleteTodosRuntimeExecutor {
+                todos: Arc::clone(&todos_arc),
+            }))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(4096);
+        session.memory_mut().todos = initial_todos;
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce final report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-final-todo-draft-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-todos-1",
+            ToolCallFunction {
+                name: "write_todos".to_string(),
+                arguments:
+                    r#"{"todos":[{"description":"write final report","status":"completed"}]}"#
+                        .to_string(),
+            },
+            false,
+        );
+
+        let final_report = format!(
+            "## Итоговый отчёт\n\n{}",
+            "- Модель: https://huggingface.co/example/model — годна после проверки.\n".repeat(80)
+        );
+        let result = runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::NativeModelContent(&final_report),
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert!(result.is_none());
+        assert!(todos_arc.lock().await.is_complete());
+        let draft = state
+            .pending_final_draft
+            .as_ref()
+            .expect("long final report should be kept as a pending draft");
+        assert_eq!(draft.content, final_report.trim());
+        assert_eq!(draft.source_tool_name, "write_todos");
+
+        let memory = ctx.agent.memory().get_messages();
+        assert_eq!(memory.len(), 2);
+        assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
+        assert_eq!(memory[0].content, final_report.trim());
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
         assert!(
             !memory
