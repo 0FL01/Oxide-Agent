@@ -8,10 +8,10 @@ use super::client::SileroClient;
 use super::types::{SileroTtsConfig, TextToSpeechRuArgs};
 use crate::agent::progress::AgentEvent;
 use crate::agent::progress::FileDeliveryKind;
-use crate::agent::providers::file_delivery::{
-    deliver_file_via_progress, FileDeliveryRequest, FileDeliveryStatus,
-};
 use crate::agent::providers::SandboxRuntime;
+use crate::agent::providers::file_delivery::{
+    FileDeliveryRequest, FileDeliveryStatus, deliver_file_via_progress,
+};
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
     ToolRuntimeError,
@@ -613,12 +613,14 @@ mod tests {
             .expect("digits return model-visible output");
 
         assert_eq!(output.status, ToolOutputStatus::Success);
-        assert!(output
-            .stdout
-            .text
-            .as_deref()
-            .expect("stdout text")
-            .contains("Arabic numerals"));
+        assert!(
+            output
+                .stdout
+                .text
+                .as_deref()
+                .expect("stdout text")
+                .contains("Arabic numerals")
+        );
     }
 
     #[test]

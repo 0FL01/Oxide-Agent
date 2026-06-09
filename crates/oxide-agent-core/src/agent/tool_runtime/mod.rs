@@ -19,7 +19,7 @@ pub mod types;
 
 pub use artifacts::{ArtifactKind, ArtifactRef};
 pub use config::{
-    v1_tool_runtime_enabled_for_model, ToolOutputBudget, ToolRuntimeConfig, ToolTimeoutConfig,
+    ToolOutputBudget, ToolRuntimeConfig, ToolTimeoutConfig, v1_tool_runtime_enabled_for_model,
 };
 pub use executor::ToolExecutor;
 pub use history::{ToolHistoryError, ToolHistoryWriter};
@@ -30,6 +30,8 @@ pub use invocation::{
 pub use modules::AgentsMdModuleContext;
 #[cfg(feature = "tool-agents-md")]
 pub use modules::AgentsMdToolModule;
+#[cfg(feature = "tool-brave-search")]
+pub use modules::BraveSearchToolModule;
 #[cfg(feature = "tool-compression")]
 pub use modules::CompressionToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]

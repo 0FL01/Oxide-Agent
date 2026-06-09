@@ -30,4 +30,4 @@ pub use patch::{
 pub use planner::{WikiPatchPlanner, WikiPatchPlannerConfig};
 pub use scope::{wiki_context_id, wiki_slug};
 pub use signals::{WikiSignal, WikiSignalBuffer, WikiSignalBufferConfig, WikiSignalKind};
-pub use store::{wiki_content_hash, WikiObjectBackend, WikiPage, WikiStore};
+pub use store::{WikiObjectBackend, WikiPage, WikiStore, wiki_content_hash};

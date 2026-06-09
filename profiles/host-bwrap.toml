@@ -3,7 +3,7 @@ cargo_features = ["profile-host-bwrap"]
 
 [modules]
 "transport/telegram" = { enabled = true }
-"storage/r2" = { enabled = true }
+"storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "llm-provider/openrouter" = { enabled = true }
 "sandbox-backend/bwrap" = { enabled = true }
@@ -20,6 +20,7 @@ cargo_features = ["profile-host-bwrap"]
 "tool/sandbox-recreate" = { enabled = true }
 "tool/tavily" = { enabled = true }
 "tool/duckduckgo" = { enabled = true }
+"tool/brave-search" = { enabled = true }
 "tool/searxng" = { enabled = true }
 "tool/todos" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }

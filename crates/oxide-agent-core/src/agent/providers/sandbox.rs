@@ -16,15 +16,15 @@ use crate::sandbox::{
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc::Sender;
 use tracing::debug;
 
 const SANDBOX_EXEC_TOOL_NAMES: &[&str] = &["execute_command"];
@@ -367,8 +367,8 @@ where
         Err(value_error) => {
             serde_json::from_str(&invocation.raw_arguments).map_err(|string_error| {
                 ToolRuntimeError::InvalidArguments(format!(
-                "invalid sandbox arguments: {value_error}; raw JSON parse error: {string_error}"
-            ))
+                    "invalid sandbox arguments: {value_error}; raw JSON parse error: {string_error}"
+                ))
             })
         }
     }
@@ -766,12 +766,16 @@ mod tests {
         )));
         let executors = provider.tool_runtime_executors();
 
-        assert!(executors
-            .iter()
-            .any(|executor| executor.name().as_str() == "recreate_sandbox"));
-        assert!(executors
-            .iter()
-            .any(|executor| executor.spec().name == "recreate_sandbox"));
+        assert!(
+            executors
+                .iter()
+                .any(|executor| executor.name().as_str() == "recreate_sandbox")
+        );
+        assert!(
+            executors
+                .iter()
+                .any(|executor| executor.spec().name == "recreate_sandbox")
+        );
     }
 
     #[test]

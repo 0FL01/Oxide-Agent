@@ -5,7 +5,7 @@
 
 use super::super::{LlmError, Message};
 use super::common::{build_openai_messages, extract_openai_response};
-use async_openai::{config::OpenAIConfig, types::chat::CreateChatCompletionRequestArgs, Client};
+use async_openai::{Client, config::OpenAIConfig, types::chat::CreateChatCompletionRequestArgs};
 
 /// Perform a chat completion using an OpenAI-compatible API
 pub async fn chat_completion(

@@ -14,6 +14,22 @@ mod searxng_tests {
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
 
+    const SEARCH_BODY: &str = r#"{
+        "results": [
+            {
+                "title": "Rust documentation",
+                "url": "https://doc.rust-lang.org/",
+                "content": "Official Rust documentation.",
+                "engine": "test"
+            }
+        ],
+        "answers": [],
+        "suggestions": [],
+        "corrections": [],
+        "number_of_results": 1,
+        "unresponsive_engines": []
+    }"#;
+
     fn runtime_invocation(raw_arguments: &str) -> ToolInvocation {
         let now = chrono::Utc::now();
         ToolInvocation {
@@ -45,7 +61,10 @@ mod searxng_tests {
         }
     }
 
-    async fn serve_search_once(body: &'static str) -> SocketAddr {
+    async fn serve_search_once(
+        body: &'static str,
+        expected_authorization: Option<&'static str>,
+    ) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind local SearXNG test server");
@@ -67,6 +86,17 @@ mod searxng_tests {
             let request_text = String::from_utf8_lossy(&request);
             assert!(request_text.contains("GET /search?"));
             assert!(request_text.contains("format=json"));
+            match expected_authorization {
+                Some(expected) => assert!(
+                    request_text.contains(&format!("Authorization: {expected}"))
+                        || request_text.contains(&format!("authorization: {expected}"))
+                ),
+                None => assert!(
+                    !request_text
+                        .to_ascii_lowercase()
+                        .contains("\r\nauthorization:")
+                ),
+            }
 
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -127,27 +157,14 @@ mod searxng_tests {
 
     #[tokio::test]
     async fn typed_runtime_executor_searches_local_searxng() {
-        let addr = serve_search_once(
-            r#"{
-                "results": [
-                    {
-                        "title": "Rust documentation",
-                        "url": "https://doc.rust-lang.org/",
-                        "content": "Official Rust documentation.",
-                        "engine": "test"
-                    }
-                ],
-                "answers": [],
-                "suggestions": [],
-                "corrections": [],
-                "number_of_results": 1,
-                "unresponsive_engines": []
-            }"#,
-        )
-        .await;
+        let addr = serve_search_once(SEARCH_BODY, None).await;
         let provider = std::sync::Arc::new(
-            SearxngProvider::new_with_timeout(&format!("http://{addr}"), Duration::from_secs(5))
-                .expect("provider should construct"),
+            SearxngProvider::new_with_timeout_and_bearer_token(
+                &format!("http://{addr}"),
+                Duration::from_secs(5),
+                None,
+            )
+            .expect("provider should construct"),
         );
         let executor = provider
             .tool_runtime_executors()
@@ -167,5 +184,32 @@ mod searxng_tests {
         assert!(stdout.contains("## SearXNG results for: rust docs"));
         assert!(stdout.contains("Rust documentation"));
         assert!(stdout.contains("https://doc.rust-lang.org/"));
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_executor_sends_optional_bearer_token() {
+        let addr = serve_search_once(SEARCH_BODY, Some("Bearer test-token")).await;
+        let provider = std::sync::Arc::new(
+            SearxngProvider::new_with_timeout_and_bearer_token(
+                &format!("http://{addr}"),
+                Duration::from_secs(5),
+                Some("test-token".to_string()),
+            )
+            .expect("provider should construct"),
+        );
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .find(|executor| executor.name().as_str() == "searxng_search")
+            .expect("typed SearXNG executor registered");
+
+        let output = executor
+            .execute(runtime_invocation(
+                r#"{"query":"rust docs","max_results":3}"#,
+            ))
+            .await
+            .expect("typed search succeeds");
+
+        assert_eq!(output.status, ToolOutputStatus::Success);
     }
 }

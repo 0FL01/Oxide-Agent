@@ -53,7 +53,8 @@ pub(super) async fn resolve_file_path(exec: &dyn SandboxExec, path: &str) -> Res
             let paths_list = found_paths.join("\n  - ");
             anyhow::bail!(
                 "Multiple files found with name '{}':\n  - {}\n\nPlease specify the full path to the desired file.",
-                path, paths_list
+                path,
+                paths_list
             )
         }
     }

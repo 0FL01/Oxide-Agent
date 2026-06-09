@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::config::{AgentSettings, ModelInfo};
+use crate::llm::LlmProvider;
 use crate::llm::capabilities::{ProviderCapabilities, ToolHistoryMode};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
-use crate::llm::LlmProvider;
 
 /// Capability module for Nvidia hosted model routes.
 pub(crate) struct NvidiaProviderModule;

@@ -1,16 +1,16 @@
 //! Runtime compaction orchestration for the agent runner.
 
-use super::types::{AgentRunnerContext, RunState};
 use super::AgentRunner;
+use super::types::{AgentRunnerContext, RunState};
 use crate::agent::compaction::{
-    count_tokens_cached, estimate_request_budget, wiki_memory_lookup_available, BudgetState,
-    CompactRequestContext, CompactRunOutcome, CompactionBackend, CompactionPhase, CompactionPolicy,
-    CompactionReason, CompactionRequest, CompactionTrigger,
+    BudgetState, CompactRequestContext, CompactRunOutcome, CompactionBackend, CompactionPhase,
+    CompactionPolicy, CompactionReason, CompactionRequest, CompactionTrigger, count_tokens_cached,
+    estimate_request_budget, wiki_memory_lookup_available,
 };
 use crate::agent::progress::{AgentEvent, RepeatedCompactionKind};
 use crate::config::ModelInfo;
 use crate::llm::LlmClient;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use tracing::warn;
 
 #[derive(Clone, Copy)]
@@ -469,9 +469,9 @@ impl AgentRunner {
 mod tests {
     use super::*;
     use crate::agent::compaction::{
-        build_compacted_history, BuildCompactedHistoryRequest, CompactSummaryBackend,
-        CompactSummaryError, CompactSummaryRequest, CompactSummaryResult, CompactedSummaryMetadata,
-        CompactionController, OXIDE_COMPACTED_SUMMARY_PREFIX,
+        BuildCompactedHistoryRequest, CompactSummaryBackend, CompactSummaryError,
+        CompactSummaryRequest, CompactSummaryResult, CompactedSummaryMetadata,
+        CompactionController, OXIDE_COMPACTED_SUMMARY_PREFIX, build_compacted_history,
     };
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::memory::AgentMessage;
@@ -573,20 +573,18 @@ mod tests {
             .expect("runner succeeds after retry");
 
         assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
-        assert!(ctx
-            .agent
-            .memory()
-            .get_messages()
-            .iter()
-            .any(|message| message
+        assert!(ctx.agent.memory().get_messages().iter().any(|message| {
+            message
                 .content
-                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)));
-        assert!(ctx
-            .agent
-            .memory()
-            .get_messages()
-            .iter()
-            .all(|message| !message.content.contains("[COMPACTION_SUMMARY]")));
+                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)
+        }));
+        assert!(
+            ctx.agent
+                .memory()
+                .get_messages()
+                .iter()
+                .all(|message| !message.content.contains("[COMPACTION_SUMMARY]"))
+        );
         drop(ctx);
         drop(progress_tx);
 
@@ -660,14 +658,11 @@ mod tests {
         let result = runner.run(&mut ctx).await.expect("runner succeeds");
 
         assert!(matches!(result, AgentRunResult::Final(answer) if answer == "done"));
-        assert!(ctx
-            .agent
-            .memory()
-            .get_messages()
-            .iter()
-            .any(|message| message
+        assert!(ctx.agent.memory().get_messages().iter().any(|message| {
+            message
                 .content
-                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)));
+                .starts_with(crate::agent::compaction::OXIDE_COMPACTED_SUMMARY_PREFIX)
+        }));
         drop(ctx);
         drop(progress_tx);
 

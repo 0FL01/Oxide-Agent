@@ -257,12 +257,6 @@ fn build_workflow_guidance(tools: &[ToolDefinition]) -> Option<String> {
                 "Prefer `crawl4ai_markdown` after search when you need to read a specific result URL as Markdown, especially pages needing browser rendering, JavaScript, or overlay/consent handling."
                     .to_string(),
             );
-        }
-        if has_tool(&tool_names, "web_markdown") && has_tool(&tool_names, "crawl4ai_markdown") {
-            lines.push(
-                "Use `web_markdown` as fallback only when `crawl4ai_markdown` is unavailable or returns a structured provider failure."
-                    .to_string(),
-            );
         } else if has_tool(&tool_names, "web_markdown") {
             lines.push(
                 "Use `web_markdown` after search when you need to read a specific result URL as Markdown."
@@ -643,11 +637,11 @@ Use only available tools if necessary.\n\
 Do not spawn, wait for, or cancel sub-agents and do not send files to the user."
         .to_string();
 
-    if let Some(extra) = extra_context {
-        if !extra.trim().is_empty() {
-            base_prompt.push_str("\n\nAdditional context:\n");
-            base_prompt.push_str(extra.trim());
-        }
+    if let Some(extra) = extra_context
+        && !extra.trim().is_empty()
+    {
+        base_prompt.push_str("\n\nAdditional context:\n");
+        base_prompt.push_str(extra.trim());
     }
 
     let base_prompt = if structured_output {

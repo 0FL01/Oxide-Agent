@@ -1,19 +1,18 @@
 use super::{
-    ensure_session_exists, remove_session, save_memory_after_task, spawn_manual_compaction_task,
     AgentDialogue, AgentModeSessionKeys, EnsureSessionContext, RunManualCompactionContext,
-    SessionTransportContext, SESSION_REGISTRY,
+    SESSION_REGISTRY, SessionTransportContext, ensure_session_exists, remove_session,
+    save_memory_after_task, spawn_manual_compaction_task,
 };
 use crate::bot::context::{ensure_current_agent_flow_id, reset_current_agent_flow_id};
 use crate::bot::resilient;
 use crate::bot::state::ConfirmationType;
 use crate::bot::views::{
-    agent_control_markup, agent_flow_inline_keyboard_with_toggle,
-    cancel_task_confirmation_inline_keyboard, empty_inline_keyboard,
-    get_agent_inline_keyboard_with_exit, AgentView, DefaultAgentView,
+    AgentView, DefaultAgentView, agent_control_markup, agent_flow_inline_keyboard_with_toggle,
+    cancel_task_confirmation_inline_keyboard, empty_inline_keyboard, get_agent_inline_keyboard,
 };
 use crate::bot::{
-    build_outbound_thread_params, general_forum_topic_id, resolve_thread_spec,
-    OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec,
+    OutboundThreadParams, TelegramThreadKind, TelegramThreadSpec, build_outbound_thread_params,
+    general_forum_topic_id, resolve_thread_spec,
 };
 use crate::config::BotSettings;
 use anyhow::{Error, Result};
@@ -456,14 +455,7 @@ pub(crate) async fn show_agent_controls(
     let outbound_thread = build_outbound_thread_params(thread_spec);
     let user_id = msg.from.as_ref().map_or(0, |u| u.id.0.cast_signed());
     let reply_markup = if use_inline_topic_controls(thread_spec) {
-        let (agent_flow_id, _) =
-            ensure_current_agent_flow_id(&storage, user_id, msg.chat.id, thread_spec).await?;
-        get_agent_inline_keyboard_with_exit(
-            false,
-            Some(&agent_flow_id),
-            settings.telegram.attach_detach_enabled,
-        )
-        .into()
+        get_agent_inline_keyboard().into()
     } else {
         agent_control_markup(false)
     };

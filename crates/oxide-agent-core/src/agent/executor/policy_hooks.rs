@@ -30,10 +30,10 @@ impl Hook for PolicyControlledHook {
     }
 
     fn handle(&self, event: &HookEvent, context: &HookContext) -> HookResult {
-        if let Ok(policy) = self.policy.read() {
-            if !policy.allows(self.name) {
-                return HookResult::Continue;
-            }
+        if let Ok(policy) = self.policy.read()
+            && !policy.allows(self.name)
+        {
+            return HookResult::Continue;
         }
 
         self.inner.handle(event, context)

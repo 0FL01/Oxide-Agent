@@ -1,0 +1,60 @@
+/* Responsive overrides. Keep this slice last in the stylesheet entrypoint. */
+
+@media (max-width: 1200px) {
+  .app-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .sidebar {
+    display: none;
+  }
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1023px) {
+  .app-layout {
+    display: block;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .workspace-main {
+    height: 100vh;
+  }
+
+  .session-workspace {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .chat-wrapper {
+    min-height: 100%;
+  }
+
+  .results-panel {
+    overflow: visible;
+    padding: 24px 14px 96px;
+  }
+
+  .composer {
+    padding: 0 14px 14px;
+  }
+
+  .activity-drawer.open {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    z-index: 200;
+    border-left: 0;
+  }
+}

@@ -10,9 +10,11 @@ fn normalize_topic_prompt_payload_normalizes_line_endings_and_trailing_spaces() 
 fn validate_topic_context_rejects_markdown_documents() {
     let error = validate_topic_context_content("# AGENTS\nDo the thing")
         .expect_err("markdown document must be rejected");
-    assert!(error
-        .to_string()
-        .contains("store AGENTS.md-style documents in topic_agents_md"));
+    assert!(
+        error
+            .to_string()
+            .contains("store AGENTS.md-style documents in topic_agents_md")
+    );
 }
 
 #[test]

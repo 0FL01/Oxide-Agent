@@ -1,5 +1,5 @@
 use ammonia::{Builder, UrlRelative};
-use comrak::{markdown_to_html, Options};
+use comrak::{Options, markdown_to_html};
 use std::collections::HashSet;
 
 #[cfg(target_arch = "wasm32")]

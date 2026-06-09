@@ -14,7 +14,7 @@ use oxide_agent_core::llm::{
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{watch, Mutex as AsyncMutex};
+use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 

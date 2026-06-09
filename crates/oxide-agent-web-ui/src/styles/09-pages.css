@@ -1,0 +1,218 @@
+/* Auth, settings, standalone pages, and page-level utility states.
+   Legacy fallback declarations are kept before canonical v2 rules. */
+
+/* === AUTH PAGES === */
+.auth-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.auth-panel {
+  display: grid;
+  width: min(420px, 100%);
+  gap: 16px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  padding: var(--space-6);
+}
+
+.auth-panel h1 {
+  margin: 0 0 4px;
+  font-size: 1.4rem;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.auth-panel label {
+  color: var(--fg-muted);
+}
+
+.auth-panel input {
+  height: 36px;
+  font-size: 13px;
+}
+
+.auth-panel button {
+  height: 36px;
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+  font-weight: 500;
+}
+
+.auth-panel button:hover {
+  background: #0e8c6d;
+}
+
+.auth-links {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+/* === SETTINGS PAGE === */
+.settings-page {
+  padding: var(--space-5);
+  background: var(--bg);
+  min-height: 100vh;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-header h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.panel {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  padding: var(--space-5);
+}
+
+.panel h2 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.meta-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 12px;
+}
+
+.meta-list dt {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.meta-list dd {
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.model-settings-form {
+  display: grid;
+  gap: 12px;
+}
+
+.model-route-select {
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
+.model-route-select option:disabled {
+  color: var(--text-faint);
+}
+
+.model-settings-note {
+  margin: -4px 0 0;
+}
+
+.model-route-meta {
+  margin: 0;
+}
+
+.model-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-profiles-panel,
+.agent-profile-form,
+.agent-profile-list {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-profile-list-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel-soft);
+}
+
+/* === NOT FOUND === */
+.not-found {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.not-found h1 {
+  color: var(--fg);
+}
+
+/* === ERROR / NOTICE === */
+.error-banner {
+  color: var(--accent-red);
+  padding: var(--space-2) var(--space-4);
+  background: rgba(239, 68, 68, 0.06);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+}
+
+.error-text {
+  color: var(--accent-red);
+  font-size: 12px;
+}
+
+.notice {
+  color: var(--accent-yellow);
+}
+
+.success {
+  color: var(--accent-green);
+}
+
+.muted {
+  color: var(--fg-muted);
+  font-size: 0.86rem;
+}
+
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+}
+
+.auth-panel,
+.settings-panel {
+  width: min(420px, calc(100vw - 32px));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 20px;
+}
+
+.auth-panel h1,
+.settings-panel h1 {
+  color: var(--fg);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}

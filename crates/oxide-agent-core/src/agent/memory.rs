@@ -4,11 +4,11 @@
 //! accounting utilities. Compaction orchestration lives outside this module.
 
 use crate::agent::compaction::{
-    count_tokens_cached, AgentMessageKind, ArchiveRef, CompactedSummaryMetadata,
-    CompactionRetention, OXIDE_COMPACTED_SUMMARY_PREFIX,
+    AgentMessageKind, ArchiveRef, CompactedSummaryMetadata, CompactionRetention,
+    OXIDE_COMPACTED_SUMMARY_PREFIX, count_tokens_cached,
 };
 use crate::agent::providers::TodoList;
-use crate::agent::recovery::{repair_agent_message_history_runtime, HistoryRepairOutcome};
+use crate::agent::recovery::{HistoryRepairOutcome, repair_agent_message_history_runtime};
 use crate::llm::{TokenUsage, ToolCall, ToolCallCorrelation};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,12 +54,62 @@ pub struct AgentMessage {
     /// Canonical correlation metadata for assistant tool call batches.
     #[serde(default)]
     pub tool_call_correlations: Option<Vec<ToolCallCorrelation>>,
+    /// Safe persisted refs for user-provided attachments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AgentMessageAttachment>,
     /// Metadata for payloads that were externalized outside hot memory.
     #[serde(default)]
     pub externalized_payload: Option<ExternalizedPayload>,
     /// Metadata for tool payloads already pruned down to a placeholder.
     #[serde(default)]
     pub pruned_artifact: Option<PrunedArtifact>,
+}
+
+/// Safe persisted reference to an attachment associated with a user message.
+///
+/// Raw bytes are intentionally absent; provider-native media parts are resolved
+/// transiently from `sandbox_path` immediately before an LLM request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentMessageAttachment {
+    /// Attachment kind. Checkpoint 2 only needs image refs.
+    pub kind: AgentMessageAttachmentKind,
+    /// Original file name reported by the transport.
+    pub file_name: String,
+    /// Best-effort MIME type reported by the transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    /// Raw uploaded file size in bytes.
+    pub size_bytes: u64,
+    /// Absolute sandbox path where the upload was staged.
+    pub sandbox_path: String,
+}
+
+impl AgentMessageAttachment {
+    /// Create an image attachment ref without retaining bytes.
+    #[must_use]
+    pub fn image(
+        file_name: impl Into<String>,
+        mime_type: Option<String>,
+        size_bytes: u64,
+        sandbox_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: AgentMessageAttachmentKind::Image,
+            file_name: file_name.into(),
+            mime_type,
+            size_bytes,
+            sandbox_path: sandbox_path.into(),
+        }
+    }
+}
+
+/// Persisted attachment kind for user message refs.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageAttachmentKind {
+    /// Image attachment eligible for native vision on capable routes.
+    Image,
 }
 
 /// Metadata describing a tool payload externalized out of hot memory.
@@ -147,6 +197,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -173,6 +224,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -196,6 +248,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -214,6 +267,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -232,6 +286,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -250,6 +305,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -271,6 +327,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -304,6 +361,7 @@ impl AgentMessage {
             tool_name: Some(name.to_string()),
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -344,6 +402,7 @@ impl AgentMessage {
             tool_name: Some(name.to_string()),
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: Some(externalized_payload),
             pruned_artifact: None,
         }
@@ -387,6 +446,7 @@ impl AgentMessage {
             tool_name: Some(name.to_string()),
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload,
             pruned_artifact: Some(pruned_artifact),
         }
@@ -416,16 +476,9 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: Some(tool_calls),
             tool_call_correlations,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
-        }
-    }
-
-    /// Create a system message instructing the agent to replay an approved action.
-    pub fn approval_replay(content: impl Into<String>) -> Self {
-        Self {
-            kind: AgentMessageKind::ApprovalReplay,
-            ..Self::system_context(content)
         }
     }
 
@@ -461,6 +514,7 @@ impl AgentMessage {
             tool_name: None,
             tool_calls: None,
             tool_call_correlations: None,
+            attachments: Vec::new(),
             externalized_payload: None,
             pruned_artifact: None,
         }
@@ -515,6 +569,34 @@ impl AgentMessage {
         match &self.tool_call_correlations {
             Some(correlations) if correlations.len() == derived.len() => Some(correlations.clone()),
             _ => Some(derived),
+        }
+    }
+
+    /// Return the stable text projection used by compaction and text-only providers.
+    #[must_use]
+    pub fn text_projection(&self) -> &str {
+        &self.content
+    }
+
+    /// Attach safe refs to a user message without changing the text projection.
+    ///
+    /// Non-user messages deliberately remain attachment-free to preserve strict
+    /// tool-call history invariants.
+    #[must_use]
+    pub fn with_user_attachments(mut self, attachments: Vec<AgentMessageAttachment>) -> Self {
+        if self.role == MessageRole::User {
+            self.attachments = attachments;
+        }
+        self
+    }
+
+    /// Return safe user attachment refs. Non-user messages are treated as text-only.
+    #[must_use]
+    pub fn user_attachments(&self) -> &[AgentMessageAttachment] {
+        if self.role == MessageRole::User {
+            &self.attachments
+        } else {
+            &[]
         }
     }
 }
@@ -908,6 +990,71 @@ mod tests {
         let message: AgentMessage = serde_json::from_value(value).expect("message deserializes");
 
         assert_eq!(message.created_at_unix, None);
+        assert!(message.attachments.is_empty());
+    }
+
+    #[test]
+    fn user_attachment_refs_do_not_change_text_projection_or_token_count() {
+        let attachment = AgentMessageAttachment::image(
+            "screen.png",
+            Some("image/png".to_string()),
+            42,
+            "/workspace/uploads/screen.png",
+        );
+        let message = AgentMessage::user_task("What is shown?")
+            .with_user_attachments(vec![attachment.clone()]);
+
+        assert_eq!(message.text_projection(), "What is shown?");
+        assert_eq!(message.user_attachments(), &[attachment]);
+
+        let mut with_attachment = AgentMemory::new(100_000);
+        with_attachment.add_message(message);
+        let mut text_only = AgentMemory::new(100_000);
+        text_only.add_message(AgentMessage::user_task("What is shown?"));
+
+        assert_eq!(with_attachment.token_count(), text_only.token_count());
+    }
+
+    #[test]
+    fn attachment_refs_serialize_without_raw_bytes_and_only_for_user_helpers() {
+        let attachment = AgentMessageAttachment::image(
+            "screen.jpg",
+            Some("image/jpeg".to_string()),
+            128,
+            "/workspace/uploads/screen.jpg",
+        );
+        let user =
+            AgentMessage::user_turn("See attached").with_user_attachments(vec![attachment.clone()]);
+        let assistant =
+            AgentMessage::assistant("No media here").with_user_attachments(vec![attachment]);
+
+        assert!(assistant.attachments.is_empty());
+
+        let value = serde_json::to_value(&user).expect("message serializes");
+        assert_eq!(value["attachments"][0]["kind"], json!("image"));
+        assert_eq!(
+            value["attachments"][0]["sandbox_path"],
+            json!("/workspace/uploads/screen.jpg")
+        );
+        assert!(value["attachments"][0].get("bytes").is_none());
+        assert!(value["attachments"][0].get("base64").is_none());
+    }
+
+    #[test]
+    fn agent_memory_deserializes_old_json_without_attachment_refs() {
+        let mut memory = AgentMemory::new(100_000);
+        memory.add_message(AgentMessage::user_task("old task"));
+        let mut value = serde_json::to_value(&memory).expect("memory serializes");
+
+        value["messages"][0]
+            .as_object_mut()
+            .expect("message object")
+            .remove("attachments");
+
+        let restored: AgentMemory = serde_json::from_value(value).expect("old memory deserializes");
+
+        assert_eq!(restored.get_messages()[0].content, "old task");
+        assert!(restored.get_messages()[0].attachments.is_empty());
     }
 
     #[test]
@@ -933,9 +1080,11 @@ mod tests {
         let current = AgentMessage::user_task("second")
             .with_created_at_unix(Some(100 + TEMPORAL_BOUNDARY_THRESHOLD_SECONDS));
 
-        assert!(memory
-            .soft_temporal_boundary_before_user_task(&current)
-            .is_none());
+        assert!(
+            memory
+                .soft_temporal_boundary_before_user_task(&current)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1102,9 +1251,11 @@ mod tests {
         memory.add_message(AgentMessage::topic_agents_md("# Topic AGENTS"));
 
         assert!(memory.has_topic_agents_md());
-        assert!(memory.get_messages()[0]
-            .content
-            .starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX));
+        assert!(
+            memory.get_messages()[0]
+                .content
+                .starts_with(TOPIC_AGENTS_MD_SYSTEM_PREFIX)
+        );
     }
 
     #[test]
@@ -1181,13 +1332,17 @@ mod tests {
         );
 
         assert!(summary.content.contains("Agent Mode hot context compacted"));
-        assert!(summary
-            .content
-            .contains("wiki_memory_lookup_available: true"));
+        assert!(
+            summary
+                .content
+                .contains("wiki_memory_lookup_available: true")
+        );
         assert!(summary.content.contains("wiki_memory_search"));
-        assert!(summary
-            .content
-            .contains("Wiki Memory is durable background, not a full transcript."));
+        assert!(
+            summary
+                .content
+                .contains("Wiki Memory is durable background, not a full transcript.")
+        );
     }
 
     #[test]
@@ -1310,10 +1465,12 @@ mod tests {
 
         assert!(memory.has_topic_agents_md());
         assert_eq!(memory.get_messages().len(), 13);
-        assert!(!memory
-            .get_messages()
-            .iter()
-            .any(|message| message.content.starts_with("[Previous context compressed]")));
+        assert!(
+            !memory
+                .get_messages()
+                .iter()
+                .any(|message| message.content.starts_with("[Previous context compressed]"))
+        );
     }
 
     /// Compacted summary must not contain volatile metadata (timestamps, provider,

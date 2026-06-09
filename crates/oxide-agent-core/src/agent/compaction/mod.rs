@@ -18,17 +18,17 @@ pub use controller::{
     CompactRequestContext, CompactRunOutcome, CompactionController, CompactionControllerError,
 };
 pub use history::{
+    BuildCompactedHistoryRequest, CompactedHistoryBuildError, PreviousCompactedSummary,
     build_compacted_history, extract_previous_compacted_summary, is_any_compaction_summary_message,
-    is_current_compacted_summary_message, BuildCompactedHistoryRequest, CompactedHistoryBuildError,
-    PreviousCompactedSummary,
+    is_current_compacted_summary_message,
 };
 pub use local_llm_summary::LocalLlmSummary;
 pub use task::{
     CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest, CompactSummaryResult,
 };
 pub use types::{
-    wiki_memory_lookup_available, AgentMessageKind, BudgetEstimate, BudgetState,
-    CompactedSummaryMetadata, CompactionBackend, CompactionPhase, CompactionPolicy,
-    CompactionReason, CompactionRequest, CompactionRetention, CompactionScope, CompactionTrigger,
-    HotMemoryBudget, OXIDE_COMPACTED_SUMMARY_PREFIX,
+    AgentMessageKind, BudgetEstimate, BudgetState, CompactedSummaryMetadata, CompactionBackend,
+    CompactionPhase, CompactionPolicy, CompactionReason, CompactionRequest, CompactionRetention,
+    CompactionScope, CompactionTrigger, HotMemoryBudget, OXIDE_COMPACTED_SUMMARY_PREFIX,
+    wiki_memory_lookup_available,
 };

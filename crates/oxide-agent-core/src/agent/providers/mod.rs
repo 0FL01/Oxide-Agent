@@ -47,6 +47,9 @@ pub mod tavily;
 #[cfg(feature = "tool-duckduckgo")]
 pub mod duckduckgo;
 
+#[cfg(feature = "tool-brave-search")]
+pub mod brave_search;
+
 #[cfg(feature = "tool-searxng")]
 pub mod searxng;
 
@@ -56,16 +59,16 @@ pub mod jira_mcp;
 #[cfg(feature = "integration-mcp-mattermost")]
 pub mod mattermost_mcp;
 
-pub use agents_md::{agents_md_tool_names, AgentsMdProvider};
-pub use compression::{compress_tool_names, CompressionProvider, TOOL_COMPRESS};
+pub use agents_md::{AgentsMdProvider, agents_md_tool_names};
+pub use compression::{CompressionProvider, TOOL_COMPRESS, compress_tool_names};
 #[cfg(feature = "tool-crawl4ai-markdown")]
 pub use crawl4ai_markdown::Crawl4AiMarkdownProvider;
 pub use delegation::DelegationProvider;
 pub use filehoster::FileHosterProvider;
 pub use manager_control_plane::{
-    manager_control_plane_tool_names, ForumTopicActionResult, ForumTopicCreateRequest,
-    ForumTopicCreateResult, ForumTopicEditRequest, ForumTopicEditResult, ForumTopicThreadRequest,
-    ManagerControlPlaneProvider, ManagerTopicLifecycle, ManagerTopicSandboxCleanup,
+    ForumTopicActionResult, ForumTopicCreateRequest, ForumTopicCreateResult, ForumTopicEditRequest,
+    ForumTopicEditResult, ForumTopicThreadRequest, ManagerControlPlaneProvider,
+    ManagerTopicLifecycle, ManagerTopicSandboxCleanup, manager_control_plane_tool_names,
 };
 #[cfg(any(
     feature = "tool-media-audio",
@@ -74,8 +77,8 @@ pub use manager_control_plane::{
 ))]
 pub use media_file::MediaFileProvider;
 pub use reminder::{
-    reminder_tool_names, ReminderContext, ReminderProvider, ReminderScheduleEvent,
-    ReminderScheduleNotifier,
+    ReminderContext, ReminderProvider, ReminderScheduleEvent, ReminderScheduleNotifier,
+    reminder_tool_names,
 };
 pub use sandbox::{
     SandboxExecProvider, SandboxFileOpsProvider, SandboxLifecycleProvider, SandboxRuntime,
@@ -87,17 +90,13 @@ pub use silero_tts::{
 };
 #[cfg(feature = "integration-ssh-mcp")]
 pub use ssh_mcp::{
-    inject_approval_credentials, inject_ssh_approval_system_message,
+    SecretProbeKind, SecretProbeReport, SshMcpProvider, TopicInfraPreflightReport,
     inject_topic_infra_preflight_system_message, inspect_topic_infra_config, probe_secret_ref,
-    SecretProbeKind, SecretProbeReport, SshApprovalGrant, SshApprovalRegistry,
-    SshApprovalRequestView, SshMcpProvider, TopicInfraPreflightReport,
 };
 #[cfg(not(feature = "integration-ssh-mcp"))]
 pub use ssh_mcp_stub::{
-    inject_approval_credentials, inject_ssh_approval_system_message,
+    SecretProbeKind, SecretProbeReport, TopicInfraPreflightReport,
     inject_topic_infra_preflight_system_message, inspect_topic_infra_config, probe_secret_ref,
-    SecretProbeKind, SecretProbeReport, SshApprovalGrant, SshApprovalRegistry,
-    SshApprovalRequestView, TopicInfraPreflightReport,
 };
 #[cfg(feature = "tool-stack-logs")]
 pub use stack_logs::StackLogsProvider;
@@ -114,6 +113,9 @@ pub use tavily::TavilyProvider;
 
 #[cfg(feature = "tool-duckduckgo")]
 pub use duckduckgo::DuckDuckGoProvider;
+
+#[cfg(feature = "tool-brave-search")]
+pub use brave_search::BraveSearchProvider;
 
 #[cfg(feature = "tool-searxng")]
 pub use searxng::SearxngProvider;

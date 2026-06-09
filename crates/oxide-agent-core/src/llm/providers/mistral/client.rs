@@ -1,7 +1,7 @@
 //! HTTP client for Mistral AI API
 
 use crate::llm::support::http;
-use async_openai::{config::OpenAIConfig, Client};
+use async_openai::{Client, config::OpenAIConfig};
 use reqwest::Client as HttpClient;
 
 /// Creates a new OpenAI-compatible client for Mistral

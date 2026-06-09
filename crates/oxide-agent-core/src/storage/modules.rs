@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use super::{SQLX_STORAGE_MODULE_ID, SqlxStorage, SqlxStorageConfig};
+use super::{StorageError, StorageProvider};
 use crate::config::AgentSettings;
-
-use super::{R2StorageConfig, StorageError, StorageProvider};
 
 /// Built storage services exposed by the selected storage backend module.
 pub struct BuiltStorageBackend {
@@ -14,6 +14,8 @@ pub struct BuiltStorageBackend {
     pub module_id: &'static str,
     /// Primary storage provider consumed by runtime and transport code.
     pub provider: Arc<dyn StorageProvider>,
+    /// Shared Postgres storage handle used by transports that need SQL-specific stores.
+    pub sqlx: Option<Arc<SqlxStorage>>,
 }
 
 /// Storage backend module descriptor and factory.
@@ -28,75 +30,54 @@ pub trait StorageBackendModule: Send + Sync {
 
 /// Builds the configured primary storage backend.
 ///
-/// S3/R2 is currently the only durable storage backend accepted by the target
-/// architecture, so this factory fails if `storage/r2` is disabled at runtime.
-#[cfg(feature = "storage-s3-r2")]
+/// SQLx/Postgres is the only durable runtime storage backend.
 pub async fn build_primary_storage(
     settings: &AgentSettings,
 ) -> Result<BuiltStorageBackend, StorageError> {
-    R2StorageModule.build(settings).await
+    if settings.is_module_enabled(SQLX_STORAGE_MODULE_ID) {
+        return SqlxStorageModule.build(settings).await;
+    }
+
+    Err(StorageError::Config(
+        "no durable storage backend module is enabled".to_string(),
+    ))
 }
 
-#[cfg(feature = "storage-s3-r2")]
-struct R2StorageModule;
+struct SqlxStorageModule;
 
-#[cfg(feature = "storage-s3-r2")]
 #[async_trait]
-impl StorageBackendModule for R2StorageModule {
+impl StorageBackendModule for SqlxStorageModule {
     fn module_id(&self) -> &'static str {
-        "storage/r2"
+        SQLX_STORAGE_MODULE_ID
     }
 
     async fn build(&self, settings: &AgentSettings) -> Result<BuiltStorageBackend, StorageError> {
         if !settings.is_module_enabled(self.module_id()) {
             return Err(StorageError::Config(format!(
-                "{} is required because S3/R2 is the only durable storage backend",
+                "{} is disabled and cannot be selected as primary storage",
                 self.module_id()
             )));
         }
 
-        let config = R2StorageConfig::from_agent_settings(settings)?;
-        let storage = Arc::new(super::R2Storage::new(&config).await?);
+        let config = SqlxStorageConfig::from_agent_settings(settings)?;
+        let storage = Arc::new(SqlxStorage::connect(config).await?);
         let provider_storage = Arc::clone(&storage);
         let provider: Arc<dyn StorageProvider> = provider_storage;
 
         Ok(BuiltStorageBackend {
             module_id: self.module_id(),
             provider,
+            sqlx: Some(storage),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "storage-s3-r2")]
     #[test]
-    fn r2_storage_module_uses_compiled_manifest_id() {
-        use super::{R2StorageModule, StorageBackendModule};
+    fn sqlx_storage_module_uses_compiled_manifest_id() {
+        use super::{SqlxStorageModule, StorageBackendModule};
 
-        assert_eq!(R2StorageModule.module_id(), "storage/r2");
-    }
-
-    #[cfg(feature = "storage-s3-r2")]
-    #[tokio::test]
-    async fn primary_storage_fails_when_r2_module_is_disabled() {
-        use crate::config::{AgentSettings, ModuleRuntimeConfig};
-
-        let mut settings = AgentSettings::default();
-        settings
-            .modules
-            .insert("storage/r2".to_string(), ModuleRuntimeConfig::disabled());
-
-        let result = super::build_primary_storage(&settings).await;
-        let Err(error) = result else {
-            panic!("disabled primary storage module must fail before backend construction");
-        };
-
-        assert!(
-            error.to_string().contains(
-                "storage/r2 is required because S3/R2 is the only durable storage backend"
-            ),
-            "unexpected storage error: {error}"
-        );
+        assert_eq!(SqlxStorageModule.module_id(), "storage/sqlx");
     }
 }

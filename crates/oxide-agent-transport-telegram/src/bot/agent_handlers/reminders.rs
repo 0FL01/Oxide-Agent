@@ -1,22 +1,22 @@
 use super::{
+    EnsureSessionContext, RunAgentTaskTextContext, SessionTransportContext,
     agent_mode_session_keys, apply_execution_profile, apply_reminder_context,
     apply_topic_infra_config, ensure_session_exists, install_reminder_scheduler,
     is_agent_task_running, manager_control_plane_enabled, manager_default_chat_id,
     renew_cancellation_token, resolve_execution_profile, resolve_topic_infra_config,
     run_agent_task_with_text, use_inline_flow_controls, use_inline_topic_controls,
-    EnsureSessionContext, RunAgentTaskTextContext, SessionTransportContext,
 };
 use crate::bot::context::sandbox_scope;
-use crate::bot::topic_route::{touch_dynamic_binding_activity_if_needed, TopicRouteDecision};
-use crate::bot::{build_outbound_thread_params, TelegramThreadKind, TelegramThreadSpec};
+use crate::bot::topic_route::{TopicRouteDecision, touch_dynamic_binding_activity_if_needed};
+use crate::bot::{TelegramThreadKind, TelegramThreadSpec, build_outbound_thread_params};
 use crate::config::BotSettings;
 use crate::reminder_scheduler::ReminderSchedulerHandle;
 use anyhow::{Error, Result};
 use oxide_agent_core::agent::SessionId;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::storage::{
-    compute_next_reminder_run_at, resolve_active_topic_binding, ReminderJobRecord,
-    ReminderThreadKind, StorageProvider,
+    ReminderJobRecord, ReminderThreadKind, StorageProvider, compute_next_reminder_run_at,
+    resolve_active_topic_binding,
 };
 use std::sync::Arc;
 use teloxide::prelude::*;
@@ -323,7 +323,7 @@ async fn resolve_scheduled_topic_route(
         };
     }
 
-    let thread_id = thread_spec.thread_id.map(|thread_id| thread_id.0 .0);
+    let thread_id = thread_spec.thread_id.map(|thread_id| thread_id.0.0);
     match settings.telegram.resolve_topic_config(chat_id.0, thread_id) {
         Some(topic) => TopicRouteDecision {
             enabled: topic.enabled,

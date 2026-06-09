@@ -6,9 +6,11 @@ async fn forum_topic_tools_unavailable_without_lifecycle_service() {
         ManagerControlPlaneProvider::new(Arc::new(crate::storage::MockStorageProvider::new()), 77);
     let tool_names: Vec<String> = provider.tools().into_iter().map(|tool| tool.name).collect();
 
-    assert!(!tool_names
-        .iter()
-        .any(|name| name == TOOL_FORUM_TOPIC_CREATE));
+    assert!(
+        !tool_names
+            .iter()
+            .any(|name| name == TOOL_FORUM_TOPIC_CREATE)
+    );
     assert!(!tool_names.iter().any(|name| name == TOOL_FORUM_TOPIC_LIST));
     assert!(!provider.can_handle(TOOL_FORUM_TOPIC_CREATE));
     assert!(!provider.can_handle(TOOL_FORUM_TOPIC_LIST));
@@ -302,9 +304,11 @@ async fn forum_topic_provision_ssh_agent_creates_canonical_binding_and_infra() {
     let allowed_tools = parsed["profile"]["profile"]["allowedTools"]
         .as_array()
         .expect("allowedTools must be present");
-    assert!(allowed_tools
-        .iter()
-        .any(|value| value.as_str() == Some("ssh_send_file_to_user")));
+    assert!(
+        allowed_tools
+            .iter()
+            .any(|value| value.as_str() == Some("ssh_send_file_to_user"))
+    );
     assert!(TOPIC_AGENT_REMINDER_TOOLS.iter().all(|tool| {
         allowed_tools
             .iter()

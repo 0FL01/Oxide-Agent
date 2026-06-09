@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -8,8 +8,9 @@ use super::env::{
     env_bool, env_parse, env_string, env_u64, env_usize, optional_path_env, parse_resolv_conf,
 };
 use super::image::{
-    bwrap_rootfs_hint, default_manifest_env, load_manifest, resolve_image_rootfs,
-    validate_direct_rootfs_override, validate_root_upper_dir, validate_rootfs, BwrapImageManifest,
+    BwrapImageManifest, bwrap_rootfs_hint, default_manifest_env, load_manifest,
+    resolve_image_rootfs, validate_direct_rootfs_override, validate_root_upper_dir,
+    validate_rootfs,
 };
 use super::preflight::{bwrap_supports_disable_userns, resolve_executable};
 use super::state::BwrapScopeMetadata;

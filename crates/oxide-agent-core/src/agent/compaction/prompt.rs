@@ -1,6 +1,6 @@
 //! Prompt builders for context compaction.
 
-use super::history::{is_any_compaction_summary_message, PreviousCompactedSummary};
+use super::history::{PreviousCompactedSummary, is_any_compaction_summary_message};
 use crate::agent::memory::{AgentMessage, MessageRole};
 
 const MESSAGE_REASONING_PREVIEW_CHARS: usize = 500;

@@ -7,6 +7,7 @@ use super::compaction::CompactionScope;
 use super::memory::AgentMemory;
 use super::session::{AgentSession, RuntimeContextInjection};
 use crate::config::DEFAULT_AGENT_INTERNAL_CONTEXT_WINDOW_TOKENS;
+use crate::sandbox::SandboxScope;
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -23,6 +24,10 @@ pub trait AgentContext: Send {
     /// Return scope metadata used by compaction persistence layers.
     fn compaction_scope(&self) -> CompactionScope {
         CompactionScope::default()
+    }
+    /// Return sandbox scope when this context can resolve sandbox-local attachment refs.
+    fn sandbox_scope(&self) -> Option<&SandboxScope> {
+        None
     }
     /// Get elapsed time in seconds since task start.
     fn elapsed_secs(&self) -> u64;
@@ -108,6 +113,10 @@ impl AgentContext for AgentSession {
 
     fn compaction_scope(&self) -> CompactionScope {
         AgentSession::compaction_scope(self)
+    }
+
+    fn sandbox_scope(&self) -> Option<&SandboxScope> {
+        Some(AgentSession::sandbox_scope(self))
     }
 
     fn drain_runtime_context(&mut self) -> Vec<RuntimeContextInjection> {

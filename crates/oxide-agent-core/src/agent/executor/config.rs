@@ -1,16 +1,16 @@
-use super::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use super::AgentExecutor;
+use super::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use crate::agent::compaction::CompactionController;
 use crate::agent::hooks::{
     CompletionCheckHook, EpisodicExtractHook, HotContextHealthHook, RetrievalAdvisorHook,
     SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
 };
-use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext, SshApprovalRegistry};
+use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext};
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::AgentSession;
 use crate::agent::wiki_memory::WikiStore;
-use crate::config::get_agent_search_limit;
 use crate::config::ModelInfo;
+use crate::config::get_agent_search_limit;
 use crate::llm::LlmClient;
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use std::sync::Arc;
@@ -160,10 +160,6 @@ impl AgentExecutor {
             user_id,
             topic_id,
             config,
-            approvals: self
-                .topic_infra
-                .as_ref()
-                .map_or_else(SshApprovalRegistry::new, |ctx| ctx.approvals.clone()),
         });
     }
 

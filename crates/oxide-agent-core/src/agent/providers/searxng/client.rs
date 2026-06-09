@@ -1,7 +1,7 @@
 use super::backoff::{self, MAX_RETRIES};
 use super::error::SearxngError;
 use super::types::{SearxngSearchArgs, SearxngSearchResponse};
-use reqwest::header::ACCEPT;
+use reqwest::header::{ACCEPT, AUTHORIZATION};
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -13,6 +13,7 @@ pub struct SearxngClient {
     base_url: String,
     http: reqwest::Client,
     rotation_seed_engines: Vec<String>,
+    bearer_token: Option<String>,
 }
 
 impl SearxngClient {
@@ -20,12 +21,16 @@ impl SearxngClient {
         base_url: &str,
         timeout: Duration,
         rotation_seed_engines: Vec<String>,
+        bearer_token: Option<String>,
     ) -> Result<Self, SearxngError> {
         let http = reqwest::Client::builder().timeout(timeout).build()?;
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http,
             rotation_seed_engines,
+            bearer_token: bearer_token
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
         })
     }
 
@@ -197,13 +202,17 @@ impl SearxngClient {
             params.push(("engines", engines));
         }
 
-        let response = self
+        let mut request = self
             .http
             .get(endpoint)
             .header(ACCEPT, "application/json")
-            .query(&params)
-            .send()
-            .await?;
+            .query(&params);
+
+        if let Some(token) = self.bearer_token.as_deref() {
+            request = request.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+
+        let response = request.send().await?;
 
         let status = response.status();
         if !status.is_success() {

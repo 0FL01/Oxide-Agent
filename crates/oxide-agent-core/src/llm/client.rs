@@ -5,8 +5,8 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use super::providers;
 use super::{
-    capabilities, support, ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message,
-    ProviderCapabilities, ToolDefinition,
+    ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message, ProviderCapabilities,
+    ToolDefinition, capabilities, support,
 };
 use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 
@@ -42,6 +42,8 @@ pub struct DiscoveredLlmModel {
     pub display_name: String,
     /// Provider protocol label for routing diagnostics.
     pub protocol: String,
+    /// Whether the discovered model advertises image input support.
+    pub supports_image_input: bool,
     /// Discovery source label: `network`, `cache`, or `fallback`.
     pub source: String,
     /// Timestamp associated with the discovered model list.
@@ -57,6 +59,7 @@ impl From<providers::opencode_go::discovery::DiscoveredOpenCodeGoModel> for Disc
             qualified_id: model.qualified_id,
             display_name: model.display_name,
             protocol: model.protocol.as_str().to_string(),
+            supports_image_input: model.supports_image_input,
             source: match model.source {
                 providers::opencode_go::discovery::DiscoverySource::Network => "network",
                 providers::opencode_go::discovery::DiscoverySource::Cache => "cache",
@@ -456,6 +459,7 @@ impl LlmClient {
         model_name: &str,
         temperature: Option<f32>,
         json_mode: bool,
+        reasoning_effort: Option<&str>,
     ) -> Result<ChatResponse, LlmError> {
         let model_info = self.get_model_info(model_name)?;
 
@@ -467,6 +471,7 @@ impl LlmClient {
             &model_info,
             temperature,
             json_mode,
+            reasoning_effort,
         )
         .await
     }
@@ -482,6 +487,7 @@ impl LlmClient {
         model_info: &crate::config::ModelInfo,
         temperature: Option<f32>,
         json_mode: bool,
+        reasoning_effort: Option<&str>,
     ) -> Result<ChatResponse, LlmError> {
         let provider = self.get_provider(&model_info.provider)?;
         let capabilities = Self::provider_capabilities_for_model(model_info);
@@ -517,6 +523,7 @@ impl LlmClient {
             max_tokens: Self::soft_cap_output_tokens(model_info.max_output_tokens),
             temperature,
             json_mode,
+            reasoning_effort,
         };
         provider.chat_with_tools(request).await
     }
@@ -605,6 +612,7 @@ impl LlmClient {
                 max_tokens: Self::soft_cap_output_tokens(model_info.max_output_tokens),
                 temperature: None,
                 json_mode,
+                reasoning_effort: None,
             };
             let result = provider.chat_with_tools(request).await;
             let duration = start.elapsed();
@@ -639,19 +647,19 @@ impl LlmClient {
                         "Tool-enabled LLM request failed"
                     );
 
-                    if attempt < Self::MAX_RETRIES {
-                        if let Some(backoff) = Self::get_retry_delay(&e, attempt) {
-                            info!(
-                                model = model_name,
-                                backoff_ms = backoff.as_millis(),
-                                attempt = attempt,
-                                max_attempts = Self::MAX_RETRIES,
-                                error_type = ?e,
-                                "Retrying LLM request"
-                            );
-                            tokio::time::sleep(backoff).await;
-                            continue;
-                        }
+                    if attempt < Self::MAX_RETRIES
+                        && let Some(backoff) = Self::get_retry_delay(&e, attempt)
+                    {
+                        info!(
+                            model = model_name,
+                            backoff_ms = backoff.as_millis(),
+                            attempt = attempt,
+                            max_attempts = Self::MAX_RETRIES,
+                            error_type = ?e,
+                            "Retrying LLM request"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        continue;
                     }
 
                     return Err(e);
@@ -861,23 +869,23 @@ impl LlmClient {
                     return Ok(result);
                 }
                 Err(e) => {
-                    if attempt < Self::MAX_RETRIES {
-                        if let Some(backoff) = support::backoff::get_retry_delay_with_initial(
+                    if attempt < Self::MAX_RETRIES
+                        && let Some(backoff) = support::backoff::get_retry_delay_with_initial(
                             &e,
                             attempt,
                             initial_backoff_ms,
-                        ) {
-                            warn!(
-                                "{} failed (attempt {}/{}): {}, retrying after {:?}",
-                                context,
-                                attempt,
-                                Self::MAX_RETRIES,
-                                e,
-                                backoff
-                            );
-                            tokio::time::sleep(backoff).await;
-                            continue;
-                        }
+                        )
+                    {
+                        warn!(
+                            "{} failed (attempt {}/{}): {}, retrying after {:?}",
+                            context,
+                            attempt,
+                            Self::MAX_RETRIES,
+                            e,
+                            backoff
+                        );
+                        tokio::time::sleep(backoff).await;
+                        continue;
                     }
                     warn!("{} failed after {} attempts: {}", context, attempt, e);
                     return Err(e);
@@ -1148,9 +1156,10 @@ mod tests {
 
         assert!(llm.is_provider_available("opencode-go"));
         assert!(llm.is_provider_available("opencode_go"));
-        assert!(llm
-            .configured_provider_names()
-            .contains(&"opencode-go".to_string()));
+        assert!(
+            llm.configured_provider_names()
+                .contains(&"opencode-go".to_string())
+        );
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -1170,9 +1179,10 @@ mod tests {
 
         assert!(llm.is_provider_available("opencode-zen"));
         assert!(llm.is_provider_available("opencode_zen"));
-        assert!(llm
-            .configured_provider_names()
-            .contains(&"opencode-zen".to_string()));
+        assert!(
+            llm.configured_provider_names()
+                .contains(&"opencode-zen".to_string())
+        );
     }
 
     #[cfg(feature = "llm-openrouter")]
@@ -1213,11 +1223,13 @@ mod tests {
         let response = llm
             .chat_with_tools_single_attempt_for_model_info(
                 "You are helpful.",
+                "",
                 &[],
                 &[],
                 &model,
                 Some(0.17),
                 false,
+                None,
             )
             .await
             .expect("request should succeed");

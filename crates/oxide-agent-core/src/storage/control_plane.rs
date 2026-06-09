@@ -126,9 +126,6 @@ pub struct TopicInfraConfigRecord {
     /// Allowlisted SSH-capable tool modes.
     #[serde(default)]
     pub allowed_tool_modes: Vec<TopicInfraToolMode>,
-    /// Tool modes that always require operator approval.
-    #[serde(default)]
-    pub approval_required_modes: Vec<TopicInfraToolMode>,
     /// Creation timestamp (unix seconds).
     pub created_at: i64,
     /// Last update timestamp (unix seconds).
@@ -262,8 +259,6 @@ pub struct UpsertTopicInfraConfigOptions {
     pub tags: Vec<String>,
     /// Allowlisted SSH-capable tool modes.
     pub allowed_tool_modes: Vec<TopicInfraToolMode>,
-    /// Tool modes that always require operator approval.
-    pub approval_required_modes: Vec<TopicInfraToolMode>,
 }
 
 /// Parameters for topic binding upsert.

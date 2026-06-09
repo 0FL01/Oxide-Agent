@@ -1,7 +1,7 @@
 //! Loop detection helpers for the agent runner.
 
-use super::types::{AgentRunnerContext, RunState};
 use super::AgentRunner;
+use super::types::{AgentRunnerContext, RunState};
 use crate::agent::loop_detection::LoopType;
 use crate::agent::progress::AgentEvent;
 use tracing::{debug, warn};

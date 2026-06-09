@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 
 const CONTEXT_SLUG_MAX_CHARS: usize = 48;
 
-/// Create a deterministic, S3-safe wiki context id from user and transport context.
+/// Create a deterministic, storage-safe wiki context id from user and transport context.
 #[must_use]
 pub fn wiki_context_id(user_id: i64, context_key: &str) -> String {
     let slug = wiki_slug(context_key, CONTEXT_SLUG_MAX_CHARS);

@@ -11,10 +11,10 @@ pub mod providers;
 mod support;
 mod types;
 
+pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
 pub(crate) use capabilities::{
     provider_capabilities_for_model, provider_media_capabilities_for_model,
 };
-pub use capabilities::{ProviderCapabilities, ToolHistoryMode};
 pub(crate) use client::InternalTextPurpose;
 pub use client::{DiscoveredLlmModel, LlmClient};
 pub use error::LlmError;
@@ -31,9 +31,9 @@ pub use provider::MockLlmProvider;
 ))]
 pub use support::http;
 pub use types::{
-    ChatResponse, ChatWithToolsRequest, InvocationId, Message, ProviderItemId, ProviderToolCallId,
-    TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolDefinition, ToolProtocol,
-    ToolTransport,
+    ChatResponse, ChatWithToolsRequest, InvocationId, Message, MessageContentPart, ProviderItemId,
+    ProviderToolCallId, TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction,
+    ToolDefinition, ToolProtocol, ToolTransport,
 };
 
 #[cfg(test)]
@@ -188,9 +188,11 @@ mod tests {
 
         assert_eq!(
             message.resolved_tool_call_correlations(),
-            Some(vec![ToolCallCorrelation::new("invoke-2")
-                .with_provider_tool_call_id("provider-call-2")
-                .with_protocol(ToolProtocol::ChatLike)])
+            Some(vec![
+                ToolCallCorrelation::new("invoke-2")
+                    .with_provider_tool_call_id("provider-call-2")
+                    .with_protocol(ToolProtocol::ChatLike)
+            ])
         );
     }
 

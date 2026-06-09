@@ -1,7 +1,7 @@
 use super::{
-    cancel_status_inline_markup, finalize_cancel_status_if_needed, is_task_cancelled_error,
-    save_memory_after_task, send_agent_message, should_preserve_pending_file_input,
-    SESSION_REGISTRY,
+    SESSION_REGISTRY, cancel_status_inline_markup, finalize_cancel_status_if_needed,
+    is_task_cancelled_error, save_memory_after_task, send_agent_message,
+    should_preserve_pending_file_input,
 };
 use crate::bot::agent_handlers::{
     media_route_unavailable_detail, preprocess_agent_message_input,
@@ -11,15 +11,15 @@ use crate::bot::agent_transport::{SilentTelegramAgentTransport, TelegramAgentTra
 use crate::bot::messaging::send_long_message_in_thread_with_final_markup;
 use crate::bot::progress_render::render_progress_html;
 use crate::bot::views::{AgentView, DefaultAgentView};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use oxide_agent_core::agent::{
-    compaction::CompactRunOutcome, progress::AgentEvent, AgentExecutionOutcome, SessionId,
+    AgentExecutionOutcome, SessionId, compaction::CompactRunOutcome, progress::AgentEvent,
 };
 use oxide_agent_core::config::get_agent_max_iterations;
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
 use oxide_agent_core::storage::StorageProvider;
-use oxide_agent_runtime::{spawn_progress_runtime, ProgressRuntimeConfig};
+use oxide_agent_runtime::{ProgressRuntimeConfig, spawn_progress_runtime};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -61,22 +61,6 @@ pub(crate) struct RunAgentTaskTextContext {
     pub(crate) attach_detach_enabled: bool,
     pub(crate) progress_enabled: bool,
     pub(crate) silent_no_change_enabled: bool,
-}
-
-#[derive(Clone)]
-pub(crate) struct RunApprovedSshResumeContext {
-    pub(crate) bot: Bot,
-    pub(crate) chat_id: ChatId,
-    pub(crate) session_id: SessionId,
-    pub(crate) user_id: i64,
-    pub(crate) request_id: String,
-    pub(crate) storage: Arc<dyn StorageProvider>,
-    pub(crate) context_key: String,
-    pub(crate) agent_flow_id: String,
-    pub(crate) message_thread_id: Option<ThreadId>,
-    pub(crate) use_inline_progress_controls: bool,
-    pub(crate) use_inline_flow_controls: bool,
-    pub(crate) attach_detach_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -187,26 +171,6 @@ impl From<&RunAgentTaskTextContext> for TaskDeliveryContext {
             attach_detach_enabled: value.attach_detach_enabled,
             progress_enabled: value.progress_enabled,
             silent_no_change_enabled: value.silent_no_change_enabled,
-        }
-    }
-}
-
-impl From<&RunApprovedSshResumeContext> for TaskDeliveryContext {
-    fn from(value: &RunApprovedSshResumeContext) -> Self {
-        Self {
-            bot: value.bot.clone(),
-            chat_id: value.chat_id,
-            session_id: value.session_id,
-            user_id: value.user_id,
-            storage: value.storage.clone(),
-            context_key: value.context_key.clone(),
-            agent_flow_id: value.agent_flow_id.clone(),
-            message_thread_id: value.message_thread_id,
-            use_inline_progress_controls: value.use_inline_progress_controls,
-            use_inline_flow_controls: value.use_inline_flow_controls,
-            attach_detach_enabled: value.attach_detach_enabled,
-            progress_enabled: true,
-            silent_no_change_enabled: false,
         }
     }
 }
@@ -339,16 +303,6 @@ pub(crate) async fn run_agent_task_continuation_with_text(
     let user_context = ctx.task_text;
     run_task_execution(delivery_ctx, move |progress_tx| async move {
         execute_agent_task_continuation(session_id, vec![user_context], progress_tx).await
-    })
-    .await
-}
-
-pub(crate) async fn run_approved_ssh_resume(ctx: RunApprovedSshResumeContext) -> Result<()> {
-    let delivery_ctx = TaskDeliveryContext::from(&ctx);
-    let session_id = ctx.session_id;
-    let request_id = ctx.request_id;
-    run_task_execution(delivery_ctx, move |progress_tx| async move {
-        execute_ssh_approval_resume(session_id, &request_id, progress_tx).await
     })
     .await
 }
@@ -746,7 +700,6 @@ async fn deliver_task_result(
             .map(|_| crate::bot::views::empty_inline_keyboard())
     });
     let cancelled = result.as_ref().err().is_some_and(is_task_cancelled_error);
-    let pending_ssh_approvals = take_pending_ssh_approvals(ctx.session_id).await;
 
     match result {
         Ok(AgentExecutionOutcome::Completed(response)) => {
@@ -779,32 +732,6 @@ async fn deliver_task_result(
                 )
                 .await?;
             }
-            send_pending_ssh_approval_messages(
-                &ctx.bot,
-                ctx.chat_id,
-                ctx.message_thread_id,
-                &pending_ssh_approvals,
-            )
-            .await?;
-        }
-        Ok(AgentExecutionOutcome::WaitingForApproval) => {
-            if let Some(progress) = &progress {
-                crate::bot::resilient::edit_message_safe_resilient_with_markup(
-                    &ctx.bot,
-                    ctx.chat_id,
-                    progress.message_id,
-                    &progress.text,
-                    terminal_progress_reply_markup,
-                )
-                .await;
-            }
-            send_pending_ssh_approval_messages(
-                &ctx.bot,
-                ctx.chat_id,
-                ctx.message_thread_id,
-                &pending_ssh_approvals,
-            )
-            .await?;
         }
         Ok(AgentExecutionOutcome::WaitingForUserInput(request)) => {
             if let Some(progress) = &progress {
@@ -935,32 +862,6 @@ async fn execute_agent_task_continuation(
     executor.continue_after_runtime_context(progress_tx).await
 }
 
-pub(crate) async fn execute_ssh_approval_resume(
-    session_id: SessionId,
-    request_id: &str,
-    progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
-) -> Result<AgentExecutionOutcome> {
-    let executor_arc = SESSION_REGISTRY
-        .get(&session_id)
-        .await
-        .ok_or_else(|| anyhow!("No agent session found"))?;
-    let cancellation_token = SESSION_REGISTRY
-        .get_cancellation_token(&session_id)
-        .await
-        .ok_or_else(|| anyhow!("No cancellation token found"))?;
-
-    let mut executor = executor_arc.write().await;
-    if executor.is_timed_out() {
-        executor.reset();
-        return Err(anyhow!(
-            "Previous session timed out. Starting a new session."
-        ));
-    }
-
-    executor.session_mut().cancellation_token = (*cancellation_token).clone();
-    executor.resume_ssh_approval(request_id, progress_tx).await
-}
-
 pub(crate) async fn execute_user_input_resume(
     session_id: SessionId,
     user_input: String,
@@ -1012,40 +913,4 @@ pub(crate) async fn execute_manual_compaction(
 
     executor.session_mut().cancellation_token = (*cancellation_token).clone();
     executor.compact_current_context(progress_tx).await
-}
-
-pub(crate) async fn take_pending_ssh_approvals(
-    session_id: SessionId,
-) -> Vec<oxide_agent_core::agent::SshApprovalRequestView> {
-    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
-        return Vec::new();
-    };
-    let executor = executor_arc.read().await;
-    executor.take_pending_ssh_approvals().await
-}
-
-pub(crate) async fn send_pending_ssh_approval_messages(
-    bot: &Bot,
-    chat_id: ChatId,
-    message_thread_id: Option<ThreadId>,
-    requests: &[oxide_agent_core::agent::SshApprovalRequestView],
-) -> Result<()> {
-    for request in requests {
-        let text = format!(
-            "⚠️ <b>SSH approval required</b>\n\nTarget: <b>{}</b>\nTool: <code>{}</code>\n\n{}",
-            html_escape::encode_text(&request.target_name),
-            html_escape::encode_text(&request.tool_name),
-            html_escape::encode_text(&request.summary),
-        );
-        let mut req = bot.send_message(chat_id, text).parse_mode(ParseMode::Html);
-        if let Some(thread_id) = message_thread_id {
-            req = req.message_thread_id(thread_id);
-        }
-        req.reply_markup(crate::bot::views::ssh_approval_inline_keyboard(
-            &request.request_id,
-        ))
-        .await?;
-    }
-
-    Ok(())
 }

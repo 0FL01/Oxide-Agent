@@ -6,7 +6,7 @@ mod registry;
 mod resume;
 
 pub(super) use super::policy_hooks::PolicyControlledHook;
-pub(super) use super::AgentExecutor;
+pub(super) use super::{AgentExecutor, AgentUserInput};
 pub(super) use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
 pub(super) use crate::agent::profile::HookAccessPolicy;
 pub(super) use crate::agent::providers::TodoList;
@@ -18,11 +18,9 @@ pub(super) use crate::agent::providers::{
 pub(super) use crate::agent::session::{AgentSession, PendingUserInput, UserInputKind};
 pub(super) use crate::config::AgentSettings;
 pub(super) use crate::llm::LlmClient;
-#[cfg(feature = "manager-control-plane")]
-pub(super) use crate::storage::MockStorageProvider;
+pub(super) use anyhow::Result;
 #[cfg(feature = "manager-control-plane")]
 pub(super) use anyhow::bail;
-pub(super) use anyhow::Result;
 pub(super) use std::sync::{Arc, Mutex as StdMutex};
 pub(super) use tokio::sync::Mutex;
 

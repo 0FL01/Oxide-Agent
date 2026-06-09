@@ -1,0 +1,119 @@
+/* === V2-FIRST DESIGN TOKENS === */
+/* Legacy aliases and layout tokens retained for existing consumers. */
+:root {
+  color-scheme: dark;
+
+  /* Surface levels — unified neutral gray, no warm undertone */
+  --bg-root: #171717;
+  --bg-panel: #171717;
+  --bg-panel-soft: #212121;
+  --bg-panel-hover: #2f2f2f;
+
+  /* Borders — minimal, near-invisible */
+  --border-subtle: #2a2a2a;
+  --border-strong: #3a3a3a;
+
+  /* Text hierarchy — neutral cool gray */
+  --text-main: #ececec;
+  --text-muted: #a1a1aa;
+  --text-faint: #8b8b94;
+
+  /* Accents — green primary, warm secondary */
+  --accent-blue: #10a37f;
+  --accent-green: #10a37f;
+  --accent-yellow: #d8a21e;
+  --accent-red: #ef4444;
+
+  /* Derived surfaces */
+  --bg: var(--bg-root);
+  --surface: var(--bg-panel);
+  --surface-elevated: var(--bg-panel-soft);
+  --surface-hover: var(--bg-panel-hover);
+  --fg: var(--text-main);
+  --fg-muted: var(--text-muted);
+  --fg-dim: var(--text-faint);
+  --border: var(--border-subtle);
+  --border-hover: var(--border-strong);
+  --border-active: var(--border-strong);
+
+  /* Status */
+  --status-idle: var(--text-faint);
+  --status-running: var(--accent-blue);
+  --status-success: var(--accent-green);
+  --status-error: var(--accent-red);
+  --status-warning: var(--accent-yellow);
+
+  /* Legacy aliases */
+  --text: var(--fg);
+  --muted: var(--fg-muted);
+  --danger: var(--status-error);
+  --success: var(--status-success);
+  --warning: var(--status-warning);
+  --accent: var(--accent-blue);
+  --accent-dim: rgba(16, 163, 127, 0.10);
+  --accent-glow: rgba(16, 163, 127, 0.18);
+  --accent-strong: var(--accent-blue);
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Layout */
+  --sidebar-width: 260px;
+  --metrics-width: 300px;
+  --topbar-height: 48px;
+  --input-min-height: 150px;
+
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+
+/* Current v2 token values. Keep this block last in token cascade. */
+:root {
+  --bg: #171717;
+  --surface: #212121;
+  --fg: #ececec;
+  --muted: #a1a1aa;
+  --faint: #8b8b94;
+  --border: #2a2a2a;
+  --border-strong: #3a3a3a;
+  --surface-hover: #2f2f2f;
+  --accent: #10a37f;
+  --accent-glow: rgba(16, 163, 127, 0.18);
+  --warning: #d8a21e;
+  --error: #ef4444;
+
+  --bg-root: var(--bg);
+  --bg-panel: var(--bg);
+  --bg-panel-soft: var(--surface);
+  --bg-panel-hover: var(--surface-hover);
+  --border-subtle: var(--border);
+  --text-main: var(--fg);
+  --text-muted: var(--muted);
+  --text-faint: var(--faint);
+  --accent-blue: var(--accent);
+  --accent-green: var(--accent);
+  --accent-yellow: var(--warning);
+  --accent-red: var(--error);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+  --sidebar-width: 260px;
+  --drawer-width: 400px;
+  --topbar-height: 48px;
+}
+

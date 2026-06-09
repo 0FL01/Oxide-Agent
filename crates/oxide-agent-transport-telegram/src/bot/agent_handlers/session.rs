@@ -1,14 +1,14 @@
 use super::{
-    clear_pending_cancel_confirmation, clear_pending_cancel_message, manager_control_plane_enabled,
-    PENDING_TEXT_INPUT_BATCHES,
+    PENDING_TEXT_INPUT_BATCHES, clear_pending_cancel_confirmation, clear_pending_cancel_message,
+    manager_control_plane_enabled,
 };
 use crate::bot::manager_topic_lifecycle::TelegramManagerTopicLifecycle;
 use crate::config::BotSettings;
 use anyhow::Result;
 use async_trait::async_trait;
 use oxide_agent_core::agent::{
-    executor::AgentExecutor, AgentMemory, AgentMemoryCheckpoint, AgentMemoryScope, AgentSession,
-    SessionId,
+    AgentMemory, AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, SessionId,
+    executor::AgentExecutor,
 };
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_core::sandbox::SandboxScope;
@@ -108,7 +108,7 @@ pub(crate) fn derive_agent_mode_session_id(
     hash = fnv1a_mix_i64(hash, chat_id.0);
     hash = fnv1a_mix_i64(
         hash,
-        thread_id.map_or(0, |thread_id| i64::from(thread_id.0 .0)),
+        thread_id.map_or(0, |thread_id| i64::from(thread_id.0.0)),
     );
     hash = fnv1a_mix_str(hash, agent_flow_id);
 

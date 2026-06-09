@@ -2,30 +2,38 @@ use super::types::{
     ExecutionRequest, ExecutionTransition, PreparedExecution, ResolvedExecutionRequest,
     RunnerContextServices,
 };
-use super::{AgentExecutionOutcome, AgentExecutor};
+use super::{
+    AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentExecutor,
+    AgentUserInput,
+};
 use crate::agent::memory::{AgentMessage, MessageRole};
 use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKind};
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_agent_system_prompt;
-use crate::agent::providers::{SshApprovalRequestView, TopicInfraPreflightReport};
-use crate::agent::runner::{run_with_timeout, AgentRunner, AgentRunnerConfig};
+use crate::agent::providers::TopicInfraPreflightReport;
+use crate::agent::runner::{AgentRunner, AgentRunnerConfig, run_with_timeout};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
 use crate::agent::wiki_memory::planner::{
     extract_explicit_remember_payload, has_explicit_remember_intent,
 };
 use crate::agent::wiki_memory::{
-    wiki_context_id, WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchOperation,
-    WikiPatchPlanner, WikiPatchSet, WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache,
-    WikiStore,
+    WikiContextAssembler, WikiContextAssemblerConfig, WikiPatchOperation, WikiPatchPlanner,
+    WikiPatchSet, WikiPatchValidator, WikiPatchValidatorConfig, WikiSessionCache, WikiStore,
+    wiki_context_id,
 };
-use crate::config::{get_agent_max_iterations, ModelInfo};
+use crate::config::{
+    ModelInfo, get_agent_continuation_limit, get_agent_max_iterations, get_agent_search_limit,
+};
 use crate::llm::{InternalTextPurpose, LlmClient};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
+
+const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
 
 static WIKI_MEMORY_BACKGROUND_WRITER_SEMAPHORE: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(1);
@@ -103,23 +111,6 @@ impl AgentExecutor {
         self.inject_system_message(message);
     }
 
-    /// Return pending SSH approvals that have not yet been surfaced to the transport.
-    pub async fn take_pending_ssh_approvals(&self) -> Vec<SshApprovalRequestView> {
-        match &self.topic_infra {
-            Some(topic_infra) => topic_infra.approvals.take_unannounced().await,
-            None => Vec::new(),
-        }
-    }
-
-    /// Reject a pending SSH approval request.
-    pub async fn reject_ssh_approval(
-        &mut self,
-        request_id: &str,
-    ) -> Option<SshApprovalRequestView> {
-        let topic_infra = self.topic_infra.as_ref()?;
-        topic_infra.approvals.reject(request_id).await
-    }
-
     /// Inject transport-generated system context into the next run.
     pub fn inject_system_message(&mut self, content: String) {
         self.session
@@ -163,8 +154,13 @@ impl AgentExecutor {
 
     /// Queue additional user context for the next safe iteration boundary.
     pub fn enqueue_runtime_context(&self, content: String) {
+        self.enqueue_runtime_user_input(AgentUserInput::new(content));
+    }
+
+    /// Queue additional user input, including safe attachment refs, for the next safe boundary.
+    pub fn enqueue_runtime_user_input(&self, input: AgentUserInput) {
         self.session
-            .push_runtime_context(RuntimeContextInjection { content });
+            .push_runtime_context(runtime_context_from_user_input(input));
     }
 
     /// Resume a paused task that is waiting for explicit user input.
@@ -173,12 +169,18 @@ impl AgentExecutor {
     /// provided content was queued for the next execution attempt.
     #[must_use]
     pub fn resume_with_user_input(&mut self, content: String) -> bool {
+        self.resume_with_agent_user_input(AgentUserInput::new(content))
+    }
+
+    /// Resume a paused task with structured user input and safe attachment refs.
+    #[must_use]
+    pub fn resume_with_agent_user_input(&mut self, input: AgentUserInput) -> bool {
         if self.session.pending_user_input().is_none() {
             return false;
         }
 
         self.session.clear_pending_user_input();
-        self.enqueue_runtime_context(content);
+        self.enqueue_runtime_user_input(input);
         true
     }
 
@@ -189,9 +191,10 @@ impl AgentExecutor {
     ) -> Result<ExecutionTransition> {
         let ResolvedExecutionRequest {
             task,
-            append_user_message,
+            user_input,
+            options,
         } = request;
-        let task_id = self.prime_session_for_execution(&task, append_user_message);
+        let task_id = self.prime_session_for_execution(&task, user_input.as_ref());
         info!(
             task = %task,
             task_id = %task_id,
@@ -200,10 +203,23 @@ impl AgentExecutor {
             "Starting agent task"
         );
 
-        let mut prepared = self.prepare_execution(&task, progress_tx.as_ref()).await;
+        let prepare_started_at = Instant::now();
+        let mut prepared = self
+            .prepare_execution(&task, progress_tx.as_ref(), options)
+            .await;
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id = %task_id,
+            model = %prepared.runner_config.model_name,
+            provider = ?prepared.runner_config.model_provider,
+            tool_count = prepared.tools.len(),
+            message_count = prepared.messages.len(),
+            prepare_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent execution prepared"
+        );
         Self::emit_milestone(progress_tx.as_ref(), "prepare_execution_done").await;
 
-        let timeout_duration = self.agent_timeout_duration();
+        let timeout_duration = self.agent_timeout_duration(options);
 
         let mut ctx = prepared.build_runner_context(
             &task,
@@ -213,6 +229,12 @@ impl AgentExecutor {
             RunnerContextServices {
                 compaction_controller: &self.compaction_controller,
             },
+        );
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id = %task_id,
+            timeout_secs = timeout_duration.as_secs(),
+            "Dispatching agent runner"
         );
 
         Ok(
@@ -231,10 +253,6 @@ impl AgentExecutor {
             ExecutionTransition::Completed(response) => {
                 self.session.complete();
                 Ok(AgentExecutionOutcome::Completed(response))
-            }
-            ExecutionTransition::WaitingForApproval => {
-                self.session.complete();
-                Ok(AgentExecutionOutcome::WaitingForApproval)
             }
             ExecutionTransition::WaitingForUserInput(request) => {
                 self.session.complete();
@@ -256,16 +274,21 @@ impl AgentExecutor {
         }
     }
 
-    fn prime_session_for_execution(&mut self, task: &str, append_user_message: bool) -> String {
-        if append_user_message {
+    fn prime_session_for_execution(
+        &mut self,
+        task: &str,
+        user_input: Option<&AgentUserInput>,
+    ) -> String {
+        if user_input.is_some() {
             self.session.reset_memory_behavior_runtime();
             self.session.clear_todos();
         }
         self.session.start_task();
         let task_id = self.session.current_task_id.clone().unwrap_or_default();
-        if append_user_message {
+        if let Some(user_input) = user_input {
             self.session.remember_task(task);
-            let user_message = AgentMessage::user_task(task);
+            let user_message = AgentMessage::user_task(user_input.text_projection())
+                .with_user_attachments(user_input.attachments.clone());
             if let Some(context) = self
                 .session
                 .memory
@@ -291,19 +314,24 @@ impl AgentExecutor {
         request: ExecutionRequest,
     ) -> Result<ResolvedExecutionRequest> {
         match request {
-            ExecutionRequest::NewTask { task } => Ok(ResolvedExecutionRequest {
-                task,
-                append_user_message: true,
-            }),
-            ExecutionRequest::ResumeUserInput { content } => {
+            ExecutionRequest::NewTask { input, options } => {
+                let task = input.content.clone();
+                Ok(ResolvedExecutionRequest {
+                    task,
+                    user_input: Some(input),
+                    options,
+                })
+            }
+            ExecutionRequest::ResumeUserInput { input, options } => {
                 let task = self.saved_task("no saved task to resume")?;
-                if !self.resume_with_user_input(content) {
+                if !self.resume_with_agent_user_input(input) {
                     return Err(anyhow!("session is not waiting for user input"));
                 }
 
                 Ok(ResolvedExecutionRequest {
                     task,
-                    append_user_message: false,
+                    user_input: None,
+                    options,
                 })
             }
             ExecutionRequest::ContinueRuntimeContext => {
@@ -314,7 +342,8 @@ impl AgentExecutor {
 
                 Ok(ResolvedExecutionRequest {
                     task,
-                    append_user_message: false,
+                    user_input: None,
+                    options: AgentExecutionOptions::default(),
                 })
             }
         }
@@ -327,7 +356,7 @@ impl AgentExecutor {
     ) -> Result<AgentExecutionOutcome> {
         let request = self.resolve_execution_request(request).await?;
         let task_for_wiki_update = request.task.clone();
-        let timeout_error_message = self.agent_timeout_error_message();
+        let timeout_error_message = self.agent_timeout_error_message(request.options);
         let transition = self.run_execution(request, progress_tx).await?;
         let outcome =
             self.apply_execution_transition(transition, timeout_error_message.as_str())?;
@@ -344,8 +373,36 @@ impl AgentExecutor {
         &mut self,
         task: &str,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
     ) -> PreparedExecution {
+        let prepare_started_at = Instant::now();
+        let mut phase_started_at = prepare_started_at;
+        let task_id = self
+            .session
+            .current_task_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            memory_messages = self.session.memory.get_messages().len(),
+            memory_tokens = self.session.memory.token_count(),
+            phase = "prepare_started",
+            elapsed_ms = 0_u128,
+            "Agent prepare execution latency"
+        );
+
         let todos_arc = Arc::new(Mutex::new(self.session.memory.todos.clone()));
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            phase = "todos_snapshot_created",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let model_routes = self
             .model_routes_override
             .clone()
@@ -354,21 +411,161 @@ impl AgentExecutor {
             .first()
             .cloned()
             .unwrap_or_else(|| self.settings.get_configured_agent_model());
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            model = %model.id,
+            provider = ?model.provider,
+            route_count = model_routes.len(),
+            phase = "model_routes_resolved",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let tool_runtime_registry =
             Arc::new(self.build_tool_runtime_registry(Arc::clone(&todos_arc), progress_tx));
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            phase = "tool_runtime_registry_built",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let tools = tool_runtime_registry.specs();
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            tool_count = tools.len(),
+            phase = "tool_specs_collected",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let structured_output = crate::llm::LlmClient::supports_structured_output_for_model(&model);
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            structured_output,
+            phase = "structured_output_resolved",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let wiki_context = self.render_wiki_context_for_task(task).await;
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            wiki_context_available = wiki_context.is_some(),
+            wiki_context_chars = wiki_context.as_ref().map_or(0, String::len),
+            phase = "wiki_context_rendered",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
+        let prompt_instructions =
+            effort_prompt_instructions(self.execution_profile.prompt_instructions(), options);
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            prompt_instructions_chars = prompt_instructions.as_ref().map_or(0, String::len),
+            phase = "prompt_instructions_resolved",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let system_prompt = create_agent_system_prompt(
             task,
             &tools,
             structured_output,
             &mut self.session,
-            self.execution_profile.prompt_instructions(),
+            prompt_instructions.as_deref(),
             wiki_context.as_deref(),
         )
         .await;
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            system_prompt_chars = system_prompt.base.len(),
+            date_suffix_chars = system_prompt.date_suffix.len(),
+            structured_output,
+            phase = "system_prompt_assembled",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
         let messages = AgentRunner::convert_memory_to_messages(self.session.memory.get_messages());
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            source_message_count = self.session.memory.get_messages().len(),
+            message_count = messages.len(),
+            phase = "memory_messages_converted",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+        phase_started_at = Instant::now();
+
+        let max_iterations = options
+            .min_max_iterations()
+            .map_or_else(get_agent_max_iterations, |minimum| {
+                get_agent_max_iterations().max(minimum)
+            });
+        let continuation_limit = options
+            .min_continuation_limit()
+            .map_or_else(get_agent_continuation_limit, |minimum| {
+                get_agent_continuation_limit().max(minimum)
+            });
+        let timeout_secs = options.min_timeout_secs().map_or_else(
+            || self.settings.get_agent_timeout_secs(),
+            |minimum| self.settings.get_agent_timeout_secs().max(minimum),
+        );
+        let search_limit = options
+            .min_search_limit()
+            .map_or_else(get_agent_search_limit, |minimum| {
+                get_agent_search_limit().max(minimum)
+            });
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            max_iterations,
+            continuation_limit,
+            timeout_secs,
+            search_limit,
+            phase = "runner_limits_resolved",
+            phase_ms = phase_started_at.elapsed().as_millis(),
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id,
+            model = %model.id,
+            provider = ?model.provider,
+            tool_count = tools.len(),
+            message_count = messages.len(),
+            wiki_context_available = wiki_context.is_some(),
+            phase = "prepare_assembled",
+            elapsed_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent prepare execution latency"
+        );
+
         PreparedExecution {
             todos_arc,
             tool_runtime_registry,
@@ -378,14 +575,16 @@ impl AgentExecutor {
             messages,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),
-                get_agent_max_iterations(),
-                crate::config::AGENT_CONTINUATION_LIMIT,
-                self.settings.get_agent_timeout_secs(),
+                max_iterations,
+                continuation_limit,
+                timeout_secs,
                 model.max_output_tokens,
             )
             .with_model_provider(model.provider.clone())
             .with_temperature(self.settings.get_configured_agent_temperature())
-            .with_model_routes(model_routes),
+            .with_model_routes(model_routes)
+            .with_search_limit(search_limit)
+            .with_reasoning_effort(options.reasoning_effort()),
         }
     }
 
@@ -396,7 +595,17 @@ impl AgentExecutor {
         };
         let scope = self.session.memory_scope();
         let cache = Arc::new(WikiSessionCache::new(store));
-        let assembler = WikiContextAssembler::new(cache, WikiContextAssemblerConfig::default());
+        let memory_message_count = self.session.memory.get_messages().len();
+        let assembler = WikiContextAssembler::new(
+            cache,
+            WikiContextAssemblerConfig {
+                fast_skip_fresh_web_session: should_fast_skip_fresh_web_session_wiki_context(
+                    &scope.context_key,
+                    memory_message_count,
+                ),
+                ..WikiContextAssemblerConfig::default()
+            },
+        );
 
         match assembler
             .assemble_for_context(scope.user_id, &scope.context_key, task)
@@ -678,24 +887,40 @@ impl AgentExecutor {
         task: &str,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        self.run_execution_request(
-            ExecutionRequest::NewTask {
-                task: task.to_string(),
-            },
-            progress_tx,
-        )
-        .await
+        self.execute_with_options(task, progress_tx, AgentExecutionOptions::default())
+            .await
     }
 
-    /// Deterministically resume a paused SSH tool call after operator approval.
-    pub async fn resume_ssh_approval(
+    /// Execute a task with per-run execution options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LLM call fails, tool execution fails, or the iteration/timeout limits are exceeded.
+    #[tracing::instrument(skip(self, progress_tx, task), fields(session_id = %self.session.session_id, effort = ?options.effort))]
+    pub async fn execute_with_options(
         &mut self,
-        request_id: &str,
-        _progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        task: &str,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
     ) -> Result<AgentExecutionOutcome> {
-        Err(anyhow!(
-            "SSH approval resume is disabled in typed tool runtime v1; request_id={request_id}"
-        ))
+        self.execute_user_input_with_options(AgentUserInput::new(task), progress_tx, options)
+            .await
+    }
+
+    /// Execute attachment-aware user input with per-run execution options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LLM call fails, tool execution fails, or the iteration/timeout limits are exceeded.
+    #[tracing::instrument(skip(self, progress_tx, input), fields(session_id = %self.session.session_id, effort = ?options.effort))]
+    pub async fn execute_user_input_with_options(
+        &mut self,
+        input: AgentUserInput,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
+    ) -> Result<AgentExecutionOutcome> {
+        self.run_execution_request(ExecutionRequest::NewTask { input, options }, progress_tx)
+            .await
     }
 
     /// Resume a paused task after receiving the user input it requested.
@@ -704,8 +929,37 @@ impl AgentExecutor {
         content: String,
         progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentExecutionOutcome> {
-        self.run_execution_request(ExecutionRequest::ResumeUserInput { content }, progress_tx)
+        self.resume_after_user_input_with_options(
+            content,
+            progress_tx,
+            AgentExecutionOptions::default(),
+        )
+        .await
+    }
+
+    /// Resume a paused task with per-run execution options.
+    pub async fn resume_after_user_input_with_options(
+        &mut self,
+        content: String,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
+    ) -> Result<AgentExecutionOutcome> {
+        self.resume_user_input_with_options(AgentUserInput::new(content), progress_tx, options)
             .await
+    }
+
+    /// Resume a paused task with attachment-aware user input and per-run execution options.
+    pub async fn resume_user_input_with_options(
+        &mut self,
+        input: AgentUserInput,
+        progress_tx: Option<tokio::sync::mpsc::Sender<AgentEvent>>,
+        options: AgentExecutionOptions,
+    ) -> Result<AgentExecutionOutcome> {
+        self.run_execution_request(
+            ExecutionRequest::ResumeUserInput { input, options },
+            progress_tx,
+        )
+        .await
     }
 
     /// Continue the saved task after queuing additional runtime context.
@@ -716,6 +970,41 @@ impl AgentExecutor {
         self.run_execution_request(ExecutionRequest::ContinueRuntimeContext, progress_tx)
             .await
     }
+}
+
+fn effort_prompt_instructions(
+    base: Option<&str>,
+    options: AgentExecutionOptions,
+) -> Option<String> {
+    let effort_guidance = match options.effort {
+        AgentExecutionEffort::Standard => return base.map(str::to_string),
+        AgentExecutionEffort::Extended => Some(
+            "[EFFORT: Extended]\nFor web research tasks, use multiple targeted searches, read selected primary sources, cross-check important claims, and state blockers instead of stopping early.",
+        ),
+        AgentExecutionEffort::Heavy => Some(concat!(
+            "[EFFORT: Heavy]\n",
+            "For current factual, comparative, market, technical, legal, scientific, product, API, benchmark, or best/latest/top/current research tasks:\n",
+            "- Create a source plan before final synthesis.\n",
+            "- If `spawn_sub_agents` is available, start by delegating 2-4 independent research branches before final synthesis unless the task is clearly simple or strictly sequential.\n",
+            "- Recommended branches: primary/official sources; recent independent secondary sources; contradictory evidence, criticism, and limitations; technical docs, benchmarks, repos, or changelogs when relevant.\n",
+            "- Give each sub-agent a narrow task and an explicit tools whitelist using only available tools, for example `web_search`, `web_extract`, `searxng_search`, `crawl4ai_markdown`, and `web_markdown`.\n",
+            "- For web-research sub-agents, include `crawl4ai_markdown` when available for browser-rendered or JS-heavy pages; keep `web_markdown` as the lightweight fallback.\n",
+            "- Use `wait_sub_agents` before relying on delegated findings. Treat sub-agent output as leads, not final truth; cross-check important claims in the parent synthesis.\n",
+            "- Use search plus extraction rather than snippets only, prioritize primary sources, and continue until evidence is sufficient or blockers are explicit.\n",
+            "Before final answer, verify internally: current sources were used; selected URLs were read; primary sources and contradictions were checked; independent branches were delegated when useful and available; if not delegated, the task was simple/sequential or delegation was unavailable."
+        )),
+    }?;
+
+    Some(
+        match base.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(base) => format!("{base}\n\n{effort_guidance}"),
+            None => effort_guidance.to_string(),
+        },
+    )
+}
+
+fn runtime_context_from_user_input(input: AgentUserInput) -> RuntimeContextInjection {
+    RuntimeContextInjection::text(input.content).with_attachments(input.attachments)
 }
 
 fn build_wiki_memory_writer_transcript(
@@ -1009,9 +1298,18 @@ fn contains_secret_like_text(value: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
+fn should_fast_skip_fresh_web_session_wiki_context(
+    context_key: &str,
+    memory_message_count: usize,
+) -> bool {
+    context_key.starts_with("web-session-") && memory_message_count <= 1
+}
+
 #[cfg(test)]
 mod wiki_memory_merge_tests {
-    use super::merge_existing_canonical_wiki_page;
+    use super::{
+        merge_existing_canonical_wiki_page, should_fast_skip_fresh_web_session_wiki_context,
+    };
 
     fn page(title: &str, body: &str) -> String {
         format!(
@@ -1041,5 +1339,21 @@ mod wiki_memory_merge_tests {
         let candidate = page("Deploy workflow", "Run smoke tests before deploy.");
 
         assert!(merge_existing_canonical_wiki_page(&existing, &candidate).is_none());
+    }
+
+    #[test]
+    fn fresh_web_session_wiki_context_skip_is_limited_to_first_message() {
+        assert!(should_fast_skip_fresh_web_session_wiki_context(
+            "web-session-abc123",
+            1
+        ));
+        assert!(!should_fast_skip_fresh_web_session_wiki_context(
+            "web-session-abc123",
+            2
+        ));
+        assert!(!should_fast_skip_fresh_web_session_wiki_context(
+            "telegram-topic",
+            1
+        ));
     }
 }

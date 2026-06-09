@@ -391,7 +391,7 @@ async fn send_file_smart(
 mod tests {
     use oxide_agent_core::agent::progress::{FileDeliveryKind, ProgressState};
 
-    use super::{progress_reply_markup_for_state, select_native_send_kind, NativeSendKind};
+    use super::{NativeSendKind, progress_reply_markup_for_state, select_native_send_kind};
     use crate::bot::views::progress_inline_keyboard;
 
     #[test]

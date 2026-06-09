@@ -276,7 +276,9 @@ fn budget_state_label(state: oxide_agent_core::agent::compaction::BudgetState) -
 mod tests {
     use oxide_agent_core::agent::compaction::BudgetState;
     use oxide_agent_core::agent::loop_detection::LoopType;
-    use oxide_agent_core::agent::progress::{AgentEvent, ProgressState, TokenSnapshot};
+    use oxide_agent_core::agent::progress::{
+        AgentEvent, AgentEventSource, ProgressState, TokenSnapshot,
+    };
     use oxide_agent_core::agent::providers::{TodoItem, TodoList, TodoStatus};
     use oxide_agent_core::llm::TokenUsage;
 
@@ -336,30 +338,35 @@ mod tests {
 
         state.update(AgentEvent::ToolCall {
             id: "tool-1".to_string(),
+            source: Default::default(),
             name: "web_search".to_string(),
             input: "q1".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
             id: "tool-1".to_string(),
+            source: Default::default(),
             name: "web_search".to_string(),
             output: "result1".to_string(),
             success: true,
         });
         state.update(AgentEvent::ToolCall {
             id: "tool-2".to_string(),
+            source: Default::default(),
             name: "web_search".to_string(),
             input: "q2".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
             id: "tool-2".to_string(),
+            source: Default::default(),
             name: "web_search".to_string(),
             output: "result2".to_string(),
             success: true,
         });
         state.update(AgentEvent::ToolCall {
             id: "tool-3".to_string(),
+            source: Default::default(),
             name: "execute_command".to_string(),
             input: "{}".to_string(),
             command_preview: Some("ls -la".to_string()),
@@ -376,6 +383,7 @@ mod tests {
         let mut state = ProgressState::new(10);
 
         state.update(AgentEvent::TodosUpdated {
+            source: AgentEventSource::Root,
             todos: TodoList {
                 items: vec![
                     TodoItem {
@@ -404,12 +412,14 @@ mod tests {
 
         state.update(AgentEvent::ToolCall {
             id: "tool-1".to_string(),
+            source: Default::default(),
             name: "text_to_speech_en_file".to_string(),
             input: "{}".to_string(),
             command_preview: None,
         });
         state.update(AgentEvent::ToolResult {
             id: "tool-1".to_string(),
+            source: Default::default(),
             name: "text_to_speech_en_file".to_string(),
             output: "Tool execution error: boom".to_string(),
             success: false,
@@ -434,28 +444,6 @@ mod tests {
 
         assert!(output.contains("❌ <b>Error:</b>"));
         assert!(output.contains("Loop detected"));
-    }
-
-    #[test]
-    fn renders_waiting_for_approval_step() {
-        let mut state = ProgressState::new(10);
-
-        state.update(AgentEvent::ToolCall {
-            id: "tool-1".to_string(),
-            name: "ssh_sudo_exec".to_string(),
-            input: "{}".to_string(),
-            command_preview: None,
-        });
-        state.update(AgentEvent::WaitingForApproval {
-            tool_name: "ssh_sudo_exec".to_string(),
-            target_name: "n-de1".to_string(),
-            summary: "sudo exec on n-de1: journalctl -p err -n 10 --no-pager".to_string(),
-        });
-
-        let output = render_progress_html(&state);
-
-        assert!(output.contains("SSH approval pending for n-de1"));
-        assert!(!output.contains("Execution: ssh_sudo_exec"));
     }
 
     #[test]

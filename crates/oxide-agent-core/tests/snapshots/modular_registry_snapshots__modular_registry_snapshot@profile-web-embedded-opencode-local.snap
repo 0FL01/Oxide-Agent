@@ -51,8 +51,12 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "sandbox-backend/sandboxd-client"
       },
       {
-        "id": "storage/r2",
-        "module": "storage/r2"
+        "id": "storage/sqlx",
+        "module": "storage/sqlx"
+      },
+      {
+        "id": "tool/brave-search",
+        "module": "tool/brave-search"
       },
       {
         "id": "tool/compression",
@@ -266,13 +270,65 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "requires": []
       },
       {
-        "cargo_feature": "storage-s3-r2",
-        "config_properties": [],
+        "cargo_feature": "storage-sqlx",
+        "config_properties": [
+          {
+            "default_value": "10",
+            "description": "Postgres pool connection/acquire timeout in seconds.",
+            "env": "OXIDE_DATABASE_CONNECT_TIMEOUT_SECS",
+            "name": "connect_timeout_secs",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": null,
+            "description": "Postgres connection URL. Also accepts DATABASE_URL as a runtime fallback.",
+            "env": "OXIDE_DATABASE_URL",
+            "name": "database_url",
+            "secret": true,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "5",
+            "description": "Maximum Postgres pool connections.",
+            "env": "OXIDE_DATABASE_MAX_CONNECTIONS",
+            "name": "max_connections",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "false",
+            "description": "Run SQLx migrations during storage startup when set to true.",
+            "env": "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
+            "name": "migrate_on_startup",
+            "secret": false,
+            "value_kind": "string"
+          },
+          {
+            "default_value": "migrations",
+            "description": "Runtime path to SQLx migration files.",
+            "env": "OXIDE_DATABASE_MIGRATIONS_DIR",
+            "name": "migrations_dir",
+            "secret": false,
+            "value_kind": "string"
+          }
+        ],
         "conflicts": [],
-        "id": "storage/r2",
+        "id": "storage/sqlx",
         "kind": "storage-backend",
         "provides": [
-          "storage/r2"
+          "storage/sqlx"
+        ],
+        "requires": []
+      },
+      {
+        "cargo_feature": "tool-brave-search",
+        "config_properties": [],
+        "conflicts": [],
+        "id": "tool/brave-search",
+        "kind": "search",
+        "provides": [
+          "tool/brave-search"
         ],
         "requires": []
       },
@@ -507,7 +563,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client/exec",
       "sandbox-backend/sandboxd-client/fileops",
       "sandbox-backend/sandboxd-client/lifecycle",
-      "storage/r2",
+      "storage/sqlx",
+      "tool/brave-search",
       "tool/compression",
       "tool/crawl4ai-markdown",
       "tool/delegation",
@@ -533,7 +590,8 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "llm-provider/opencode-zen",
       "sandbox-backend/bwrap",
       "sandbox-backend/sandboxd-client",
-      "storage/r2",
+      "storage/sqlx",
+      "tool/brave-search",
       "tool/compression",
       "tool/crawl4ai-markdown",
       "tool/delegation",
@@ -584,7 +642,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "opencode_zen"
   ],
   "storage_backend_module_ids": [
-    "storage/r2"
+    "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
     "sandbox-backend/bwrap",
@@ -632,9 +690,22 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "requires_capabilities": []
     },
     {
-      "module_id": "storage/r2",
+      "module_id": "storage/sqlx",
       "kind": "storage-backend",
-      "cargo_feature": "storage-s3-r2",
+      "cargo_feature": "storage-sqlx",
+      "config_env": [
+        "OXIDE_DATABASE_CONNECT_TIMEOUT_SECS",
+        "OXIDE_DATABASE_URL",
+        "OXIDE_DATABASE_MAX_CONNECTIONS",
+        "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
+        "OXIDE_DATABASE_MIGRATIONS_DIR"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/brave-search",
+      "kind": "search",
+      "cargo_feature": "tool-brave-search",
       "config_env": [],
       "requires_capabilities": []
     },

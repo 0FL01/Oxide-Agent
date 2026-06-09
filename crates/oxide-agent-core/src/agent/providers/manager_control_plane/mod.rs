@@ -2,10 +2,10 @@
 //!
 //! Exposes user-scoped CRUD tools for topic bindings, topic contexts, and agent profiles.
 
-use super::{probe_secret_ref, SecretProbeKind};
+use super::{SecretProbeKind, probe_secret_ref};
 use crate::agent::profile::{
-    parse_agent_profile, topic_agent_all_hooks, topic_agent_default_blocked_tools,
-    topic_agent_manageable_hooks, topic_agent_protected_hooks, HookAccessPolicy, ToolAccessPolicy,
+    HookAccessPolicy, ToolAccessPolicy, parse_agent_profile, topic_agent_all_hooks,
+    topic_agent_default_blocked_tools, topic_agent_manageable_hooks, topic_agent_protected_hooks,
 };
 use crate::agent::tool_runtime::{
     OutputNormalizer, ToolExecutor, ToolInvocation, ToolName, ToolOutput, ToolRuntimeConfig,
@@ -16,16 +16,16 @@ use crate::sandbox::{
     SandboxAdmin, SandboxAdminRuntime, SandboxContainerRecord, SandboxInstanceRecord, SandboxScope,
 };
 use crate::storage::{
-    validate_topic_agents_md_content, validate_topic_context_content, AgentProfileRecord,
-    AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider, TopicAgentsMdRecord,
-    TopicBindingKind, TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode,
-    TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
-    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
-    UpsertTopicInfraConfigOptions, UserConfig, TOPIC_CONTEXT_MAX_CHARS, TOPIC_CONTEXT_MAX_LINES,
+    AgentProfileRecord, AppendAuditEventOptions, OptionalMetadataPatch, StorageProvider,
+    TOPIC_CONTEXT_MAX_CHARS, TOPIC_CONTEXT_MAX_LINES, TopicAgentsMdRecord, TopicBindingKind,
+    TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord,
+    TopicInfraToolMode, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
+    UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
+    UserConfig, validate_topic_agents_md_content, validate_topic_context_content,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
@@ -159,13 +159,6 @@ fn default_infra_allowed_tool_modes() -> Vec<TopicInfraToolMode> {
         TopicInfraToolMode::ApplyFileEdit,
         TopicInfraToolMode::CheckProcess,
         TopicInfraToolMode::Transfer,
-    ]
-}
-
-fn default_infra_approval_required_modes() -> Vec<TopicInfraToolMode> {
-    vec![
-        TopicInfraToolMode::SudoExec,
-        TopicInfraToolMode::ApplyFileEdit,
     ]
 }
 

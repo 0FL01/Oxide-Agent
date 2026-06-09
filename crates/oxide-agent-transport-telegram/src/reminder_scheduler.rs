@@ -91,10 +91,11 @@ impl ReminderSchedulerHandle {
         let tracked = records.len();
         for mut record in records {
             let key = (record.user_id, record.reminder_id.clone());
-            if let Some(previous) = previous_records.get(&key) {
-                if previous.version == record.version && previous.next_run_at > record.next_run_at {
-                    record.next_run_at = previous.next_run_at;
-                }
+            if let Some(previous) = previous_records.get(&key)
+                && previous.version == record.version
+                && previous.next_run_at > record.next_run_at
+            {
+                record.next_run_at = previous.next_run_at;
             }
             state.records.insert(key, record);
         }

@@ -1,17 +1,16 @@
 use super::{
+    AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx, EnsureSessionContext,
+    ResetSessionOutcome, RunAgentTaskTextContext, SESSION_REGISTRY, SessionTransportContext,
     agent_mode_session_keys, automatic_agent_control_markup, cancel_and_clear_session,
     cancel_status_inline_markup, cancel_status_reply_markup, cleanup_abandoned_empty_flow,
-    clear_cancel_confirmation_message, clear_pending_cancel_message, confirm_destructive_action,
-    ensure_session_exists, exit_agent_mode, handle_clear_memory_confirmation,
-    handle_recreate_container_confirmation, is_agent_task_running, manager_default_chat_id,
-    outbound_thread_from_callback, renew_cancellation_token, reset_session,
-    resolve_existing_session_id, run_agent_task_with_text, run_approved_ssh_resume,
+    clear_cancel_confirmation_message, clear_pending_cancel_message, ensure_session_exists,
+    handle_clear_memory_confirmation, handle_recreate_container_confirmation,
+    is_agent_task_running, manager_default_chat_id, outbound_thread_from_callback,
+    renew_cancellation_token, reset_session, resolve_existing_session_id, run_agent_task_with_text,
     save_memory_after_task, send_agent_message, send_agent_message_with_optional_keyboard,
     send_or_update_cancel_confirmation, send_or_update_pending_cancel_message,
     should_create_fresh_flow_on_detach, start_manual_compaction, use_inline_flow_controls,
-    use_inline_topic_controls, AgentDialogue, AgentModeSessionKeys, ConfirmationSendCtx,
-    EnsureSessionContext, ResetSessionOutcome, RunAgentTaskTextContext,
-    RunApprovedSshResumeContext, SessionTransportContext, SESSION_REGISTRY,
+    use_inline_topic_controls,
 };
 use crate::bot::context::{
     ensure_current_agent_flow_id, reset_current_agent_flow_id, set_current_agent_flow_id,
@@ -19,18 +18,15 @@ use crate::bot::context::{
 };
 use crate::bot::state::{ConfirmationType, State};
 use crate::bot::views::{
-    AgentView, DefaultAgentView, AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK,
-    AGENT_CALLBACK_CLEAR_MEMORY, AGENT_CALLBACK_COMPACT_CONTEXT, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
+    AGENT_CALLBACK_ATTACH_PREFIX, AGENT_CALLBACK_CANCEL_TASK, AGENT_CALLBACK_CONFIRM_CANCEL_NO,
     AGENT_CALLBACK_CONFIRM_CANCEL_YES, AGENT_CALLBACK_CONFIRM_CLEAR_CANCEL,
     AGENT_CALLBACK_CONFIRM_CLEAR_YES, AGENT_CALLBACK_CONFIRM_COMPACT_CANCEL,
     AGENT_CALLBACK_CONFIRM_COMPACT_YES, AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL,
-    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AGENT_CALLBACK_EXIT,
-    AGENT_CALLBACK_RECREATE_CONTAINER, AGENT_CALLBACK_SSH_APPROVE_PREFIX,
-    AGENT_CALLBACK_SSH_REJECT_PREFIX, LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET,
-    LOOP_CALLBACK_RETRY,
+    AGENT_CALLBACK_CONFIRM_RECREATE_YES, AGENT_CALLBACK_DETACH, AgentView, DefaultAgentView,
+    LOOP_CALLBACK_CANCEL, LOOP_CALLBACK_RESET, LOOP_CALLBACK_RETRY,
 };
 use crate::bot::{
-    build_outbound_thread_params, resolve_thread_spec, OutboundThreadParams, TelegramThreadSpec,
+    OutboundThreadParams, TelegramThreadSpec, build_outbound_thread_params, resolve_thread_spec,
 };
 use crate::config::BotSettings;
 use anyhow::Result;
@@ -63,12 +59,8 @@ pub(crate) enum AgentCallbackAction {
     LoopCancel,
     Attach(String),
     Detach,
-    ApproveSsh(String),
-    RejectSsh(String),
     StartCancelTaskConfirmation,
     ResolveCancelTaskConfirmation(bool),
-    StartConfirmation(ConfirmationType),
-    Exit,
     ResolveConfirmation(ConfirmationType, bool),
 }
 
@@ -89,34 +81,17 @@ pub(crate) fn parse_agent_callback_action(data: &str) -> Option<AgentCallbackAct
     if let Some(flow_id) = data.strip_prefix(AGENT_CALLBACK_ATTACH_PREFIX) {
         return Some(AgentCallbackAction::Attach(flow_id.to_string()));
     }
-    if let Some(request_id) = data.strip_prefix(AGENT_CALLBACK_SSH_APPROVE_PREFIX) {
-        return Some(AgentCallbackAction::ApproveSsh(request_id.to_string()));
-    }
-    if let Some(request_id) = data.strip_prefix(AGENT_CALLBACK_SSH_REJECT_PREFIX) {
-        return Some(AgentCallbackAction::RejectSsh(request_id.to_string()));
-    }
-
     match data {
         LOOP_CALLBACK_RETRY => Some(AgentCallbackAction::LoopRetry),
         LOOP_CALLBACK_RESET => Some(AgentCallbackAction::LoopReset),
         LOOP_CALLBACK_CANCEL => Some(AgentCallbackAction::LoopCancel),
         AGENT_CALLBACK_CANCEL_TASK => Some(AgentCallbackAction::StartCancelTaskConfirmation),
-        AGENT_CALLBACK_COMPACT_CONTEXT => Some(AgentCallbackAction::StartConfirmation(
-            ConfirmationType::CompactContext,
-        )),
         AGENT_CALLBACK_CONFIRM_CANCEL_YES => {
             Some(AgentCallbackAction::ResolveCancelTaskConfirmation(true))
         }
         AGENT_CALLBACK_CONFIRM_CANCEL_NO => {
             Some(AgentCallbackAction::ResolveCancelTaskConfirmation(false))
         }
-        AGENT_CALLBACK_CLEAR_MEMORY => Some(AgentCallbackAction::StartConfirmation(
-            ConfirmationType::ClearMemory,
-        )),
-        AGENT_CALLBACK_RECREATE_CONTAINER => Some(AgentCallbackAction::StartConfirmation(
-            ConfirmationType::RecreateContainer,
-        )),
-        AGENT_CALLBACK_EXIT => Some(AgentCallbackAction::Exit),
         AGENT_CALLBACK_CONFIRM_CLEAR_YES => Some(AgentCallbackAction::ResolveConfirmation(
             ConfirmationType::ClearMemory,
             true,
@@ -312,147 +287,6 @@ async fn handle_loop_reset(ctx: &LoopCallbackContext) -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-async fn handle_ssh_approval_callback(
-    ctx: &AgentCallbackContext,
-    request_id: String,
-) -> Result<()> {
-    let Some(session_id) = resolve_existing_session_id(ctx.loop_ctx.session_keys).await else {
-        send_agent_message(
-            &ctx.loop_ctx.bot,
-            ctx.loop_ctx.chat_id,
-            DefaultAgentView::session_not_found(),
-            ctx.loop_ctx.outbound_thread,
-        )
-        .await?;
-        return Ok(());
-    };
-
-    if is_agent_task_running(session_id).await {
-        send_agent_message(
-            &ctx.loop_ctx.bot,
-            ctx.loop_ctx.chat_id,
-            DefaultAgentView::task_already_running(),
-            ctx.loop_ctx.outbound_thread,
-        )
-        .await?;
-        return Ok(());
-    }
-
-    renew_cancellation_token(session_id).await;
-
-    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
-        send_agent_message(
-            &ctx.loop_ctx.bot,
-            ctx.loop_ctx.chat_id,
-            DefaultAgentView::session_not_found(),
-            ctx.loop_ctx.outbound_thread,
-        )
-        .await?;
-        return Ok(());
-    };
-
-    let has_saved_task = {
-        let executor = executor_arc.read().await;
-        executor.last_task().is_some()
-    };
-
-    if !has_saved_task {
-        send_agent_message(
-            &ctx.loop_ctx.bot,
-            ctx.loop_ctx.chat_id,
-            DefaultAgentView::no_saved_task(),
-            ctx.loop_ctx.outbound_thread,
-        )
-        .await?;
-        return Ok(());
-    }
-
-    send_agent_message(
-        &ctx.loop_ctx.bot,
-        ctx.loop_ctx.chat_id,
-        "SSH approval granted. Resuming the task.",
-        ctx.loop_ctx.outbound_thread,
-    )
-    .await?;
-
-    let retry_ctx = ctx.loop_ctx.clone();
-    let storage = ctx.storage.clone();
-    let request_id_for_resume = request_id.clone();
-    let attach_detach_enabled = ctx.settings.telegram.attach_detach_enabled;
-    tokio::spawn(async move {
-        let error_bot = retry_ctx.bot.clone();
-        if let Err(e) = run_approved_ssh_resume(RunApprovedSshResumeContext {
-            bot: retry_ctx.bot,
-            chat_id: retry_ctx.chat_id,
-            session_id,
-            user_id: retry_ctx.user_id,
-            request_id: request_id_for_resume,
-            storage,
-            context_key: retry_ctx.context_key,
-            agent_flow_id: retry_ctx.agent_flow_id,
-            message_thread_id: retry_ctx.outbound_thread.message_thread_id,
-            use_inline_progress_controls: use_inline_topic_controls(retry_ctx.thread_spec),
-            use_inline_flow_controls: use_inline_flow_controls(retry_ctx.thread_spec),
-            attach_detach_enabled,
-        })
-        .await
-        {
-            let _ = send_agent_message(
-                &error_bot,
-                retry_ctx.chat_id,
-                DefaultAgentView::error_message(&e.to_string()),
-                retry_ctx.outbound_thread,
-            )
-            .await;
-        }
-    });
-
-    Ok(())
-}
-
-async fn handle_ssh_reject_callback(ctx: &AgentCallbackContext, request_id: String) -> Result<()> {
-    let Some(session_id) = resolve_existing_session_id(ctx.loop_ctx.session_keys).await else {
-        send_agent_message(
-            &ctx.loop_ctx.bot,
-            ctx.loop_ctx.chat_id,
-            DefaultAgentView::session_not_found(),
-            ctx.loop_ctx.outbound_thread,
-        )
-        .await?;
-        return Ok(());
-    };
-
-    let Some(executor_arc) = SESSION_REGISTRY.get(&session_id).await else {
-        send_agent_message(
-            &ctx.loop_ctx.bot,
-            ctx.loop_ctx.chat_id,
-            DefaultAgentView::session_not_found(),
-            ctx.loop_ctx.outbound_thread,
-        )
-        .await?;
-        return Ok(());
-    };
-
-    let rejected = {
-        let mut executor = executor_arc.write().await;
-        executor.reject_ssh_approval(&request_id).await
-    };
-
-    let message = if rejected.is_some() {
-        "SSH action rejected. The agent will not replay the command."
-    } else {
-        "SSH approval request not found or already handled."
-    };
-    send_agent_message(
-        &ctx.loop_ctx.bot,
-        ctx.loop_ctx.chat_id,
-        message,
-        ctx.loop_ctx.outbound_thread,
-    )
-    .await?;
     Ok(())
 }
 
@@ -704,24 +538,6 @@ async fn dispatch_agent_callback(
             handle_attach_flow_callback(&ctx, selected_flow_id).await
         }
         AgentCallbackAction::Detach => handle_detach_flow_callback(&ctx).await,
-        AgentCallbackAction::ApproveSsh(request_id) => {
-            answer_agent_callback(
-                &ctx.loop_ctx.bot,
-                ctx.callback_id.clone(),
-                Some("SSH action approved"),
-            )
-            .await;
-            handle_ssh_approval_callback(&ctx, request_id).await
-        }
-        AgentCallbackAction::RejectSsh(request_id) => {
-            answer_agent_callback(
-                &ctx.loop_ctx.bot,
-                ctx.callback_id.clone(),
-                Some("SSH action rejected"),
-            )
-            .await;
-            handle_ssh_reject_callback(&ctx, request_id).await
-        }
         AgentCallbackAction::LoopRetry => {
             answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             handle_loop_retry(
@@ -756,15 +572,6 @@ async fn dispatch_agent_callback(
         AgentCallbackAction::ResolveCancelTaskConfirmation(confirmed) => {
             answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
             handle_cancel_task_confirmation_callback(&ctx, confirmed).await
-        }
-        AgentCallbackAction::StartConfirmation(action) => {
-            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
-            confirm_destructive_action(action, ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue)
-                .await
-        }
-        AgentCallbackAction::Exit => {
-            answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;
-            exit_agent_mode(ctx.loop_ctx.bot.clone(), ctx.msg, ctx.dialogue, ctx.storage).await
         }
         AgentCallbackAction::ResolveConfirmation(action, confirmed) => {
             answer_agent_callback(&ctx.loop_ctx.bot, ctx.callback_id.clone(), None).await;

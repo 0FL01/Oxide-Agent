@@ -60,6 +60,28 @@ pub struct FileDeliveryReceipt {
     pub download_url: Option<String>,
 }
 
+/// Execution source for events that can be relayed from delegated sub-agents.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEventSource {
+    /// Event came from the root agent task.
+    #[default]
+    Root,
+    /// Event came from a delegated sub-agent.
+    SubAgent,
+}
+
+impl AgentEventSource {
+    /// Stable string value used in transport payloads.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::SubAgent => "sub_agent",
+        }
+    }
+}
+
 /// Events that can occur during agent execution
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +101,9 @@ pub enum AgentEvent {
         /// Stable runtime invocation identifier for pairing call/result events.
         #[serde(default)]
         id: String,
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Tool name
         name: String,
         /// Tool input arguments
@@ -91,6 +116,9 @@ pub enum AgentEvent {
         /// Stable runtime invocation identifier for pairing call/result events.
         #[serde(default)]
         id: String,
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Tool name
         name: String,
         /// Tool execution output
@@ -98,17 +126,11 @@ pub enum AgentEvent {
         /// Whether the tool finished successfully.
         success: bool,
     },
-    /// Agent is waiting for operator approval before continuing a tool call.
-    WaitingForApproval {
-        /// Tool name awaiting approval.
-        tool_name: String,
-        /// Infra target name shown to the operator.
-        target_name: String,
-        /// Human-readable approval summary.
-        summary: String,
-    },
     /// Agent is continuing work due to incomplete todos
     Continuation {
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Reason for continuation
         reason: String,
         /// Number of continuations so far
@@ -116,6 +138,9 @@ pub enum AgentEvent {
     },
     /// Todos list was updated
     TodosUpdated {
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Updated list of tasks
         todos: TodoList,
     },
@@ -157,8 +182,20 @@ pub enum AgentEvent {
     Error(String),
     /// Agent's reasoning/thinking process (for models that support it)
     Reasoning {
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
         /// Short summary of reasoning
         summary: String,
+    },
+    /// Event relayed from a named delegated sub-agent.
+    SubAgent {
+        /// Stable sub-agent job id.
+        sub_agent_id: String,
+        /// Human-readable sub-agent display name.
+        sub_agent_name: String,
+        /// Original sub-agent event.
+        event: Box<AgentEvent>,
     },
     /// Loop detected during execution
     LoopDetected {
@@ -305,6 +342,63 @@ pub enum AgentEvent {
     },
 }
 
+impl AgentEvent {
+    /// Mark visible delegated progress before relaying it into the parent stream.
+    #[must_use]
+    pub fn with_sub_agent_source(self, sub_agent_id: String, sub_agent_name: String) -> Self {
+        Self::SubAgent {
+            sub_agent_id,
+            sub_agent_name,
+            event: Box::new(self.with_sub_agent_source_marker()),
+        }
+    }
+
+    fn with_sub_agent_source_marker(self) -> Self {
+        match self {
+            Self::ToolCall {
+                id,
+                name,
+                input,
+                command_preview,
+                ..
+            } => Self::ToolCall {
+                id,
+                source: AgentEventSource::SubAgent,
+                name,
+                input,
+                command_preview,
+            },
+            Self::ToolResult {
+                id,
+                name,
+                output,
+                success,
+                ..
+            } => Self::ToolResult {
+                id,
+                source: AgentEventSource::SubAgent,
+                name,
+                output,
+                success,
+            },
+            Self::Continuation { reason, count, .. } => Self::Continuation {
+                source: AgentEventSource::SubAgent,
+                reason,
+                count,
+            },
+            Self::TodosUpdated { todos, .. } => Self::TodosUpdated {
+                source: AgentEventSource::SubAgent,
+                todos,
+            },
+            Self::Reasoning { summary, .. } => Self::Reasoning {
+                source: AgentEventSource::SubAgent,
+                summary,
+            },
+            other => other,
+        }
+    }
+}
+
 /// User-facing class of repeated context maintenance activity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -439,6 +533,7 @@ impl ProgressState {
     /// Updates the progress state based on an agent event
     pub fn update(&mut self, event: AgentEvent) {
         match event {
+            AgentEvent::SubAgent { event, .. } => self.update(*event),
             AgentEvent::Thinking { snapshot } => self.handle_thinking(snapshot),
             AgentEvent::TokenSnapshotUpdated { snapshot } => {
                 self.handle_token_snapshot_updated(snapshot)
@@ -448,15 +543,13 @@ impl ProgressState {
                 name,
                 input,
                 command_preview,
+                ..
             } => self.handle_tool_call(id, name, input, command_preview),
             AgentEvent::ToolResult { id, success, .. } => self.handle_tool_result(&id, success),
-            AgentEvent::WaitingForApproval {
-                tool_name,
-                target_name,
-                summary,
-            } => self.handle_waiting_for_approval(tool_name, target_name, summary),
-            AgentEvent::Continuation { reason, count } => self.handle_continuation(reason, count),
-            AgentEvent::TodosUpdated { todos } => self.handle_todos_update(todos),
+            AgentEvent::Continuation { reason, count, .. } => {
+                self.handle_continuation(reason, count)
+            }
+            AgentEvent::TodosUpdated { todos, .. } => self.handle_todos_update(todos),
             AgentEvent::FileToSend { file_name, .. } => self.handle_file_send(file_name),
             AgentEvent::FileToSendWithConfirmation { file_name, .. } => {
                 self.handle_file_send(file_name)
@@ -465,7 +558,7 @@ impl ProgressState {
             AgentEvent::Cancelling { tool_name } => self.handle_cancelling(tool_name),
             AgentEvent::Cancelled => self.handle_cancelled(),
             AgentEvent::Error(e) => self.handle_error(e),
-            AgentEvent::Reasoning { summary } => self.handle_reasoning(summary),
+            AgentEvent::Reasoning { summary, .. } => self.handle_reasoning(summary),
             AgentEvent::LoopDetected {
                 loop_type,
                 iteration,
@@ -592,19 +685,19 @@ impl ProgressState {
 
     /// Helper: Complete the last in-progress step
     fn complete_last_step(&mut self) {
-        if let Some(last) = self.steps.last_mut() {
-            if last.status == StepStatus::InProgress {
-                last.status = StepStatus::Completed;
-            }
+        if let Some(last) = self.steps.last_mut()
+            && last.status == StepStatus::InProgress
+        {
+            last.status = StepStatus::Completed;
         }
     }
 
     /// Helper: Mark the last in-progress step as failed
     fn fail_last_step(&mut self) {
-        if let Some(last) = self.steps.last_mut() {
-            if last.status == StepStatus::InProgress {
-                last.status = StepStatus::Failed;
-            }
+        if let Some(last) = self.steps.last_mut()
+            && last.status == StepStatus::InProgress
+        {
+            last.status = StepStatus::Failed;
         }
     }
 
@@ -675,17 +768,17 @@ impl ProgressState {
     }
 
     fn handle_tool_result(&mut self, id: &str, success: bool) {
-        if !id.is_empty() {
-            if let Some(step) = self.steps.iter_mut().rev().find(|step| {
+        if !id.is_empty()
+            && let Some(step) = self.steps.iter_mut().rev().find(|step| {
                 step.status == StepStatus::InProgress && step.tool_id.as_deref() == Some(id)
-            }) {
-                step.status = if success {
-                    StepStatus::Completed
-                } else {
-                    StepStatus::Failed
-                };
-                return;
-            }
+            })
+        {
+            step.status = if success {
+                StepStatus::Completed
+            } else {
+                StepStatus::Failed
+            };
+            return;
         }
 
         if success {
@@ -701,29 +794,8 @@ impl ProgressState {
             description: format!(
                 "🔄 Continuation ({}/{}): {}",
                 count,
-                crate::config::AGENT_CONTINUATION_LIMIT,
+                crate::config::get_agent_continuation_limit(),
                 crate::utils::truncate_str(reason, 50)
-            ),
-            status: StepStatus::InProgress,
-            tokens: None,
-            tool_name: None,
-            tool_id: None,
-        });
-    }
-
-    fn handle_waiting_for_approval(
-        &mut self,
-        tool_name: String,
-        target_name: String,
-        summary: String,
-    ) {
-        self.complete_last_step();
-        self.current_thought = Some(format!("Waiting for SSH approval for {tool_name}"));
-        self.steps.push(Step {
-            description: format!(
-                "SSH approval pending for {}: {}",
-                target_name,
-                crate::utils::truncate_str(&summary, 80)
             ),
             status: StepStatus::InProgress,
             tokens: None,
@@ -744,15 +816,15 @@ impl ProgressState {
 
         if let Some((task, blocked_on_user)) = current_task {
             // Update step description with current task
-            if let Some(last) = self.steps.last_mut() {
-                if last.status == StepStatus::InProgress {
-                    let prefix = if blocked_on_user {
-                        "📋 Waiting on user"
-                    } else {
-                        "📋"
-                    };
-                    last.description = format!("{prefix} {task} ({completed}/{total})");
-                }
+            if let Some(last) = self.steps.last_mut()
+                && last.status == StepStatus::InProgress
+            {
+                let prefix = if blocked_on_user {
+                    "📋 Waiting on user"
+                } else {
+                    "📋"
+                };
+                last.description = format!("{prefix} {task} ({completed}/{total})");
             }
         }
     }
@@ -1059,18 +1131,24 @@ mod tests {
 
         assert_eq!(state.steps.len(), 1);
         assert_eq!(state.steps[0].status, super::StepStatus::Completed);
-        assert!(state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status.contains("Compaction: compacted history")));
-        assert!(state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status.contains("manual/manual")));
-        assert!(state
-            .last_compaction_status
-            .as_deref()
-            .is_some_and(|status| status.contains("mock/compact")));
+        assert!(
+            state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("Compaction: compacted history"))
+        );
+        assert!(
+            state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("manual/manual"))
+        );
+        assert!(
+            state
+                .last_compaction_status
+                .as_deref()
+                .is_some_and(|status| status.contains("mock/compact"))
+        );
     }
 
     #[test]
@@ -1081,9 +1159,11 @@ mod tests {
             count: 3,
         });
 
-        assert!(state
-            .repeated_compaction_warning
-            .as_deref()
-            .is_some_and(|warning| warning == "History compaction: 3x"));
+        assert!(
+            state
+                .repeated_compaction_warning
+                .as_deref()
+                .is_some_and(|warning| warning == "History compaction: 3x")
+        );
     }
 }

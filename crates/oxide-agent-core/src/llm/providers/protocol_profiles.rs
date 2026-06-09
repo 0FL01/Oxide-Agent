@@ -101,7 +101,7 @@ pub const ANTHROPIC_CLIENT_TOOL_PROFILE: ToolProtocolProfile = ToolProtocolProfi
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolProtocolProfile, CHAT_LIKE_TOOL_PROFILE};
+    use super::{CHAT_LIKE_TOOL_PROFILE, ToolProtocolProfile};
     use crate::llm::{
         Message, ToolCall, ToolCallCorrelation, ToolCallFunction, ToolProtocol, ToolTransport,
     };

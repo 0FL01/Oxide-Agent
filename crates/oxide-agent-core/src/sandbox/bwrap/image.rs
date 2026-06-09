@@ -1,11 +1,11 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-use super::config::BwrapSandboxConfig;
 use super::WORKSPACE_PREFIX;
+use super::config::BwrapSandboxConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct BwrapImageManifest {

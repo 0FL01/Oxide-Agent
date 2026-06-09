@@ -177,10 +177,8 @@ pub async fn run_progress_loop<T: AgentTransport>(
         }
     }
 
-    if needs_update {
-        if let Err(e) = transport.update_progress(&state).await {
-            warn!(error = %e, "Final progress update failed");
-        }
+    if needs_update && let Err(e) = transport.update_progress(&state).await {
+        warn!(error = %e, "Final progress update failed");
     }
 
     state
@@ -194,7 +192,7 @@ mod tests {
     use oxide_agent_core::agent::progress::TokenSnapshot;
     use oxide_agent_core::llm::TokenUsage;
     use std::sync::Arc;
-    use tokio::sync::{mpsc, oneshot, Mutex};
+    use tokio::sync::{Mutex, mpsc, oneshot};
 
     type DeliveredFileRecord = (DeliveryMode, FileDeliveryKind, String, usize);
 

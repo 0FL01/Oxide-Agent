@@ -3,7 +3,7 @@
 pub struct WikiMemoryConfig {
     /// Whether durable wiki memory should run.
     pub enabled: bool,
-    /// Optional S3/R2 object prefix before `wiki/v1/`.
+    /// Optional durable storage prefix before `wiki/v1/`.
     pub storage_prefix: String,
     /// Maximum size for normal durable wiki pages.
     pub normal_page_max_bytes: usize,

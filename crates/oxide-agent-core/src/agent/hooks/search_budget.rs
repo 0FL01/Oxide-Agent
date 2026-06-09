@@ -5,8 +5,8 @@
 use super::registry::Hook;
 use super::types::{HookContext, HookEvent, HookResult};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use url::Url;
 
 /// Hook that limits the number of search tool calls.
@@ -14,6 +14,7 @@ pub struct SearchBudgetHook {
     limit: usize,
     count: AtomicUsize,
     duckduckgo_unavailable: AtomicBool,
+    brave_search_unavailable: AtomicBool,
     blocked_web_markdown_hosts: Mutex<HashSet<String>>,
 }
 
@@ -25,6 +26,7 @@ impl SearchBudgetHook {
             limit,
             count: AtomicUsize::new(0),
             duckduckgo_unavailable: AtomicBool::new(false),
+            brave_search_unavailable: AtomicBool::new(false),
             blocked_web_markdown_hosts: Mutex::new(HashSet::new()),
         }
     }
@@ -36,12 +38,17 @@ impl SearchBudgetHook {
                 | "web_extract"
                 | "duckduckgo_search"
                 | "duckduckgo_news"
+                | "brave_search"
                 | "searxng_search"
         )
     }
 
     fn is_duckduckgo_tool(tool_name: &str) -> bool {
         matches!(tool_name, "duckduckgo_search" | "duckduckgo_news")
+    }
+
+    fn is_brave_search_tool(tool_name: &str) -> bool {
+        matches!(tool_name, "brave_search")
     }
 
     fn result_marks_duckduckgo_unavailable(result: &str) -> bool {
@@ -58,6 +65,29 @@ impl SearchBudgetHook {
             payload.get("error_kind").and_then(|value| value.as_str()),
             Some("blocked" | "rate_limited")
         )
+    }
+
+    fn result_marks_brave_search_unavailable(result: &str) -> bool {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(result) else {
+            return false;
+        };
+        let Some(payload) = value.get("structured_payload") else {
+            return false;
+        };
+        if payload.get("provider").and_then(|value| value.as_str()) != Some("brave_search") {
+            return false;
+        }
+
+        payload
+            .get("provider_unavailable")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+            || matches!(
+                payload.get("error_kind").and_then(|value| value.as_str()),
+                Some(
+                    "rate_limited" | "auth" | "missing_api_key" | "server" | "network" | "timeout"
+                )
+            )
     }
 
     fn web_markdown_host_from_arguments(arguments: &str) -> Option<String> {
@@ -94,7 +124,7 @@ impl Hook for SearchBudgetHook {
         "search_budget"
     }
 
-    fn handle(&self, event: &HookEvent, _context: &HookContext) -> HookResult {
+    fn handle(&self, event: &HookEvent, context: &HookContext) -> HookResult {
         match event {
             HookEvent::BeforeTool {
                 tool_name,
@@ -113,30 +143,41 @@ impl Hook for SearchBudgetHook {
                     };
                 }
 
-                if tool_name == "web_markdown" {
-                    if let Some(host) = Self::web_markdown_host_from_arguments(arguments) {
-                        if self
-                            .blocked_web_markdown_hosts
-                            .lock()
-                            .expect("blocked_web_markdown_hosts poisoned")
-                            .contains(&host)
-                        {
-                            return HookResult::Block {
-                                reason: format!(
-                                    "web_markdown is temporarily unavailable for host {host} in this task because the site returned an anti-bot challenge. Do not retry this host with the lightweight fetcher; use another source."
-                                ),
-                            };
-                        }
-                    }
+                if Self::is_brave_search_tool(tool_name)
+                    && self.brave_search_unavailable.load(Ordering::SeqCst)
+                {
+                    return HookResult::Block {
+                        reason: concat!(
+                            "Brave Search is unavailable in this task. Do not retry ",
+                            "brave_search with rewritten queries; use searxng_search fallback."
+                        )
+                        .to_string(),
+                    };
+                }
+
+                if tool_name == "web_markdown"
+                    && let Some(host) = Self::web_markdown_host_from_arguments(arguments)
+                    && self
+                        .blocked_web_markdown_hosts
+                        .lock()
+                        .expect("blocked_web_markdown_hosts poisoned")
+                        .contains(&host)
+                {
+                    return HookResult::Block {
+                        reason: format!(
+                            "web_markdown is temporarily unavailable for host {host} in this task because the site returned an anti-bot challenge. Do not retry this host with the lightweight fetcher; use another source."
+                        ),
+                    };
                 }
 
                 if self.is_search_tool(tool_name) {
+                    let limit = context.search_limit.unwrap_or(self.limit).max(self.limit);
                     let current = self.count.fetch_add(1, Ordering::SeqCst) + 1;
-                    if current > self.limit {
+                    if current > limit {
                         return HookResult::Block {
                             reason: format!(
                                 "Search budget exceeded ({}/{}). Please synthesize findings from existing data instead of searching more.",
-                                current, self.limit
+                                current, limit
                             ),
                         };
                     }
@@ -145,6 +186,11 @@ impl Hook for SearchBudgetHook {
             HookEvent::AfterTool { tool_name, result } if Self::is_duckduckgo_tool(tool_name) => {
                 if Self::result_marks_duckduckgo_unavailable(result) {
                     self.duckduckgo_unavailable.store(true, Ordering::SeqCst);
+                }
+            }
+            HookEvent::AfterTool { tool_name, result } if Self::is_brave_search_tool(tool_name) => {
+                if Self::result_marks_brave_search_unavailable(result) {
+                    self.brave_search_unavailable.store(true, Ordering::SeqCst);
                 }
             }
             HookEvent::AfterTool { tool_name, result } if tool_name == "web_markdown" => {
@@ -213,6 +259,24 @@ mod tests {
     }
 
     #[test]
+    fn counts_brave_search_against_budget() {
+        let hook = SearchBudgetHook::new(0);
+        let todos = TodoList::new();
+        let memory = AgentMemory::new(1024);
+        let context = HookContext::new(&todos, &memory, 0, 0, 1);
+
+        let result = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "brave_search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+
+        assert!(matches!(result, HookResult::Block { .. }));
+    }
+
+    #[test]
     fn blocks_repeated_duckduckgo_after_block_signal() {
         let hook = SearchBudgetHook::new(10);
         let todos = TodoList::new();
@@ -247,6 +311,84 @@ mod tests {
         );
 
         assert!(matches!(blocked, HookResult::Block { .. }));
+    }
+
+    #[test]
+    fn blocks_repeated_brave_search_after_unavailable_payload() {
+        let hook = SearchBudgetHook::new(10);
+        let todos = TodoList::new();
+        let memory = AgentMemory::new(1024);
+        let context = HookContext::new(&todos, &memory, 0, 0, 1);
+
+        let result = serde_json::json!({
+            "structured_payload": {
+                "provider": "brave_search",
+                "kind": "search",
+                "error_kind": "rate_limited",
+                "provider_unavailable": true
+            }
+        })
+        .to_string();
+        assert!(matches!(
+            hook.handle(
+                &HookEvent::AfterTool {
+                    tool_name: "brave_search".to_string(),
+                    result,
+                },
+                &context,
+            ),
+            HookResult::Continue
+        ));
+
+        let blocked = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "brave_search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+
+        assert!(matches!(blocked, HookResult::Block { .. }));
+        if let HookResult::Block { reason } = blocked {
+            assert!(reason.contains("use searxng_search fallback"));
+        }
+    }
+
+    #[test]
+    fn allows_searxng_after_brave_search_failure() {
+        let hook = SearchBudgetHook::new(10);
+        let todos = TodoList::new();
+        let memory = AgentMemory::new(1024);
+        let context = HookContext::new(&todos, &memory, 0, 0, 1);
+
+        let result = serde_json::json!({
+            "structured_payload": {
+                "provider": "brave_search",
+                "kind": "search",
+                "error_kind": "server"
+            }
+        })
+        .to_string();
+        assert!(matches!(
+            hook.handle(
+                &HookEvent::AfterTool {
+                    tool_name: "brave_search".to_string(),
+                    result,
+                },
+                &context,
+            ),
+            HookResult::Continue
+        ));
+
+        let searxng = hook.handle(
+            &HookEvent::BeforeTool {
+                tool_name: "searxng_search".to_string(),
+                arguments: "{}".to_string(),
+            },
+            &context,
+        );
+
+        assert!(matches!(searxng, HookResult::Continue));
     }
 
     #[test]

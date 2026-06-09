@@ -1,14 +1,14 @@
 use super::{
-    schema::{
-        AGENT_FLOW_SCHEMA_VERSION, AGENT_PROFILE_SCHEMA_VERSION, AUDIT_EVENT_SCHEMA_VERSION,
-        REMINDER_JOB_SCHEMA_VERSION, TOPIC_AGENTS_MD_SCHEMA_VERSION, TOPIC_BINDING_SCHEMA_VERSION,
-        TOPIC_CONTEXT_SCHEMA_VERSION, TOPIC_INFRA_CONFIG_SCHEMA_VERSION,
-    },
     AgentFlowRecord, AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord,
     CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, TopicAgentsMdRecord,
     TopicBindingRecord, TopicContextRecord, TopicInfraConfigRecord, UpsertAgentProfileOptions,
     UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
     UpsertTopicInfraConfigOptions,
+    schema::{
+        AGENT_FLOW_SCHEMA_VERSION, AGENT_PROFILE_SCHEMA_VERSION, AUDIT_EVENT_SCHEMA_VERSION,
+        REMINDER_JOB_SCHEMA_VERSION, TOPIC_AGENTS_MD_SCHEMA_VERSION, TOPIC_BINDING_SCHEMA_VERSION,
+        TOPIC_CONTEXT_SCHEMA_VERSION, TOPIC_INFRA_CONFIG_SCHEMA_VERSION,
+    },
 };
 
 #[must_use]
@@ -117,7 +117,6 @@ pub(crate) fn build_topic_infra_config_record(
             environment: options.environment,
             tags: options.tags,
             allowed_tool_modes: options.allowed_tool_modes,
-            approval_required_modes: options.approval_required_modes,
             created_at: existing_record.created_at,
             updated_at: now,
         },
@@ -136,7 +135,6 @@ pub(crate) fn build_topic_infra_config_record(
             environment: options.environment,
             tags: options.tags,
             allowed_tool_modes: options.allowed_tool_modes,
-            approval_required_modes: options.approval_required_modes,
             created_at: now,
             updated_at: now,
         },
@@ -218,6 +216,7 @@ pub(crate) fn build_agent_flow_record(
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn build_audit_event_record(
     options: AppendAuditEventOptions,
     current_version: Option<u64>,
@@ -238,6 +237,7 @@ pub(crate) fn build_audit_event_record(
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn build_reminder_job_record(
     options: CreateReminderJobOptions,
     reminder_id: String,
@@ -270,6 +270,7 @@ pub(crate) fn build_reminder_job_record(
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn with_next_reminder_version(record: &ReminderJobRecord) -> u64 {
     next_record_version(Some(record.version))
 }

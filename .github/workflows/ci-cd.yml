@@ -10,15 +10,26 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: oxide_agent
+          POSTGRES_PASSWORD: oxide_agent
+          POSTGRES_DB: oxide_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       TELEGRAM_TOKEN: dummy_token
       ALLOWED_USERS: 123456789
       MISTRAL_API_KEY: dummy
       OPENROUTER_API_KEY: dummy
-      OXIDE_R2_ENDPOINT_URL: https://dummy.r2.cloudflarestorage.com
-      OXIDE_R2_ACCESS_KEY_ID: dummy
-      OXIDE_R2_SECRET_ACCESS_KEY: dummy
-      OXIDE_R2_BUCKET_NAME: dummy
+      OXIDE_DATABASE_TEST_URL: postgres://oxide_agent:oxide_agent@localhost:5432/oxide_agent_test
       ZAI_API_KEY: dummy
       LOOP_DETECTION_ENABLED: "true"
       LOOP_TOOL_CALL_THRESHOLD: "5"
@@ -66,69 +77,14 @@ jobs:
       - name: Run cargo check/clippy/test
         run: cargo check --workspace --all-targets && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace
 
+      - name: Run SQLx/Postgres foundation smoke
+        run: cargo test -p oxide-agent-core --no-default-features --features storage-sqlx sqlx_storage_connects_and_runs_migrations_when_test_url_is_set
+
       - name: Run cargo fmt check
         run: cargo fmt --all -- --check
 
-
-  validate-credentials:
-    runs-on: ubuntu-latest
-    needs: test
-    if: github.event_name != 'pull_request'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('Cargo.lock') }}
-
-      - name: Run credentials validation test
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-          OXIDE_R2_ACCESS_KEY_ID: ${{ secrets.OXIDE_R2_ACCESS_KEY_ID }}
-          OXIDE_R2_SECRET_ACCESS_KEY: ${{ secrets.OXIDE_R2_SECRET_ACCESS_KEY }}
-          OXIDE_R2_ENDPOINT_URL: ${{ secrets.OXIDE_R2_ENDPOINT_URL }}
-          OXIDE_R2_BUCKET_NAME: ${{ secrets.OXIDE_R2_BUCKET_NAME }}
-          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          LOOP_DETECTION_ENABLED: ${{ secrets.LOOP_DETECTION_ENABLED || 'true' }}
-          LOOP_TOOL_CALL_THRESHOLD: ${{ secrets.LOOP_TOOL_CALL_THRESHOLD || '5' }}
-          LOOP_CONTENT_CHUNK_SIZE: ${{ secrets.LOOP_CONTENT_CHUNK_SIZE || '50' }}
-          LOOP_CONTENT_THRESHOLD: ${{ secrets.LOOP_CONTENT_THRESHOLD || '10' }}
-          LOOP_MAX_HISTORY_LENGTH: ${{ secrets.LOOP_MAX_HISTORY_LENGTH || '5000' }}
-          LOOP_LLM_CHECK_AFTER_TURNS: ${{ secrets.LOOP_LLM_CHECK_AFTER_TURNS || '25' }}
-          LOOP_LLM_CHECK_INTERVAL: ${{ secrets.LOOP_LLM_CHECK_INTERVAL || '3' }}
-          LOOP_LLM_CONFIDENCE_THRESHOLD: ${{ secrets.LOOP_LLM_CONFIDENCE_THRESHOLD || '0.9' }}
-          LOOP_LLM_HISTORY_COUNT: ${{ secrets.LOOP_LLM_HISTORY_COUNT || '20' }}
-          LOOP_SCOUT_MODEL: ${{ secrets.LOOP_SCOUT_MODEL || 'labs-devstral-small-2512' }}
-          AGENT_MODEL_ID: ${{ secrets.AGENT_MODEL_ID || 'glm-4.7' }}
-          AGENT_MODEL_PROVIDER: ${{ secrets.AGENT_MODEL_PROVIDER || 'zai' }}
-          AGENT_MODEL_MAX_OUTPUT_TOKENS: ${{ secrets.AGENT_MODEL_MAX_OUTPUT_TOKENS || '48000' }}
-          SUB_AGENT_MODEL_ID: ${{ secrets.SUB_AGENT_MODEL_ID || 'glm-4.5-air' }}
-          SUB_AGENT_MODEL_PROVIDER: ${{ secrets.SUB_AGENT_MODEL_PROVIDER || 'zai' }}
-          SUB_AGENT_MAX_OUTPUT_TOKENS: ${{ secrets.SUB_AGENT_MAX_OUTPUT_TOKENS || '48000' }}
-          MEDIA_MODEL_ID: ${{ secrets.MEDIA_MODEL_ID || 'google/gemini-3-flash-preview' }}
-          MEDIA_MODEL_PROVIDER: ${{ secrets.MEDIA_MODEL_PROVIDER || 'openrouter' }}
-          NARRATOR_MODEL_ID: ${{ secrets.NARRATOR_MODEL_ID || 'labs-mistral-small-creative' }}
-          NARRATOR_MODEL_PROVIDER: ${{ secrets.NARRATOR_MODEL_PROVIDER || 'mistral' }}
-        run: cargo test -p oxide-agent-telegram-bot --test integration_validation -- --ignored --nocapture
-
   deploy:
-    needs: validate-credentials
+    needs: test
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -165,10 +121,7 @@ jobs:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
           AGENT_ACCESS_IDS: ${{ secrets.AGENT_ACCESS_IDS }}
-          OXIDE_R2_ACCESS_KEY_ID: ${{ secrets.OXIDE_R2_ACCESS_KEY_ID }}
-          OXIDE_R2_SECRET_ACCESS_KEY: ${{ secrets.OXIDE_R2_SECRET_ACCESS_KEY }}
-          OXIDE_R2_ENDPOINT_URL: ${{ secrets.OXIDE_R2_ENDPOINT_URL }}
-          OXIDE_R2_BUCKET_NAME: ${{ secrets.OXIDE_R2_BUCKET_NAME }}
+          OXIDE_DATABASE_URL: ${{ secrets.OXIDE_DATABASE_URL }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           LOOP_DETECTION_ENABLED: ${{ secrets.LOOP_DETECTION_ENABLED }}
           LOOP_TOOL_CALL_THRESHOLD: ${{ secrets.LOOP_TOOL_CALL_THRESHOLD }}
@@ -195,7 +148,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,OXIDE_R2_ACCESS_KEY_ID,OXIDE_R2_SECRET_ACCESS_KEY,OXIDE_R2_ENDPOINT_URL,OXIDE_R2_BUCKET_NAME,TAVILY_API_KEY,LOOP_DETECTION_ENABLED,LOOP_TOOL_CALL_THRESHOLD,LOOP_CONTENT_CHUNK_SIZE,LOOP_CONTENT_THRESHOLD,LOOP_MAX_HISTORY_LENGTH,LOOP_LLM_CHECK_AFTER_TURNS,LOOP_LLM_CHECK_INTERVAL,LOOP_LLM_CONFIDENCE_THRESHOLD,LOOP_LLM_HISTORY_COUNT,LOOP_SCOUT_MODEL,AGENT_MODEL_ID,AGENT_MODEL_PROVIDER,AGENT_MODEL_MAX_OUTPUT_TOKENS,SUB_AGENT_MODEL_ID,SUB_AGENT_MODEL_PROVIDER,SUB_AGENT_MAX_OUTPUT_TOKENS,MEDIA_MODEL_ID,MEDIA_MODEL_PROVIDER,NARRATOR_MODEL_ID,NARRATOR_MODEL_PROVIDER
+          envs: TELEGRAM_TOKEN,OPENROUTER_API_KEY,ZAI_API_KEY,MISTRAL_API_KEY,ALLOWED_USERS,AGENT_ACCESS_IDS,OXIDE_DATABASE_URL,TAVILY_API_KEY,LOOP_DETECTION_ENABLED,LOOP_TOOL_CALL_THRESHOLD,LOOP_CONTENT_CHUNK_SIZE,LOOP_CONTENT_THRESHOLD,LOOP_MAX_HISTORY_LENGTH,LOOP_LLM_CHECK_AFTER_TURNS,LOOP_LLM_CHECK_INTERVAL,LOOP_LLM_CONFIDENCE_THRESHOLD,LOOP_LLM_HISTORY_COUNT,LOOP_SCOUT_MODEL,AGENT_MODEL_ID,AGENT_MODEL_PROVIDER,AGENT_MODEL_MAX_OUTPUT_TOKENS,SUB_AGENT_MODEL_ID,SUB_AGENT_MODEL_PROVIDER,SUB_AGENT_MAX_OUTPUT_TOKENS,MEDIA_MODEL_ID,MEDIA_MODEL_PROVIDER,NARRATOR_MODEL_ID,NARRATOR_MODEL_PROVIDER
 
 
           timeout: 60s
@@ -218,10 +171,7 @@ jobs:
             printf "MISTRAL_API_KEY=%s\n" "$MISTRAL_API_KEY" >> .env
             printf "ALLOWED_USERS=%s\n" "$ALLOWED_USERS" >> .env
             printf "AGENT_ACCESS_IDS=%s\n" "$AGENT_ACCESS_IDS" >> .env
-            printf "OXIDE_R2_ACCESS_KEY_ID=%s\n" "$OXIDE_R2_ACCESS_KEY_ID" >> .env
-            printf "OXIDE_R2_SECRET_ACCESS_KEY=%s\n" "$OXIDE_R2_SECRET_ACCESS_KEY" >> .env
-            printf "OXIDE_R2_ENDPOINT_URL=%s\n" "$OXIDE_R2_ENDPOINT_URL" >> .env
-            printf "OXIDE_R2_BUCKET_NAME=%s\n" "$OXIDE_R2_BUCKET_NAME" >> .env
+            printf "OXIDE_DATABASE_URL=%s\n" "$OXIDE_DATABASE_URL" >> .env
             printf "TAVILY_API_KEY=%s\n" "$TAVILY_API_KEY" >> .env
             # Set defaults for optional variables (fish shell compatible)
             test -n "$LOOP_DETECTION_ENABLED"; or set LOOP_DETECTION_ENABLED true

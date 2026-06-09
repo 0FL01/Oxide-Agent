@@ -107,7 +107,9 @@ pub fn parse_structured_output(
     if sanitized != trimmed {
         match try_parse_structured_output(&sanitized, tools) {
             Ok(parsed) => {
-                warn!("Structured output required control character stripping. This should be rare in JSON mode.");
+                warn!(
+                    "Structured output required control character stripping. This should be rare in JSON mode."
+                );
                 return Ok(parsed);
             }
             Err(err) => last_error = err.message().to_string(),
@@ -133,18 +135,19 @@ pub fn parse_structured_output(
     // Prose wrapper: if the response contains no JSON at all but looks like
     // meaningful prose, wrap it as a structured final answer. This catches
     // models that ignore structured output instructions and return plain text.
-    if !sanitized.contains('{') && looks_like_prose(&sanitized) {
-        if let Ok(escaped) = serde_json::to_string(&sanitized) {
-            let wrapped = format!(
-                r#"{{"thought":"Model provided direct response","tool_call":null,"final_answer":{escaped},"awaiting_user_input":null}}"#
+    if !sanitized.contains('{')
+        && looks_like_prose(&sanitized)
+        && let Ok(escaped) = serde_json::to_string(&sanitized)
+    {
+        let wrapped = format!(
+            r#"{{"thought":"Model provided direct response","tool_call":null,"final_answer":{escaped},"awaiting_user_input":null}}"#
+        );
+        if let Ok(parsed) = try_parse_structured_output(&wrapped, tools) {
+            warn!(
+                raw_content = %crate::utils::truncate_str(trimmed, 200),
+                "Structured output: wrapped prose response as final_answer"
             );
-            if let Ok(parsed) = try_parse_structured_output(&wrapped, tools) {
-                warn!(
-                    raw_content = %crate::utils::truncate_str(trimmed, 200),
-                    "Structured output: wrapped prose response as final_answer"
-                );
-                return Ok(parsed);
-            }
+            return Ok(parsed);
         }
     }
 
@@ -189,11 +192,7 @@ fn strip_control_chars(input: &str) -> String {
         }
     }
 
-    if changed {
-        output
-    } else {
-        input.to_string()
-    }
+    if changed { output } else { input.to_string() }
 }
 
 /// Strip ALL control characters including newlines, tabs, carriage returns.
@@ -210,10 +209,10 @@ fn recovery_candidates(input: &str) -> Vec<String> {
         candidates.push(fenced);
     }
 
-    if let Some(extracted) = extract_first_json(input) {
-        if !candidates.contains(&extracted) {
-            candidates.push(extracted);
-        }
+    if let Some(extracted) = extract_first_json(input)
+        && !candidates.contains(&extracted)
+    {
+        candidates.push(extracted);
     }
 
     candidates
@@ -250,12 +249,12 @@ fn validate_structured_output(
         ));
     }
 
-    if let Some(ref final_answer) = output.final_answer {
-        if final_answer.trim().is_empty() {
-            return Err(StructuredOutputError::new(
-                "Field 'final_answer' must be a non-empty string when provided",
-            ));
-        }
+    if let Some(ref final_answer) = output.final_answer
+        && final_answer.trim().is_empty()
+    {
+        return Err(StructuredOutputError::new(
+            "Field 'final_answer' must be a non-empty string when provided",
+        ));
     }
 
     let has_tool_call = output.tool_call.is_some();
@@ -465,8 +464,7 @@ mod tests {
 
     #[test]
     fn parses_json_with_leading_text() {
-        let raw =
-            "Answer:\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}\nThank you";
+        let raw = "Answer:\n{\"thought\":\"done\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}\nThank you";
         let result = parse_structured_output(raw, &tools_fixture());
         assert!(matches!(
             result,
@@ -497,9 +495,14 @@ mod tests {
             result.is_ok(),
             "Prose should be wrapped as structured output"
         );
-        let parsed = result.unwrap();
-        assert!(parsed.final_answer.is_some());
-        assert!(parsed.final_answer.unwrap().contains("Summary:"));
+        let parsed = result.expect("prose should parse as structured output");
+        assert!(
+            parsed
+                .final_answer
+                .as_deref()
+                .expect("final answer should be present")
+                .contains("Summary:")
+        );
         assert!(parsed.tool_call.is_none());
     }
 
@@ -532,24 +535,20 @@ mod tests {
     #[test]
     fn strips_literal_newlines_in_string_values() {
         // Model puts raw newline inside "thought" value — aggressive stripping should fix it
-        let raw = format!(
-            "{{\"thought\":\"line1\nline2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}}"
-        );
+        let raw = "{\"thought\":\"line1\nline2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}".to_string();
         let result = parse_structured_output(&raw, &tools_fixture());
         assert!(
             result.is_ok(),
             "Should parse after aggressive control char stripping"
         );
-        let parsed = result.unwrap();
+        let parsed = result.expect("control-stripped newline payload should parse");
         assert_eq!(parsed.thought, "line1line2");
         assert_eq!(parsed.final_answer.as_deref(), Some("ok"));
     }
 
     #[test]
     fn strips_literal_tabs_in_string_values() {
-        let raw = format!(
-            "{{\"thought\":\"col1\tcol2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}}"
-        );
+        let raw = "{\"thought\":\"col1\tcol2\",\"tool_call\":null,\"final_answer\":\"ok\",\"awaiting_user_input\":null}".to_string();
         let result = parse_structured_output(&raw, &tools_fixture());
         assert!(
             result.is_ok(),

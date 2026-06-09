@@ -160,7 +160,7 @@ fn parse_classifier_response(raw: &str) -> Option<ClassifierResponse> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_classifier_response, AgentInputIntentClassification};
+    use super::{AgentInputIntentClassification, parse_classifier_response};
 
     #[test]
     fn parse_classifier_response_accepts_wrapped_json() {

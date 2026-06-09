@@ -18,3 +18,5 @@ __pycache__
 .cargo-cache/
 .rustup-cache/
 dist/
+pg_data/
+postgres-init/

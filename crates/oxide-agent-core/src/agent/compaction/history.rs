@@ -288,10 +288,11 @@ fn completed_tool_batch_indices(
     while cursor < messages.len()
         && messages[cursor].resolved_kind() == AgentMessageKind::ToolResult
     {
-        if let Some(invocation_id) = tool_result_invocation_id(&messages[cursor]) {
-            if expected_set.contains(&invocation_id) && seen_ids.insert(invocation_id) {
-                indices.push(cursor);
-            }
+        if let Some(invocation_id) = tool_result_invocation_id(&messages[cursor])
+            && expected_set.contains(&invocation_id)
+            && seen_ids.insert(invocation_id)
+        {
+            indices.push(cursor);
         }
         cursor += 1;
     }
@@ -336,7 +337,6 @@ fn is_pinned(message: &AgentMessage) -> bool {
         AgentMessageKind::TopicAgentsMd
             | AgentMessageKind::UserTask
             | AgentMessageKind::RuntimeContext
-            | AgentMessageKind::ApprovalReplay
             | AgentMessageKind::InfraStatus
     )
 }
@@ -512,43 +512,26 @@ mod tests {
                 .count(),
             1
         );
-        assert!(replacement
-            .iter()
-            .all(|message| !message.content.contains("Old current-format summary.")));
-        assert!(replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::TopicAgentsMd));
-        assert!(replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::UserTask));
-        assert!(replacement
-            .iter()
-            .any(|message| message.content == "latest request"));
-    }
-
-    #[test]
-    fn preserves_approval_replay_messages() {
-        let messages = vec![
-            AgentMessage::user("Resume approved SSH action."),
-            AgentMessage::approval_replay(
-                "Retry exact SSH call with approval_request_id='req-1' and approval_token='token-1'.",
-            ),
-            AgentMessage::assistant("Continuing after approval."),
-        ];
-
-        let replacement = build_compacted_history(BuildCompactedHistoryRequest {
-            messages: &messages,
-            summary_text: "Approval replay is pending and must be preserved.",
-            metadata: &metadata(false),
-            target_token_budget: 10_000,
-        })
-        .expect("history builds with approval replay");
-
-        assert!(replacement.iter().any(|message| {
-            message.resolved_kind() == AgentMessageKind::ApprovalReplay
-                && message.content.contains("approval_request_id='req-1'")
-                && message.content.contains("approval_token='token-1'")
-        }));
+        assert!(
+            replacement
+                .iter()
+                .all(|message| !message.content.contains("Old current-format summary."))
+        );
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::TopicAgentsMd)
+        );
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::UserTask)
+        );
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.content == "latest request")
+        );
     }
 
     #[test]
@@ -574,9 +557,11 @@ mod tests {
         })
         .expect("history builds with terminal open tool batch");
 
-        assert!(replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall)
+        );
 
         let mut with_result = replacement;
         with_result.push(AgentMessage::tool(
@@ -628,12 +613,16 @@ mod tests {
         })
         .expect("history builds without orphaning tool result");
 
-        assert!(!replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult));
-        assert!(!replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
+        assert!(
+            !replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult)
+        );
+        assert!(
+            !replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall)
+        );
 
         let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);
         assert!(!repair_outcome.applied);
@@ -670,15 +659,21 @@ mod tests {
         })
         .expect("minimum floor skips oversized complete tool batch");
 
-        assert!(replacement
-            .iter()
-            .any(|message| message.content == "Need fresh pricing data."));
-        assert!(!replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall));
-        assert!(!replacement
-            .iter()
-            .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult));
+        assert!(
+            replacement
+                .iter()
+                .any(|message| message.content == "Need fresh pricing data.")
+        );
+        assert!(
+            !replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::AssistantToolCall)
+        );
+        assert!(
+            !replacement
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::ToolResult)
+        );
         assert!(replacement.iter().map(message_tokens).sum::<usize>() <= 2_000);
 
         let (validated, repair_outcome) = repair_agent_message_history_runtime(&replacement);

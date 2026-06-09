@@ -66,17 +66,10 @@ pub struct UserMessageEventPayload {
 #[serde(rename_all = "snake_case")]
 pub struct TaskEventsResponse {
     pub events: Vec<PersistedTaskEvent>,
+    #[serde(default)]
+    pub first_seq: u64,
     pub last_seq: u64,
     pub has_more: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SseConnectionState {
-    Connected,
-    Disconnected,
-    Reconnecting,
-    TerminalClosed,
 }
 
 #[cfg(test)]

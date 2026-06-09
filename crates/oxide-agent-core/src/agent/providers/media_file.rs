@@ -6,10 +6,10 @@ use crate::agent::tool_runtime::{
 };
 use crate::llm::{LlmClient, ToolDefinition};
 use crate::sandbox::{SandboxExec, SandboxFileOps, SandboxScope};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use reqwest::header::CONTENT_TYPE;
 use reqwest::Url;
+use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::json;
 use shell_escape::escape;
@@ -767,12 +767,16 @@ mod tests {
             .find(|tool| tool.name == TOOL_DESCRIBE_VIDEO_FILE)
             .expect("video tool");
 
-        assert!(image_tool.parameters["properties"]["path"]["description"]
-            .as_str()
-            .is_some_and(|text| text.contains("URL")));
-        assert!(video_tool.parameters["properties"]["path"]["description"]
-            .as_str()
-            .is_some_and(|text| text.contains("URL")));
+        assert!(
+            image_tool.parameters["properties"]["path"]["description"]
+                .as_str()
+                .is_some_and(|text| text.contains("URL"))
+        );
+        assert!(
+            video_tool.parameters["properties"]["path"]["description"]
+                .as_str()
+                .is_some_and(|text| text.contains("URL"))
+        );
     }
 
     #[test]

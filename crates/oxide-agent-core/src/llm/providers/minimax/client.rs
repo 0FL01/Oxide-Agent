@@ -204,6 +204,7 @@ impl LlmProvider for MiniMaxProvider {
             max_tokens,
             temperature,
             json_mode: _,
+            reasoning_effort: _,
         } = request;
 
         let params = Self::build_tool_params(

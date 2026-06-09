@@ -1,6 +1,6 @@
 use crate::agent::compaction::CompactionController;
 use crate::agent::progress::AgentEvent;
-use crate::agent::providers::{ManagerTopicLifecycle, SshApprovalRegistry, TodoList};
+use crate::agent::providers::{ManagerTopicLifecycle, TodoList};
 use crate::agent::runner::{
     AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
 };
@@ -11,6 +11,8 @@ use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use anyhow::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+use super::{AgentExecutionOptions, AgentUserInput};
 
 #[derive(Clone)]
 #[cfg_attr(not(feature = "tool-agents-md"), allow(dead_code))]
@@ -35,7 +37,6 @@ pub(super) struct TopicInfraContext {
     pub(super) user_id: i64,
     pub(super) topic_id: String,
     pub(super) config: TopicInfraConfigRecord,
-    pub(super) approvals: SshApprovalRegistry,
 }
 
 pub(super) struct PreparedExecution {
@@ -90,19 +91,25 @@ impl PreparedExecution {
 }
 
 pub(super) enum ExecutionRequest {
-    NewTask { task: String },
-    ResumeUserInput { content: String },
+    NewTask {
+        input: AgentUserInput,
+        options: AgentExecutionOptions,
+    },
+    ResumeUserInput {
+        input: AgentUserInput,
+        options: AgentExecutionOptions,
+    },
     ContinueRuntimeContext,
 }
 
 pub(super) struct ResolvedExecutionRequest {
     pub(super) task: String,
-    pub(super) append_user_message: bool,
+    pub(super) user_input: Option<AgentUserInput>,
+    pub(super) options: AgentExecutionOptions,
 }
 
 pub(super) enum ExecutionTransition {
     Completed(String),
-    WaitingForApproval,
     WaitingForUserInput(PendingUserInput),
     Failed(Error),
     TimedOut,
@@ -112,7 +119,6 @@ impl From<TimedRunResult> for ExecutionTransition {
     fn from(result: TimedRunResult) -> Self {
         match result {
             TimedRunResult::Final(res) => Self::Completed(res),
-            TimedRunResult::WaitingForApproval => Self::WaitingForApproval,
             TimedRunResult::WaitingForUserInput(request) => Self::WaitingForUserInput(request),
             TimedRunResult::Failed(error) => Self::Failed(error),
             TimedRunResult::TimedOut => Self::TimedOut,

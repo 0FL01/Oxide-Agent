@@ -146,18 +146,20 @@ mod tests {
         let history = vec![
             Message::assistant_with_tools(
                 "Calling tools",
-                vec![ToolCall::new(
-                    "invoke-openrouter-1",
-                    ToolCallFunction {
-                        name: "search".to_string(),
-                        arguments: r#"{"query":"oxide"}"#.to_string(),
-                    },
-                    false,
-                )
-                .with_correlation(
-                    ToolCallCorrelation::new("invoke-openrouter-1")
-                        .with_provider_tool_call_id("call-openrouter-1"),
-                )],
+                vec![
+                    ToolCall::new(
+                        "invoke-openrouter-1",
+                        ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: r#"{"query":"oxide"}"#.to_string(),
+                        },
+                        false,
+                    )
+                    .with_correlation(
+                        ToolCallCorrelation::new("invoke-openrouter-1")
+                            .with_provider_tool_call_id("call-openrouter-1"),
+                    ),
+                ],
             ),
             Message::tool_with_correlation(
                 "invoke-openrouter-1",

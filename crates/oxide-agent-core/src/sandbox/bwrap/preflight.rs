@@ -1,9 +1,9 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
+use super::BWRAP_DEFAULT_BIN;
 use super::bootstrap::BwrapImageBootstrapConfig;
 use super::env::{absolute_existing_path, env_bool, env_string};
-use super::BWRAP_DEFAULT_BIN;
 
 pub(crate) fn preflight_from_env() -> Result<()> {
     let bwrap_bin = resolve_executable(&env_string("BWRAP_BIN", BWRAP_DEFAULT_BIN)?)?;

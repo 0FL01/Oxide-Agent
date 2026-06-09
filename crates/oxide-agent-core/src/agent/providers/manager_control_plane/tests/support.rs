@@ -40,7 +40,6 @@ pub(super) fn topic_infra(user_id: i64, topic_id: &str, version: u64) -> TopicIn
         environment: Some("prod".to_string()),
         tags: vec!["prod".to_string()],
         allowed_tool_modes: vec![TopicInfraToolMode::Exec, TopicInfraToolMode::ReadFile],
-        approval_required_modes: vec![TopicInfraToolMode::SudoExec],
         created_at: 10,
         updated_at: 20,
     }
@@ -243,7 +242,6 @@ pub(super) fn expect_forum_topic_provision_infra_calls(
                 environment: options.environment,
                 tags: options.tags,
                 allowed_tool_modes: options.allowed_tool_modes,
-                approval_required_modes: options.approval_required_modes,
                 created_at: 10,
                 updated_at: 10,
             })

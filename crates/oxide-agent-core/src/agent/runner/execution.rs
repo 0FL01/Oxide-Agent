@@ -1,18 +1,30 @@
 //! Core execution loop for the agent runner.
 
-use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use super::AgentRunner;
+use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMessage;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::tool_failure_summary::rewrite_tool_failure_messages;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::future::Future;
 use tracing::debug;
+
+const AGENT_LATENCY_TARGET: &str = "oxide_agent_core::agent_latency";
 
 impl AgentRunner {
     /// Execute the agent loop until completion or error.
     pub async fn run(&mut self, ctx: &mut AgentRunnerContext<'_>) -> Result<AgentRunResult> {
+        debug!(
+            target: AGENT_LATENCY_TARGET,
+            task_id = %ctx.task_id,
+            session_id = ?ctx.session_id,
+            model = %ctx.config.model_name,
+            provider = ?ctx.config.model_provider,
+            max_iterations = ctx.config.max_iterations,
+            timeout_secs = ctx.config.timeout_secs,
+            "Agent runner entered"
+        );
         self.reset_loop_detector(ctx).await;
         self.apply_before_agent_hooks(ctx)?;
         self.run_loop(ctx).await
@@ -28,10 +40,10 @@ impl AgentRunner {
                 return Err(self.cancelled_error(ctx).await);
             }
 
-            if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs {
-                if let Some(res) = self.apply_timeout_hook(ctx, &mut state)? {
-                    return Ok(AgentRunResult::Final(res));
-                }
+            if ctx.agent.elapsed_secs() >= ctx.config.timeout_secs
+                && let Some(res) = self.apply_timeout_hook(ctx, &mut state)?
+            {
+                return Ok(AgentRunResult::Final(res));
             }
 
             self.apply_pending_runtime_context(ctx, &mut state).await;
@@ -39,7 +51,16 @@ impl AgentRunner {
             self.run_pre_llm_maintenance(ctx, &mut state, iteration)
                 .await?;
 
-            debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
+            if iteration == 0 {
+                debug!(
+                    target: AGENT_LATENCY_TARGET,
+                    task_id = %ctx.task_id,
+                    iteration,
+                    "Agent first loop iteration started"
+                );
+            } else {
+                debug!(task_id = %ctx.task_id, iteration = iteration, "Agent loop iteration");
+            }
 
             let snapshot_trigger = if iteration == 0 {
                 CompactionTrigger::PreRun
@@ -197,6 +218,7 @@ impl AgentRunner {
         if let Some(tx) = ctx.progress_tx {
             let _ = tx
                 .send(AgentEvent::Continuation {
+                    source: AgentEventSource::Root,
                     reason: "New user context received, adapting the plan.".to_string(),
                     count: state.continuation_count,
                 })
@@ -206,9 +228,9 @@ impl AgentRunner {
         for injection in pending_context {
             ctx.messages
                 .push(crate::llm::Message::user(&injection.content));
-            ctx.agent
-                .memory_mut()
-                .add_message(AgentMessage::runtime_context(injection.content));
+            let message = AgentMessage::runtime_context(injection.content)
+                .with_user_attachments(injection.attachments);
+            ctx.agent.memory_mut().add_message(message);
         }
     }
 

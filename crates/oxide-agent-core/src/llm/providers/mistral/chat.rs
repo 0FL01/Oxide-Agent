@@ -10,11 +10,11 @@ use crate::llm::providers::mistral::{
     types::{MISTRAL_REASONING_EFFORT, MISTRAL_REASONING_MODEL_ID},
 };
 use crate::llm::{
-    support::http::{parse_retry_after, APP_USER_AGENT},
     ChatResponse, ChatWithToolsRequest, LlmError, Message, ToolDefinition,
+    support::http::{APP_USER_AGENT, parse_retry_after},
 };
 use reqwest::Client as HttpClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 /// Build chat completion request body
@@ -50,6 +50,7 @@ pub fn build_tool_chat_body(
     model_id: &str,
     max_tokens: u32,
     temperature: Option<f32>,
+    reasoning_effort: Option<&str>,
     id_mapper: &mut ToolCallIdMapper,
 ) -> Value {
     let messages = prepare_structured_messages(system_prompt, history, id_mapper);
@@ -87,7 +88,7 @@ pub fn build_tool_chat_body(
     }
 
     if is_reasoning_model(model_id) {
-        body["reasoning_effort"] = json!(MISTRAL_REASONING_EFFORT);
+        body["reasoning_effort"] = json!(reasoning_effort.unwrap_or(MISTRAL_REASONING_EFFORT));
     }
 
     body
@@ -191,6 +192,7 @@ pub async fn chat_with_tools(
         model_id,
         max_tokens,
         temperature,
+        reasoning_effort,
         json_mode: _,
     } = request;
 
@@ -204,6 +206,7 @@ pub async fn chat_with_tools(
             model_id,
             max_tokens,
             temperature,
+            reasoning_effort,
             &mut mapper,
         )
     };

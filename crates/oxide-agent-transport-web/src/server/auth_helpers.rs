@@ -1,19 +1,20 @@
 //! Authentication, CSRF protection, rate limiting, and cookie helpers.
 
-use super::{api_error, AppState, AUTH_COOKIE_NAME, CSRF_HEADER_NAME};
-pub(crate) use crate::auth::AUTH_SESSION_TTL_SECS;
-use crate::auth::{current_user_for_token, AuthError};
+use super::{AUTH_COOKIE_NAME, AppState, CSRF_HEADER_NAME, CachedAuthSession, api_error};
+use crate::auth::{AuthError, current_user_for_token, hash_session_token};
 use axum::{
-    http::{
-        header::{COOKIE, HOST, ORIGIN, REFERER},
-        HeaderMap, HeaderValue, StatusCode,
-    },
     Json,
+    http::{
+        HeaderMap, HeaderValue, StatusCode,
+        header::{COOKIE, HOST, ORIGIN, REFERER},
+    },
 };
 use oxide_agent_web_contracts::{
     CurrentUser, ErrorCode, ErrorEnvelope, WebSessionRecord, WebTaskRecord,
 };
 use std::time::Instant;
+
+const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
 
 // ---------------------------------------------------------------------------
 // Auth error mapping
@@ -223,13 +224,9 @@ pub(crate) async fn authenticated_user(
     headers: &HeaderMap,
 ) -> Result<CurrentUser, (StatusCode, Json<ErrorEnvelope>)> {
     let raw_session_token = auth_cookie_value(headers).map_err(auth_error_response)?;
-    let (user, _) = current_user_for_token(
-        state.web_store.as_ref(),
-        &raw_session_token,
-        chrono::Utc::now(),
-    )
-    .await
-    .map_err(auth_error_response)?;
+    let (user, _) = current_user_for_token_cached(state, &raw_session_token, chrono::Utc::now())
+        .await
+        .map_err(auth_error_response)?;
     Ok(user)
 }
 
@@ -240,17 +237,123 @@ pub(crate) async fn authenticated_user_with_csrf(
     validate_csrf_request_origin(headers)?;
     let raw_session_token = auth_cookie_value(headers).map_err(auth_error_response)?;
     let csrf_token = csrf_header_value(headers).map_err(auth_error_response)?;
-    let (user, auth_session) = current_user_for_token(
-        state.web_store.as_ref(),
-        &raw_session_token,
-        chrono::Utc::now(),
-    )
-    .await
-    .map_err(auth_error_response)?;
+    let (user, auth_session) =
+        current_user_for_token_cached(state, &raw_session_token, chrono::Utc::now())
+            .await
+            .map_err(auth_error_response)?;
     if auth_session.csrf_token != csrf_token {
         return Err(auth_error_response(AuthError::CsrfInvalid));
     }
     Ok(user)
+}
+
+pub(crate) async fn current_user_for_token_cached(
+    state: &AppState,
+    raw_session_token: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(CurrentUser, crate::persistence::WebAuthSessionRecord), AuthError> {
+    let session_token_hash = hash_session_token(raw_session_token);
+    if let Some(entry) = state.auth_cache.get(&session_token_hash).await {
+        if entry.auth_session.revoked_at.is_some() || entry.auth_session.expires_at <= now {
+            state.auth_cache.invalidate(&session_token_hash).await;
+            tracing::debug!(
+                target: "oxide_agent_transport_web::web_perf",
+                auth_cache_hit = true,
+                auth_cache_valid = false,
+                user_id = entry.user.user_id,
+                cache_age_ms = (now - entry.cached_at).num_milliseconds(),
+                "web auth cache checked"
+            );
+            return Err(AuthError::Unauthorized);
+        }
+
+        tracing::debug!(
+            target: "oxide_agent_transport_web::web_perf",
+            auth_cache_hit = true,
+            auth_cache_valid = true,
+            user_id = entry.user.user_id,
+            cache_age_ms = (now - entry.cached_at).num_milliseconds(),
+            "web auth cache checked"
+        );
+        return Ok((entry.user, entry.auth_session));
+    }
+
+    let store_started_at = Instant::now();
+    let (user, auth_session) =
+        current_user_for_token(state.web_store.as_ref(), raw_session_token, now).await?;
+    tracing::debug!(
+        target: WEB_LATENCY_TARGET,
+        user_id = user.user_id,
+        phase = "auth_cache_miss_store_load",
+        elapsed_ms = store_started_at.elapsed().as_millis(),
+        "web auth helper latency"
+    );
+    state
+        .auth_cache
+        .insert(
+            session_token_hash,
+            CachedAuthSession {
+                user: user.clone(),
+                auth_session: auth_session.clone(),
+                cached_at: now,
+            },
+        )
+        .await;
+    spawn_user_route_cache_prewarm(state, user.user_id);
+    tracing::debug!(
+        target: "oxide_agent_transport_web::web_perf",
+        auth_cache_hit = false,
+        auth_cache_valid = true,
+        user_id = user.user_id,
+        "web auth cache checked"
+    );
+    Ok((user, auth_session))
+}
+
+pub(crate) async fn cache_auth_session(
+    state: &AppState,
+    raw_session_token: &str,
+    user: CurrentUser,
+    auth_session: crate::persistence::WebAuthSessionRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let user_id = user.user_id;
+    state
+        .auth_cache
+        .insert(
+            hash_session_token(raw_session_token),
+            CachedAuthSession {
+                user,
+                auth_session,
+                cached_at: now,
+            },
+        )
+        .await;
+    spawn_user_route_cache_prewarm(state, user_id);
+}
+
+pub(crate) fn spawn_user_route_cache_prewarm(state: &AppState, user_id: i64) {
+    let settings_state = state.clone();
+    tokio::spawn(async move {
+        super::settings_routes::prewarm_user_settings_cache(settings_state, user_id).await;
+    });
+
+    let profiles_state = state.clone();
+    tokio::spawn(async move {
+        super::agent_profiles::prewarm_agent_profiles_cache(profiles_state, user_id).await;
+    });
+
+    let sessions_state = state.clone();
+    tokio::spawn(async move {
+        super::session_routes::prewarm_session_summaries_cache(sessions_state, user_id).await;
+    });
+}
+
+pub(crate) async fn invalidate_auth_session_cache(state: &AppState, raw_session_token: &str) {
+    state
+        .auth_cache
+        .invalidate(&hash_session_token(raw_session_token))
+        .await;
 }
 
 pub(crate) async fn load_owned_session(
@@ -258,12 +361,23 @@ pub(crate) async fn load_owned_session(
     user_id: i64,
     session_id: &str,
 ) -> Result<WebSessionRecord, (StatusCode, Json<ErrorEnvelope>)> {
-    state
+    let started_at = Instant::now();
+    let session = state
         .web_store
         .load_session(user_id, session_id)
         .await
         .map_err(store_error_response)?
-        .ok_or_else(not_found_response)
+        .ok_or_else(not_found_response)?;
+    tracing::debug!(
+        target: WEB_LATENCY_TARGET,
+        user_id,
+        session_id = %session_id,
+        active_task_id = ?session.active_task_id,
+        phase = "load_owned_session",
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web auth helper latency"
+    );
+    Ok(session)
 }
 
 pub(crate) async fn load_owned_task(

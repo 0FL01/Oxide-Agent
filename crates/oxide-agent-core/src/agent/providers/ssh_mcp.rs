@@ -1,4 +1,4 @@
-//! Topic-scoped SSH infrastructure provider with approval gating.
+//! Topic-scoped SSH infrastructure provider.
 
 use crate::agent::memory::AgentMessage;
 use crate::agent::progress::{AgentEvent, FileDeliveryKind};
@@ -10,39 +10,35 @@ use crate::llm::ToolDefinition;
 use crate::storage::{
     StorageProvider, TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use rmcp::{
+    ServiceExt,
     model::CallToolRequestParams,
     service::{Peer, RoleClient, RunningService, ServiceError},
     transport::{ConfigureCommandExt, TokioChildProcess},
-    ServiceExt,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
-#[cfg(test)]
-use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use shell_escape::unix::escape;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use tempfile::{Builder, NamedTempFile};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 
 use super::file_delivery::{
-    chat_delivery_max_file_size_bytes, deliver_file_via_progress, format_generic_delivery_report,
-    FileDeliveryRequest, FileDeliveryStatus,
+    FileDeliveryRequest, FileDeliveryStatus, chat_delivery_max_file_size_bytes,
+    deliver_file_via_progress, format_generic_delivery_report,
 };
 
 const TOOL_SSH_EXEC: &str = "ssh_exec";
@@ -54,7 +50,6 @@ const TOOL_SSH_SEND_FILE_TO_USER: &str = "ssh_send_file_to_user";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_REMOTE_OUTPUT_CHARS: usize = 16_000;
-const APPROVAL_TTL_SECS: i64 = 600;
 const KEY_PROBE_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_UPSTREAM_SSH_MCP_BINARY_PATH: &str = "/usr/local/bin/ssh-mcp";
 const UPSTREAM_SSH_MCP_BINARY_ENV: &str = "OXIDE_SSH_MCP_BINARY";
@@ -234,205 +229,6 @@ pub struct TopicInfraPreflightReport {
     pub sudo_secret: Option<SecretProbeReport>,
     /// Safe human-readable summary suitable for prompt injection.
     pub summary: String,
-}
-
-/// Transport-facing view of a pending SSH approval request.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SshApprovalRequestView {
-    /// Stable approval request identifier.
-    pub request_id: String,
-    /// Tool name awaiting approval.
-    pub tool_name: String,
-    /// Topic associated with the request.
-    pub topic_id: String,
-    /// Human-readable infra target name.
-    pub target_name: String,
-    /// Operator-facing summary of the pending action.
-    pub summary: String,
-    /// Creation timestamp (unix seconds).
-    pub created_at: i64,
-    /// Expiry timestamp (unix seconds).
-    pub expires_at: i64,
-}
-
-/// Granted SSH approval token returned after operator confirmation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SshApprovalGrant {
-    /// Stable approval request identifier.
-    pub request_id: String,
-    /// Single-use approval token.
-    pub approval_token: String,
-    /// Tool name that may now be replayed.
-    pub tool_name: String,
-    /// Topic associated with the request.
-    pub topic_id: String,
-    /// Human-readable infra target name.
-    pub target_name: String,
-    /// Operator-facing summary of the pending action.
-    pub summary: String,
-    /// Expiry timestamp (unix seconds).
-    pub expires_at: i64,
-}
-
-/// In-memory short-lived approval registry for topic-scoped SSH actions.
-#[derive(Clone, Default)]
-pub struct SshApprovalRegistry {
-    inner: Arc<Mutex<HashMap<String, ApprovalEntry>>>,
-}
-
-#[derive(Clone)]
-struct ApprovalEntry {
-    view: SshApprovalRequestView,
-    fingerprint: String,
-    state: ApprovalState,
-    announced: bool,
-}
-
-#[derive(Clone)]
-enum ApprovalState {
-    Pending,
-    Approved { token: String, expires_at: i64 },
-    Rejected,
-    Consumed,
-}
-
-impl SshApprovalRegistry {
-    /// Create an empty approval registry.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register a new pending SSH approval request.
-    pub async fn register(
-        &self,
-        tool_name: &str,
-        topic_id: &str,
-        target_name: &str,
-        summary: String,
-        fingerprint: String,
-    ) -> SshApprovalRequestView {
-        let now = now_unix_secs();
-        let view = SshApprovalRequestView {
-            request_id: Uuid::new_v4().to_string(),
-            tool_name: tool_name.to_string(),
-            topic_id: topic_id.to_string(),
-            target_name: target_name.to_string(),
-            summary,
-            created_at: now,
-            expires_at: now + APPROVAL_TTL_SECS,
-        };
-        let entry = ApprovalEntry {
-            view: view.clone(),
-            fingerprint,
-            state: ApprovalState::Pending,
-            announced: false,
-        };
-        let mut guard = self.inner.lock().await;
-        purge_expired_entries(&mut guard, now);
-        guard.insert(view.request_id.clone(), entry);
-        view
-    }
-
-    /// Return pending approvals that have not yet been surfaced to the transport.
-    pub async fn take_unannounced(&self) -> Vec<SshApprovalRequestView> {
-        let now = now_unix_secs();
-        let mut guard = self.inner.lock().await;
-        purge_expired_entries(&mut guard, now);
-        let mut pending = Vec::new();
-        for entry in guard.values_mut() {
-            if !matches!(entry.state, ApprovalState::Pending) || entry.announced {
-                continue;
-            }
-            entry.announced = true;
-            pending.push(entry.view.clone());
-        }
-        pending.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-        pending
-    }
-
-    /// Mark a pending approval request as granted and mint a replay token.
-    pub async fn grant(&self, request_id: &str) -> Option<SshApprovalGrant> {
-        let now = now_unix_secs();
-        let mut guard = self.inner.lock().await;
-        purge_expired_entries(&mut guard, now);
-        let entry = guard.get_mut(request_id)?;
-        if !matches!(entry.state, ApprovalState::Pending) {
-            return None;
-        }
-        let token = Uuid::new_v4().to_string();
-        let expires_at = now + APPROVAL_TTL_SECS;
-        entry.state = ApprovalState::Approved {
-            token: token.clone(),
-            expires_at,
-        };
-        Some(SshApprovalGrant {
-            request_id: entry.view.request_id.clone(),
-            approval_token: token,
-            tool_name: entry.view.tool_name.clone(),
-            topic_id: entry.view.topic_id.clone(),
-            target_name: entry.view.target_name.clone(),
-            summary: entry.view.summary.clone(),
-            expires_at,
-        })
-    }
-
-    /// Mark an existing approval request as rejected.
-    pub async fn reject(&self, request_id: &str) -> Option<SshApprovalRequestView> {
-        let now = now_unix_secs();
-        let mut guard = self.inner.lock().await;
-        purge_expired_entries(&mut guard, now);
-        let entry = guard.get_mut(request_id)?;
-        if !matches!(
-            entry.state,
-            ApprovalState::Pending | ApprovalState::Approved { .. }
-        ) {
-            return None;
-        }
-        entry.state = ApprovalState::Rejected;
-        Some(entry.view.clone())
-    }
-
-    /// Consume a granted approval token for a specific replayed SSH action fingerprint.
-    pub async fn consume(
-        &self,
-        request_id: &str,
-        approval_token: &str,
-        fingerprint: &str,
-    ) -> Result<()> {
-        let now = now_unix_secs();
-        let mut guard = self.inner.lock().await;
-        purge_expired_entries(&mut guard, now);
-        let entry = guard
-            .get_mut(request_id)
-            .ok_or_else(|| anyhow!("approval request not found or expired"))?;
-        if entry.fingerprint != fingerprint {
-            bail!("approval token does not match the original SSH action");
-        }
-        match &entry.state {
-            ApprovalState::Approved { token, expires_at } => {
-                if token != approval_token {
-                    bail!("approval token is invalid");
-                }
-                if *expires_at < now {
-                    bail!("approval token has expired");
-                }
-                entry.state = ApprovalState::Consumed;
-                Ok(())
-            }
-            ApprovalState::Pending => bail!("approval has not been granted yet"),
-            ApprovalState::Rejected => bail!("approval request was rejected"),
-            ApprovalState::Consumed => bail!("approval token has already been used"),
-        }
-    }
-}
-
-fn purge_expired_entries(entries: &mut HashMap<String, ApprovalEntry>, now: i64) {
-    entries.retain(|_, entry| match entry.state {
-        ApprovalState::Pending => entry.view.expires_at >= now,
-        ApprovalState::Approved { expires_at, .. } => expires_at >= now,
-        ApprovalState::Rejected | ApprovalState::Consumed => false,
-    });
 }
 
 #[derive(Clone)]
@@ -637,10 +433,10 @@ impl Drop for UpstreamSshMcpSession {
         if let Ok(mut client) = self.client.try_lock() {
             client.take();
         }
-        if let Ok(mut stderr_task) = self.stderr_task.try_lock() {
-            if let Some(task) = stderr_task.take() {
-                task.abort();
-            }
+        if let Ok(mut stderr_task) = self.stderr_task.try_lock()
+            && let Some(task) = stderr_task.take()
+        {
+            task.abort();
         }
     }
 }
@@ -1002,7 +798,6 @@ pub struct SshMcpProvider {
     storage: Arc<dyn StorageProvider>,
     user_id: i64,
     config: TopicInfraConfigRecord,
-    approvals: SshApprovalRegistry,
 }
 
 impl SshMcpProvider {
@@ -1013,21 +808,13 @@ impl SshMcpProvider {
         user_id: i64,
         topic_id: String,
         config: TopicInfraConfigRecord,
-        approvals: SshApprovalRegistry,
     ) -> Self {
         Self {
             topic_id,
             storage,
             user_id,
             config,
-            approvals,
         }
-    }
-
-    /// Shared approval registry used by this provider.
-    #[must_use]
-    pub fn approvals(&self) -> SshApprovalRegistry {
-        self.approvals.clone()
     }
 
     /// Build typed v1 runtime executors for SSH process-like tools.
@@ -1401,10 +1188,10 @@ impl SshMcpProvider {
             ssh_delivery_result(&download_path, &path, &delivered_file_name, progress_tx).await;
 
         let cleanup_result = tokio::fs::remove_file(&download_path).await;
-        if let Err(error) = cleanup_result {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(path = %download_path.display(), error = %error, "Failed to cleanup transferred SSH file");
-            }
+        if let Err(error) = cleanup_result
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %download_path.display(), error = %error, "Failed to cleanup transferred SSH file");
         }
 
         let (payload, report, ok) = delivery_result.map_err(ssh_runtime_failure)?;
@@ -2204,7 +1991,7 @@ async fn validate_ssh_private_key(
                 source,
                 SecretProbeKind::SshPrivateKey,
                 error.to_string(),
-            )
+            );
         }
     };
     let key_path = key_file.path();
@@ -2213,7 +2000,7 @@ async fn validate_ssh_private_key(
     public_command.arg("-y").arg("-f").arg(key_path);
     let public_result = run_command_with_timeout(public_command, KEY_PROBE_TIMEOUT_SECS).await;
 
-    let report = match public_result {
+    match public_result {
         Ok(output) if output.exit_code == 0 => {
             let mut listing_command = Command::new("ssh-keygen");
             listing_command.arg("-l").arg("-f").arg(key_path);
@@ -2268,9 +2055,7 @@ async fn validate_ssh_private_key(
             SecretProbeKind::SshPrivateKey,
             format!("ssh-keygen -y failed: {error}"),
         ),
-    };
-
-    report
+    }
 }
 
 fn format_stderr_suffix(stderr: &str) -> String {
@@ -2317,44 +2102,6 @@ fn parse_ssh_keygen_listing(
     });
 
     Some((fingerprint, key_type, comment))
-}
-
-#[cfg(test)]
-fn fingerprint_for_request(tool_name: &str, arguments: &str) -> Result<String> {
-    let mut value = serde_json::from_str::<serde_json::Value>(arguments)
-        .map_err(|err| anyhow!("invalid approval fingerprint payload: {err}"))?;
-    if let Some(object) = value.as_object_mut() {
-        object.remove("approval_request_id");
-        object.remove("approval_token");
-    }
-    let canonical = serde_json::to_string(&value)?;
-    let mut digest = Sha256::new();
-    digest.update(tool_name.as_bytes());
-    digest.update(b":");
-    digest.update(canonical.as_bytes());
-    Ok(format!("{:x}", digest.finalize()))
-}
-
-/// Inject approval replay credentials into the original SSH tool arguments.
-pub fn inject_approval_credentials(
-    arguments: &str,
-    request_id: &str,
-    approval_token: &str,
-) -> Result<String> {
-    let mut value = serde_json::from_str::<serde_json::Value>(arguments)
-        .map_err(|err| anyhow!("invalid approval replay payload: {err}"))?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("approval replay payload must be a JSON object"))?;
-    object.insert(
-        "approval_request_id".to_string(),
-        serde_json::Value::String(request_id.to_string()),
-    );
-    object.insert(
-        "approval_token".to_string(),
-        serde_json::Value::String(approval_token.to_string()),
-    );
-    serde_json::to_string(&value).map_err(Into::into)
 }
 
 fn validate_non_empty(value: String, field_name: &str) -> Result<String> {
@@ -2419,52 +2166,8 @@ fn truncate(value: &str, max_chars: usize) -> String {
     truncated
 }
 
-// [APPROVAL DISABLED] Temporarily unused — approval heuristic disabled until the
-// approval pipeline is fixed (replay payload loss between request and grant).
-#[allow(dead_code)]
-fn is_dangerous_command(summary: &str) -> bool {
-    let lowered = summary.to_ascii_lowercase();
-    [
-        "rm -rf",
-        "shutdown",
-        "reboot",
-        "systemctl stop",
-        "systemctl restart",
-        "docker compose down",
-        "kubectl delete",
-        "terraform apply",
-        "terraform destroy",
-    ]
-    .iter()
-    .any(|pattern| lowered.contains(pattern))
-}
-
-// [APPROVAL DISABLED] Temporarily unused — see is_dangerous_command above.
-#[allow(dead_code)]
-fn is_sensitive_path(summary: &str) -> bool {
-    let lowered = summary.to_ascii_lowercase();
-    [
-        "/etc/",
-        "/root/",
-        "/home/",
-        ".ssh",
-        "systemd",
-        "nginx",
-        "postgresql",
-    ]
-    .iter()
-    .any(|pattern| lowered.contains(pattern))
-}
-
 fn escape_shell_argument(value: &str) -> String {
     escape(Cow::Borrowed(value)).into_owned()
-}
-
-fn now_unix_secs() -> i64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs() as i64,
-        Err(_) => 0,
-    }
 }
 
 /// Remove any stale SSH private key temp files left from previous process runs.
@@ -2538,14 +2241,6 @@ fn write_private_key_tempfile_in(temp_dir: &Path, private_key: &str) -> Result<N
     Ok(file)
 }
 
-/// Build a system message instructing the agent to replay an approved SSH tool call.
-pub fn inject_ssh_approval_system_message(grant: &SshApprovalGrant) -> AgentMessage {
-    AgentMessage::approval_replay(format!(
-        "A human operator approved the pending SSH action for target '{}' in topic '{}'. Retry the exact same SSH tool call and include approval_request_id='{}' and approval_token='{}'. Do not change any other tool arguments.",
-        grant.target_name, grant.topic_id, grant.request_id, grant.approval_token
-    ))
-}
-
 /// Build a safe system message describing SSH preflight status for the current topic.
 pub fn inject_topic_infra_preflight_system_message(
     report: &TopicInfraPreflightReport,
@@ -2559,15 +2254,13 @@ pub fn inject_topic_infra_preflight_system_message(
 #[cfg(test)]
 mod tests {
     use super::{
+        RemoteOutput, SecretProbeKind, SecretProbeReport, TopicInfraPreflightReport,
+        UpstreamApplyFileEditResponse, UpstreamReadFileResponse, WrappedCommandMarkers,
         cleanup_stale_private_key_tempfiles_in, decode_hex, default_remote_file_name,
-        fingerprint_for_request, inject_approval_credentials, inject_ssh_approval_system_message,
-        inject_topic_infra_preflight_system_message, is_dangerous_command, is_sensitive_path,
-        normalize_check_process_args, parse_ssh_keygen_listing, parse_wrapped_remote_output,
-        typed_apply_file_edit_payload, typed_read_file_payload, typed_ssh_exec_output,
-        unique_transfer_local_path, validate_chat_file_name, write_private_key_tempfile_in,
-        RemoteOutput, SecretProbeKind, SecretProbeReport, SshApprovalRegistry,
-        TopicInfraPreflightReport, UpstreamApplyFileEditResponse, UpstreamReadFileResponse,
-        WrappedCommandMarkers,
+        inject_topic_infra_preflight_system_message, normalize_check_process_args,
+        parse_ssh_keygen_listing, parse_wrapped_remote_output, typed_apply_file_edit_payload,
+        typed_read_file_payload, typed_ssh_exec_output, unique_transfer_local_path,
+        validate_chat_file_name, write_private_key_tempfile_in,
     };
     use crate::agent::identity::SessionId;
     use crate::agent::tool_runtime::{
@@ -2581,73 +2274,6 @@ mod tests {
     use serde_json::json;
     use std::{fs, path::Path, path::PathBuf};
     use tempfile::tempdir;
-
-    #[tokio::test]
-    async fn approval_registry_grants_and_consumes_matching_request() {
-        let registry = SshApprovalRegistry::new();
-        let request = registry
-            .register(
-                "ssh_exec",
-                "topic-a",
-                "prod-app",
-                "exec on prod-app: systemctl restart api".to_string(),
-                "fp-1".to_string(),
-            )
-            .await;
-
-        let grant = registry
-            .grant(&request.request_id)
-            .await
-            .expect("grant must succeed");
-        registry
-            .consume(&request.request_id, &grant.approval_token, "fp-1")
-            .await
-            .expect("consume must succeed");
-    }
-
-    #[test]
-    fn fingerprint_ignores_approval_fields() {
-        let first = fingerprint_for_request(
-            "ssh_exec",
-            r#"{"command":"uname -a","approval_request_id":"a","approval_token":"b"}"#,
-        )
-        .expect("fingerprint must succeed");
-        let second = fingerprint_for_request("ssh_exec", r#"{"command":"uname -a"}"#)
-            .expect("fingerprint must succeed");
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn inject_approval_credentials_preserves_original_fingerprint() {
-        let original = r#"{"command":"uname -a","timeout_secs":30}"#;
-        let replay = inject_approval_credentials(original, "req-1", "token-1")
-            .expect("approval credentials must inject");
-
-        let original_fingerprint =
-            fingerprint_for_request("ssh_exec", original).expect("fingerprint must succeed");
-        let replay_fingerprint =
-            fingerprint_for_request("ssh_exec", &replay).expect("fingerprint must succeed");
-
-        assert_eq!(original_fingerprint, replay_fingerprint);
-        assert!(replay.contains("approval_request_id"));
-        assert!(replay.contains("approval_token"));
-    }
-
-    #[test]
-    fn dangerous_command_detection_flags_high_risk_operations() {
-        assert!(is_dangerous_command(
-            "exec on prod: terraform apply -auto-approve"
-        ));
-        assert!(!is_dangerous_command("exec on prod: uname -a"));
-    }
-
-    #[test]
-    fn sensitive_path_detection_flags_system_locations() {
-        assert!(is_sensitive_path(
-            "read file on prod: /etc/nginx/nginx.conf"
-        ));
-        assert!(!is_sensitive_path("read file on prod: /tmp/app.log"));
-    }
 
     #[test]
     fn default_remote_file_name_uses_basename() {
@@ -2666,22 +2292,6 @@ mod tests {
     fn chat_file_name_rejects_path_separators() {
         assert!(validate_chat_file_name("app.log".to_string()).is_ok());
         assert!(validate_chat_file_name("foo/bar.log".to_string()).is_err());
-    }
-
-    #[test]
-    fn approval_system_message_contains_replay_tokens() {
-        let grant = super::SshApprovalGrant {
-            request_id: "req-1".to_string(),
-            approval_token: "token-1".to_string(),
-            tool_name: "ssh_exec".to_string(),
-            topic_id: "topic-a".to_string(),
-            target_name: "prod-app".to_string(),
-            summary: "restart api".to_string(),
-            expires_at: 100,
-        };
-        let message = inject_ssh_approval_system_message(&grant);
-        assert!(message.content.contains("approval_request_id='req-1'"));
-        assert!(message.content.contains("approval_token='token-1'"));
     }
 
     #[test]
@@ -2775,31 +2385,6 @@ mod tests {
                 properties.contains_key(property),
                 "{property} property should be present"
             );
-        }
-    }
-
-    #[test]
-    fn runtime_ssh_tool_schemas_exclude_approval_fields() {
-        let tools = super::SshMcpProvider::runtime_tool_definitions();
-        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
-
-        assert_eq!(
-            names,
-            vec![
-                "ssh_exec",
-                "ssh_sudo_exec",
-                "ssh_read_file",
-                "ssh_apply_file_edit",
-                "ssh_check_process",
-                "ssh_send_file_to_user"
-            ]
-        );
-        for tool in tools {
-            let properties = tool.parameters["properties"]
-                .as_object()
-                .expect("runtime tool schema should define properties");
-            assert!(!properties.contains_key("approval_request_id"));
-            assert!(!properties.contains_key("approval_token"));
         }
     }
 
@@ -2904,7 +2489,6 @@ mod tests {
                 TopicInfraToolMode::SudoExec,
                 TopicInfraToolMode::CheckProcess,
             ],
-            approval_required_modes: Vec::new(),
             created_at: 0,
             updated_at: 0,
         }

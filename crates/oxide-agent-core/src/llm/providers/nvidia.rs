@@ -11,7 +11,7 @@ use crate::llm::{
 };
 use async_trait::async_trait;
 use reqwest::Client as HttpClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::debug;
 
 pub struct NvidiaProvider {
@@ -301,7 +301,7 @@ fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
         Some(_) => {
             return Err(LlmError::JsonError(
                 "Invalid tool_calls format from NVIDIA NIM".to_string(),
-            ))
+            ));
         }
         None => Vec::new(),
     };
@@ -404,6 +404,7 @@ impl LlmProvider for NvidiaProvider {
             max_tokens,
             temperature,
             json_mode,
+            reasoning_effort: _,
         } = request;
 
         let model_capabilities = model_capabilities(model_id);
@@ -433,8 +434,8 @@ impl LlmProvider for NvidiaProvider {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_tool_chat_body, model_capabilities, normalize_tool_arguments_str,
-        parse_chat_response, parse_tool_calls, NvidiaProvider,
+        NvidiaProvider, build_tool_chat_body, model_capabilities, normalize_tool_arguments_str,
+        parse_chat_response, parse_tool_calls,
     };
     use crate::llm::{Message, ToolDefinition};
     use serde_json::json;

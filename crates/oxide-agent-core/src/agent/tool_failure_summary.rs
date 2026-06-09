@@ -1,9 +1,9 @@
 //! Deterministic summaries for noisy dead-end tool failures.
 
-use crate::agent::compaction::{count_tokens_cached, AgentMessageKind};
+use crate::agent::compaction::{AgentMessageKind, count_tokens_cached};
 use crate::agent::memory::{AgentMessage, MessageRole, PrunedArtifact};
 use lazy_regex::lazy_regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 static RE_ANTI_BOT_HOST: lazy_regex::Lazy<regex::Regex> =
     lazy_regex!(r"anti-bot protection at ([A-Za-z0-9.-]+)");
@@ -129,7 +129,10 @@ fn classify_failure(tool_name: &str, content: &str) -> Option<FailureSignal> {
 }
 
 fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<FailureSignal> {
-    let payload = value.get("structured_payload").unwrap_or(&Value::Null);
+    let payload = value
+        .get("structured_payload")
+        .filter(|payload| payload.is_object())
+        .unwrap_or(value);
     let effective_tool_name = value
         .get("tool_name")
         .and_then(Value::as_str)
@@ -147,6 +150,18 @@ fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<Failure
         ));
     }
 
+    if is_brave_search(provider, effective_tool_name)
+        && matches!(
+            error_kind,
+            Some("rate_limited" | "auth" | "missing_api_key" | "server" | "network" | "timeout")
+        )
+    {
+        return Some(brave_search_dead_end(
+            error_kind.unwrap_or("provider_unavailable"),
+            string_field(payload, "query"),
+        ));
+    }
+
     if is_web_markdown(provider, effective_tool_name) {
         if error_kind == Some("anti_bot") {
             return Some(web_markdown_host_dead_end(
@@ -155,17 +170,15 @@ fn classify_structured_failure(tool_name: &str, value: &Value) -> Option<Failure
             ));
         }
 
-        if error_kind == Some("http_status") {
-            if let Some(status_code) = payload.get("status_code").and_then(Value::as_u64) {
-                if matches!(status_code, 404 | 410)
-                    && payload.get("retryable").and_then(Value::as_bool) != Some(true)
-                {
-                    return Some(web_markdown_exact_url_dead_end(
-                        status_code,
-                        string_field(payload, "url"),
-                    ));
-                }
-            }
+        if error_kind == Some("http_status")
+            && let Some(status_code) = payload.get("status_code").and_then(Value::as_u64)
+            && matches!(status_code, 404 | 410)
+            && payload.get("retryable").and_then(Value::as_bool) != Some(true)
+        {
+            return Some(web_markdown_exact_url_dead_end(
+                status_code,
+                string_field(payload, "url"),
+            ));
         }
     }
 
@@ -200,18 +213,16 @@ fn classify_text_failure(tool_name: &str, content: &str) -> Option<FailureSignal
             ));
         }
 
-        if let Some(captures) = RE_HTTP_STATUS.captures(content) {
-            if let Some(status_code) = captures
+        if let Some(captures) = RE_HTTP_STATUS.captures(content)
+            && let Some(status_code) = captures
                 .get(1)
                 .and_then(|value| value.as_str().parse::<u64>().ok())
-            {
-                if matches!(status_code, 404 | 410) {
-                    return Some(web_markdown_exact_url_dead_end(
-                        status_code,
-                        first_url(content).as_deref(),
-                    ));
-                }
-            }
+            && matches!(status_code, 404 | 410)
+        {
+            return Some(web_markdown_exact_url_dead_end(
+                status_code,
+                first_url(content).as_deref(),
+            ));
         }
     }
 
@@ -232,6 +243,21 @@ fn duckduckgo_dead_end(tool_name: &str, error_kind: &str, query: Option<&str>) -
         guidance: format!(
             "Do not retry {tool_name} with rewritten queries in this task; use existing results or another available source."
         ),
+    }
+}
+
+fn brave_search_dead_end(error_kind: &str, query: Option<&str>) -> FailureSignal {
+    let query = query.map(trim_for_prompt);
+    let summary = query.as_ref().map_or_else(
+        || format!("Brave Search {error_kind}"),
+        |query| format!("Brave Search {error_kind} query: {query}"),
+    );
+    FailureSignal {
+        failure_kind: error_kind.to_string(),
+        dead_end_scope: "provider",
+        target: "brave_search".to_string(),
+        summary,
+        guidance: "Do not retry brave_search in this task; use searxng_search or synthesize from existing results.".to_string(),
     }
 }
 
@@ -284,6 +310,10 @@ fn is_web_markdown(provider: Option<&str>, tool_name: &str) -> bool {
 
 fn is_duckduckgo(provider: Option<&str>, tool_name: &str) -> bool {
     provider == Some("duckduckgo") || matches!(tool_name, "duckduckgo_search" | "duckduckgo_news")
+}
+
+fn is_brave_search(provider: Option<&str>, tool_name: &str) -> bool {
+    provider == Some("brave_search") || tool_name == "brave_search"
 }
 
 fn string_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -347,10 +377,12 @@ mod tests {
         assert_eq!(value["dead_end_scope"], "host");
         assert_eq!(value["failure_kind"], "anti_bot");
         assert_eq!(value["target"], "platform.kimi.ai");
-        assert!(value["guidance"]
-            .as_str()
-            .expect("guidance")
-            .contains("Do not retry web_markdown for platform.kimi.ai"));
+        assert!(
+            value["guidance"]
+                .as_str()
+                .expect("guidance")
+                .contains("Do not retry web_markdown for platform.kimi.ai")
+        );
         assert!(summary.pruned_artifact.original_chars > summary.content.len());
     }
 
@@ -380,14 +412,54 @@ mod tests {
         assert_eq!(value["dead_end_scope"], "provider");
         assert_eq!(value["failure_kind"], "blocked");
         assert_eq!(value["target"], "duckduckgo");
-        assert!(value["summary"]
-            .as_str()
-            .expect("summary")
-            .contains("kimi code subscription"));
-        assert!(value["guidance"]
-            .as_str()
-            .expect("guidance")
-            .contains("Do not retry duckduckgo_search"));
+        assert!(
+            value["summary"]
+                .as_str()
+                .expect("summary")
+                .contains("kimi code subscription")
+        );
+        assert!(
+            value["guidance"]
+                .as_str()
+                .expect("guidance")
+                .contains("Do not retry duckduckgo_search")
+        );
+    }
+
+    #[test]
+    fn summarizes_brave_rate_limit_as_provider_dead_end() {
+        let raw = serde_json::to_string(&json!({
+            "provider": "brave_search",
+            "kind": "search",
+            "query": "rust async runtime comparison",
+            "error_kind": "rate_limited",
+            "error": "Brave Search is temporarily rate-limited",
+            "provider_unavailable": true,
+            "retryable": false,
+            "fallback": "searxng_search",
+            "results": []
+        }))
+        .expect("raw json");
+
+        let summary = summarize_tool_failure_content("brave_search", &raw)
+            .expect("rate-limited Brave failure should be summarized");
+        let value = parsed_summary(&summary.content);
+
+        assert_eq!(value["dead_end_scope"], "provider");
+        assert_eq!(value["failure_kind"], "rate_limited");
+        assert_eq!(value["target"], "brave_search");
+        assert!(
+            value["summary"]
+                .as_str()
+                .expect("summary")
+                .contains("Brave Search rate_limited query: rust async runtime comparison")
+        );
+        assert!(
+            value["guidance"]
+                .as_str()
+                .expect("guidance")
+                .contains("Do not retry brave_search in this task; use searxng_search")
+        );
     }
 
     #[test]
@@ -417,10 +489,12 @@ mod tests {
         assert_eq!(value["dead_end_scope"], "exact_url");
         assert_eq!(value["failure_kind"], "http_404");
         assert_eq!(value["target"], "https://kimi.com/api/pricing");
-        assert!(value["guidance"]
-            .as_str()
-            .expect("guidance")
-            .contains("host and web_markdown are not marked unavailable"));
+        assert!(
+            value["guidance"]
+                .as_str()
+                .expect("guidance")
+                .contains("host and web_markdown are not marked unavailable")
+        );
     }
 
     #[test]
@@ -476,8 +550,10 @@ mod tests {
         assert_eq!(rewritten.tool_call_id.as_deref(), Some("invoke-web"));
         assert_eq!(rewritten.tool_name.as_deref(), Some("web_markdown"));
         assert!(rewritten.is_pruned());
-        assert!(rewritten
-            .content
-            .contains("\"tool_failure_summary_version\":1"));
+        assert!(
+            rewritten
+                .content
+                .contains("\"tool_failure_summary_version\":1")
+        );
     }
 }

@@ -13,8 +13,8 @@ use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_sub_agent_system_prompt;
 use crate::agent::providers::{SandboxRuntime, TodoList};
 use crate::agent::runner::{
-    run_with_timeout, AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase,
-    TimedRunResult,
+    AgentRunner, AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
+    run_with_timeout,
 };
 use crate::agent::session::AgentMemoryScope;
 use crate::agent::tool_runtime::{
@@ -22,24 +22,27 @@ use crate::agent::tool_runtime::{
     ToolName, ToolOutput, ToolRegistry as RuntimeToolRegistry, ToolRuntimeConfig, ToolRuntimeError,
 };
 use crate::config::{
-    get_agent_search_limit, get_sub_agent_max_iterations, AgentSettings, AGENT_CONTINUATION_LIMIT,
+    AgentSettings, get_agent_continuation_limit, get_agent_search_limit,
+    get_sub_agent_max_iterations,
 };
 use crate::llm::{Message, ToolDefinition};
 use crate::sandbox::SandboxScope;
 use crate::storage::StorageProvider;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+#[cfg(feature = "tool-brave-search")]
+use crate::agent::tool_runtime::BraveSearchToolModule;
 #[cfg(feature = "tool-crawl4ai-markdown")]
 use crate::agent::tool_runtime::Crawl4AiMarkdownToolModule;
 #[cfg(feature = "tool-duckduckgo")]
@@ -57,6 +60,7 @@ use crate::agent::tool_runtime::TodosToolModule;
 #[cfg(any(
     feature = "tool-sandbox-exec",
     feature = "tool-sandbox-fileops",
+    feature = "tool-brave-search",
     feature = "tool-duckduckgo",
     feature = "tool-searxng",
     feature = "tool-tavily",
@@ -75,9 +79,34 @@ use tokio::sync::Semaphore;
 const TOOL_SPAWN_SUB_AGENTS: &str = "spawn_sub_agents";
 const TOOL_WAIT_SUB_AGENTS: &str = "wait_sub_agents";
 const TOOL_CANCEL_SUB_AGENTS: &str = "cancel_sub_agents";
+const TOOL_WEB_MARKDOWN: &str = "web_markdown";
+const TOOL_CRAWL4AI_MARKDOWN: &str = "crawl4ai_markdown";
 const SUB_AGENT_MAX_CONCURRENT_JOBS: usize = 5;
 const SUB_AGENT_DEFAULT_WAIT_TIMEOUT_MS: u64 = 30_000;
 const SUB_AGENT_MAX_WAIT_TIMEOUT_MS: u64 = 3_600_000;
+const SUB_AGENT_DISPLAY_NAMES: &[&str] = &[
+    "investi-gator",
+    "navig-gator",
+    "debug-bug",
+    "hash-hippo",
+    "blob-blobfish",
+    "commit-chameleon",
+    "koala-ty-assurance",
+    "data-basset",
+    "se-quail",
+    "byte-bull",
+    "ape-i",
+    "maca-queue",
+    "wi-fly",
+    "ram-ram",
+    "term-ite",
+    "algo-rhythm-ant",
+    "cat-alyst",
+    "log-frog",
+    "c-horse",
+    "octo-pusher",
+    "spam-ster",
+];
 
 const BLOCKED_SUB_AGENT_TOOLS: &[&str] = &[
     TOOL_SPAWN_SUB_AGENTS,
@@ -166,6 +195,7 @@ struct TopicAgentsMdContext {
 
 struct PreparedSubAgentExecution {
     task_id: String,
+    name: String,
     task: String,
     tool_runtime_registry: Arc<RuntimeToolRegistry>,
     tools: Vec<ToolDefinition>,
@@ -213,6 +243,7 @@ struct CompletedSubAgentExecution {
 
 struct SubAgentJobRecord {
     id: String,
+    name: String,
     task: String,
     status: SubAgentJobStatus,
     output: Option<String>,
@@ -225,6 +256,7 @@ struct SubAgentJobRecord {
 #[derive(Debug, Clone)]
 struct SubAgentJobSnapshot {
     id: String,
+    name: String,
     task: String,
     status: SubAgentJobStatus,
     output: Option<String>,
@@ -236,6 +268,7 @@ impl SubAgentJobSnapshot {
     fn to_json(&self) -> serde_json::Value {
         json!({
             "id": self.id,
+            "name": self.name,
             "task": self.task,
             "status": self.status.as_str(),
             "output": self.output,
@@ -315,6 +348,7 @@ impl SubAgentJobStore {
     fn insert_running(
         &self,
         id: String,
+        name: String,
         task: String,
         cancellation_token: tokio_util::sync::CancellationToken,
     ) {
@@ -326,6 +360,7 @@ impl SubAgentJobStore {
             id.clone(),
             SubAgentJobRecord {
                 id,
+                name,
                 task,
                 status: SubAgentJobStatus::Running,
                 output: None,
@@ -346,6 +381,15 @@ impl SubAgentJobStore {
         if let Some(job) = jobs.get_mut(id) {
             job.handle = Some(handle);
         }
+    }
+
+    fn has_active_name(&self, name: &str) -> bool {
+        let jobs = self
+            .jobs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        jobs.values()
+            .any(|job| !job.status.is_terminal() && job.name == name)
     }
 
     fn finish(&self, id: &str, status: SubAgentJobStatus, output: String) {
@@ -470,6 +514,7 @@ fn snapshot_job(job: &SubAgentJobRecord) -> SubAgentJobSnapshot {
         .duration_since(job.started_at);
     SubAgentJobSnapshot {
         id: job.id.clone(),
+        name: job.name.clone(),
         task: job.task.clone(),
         status: job.status,
         output: job.output.clone(),
@@ -666,7 +711,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         #[cfg(not(any(
             feature = "tool-sandbox-exec",
             feature = "tool-sandbox-fileops",
+            feature = "tool-brave-search",
             feature = "tool-duckduckgo",
+            feature = "tool-searxng",
             feature = "tool-tavily",
             feature = "tool-todos",
             feature = "tool-crawl4ai-markdown",
@@ -698,6 +745,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
         #[cfg(feature = "tool-duckduckgo")]
         self.push_sub_agent_tool_module(&mut executors, &DuckDuckGoToolModule, &module_ctx);
+
+        #[cfg(feature = "tool-brave-search")]
+        self.push_sub_agent_tool_module(&mut executors, &BraveSearchToolModule, &module_ctx);
 
         #[cfg(feature = "tool-searxng")]
         self.push_sub_agent_tool_module(&mut executors, &SearxngToolModule, &module_ctx);
@@ -744,7 +794,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     #[cfg(any(
         feature = "tool-sandbox-exec",
         feature = "tool-sandbox-fileops",
+        feature = "tool-brave-search",
         feature = "tool-duckduckgo",
+        feature = "tool-searxng",
         feature = "tool-tavily",
         feature = "tool-todos",
         feature = "tool-crawl4ai-markdown",
@@ -786,6 +838,11 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             warn!("DuckDuckGo enabled but feature not compiled in");
         }
 
+        #[cfg(not(feature = "tool-brave-search"))]
+        if crate::config::is_brave_search_enabled() {
+            warn!("Brave Search enabled but feature not compiled in");
+        }
+
         #[cfg(not(feature = "tool-searxng"))]
         if crate::config::is_searxng_enabled() {
             warn!("SearXNG enabled but feature not compiled in");
@@ -822,12 +879,19 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     ) -> Result<HashSet<String>> {
         let blocked = Self::blocked_tool_set();
         let requested: HashSet<String> = requested_tools.into_iter().collect();
-        let allowed: HashSet<String> = requested
+        let mut allowed: HashSet<String> = requested
             .iter()
             .filter(|name| !blocked.contains(*name))
             .filter(|name| available_tools.contains(*name))
             .cloned()
             .collect();
+
+        if requested.contains(TOOL_WEB_MARKDOWN)
+            && !blocked.contains(TOOL_CRAWL4AI_MARKDOWN)
+            && available_tools.contains(TOOL_CRAWL4AI_MARKDOWN)
+        {
+            allowed.insert(TOOL_CRAWL4AI_MARKDOWN.to_string());
+        }
 
         if allowed.is_empty() {
             warn!(
@@ -892,6 +956,23 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         Ok(args)
     }
 
+    fn unique_sub_agent_display_name(
+        &self,
+        seed: Uuid,
+        reserved_names: &HashSet<String>,
+    ) -> String {
+        let bytes = seed.as_bytes();
+        let start = usize::from(bytes[0]) % SUB_AGENT_DISPLAY_NAMES.len();
+        for offset in 0..SUB_AGENT_DISPLAY_NAMES.len() {
+            let name = SUB_AGENT_DISPLAY_NAMES[(start + offset) % SUB_AGENT_DISPLAY_NAMES.len()];
+            if !reserved_names.contains(name) && !self.jobs.has_active_name(name) {
+                return name.to_string();
+            }
+        }
+
+        SUB_AGENT_DISPLAY_NAMES[start].to_string()
+    }
+
     fn build_sub_agent_session(
         task: &str,
         max_tokens: usize,
@@ -953,7 +1034,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         AgentRunnerConfig::new(
             model.id.clone(),
             get_sub_agent_max_iterations(),
-            AGENT_CONTINUATION_LIMIT,
+            get_agent_continuation_limit(),
             self.settings.get_sub_agent_timeout_secs(),
             model.max_output_tokens,
         )
@@ -965,6 +1046,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     async fn prepare_sub_agent_execution(
         &self,
         arguments: &str,
+        reserved_names: &HashSet<String>,
         progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
         cancellation_token: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<PreparedSubAgentExecution> {
@@ -974,7 +1056,9 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             context,
         } = Self::parse_sub_agent_task_args(arguments)?;
 
-        let task_id = format!("sub-{}", Uuid::new_v4());
+        let task_uuid = Uuid::new_v4();
+        let task_id = format!("sub-{task_uuid}");
+        let name = self.unique_sub_agent_display_name(task_uuid, reserved_names);
         let model_routes = self.settings.get_configured_sub_agent_model_routes();
         let model = model_routes
             .first()
@@ -990,7 +1074,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
         );
         let todos_arc = Arc::new(Mutex::new(sub_session.memory().todos.clone()));
         let (sub_agent_progress_tx, progress_relay_task) =
-            spawn_sub_agent_progress_relay(progress_tx);
+            spawn_sub_agent_progress_relay(progress_tx, task_id.clone(), name.clone());
         let executors = self.build_sub_agent_tool_runtime_executors(
             Arc::clone(&todos_arc),
             AgentMemoryScope::new(0, "sub-agent", task_id.clone()),
@@ -1014,6 +1098,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
         Ok(PreparedSubAgentExecution {
             task_id,
+            name,
             task,
             tool_runtime_registry,
             tools,
@@ -1109,13 +1194,13 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     ) -> String {
         match outcome {
             TimedRunResult::Final(result) => result,
-            TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
-                warn!(task_id = %task_id, "Sub-agent paused waiting for unsupported approval");
+            TimedRunResult::WaitingForUserInput(_) => {
+                warn!(task_id = %task_id, "Sub-agent paused waiting for unsupported user input");
                 Self::build_sub_agent_error_report_for_settings(
                     settings,
                     task_id,
                     memory,
-                    "sub-agent paused waiting for unsupported external approval".to_string(),
+                    "sub-agent paused waiting for unsupported user input".to_string(),
                 )
             }
             TimedRunResult::Failed(err) => {
@@ -1137,9 +1222,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
     const fn status_for_timed_run_result(outcome: &TimedRunResult) -> SubAgentJobStatus {
         match outcome {
             TimedRunResult::Final(_) => SubAgentJobStatus::Completed,
-            TimedRunResult::WaitingForApproval | TimedRunResult::WaitingForUserInput(_) => {
-                SubAgentJobStatus::Failed
-            }
+            TimedRunResult::WaitingForUserInput(_) => SubAgentJobStatus::Failed,
             TimedRunResult::Failed(_) => SubAgentJobStatus::Failed,
             TimedRunResult::TimedOut => SubAgentJobStatus::TimedOut,
         }
@@ -1182,21 +1265,29 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
             .collect::<Result<Vec<_>>>()?;
         let permits = self.jobs.try_acquire_slots(tasks.len())?;
         let mut prepared_jobs = Vec::with_capacity(tasks.len());
+        let mut reserved_names = HashSet::with_capacity(tasks.len());
         for task in tasks {
             let arguments = serde_json::to_string(&task)?;
             let prepared = self
-                .prepare_sub_agent_execution(&arguments, progress_tx, cancellation_token)
+                .prepare_sub_agent_execution(
+                    &arguments,
+                    &reserved_names,
+                    progress_tx,
+                    cancellation_token,
+                )
                 .await?;
+            reserved_names.insert(prepared.name.clone());
             prepared_jobs.push(prepared);
         }
 
         let mut started = Vec::with_capacity(prepared_jobs.len());
         for (prepared, permit) in prepared_jobs.into_iter().zip(permits) {
             let job_id = prepared.task_id.clone();
+            let job_name = prepared.name.clone();
             let task = prepared.task.clone();
             let job_token = prepared.sub_session.cancellation_token().clone();
             self.jobs
-                .insert_running(job_id.clone(), task.clone(), job_token);
+                .insert_running(job_id.clone(), job_name.clone(), task.clone(), job_token);
 
             let jobs = Arc::clone(&self.jobs);
             let llm_client = Arc::clone(&self.llm_client);
@@ -1212,6 +1303,7 @@ Returns as soon as any requested sub-agent reaches a final status or the timeout
 
             started.push(json!({
                 "id": job_id,
+                "name": job_name,
                 "task": task,
                 "status": SubAgentJobStatus::Running.as_str(),
             }));
@@ -1375,6 +1467,8 @@ fn delegation_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
 
 fn spawn_sub_agent_progress_relay(
     parent_tx: Option<&mpsc::Sender<AgentEvent>>,
+    sub_agent_id: String,
+    sub_agent_name: String,
 ) -> (Option<mpsc::Sender<AgentEvent>>, Option<JoinHandle<()>>) {
     let Some(parent_tx) = parent_tx.cloned() else {
         return (None, None);
@@ -1387,7 +1481,11 @@ fn spawn_sub_agent_progress_relay(
                 continue;
             }
 
-            if parent_tx.send(event).await.is_err() {
+            if parent_tx
+                .send(event.with_sub_agent_source(sub_agent_id.clone(), sub_agent_name.clone()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -1519,15 +1617,16 @@ fn role_label(role: &MessageRole) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_forward_sub_agent_progress_event, spawn_sub_agent_progress_relay,
-        DelegationProvider, SubAgentJobStatus, SubAgentJobStore, SUB_AGENT_MAX_CONCURRENT_JOBS,
-        TOOL_CANCEL_SUB_AGENTS, TOOL_SPAWN_SUB_AGENTS, TOOL_WAIT_SUB_AGENTS,
+        DelegationProvider, SUB_AGENT_DISPLAY_NAMES, SUB_AGENT_MAX_CONCURRENT_JOBS,
+        SubAgentJobStatus, SubAgentJobStore, TOOL_CANCEL_SUB_AGENTS, TOOL_SPAWN_SUB_AGENTS,
+        TOOL_WAIT_SUB_AGENTS, should_forward_sub_agent_progress_event,
+        spawn_sub_agent_progress_relay,
     };
     use crate::agent::compaction::BudgetState;
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::identity::SessionId;
     use crate::agent::memory::AgentMessage;
-    use crate::agent::progress::{AgentEvent, FileDeliveryKind, TokenSnapshot};
+    use crate::agent::progress::{AgentEvent, AgentEventSource, FileDeliveryKind, TokenSnapshot};
     use crate::agent::providers::TodoList;
     use crate::agent::runner::TimedRunResult;
     use crate::agent::session::{AgentMemoryScope, PendingUserInput, UserInputKind};
@@ -1545,6 +1644,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
 
     fn runtime_invocation(tool_name: &str, raw_arguments: &str) -> ToolInvocation {
         let now = Utc::now();
@@ -1657,6 +1757,7 @@ mod tests {
         let store = SubAgentJobStore::new(SUB_AGENT_MAX_CONCURRENT_JOBS);
         store.insert_running(
             "sub-1".to_string(),
+            "debug-bug".to_string(),
             "Inspect workspace".to_string(),
             tokio_util::sync::CancellationToken::new(),
         );
@@ -1665,8 +1766,38 @@ mod tests {
 
         assert_eq!(lookup.found.len(), 1);
         assert_eq!(lookup.found[0].status, SubAgentJobStatus::Cancelled);
+        assert_eq!(lookup.found[0].name, "debug-bug");
         assert!(lookup.found[0].completed);
         assert_eq!(store.active_count(), 0);
+    }
+
+    #[test]
+    fn sub_agent_display_names_are_drawn_from_pun_pool() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+
+        let name = provider.unique_sub_agent_display_name(Uuid::nil(), &HashSet::new());
+
+        assert!(SUB_AGENT_DISPLAY_NAMES.contains(&name.as_str()));
+    }
+
+    #[test]
+    fn sub_agent_display_names_avoid_active_collisions() {
+        let settings = Arc::new(AgentSettings::default());
+        let provider =
+            DelegationProvider::new(Arc::new(LlmClient::new(&settings)), 1_i64, settings);
+        provider.jobs.insert_running(
+            "sub-1".to_string(),
+            "investi-gator".to_string(),
+            "Inspect workspace".to_string(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        let name = provider.unique_sub_agent_display_name(Uuid::nil(), &HashSet::new());
+
+        assert_ne!(name, "investi-gator");
+        assert!(SUB_AGENT_DISPLAY_NAMES.contains(&name.as_str()));
     }
 
     #[test]
@@ -1835,6 +1966,7 @@ mod tests {
         assert!(should_forward_sub_agent_progress_event(
             &AgentEvent::ToolCall {
                 id: "tool-1".to_string(),
+                source: AgentEventSource::Root,
                 name: "execute_command".to_string(),
                 input: "{\"command\":\"pwd\"}".to_string(),
                 command_preview: Some("pwd".to_string()),
@@ -1845,7 +1977,11 @@ mod tests {
     #[tokio::test]
     async fn sub_agent_progress_relay_filters_snapshot_events() {
         let (parent_tx, mut parent_rx) = mpsc::channel(8);
-        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(
+            Some(&parent_tx),
+            "sub-1".to_string(),
+            "debug-bug".to_string(),
+        );
         let sub_tx = sub_tx.expect("relay tx");
 
         sub_tx
@@ -1857,6 +1993,7 @@ mod tests {
         sub_tx
             .send(AgentEvent::ToolCall {
                 id: "tool-1".to_string(),
+                source: AgentEventSource::Root,
                 name: "execute_command".to_string(),
                 input: "{\"command\":\"pwd\"}".to_string(),
                 command_preview: Some("pwd".to_string()),
@@ -1879,14 +2016,30 @@ mod tests {
         drop(parent_tx);
 
         let forwarded = parent_rx.recv().await.expect("forwarded event");
-        assert!(matches!(forwarded, AgentEvent::ToolCall { .. }));
+        assert!(matches!(
+            forwarded,
+            AgentEvent::SubAgent {
+                sub_agent_id,
+                sub_agent_name,
+                event,
+            } if sub_agent_id == "sub-1"
+                && sub_agent_name == "debug-bug"
+                && matches!(*event, AgentEvent::ToolCall {
+                    source: AgentEventSource::SubAgent,
+                    ..
+                })
+        ));
         assert!(parent_rx.recv().await.is_none());
     }
 
     #[tokio::test]
     async fn sub_agent_progress_relay_drops_loop_notifications() {
         let (parent_tx, mut parent_rx) = mpsc::channel(8);
-        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(
+            Some(&parent_tx),
+            "sub-1".to_string(),
+            "debug-bug".to_string(),
+        );
         let sub_tx = sub_tx.expect("relay tx");
 
         sub_tx
@@ -1909,7 +2062,11 @@ mod tests {
     #[tokio::test]
     async fn sub_agent_progress_relay_drops_terminal_status_events() {
         let (parent_tx, mut parent_rx) = mpsc::channel(8);
-        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(Some(&parent_tx));
+        let (sub_tx, relay_task) = spawn_sub_agent_progress_relay(
+            Some(&parent_tx),
+            "sub-1".to_string(),
+            "debug-bug".to_string(),
+        );
         let sub_tx = sub_tx.expect("relay tx");
 
         sub_tx
@@ -1960,6 +2117,7 @@ mod tests {
                     "context": "Keep notes concise."
                 })
                 .to_string(),
+                &HashSet::new(),
                 None,
                 None,
             )
@@ -1973,10 +2131,12 @@ mod tests {
             prepared.tool_runtime_registry.specs().len(),
             prepared.tools.len()
         );
-        assert!(prepared
-            .tool_runtime_registry
-            .get(&ToolName::from("write_todos"))
-            .is_some());
+        assert!(
+            prepared
+                .tool_runtime_registry
+                .get(&ToolName::from("write_todos"))
+                .is_some()
+        );
 
         let ctx = DelegationProvider::build_sub_agent_runner_context(&mut prepared);
         assert!(ctx.tool_runtime_registry.is_some());
@@ -2012,6 +2172,7 @@ mod tests {
                     "tools": ["write_todos"]
                 })
                 .to_string(),
+                &HashSet::new(),
                 None,
                 None,
             )
@@ -2049,6 +2210,7 @@ mod tests {
                     "tools": ["write_todos"]
                 })
                 .to_string(),
+                &HashSet::new(),
                 None,
                 None,
             )
@@ -2058,9 +2220,11 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error
-            .to_string()
-            .contains("Failed to load topic AGENTS.md for sub-agent bootstrap"));
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to load topic AGENTS.md for sub-agent bootstrap")
+        );
     }
 
     #[test]

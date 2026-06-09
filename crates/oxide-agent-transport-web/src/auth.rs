@@ -1,19 +1,20 @@
 //! Authentication helpers for the web console.
 
+use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use oxide_agent_web_contracts::{
     BootstrapRequest, ChangePasswordRequest, CurrentUser, LoginRequest, RegisterRequest, UserRole,
 };
 use sha2::{Digest, Sha256};
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::persistence::{
-    WebAuthSessionRecord, WebUiStore, WebUiStoreError, WebUserRecord, WebUserStatus,
-    WEB_AUTH_SCHEMA_VERSION,
+    WEB_AUTH_SCHEMA_VERSION, WebAuthSessionRecord, WebUiStore, WebUiStoreError, WebUserRecord,
+    WebUserStatus,
 };
 
 const LOGIN_MIN_LEN: usize = 3;
@@ -22,6 +23,17 @@ const PASSWORD_MIN_LEN: usize = 12;
 const PASSWORD_MAX_LEN: usize = 1024;
 const USER_ID_ATTEMPTS: usize = 16;
 pub const AUTH_SESSION_TTL_SECS: i64 = 60 * 60 * 24 * 14;
+const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
+
+fn log_auth_store_phase(phase: &'static str, started_at: Instant, user_id: Option<i64>) {
+    tracing::debug!(
+        target: WEB_LATENCY_TARGET,
+        phase,
+        user_id = ?user_id,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "web auth store latency"
+    );
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
@@ -196,31 +208,39 @@ pub async fn current_user_for_token(
     now: DateTime<Utc>,
 ) -> Result<(CurrentUser, WebAuthSessionRecord), AuthError> {
     let session_token_hash = hash_session_token(raw_session_token);
+    let started_at = Instant::now();
     let Some(mut auth_session) = store
         .load_auth_session(&session_token_hash)
         .await
         .map_err(map_store_error)?
     else {
+        log_auth_store_phase("load_auth_session", started_at, None);
         return Err(AuthError::Unauthorized);
     };
+    log_auth_store_phase("load_auth_session", started_at, Some(auth_session.user_id));
     if auth_session.revoked_at.is_some() || auth_session.expires_at <= now {
         return Err(AuthError::Unauthorized);
     }
+    let started_at = Instant::now();
     let Some(user) = store
         .load_user(auth_session.user_id)
         .await
         .map_err(map_store_error)?
     else {
+        log_auth_store_phase("load_user", started_at, Some(auth_session.user_id));
         return Err(AuthError::Unauthorized);
     };
+    log_auth_store_phase("load_user", started_at, Some(auth_session.user_id));
     if user.status != WebUserStatus::Active {
         return Err(AuthError::Unauthorized);
     }
     auth_session.last_seen_at = now;
+    let started_at = Instant::now();
     store
         .save_auth_session(auth_session.clone())
         .await
         .map_err(map_store_error)?;
+    log_auth_store_phase("save_auth_session", started_at, Some(auth_session.user_id));
     Ok((current_user_from_record(&user), auth_session))
 }
 
@@ -308,6 +328,7 @@ async fn create_user(
         status: WebUserStatus::Active,
         default_model_selection: None,
         default_agent_profile_id: None,
+        default_effort: None,
         created_at: now,
         updated_at: now,
         last_login_at: None,
@@ -368,9 +389,9 @@ mod tests {
     };
 
     use crate::auth::{
-        bootstrap_user, change_password, current_user_for_token, hash_password, hash_session_token,
-        login_user, logout_session, normalize_login, register_user, validate_password,
-        verify_password, AuthError,
+        AuthError, bootstrap_user, change_password, current_user_for_token, hash_password,
+        hash_session_token, login_user, logout_session, normalize_login, register_user,
+        validate_password, verify_password,
     };
     use crate::persistence::{InMemoryWebUiStore, WebUiStore, WebUserStatus};
 
@@ -606,9 +627,11 @@ mod tests {
         .await
         .expect("change password");
 
-        assert!(current_user_for_token(&store, &token_one, now)
-            .await
-            .is_ok());
+        assert!(
+            current_user_for_token(&store, &token_one, now)
+                .await
+                .is_ok()
+        );
         assert!(matches!(
             current_user_for_token(&store, &token_two, now).await,
             Err(AuthError::Unauthorized)
@@ -625,15 +648,17 @@ mod tests {
             .await,
             Err(AuthError::InvalidCredentials)
         ));
-        assert!(login_user(
-            &store,
-            LoginRequest {
-                login: "alice".to_string(),
-                password: "new correct horse battery staple".to_string(),
-            },
-            now,
-        )
-        .await
-        .is_ok());
+        assert!(
+            login_user(
+                &store,
+                LoginRequest {
+                    login: "alice".to_string(),
+                    password: "new correct horse battery staple".to_string(),
+                },
+                now,
+            )
+            .await
+            .is_ok()
+        );
     }
 }

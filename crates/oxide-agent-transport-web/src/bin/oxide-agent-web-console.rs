@@ -1,10 +1,10 @@
 use dotenvy::dotenv;
 use oxide_agent_core::capabilities::{compiled_capability_manifest, compiled_profile_name};
-use oxide_agent_core::config::{load_module_runtime_settings, AgentSettings};
+use oxide_agent_core::config::{AgentSettings, load_module_runtime_settings};
 use oxide_agent_core::llm::LlmClient;
 use oxide_agent_runtime::SessionRegistry;
 use oxide_agent_transport_web::session::WebSessionManager;
-use oxide_agent_transport_web::{serve, AppState};
+use oxide_agent_transport_web::{AppState, serve};
 use std::env;
 use std::io;
 use std::net::SocketAddr;
@@ -261,38 +261,76 @@ async fn build_app_state(
     llm: Arc<LlmClient>,
     agent_settings: Arc<AgentSettings>,
 ) -> Result<AppState, Box<dyn std::error::Error>> {
-    if use_r2_web_store(agent_settings.as_ref()) {
-        return build_r2_app_state(registry, llm, agent_settings).await;
+    if unsupported_web_store_env() {
+        return Err("unsupported OXIDE_WEB_STORE value; use sqlx or postgres".into());
+    }
+    if use_sqlx_web_store(agent_settings.as_ref()) {
+        return build_sqlx_app_state(registry, llm, agent_settings).await;
     }
 
     let session_manager = WebSessionManager::new(registry, llm, agent_settings);
     Ok(AppState::new(Arc::new(session_manager)))
 }
 
-#[cfg(feature = "storage-s3-r2")]
-async fn build_r2_app_state(
+#[cfg(feature = "storage-sqlx")]
+async fn build_sqlx_app_state(
     registry: SessionRegistry,
     llm: Arc<LlmClient>,
     agent_settings: Arc<AgentSettings>,
 ) -> Result<AppState, Box<dyn std::error::Error>> {
-    oxide_agent_transport_web::build_r2_backed_app_state(registry, llm, agent_settings)
+    oxide_agent_transport_web::build_sqlx_backed_app_state(registry, llm, agent_settings)
         .await
         .map_err(Into::into)
 }
 
-#[cfg(not(feature = "storage-s3-r2"))]
-async fn build_r2_app_state(
+#[cfg(not(feature = "storage-sqlx"))]
+async fn build_sqlx_app_state(
     _registry: SessionRegistry,
     _llm: Arc<LlmClient>,
     _agent_settings: Arc<AgentSettings>,
 ) -> Result<AppState, Box<dyn std::error::Error>> {
-    Err("OXIDE_WEB_STORE=r2 requires the storage-s3-r2 feature".into())
+    Err("SQLx/Postgres web persistence requires the storage-sqlx feature".into())
 }
 
-fn use_r2_web_store(agent_settings: &AgentSettings) -> bool {
-    env::var("OXIDE_WEB_STORE").is_ok_and(|value| value.trim().eq_ignore_ascii_case("r2"))
+fn unsupported_web_store_env() -> bool {
+    web_store_env().is_some_and(|value| value != "sqlx" && value != "postgres")
+}
+
+fn use_sqlx_web_store(agent_settings: &AgentSettings) -> bool {
+    web_store_env().is_some_and(|value| value == "sqlx" || value == "postgres")
+        || durable_web_store_required()
+        || sqlx_web_store_configured(agent_settings)
+}
+
+#[cfg(feature = "storage-sqlx")]
+fn sqlx_web_store_configured(agent_settings: &AgentSettings) -> bool {
+    agent_settings.is_module_enabled("storage/sqlx")
+        && oxide_agent_core::storage::SqlxStorageConfig::is_configured(agent_settings)
+}
+
+#[cfg(not(feature = "storage-sqlx"))]
+fn sqlx_web_store_configured(_agent_settings: &AgentSettings) -> bool {
+    false
+}
+
+fn durable_web_store_required() -> bool {
+    production_run_mode()
+        || web_bool_env("OXIDE_WEB_ENABLED")
         || web_bool_env("OXIDE_WEB_REQUIRE_DURABLE_STORAGE")
-        || agent_settings.is_module_enabled("storage/r2")
+}
+
+fn production_run_mode() -> bool {
+    env::var("RUN_MODE").is_ok_and(|value| {
+        let value = value.trim().to_ascii_lowercase();
+        value == "prod" || value == "production"
+    })
+}
+
+fn web_store_env() -> Option<String> {
+    env::var("OXIDE_WEB_STORE")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
 }
 
 fn web_bool_env(key: &str) -> bool {

@@ -1,3 +1,5 @@
+// Production: forbid unsafe. Tests: no lint (allows test helpers to wrap unsafe env ops).
+#![cfg_attr(not(test), forbid(unsafe_code))]
 //! Web transport for Oxide Agent — HTTP API for Agent Mode execution.
 //!
 //! ## Overview
@@ -19,7 +21,7 @@
 //!     v
 //! [AgentExecutor] -- core agent loop (from oxide-agent-core)
 //!     |
-//!     +-- [InMemoryStorage] -- StorageProvider impl, no R2 required
+//!     +-- [InMemoryStorage] -- StorageProvider impl for hermetic tests
 //!     +-- [WebAgentTransport] -- AgentTransport impl, collects events in memory
 //!     +-- [ScriptedLlmProvider] -- deterministic LLM for tests
 //! ```

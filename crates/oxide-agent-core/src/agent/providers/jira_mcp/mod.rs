@@ -8,9 +8,9 @@ use crate::agent::tool_runtime::{
     ToolRuntimeError,
 };
 use crate::llm::ToolDefinition;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
 
@@ -558,9 +558,11 @@ mod tests {
         })))
         .expect_err("multiple selector modes must be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("Provide exactly one of: keys, jql, or resource"));
+        assert!(
+            error
+                .to_string()
+                .contains("Provide exactly one of: keys, jql, or resource")
+        );
     }
 
     #[test]
@@ -568,9 +570,11 @@ mod tests {
         let error = validate_jira_read_arguments(&json_args(json!({"limit": 10})))
             .expect_err("missing selector must be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("Provide exactly one of: keys, jql, or resource"));
+        assert!(
+            error
+                .to_string()
+                .contains("Provide exactly one of: keys, jql, or resource")
+        );
     }
 
     #[test]
@@ -592,9 +596,11 @@ mod tests {
         })))
         .expect_err("unknown jira_read keys must be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("unknown argument(s): unexpected"));
+        assert!(
+            error
+                .to_string()
+                .contains("unknown argument(s): unexpected")
+        );
     }
 
     #[tokio::test]

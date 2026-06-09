@@ -353,15 +353,56 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
-        "id": "storage/r2",
+        "id": "storage/sqlx",
         "kind": "storage-backend",
-        "cargo_feature": "storage-s3-r2",
+        "cargo_feature": "storage-sqlx",
         "provides": [
-          "storage/r2"
+          "storage/sqlx"
         ],
         "requires": [],
         "conflicts": [],
-        "config_properties": []
+        "config_properties": [
+          {
+            "name": "connect_timeout_secs",
+            "value_kind": "string",
+            "description": "Postgres pool connection/acquire timeout in seconds.",
+            "env": "OXIDE_DATABASE_CONNECT_TIMEOUT_SECS",
+            "secret": false,
+            "default_value": "10"
+          },
+          {
+            "name": "database_url",
+            "value_kind": "string",
+            "description": "Postgres connection URL. Also accepts DATABASE_URL as a runtime fallback.",
+            "env": "OXIDE_DATABASE_URL",
+            "secret": true,
+            "default_value": null
+          },
+          {
+            "name": "max_connections",
+            "value_kind": "string",
+            "description": "Maximum Postgres pool connections.",
+            "env": "OXIDE_DATABASE_MAX_CONNECTIONS",
+            "secret": false,
+            "default_value": "5"
+          },
+          {
+            "name": "migrate_on_startup",
+            "value_kind": "string",
+            "description": "Run SQLx migrations during storage startup when set to true.",
+            "env": "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
+            "secret": false,
+            "default_value": "false"
+          },
+          {
+            "name": "migrations_dir",
+            "value_kind": "string",
+            "description": "Runtime path to SQLx migration files.",
+            "env": "OXIDE_DATABASE_MIGRATIONS_DIR",
+            "secret": false,
+            "default_value": "migrations"
+          }
+        ]
       },
       {
         "id": "tool/agents-md",
@@ -369,6 +410,17 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "cargo_feature": "tool-agents-md",
         "provides": [
           "tool/agents-md"
+        ],
+        "requires": [],
+        "conflicts": [],
+        "config_properties": []
+      },
+      {
+        "id": "tool/brave-search",
+        "kind": "search",
+        "cargo_feature": "tool-brave-search",
+        "provides": [
+          "tool/brave-search"
         ],
         "requires": [],
         "conflicts": [],
@@ -663,28 +715,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "config_properties": []
       },
       {
-        "id": "transport/cli",
-        "kind": "transport",
-        "cargo_feature": "transport-cli",
-        "provides": [
-          "transport/cli"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
-        "id": "transport/http-api",
-        "kind": "transport",
-        "cargo_feature": "transport-http-api",
-        "provides": [
-          "transport/http-api"
-        ],
-        "requires": [],
-        "conflicts": [],
-        "config_properties": []
-      },
-      {
         "id": "transport/telegram",
         "kind": "transport",
         "cargo_feature": "transport-telegram",
@@ -825,12 +855,16 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "sandbox-daemon/sandboxd"
       },
       {
-        "id": "storage/r2",
-        "module": "storage/r2"
+        "id": "storage/sqlx",
+        "module": "storage/sqlx"
       },
       {
         "id": "tool/agents-md",
         "module": "tool/agents-md"
+      },
+      {
+        "id": "tool/brave-search",
+        "module": "tool/brave-search"
       },
       {
         "id": "tool/compression",
@@ -937,14 +971,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
         "module": "tool/ytdlp"
       },
       {
-        "id": "transport/cli",
-        "module": "transport/cli"
-      },
-      {
-        "id": "transport/http-api",
-        "module": "transport/http-api"
-      },
-      {
         "id": "transport/telegram",
         "module": "transport/telegram"
       },
@@ -972,8 +998,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/docker-direct",
       "sandbox-backend/sandboxd-client",
       "sandbox-daemon/sandboxd",
-      "storage/r2",
+      "storage/sqlx",
       "tool/agents-md",
+      "tool/brave-search",
       "tool/compression",
       "tool/crawl4ai-markdown",
       "tool/delegation",
@@ -995,8 +1022,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/webfetch-md",
       "tool/wiki-memory",
       "tool/ytdlp",
-      "transport/cli",
-      "transport/http-api",
       "transport/telegram",
       "transport/web"
     ],
@@ -1030,8 +1055,9 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "sandbox-backend/sandboxd-client/fileops",
       "sandbox-backend/sandboxd-client/lifecycle",
       "sandbox-daemon/sandboxd",
-      "storage/r2",
+      "storage/sqlx",
       "tool/agents-md",
+      "tool/brave-search",
       "tool/compression",
       "tool/crawl4ai-markdown",
       "tool/delegation",
@@ -1058,8 +1084,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       "tool/ytdlp-download",
       "tool/ytdlp-metadata",
       "tool/ytdlp-transcript",
-      "transport/cli",
-      "transport/http-api",
       "transport/telegram",
       "transport/web"
     ]
@@ -1068,7 +1092,6 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "apply_file_edit",
     "cancel_sub_agents",
     "compress",
-    "crawl4ai_markdown",
     "describe_image_file",
     "describe_video_file",
     "duckduckgo_news",
@@ -1121,7 +1144,7 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
     "zai"
   ],
   "storage_backend_module_ids": [
-    "storage/r2"
+    "storage/sqlx"
   ],
   "sandbox_backend_module_ids": [
     "sandbox-backend/bwrap",
@@ -1265,9 +1288,22 @@ expression: "serde_json::to_string_pretty(&snapshot).expect(\"snapshot should se
       ]
     },
     {
-      "module_id": "storage/r2",
+      "module_id": "storage/sqlx",
       "kind": "storage-backend",
-      "cargo_feature": "storage-s3-r2",
+      "cargo_feature": "storage-sqlx",
+      "config_env": [
+        "OXIDE_DATABASE_CONNECT_TIMEOUT_SECS",
+        "OXIDE_DATABASE_URL",
+        "OXIDE_DATABASE_MAX_CONNECTIONS",
+        "OXIDE_DATABASE_MIGRATE_ON_STARTUP",
+        "OXIDE_DATABASE_MIGRATIONS_DIR"
+      ],
+      "requires_capabilities": []
+    },
+    {
+      "module_id": "tool/brave-search",
+      "kind": "search",
+      "cargo_feature": "tool-brave-search",
       "config_env": [],
       "requires_capabilities": []
     },

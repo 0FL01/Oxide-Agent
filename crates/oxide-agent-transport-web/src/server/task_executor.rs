@@ -4,25 +4,34 @@
 //! and tracking timeline milestones.
 
 use super::{
-    markdown_preview, pending_user_input_view, progress_snapshot_from_serializable, AppState,
-    Milestones, SerializableProgress, TaskTimelineRecord, EVENT_LOGS, YOLO_APPROVAL_DIAGNOSTIC,
+    AppState, EVENT_LOGS, Milestones, SerializableProgress, TaskTimelineRecord, markdown_preview,
+    pending_user_input_view, progress_snapshot_from_serializable,
 };
 use crate::persistence::WebUiStore;
 use crate::session::{RunningTask, ToolCallTiming, WebSessionManager};
-use crate::web_transport::{collect_events, BrowserEventScope};
-use oxide_agent_core::agent::{AgentExecutionOutcome, PendingUserInput};
-use oxide_agent_web_contracts::{PersistedTaskEvent, TaskStatus as ApiTaskStatus, WebTaskRecord};
+use crate::web_transport::{BrowserEventScope, TaskEventLog, collect_events};
+use oxide_agent_core::agent::{
+    AgentExecutionEffort, AgentExecutionOptions, AgentExecutionOutcome, AgentUserInput,
+    PendingUserInput,
+};
+use oxide_agent_web_contracts::{
+    AgentEffort as WebAgentEffort, PersistedTaskEvent, ProgressSnapshot,
+    TaskStatus as ApiTaskStatus, WebTaskRecord,
+};
 use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, RwLock};
-use tracing::{info, warn};
+use tokio::sync::{RwLock, mpsc};
+use tracing::{debug, info, warn};
+
+const WEB_LATENCY_TARGET: &str = "oxide_agent_transport_web::web_latency";
 
 /// Shared state needed by the task executor.
 struct TaskExecutorCtx {
     task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     web_task: Option<WebTaskPersistence>,
+    queued_at: Instant,
 }
 
 #[derive(Clone)]
@@ -31,6 +40,9 @@ pub(crate) struct WebTaskPersistence {
     pub(crate) user_id: i64,
     pub(crate) session_id: String,
     pub(crate) task_id: String,
+    /// In-process event log for live SSE subscribers. `None` for tasks that
+    /// run without a browser-visible session (tests, internal jobs).
+    pub(crate) event_log: Option<TaskEventLog>,
 }
 
 struct ExecutorTaskCtx {
@@ -42,13 +54,32 @@ struct ExecutorTaskCtx {
     tx: mpsc::Sender<oxide_agent_core::agent::AgentEvent>,
     timeline_map: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     agent_started_at: Instant,
+    queued_at: Instant,
     web_task: Option<WebTaskPersistence>,
     event_collector_handle: tokio::task::JoinHandle<()>,
 }
 
 pub(crate) enum TaskRunRequest {
-    Execute(String),
-    ResumeUserInput(String),
+    Execute {
+        input: AgentUserInput,
+        effort: Option<WebAgentEffort>,
+    },
+    ResumeUserInput {
+        input: AgentUserInput,
+        effort: Option<WebAgentEffort>,
+    },
+}
+
+fn execution_options_from_effort(effort: Option<WebAgentEffort>) -> AgentExecutionOptions {
+    let Some(effort) = effort else {
+        return AgentExecutionOptions::default();
+    };
+    let effort = match effort {
+        WebAgentEffort::Standard => AgentExecutionEffort::Standard,
+        WebAgentEffort::Extended => AgentExecutionEffort::Extended,
+        WebAgentEffort::Heavy => AgentExecutionEffort::Heavy,
+    };
+    AgentExecutionOptions::with_effort(effort)
 }
 
 pub(crate) async fn spawn_registered_task(
@@ -58,6 +89,7 @@ pub(crate) async fn spawn_registered_task(
     run_request: TaskRunRequest,
     web_task: Option<WebTaskPersistence>,
 ) {
+    let queued_at = Instant::now();
     let task_id = running_task.task_id.clone();
     let task_progress = state.task_progress.clone();
     let task_timeline = state.task_timeline.clone();
@@ -96,10 +128,13 @@ pub(crate) async fn spawn_registered_task(
         task_progress,
         task_timeline,
         web_task,
+        queued_at,
     };
     let task_handles = state.task_handles.clone();
     let tid_for_cleanup = task_id.clone();
     let session_id_for_task = session_id.clone();
+    let task_id_for_log = tid_for_cleanup.clone();
+    let session_id_for_log = session_id_for_task.clone();
 
     let handle = tokio::spawn(async move {
         execute_agent_task(
@@ -120,6 +155,15 @@ pub(crate) async fn spawn_registered_task(
         handles.insert(task_id, Arc::new(handle));
     }
 
+    debug!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id_for_log,
+        task_id = %task_id_for_log,
+        phase = "task_tokio_spawned",
+        elapsed_ms = queued_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
+
     tokio::task::yield_now().await;
 }
 
@@ -130,6 +174,16 @@ async fn execute_agent_task(
     run_request: TaskRunRequest,
     ctx: TaskExecutorCtx,
 ) {
+    let executor_started_at = Instant::now();
+    debug!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "execute_agent_task_started",
+        queue_wait_ms = ctx.queued_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
+
     let registry = session_manager.session_registry();
     let sid = derive_session_id(&session_manager, session_id).await;
     let Some(sid) = sid else {
@@ -154,6 +208,15 @@ async fn execute_agent_task(
             return;
         }
     };
+    debug!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "runtime_executor_resolved",
+        queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
+        executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
     let cancellation_token = match registry.get_cancellation_token(&sid).await {
         Some(token) => token,
         None => {
@@ -164,10 +227,30 @@ async fn execute_agent_task(
             return;
         }
     };
+    debug!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "runtime_cancellation_token_resolved",
+        queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
+        executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
 
     {
+        let lock_started_at = Instant::now();
         let mut executor = executor_arc.write().await;
         executor.session_mut().cancellation_token = (*cancellation_token).clone();
+        debug!(
+            target: WEB_LATENCY_TARGET,
+            session_id = %session_id,
+            task_id = %task_id,
+            phase = "cancellation_token_installed",
+            executor_lock_wait_ms = lock_started_at.elapsed().as_millis(),
+            queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
+            executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
+            "web task executor latency"
+        );
     }
 
     // Capture chrono timestamp for calculating offsets from named milestones.
@@ -193,6 +276,15 @@ async fn execute_agent_task(
         agent_started_at_chrono,
         ctx.web_task.clone(),
     );
+    debug!(
+        target: WEB_LATENCY_TARGET,
+        session_id = %session_id,
+        task_id = %task_id,
+        phase = "event_collector_spawned",
+        queue_elapsed_ms = ctx.queued_at.elapsed().as_millis(),
+        executor_elapsed_ms = executor_started_at.elapsed().as_millis(),
+        "web task executor latency"
+    );
     spawn_executor_task(ExecutorTaskCtx {
         session_manager,
         session_id: session_id.to_string(),
@@ -202,6 +294,7 @@ async fn execute_agent_task(
         tx,
         timeline_map: ctx.task_timeline.clone(),
         agent_started_at,
+        queued_at: ctx.queued_at,
         web_task: ctx.web_task,
         event_collector_handle,
     });
@@ -267,14 +360,14 @@ fn spawn_event_collector(
             } else {
                 persist_task_events(&web_task, collected.persisted_events).await;
             }
-            if let Some(handle) = live_progress_persister_handle {
-                if let Err(error) = handle.await {
-                    warn!(
-                        task_id = %web_task.task_id,
-                        error = %error,
-                        "Live web progress persistence task failed"
-                    );
-                }
+            if let Some(handle) = live_progress_persister_handle
+                && let Err(error) = handle.await
+            {
+                warn!(
+                    task_id = %web_task.task_id,
+                    error = %error,
+                    "Live web progress persistence task failed"
+                );
             }
             persist_task_progress(&web_task, progress).await;
         }
@@ -314,18 +407,70 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
             tx,
             timeline_map,
             agent_started_at,
+            queued_at,
             web_task,
             event_collector_handle,
         } = ctx;
 
         let result = {
+            let executor_lock_started_at = Instant::now();
+            debug!(
+                target: WEB_LATENCY_TARGET,
+                session_id = %session_id,
+                task_id = %task_id,
+                phase = "executor_lock_wait_started",
+                queue_elapsed_ms = queued_at.elapsed().as_millis(),
+                agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
+                "web task executor latency"
+            );
             let mut executor = executor_arc.write().await;
             let executor_lock_acquired_ms = Some(agent_started_at.elapsed().as_millis() as i64);
             record_executor_lock_acquired(&timeline_map, &task_id, executor_lock_acquired_ms).await;
+            debug!(
+                target: WEB_LATENCY_TARGET,
+                session_id = %session_id,
+                task_id = %task_id,
+                phase = "executor_lock_acquired",
+                executor_lock_wait_ms = executor_lock_started_at.elapsed().as_millis(),
+                queue_elapsed_ms = queued_at.elapsed().as_millis(),
+                agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
+                "web task executor latency"
+            );
             match run_request {
-                TaskRunRequest::Execute(task_text) => executor.execute(&task_text, Some(tx)).await,
-                TaskRunRequest::ResumeUserInput(input) => {
-                    executor.resume_after_user_input(input, Some(tx)).await
+                TaskRunRequest::Execute {
+                    input: task_text,
+                    effort,
+                } => {
+                    let options = execution_options_from_effort(effort);
+                    debug!(
+                        target: WEB_LATENCY_TARGET,
+                        session_id = %session_id,
+                        task_id = %task_id,
+                        run_kind = "execute",
+                        phase = "core_executor_call_started",
+                        queue_elapsed_ms = queued_at.elapsed().as_millis(),
+                        agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
+                        "web task executor latency"
+                    );
+                    executor
+                        .execute_user_input_with_options(task_text, Some(tx), options)
+                        .await
+                }
+                TaskRunRequest::ResumeUserInput { input, effort } => {
+                    let options = execution_options_from_effort(effort);
+                    debug!(
+                        target: WEB_LATENCY_TARGET,
+                        session_id = %session_id,
+                        task_id = %task_id,
+                        run_kind = "resume_user_input",
+                        phase = "core_executor_call_started",
+                        queue_elapsed_ms = queued_at.elapsed().as_millis(),
+                        agent_elapsed_ms = agent_started_at.elapsed().as_millis(),
+                        "web task executor latency"
+                    );
+                    executor
+                        .resume_user_input_with_options(input, Some(tx), options)
+                        .await
                 }
             }
         };
@@ -352,13 +497,6 @@ fn spawn_executor_task(ctx: ExecutorTaskCtx) {
                 }
                 session_manager.complete_task(&task_id, &session_id).await;
                 info!(task_id = %task_id, "Task paused waiting for user input");
-            }
-            Ok(AgentExecutionOutcome::WaitingForApproval) => {
-                if let Some(web_task) = &web_task {
-                    persist_task_failed(web_task, YOLO_APPROVAL_DIAGNOSTIC).await;
-                }
-                session_manager.fail_task(&task_id, &session_id).await;
-                info!(task_id = %task_id, "Task failed after unexpected approval wait");
             }
             Err(e) => {
                 if let Some(web_task) = &web_task {
@@ -387,6 +525,8 @@ async fn persist_task_completed(web_task: &WebTaskPersistence, final_response: S
         update_web_session_for_task(web_task, ApiTaskStatus::Completed, None, Some(preview), now)
             .await;
     }
+    broadcast_status_if_present(web_task, ApiTaskStatus::Completed, true).await;
+    close_event_log_if_present(web_task).await;
 }
 
 async fn persist_task_waiting_for_user_input(
@@ -412,6 +552,8 @@ async fn persist_task_waiting_for_user_input(
         )
         .await;
     }
+    broadcast_status_if_present(web_task, ApiTaskStatus::WaitingForUserInput, false).await;
+    close_event_log_if_present(web_task).await;
 }
 
 async fn persist_task_failed(web_task: &WebTaskPersistence, message: impl Into<String>) {
@@ -428,16 +570,85 @@ async fn persist_task_failed(web_task: &WebTaskPersistence, message: impl Into<S
     if updated {
         update_web_session_for_task(web_task, ApiTaskStatus::Failed, None, None, now).await;
     }
+    broadcast_status_if_present(web_task, ApiTaskStatus::Failed, false).await;
+    close_event_log_if_present(web_task).await;
+}
+
+async fn close_event_log_if_present(web_task: &WebTaskPersistence) {
+    if let Some(event_log) = web_task.event_log.as_ref() {
+        event_log.close().await;
+        if let Some(closed_at) = event_log.closed_at().await {
+            spawn_event_log_cleanup(web_task.task_id.clone(), closed_at);
+        }
+    }
+}
+
+/// Spawn a background task that removes the `TaskEventLog` entry for
+/// `task_id` from the global `EVENT_LOGS` registry after
+/// `EVENT_LOG_RETENTION_AFTER_CLOSE`. Late subscribers that connect
+/// during the retention window can still query the in-memory snapshot
+/// for replay; after the window expires the entry is evicted and
+/// subscribers fall back to the durable DB.
+fn spawn_event_log_cleanup(task_id: String, closed_at: std::time::Instant) {
+    tokio::spawn(async move {
+        tokio::time::sleep(super::EVENT_LOG_RETENTION_AFTER_CLOSE).await;
+        let mut logs = EVENT_LOGS.lock().await;
+        // Only evict if the entry in the map is still the same closed
+        // log. A fresh task that re-used the same id would have a
+        // different `closed_at` (or `None`), and we must not touch it.
+        if let Some(current) = logs.get(&task_id)
+            && current.closed_at().await == Some(closed_at)
+        {
+            logs.remove(&task_id);
+        }
+    });
+}
+
+async fn broadcast_status_if_present(
+    web_task: &WebTaskPersistence,
+    status: ApiTaskStatus,
+    final_response_available: bool,
+) {
+    let Some(event_log) = web_task.event_log.as_ref() else {
+        return;
+    };
+    let last_seq = web_task
+        .web_store
+        .load_task_event_state(web_task.user_id, &web_task.session_id, &web_task.task_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.last_event_seq)
+        .unwrap_or_else(|| 0);
+    event_log
+        .notify_status(status, final_response_available, last_seq)
+        .await;
+}
+
+async fn broadcast_progress_if_present(web_task: &WebTaskPersistence, snapshot: ProgressSnapshot) {
+    let Some(event_log) = web_task.event_log.as_ref() else {
+        return;
+    };
+    let last_seq = web_task
+        .web_store
+        .load_task_event_state(web_task.user_id, &web_task.session_id, &web_task.task_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|state| state.last_event_seq)
+        .unwrap_or_else(|| 0);
+    event_log.notify_progress(snapshot, last_seq).await;
 }
 
 async fn persist_task_progress(web_task: &WebTaskPersistence, progress: SerializableProgress) {
     let now = chrono::Utc::now();
     let snapshot = progress_snapshot_from_serializable(progress);
     update_web_task_unless_cancelled(web_task, |task| {
-        task.last_progress = Some(snapshot);
+        task.last_progress = Some(snapshot.clone());
         task.updated_at = now;
     })
     .await;
+    broadcast_progress_if_present(web_task, snapshot).await;
 }
 
 async fn persist_task_events(
@@ -457,7 +668,7 @@ async fn persist_task_events(
             web_task.user_id,
             &web_task.session_id,
             &web_task.task_id,
-            events,
+            events.clone(),
         )
         .await
     {
@@ -467,6 +678,12 @@ async fn persist_task_events(
             "Failed to persist web task events"
         );
         return;
+    }
+
+    if let Some(event_log) = web_task.event_log.as_ref() {
+        for event in &events {
+            event_log.push_persisted(event.clone()).await;
+        }
     }
 
     let now = chrono::Utc::now();

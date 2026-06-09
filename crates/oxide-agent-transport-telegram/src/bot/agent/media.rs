@@ -82,23 +82,23 @@ async fn extract_agent_input_inner(
     }
 
     // Photo
-    if let Some(photos) = msg.photo() {
-        if let Some(photo) = photos.last() {
-            let buffer = download_telegram_file(bot, photo.file.id.clone()).await?;
-            if preserve_binary_uploads {
-                return Ok(build_uploaded_file_input(
-                    buffer,
-                    format!("photo_{}.jpg", msg.id.0),
-                    Some("image/jpeg".to_string()),
-                    caption,
-                ));
-            }
-
-            return Ok(AgentInput::Image {
-                bytes: buffer,
-                context: caption,
-            });
+    if let Some(photos) = msg.photo()
+        && let Some(photo) = photos.last()
+    {
+        let buffer = download_telegram_file(bot, photo.file.id.clone()).await?;
+        if preserve_binary_uploads {
+            return Ok(build_uploaded_file_input(
+                buffer,
+                format!("photo_{}.jpg", msg.id.0),
+                Some("image/jpeg".to_string()),
+                caption,
+            ));
         }
+
+        return Ok(AgentInput::Image {
+            bytes: buffer,
+            context: caption,
+        });
     }
 
     // Video

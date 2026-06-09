@@ -30,7 +30,6 @@ async fn topic_infra_upsert_resolves_unique_forum_topic_name_alias() {
                 environment: options.environment,
                 tags: options.tags,
                 allowed_tool_modes: options.allowed_tool_modes,
-                approval_required_modes: options.approval_required_modes,
                 created_at: 10,
                 updated_at: 10,
             })
@@ -93,7 +92,6 @@ async fn topic_infra_upsert_persists_and_audits() {
                 environment: options.environment,
                 tags: options.tags,
                 allowed_tool_modes: options.allowed_tool_modes,
-                approval_required_modes: options.approval_required_modes,
                 created_at: 10,
                 updated_at: 10,
             })
@@ -118,7 +116,7 @@ async fn topic_infra_upsert_persists_and_audits() {
     let response = provider
         .execute(
             TOOL_TOPIC_INFRA_UPSERT,
-            r#"{"topic_id":"topic-a","target_name":"prod-app","host":"prod.example.com","remote_user":"deploy","auth_mode":"private_key","secret_ref":"storage:ssh/prod-key","sudo_secret_ref":"storage:ssh/prod-sudo","environment":"prod","tags":["prod"],"allowed_tool_modes":["exec","read_file"],"approval_required_modes":["sudo_exec"]}"#,
+            r#"{"topic_id":"topic-a","target_name":"prod-app","host":"prod.example.com","remote_user":"deploy","auth_mode":"private_key","secret_ref":"storage:ssh/prod-key","sudo_secret_ref":"storage:ssh/prod-sudo","environment":"prod","tags":["prod"],"allowed_tool_modes":["exec","read_file"]}"#,
             None,
             None,
         )
@@ -177,7 +175,6 @@ async fn topic_infra_rollback_restores_previous_snapshot() {
                 environment: options.environment,
                 tags: options.tags,
                 allowed_tool_modes: options.allowed_tool_modes,
-                approval_required_modes: options.approval_required_modes,
                 created_at: 10,
                 updated_at: 40,
             })

@@ -3,9 +3,9 @@
 use oxide_agent_core::llm::{
     ChatResponse, TokenUsage, ToolCall, ToolCallCorrelation, ToolCallFunction,
 };
+use oxide_agent_transport_web::AppState;
 use oxide_agent_transport_web::auth::{login_user, register_user};
 use oxide_agent_transport_web::session::WebSessionManager;
-use oxide_agent_transport_web::AppState;
 use oxide_agent_web_contracts::{LoginRequest, RegisterRequest};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -44,18 +44,20 @@ pub fn tool_call_response(name: &str, arguments: serde_json::Value) -> ChatRespo
 
     ChatResponse {
         content: None,
-        tool_calls: vec![ToolCall::new(
-            invocation_id.clone(),
-            ToolCallFunction {
-                name: name.to_string(),
-                arguments: arguments.to_string(),
-            },
-            false,
-        )
-        .with_correlation(
-            ToolCallCorrelation::new(invocation_id)
-                .with_provider_tool_call_id(format!("sequenced-{name}")),
-        )],
+        tool_calls: vec![
+            ToolCall::new(
+                invocation_id.clone(),
+                ToolCallFunction {
+                    name: name.to_string(),
+                    arguments: arguments.to_string(),
+                },
+                false,
+            )
+            .with_correlation(
+                ToolCallCorrelation::new(invocation_id)
+                    .with_provider_tool_call_id(format!("sequenced-{name}")),
+            ),
+        ],
         finish_reason: "tool_calls".to_string(),
         reasoning_content: None,
         usage: Some(TokenUsage {

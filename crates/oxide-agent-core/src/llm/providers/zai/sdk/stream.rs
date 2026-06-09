@@ -3,11 +3,11 @@ use crate::llm::providers::protocol_profiles::CHAT_LIKE_TOOL_PROFILE;
 use crate::llm::{ChatResponse, LlmError, TokenUsage, ToolCall};
 use futures_util::StreamExt;
 use serde::Serialize;
+use zai_rs::model::StreamChatLikeExt;
 use zai_rs::model::chat::ChatCompletion;
 use zai_rs::model::chat_base_response::{ToolCallMessage, Usage};
 use zai_rs::model::chat_message_types::TextMessage;
 use zai_rs::model::traits::{Chat, ModelName};
-use zai_rs::model::StreamChatLikeExt;
 
 struct PendingToolCall {
     id: Option<String>,
@@ -83,10 +83,10 @@ fn map_usage(usage: Usage) -> TokenUsage {
 
 fn apply_tool_call_delta(tool_calls: &[ToolCallMessage], pending: &mut Vec<PendingToolCall>) {
     for call in tool_calls {
-        if let Some(call_type) = call.type_.as_deref() {
-            if call_type != "function" {
-                continue;
-            }
+        if let Some(call_type) = call.type_.as_deref()
+            && call_type != "function"
+        {
+            continue;
         }
 
         let is_new_id = if let Some(id) = &call.id {
@@ -145,7 +145,7 @@ fn finalize_tool_calls(pending: Vec<PendingToolCall>) -> Vec<ToolCall> {
 
 #[cfg(test)]
 mod tests {
-    use super::{finalize_tool_calls, PendingToolCall};
+    use super::{PendingToolCall, finalize_tool_calls};
 
     #[test]
     fn finalize_tool_calls_separates_runtime_and_wire_ids() {

@@ -54,10 +54,10 @@ impl Hook for ToolAccessPolicyHook {
 #[cfg(test)]
 mod tests {
     use super::ToolAccessPolicyHook;
+    use crate::agent::AgentMemory;
     use crate::agent::hooks::{Hook, HookContext, HookEvent, HookResult};
     use crate::agent::profile::ToolAccessPolicy;
     use crate::agent::providers::TodoList;
-    use crate::agent::AgentMemory;
     use std::collections::HashSet;
     use std::sync::{Arc, RwLock};
 

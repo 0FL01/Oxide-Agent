@@ -1,12 +1,11 @@
 [package]
 name = "oxide-agent-transport-web"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-authors = ["@0FL01"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [lints.rust]
-unsafe_code = "forbid"
 
 [lints.clippy]
 unwrap_used = "forbid"
@@ -37,16 +36,23 @@ chrono = { version = "0.4", features = ["serde"] }
 argon2 = "0.5.3"
 sha2 = "0.10.9"
 base64 = "0.22.1"
+sqlx-postgres = { version = "0.8.6", default-features = false, features = ["chrono", "json", "uuid", "migrate"], optional = true }
+sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "json", "uuid", "migrate"], optional = true }
+moka = { version = "0.12", features = ["future"] }
 
 [features]
 default = []
-profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2"]
-profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2"]
+profile-lite = ["oxide-agent-core/profile-lite", "storage-sqlx"]
+profile-full = ["oxide-agent-core/profile-full", "storage-sqlx"]
 profile-web-embedded-opencode-local = [
     "oxide-agent-core/profile-web-embedded-opencode-local",
-    "storage-s3-r2",
+    "storage-sqlx",
 ]
-storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
+storage-sqlx = [
+    "oxide-agent-core/storage-sqlx",
+    "dep:sqlx-core",
+    "dep:sqlx-postgres",
+]
 socket_e2e = ["oxide-agent-core/llm-opencode-go"]
 delegation_e2e = ["oxide-agent-core/tool-delegation"]
 compression_e2e = ["oxide-agent-core/tool-compression"]

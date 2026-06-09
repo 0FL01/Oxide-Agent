@@ -192,9 +192,6 @@ fn SessionItem(
                 <span class=format!("session-status-dot {}", status_class)></span>
                 <span class="session-copy">
                     <span class="session-id">{display_session_title(&session)}</span>
-                    <span class="session-preview">
-                        {display_session_preview(&session)}
-                    </span>
                 </span>
             </a>
             <button
@@ -213,31 +210,13 @@ fn SessionItem(
 fn display_session_title(session: &SessionSummary) -> String {
     let trimmed = session.title.trim();
     if trimmed.is_empty() || trimmed == "New session" || looks_like_timestamp_title(trimmed) {
-        return session
-            .last_preview
-            .as_deref()
-            .filter(|preview| meaningful_preview(preview))
-            .map(concise_title)
-            .unwrap_or_else(|| "New chat".to_string());
+        return "New chat".to_string();
     }
     concise_title(&session.title)
 }
 
-fn display_session_preview(session: &SessionSummary) -> String {
-    session
-        .last_preview
-        .as_deref()
-        .filter(|preview| meaningful_preview(preview))
-        .map(concise_preview)
-        .unwrap_or_else(|| "No messages yet".to_string())
-}
-
 fn concise_title(value: &str) -> String {
     concise_text(value, 32)
-}
-
-fn concise_preview(value: &str) -> String {
-    concise_text(value, 44)
 }
 
 fn concise_text(value: &str, max_chars: usize) -> String {
@@ -251,11 +230,6 @@ fn concise_text(value: &str, max_chars: usize) -> String {
         .collect::<String>();
     out.push('…');
     out
-}
-
-fn meaningful_preview(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.chars().count() > 4 && !matches!(trimmed, "U C" | "UC")
 }
 
 fn looks_like_timestamp_title(value: &str) -> bool {
@@ -291,7 +265,7 @@ mod tests {
     fn detects_chrono_timestamp_titles() {
         assert!(looks_like_timestamp_title("2026-05-29 20:53:47.208618014"));
         assert!(looks_like_timestamp_title("2026-05-29T20:53:47Z"));
-        assert!(!looks_like_timestamp_title("Cloudflare R2 limits"));
+        assert!(!looks_like_timestamp_title("Cloud storage limits"));
     }
 }
 

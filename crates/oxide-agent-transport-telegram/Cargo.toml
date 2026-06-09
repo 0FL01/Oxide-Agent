@@ -1,9 +1,9 @@
 [package]
 name = "oxide-agent-transport-telegram"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-authors = ["@0FL01"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -29,17 +29,17 @@ serde_json = "1.0"
 
 [features]
 default = []
-profile-full = ["oxide-agent-core/profile-full", "storage-s3-r2"]
+profile-full = ["oxide-agent-core/profile-full", "storage-sqlx"]
 profile-embedded-opencode-local = [
     "oxide-agent-core/profile-embedded-opencode-local",
-    "storage-s3-r2",
+    "storage-sqlx",
 ]
-profile-lite = ["oxide-agent-core/profile-lite", "storage-s3-r2"]
-profile-search-only = ["oxide-agent-core/profile-search-only", "storage-s3-r2"]
-profile-no-sandbox = ["oxide-agent-core/profile-no-sandbox", "storage-s3-r2"]
-profile-media-enabled = ["oxide-agent-core/profile-media-enabled", "storage-s3-r2"]
-profile-host-bwrap = ["oxide-agent-core/profile-host-bwrap", "storage-s3-r2"]
-storage-s3-r2 = ["oxide-agent-core/storage-s3-r2"]
+profile-lite = ["oxide-agent-core/profile-lite", "storage-sqlx"]
+profile-search-only = ["oxide-agent-core/profile-search-only", "storage-sqlx"]
+profile-no-sandbox = ["oxide-agent-core/profile-no-sandbox", "storage-sqlx"]
+profile-media-enabled = ["oxide-agent-core/profile-media-enabled", "storage-sqlx"]
+profile-host-bwrap = ["oxide-agent-core/profile-host-bwrap", "storage-sqlx"]
+storage-sqlx = ["oxide-agent-core/storage-sqlx"]
 
 [dev-dependencies]
 lazy-regex = "3.5.1"

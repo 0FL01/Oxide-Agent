@@ -3,11 +3,11 @@ cargo_features = ["profile-embedded-opencode-local"]
 
 [modules]
 "transport/telegram" = { enabled = true }
-"storage/r2" = { enabled = true }
+"storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "sandbox-backend/bwrap" = { enabled = true }
 "sandbox-backend/docker-direct" = { enabled = true }
-"sandbox-daemon/sandboxd" = { enabled = true }
+"sandbox-backend/sandboxd-client" = { enabled = true }
 "tool/compression" = { enabled = true }
 "tool/delegation" = { enabled = true }
 "tool/file-delivery" = { enabled = true }
@@ -24,4 +24,5 @@ cargo_features = ["profile-embedded-opencode-local"]
 "tool/wiki-memory" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
 "tool/duckduckgo" = { enabled = true }
+"tool/brave-search" = { enabled = true }
 "tool/searxng" = { enabled = true }

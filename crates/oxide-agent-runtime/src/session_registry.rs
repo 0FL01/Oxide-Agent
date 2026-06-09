@@ -112,7 +112,7 @@ impl SessionRegistry {
     pub async fn enqueue_runtime_context(&self, id: &SessionId, content: String) -> bool {
         let inboxes = self.runtime_context_inboxes.read().await;
         if let Some(inbox) = inboxes.get(id) {
-            inbox.push(RuntimeContextInjection { content });
+            inbox.push(RuntimeContextInjection::text(content));
             return true;
         }
 
@@ -146,11 +146,10 @@ impl SessionRegistry {
             return false;
         };
 
-        let result = match executor_arc.try_read() {
+        match executor_arc.try_read() {
             Ok(executor) => executor.session().is_processing(),
             Err(_) => true, // Lock held = task running
-        };
-        result
+        }
     }
 
     /// Cancel the current task for a session (lock-free)
@@ -278,13 +277,12 @@ impl SessionRegistry {
             return false;
         };
 
-        let result = if let Ok(mut executor) = executor_arc.try_write() {
+        if let Ok(mut executor) = executor_arc.try_write() {
             executor.session_mut().clear_todos();
             true
         } else {
             false
-        };
-        result
+        }
     }
 
     /// Get the number of active sessions

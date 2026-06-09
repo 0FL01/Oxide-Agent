@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, TaskEventsResponse, TaskStatus, WebSessionRecord, WebTaskRecord,
+    PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
+    WebTaskRecord,
 };
 use tokio::sync::RwLock;
 
 use super::{
-    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebTaskFileBlob, WebTaskFileRecord,
-    WebUiStore, WebUiStoreError, WebUiStoreResult, WebUserRecord,
+    LoginIndexRecord, ValidateWebRecord, WebAuthSessionRecord, WebSessionContextKeys,
+    WebTaskEventState, WebTaskFileBlob, WebTaskFileRecord, WebUiStore, WebUiStoreError,
+    WebUiStoreResult, WebUserRecord,
 };
 
 type SessionKey = (i64, String);
@@ -64,12 +66,12 @@ impl WebUiStore for InMemoryWebUiStore {
 
         {
             let login_index = self.login_index.read().await;
-            if let Some(existing) = login_index.get(&normalized_login) {
-                if existing.user_id != user_id {
-                    return Err(WebUiStoreError::Conflict(format!(
-                        "login {normalized_login} already belongs to another user"
-                    )));
-                }
+            if let Some(existing) = login_index.get(&normalized_login)
+                && existing.user_id != user_id
+            {
+                return Err(WebUiStoreError::Conflict(format!(
+                    "login {normalized_login} already belongs to another user"
+                )));
             }
         }
 
@@ -184,6 +186,71 @@ impl WebUiStore for InMemoryWebUiStore {
         Ok(sessions)
     }
 
+    async fn list_session_summaries(&self, user_id: i64) -> WebUiStoreResult<Vec<SessionSummary>> {
+        let sessions = self.list_sessions(user_id).await?;
+        Ok(sessions
+            .into_iter()
+            .map(|record| SessionSummary {
+                session_id: record.session_id,
+                title: record.title,
+                model_selection: record.model_selection,
+                agent_profile_id: record.agent_profile_id,
+                last_preview: record.last_preview,
+                active_task_id: record.active_task_id,
+                last_task_status: record.last_task_status,
+                created_at: record.created_at,
+                updated_at: record.updated_at,
+            })
+            .collect())
+    }
+
+    async fn list_session_context_keys(
+        &self,
+        user_id: i64,
+    ) -> WebUiStoreResult<Vec<WebSessionContextKeys>> {
+        let mut sessions = self
+            .sessions
+            .read()
+            .await
+            .values()
+            .filter(|record| record.user_id == user_id)
+            .map(|record| WebSessionContextKeys {
+                context_key: record.context_key.clone(),
+                context_keys: record.context_keys.clone(),
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by(|a, b| a.context_key.cmp(&b.context_key));
+        Ok(sessions)
+    }
+
+    async fn list_due_auto_title_sessions(
+        &self,
+        now: DateTime<Utc>,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebSessionRecord>> {
+        let mut sessions = self
+            .sessions
+            .read()
+            .await
+            .values()
+            .filter(|record| {
+                record.auto_title_source_message.is_some()
+                    && !record.manually_renamed
+                    && record
+                        .auto_title_next_attempt_at
+                        .is_none_or(|next_attempt_at| next_attempt_at <= now)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        sessions.sort_by(|a, b| {
+            a.auto_title_next_attempt_at
+                .cmp(&b.auto_title_next_attempt_at)
+                .then_with(|| a.updated_at.cmp(&b.updated_at))
+        });
+        sessions.truncate(limit);
+        Ok(sessions)
+    }
+
     async fn delete_session(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
         let removed = self
             .sessions
@@ -239,6 +306,32 @@ impl WebUiStore for InMemoryWebUiStore {
             .cloned())
     }
 
+    async fn task_exists(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool> {
+        Ok(self
+            .tasks
+            .read()
+            .await
+            .values()
+            .any(|record| record.user_id == user_id && record.session_id == session_id))
+    }
+
+    async fn load_task_event_state(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskEventState>> {
+        Ok(self
+            .tasks
+            .read()
+            .await
+            .get(&Self::task_key(user_id, session_id, task_id))
+            .map(|record| WebTaskEventState {
+                status: record.status,
+                last_event_seq: record.last_event_seq,
+            }))
+    }
+
     async fn list_tasks(
         &self,
         user_id: i64,
@@ -254,6 +347,39 @@ impl WebUiStore for InMemoryWebUiStore {
             .collect::<Vec<_>>();
         tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         Ok(tasks)
+    }
+
+    async fn list_recent_tasks_page(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebTaskRecord>> {
+        let mut tasks = self
+            .tasks
+            .read()
+            .await
+            .values()
+            .filter(|record| record.user_id == user_id && record.session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.task_id.cmp(&a.task_id))
+        });
+        let mut page = tasks
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        page.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        });
+        Ok(page)
     }
 
     async fn append_task_events(
@@ -297,10 +423,44 @@ impl WebUiStore for InMemoryWebUiStore {
             .collect::<Vec<_>>();
         let has_more = matching.len() > limit;
         let events = matching.into_iter().take(limit).collect::<Vec<_>>();
+        let first_seq = events.first().map_or(after_seq, |event| event.seq);
         let last_seq = events.last().map_or(after_seq, |event| event.seq);
 
         Ok(TaskEventsResponse {
             events,
+            first_seq,
+            last_seq,
+            has_more,
+        })
+    }
+
+    async fn list_task_events_before(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        before_seq: u64,
+        limit: usize,
+    ) -> WebUiStoreResult<TaskEventsResponse> {
+        let events = self.events.read().await;
+        let mut matching = events
+            .get(&Self::task_key(user_id, session_id, task_id))
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|event| event.seq < before_seq)
+            .collect::<Vec<_>>();
+        matching.sort_by(|a, b| b.seq.cmp(&a.seq));
+
+        let has_more = matching.len() > limit;
+        let mut events = matching.into_iter().take(limit).collect::<Vec<_>>();
+        events.sort_by_key(|event| event.seq);
+        let first_seq = events.first().map_or(before_seq, |event| event.seq);
+        let last_seq = events.last().map_or(0, |event| event.seq);
+
+        Ok(TaskEventsResponse {
+            events,
+            first_seq,
             last_seq,
             has_more,
         })
@@ -403,6 +563,7 @@ mod tests {
             status: WebUserStatus::Active,
             default_model_selection: None,
             default_agent_profile_id: None,
+            default_effort: None,
             created_at: now,
             updated_at: now,
             last_login_at: None,
@@ -430,6 +591,11 @@ mod tests {
             last_task_status: None,
             last_preview: None,
             manually_renamed: false,
+            auto_title_source_message: None,
+            auto_title_replaceable_title: None,
+            auto_title_attempts: 0,
+            auto_title_next_attempt_at: None,
+            auto_title_last_error: None,
         }
     }
 
@@ -513,16 +679,20 @@ mod tests {
             .save_auth_session(auth_session)
             .await
             .expect("save auth session");
-        assert!(store
-            .revoke_auth_session("token-hash", now)
-            .await
-            .expect("revoke auth session"));
-        assert!(store
-            .load_auth_session("token-hash")
-            .await
-            .expect("load auth session")
-            .and_then(|record| record.revoked_at)
-            .is_some());
+        assert!(
+            store
+                .revoke_auth_session("token-hash", now)
+                .await
+                .expect("revoke auth session")
+        );
+        assert!(
+            store
+                .load_auth_session("token-hash")
+                .await
+                .expect("load auth session")
+                .and_then(|record| record.revoked_at)
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -581,6 +751,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["task-1", "task-2"]
         );
+        assert!(store.task_exists(1, "newer").await.expect("task exists"));
+        let task_state = store
+            .load_task_event_state(1, "newer", "task-1")
+            .await
+            .expect("load task event state")
+            .expect("task event state exists");
+        assert_eq!(task_state.status, TaskStatus::Completed);
+        assert_eq!(task_state.last_event_seq, 0);
 
         store
             .append_task_events(
@@ -601,15 +779,28 @@ mod tests {
             .expect("list events");
         assert_eq!(response.events.len(), 1);
         assert_eq!(response.events[0].seq, 2);
+        assert_eq!(response.first_seq, 2);
         assert_eq!(response.last_seq, 2);
         assert!(response.has_more);
 
-        assert!(store
-            .list_task_events(2, "foreign", "task-1", 0, 100)
+        let tail = store
+            .list_task_events_before(1, "newer", "task-1", 4, 1)
             .await
-            .expect("list foreign events")
-            .events
-            .is_empty());
+            .expect("list event tail");
+        assert_eq!(tail.events.len(), 1);
+        assert_eq!(tail.events[0].seq, 3);
+        assert_eq!(tail.first_seq, 3);
+        assert_eq!(tail.last_seq, 3);
+        assert!(tail.has_more);
+
+        assert!(
+            store
+                .list_task_events(2, "foreign", "task-1", 0, 100)
+                .await
+                .expect("list foreign events")
+                .events
+                .is_empty()
+        );
     }
 
     #[tokio::test]

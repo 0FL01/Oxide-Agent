@@ -2,7 +2,7 @@
 
 use super::prompt::{build_local_compaction_user_message, local_compaction_system_prompt};
 use super::{CompactSummaryBackend, CompactSummaryError, CompactSummaryRequest};
-use crate::config::{ModelInfo, AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS};
+use crate::config::{AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS, ModelInfo};
 use crate::llm::{InternalTextPurpose, LlmClient};
 use async_trait::async_trait;
 use std::sync::Arc;

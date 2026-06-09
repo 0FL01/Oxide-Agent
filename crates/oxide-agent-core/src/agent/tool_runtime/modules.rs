@@ -20,12 +20,12 @@ use crate::sandbox::SandboxScope;
 use std::sync::Arc;
 #[cfg(feature = "integration-ssh-mcp")]
 use std::sync::OnceLock;
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::{Mutex, mpsc::Sender};
 
-#[cfg(feature = "integration-ssh-mcp")]
-use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "tool-agents-md")]
 use crate::agent::providers::AgentsMdProvider;
+#[cfg(feature = "tool-brave-search")]
+use crate::agent::providers::BraveSearchProvider;
 #[cfg(feature = "tool-compression")]
 use crate::agent::providers::CompressionProvider;
 #[cfg(feature = "tool-crawl4ai-markdown")]
@@ -44,6 +44,8 @@ use crate::agent::providers::FileHosterProvider;
 use crate::agent::providers::MediaFileProvider;
 #[cfg(feature = "tool-searxng")]
 use crate::agent::providers::SearxngProvider;
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::SshMcpProvider;
 #[cfg(feature = "tool-stack-logs")]
 use crate::agent::providers::StackLogsProvider;
 #[cfg(feature = "tool-tavily")]
@@ -56,6 +58,8 @@ use crate::agent::providers::WebFetchMdProvider;
 use crate::agent::providers::WikiMemoryProvider;
 #[cfg(feature = "tool-ytdlp")]
 use crate::agent::providers::YtdlpProvider;
+#[cfg(feature = "integration-ssh-mcp")]
+use crate::agent::providers::ssh_mcp::cleanup_stale_private_key_tempfiles;
 #[cfg(feature = "integration-mcp-jira")]
 use crate::agent::providers::{JiraMcpConfig, JiraMcpProvider};
 #[cfg(feature = "tool-tts-kokoro")]
@@ -68,8 +72,6 @@ use crate::agent::providers::{MattermostMcpConfig, MattermostMcpProvider};
 use crate::agent::providers::{ReminderContext, ReminderProvider};
 #[cfg(feature = "tool-tts-silero")]
 use crate::agent::providers::{SileroTtsConfig, SileroTtsProvider};
-#[cfg(feature = "integration-ssh-mcp")]
-use crate::agent::providers::{SshApprovalRegistry, SshMcpProvider};
 #[cfg(any(
     feature = "tool-agents-md",
     feature = "manager-control-plane",
@@ -135,7 +137,6 @@ pub struct SshMcpModuleContext {
     user_id: i64,
     topic_id: String,
     config: TopicInfraConfigRecord,
-    approvals: SshApprovalRegistry,
 }
 
 #[cfg(feature = "integration-ssh-mcp")]
@@ -147,14 +148,12 @@ impl SshMcpModuleContext {
         user_id: i64,
         topic_id: String,
         config: TopicInfraConfigRecord,
-        approvals: SshApprovalRegistry,
     ) -> Self {
         Self {
             storage,
             user_id,
             topic_id,
             config,
-            approvals,
         }
     }
 }
@@ -468,7 +467,6 @@ impl SshMcpToolModule {
             ssh.user_id,
             ssh.topic_id,
             ssh.config,
-            ssh.approvals,
         ))
     }
 
@@ -721,13 +719,28 @@ impl ToolModule for StackLogsToolModule {
 pub struct WebFetchMdToolModule;
 
 #[cfg(feature = "tool-webfetch-md")]
+impl WebFetchMdToolModule {
+    fn provider(&self) -> Option<WebFetchMdProvider> {
+        if !crate::config::is_webfetch_md_enabled() {
+            tracing::debug!(
+                "webfetch_md disabled: Crawl4AI is configured or WEBFETCH_MD_ENABLED=false"
+            );
+            return None;
+        }
+        Some(WebFetchMdProvider::new())
+    }
+}
+
+#[cfg(feature = "tool-webfetch-md")]
 impl ToolModule for WebFetchMdToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/webfetch-md")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Arc::new(WebFetchMdProvider::new()).tool_runtime_executors()
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
@@ -736,13 +749,28 @@ impl ToolModule for WebFetchMdToolModule {
 pub struct Crawl4AiMarkdownToolModule;
 
 #[cfg(feature = "tool-crawl4ai-markdown")]
+impl Crawl4AiMarkdownToolModule {
+    fn provider(&self) -> Option<Crawl4AiMarkdownProvider> {
+        if !crate::config::is_crawl4ai_markdown_enabled() {
+            tracing::debug!(
+                "crawl4ai_markdown disabled: OXIDE_CRAWL4AI_BASE_URL is not set and OXIDE_CRAWL4AI_ENABLED is not true"
+            );
+            return None;
+        }
+        Some(Crawl4AiMarkdownProvider::new())
+    }
+}
+
+#[cfg(feature = "tool-crawl4ai-markdown")]
 impl ToolModule for Crawl4AiMarkdownToolModule {
     fn module_id(&self) -> ModuleId {
         ModuleId::new("tool/crawl4ai-markdown")
     }
 
     fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
-        Arc::new(Crawl4AiMarkdownProvider::new()).tool_runtime_executors()
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
     }
 }
 
@@ -830,6 +858,40 @@ impl ToolModule for DuckDuckGoToolModule {
     }
 }
 
+/// Capability module for Brave Search API web search.
+#[cfg(feature = "tool-brave-search")]
+pub struct BraveSearchToolModule;
+
+#[cfg(feature = "tool-brave-search")]
+impl BraveSearchToolModule {
+    fn provider(&self) -> Option<BraveSearchProvider> {
+        if !crate::config::is_brave_search_enabled() {
+            return None;
+        }
+
+        match BraveSearchProvider::new_from_config() {
+            Ok(provider) => Some(provider),
+            Err(error) => {
+                tracing::warn!(error = %error, "Brave Search provider initialization failed");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(feature = "tool-brave-search")]
+impl ToolModule for BraveSearchToolModule {
+    fn module_id(&self) -> ModuleId {
+        ModuleId::new("tool/brave-search")
+    }
+
+    fn tool_runtime_executors(&self, _ctx: &ToolModuleContext) -> Vec<Arc<dyn ToolExecutor>> {
+        self.provider()
+            .map(|provider| Arc::new(provider).tool_runtime_executors())
+            .unwrap_or_default()
+    }
+}
+
 /// Capability module for SearXNG web search.
 #[cfg(feature = "tool-searxng")]
 pub struct SearxngToolModule;
@@ -885,13 +947,13 @@ impl KokoroTtsToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<KokoroTtsProvider> {
         let config = TtsConfig::from_env();
 
-        if let Ok(url) = std::env::var("KOKORO_TTS_URL") {
-            if url.trim().is_empty() {
-                tracing::debug!(
-                    "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
-                );
-                return None;
-            }
+        if let Ok(url) = std::env::var("KOKORO_TTS_URL")
+            && url.trim().is_empty()
+        {
+            tracing::debug!(
+                "TTS provider disabled: KOKORO_TTS_URL is explicitly set to empty string"
+            );
+            return None;
         }
 
         tracing::debug!(url = %config.base_url, "Registering TTS provider");
@@ -929,13 +991,13 @@ impl SileroTtsToolModule {
     fn provider(&self, ctx: &ToolModuleContext) -> Option<SileroTtsProvider> {
         let config = SileroTtsConfig::from_env();
 
-        if let Ok(url) = std::env::var("SILERO_TTS_URL") {
-            if url.trim().is_empty() {
-                tracing::debug!(
-                    "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
-                );
-                return None;
-            }
+        if let Ok(url) = std::env::var("SILERO_TTS_URL")
+            && url.trim().is_empty()
+        {
+            tracing::debug!(
+                "Silero TTS provider disabled: SILERO_TTS_URL is explicitly set to empty string"
+            );
+            return None;
         }
 
         tracing::debug!(url = %config.base_url, "Registering Silero TTS provider");

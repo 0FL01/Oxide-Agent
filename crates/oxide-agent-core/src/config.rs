@@ -3,8 +3,8 @@
 //! Loads settings from environment variables and defines configuration constants.
 //!
 use crate::capabilities::{
-    compiled_capability_manifest, CompiledCapabilityManifest, EnabledCapabilityManifest,
-    ManifestError,
+    CompiledCapabilityManifest, EnabledCapabilityManifest, ManifestError,
+    compiled_capability_manifest,
 };
 use crate::llm::providers::{provider_missing_route_config_message, provider_module_id};
 use crate::llm::{provider_capabilities_for_model, provider_media_capabilities_for_model};
@@ -59,6 +59,24 @@ pub struct AgentSettings {
     pub tavily_api_key: Option<String>,
     /// Enable Tavily tool provider registration.
     pub tavily_enabled: Option<bool>,
+    /// Brave Search API key.
+    pub brave_search_api_key: Option<String>,
+    /// Enable Brave Search tool provider registration.
+    pub brave_search_enabled: Option<bool>,
+    /// Brave Search request timeout (seconds).
+    pub brave_search_timeout_secs: Option<u64>,
+    /// Default Brave Search country targeting.
+    pub brave_search_country: Option<String>,
+    /// Default Brave Search language targeting.
+    pub brave_search_lang: Option<String>,
+    /// Default Brave Search UI language.
+    pub brave_search_ui_lang: Option<String>,
+    /// Default Brave Search safe-search setting.
+    pub brave_search_safesearch: Option<String>,
+    /// Process-wide Brave Search max concurrent operations.
+    pub brave_search_max_concurrent: Option<usize>,
+    /// Process-wide Brave Search minimum delay between operations.
+    pub brave_search_min_delay_ms: Option<u64>,
     /// Enable DuckDuckGo tool provider registration.
     pub duckduckgo_enabled: Option<bool>,
     /// DuckDuckGo request timeout (seconds).
@@ -91,6 +109,8 @@ pub struct AgentSettings {
     pub searxng_enabled: Option<bool>,
     /// SearXNG request timeout (seconds).
     pub searxng_timeout_secs: Option<u64>,
+    /// Optional SearXNG Bearer token for protected deployments.
+    pub searxng_bearer_token: Option<String>,
     /// Kokoro TTS server URL (default: http://127.0.0.1:8000)
     pub kokoro_tts_url: Option<String>,
 
@@ -745,50 +765,67 @@ impl AgentSettings {
     }
 
     fn apply_tool_provider_env_fallbacks(&mut self) {
-        if self.tavily_api_key.is_none() {
-            if let Ok(val) = std::env::var("TAVILY_API_KEY") {
-                if !val.is_empty() {
-                    self.tavily_api_key = Some(val);
-                }
-            }
+        if self.tavily_api_key.is_none()
+            && let Ok(val) = std::env::var("TAVILY_API_KEY")
+            && !val.is_empty()
+        {
+            self.tavily_api_key = Some(val);
         }
 
         if self.tavily_enabled.is_none() {
             self.tavily_enabled = parse_optional_env_bool("TAVILY_ENABLED");
         }
 
+        if self.brave_search_api_key.is_none()
+            && let Ok(val) = std::env::var("BRAVE_SEARCH_API_KEY")
+        {
+            let val = val.trim();
+            if !val.is_empty() {
+                self.brave_search_api_key = Some(val.to_string());
+            }
+        }
+
+        if self.brave_search_enabled.is_none() {
+            self.brave_search_enabled = parse_optional_env_bool("BRAVE_SEARCH_ENABLED");
+        }
+
         if self.duckduckgo_enabled.is_none() {
             self.duckduckgo_enabled = parse_optional_env_bool("DUCKDUCKGO_ENABLED");
         }
 
-        if self.duckduckgo_user_agent.is_none() {
-            if let Ok(val) = std::env::var("DUCKDUCKGO_USER_AGENT") {
-                if !val.is_empty() {
-                    self.duckduckgo_user_agent = Some(val);
-                }
-            }
+        if self.duckduckgo_user_agent.is_none()
+            && let Ok(val) = std::env::var("DUCKDUCKGO_USER_AGENT")
+            && !val.is_empty()
+        {
+            self.duckduckgo_user_agent = Some(val);
         }
 
-        if self.duckduckgo_proxy_url.is_none() {
-            if let Ok(val) =
+        if self.duckduckgo_proxy_url.is_none()
+            && let Ok(val) =
                 std::env::var("DUCKDUCKGO_PROXY_URL").or_else(|_| std::env::var("DUCKDUCKGO_PROXY"))
-            {
-                if !val.is_empty() {
-                    self.duckduckgo_proxy_url = Some(val);
-                }
-            }
+            && !val.is_empty()
+        {
+            self.duckduckgo_proxy_url = Some(val);
         }
 
-        if self.searxng_url.is_none() {
-            if let Ok(val) = std::env::var("SEARXNG_URL") {
-                if !val.is_empty() {
-                    self.searxng_url = Some(val);
-                }
-            }
+        if self.searxng_url.is_none()
+            && let Ok(val) = std::env::var("SEARXNG_URL")
+            && !val.is_empty()
+        {
+            self.searxng_url = Some(val);
         }
 
         if self.searxng_enabled.is_none() {
             self.searxng_enabled = parse_optional_env_bool("SEARXNG_ENABLED");
+        }
+
+        if self.searxng_bearer_token.is_none()
+            && let Ok(val) = std::env::var("SEARXNG_BEARER_TOKEN")
+        {
+            let val = val.trim();
+            if !val.is_empty() {
+                self.searxng_bearer_token = Some(val.to_string());
+            }
         }
     }
 
@@ -979,10 +1016,8 @@ impl AgentSettings {
     }
 
     fn resolve_execution_model(&self, prefer_sub_agent: bool) -> ModelInfo {
-        if prefer_sub_agent {
-            if let Some((_, info)) = self.sub_agent_model_spec() {
-                return info;
-            }
+        if prefer_sub_agent && let Some((_, info)) = self.sub_agent_model_spec() {
+            return info;
         }
         if let Some((_, info)) = self.agent_model_spec() {
             return info;
@@ -1176,9 +1211,16 @@ pub(crate) fn test_env_mutex() -> &'static std::sync::Mutex<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{test_remove_env, test_set_env};
     use serde_json::json;
     use std::env;
 
+    #[cfg(any(
+        feature = "llm-minimax",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter",
+        feature = "llm-zai"
+    ))]
     fn clear_model_route_env() {
         let keys: Vec<String> = env::vars()
             .map(|(key, _)| key)
@@ -1188,10 +1230,11 @@ mod tests {
             })
             .collect();
         for key in keys {
-            env::remove_var(key);
+            test_remove_env(key);
         }
     }
 
+    #[cfg(feature = "llm-opencode-go")]
     fn clear_opencode_go_env() {
         for key in [
             "OPENCODE_API_KEY",
@@ -1201,7 +1244,7 @@ mod tests {
             "OPENCODE_GO_MODELS_URL",
             "OPENCODE_GO_MODEL_CACHE_TTL_SECS",
         ] {
-            env::remove_var(key);
+            test_remove_env(key);
         }
     }
 
@@ -1213,44 +1256,44 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        env::set_var("OPENROUTER_API_KEY", "dummy_openrouter_key");
+        test_set_env("OPENROUTER_API_KEY", "dummy_openrouter_key");
 
-        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
-        env::set_var("AGENT_MODEL_TEMPERATURE", "0.42");
+        test_set_env("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_PROVIDER", "openrouter");
+        test_set_env("AGENT_MODEL_TEMPERATURE", "0.42");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), Some(0.42));
 
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("AGENT_MODEL_TEMPERATURE");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
+        test_remove_env("AGENT_MODEL_TEMPERATURE");
 
         // 2. Test empty env var ignored by direct fallback parsing.
-        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
-        env::set_var("AGENT_MODEL_TEMPERATURE", "");
+        test_set_env("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_PROVIDER", "openrouter");
+        test_set_env("AGENT_MODEL_TEMPERATURE", "");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), None);
 
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("AGENT_MODEL_TEMPERATURE");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
+        test_remove_env("AGENT_MODEL_TEMPERATURE");
 
         // 3. Test explicit environment mapping case.
-        env::set_var("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_PROVIDER", "openrouter");
-        env::set_var("AGENT_MODEL_TEMPERATURE", "0.13");
+        test_set_env("AGENT_MODEL_ID", "deepseek/deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_PROVIDER", "openrouter");
+        test_set_env("AGENT_MODEL_TEMPERATURE", "0.13");
 
         let settings = AgentSettings::new()?;
         assert_eq!(settings.get_configured_agent_temperature(), Some(0.13));
 
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("AGENT_MODEL_TEMPERATURE");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
+        test_remove_env("AGENT_MODEL_TEMPERATURE");
 
-        env::remove_var("OPENROUTER_API_KEY");
+        test_remove_env("OPENROUTER_API_KEY");
         Ok(())
     }
 
@@ -1312,14 +1355,14 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = env::var_os("SANDBOX_BACKEND");
 
-        env::set_var("SANDBOX_BACKEND", "bwrap");
+        test_set_env("SANDBOX_BACKEND", "bwrap");
         assert_eq!(
             get_sandbox_backend_config().expect("bwrap sandbox backend env should parse"),
             SandboxBackendConfig::Bwrap
         );
         assert!(!sandbox_uses_broker());
 
-        env::set_var("SANDBOX_BACKEND", "broker");
+        test_set_env("SANDBOX_BACKEND", "broker");
         assert_eq!(
             get_sandbox_backend_config().expect("broker sandbox backend env should parse"),
             SandboxBackendConfig::Broker
@@ -1327,8 +1370,8 @@ mod tests {
         assert!(sandbox_uses_broker());
 
         match previous {
-            Some(value) => env::set_var("SANDBOX_BACKEND", value),
-            None => env::remove_var("SANDBOX_BACKEND"),
+            Some(value) => test_set_env("SANDBOX_BACKEND", value),
+            None => test_remove_env("SANDBOX_BACKEND"),
         }
     }
 
@@ -1344,12 +1387,16 @@ mod tests {
             .validate_route_providers()
             .expect_err("unknown provider should fail");
 
-        assert!(error
-            .to_string()
-            .contains("AGENT_MODEL_PROVIDER references provider 'removed-provider'"));
-        assert!(error
-            .to_string()
-            .contains("no compiled LLM provider module owns that provider alias or ID"));
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_MODEL_PROVIDER references provider 'removed-provider'")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("no compiled LLM provider module owns that provider alias or ID")
+        );
     }
 
     #[test]
@@ -1398,9 +1445,11 @@ mod tests {
             .validate_route_providers()
             .expect_err("unknown weighted route provider should fail");
 
-        assert!(error
-            .to_string()
-            .contains("AGENT_MODEL_ROUTES[0].provider references provider 'removed-provider'"));
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_MODEL_ROUTES[0].provider references provider 'removed-provider'")
+        );
     }
 
     #[cfg(feature = "llm-openrouter")]
@@ -1519,9 +1568,11 @@ mod tests {
             .validate_route_model_capabilities()
             .expect_err("unknown OpenRouter agent model should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("AGENT_MODEL route llm-provider/openrouter/unknown/model is not approved"));
+        assert!(
+            error.to_string().contains(
+                "AGENT_MODEL route llm-provider/openrouter/unknown/model is not approved"
+            )
+        );
     }
 
     #[cfg(feature = "llm-openrouter")]
@@ -1542,9 +1593,11 @@ mod tests {
             .validate_route_model_capabilities()
             .expect_err("unknown OpenRouter media model should be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("MEDIA_MODEL route llm-provider/openrouter/unknown/model is not approved"));
+        assert!(
+            error.to_string().contains(
+                "MEDIA_MODEL route llm-provider/openrouter/unknown/model is not approved"
+            )
+        );
     }
 
     #[cfg(feature = "llm-opencode-go")]
@@ -1674,23 +1727,22 @@ mod tests {
     #[cfg(all(feature = "llm-minimax", feature = "llm-zai"))]
     #[test]
     fn test_model_routes_parse_from_env_and_override_primary_models() -> Result<(), ConfigError> {
-        use std::env;
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
 
-        env::set_var("ZAI_API_KEY", "test-key");
-        env::set_var("AGENT_MODEL_ROUTES__0__ID", "MiniMax-M2.7");
-        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "minimax");
-        env::set_var("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
-        env::set_var("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "204800");
-        env::set_var("AGENT_MODEL_ROUTES__0__WEIGHT", "10");
-        env::set_var("AGENT_MODEL_ROUTES__1__ID", "glm-4.7");
-        env::set_var("AGENT_MODEL_ROUTES__1__PROVIDER", "zai");
-        env::set_var("AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS", "32000");
-        env::set_var("AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS", "200000");
-        env::set_var("AGENT_MODEL_ROUTES__1__WEIGHT", "3");
+        test_set_env("ZAI_API_KEY", "test-key");
+        test_set_env("AGENT_MODEL_ROUTES__0__ID", "MiniMax-M2.7");
+        test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "minimax");
+        test_set_env("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
+        test_set_env("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "204800");
+        test_set_env("AGENT_MODEL_ROUTES__0__WEIGHT", "10");
+        test_set_env("AGENT_MODEL_ROUTES__1__ID", "glm-4.7");
+        test_set_env("AGENT_MODEL_ROUTES__1__PROVIDER", "zai");
+        test_set_env("AGENT_MODEL_ROUTES__1__MAX_OUTPUT_TOKENS", "32000");
+        test_set_env("AGENT_MODEL_ROUTES__1__CONTEXT_WINDOW_TOKENS", "200000");
+        test_set_env("AGENT_MODEL_ROUTES__1__WEIGHT", "3");
 
         let settings = AgentSettings::new()?;
         let routes = settings.get_configured_agent_model_routes();
@@ -1716,7 +1768,7 @@ mod tests {
             "AGENT_MODEL_ROUTES__1__WEIGHT",
             "ZAI_API_KEY",
         ] {
-            env::remove_var(key);
+            test_remove_env(key);
         }
 
         Ok(())
@@ -1729,13 +1781,13 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        env::remove_var("ZAI_API_KEY");
+        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
-        env::set_var("AGENT_MODEL_ID", "chat-model");
-        env::set_var("AGENT_MODEL_PROVIDER", "opencode-go");
-        env::set_var("OPENCODE_API_KEY", "opencode-key");
-        env::set_var(
+        test_set_env("AGENT_MODEL_ID", "chat-model");
+        test_set_env("AGENT_MODEL_PROVIDER", "opencode-go");
+        test_set_env("OPENCODE_API_KEY", "opencode-key");
+        test_set_env(
             "OPENCODE_GO_API_BASE",
             "https://opencode.example.test/v1/chat/completions",
         );
@@ -1766,8 +1818,8 @@ mod tests {
             "https://opencode.example.test/v1/chat/completions"
         );
 
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
         clear_opencode_go_env();
         Ok(())
     }
@@ -1780,11 +1832,11 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
         clear_opencode_go_env();
-        env::remove_var("AGENT_MODEL_ID");
-        env::remove_var("AGENT_MODEL_PROVIDER");
-        env::remove_var("ZAI_API_KEY");
+        test_remove_env("AGENT_MODEL_ID");
+        test_remove_env("AGENT_MODEL_PROVIDER");
+        test_remove_env("ZAI_API_KEY");
 
-        env::set_var("OPENCODE_API_KEY", "opencode-key");
+        test_set_env("OPENCODE_API_KEY", "opencode-key");
 
         let settings = AgentSettings::new()?;
         let primary = settings.get_configured_agent_model();
@@ -1806,20 +1858,20 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn settings_do_not_require_zai_key_when_active_routes_use_opencode_go(
-    ) -> Result<(), ConfigError> {
+    fn settings_do_not_require_zai_key_when_active_routes_use_opencode_go()
+    -> Result<(), ConfigError> {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        env::remove_var("ZAI_API_KEY");
+        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
-        env::set_var("OPENCODE_GO_API_KEY", "opencode-key");
-        env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode-go");
-        env::set_var("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
-        env::set_var("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "200000");
+        test_set_env("OPENCODE_GO_API_KEY", "opencode-key");
+        test_set_env("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode-go");
+        test_set_env("AGENT_MODEL_ROUTES__0__MAX_OUTPUT_TOKENS", "32000");
+        test_set_env("AGENT_MODEL_ROUTES__0__CONTEXT_WINDOW_TOKENS", "200000");
 
         let settings = AgentSettings::new()?;
         let primary = settings.get_configured_agent_model();
@@ -1848,11 +1900,11 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_model_route_env();
-        env::remove_var("ZAI_API_KEY");
+        test_remove_env("ZAI_API_KEY");
         clear_opencode_go_env();
 
-        env::set_var("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
-        env::set_var("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
+        test_set_env("AGENT_MODEL_ROUTES__0__ID", "deepseek-v4-flash");
+        test_set_env("AGENT_MODEL_ROUTES__0__PROVIDER", "opencode_go");
 
         let error = AgentSettings::new().expect_err("missing OpenCode Go key should fail");
         assert!(error.to_string().contains("OPENCODE_API_KEY"));
@@ -1863,13 +1915,13 @@ mod tests {
 
     #[test]
     fn tavily_enabled_flag_overrides_api_key_fallback() {
-        env::set_var("TAVILY_API_KEY", "dummy-key");
-        env::set_var("TAVILY_ENABLED", "false");
+        test_set_env("TAVILY_API_KEY", "dummy-key");
+        test_set_env("TAVILY_ENABLED", "false");
 
         assert!(!is_tavily_enabled());
 
-        env::remove_var("TAVILY_ENABLED");
-        env::remove_var("TAVILY_API_KEY");
+        test_remove_env("TAVILY_ENABLED");
+        test_remove_env("TAVILY_API_KEY");
     }
 
     #[test]
@@ -1877,7 +1929,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("DUCKDUCKGO_ENABLED");
+        test_remove_env("DUCKDUCKGO_ENABLED");
 
         assert!(is_duckduckgo_enabled());
     }
@@ -1887,11 +1939,115 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::set_var("DUCKDUCKGO_ENABLED", "false");
+        test_set_env("DUCKDUCKGO_ENABLED", "false");
 
         assert!(!is_duckduckgo_enabled());
 
-        env::remove_var("DUCKDUCKGO_ENABLED");
+        test_remove_env("DUCKDUCKGO_ENABLED");
+    }
+
+    fn clear_brave_search_env() {
+        for key in [
+            "BRAVE_SEARCH_API_KEY",
+            "BRAVE_SEARCH_ENABLED",
+            "BRAVE_SEARCH_TIMEOUT_SECS",
+            "BRAVE_SEARCH_COUNTRY",
+            "BRAVE_SEARCH_LANG",
+            "BRAVE_SEARCH_UI_LANG",
+            "BRAVE_SEARCH_SAFESEARCH",
+            "BRAVE_SEARCH_MAX_CONCURRENT",
+            "BRAVE_SEARCH_MIN_DELAY_MS",
+        ] {
+            test_remove_env(key);
+        }
+    }
+
+    #[test]
+    fn brave_search_enabled_defaults_to_key_presence() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_brave_search_env();
+
+        assert!(!is_brave_search_enabled());
+
+        test_set_env("BRAVE_SEARCH_API_KEY", "brave-key");
+        assert!(is_brave_search_enabled());
+
+        clear_brave_search_env();
+    }
+
+    #[test]
+    fn brave_search_enabled_flag_overrides_key_presence() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_brave_search_env();
+
+        test_set_env("BRAVE_SEARCH_API_KEY", "brave-key");
+        test_set_env("BRAVE_SEARCH_ENABLED", "false");
+        assert!(!is_brave_search_enabled());
+
+        test_remove_env("BRAVE_SEARCH_API_KEY");
+        test_set_env("BRAVE_SEARCH_ENABLED", "true");
+        assert!(is_brave_search_enabled());
+        assert_eq!(get_brave_search_api_key(), None);
+
+        clear_brave_search_env();
+    }
+
+    #[test]
+    fn brave_search_config_uses_defaults_when_env_missing() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_brave_search_env();
+
+        assert_eq!(
+            get_brave_search_timeout(),
+            BRAVE_SEARCH_DEFAULT_TIMEOUT_SECS
+        );
+        assert_eq!(get_brave_search_country(), BRAVE_SEARCH_DEFAULT_COUNTRY);
+        assert_eq!(get_brave_search_lang(), BRAVE_SEARCH_DEFAULT_LANG);
+        assert_eq!(get_brave_search_ui_lang(), BRAVE_SEARCH_DEFAULT_UI_LANG);
+        assert_eq!(
+            get_brave_search_safesearch(),
+            BRAVE_SEARCH_DEFAULT_SAFESEARCH
+        );
+        assert_eq!(
+            get_brave_search_max_concurrent(),
+            BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT
+        );
+        assert_eq!(
+            get_brave_search_min_delay_ms(),
+            BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS
+        );
+    }
+
+    #[test]
+    fn brave_search_config_parses_non_empty_env_values() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_brave_search_env();
+
+        test_set_env("BRAVE_SEARCH_TIMEOUT_SECS", "7");
+        test_set_env("BRAVE_SEARCH_COUNTRY", "DE");
+        test_set_env("BRAVE_SEARCH_LANG", "de");
+        test_set_env("BRAVE_SEARCH_UI_LANG", "de-DE");
+        test_set_env("BRAVE_SEARCH_SAFESEARCH", "strict");
+        test_set_env("BRAVE_SEARCH_MAX_CONCURRENT", "2");
+        test_set_env("BRAVE_SEARCH_MIN_DELAY_MS", "500");
+
+        assert_eq!(get_brave_search_timeout(), 7);
+        assert_eq!(get_brave_search_country(), "DE");
+        assert_eq!(get_brave_search_lang(), "de");
+        assert_eq!(get_brave_search_ui_lang(), "de-DE");
+        assert_eq!(get_brave_search_safesearch(), "strict");
+        assert_eq!(get_brave_search_max_concurrent(), 2);
+        assert_eq!(get_brave_search_min_delay_ms(), 500);
+
+        clear_brave_search_env();
     }
 
     #[test]
@@ -1899,10 +2055,10 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("DUCKDUCKGO_MAX_CONCURRENT");
-        env::remove_var("DUCKDUCKGO_MIN_DELAY_MS");
-        env::remove_var("DUCKDUCKGO_JITTER_MS");
-        env::remove_var("DUCKDUCKGO_COOLDOWN_SECS");
+        test_remove_env("DUCKDUCKGO_MAX_CONCURRENT");
+        test_remove_env("DUCKDUCKGO_MIN_DELAY_MS");
+        test_remove_env("DUCKDUCKGO_JITTER_MS");
+        test_remove_env("DUCKDUCKGO_COOLDOWN_SECS");
 
         let config = get_duckduckgo_rate_limit_config();
         assert_eq!(
@@ -1918,12 +2074,30 @@ mod tests {
 
     #[test]
     fn searxng_enabled_flag_falls_back_to_url_presence() {
-        env::remove_var("SEARXNG_ENABLED");
-        env::set_var("SEARXNG_URL", "http://searxng:8080");
+        test_remove_env("SEARXNG_ENABLED");
+        test_set_env("SEARXNG_URL", "http://searxng:8080");
 
         assert!(is_searxng_enabled());
 
-        env::remove_var("SEARXNG_URL");
+        test_remove_env("SEARXNG_URL");
+    }
+
+    #[test]
+    fn searxng_bearer_token_uses_only_non_empty_env() {
+        let _guard = test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        test_remove_env("SEARXNG_BEARER_TOKEN");
+
+        assert_eq!(get_searxng_bearer_token(), None);
+
+        test_set_env("SEARXNG_BEARER_TOKEN", "  ");
+        assert_eq!(get_searxng_bearer_token(), None);
+
+        test_set_env("SEARXNG_BEARER_TOKEN", " test-token ");
+        assert_eq!(get_searxng_bearer_token(), Some("test-token".to_string()));
+
+        test_remove_env("SEARXNG_BEARER_TOKEN");
     }
 
     #[test]
@@ -1931,7 +2105,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::remove_var("SEARXNG_ROTATION_ENGINES");
+        test_remove_env("SEARXNG_ROTATION_ENGINES");
 
         assert_eq!(
             get_searxng_rotation_engines(),
@@ -1950,7 +2124,7 @@ mod tests {
         let _guard = test_env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        env::set_var("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
+        test_set_env("SEARXNG_ROTATION_ENGINES", " bing, qwant ,, yandex ");
 
         assert_eq!(
             get_searxng_rotation_engines(),
@@ -1961,7 +2135,7 @@ mod tests {
             ]
         );
 
-        env::remove_var("SEARXNG_ROTATION_ENGINES");
+        test_remove_env("SEARXNG_ROTATION_ENGINES");
     }
 }
 
@@ -2083,6 +2257,15 @@ pub fn get_agent_search_limit() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(AGENT_SEARCH_LIMIT)
+}
+
+/// Get forced continuation limit from env or default.
+#[must_use]
+pub fn get_agent_continuation_limit() -> usize {
+    std::env::var("AGENT_CONTINUATION_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(AGENT_CONTINUATION_LIMIT)
 }
 
 /// Get agent max iterations from env or default.
@@ -2230,6 +2413,21 @@ pub const TRANSPORT_API_INITIAL_BACKOFF_MS: u64 = 500;
 pub const TRANSPORT_API_MAX_BACKOFF_MS: u64 = 4000;
 
 // Public search provider HTTP client configuration
+/// Default timeout for Brave Search requests (seconds).
+pub const BRAVE_SEARCH_DEFAULT_TIMEOUT_SECS: u64 = 10;
+/// Default Brave Search country targeting.
+pub const BRAVE_SEARCH_DEFAULT_COUNTRY: &str = "US";
+/// Default Brave Search language targeting.
+pub const BRAVE_SEARCH_DEFAULT_LANG: &str = "en";
+/// Default Brave Search UI language.
+pub const BRAVE_SEARCH_DEFAULT_UI_LANG: &str = "en-US";
+/// Default Brave Search safe-search setting.
+pub const BRAVE_SEARCH_DEFAULT_SAFESEARCH: &str = "moderate";
+/// Default process-wide Brave Search max concurrent operations.
+pub const BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT: usize = 1;
+/// Default process-wide Brave Search minimum delay between operations.
+pub const BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS: u64 = 1_000;
+
 /// Default timeout for DuckDuckGo requests (seconds).
 pub const DUCKDUCKGO_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Default DuckDuckGo region.
@@ -2297,6 +2495,91 @@ pub struct DuckDuckGoBackoffConfig {
 #[must_use]
 pub fn get_duckduckgo_timeout() -> u64 {
     parse_env_u64("DUCKDUCKGO_TIMEOUT_SECS").unwrap_or(DUCKDUCKGO_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get Brave Search API key from env.
+///
+/// Environment variable: `BRAVE_SEARCH_API_KEY`
+#[must_use]
+pub fn get_brave_search_api_key() -> Option<String> {
+    std::env::var("BRAVE_SEARCH_API_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Get Brave Search timeout from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_TIMEOUT_SECS`
+#[must_use]
+pub fn get_brave_search_timeout() -> u64 {
+    parse_env_u64("BRAVE_SEARCH_TIMEOUT_SECS").unwrap_or(BRAVE_SEARCH_DEFAULT_TIMEOUT_SECS)
+}
+
+/// Get Brave Search default country from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_COUNTRY`
+#[must_use]
+pub fn get_brave_search_country() -> String {
+    std::env::var("BRAVE_SEARCH_COUNTRY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| BRAVE_SEARCH_DEFAULT_COUNTRY.to_string())
+}
+
+/// Get Brave Search default search language from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_LANG`
+#[must_use]
+pub fn get_brave_search_lang() -> String {
+    std::env::var("BRAVE_SEARCH_LANG")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| BRAVE_SEARCH_DEFAULT_LANG.to_string())
+}
+
+/// Get Brave Search default UI language from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_UI_LANG`
+#[must_use]
+pub fn get_brave_search_ui_lang() -> String {
+    std::env::var("BRAVE_SEARCH_UI_LANG")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| BRAVE_SEARCH_DEFAULT_UI_LANG.to_string())
+}
+
+/// Get Brave Search safe-search setting from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_SAFESEARCH`
+#[must_use]
+pub fn get_brave_search_safesearch() -> String {
+    std::env::var("BRAVE_SEARCH_SAFESEARCH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| BRAVE_SEARCH_DEFAULT_SAFESEARCH.to_string())
+}
+
+/// Get Brave Search process-wide max concurrent operations from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_MAX_CONCURRENT`
+#[must_use]
+pub fn get_brave_search_max_concurrent() -> usize {
+    parse_env_usize("BRAVE_SEARCH_MAX_CONCURRENT")
+        .filter(|value| *value > 0)
+        .unwrap_or(BRAVE_SEARCH_DEFAULT_MAX_CONCURRENT)
+}
+
+/// Get Brave Search process-wide minimum delay from env or default.
+///
+/// Environment variable: `BRAVE_SEARCH_MIN_DELAY_MS`
+#[must_use]
+pub fn get_brave_search_min_delay_ms() -> u64 {
+    parse_env_u64("BRAVE_SEARCH_MIN_DELAY_MS").unwrap_or(BRAVE_SEARCH_DEFAULT_MIN_DELAY_MS)
 }
 
 /// Get DuckDuckGo default region from env or default.
@@ -2373,6 +2656,17 @@ pub fn get_searxng_url() -> Option<String> {
     std::env::var("SEARXNG_URL").ok().filter(|s| !s.is_empty())
 }
 
+/// Get optional SearXNG Bearer token from env.
+///
+/// Environment variable: `SEARXNG_BEARER_TOKEN`
+#[must_use]
+pub fn get_searxng_bearer_token() -> Option<String> {
+    std::env::var("SEARXNG_BEARER_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 /// Determine whether SearXNG tools should be registered.
 ///
 /// Enabled when `SEARXNG_ENABLED` is truthy **or** when `SEARXNG_URL` is set.
@@ -2382,6 +2676,34 @@ pub fn is_searxng_enabled() -> bool {
         return enabled;
     }
     get_searxng_url().is_some()
+}
+
+/// Determine whether Crawl4AI markdown tools should be registered.
+///
+/// `OXIDE_CRAWL4AI_ENABLED=false` forces disable. Without an explicit flag,
+/// registration is enabled only when `OXIDE_CRAWL4AI_BASE_URL` is non-empty —
+/// the operator's signal that a Crawl4AI service is reachable.
+#[must_use]
+pub fn is_crawl4ai_markdown_enabled() -> bool {
+    if let Some(enabled) = parse_optional_env_bool("OXIDE_CRAWL4AI_ENABLED") {
+        return enabled;
+    }
+    std::env::var("OXIDE_CRAWL4AI_BASE_URL")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+/// Determine whether the lightweight `webfetch_md` tool should be registered.
+///
+/// Default-on. Forced off by `WEBFETCH_MD_ENABLED=false`, and automatically
+/// suppressed when Crawl4AI is configured — `crawl4ai_markdown` is preferred
+/// to avoid duplicating the URL-to-Markdown capability.
+#[must_use]
+pub fn is_webfetch_md_enabled() -> bool {
+    if let Some(enabled) = parse_optional_env_bool("WEBFETCH_MD_ENABLED") {
+        return enabled;
+    }
+    !is_crawl4ai_markdown_enabled()
 }
 
 /// Get SearXNG timeout from env or default.
@@ -2478,6 +2800,16 @@ pub fn is_tavily_enabled() -> bool {
             .ok()
             .is_some_and(|value| !value.trim().is_empty())
     })
+}
+
+/// Determine whether Brave Search tools should be registered.
+///
+/// `BRAVE_SEARCH_ENABLED=false` disables registration. Without an explicit flag,
+/// registration is enabled only when `BRAVE_SEARCH_API_KEY` is non-empty.
+#[must_use]
+pub fn is_brave_search_enabled() -> bool {
+    parse_optional_env_bool("BRAVE_SEARCH_ENABLED")
+        .unwrap_or_else(|| get_brave_search_api_key().is_some())
 }
 
 /// Determine whether DuckDuckGo tools should be registered.

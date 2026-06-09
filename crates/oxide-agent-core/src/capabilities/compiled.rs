@@ -208,6 +208,33 @@ const OPENROUTER_CONFIG_PROPERTIES: &[ModuleConfigProperty] =
             .with_env("OPENROUTER_API_KEY")
             .secret(),
     ];
+#[allow(dead_code)]
+const SQLX_STORAGE_CONFIG_PROPERTIES: &[ModuleConfigProperty] = &[
+    ModuleConfigProperty::string(
+        "database_url",
+        "Postgres connection URL. Also accepts DATABASE_URL as a runtime fallback.",
+    )
+    .with_env("OXIDE_DATABASE_URL")
+    .secret(),
+    ModuleConfigProperty::string("max_connections", "Maximum Postgres pool connections.")
+        .with_env("OXIDE_DATABASE_MAX_CONNECTIONS")
+        .with_default("5"),
+    ModuleConfigProperty::string(
+        "connect_timeout_secs",
+        "Postgres pool connection/acquire timeout in seconds.",
+    )
+    .with_env("OXIDE_DATABASE_CONNECT_TIMEOUT_SECS")
+    .with_default("10"),
+    ModuleConfigProperty::string(
+        "migrate_on_startup",
+        "Run SQLx migrations during storage startup when set to true.",
+    )
+    .with_env("OXIDE_DATABASE_MIGRATE_ON_STARTUP")
+    .with_default("false"),
+    ModuleConfigProperty::string("migrations_dir", "Runtime path to SQLx migration files.")
+        .with_env("OXIDE_DATABASE_MIGRATIONS_DIR")
+        .with_default("migrations"),
+];
 
 /// Returns the deterministic list of modules compiled into this build.
 #[must_use]
@@ -281,27 +308,13 @@ fn push_transport_and_storage_modules(modules: &mut Vec<Box<dyn CapabilityModule
         Transport,
         ["transport/web"]
     );
-    push_module!(
+    push_module_with_config!(
         modules,
-        "transport-cli",
-        "transport/cli",
-        Transport,
-        ["transport/cli"]
-    );
-    push_module!(
-        modules,
-        "transport-http-api",
-        "transport/http-api",
-        Transport,
-        ["transport/http-api"]
-    );
-
-    push_module!(
-        modules,
-        "storage-s3-r2",
-        "storage/r2",
+        "storage-sqlx",
+        "storage/sqlx",
         StorageBackend,
-        ["storage/r2"]
+        ["storage/sqlx"],
+        SQLX_STORAGE_CONFIG_PROPERTIES
     );
 }
 
@@ -438,6 +451,13 @@ fn push_tool_modules(modules: &mut Vec<Box<dyn CapabilityModule>>) {
         "tool/duckduckgo",
         Search,
         ["tool/duckduckgo-search", "tool/duckduckgo-news"]
+    );
+    push_module!(
+        modules,
+        "tool-brave-search",
+        "tool/brave-search",
+        Search,
+        ["tool/brave-search"]
     );
     push_module!(
         modules,
@@ -619,51 +639,30 @@ fn push_runtime_and_integration_modules(modules: &mut Vec<Box<dyn CapabilityModu
 
 #[cfg(test)]
 mod tests {
-    use super::compiled_capability_manifest;
-    use crate::capabilities::CapabilityKind;
-
+    #[cfg(feature = "storage-sqlx")]
     #[test]
-    fn transient_local_fs_is_not_registered_as_durable_storage_backend() {
-        let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
-
-        assert!(
-            manifest
-                .modules()
-                .iter()
-                .all(|module| module.id().as_str() != "storage/local-fs-transient"),
-            "storage-local-fs is transient workspace only and must not register a storage backend module"
-        );
-        assert!(
-            manifest
-                .capabilities()
-                .iter()
-                .all(|capability| capability.id().as_str() != "storage/local-fs-transient"),
-            "storage-local-fs must not expose a durable storage capability"
-        );
-    }
-
-    #[cfg(feature = "storage-s3-r2")]
-    #[test]
-    fn compiled_manifest_exposes_only_r2_as_durable_storage_backend() {
-        let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
+    fn compiled_manifest_exposes_compiled_durable_storage_backends() {
+        let manifest =
+            super::compiled_capability_manifest().expect("compiled manifest should be valid");
         let storage_backend_ids: Vec<_> = manifest
             .modules()
             .iter()
-            .filter(|module| module.kind() == CapabilityKind::StorageBackend)
+            .filter(|module| module.kind() == crate::capabilities::CapabilityKind::StorageBackend)
             .map(|module| module.id().as_str())
             .collect();
+        let expected = vec!["storage/sqlx"];
 
         assert_eq!(
-            storage_backend_ids,
-            ["storage/r2"],
-            "S3/R2 must stay the single production durable storage backend"
+            storage_backend_ids, expected,
+            "compiled durable storage backend modules must match active storage features"
         );
     }
 
     #[cfg(feature = "llm-openrouter")]
     #[test]
     fn openrouter_module_declares_provider_config_schema() {
-        let manifest = compiled_capability_manifest().expect("compiled manifest should be valid");
+        let manifest =
+            super::compiled_capability_manifest().expect("compiled manifest should be valid");
         let schema = manifest.config_schema();
         let openrouter = &schema["properties"]["modules"]["properties"]["llm-provider/openrouter"];
 

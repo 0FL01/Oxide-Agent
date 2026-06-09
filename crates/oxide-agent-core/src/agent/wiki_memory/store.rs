@@ -1,6 +1,6 @@
 use crate::storage::{
-    wiki_context_inbox_key, wiki_context_key, wiki_context_page_key, wiki_context_raw_key,
-    wiki_global_key, StorageError, StorageProvider,
+    StorageError, StorageProvider, wiki_context_inbox_key, wiki_context_key, wiki_context_page_key,
+    wiki_context_raw_key, wiki_global_key,
 };
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -17,10 +17,10 @@ pub trait WikiObjectBackend: Send + Sync {
     async fn delete_text(&self, key: &str) -> Result<(), StorageError>;
 }
 
-/// Loaded wiki page content with its deterministic object key and content hash.
+/// Loaded wiki page content with its deterministic storage key and content hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WikiPage {
-    /// S3/R2 object key used for the page.
+    /// Logical storage key used for the page.
     pub key: String,
     /// UTF-8 Markdown page content.
     pub content: String,
@@ -57,7 +57,7 @@ impl WikiObjectBackend for StorageProviderWikiBackend {
 }
 
 impl WikiStore {
-    /// Create a wiki store over a text object backend and optional storage prefix.
+    /// Create a wiki store over a text backend and optional storage prefix.
     #[must_use]
     pub fn new(backend: Arc<dyn WikiObjectBackend>, prefix: impl Into<String>) -> Self {
         Self {
@@ -75,27 +75,27 @@ impl WikiStore {
         Self::new(Arc::new(StorageProviderWikiBackend { storage }), prefix)
     }
 
-    /// Return the deterministic object key for a global wiki file.
+    /// Return the deterministic storage key for a global wiki file.
     pub fn global_file_key(&self, file: &str) -> Result<String, StorageError> {
         validate_markdown_file_name(file, "global wiki file")?;
         Ok(wiki_global_key(&self.prefix, file))
     }
 
-    /// Return the deterministic object key for a context wiki core file.
+    /// Return the deterministic storage key for a context wiki core file.
     pub fn context_file_key(&self, context_id: &str, file: &str) -> Result<String, StorageError> {
         validate_context_id(context_id)?;
         validate_markdown_file_name(file, "context wiki file")?;
         Ok(wiki_context_key(&self.prefix, context_id, file))
     }
 
-    /// Return the deterministic object key for a context wiki topic page.
+    /// Return the deterministic storage key for a context wiki topic page.
     pub fn context_page_key(&self, context_id: &str, slug: &str) -> Result<String, StorageError> {
         validate_context_id(context_id)?;
         validate_slug(slug, "context wiki page slug")?;
         Ok(wiki_context_page_key(&self.prefix, context_id, slug))
     }
 
-    /// Return the deterministic object key for a context wiki inbox item.
+    /// Return the deterministic storage key for a context wiki inbox item.
     pub fn context_inbox_key(
         &self,
         context_id: &str,
@@ -106,7 +106,7 @@ impl WikiStore {
         Ok(wiki_context_inbox_key(&self.prefix, context_id, item_slug))
     }
 
-    /// Return the deterministic object key for a context wiki raw archive item.
+    /// Return the deterministic storage key for a context wiki raw archive item.
     pub fn context_raw_key(
         &self,
         context_id: &str,
@@ -483,10 +483,12 @@ mod tests {
             *backend.delete_keys.lock().await,
             vec!["prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md".to_string()]
         );
-        assert!(!backend
-            .objects
-            .lock()
-            .await
-            .contains_key("prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md"));
+        assert!(
+            !backend
+                .objects
+                .lock()
+                .await
+                .contains_key("prod/wiki/v1/contexts/ctx-12345678/inbox/price-note.md")
+        );
     }
 }

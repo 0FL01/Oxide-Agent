@@ -2,7 +2,7 @@
 
 Oxide Agent is a Telegram bot with Agent Mode on top of multiple LLM providers. It handles text, voice, images, documents, topic-scoped memory, sandbox tasks, a web console, and a manager control plane.
 
-Stack: Rust 1.94, `teloxide`, AWS SDK for Cloudflare R2, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
+Stack: Rust 1.94, `teloxide`, SQLx/Postgres durable storage, Leptos, native integrations with Mistral AI, OpenRouter, MiniMax AI (claude SDK), ZAI/Zhipu AI, NVIDIA NIM, ChatGPT/Codex OAuth, and OpenCode Go. Gemini-family models are accessed through OpenRouter routes, not a direct Google Gemini provider.
 
 ## Branch
 
@@ -37,12 +37,12 @@ Default branch: `dev`.
 ## Where To Look
 
 - `crates/oxide-agent-core/src/agent/` - executor, runner, hooks, compaction, wiki memory, providers, prompt composition.
-- `crates/oxide-agent-core/src/storage/` - storage facade, R2 backend, domain records (control-plane, reminders, flows).
+- `crates/oxide-agent-core/src/storage/` - storage facade, SQLx backend, domain records (control-plane, reminders, flows).
 - `crates/oxide-agent-core/src/llm/providers/` - LLM provider implementations.
 - `crates/oxide-agent-core/src/sandbox/` - sandbox facade; backends: direct Docker, broker, Bubblewrap (`bwrap/`).
 - `crates/oxide-agent-transport-telegram/src/bot/agent_handlers/` - Agent Mode lifecycle, controls, callbacks, task runner, reminders.
-- `crates/oxide-agent-transport-web/src/` - web console server (split into `auth_helpers`, `converters`, `sse`, `static_assets`, `task_executor`, `types`).
-- `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client, styles.
+- `crates/oxide-agent-transport-web/src/server/` - web console backend; `mod.rs` is a thin hub, `router.rs` owns route table/serve, route slices live in `*_routes.rs`, with `sse.rs`, `static_assets.rs`, `task_executor.rs`, and `types.rs` for streaming/assets/execution/state.
+- `crates/oxide-agent-web-ui/src/` - Leptos frontend: components, routes, SSE client; CSS entrypoint is `styles.css`, with maintained slices in `styles/` (`00-tokens.css` through `10-responsive.css`).
 - `crates/oxide-agent-core/src/capabilities/` - compiled module and capability manifests.
 - `crates/oxide-agent-core/src/agent/tool_runtime/` - typed tool registration and execution.
 - `docs/` - detailed documentation for hooks, integrations, sandbox, wiki memory, and TTS.
@@ -60,7 +60,7 @@ Default branch: `dev`.
 - Topic-scoped `AGENTS.md` is stored separately, pinned during flow bootstrap, live-synced after `agents_md_update`, inherited by sub-agents.
 - Sandbox backends are explicit: direct Docker (`SANDBOX_BACKEND=docker`), broker (`SANDBOX_BACKEND=broker`), or Bubblewrap (`SANDBOX_BACKEND=bwrap`). Default Compose stays on broker; bwrap must not require Docker.
 - Manager CRUD goes through `manager_control_plane` provider with audit trail and RBAC (`manager_allowed_users`).
-- `storage-s3-r2` is the only production durable storage. Local filesystem is transient only.
+- `storage-sqlx` is the production durable storage. Local filesystem is transient only.
 - Direct Google Gemini provider code must stay absent. Gemini models are valid only through OpenRouter.
 
 ## Key Subsystems
@@ -72,7 +72,7 @@ Default branch: `dev`.
 - Compaction is runner-integrated with typed message classes, budget estimator, hot-memory classifier, externalized large tool payloads, and LLM summarization sidecar. Legacy staged pipeline (classifier/prune/rebuild/summarizer) has been removed.
 
 ### Wiki memory
-- Lives in `agent/wiki_memory/` -- no separate crate. Storage: S3/R2 object storage.
+- Lives in `agent/wiki_memory/` -- no separate crate. Storage: SQLx/Postgres via the storage facade.
 - Pages are deterministic Markdown: `{prefix}/wiki/v1/contexts/{context_id}/pages/{slug}.md`.
 - Background planner (`planner.rs`) optionally uses LLM to extract structured memory.
 - Tools: `wiki_memory_list`, `wiki_memory_read`, `wiki_memory_delete` (blocked for sub-agents).
@@ -111,20 +111,21 @@ Default branch: `dev`.
 - Secret refs: `env:KEY`, `storage:PATH`; secrets must not reach prompts or memory.
 
 ### Storage and LLM
-- Storage facade and R2 backend in `storage/`; context-scoped APIs for transport state.
+- Storage facade and SQLx/Postgres backend in `storage/`; context-scoped APIs for transport state.
 - LLM providers in `llm/providers/`; shared orchestration: `llm/client.rs`, `llm/capabilities.rs`, `llm/support/` (backoff, HTTP pooling, OpenAI compat), `llm/types.rs`.
 - Route failover: weighted `AGENT_MODEL_ROUTES__N__*` / `SUB_AGENT_MODEL_ROUTES__N__*`; persistent 429s quarantine a route.
 - ChatGPT: OAuth/Codex Responses streaming; must fail over for structured-output/json-mode routes.
-
 ### Tool providers
+
 - Extend in `agent/providers/`; keep the transport-agnostic contract. Feature-gated: sandbox, todos, tavily, duckduckgo, webfetch_md, crawl4ai-markdown, searxng, jira-mcp, mattermost-mcp (disabled), filehoster, delegation, manager_control_plane, ssh_mcp, yt-dlp, reminders, agents_md, wiki_memory, tts (Kokoro EN + Silero RU), stack_logs (disabled for topic agents, blocked for sub-agents), compression, file_delivery, path.
+- `webfetch_md` and `crawl4ai_markdown` are mutually exclusive at runtime: if `OXIDE_CRAWL4AI_BASE_URL` is set (or `OXIDE_CRAWL4AI_ENABLED=true`), only `crawl4ai_markdown` is registered; otherwise only `webfetch_md` is registered. Override with `WEBFETCH_MD_ENABLED=false` as a belt-and-braces disable.
 
 ## Configuration
 
 - Layered: optional `config/{RUN_MODE}.yaml`, `config/local.yaml` + env vars. Config files optional (`required(false)`).
 - Provider secrets in `modules.<module-id>` with env fallbacks.
 - Key runtime: DuckDuckGo, model routes, temperature, compaction budget, sandbox backend (`SANDBOX_BACKEND`, `BWRAP_*`), Jira MCP, wiki memory writer.
-- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Profile overlays in `docker/`.
+- Docker Compose split: `docker-compose.yml` (root), `docker-compose.telegram.yml`, `docker-compose.web.yml`. Optional local SearXNG/Crawl4AI overlays: `docker-compose.telegram.local-services.yml`, `docker-compose.web.local-services.yml`. Profile overlays in `docker/`.
 
 ## Development Practices
 
@@ -142,12 +143,13 @@ Default branch: `dev`.
 - Dependencies: `cargo add`, `cargo remove`, `cargo update`. Metadata: `workspace info`, `cargo info`.
 
 ### Format and lint
-- `cargo clippy` before finishing. `cargo fmt` before committing.
+- `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check` must both pass before finishing. CI enforces both.
 
 ### Testing
-- Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`).
+- Helpers: `crates/oxide-agent-core/src/testing.rs` (`mock_llm_simple()`, `mock_storage_noop()`, `test_set_env()`, `test_remove_env()`).
 - Categories: hermetic, integration, snapshot (`insta`), property/fuzz (`proptest`).
 - E2E: `crates/oxide-agent-transport-web/tests/e2e.rs`.
+- Transport-specific profiles (e.g. `profile-web-embedded-opencode-local`) do not activate features in unrelated crates. `cargo test --workspace` will fail on crates whose modules are behind different feature gates. Use scoped `-p` for such profiles: `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local`. Full and lite profiles work with `--workspace`.
 - The legacy modular shell guard layer was removed; use focused `cargo check`, `cargo test`, and Docker build checks for touched areas.
 
 ### Bwrap rootfs
@@ -175,6 +177,7 @@ feat(sources): add bybit proof of reserves source
 - `docs/silero-tts-api.md` - Silero TTS integration for Russian voice.
 - `docs/context-window-tracking.md` - token budget and context window management.
 - `docs/stack-logs-stage0.md` - stack logs tool: Docker Compose log access.
+- `docs/deploy.md` - concise deploy guide, optional external services, local service overlays, operations.
 - `README.md` - product overview and user-facing setup notes.
 - `config/` and `.env.example` - runtime configuration examples.
 

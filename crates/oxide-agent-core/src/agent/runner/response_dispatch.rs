@@ -1,16 +1,16 @@
 //! LLM response dispatch for native, structured, and unstructured responses.
 
+use super::AgentRunner;
 use super::tools::ToolTurnAssistantContent;
 use super::types::{
     AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState, StructuredOutputFailure,
 };
-use super::AgentRunner;
 use crate::agent::compaction::CompactionTrigger;
-use crate::agent::progress::AgentEvent;
+use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::recovery::sanitize_tool_calls;
 use crate::agent::structured_output::parse_structured_output;
 use crate::llm::ChatResponse;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use tracing::{debug, info, warn};
 
 impl AgentRunner {
@@ -168,7 +168,10 @@ impl AgentRunner {
         ctx: &mut AgentRunnerContext<'_>,
         state: &mut RunState,
     ) -> Result<Option<AgentRunResult>> {
-        if let Ok(parsed) = parse_structured_output(&raw_output, ctx.tools) {
+        if let Some(parsed) = should_parse_unstructured_structured_output_fallback(&raw_output)
+            .then(|| parse_structured_output(&raw_output, ctx.tools))
+            .and_then(Result::ok)
+        {
             warn!(
                 model = %ctx.config.model_name,
                 provider = ctx.config.model_provider.as_deref().unwrap_or("unknown"),
@@ -297,7 +300,12 @@ impl AgentRunner {
 
             if let Some(tx) = ctx.progress_tx {
                 let summary = crate::agent::thoughts::extract_reasoning_summary(reasoning, 100);
-                let _ = tx.send(AgentEvent::Reasoning { summary }).await;
+                let _ = tx
+                    .send(AgentEvent::Reasoning {
+                        source: AgentEventSource::Root,
+                        summary,
+                    })
+                    .await;
             }
         }
 
@@ -315,6 +323,11 @@ impl AgentRunner {
             );
         }
     }
+}
+
+fn should_parse_unstructured_structured_output_fallback(raw: &str) -> bool {
+    let trimmed = raw.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with("```")
 }
 
 #[cfg(test)]
@@ -381,6 +394,19 @@ mod tests {
         assert!(!last_message.content.contains("\"final_answer\""));
     }
 
+    #[test]
+    fn unstructured_fallback_only_tries_json_like_candidates() {
+        assert!(should_parse_unstructured_structured_output_fallback(
+            r#"{"thought":"done","tool_call":null,"final_answer":"ok","awaiting_user_input":null}"#
+        ));
+        assert!(should_parse_unstructured_structured_output_fallback(
+            "```json\n{}\n```"
+        ));
+        assert!(!should_parse_unstructured_structured_output_fallback(
+            "# Обзор: Gemma 4 12B\n\nОбычный markdown-ответ модели."
+        ));
+    }
+
     #[tokio::test]
     async fn tool_calls_without_typed_runtime_fail_without_history_mutation() {
         let llm_client = build_llm_client(single_final_response_provider());
@@ -431,9 +457,11 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error
-            .to_string()
-            .contains("tool runtime registry is required for active tool calls"));
+        assert!(
+            error
+                .to_string()
+                .contains("tool runtime registry is required for active tool calls")
+        );
         assert!(
             ctx.agent.memory().get_messages().is_empty(),
             "missing tool runtime must not write partial assistant/tool history"

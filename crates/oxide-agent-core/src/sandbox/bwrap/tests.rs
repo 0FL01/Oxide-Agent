@@ -1,17 +1,19 @@
 use super::workspace::resolve_workspace_path;
 use super::{
-    host_arch, load_manifest, BwrapNetworkMode, BwrapRootMode, BwrapSandboxManager,
-    WORKSPACE_PREFIX,
+    BwrapNetworkMode, BwrapRootMode, BwrapSandboxManager, WORKSPACE_PREFIX, host_arch,
+    load_manifest,
 };
 use crate::sandbox::{SandboxEditReadGuard, SandboxFileEdit, SandboxScope};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 #[cfg(unix)]
-use std::os::unix::fs::symlink;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use crate::testing::{test_remove_env, test_set_env};
 
 const BWRAP_TEST_ENV_KEYS: &[&str] = &[
     "BWRAP_ALLOW_OVERLAY",
@@ -57,8 +59,8 @@ impl Drop for EnvGuard {
     fn drop(&mut self) {
         for (key, value) in &self.previous {
             match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
+                Some(value) => test_set_env(key, value),
+                None => test_remove_env(key),
             }
         }
     }
@@ -138,20 +140,20 @@ async fn bwrap_state_lifecycle_persists_workspace_and_recreate_wipes_it() {
     let fake_bwrap = temp.path().join("bwrap");
     create_fake_bwrap(&fake_bwrap);
 
-    std::env::set_var("BWRAP_ALLOW_OVERLAY", "true");
-    std::env::set_var("BWRAP_BIN", &fake_bwrap);
-    std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "5");
-    std::env::set_var("BWRAP_DISABLE_NESTED_USERNS", "false");
-    std::env::set_var("BWRAP_IMAGE", "test-dev");
-    std::env::set_var("BWRAP_LOCK_DIR", temp.path().join("locks"));
-    std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "1024");
-    std::env::set_var("BWRAP_MAX_READ_FILE_BYTES", "1024");
-    std::env::set_var("BWRAP_NET", "none");
-    std::env::set_var("BWRAP_RESOLV_CONF", "none");
-    std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
-    std::env::set_var("BWRAP_ROOTFS", &rootfs);
-    std::env::set_var("BWRAP_STATE_DIR", temp.path().join("scopes"));
-    std::env::remove_var("SANDBOX_EXEC_TIMEOUT_SECS");
+    test_set_env("BWRAP_ALLOW_OVERLAY", "true");
+    test_set_env("BWRAP_BIN", &fake_bwrap);
+    test_set_env("BWRAP_COMMAND_TIMEOUT_SECS", "5");
+    test_set_env("BWRAP_DISABLE_NESTED_USERNS", "false");
+    test_set_env("BWRAP_IMAGE", "test-dev");
+    test_set_env("BWRAP_LOCK_DIR", temp.path().join("locks"));
+    test_set_env("BWRAP_MAX_OUTPUT_BYTES", "1024");
+    test_set_env("BWRAP_MAX_READ_FILE_BYTES", "1024");
+    test_set_env("BWRAP_NET", "none");
+    test_set_env("BWRAP_RESOLV_CONF", "none");
+    test_set_env("BWRAP_ROOT_MODE", "overlay-rw");
+    test_set_env("BWRAP_ROOTFS", &rootfs);
+    test_set_env("BWRAP_STATE_DIR", temp.path().join("scopes"));
+    test_remove_env("SANDBOX_EXEC_TIMEOUT_SECS");
 
     let scope = SandboxScope::new(42, "topic-alpha").with_transport_metadata(Some(1001), Some(77));
     let mut manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
@@ -198,11 +200,13 @@ async fn bwrap_state_lifecycle_persists_workspace_and_recreate_wipes_it() {
     );
 
     manager.destroy().await.unwrap();
-    assert!(!temp
-        .path()
-        .join("scopes")
-        .join(scope.stable_name())
-        .exists());
+    assert!(
+        !temp
+            .path()
+            .join("scopes")
+            .join(scope.stable_name())
+            .exists()
+    );
 }
 
 #[cfg(unix)]
@@ -231,10 +235,12 @@ async fn bwrap_workspace_file_ops_reject_symlink_escapes() {
     std::fs::write(outside.join("secret.txt"), b"secret").expect("outside secret");
 
     symlink(&outside, manager.state.workspace.join("linked-dir")).expect("parent symlink");
-    assert!(manager
-        .write_file("linked-dir/new.txt", b"nope")
-        .await
-        .is_err());
+    assert!(
+        manager
+            .write_file("linked-dir/new.txt", b"nope")
+            .await
+            .is_err()
+    );
     assert!(manager.list_files("linked-dir").await.is_err());
 
     symlink(
@@ -243,10 +249,12 @@ async fn bwrap_workspace_file_ops_reject_symlink_escapes() {
     )
     .expect("final symlink");
     assert!(manager.read_file("secret-link.txt").await.is_err());
-    assert!(manager
-        .write_file("secret-link.txt", b"nope")
-        .await
-        .is_err());
+    assert!(
+        manager
+            .write_file("secret-link.txt", b"nope")
+            .await
+            .is_err()
+    );
 }
 
 #[cfg(unix)]
@@ -359,9 +367,9 @@ async fn bwrap_invocation_args_encode_network_root_modes_and_bind_policy() {
     create_fake_bwrap(&fake_bwrap);
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_NET", "host");
-    std::env::set_var("BWRAP_RESOLV_CONF", "auto");
-    std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
+    test_set_env("BWRAP_NET", "host");
+    test_set_env("BWRAP_RESOLV_CONF", "auto");
+    test_set_env("BWRAP_ROOT_MODE", "overlay-rw");
     let overlay_manager = BwrapSandboxManager::new(SandboxScope::new(42, "args-overlay-host"))
         .await
         .unwrap();
@@ -394,11 +402,13 @@ async fn bwrap_invocation_args_encode_network_root_modes_and_bind_policy() {
             .expect("auto resolver should stage a bind source");
         assert!(staged_resolv.starts_with(&overlay_manager.state.scope_dir));
         assert_ne!(staged_resolv, PathBuf::from("/etc/resolv.conf"));
-        assert!(!staged_resolv
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            !staged_resolv
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         let overlay_args_with_resolv = args_to_strings(overlay_manager.bwrap_args(
             Some(&work_dir),
             Some(&staged_resolv),
@@ -412,8 +422,8 @@ async fn bwrap_invocation_args_encode_network_root_modes_and_bind_policy() {
     }
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_NET", "none");
-    std::env::set_var("BWRAP_ROOT_MODE", "ro");
+    test_set_env("BWRAP_NET", "none");
+    test_set_env("BWRAP_ROOT_MODE", "ro");
     let readonly_manager = BwrapSandboxManager::new(SandboxScope::new(42, "args-ro-none"))
         .await
         .unwrap();
@@ -453,9 +463,9 @@ async fn bwrap_auto_resolver_creates_overlay_bind_target_when_rootfs_file_is_mis
     create_fake_bwrap(&fake_bwrap);
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_NET", "host");
-    std::env::set_var("BWRAP_RESOLV_CONF", "auto");
-    std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
+    test_set_env("BWRAP_NET", "host");
+    test_set_env("BWRAP_RESOLV_CONF", "auto");
+    test_set_env("BWRAP_ROOT_MODE", "overlay-rw");
     let overlay_manager = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-overlay"))
         .await
         .unwrap();
@@ -475,9 +485,9 @@ async fn bwrap_auto_resolver_creates_overlay_bind_target_when_rootfs_file_is_mis
     }
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_NET", "host");
-    std::env::set_var("BWRAP_RESOLV_CONF", "auto");
-    std::env::set_var("BWRAP_ROOT_MODE", "ro");
+    test_set_env("BWRAP_NET", "host");
+    test_set_env("BWRAP_RESOLV_CONF", "auto");
+    test_set_env("BWRAP_ROOT_MODE", "ro");
     let readonly_manager = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-ro"))
         .await
         .unwrap();
@@ -508,7 +518,7 @@ async fn bwrap_config_errors_are_actionable() {
     create_fake_bwrap(&fake_bwrap);
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_BIN", temp.path().join("missing-bwrap"));
+    test_set_env("BWRAP_BIN", temp.path().join("missing-bwrap"));
     let missing_bwrap = BwrapSandboxManager::new(SandboxScope::new(42, "missing-bwrap"))
         .await
         .err()
@@ -518,7 +528,7 @@ async fn bwrap_config_errors_are_actionable() {
     assert!(missing_bwrap.contains("Install bubblewrap"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_ROOTFS", temp.path().join("missing-rootfs"));
+    test_set_env("BWRAP_ROOTFS", temp.path().join("missing-rootfs"));
     let missing_rootfs = BwrapSandboxManager::new(SandboxScope::new(42, "missing-rootfs"))
         .await
         .err()
@@ -530,7 +540,7 @@ async fn bwrap_config_errors_are_actionable() {
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     let rootfs_symlink = temp.path().join("rootfs-symlink");
     symlink(&rootfs, &rootfs_symlink).expect("rootfs symlink");
-    std::env::set_var("BWRAP_ROOTFS", &rootfs_symlink);
+    test_set_env("BWRAP_ROOTFS", &rootfs_symlink);
     let rootfs_symlink_error = BwrapSandboxManager::new(SandboxScope::new(42, "rootfs-symlink"))
         .await
         .err()
@@ -540,7 +550,7 @@ async fn bwrap_config_errors_are_actionable() {
     assert!(rootfs_symlink_error.contains("must not be a symlink"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_RESOLV_CONF", temp.path());
+    test_set_env("BWRAP_RESOLV_CONF", temp.path());
     let resolv_dir_error = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-dir"))
         .await
         .err()
@@ -554,7 +564,7 @@ async fn bwrap_config_errors_are_actionable() {
     std::fs::write(&resolv_file, b"nameserver 127.0.0.1\n").expect("resolv file");
     let resolv_symlink = temp.path().join("resolv-link.conf");
     symlink(&resolv_file, &resolv_symlink).expect("resolv symlink");
-    std::env::set_var("BWRAP_RESOLV_CONF", &resolv_symlink);
+    test_set_env("BWRAP_RESOLV_CONF", &resolv_symlink);
     let resolv_symlink_error = BwrapSandboxManager::new(SandboxScope::new(42, "resolv-symlink"))
         .await
         .err()
@@ -564,9 +574,9 @@ async fn bwrap_config_errors_are_actionable() {
     assert!(resolv_symlink_error.contains("must not be a symlink"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::remove_var("BWRAP_ROOTFS");
-    std::env::set_var("BWRAP_IMAGE_STORE", temp.path().join("empty-images"));
-    std::env::set_var("SANDBOX_IMAGE", "agent-sandbox:custom");
+    test_remove_env("BWRAP_ROOTFS");
+    test_set_env("BWRAP_IMAGE_STORE", temp.path().join("empty-images"));
+    test_set_env("SANDBOX_IMAGE", "agent-sandbox:custom");
     let docker_image_only = BwrapSandboxManager::new(SandboxScope::new(42, "docker-image-only"))
         .await
         .err()
@@ -596,9 +606,9 @@ async fn bwrap_config_errors_are_actionable() {
     )
     .expect("unsafe image manifest");
     symlink(&rootfs, unsafe_image.join("rootfs")).expect("unsafe rootfs symlink");
-    std::env::remove_var("BWRAP_ROOTFS");
-    std::env::set_var("BWRAP_IMAGE_STORE", &image_store);
-    std::env::set_var("BWRAP_IMAGE", "unsafe-rootfs-link");
+    test_remove_env("BWRAP_ROOTFS");
+    test_set_env("BWRAP_IMAGE_STORE", &image_store);
+    test_set_env("BWRAP_IMAGE", "unsafe-rootfs-link");
     let unsafe_rootfs_symlink =
         BwrapSandboxManager::new(SandboxScope::new(42, "unsafe-rootfs-symlink"))
             .await
@@ -609,7 +619,7 @@ async fn bwrap_config_errors_are_actionable() {
     assert!(unsafe_rootfs_symlink.contains("unsafe rootfs symlink"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_ROOT_MODE", "tmp-overlay");
+    test_set_env("BWRAP_ROOT_MODE", "tmp-overlay");
     let unsupported_root_mode =
         BwrapSandboxManager::new(SandboxScope::new(42, "unsupported-root-mode"))
             .await
@@ -634,15 +644,15 @@ async fn bwrap_lock_timeout_defaults_to_command_timeout_plus_five_and_rejects_ze
     create_fake_bwrap(&fake_bwrap);
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "7");
-    std::env::remove_var("BWRAP_RECREATE_LOCK_TIMEOUT_SECS");
+    test_set_env("BWRAP_COMMAND_TIMEOUT_SECS", "7");
+    test_remove_env("BWRAP_RECREATE_LOCK_TIMEOUT_SECS");
     let manager = BwrapSandboxManager::new(SandboxScope::new(42, "default-lock-timeout"))
         .await
         .unwrap();
     assert_eq!(manager.config.lock_timeout, Duration::from_secs(12));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_RECREATE_LOCK_TIMEOUT_SECS", "0");
+    test_set_env("BWRAP_RECREATE_LOCK_TIMEOUT_SECS", "0");
     let zero_lock_timeout = BwrapSandboxManager::new(SandboxScope::new(42, "zero-lock-timeout"))
         .await
         .err()
@@ -685,9 +695,9 @@ async fn bwrap_metadata_reports_manifest_path_package_manager_and_sha() {
     .expect("image manifest");
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::remove_var("BWRAP_ROOTFS");
-    std::env::set_var("BWRAP_IMAGE_STORE", temp.path().join("images"));
-    std::env::set_var("BWRAP_IMAGE", "debian-test");
+    test_remove_env("BWRAP_ROOTFS");
+    test_set_env("BWRAP_IMAGE_STORE", temp.path().join("images"));
+    test_set_env("BWRAP_IMAGE", "debian-test");
 
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "metadata-status"))
         .await
@@ -699,10 +709,12 @@ async fn bwrap_metadata_reports_manifest_path_package_manager_and_sha() {
         record.labels.get("agent.image_manifest_path"),
         Some(&manifest_path.display().to_string())
     );
-    assert!(record
-        .labels
-        .get("agent.image_manifest_sha256")
-        .is_some_and(|value| !value.is_empty()));
+    assert!(
+        record
+            .labels
+            .get("agent.image_manifest_sha256")
+            .is_some_and(|value| !value.is_empty())
+    );
     assert_eq!(
         record.labels.get("agent.package_manager"),
         Some(&"apt".to_string())
@@ -792,12 +804,12 @@ async fn bwrap_image_bootstrap_noops_when_manifest_exists() {
     write_test_image_manifest(&image_dir, "existing-image", "apk");
 
     configure_fake_bwrap_env(temp.path(), &image_dir.join("rootfs"), &fake_bwrap);
-    std::env::remove_var("BWRAP_ROOTFS");
-    std::env::set_var("BWRAP_IMAGE", "existing-image");
-    std::env::set_var("BWRAP_IMAGE_BOOTSTRAP", "download");
-    std::env::set_var("BWRAP_IMAGE_STORE", temp.path().join("images"));
-    std::env::remove_var("BWRAP_IMAGE_URL");
-    std::env::remove_var("BWRAP_IMAGE_SHA256");
+    test_remove_env("BWRAP_ROOTFS");
+    test_set_env("BWRAP_IMAGE", "existing-image");
+    test_set_env("BWRAP_IMAGE_BOOTSTRAP", "download");
+    test_set_env("BWRAP_IMAGE_STORE", temp.path().join("images"));
+    test_remove_env("BWRAP_IMAGE_URL");
+    test_remove_env("BWRAP_IMAGE_SHA256");
 
     let manager = BwrapSandboxManager::new(SandboxScope::new(42, "bootstrap-existing"))
         .await
@@ -821,7 +833,7 @@ async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     let state_file = temp.path().join("not-a-state-dir");
     std::fs::write(&state_file, b"file").expect("state file");
-    std::env::set_var("BWRAP_STATE_DIR", &state_file);
+    test_set_env("BWRAP_STATE_DIR", &state_file);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-state-dir"))
         .await
         .unwrap();
@@ -839,7 +851,7 @@ async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
     std::fs::create_dir(&state_target).expect("state target");
     let state_symlink = temp.path().join("state-link");
     symlink(&state_target, &state_symlink).expect("state symlink");
-    std::env::set_var("BWRAP_STATE_DIR", &state_symlink);
+    test_set_env("BWRAP_STATE_DIR", &state_symlink);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-state-symlink"))
         .await
         .unwrap();
@@ -855,7 +867,7 @@ async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     let lock_file = temp.path().join("not-a-lock-dir");
     std::fs::write(&lock_file, b"file").expect("lock file");
-    std::env::set_var("BWRAP_LOCK_DIR", &lock_file);
+    test_set_env("BWRAP_LOCK_DIR", &lock_file);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-lock-dir"))
         .await
         .unwrap();
@@ -873,7 +885,7 @@ async fn bwrap_state_and_lock_dir_errors_name_config_keys() {
     std::fs::create_dir(&lock_target).expect("lock target");
     let lock_symlink = temp.path().join("lock-link");
     symlink(&lock_target, &lock_symlink).expect("lock symlink");
-    std::env::set_var("BWRAP_LOCK_DIR", &lock_symlink);
+    test_set_env("BWRAP_LOCK_DIR", &lock_symlink);
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "bad-lock-symlink"))
         .await
         .unwrap();
@@ -902,7 +914,7 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     let root_upper_parent = temp.path().join("root-upper");
-    std::env::set_var("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
+    test_set_env("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
     let scope = SandboxScope::new(42, "upper-override");
     let manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
     assert_eq!(
@@ -922,7 +934,7 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     manager.create_sandbox().await.unwrap();
     assert!(root_upper_parent.join(scope.stable_name()).exists());
     let changed_root_upper_parent = temp.path().join("changed-root-upper");
-    std::env::set_var("BWRAP_ROOT_UPPER_DIR", &changed_root_upper_parent);
+    test_set_env("BWRAP_ROOT_UPPER_DIR", &changed_root_upper_parent);
     let pinned_manager = BwrapSandboxManager::new(scope.clone()).await.unwrap();
     assert_eq!(
         pinned_manager.state.system_dir,
@@ -934,7 +946,7 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     assert!(root_upper_parent.exists());
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
+    test_set_env("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
     let delete_scope = SandboxScope::new(42, "upper-delete");
     let mut manager = BwrapSandboxManager::new(delete_scope.clone())
         .await
@@ -949,29 +961,33 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     assert!(!root_upper_parent.join(delete_scope.stable_name()).exists());
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
+    test_set_env("BWRAP_ROOT_UPPER_DIR", &root_upper_parent);
     let changed_delete_scope = SandboxScope::new(42, "upper-delete-after-env-change");
     let mut manager = BwrapSandboxManager::new(changed_delete_scope.clone())
         .await
         .unwrap();
     manager.create_sandbox().await.unwrap();
-    std::env::set_var("BWRAP_ROOT_UPPER_DIR", &changed_root_upper_parent);
+    test_set_env("BWRAP_ROOT_UPPER_DIR", &changed_root_upper_parent);
     assert!(
         BwrapSandboxManager::delete_sandbox_by_name(42, &changed_delete_scope.stable_name())
             .await
             .unwrap()
     );
-    assert!(!root_upper_parent
-        .join(changed_delete_scope.stable_name())
-        .exists());
-    assert!(!changed_root_upper_parent
-        .join(changed_delete_scope.stable_name())
-        .exists());
+    assert!(
+        !root_upper_parent
+            .join(changed_delete_scope.stable_name())
+            .exists()
+    );
+    assert!(
+        !changed_root_upper_parent
+            .join(changed_delete_scope.stable_name())
+            .exists()
+    );
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
     let file_upper = temp.path().join("file-upper");
     std::fs::write(&file_upper, b"file").expect("file upper");
-    std::env::set_var("BWRAP_ROOT_UPPER_DIR", &file_upper);
+    test_set_env("BWRAP_ROOT_UPPER_DIR", &file_upper);
     let file_error = BwrapSandboxManager::new(SandboxScope::new(42, "file-upper"))
         .await
         .err()
@@ -985,7 +1001,7 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     std::fs::create_dir_all(&symlink_target).expect("upper target");
     let symlink_upper = temp.path().join("upper-symlink");
     symlink(&symlink_target, &symlink_upper).expect("upper symlink");
-    std::env::set_var("BWRAP_ROOT_UPPER_DIR", &symlink_upper);
+    test_set_env("BWRAP_ROOT_UPPER_DIR", &symlink_upper);
     let symlink_error = BwrapSandboxManager::new(SandboxScope::new(42, "symlink-upper"))
         .await
         .err()
@@ -995,7 +1011,7 @@ async fn bwrap_root_upper_dir_override_is_per_scope_and_rejects_unsafe_paths() {
     assert!(symlink_error.contains("must not be a symlink"));
 
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_ROOT_UPPER_DIR", rootfs.join("unsafe-upper"));
+    test_set_env("BWRAP_ROOT_UPPER_DIR", rootfs.join("unsafe-upper"));
     let rootfs_error = BwrapSandboxManager::new(SandboxScope::new(42, "rootfs-upper"))
         .await
         .err()
@@ -1082,7 +1098,7 @@ async fn bwrap_exec_preserves_nonzero_exit_truncates_output_and_times_out() {
         "#!/bin/sh\nprintf abcdefghijklmnop\nprintf qrstuvwxyz >&2\nexit 7\n",
     );
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "8");
+    test_set_env("BWRAP_MAX_OUTPUT_BYTES", "8");
 
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "exec-output"))
         .await
@@ -1091,12 +1107,16 @@ async fn bwrap_exec_preserves_nonzero_exit_truncates_output_and_times_out() {
     assert_eq!(output.exit_code, 7);
     assert_eq!(output.stdout, "abcdefgh");
     assert!(output.stderr.contains("qrstuvwx"));
-    assert!(output
-        .stderr
-        .contains("stdout truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 16 bytes"));
-    assert!(output
-        .stderr
-        .contains("stderr truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 10 bytes"));
+    assert!(
+        output
+            .stderr
+            .contains("stdout truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 16 bytes")
+    );
+    assert!(
+        output
+            .stderr
+            .contains("stderr truncated by BWRAP_MAX_OUTPUT_BYTES: captured 8 of 10 bytes")
+    );
 
     let child_pid_file = temp.path().join("bwrap-child.pid");
     create_fake_bwrap_script(
@@ -1107,7 +1127,7 @@ async fn bwrap_exec_preserves_nonzero_exit_truncates_output_and_times_out() {
         ),
     );
     configure_fake_bwrap_env(temp.path(), &rootfs, &fake_bwrap);
-    std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "1");
+    test_set_env("BWRAP_COMMAND_TIMEOUT_SECS", "1");
     let mut manager = BwrapSandboxManager::new(SandboxScope::new(42, "exec-timeout"))
         .await
         .unwrap();
@@ -1299,59 +1319,59 @@ fn configure_bwrap_image_bootstrap_env(
     let file_url = url::Url::from_file_path(tarball)
         .expect("tarball file URL")
         .to_string();
-    std::env::set_var("BWRAP_ALLOW_OVERLAY", "true");
-    std::env::set_var("BWRAP_BIN", fake_bwrap);
-    std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "5");
-    std::env::set_var("BWRAP_DISABLE_NESTED_USERNS", "false");
-    std::env::set_var("BWRAP_IMAGE", image_id);
-    std::env::set_var("BWRAP_IMAGE_BOOTSTRAP", "download");
-    std::env::set_var("BWRAP_IMAGE_PACKAGE_MANAGER", "apk");
-    std::env::set_var("BWRAP_IMAGE_SHA256", sha256);
-    std::env::set_var("BWRAP_IMAGE_STORE", temp.join("images"));
-    std::env::set_var("BWRAP_IMAGE_URL", file_url);
-    std::env::set_var("BWRAP_LOCK_DIR", temp.join("locks"));
-    std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "1024");
-    std::env::set_var("BWRAP_MAX_READ_FILE_BYTES", "1024");
-    std::env::set_var("BWRAP_NET", "none");
-    std::env::set_var("BWRAP_RESOLV_CONF", "none");
-    std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
-    std::env::remove_var("BWRAP_ROOTFS");
-    std::env::set_var("BWRAP_STATE_DIR", temp.join("scopes"));
-    std::env::remove_var("SANDBOX_EXEC_TIMEOUT_SECS");
+    test_set_env("BWRAP_ALLOW_OVERLAY", "true");
+    test_set_env("BWRAP_BIN", fake_bwrap);
+    test_set_env("BWRAP_COMMAND_TIMEOUT_SECS", "5");
+    test_set_env("BWRAP_DISABLE_NESTED_USERNS", "false");
+    test_set_env("BWRAP_IMAGE", image_id);
+    test_set_env("BWRAP_IMAGE_BOOTSTRAP", "download");
+    test_set_env("BWRAP_IMAGE_PACKAGE_MANAGER", "apk");
+    test_set_env("BWRAP_IMAGE_SHA256", sha256);
+    test_set_env("BWRAP_IMAGE_STORE", temp.join("images"));
+    test_set_env("BWRAP_IMAGE_URL", file_url);
+    test_set_env("BWRAP_LOCK_DIR", temp.join("locks"));
+    test_set_env("BWRAP_MAX_OUTPUT_BYTES", "1024");
+    test_set_env("BWRAP_MAX_READ_FILE_BYTES", "1024");
+    test_set_env("BWRAP_NET", "none");
+    test_set_env("BWRAP_RESOLV_CONF", "none");
+    test_set_env("BWRAP_ROOT_MODE", "overlay-rw");
+    test_remove_env("BWRAP_ROOTFS");
+    test_set_env("BWRAP_STATE_DIR", temp.join("scopes"));
+    test_remove_env("SANDBOX_EXEC_TIMEOUT_SECS");
 }
 
 #[cfg(unix)]
 fn configure_fake_bwrap_env(temp: &Path, rootfs: &Path, fake_bwrap: &Path) {
-    std::env::set_var("BWRAP_ALLOW_OVERLAY", "true");
-    std::env::set_var("BWRAP_BIN", fake_bwrap);
-    std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "5");
-    std::env::set_var("BWRAP_DISABLE_NESTED_USERNS", "false");
-    std::env::set_var("BWRAP_IMAGE", "test-dev");
-    std::env::set_var("BWRAP_LOCK_DIR", temp.join("locks"));
-    std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "1024");
-    std::env::set_var("BWRAP_MAX_READ_FILE_BYTES", "1024");
-    std::env::set_var("BWRAP_NET", "none");
-    std::env::set_var("BWRAP_RESOLV_CONF", "none");
-    std::env::set_var("BWRAP_ROOT_MODE", "overlay-rw");
-    std::env::set_var("BWRAP_ROOTFS", rootfs);
-    std::env::set_var("BWRAP_STATE_DIR", temp.join("scopes"));
-    std::env::remove_var("SANDBOX_EXEC_TIMEOUT_SECS");
+    test_set_env("BWRAP_ALLOW_OVERLAY", "true");
+    test_set_env("BWRAP_BIN", fake_bwrap);
+    test_set_env("BWRAP_COMMAND_TIMEOUT_SECS", "5");
+    test_set_env("BWRAP_DISABLE_NESTED_USERNS", "false");
+    test_set_env("BWRAP_IMAGE", "test-dev");
+    test_set_env("BWRAP_LOCK_DIR", temp.join("locks"));
+    test_set_env("BWRAP_MAX_OUTPUT_BYTES", "1024");
+    test_set_env("BWRAP_MAX_READ_FILE_BYTES", "1024");
+    test_set_env("BWRAP_NET", "none");
+    test_set_env("BWRAP_RESOLV_CONF", "none");
+    test_set_env("BWRAP_ROOT_MODE", "overlay-rw");
+    test_set_env("BWRAP_ROOTFS", rootfs);
+    test_set_env("BWRAP_STATE_DIR", temp.join("scopes"));
+    test_remove_env("SANDBOX_EXEC_TIMEOUT_SECS");
 }
 
 #[cfg(unix)]
 fn configure_real_bwrap_env(temp: &Path, rootfs: &Path, root_mode: BwrapRootMode) {
-    std::env::set_var("BWRAP_ALLOW_OVERLAY", "true");
-    std::env::set_var("BWRAP_COMMAND_TIMEOUT_SECS", "15");
-    std::env::set_var("BWRAP_IMAGE", "ignored-test-rootfs");
-    std::env::set_var("BWRAP_LOCK_DIR", temp.join("locks"));
-    std::env::set_var("BWRAP_MAX_OUTPUT_BYTES", "1048576");
-    std::env::set_var("BWRAP_MAX_READ_FILE_BYTES", "1048576");
-    std::env::set_var("BWRAP_NET", "host");
-    std::env::set_var("BWRAP_RESOLV_CONF", "auto");
-    std::env::set_var("BWRAP_ROOT_MODE", root_mode.to_string());
-    std::env::set_var("BWRAP_ROOTFS", rootfs);
-    std::env::set_var("BWRAP_STATE_DIR", temp.join("scopes"));
-    std::env::remove_var("SANDBOX_EXEC_TIMEOUT_SECS");
+    test_set_env("BWRAP_ALLOW_OVERLAY", "true");
+    test_set_env("BWRAP_COMMAND_TIMEOUT_SECS", "15");
+    test_set_env("BWRAP_IMAGE", "ignored-test-rootfs");
+    test_set_env("BWRAP_LOCK_DIR", temp.join("locks"));
+    test_set_env("BWRAP_MAX_OUTPUT_BYTES", "1048576");
+    test_set_env("BWRAP_MAX_READ_FILE_BYTES", "1048576");
+    test_set_env("BWRAP_NET", "host");
+    test_set_env("BWRAP_RESOLV_CONF", "auto");
+    test_set_env("BWRAP_ROOT_MODE", root_mode.to_string());
+    test_set_env("BWRAP_ROOTFS", rootfs);
+    test_set_env("BWRAP_STATE_DIR", temp.join("scopes"));
+    test_remove_env("SANDBOX_EXEC_TIMEOUT_SECS");
 }
 
 #[cfg(unix)]

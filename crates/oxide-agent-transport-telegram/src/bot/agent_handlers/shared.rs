@@ -1,9 +1,9 @@
 use super::input::PendingTextInputBatch;
-use crate::bot::{general_forum_topic_id, TelegramThreadKind, TelegramThreadSpec};
+use crate::bot::{TelegramThreadKind, TelegramThreadSpec, general_forum_topic_id};
 use crate::config::BotSettings;
 use crate::reminder_scheduler::ReminderSchedulerHandle;
-use oxide_agent_core::agent::providers::ReminderScheduleNotifier;
 use oxide_agent_core::agent::SessionId;
+use oxide_agent_core::agent::providers::ReminderScheduleNotifier;
 use oxide_agent_core::storage::ReminderThreadKind;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -12,7 +12,7 @@ use teloxide::types::MessageId;
 use tokio::sync::{Mutex, RwLock};
 
 fn thread_id_value(thread_spec: TelegramThreadSpec) -> Option<i32> {
-    thread_spec.thread_id.map(|thread_id| thread_id.0 .0)
+    thread_spec.thread_id.map(|thread_id| thread_id.0.0)
 }
 
 pub(crate) fn manager_default_chat_id(

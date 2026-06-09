@@ -5,7 +5,7 @@ use super::{
     ModuleId,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
@@ -16,9 +16,7 @@ pub enum ManifestError {
     #[error("duplicate module id: {0}")]
     DuplicateModuleId(ModuleId),
     /// More than one module declared the same capability ID.
-    #[error(
-        "duplicate capability id: {capability} provided by {first_module} and {second_module}"
-    )]
+    #[error("duplicate capability id: {capability} provided by {first_module} and {second_module}")]
     DuplicateCapabilityId {
         /// Duplicate capability.
         capability: CapabilityId,
@@ -550,7 +548,7 @@ fn requirement_is_satisfied_by(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capabilities::{compiled_capability_manifest, StaticCapabilityModule};
+    use crate::capabilities::{StaticCapabilityModule, compiled_capability_manifest};
 
     const TOOL_Z_WRITE: &[CapabilityId] = &[CapabilityId::new("tool/z-write")];
     const TOOL_A_WRITE_READ: &[CapabilityId] = &[
@@ -955,13 +953,14 @@ mod tests {
             .map(|capability| capability.as_str())
             .collect();
 
-        let mut expected = Vec::new();
-        #[cfg(feature = "sandbox-backend-docker-direct")]
-        expected.push("sandbox-backend/docker-direct/exec");
-        #[cfg(feature = "sandbox-backend-sandboxd-client")]
-        expected.push("sandbox-backend/sandboxd-client/exec");
-        #[cfg(feature = "sandbox-backend-bwrap")]
-        expected.push("sandbox-backend/bwrap/exec");
+        let expected = vec![
+            #[cfg(feature = "sandbox-backend-docker-direct")]
+            "sandbox-backend/docker-direct/exec",
+            #[cfg(feature = "sandbox-backend-sandboxd-client")]
+            "sandbox-backend/sandboxd-client/exec",
+            #[cfg(feature = "sandbox-backend-bwrap")]
+            "sandbox-backend/bwrap/exec",
+        ];
 
         assert_eq!(requirement_options, expected);
     }

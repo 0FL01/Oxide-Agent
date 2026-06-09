@@ -1,0 +1,288 @@
+/* Shell and navigation layout. Canonical v2 rules include legacy fallback properties
+   that still affect the computed layout until each component family is audited. */
+
+/* === APP SHELL === */
+.app-layout {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.workspace-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* === SIDEBAR === */
+.sidebar {
+  width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-header {
+  min-height: 58px;
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+  flex-shrink: 0;
+}
+
+.sidebar-header h2 {
+  flex: 1;
+  margin: 0;
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.sidebar-header h2 span {
+  display: none;
+}
+
+.sidebar-header button {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-color: var(--border-subtle);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.sidebar-header button:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+
+.sidebar-search {
+  padding: 12px 16px;
+  border-bottom: none;
+  flex-shrink: 0;
+}
+
+.sidebar-search input {
+  width: 100%;
+  height: 30px;
+  padding: 7px 10px;
+  background: var(--bg-panel-soft);
+  border: 1px solid var(--border-subtle);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.sidebar-search input:focus {
+  border-color: var(--accent-blue);
+}
+
+.sessions-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-footer a {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sidebar-footer a:hover {
+  color: var(--fg);
+}
+
+/* === SESSION NAVIGATION === */
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: 2px;
+}
+
+.session-list-item {
+  position: relative;
+}
+
+.session-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  cursor: pointer;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  position: relative;
+  color: var(--fg);
+  text-decoration: none;
+  transition: background 0.1s;
+}
+
+.session-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 1px;
+}
+
+.session-item:hover {
+  background: var(--surface-hover);
+}
+
+.session-item.active {
+  background: rgba(16, 163, 127, 0.08);
+  border-color: transparent;
+  border-left: 2px solid var(--accent);
+}
+
+.session-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.session-id,
+.session-title {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.session-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-title {
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-preview {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 3px;
+  color: var(--faint);
+  font: 11px/1.5 var(--font-mono);
+}
+
+.session-status-dot,
+.session-dot {
+  width: 8px;
+  height: 8px;
+  display: inline-block;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: 0 0 auto;
+  margin-top: 5px;
+}
+
+.session-status-dot.idle {
+  background: var(--text-faint);
+}
+
+.session-status-dot.running,
+.session-dot.running {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+.session-status-dot.success,
+.session-dot.completed {
+  background: var(--accent);
+  opacity: 0.75;
+}
+
+.session-status-dot.warning,
+.session-dot.waiting {
+  background: var(--warning);
+  box-shadow: 0 0 6px rgba(216, 162, 30, 0.4);
+}
+
+.session-status-dot.error,
+.session-dot.error,
+.session-dot.cancelled {
+  background: var(--error);
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
+}
+
+.session-delete-button {
+  position: absolute;
+  right: 10px;
+  top: var(--space-3);
+  bottom: 8px;
+  align-self: start;
+  min-height: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 10px;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+}
+
+.session-list-item:hover .session-delete-button {
+  opacity: 1;
+}
+
+.session-delete-button:hover {
+  color: var(--accent-red);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}

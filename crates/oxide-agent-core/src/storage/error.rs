@@ -3,21 +3,24 @@ use thiserror::Error;
 /// Errors that can occur during storage operations.
 #[derive(Error, Debug)]
 pub enum StorageError {
-    /// Error retrieving object from S3.
-    #[error("S3 Get error: {0}")]
-    S3Get(String),
-    /// Error putting object into S3.
-    #[error("S3 put error: {0}")]
-    S3Put(String),
     /// Error during JSON serialization or deserialization.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
     /// Standard I/O error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// SQL database connectivity or query error.
+    #[error("Database error: {0}")]
+    Database(String),
+    /// SQL migration discovery or execution error.
+    #[error("Database migration error: {0}")]
+    DatabaseMigration(String),
     /// Configuration error (missing credentials, etc.).
     #[error("Configuration error: {0}")]
     Config(String),
+    /// Storage operation is not implemented by the selected backend yet.
+    #[error("Unsupported storage operation: {0}")]
+    Unsupported(String),
     /// Invalid storage input.
     #[error("Invalid input: {0}")]
     InvalidInput(String),

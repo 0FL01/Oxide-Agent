@@ -6,12 +6,12 @@ use crate::agent::tool_runtime::{
 };
 use crate::llm::ToolDefinition;
 use crate::storage::{
-    compute_cron_next_run_at, compute_next_reminder_run_at, format_reminder_unix_in_timezone,
-    resolve_reminder_local_datetime, AppendAuditEventOptions, CreateReminderJobOptions,
-    ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
-    StorageProvider,
+    AppendAuditEventOptions, CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus,
+    ReminderScheduleKind, ReminderThreadKind, StorageProvider, compute_cron_next_run_at,
+    compute_next_reminder_run_at, format_reminder_unix_in_timezone,
+    resolve_reminder_local_datetime,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use chrono::Local;
 use serde::Deserialize;
@@ -1128,12 +1128,14 @@ mod tests {
             .expect("typed reminder list succeeds");
 
         assert_eq!(output.status, ToolOutputStatus::Success);
-        assert!(output
-            .stdout
-            .text
-            .as_deref()
-            .expect("stdout text")
-            .contains("No reminders found"));
+        assert!(
+            output
+                .stdout
+                .text
+                .as_deref()
+                .expect("stdout text")
+                .contains("No reminders found")
+        );
     }
 
     #[test]

@@ -5,12 +5,12 @@ use super::types::{
     DuckDuckGoNewsArgs, DuckDuckGoNewsResult, DuckDuckGoSearchArgs, DuckDuckGoSearchResult,
 };
 use crate::config::{
-    get_duckduckgo_backoff_config, get_duckduckgo_browser_config, get_duckduckgo_rate_limit_config,
-    get_duckduckgo_timeout, DuckDuckGoBrowserConfig,
+    DuckDuckGoBrowserConfig, get_duckduckgo_backoff_config, get_duckduckgo_browser_config,
+    get_duckduckgo_rate_limit_config, get_duckduckgo_timeout,
 };
 use duckduckgo::browser::Browser;
 use reqwest::header::{
-    HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, ORIGIN, PRAGMA,
+    ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, HeaderMap, HeaderName, HeaderValue, ORIGIN, PRAGMA,
     REFERER,
 };
 use reqwest::{Client as HttpClient, StatusCode};

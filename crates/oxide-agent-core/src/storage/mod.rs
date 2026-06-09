@@ -1,79 +1,60 @@
 //! Storage layer for user, agent, topic, and control-plane data.
 //!
-//! Provides a persistent storage implementation using Cloudflare R2 / AWS S3.
+//! Provides persistent storage implementations for durable runtime state.
 
-#[cfg(any(feature = "storage-s3-r2", test))]
+#[cfg(any(feature = "storage-sqlx", test))]
 mod builders;
 mod control_plane;
 mod error;
 mod flows;
 mod keys;
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(feature = "storage-sqlx")]
 mod modules;
 mod provider;
-#[cfg(feature = "storage-s3-r2")]
-mod r2;
-#[cfg(feature = "storage-s3-r2")]
-mod r2_base;
-#[cfg(feature = "storage-s3-r2")]
-mod r2_config;
-#[cfg(feature = "storage-s3-r2")]
-mod r2_control_plane;
-#[cfg(feature = "storage-s3-r2")]
-mod r2_memory;
-#[cfg(feature = "storage-s3-r2")]
-mod r2_provider;
-#[cfg(feature = "storage-s3-r2")]
-mod r2_reminder;
-#[cfg(feature = "storage-s3-r2")]
-mod r2_user;
 mod reminder;
-#[cfg(any(feature = "storage-s3-r2", test))]
+#[cfg(any(feature = "storage-sqlx", test))]
 mod schema;
-#[cfg(any(feature = "storage-s3-r2", test))]
-mod telemetry;
+#[cfg(feature = "storage-sqlx")]
+mod sqlx;
+#[cfg(feature = "storage-sqlx")]
+mod sqlx_config;
 mod user;
-#[cfg(any(feature = "storage-s3-r2", test))]
+#[cfg(feature = "storage-sqlx")]
 mod utils;
 
 #[cfg(test)]
 pub(crate) use control_plane::TOPIC_AGENTS_MD_MAX_LINES;
 pub use control_plane::{
-    binding_is_active, resolve_active_topic_binding, AgentProfileRecord, AppendAuditEventOptions,
-    AuditEventRecord, OptionalMetadataPatch, TopicAgentsMdRecord, TopicBindingKind,
-    TopicBindingRecord, TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord,
-    TopicInfraToolMode, UpsertAgentProfileOptions, UpsertTopicAgentsMdOptions,
-    UpsertTopicBindingOptions, UpsertTopicContextOptions, UpsertTopicInfraConfigOptions,
+    AgentProfileRecord, AppendAuditEventOptions, AuditEventRecord, OptionalMetadataPatch,
+    TopicAgentsMdRecord, TopicBindingKind, TopicBindingRecord, TopicContextRecord,
+    TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UpsertAgentProfileOptions,
+    UpsertTopicAgentsMdOptions, UpsertTopicBindingOptions, UpsertTopicContextOptions,
+    UpsertTopicInfraConfigOptions, binding_is_active, resolve_active_topic_binding,
 };
 pub(crate) use control_plane::{
-    validate_topic_agents_md_content, validate_topic_context_content, TOPIC_CONTEXT_MAX_CHARS,
-    TOPIC_CONTEXT_MAX_LINES,
+    TOPIC_CONTEXT_MAX_CHARS, TOPIC_CONTEXT_MAX_LINES, validate_topic_agents_md_content,
+    validate_topic_context_content,
 };
 pub use error::StorageError;
 pub use flows::AgentFlowRecord;
 pub use keys::{
-    agent_profile_key, agent_profiles_prefix, audit_events_key, generate_flow_id,
-    private_secret_key, reminder_job_key, reminder_jobs_prefix, topic_agents_md_key,
-    topic_binding_key, topic_context_key, topic_infra_config_key, user_agent_memory_key,
-    user_config_key, user_context_agent_flow_key, user_context_agent_flow_memory_key,
-    user_context_agent_flow_prefix, user_context_agent_flows_prefix, user_context_agent_memory_key,
-    wiki_context_inbox_key, wiki_context_key, wiki_context_page_key, wiki_context_prefix,
-    wiki_context_raw_key, wiki_global_key,
+    generate_flow_id, wiki_context_inbox_key, wiki_context_key, wiki_context_page_key,
+    wiki_context_prefix, wiki_context_raw_key, wiki_global_key,
 };
-#[cfg(feature = "storage-s3-r2")]
-pub use modules::{build_primary_storage, BuiltStorageBackend, StorageBackendModule};
+#[cfg(feature = "storage-sqlx")]
+pub use modules::{BuiltStorageBackend, StorageBackendModule, build_primary_storage};
 #[cfg(test)]
 pub use provider::MockStorageProvider;
 pub use provider::StorageProvider;
-#[cfg(feature = "storage-s3-r2")]
-pub use r2::R2Storage;
-#[cfg(feature = "storage-s3-r2")]
-pub use r2_config::R2StorageConfig;
 pub use reminder::{
-    compute_cron_next_run_at, compute_next_reminder_run_at, format_reminder_unix_in_timezone,
-    parse_reminder_timezone, resolve_reminder_local_datetime, CreateReminderJobOptions,
-    ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind, ReminderThreadKind,
+    CreateReminderJobOptions, ReminderJobRecord, ReminderJobStatus, ReminderScheduleKind,
+    ReminderThreadKind, compute_cron_next_run_at, compute_next_reminder_run_at,
+    format_reminder_unix_in_timezone, parse_reminder_timezone, resolve_reminder_local_datetime,
 };
+#[cfg(feature = "storage-sqlx")]
+pub use sqlx::SqlxStorage;
+#[cfg(feature = "storage-sqlx")]
+pub use sqlx_config::{SQLX_STORAGE_MODULE_ID, SqlxStorageConfig};
 pub use user::{UserConfig, UserContextConfig};
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::config::AgentSettings;
+use crate::llm::LlmProvider;
 use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
 use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
-use crate::llm::LlmProvider;
 
 /// Capability module for Mistral routes.
 pub(crate) struct MistralProviderModule;

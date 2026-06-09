@@ -32,6 +32,7 @@ mod provider_tests {
             "mistral-large-latest",
             4096,
             None,
+            None,
             &mut id_mapper,
         );
 
@@ -49,6 +50,7 @@ mod provider_tests {
             "mistral-large-latest",
             4096,
             Some(0.23),
+            None,
             &mut id_mapper,
         );
 
@@ -253,6 +255,7 @@ mod provider_tests {
             "mistral-large-latest",
             4096,
             None,
+            None,
             &mut id_mapper,
         );
 
@@ -287,6 +290,7 @@ mod provider_tests {
             &[],
             "mistral-large-latest",
             4096,
+            None,
             None,
             &mut id_mapper,
         );

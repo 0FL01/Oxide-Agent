@@ -422,12 +422,16 @@ mod tests {
         let provider = Arc::new(StackLogsProvider::new());
         let tools = provider.tool_runtime_executors();
 
-        assert!(tools
-            .iter()
-            .any(|tool| tool.name().as_str() == TOOL_STACK_LOGS_LIST_SOURCES));
-        assert!(tools
-            .iter()
-            .any(|tool| tool.name().as_str() == TOOL_STACK_LOGS_FETCH));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name().as_str() == TOOL_STACK_LOGS_LIST_SOURCES)
+        );
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool.name().as_str() == TOOL_STACK_LOGS_FETCH)
+        );
     }
 
     #[tokio::test]

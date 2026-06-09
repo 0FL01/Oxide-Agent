@@ -64,8 +64,6 @@ struct ForumTopicProvisionSshAgentArgs {
     tags: Vec<String>,
     #[serde(default = "super::default_infra_allowed_tool_modes")]
     allowed_tool_modes: Vec<TopicInfraToolMode>,
-    #[serde(default = "super::default_infra_approval_required_modes")]
-    approval_required_modes: Vec<TopicInfraToolMode>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -85,7 +83,6 @@ pub(super) struct ForumTopicProvisionSshAgentPlan {
     pub(super) environment: Option<String>,
     pub(super) tags: Vec<String>,
     pub(super) allowed_tool_modes: Vec<TopicInfraToolMode>,
-    pub(super) approval_required_modes: Vec<TopicInfraToolMode>,
     pub(super) dry_run: bool,
 }
 
@@ -590,7 +587,6 @@ impl ManagerControlPlaneProvider {
                     "environment": { "type": "string", "description": "Optional environment label such as prod or stage" },
                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional free-form target tags" },
                     "allowed_tool_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process", "transfer"] }, "description": "Allowlisted SSH tool modes; defaults to all SSH modes" },
-                    "approval_required_modes": { "type": "array", "items": { "type": "string", "enum": ["exec", "sudo_exec", "read_file", "apply_file_edit", "check_process", "transfer"] }, "description": "Modes that always require approval; defaults to sudo_exec and apply_file_edit" },
                     "dry_run": { "type": "boolean", "description": "Validate and preview without mutating Telegram or storage" }
                 },
                 "required": ["name", "host", "remote_user", "auth_mode"]
@@ -677,9 +673,8 @@ impl ManagerControlPlaneProvider {
             },
             ToolDefinition {
                 name: TOOL_FORUM_TOPIC_LIST.to_string(),
-                description:
-                    "List active Telegram forum topics tracked in persisted S3 topic records"
-                        .to_string(),
+                description: "List active Telegram forum topics tracked in persisted topic records"
+                    .to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -757,7 +752,6 @@ impl ManagerControlPlaneProvider {
         if allowed_tool_modes.is_empty() {
             bail!("allowed_tool_modes must not be empty");
         }
-        let approval_required_modes = Self::normalize_tool_modes(args.approval_required_modes);
         let profile = Self::validate_profile_object(Self::build_default_ssh_agent_profile(
             &agent_id,
             &name,
@@ -786,7 +780,6 @@ impl ManagerControlPlaneProvider {
             environment,
             tags,
             allowed_tool_modes,
-            approval_required_modes,
             dry_run: args.dry_run,
         })
     }
@@ -881,7 +874,6 @@ impl ManagerControlPlaneProvider {
                 "environment": plan.environment,
                 "tags": plan.tags,
                 "allowed_tool_modes": plan.allowed_tool_modes,
-                "approval_required_modes": plan.approval_required_modes,
             }))?)
             .await?;
 

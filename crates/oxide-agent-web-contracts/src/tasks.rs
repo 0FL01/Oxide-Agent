@@ -32,6 +32,14 @@ impl TaskStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEffort {
+    Standard,
+    Extended,
+    Heavy,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProgressSnapshot {
@@ -163,6 +171,10 @@ pub struct TaskDetail {
 #[serde(rename_all = "snake_case")]
 pub struct ListTasksResponse {
     pub tasks: Vec<TaskSummary>,
+    #[serde(default)]
+    pub has_more: bool,
+    #[serde(default)]
+    pub next_offset: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +183,8 @@ pub struct CreateTaskRequest {
     pub input_markdown: String,
     #[serde(default)]
     pub attachments: Vec<TaskAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<AgentEffort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +199,8 @@ pub struct CreateTaskVersionRequest {
     pub input_markdown: String,
     #[serde(default)]
     pub attachments: Vec<TaskAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<AgentEffort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,6 +215,8 @@ pub struct ResumeTaskRequest {
     pub input_markdown: String,
     #[serde(default)]
     pub attachments: Vec<TaskAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<AgentEffort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

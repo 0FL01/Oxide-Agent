@@ -1,8 +1,8 @@
 #![allow(missing_docs)]
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 #[cfg(feature = "sandbox-backend-docker-direct")]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(feature = "sandbox-backend-docker-direct")]
@@ -1047,7 +1047,7 @@ mod tests {
     #[cfg(feature = "sandbox-backend-docker-direct")]
     use crate::sandbox::scope::SandboxScope;
     #[cfg(feature = "sandbox-backend-docker-direct")]
-    use anyhow::{bail, Context, Result};
+    use anyhow::{Context, Result, bail};
     use chrono::{TimeZone, Utc};
     #[cfg(feature = "sandbox-backend-docker-direct")]
     use std::path::PathBuf;

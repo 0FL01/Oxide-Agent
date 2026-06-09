@@ -218,12 +218,24 @@ fn compiled_provider_modules() -> Vec<Box<dyn LlmProviderModule>> {
 }
 
 #[cfg(test)]
+#[cfg_attr(
+    not(any(
+        feature = "llm-chatgpt",
+        feature = "llm-mistral",
+        feature = "llm-minimax",
+        feature = "llm-opencode-go",
+        feature = "llm-openrouter",
+        feature = "llm-zai"
+    )),
+    allow(dead_code, unused_imports)
+)]
 mod tests {
     use super::{
         build_configured_providers, provider_capabilities, provider_capabilities_for_model,
         provider_key, provider_missing_route_config_message, provider_module_id,
     };
-    use crate::config::{test_env_mutex, AgentSettings, ModuleRuntimeConfig};
+    use crate::config::{AgentSettings, ModuleRuntimeConfig, test_env_mutex};
+    use crate::testing::{test_remove_env, test_set_env};
 
     fn settings_with_provider_key(module_id: &str, api_key: &str) -> AgentSettings {
         let mut settings = AgentSettings::default();
@@ -303,15 +315,17 @@ mod tests {
         let previous_api_key = std::env::var("OPENCODE_GO_API_KEY").ok();
         let previous_primary_api_key = std::env::var("OPENCODE_API_KEY").ok();
         let previous_zen_api_key = std::env::var("OPENCODE_ZEN_API_KEY").ok();
-        std::env::remove_var("OPENCODE_GO_API_KEY");
-        std::env::remove_var("OPENCODE_API_KEY");
-        std::env::remove_var("OPENCODE_ZEN_API_KEY");
+        test_remove_env("OPENCODE_GO_API_KEY");
+        test_remove_env("OPENCODE_API_KEY");
+        test_remove_env("OPENCODE_ZEN_API_KEY");
 
         let settings = AgentSettings::default();
 
         assert_eq!(
             provider_missing_route_config_message("opencode_go", &settings),
-            Some("Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes")
+            Some(
+                "Critical: OPENCODE_API_KEY, OPENCODE_ZEN_API_KEY, or OPENCODE_GO_API_KEY is required for configured OpenCode Go routes"
+            )
         );
 
         let settings = settings_with_provider_key("llm-provider/opencode-go", "test-opencode-key");
@@ -322,13 +336,13 @@ mod tests {
         );
 
         if let Some(api_key) = previous_api_key {
-            std::env::set_var("OPENCODE_GO_API_KEY", api_key);
+            test_set_env("OPENCODE_GO_API_KEY", api_key);
         }
         if let Some(api_key) = previous_primary_api_key {
-            std::env::set_var("OPENCODE_API_KEY", api_key);
+            test_set_env("OPENCODE_API_KEY", api_key);
         }
         if let Some(api_key) = previous_zen_api_key {
-            std::env::set_var("OPENCODE_ZEN_API_KEY", api_key);
+            test_set_env("OPENCODE_ZEN_API_KEY", api_key);
         }
     }
 
@@ -370,30 +384,30 @@ mod tests {
         let previous_go_key = std::env::var("OPENCODE_GO_API_KEY").ok();
         let previous_primary_key = std::env::var("OPENCODE_API_KEY").ok();
         let previous_zen_key = std::env::var("OPENCODE_ZEN_API_KEY").ok();
-        std::env::set_var("OPENCODE_GO_API_KEY", "test-opencode-go-key");
-        std::env::remove_var("OPENCODE_API_KEY");
-        std::env::remove_var("OPENCODE_ZEN_API_KEY");
+        test_set_env("OPENCODE_GO_API_KEY", "test-opencode-go-key");
+        test_remove_env("OPENCODE_API_KEY");
+        test_remove_env("OPENCODE_ZEN_API_KEY");
 
         let providers = build_configured_providers(&AgentSettings::default());
 
         assert!(providers.contains_key("opencode-zen"));
 
         if let Some(api_key) = previous_go_key {
-            std::env::set_var("OPENCODE_GO_API_KEY", api_key);
+            test_set_env("OPENCODE_GO_API_KEY", api_key);
         } else {
-            std::env::remove_var("OPENCODE_GO_API_KEY");
+            test_remove_env("OPENCODE_GO_API_KEY");
         }
         if let Some(api_key) = previous_primary_key {
-            std::env::set_var("OPENCODE_API_KEY", api_key);
+            test_set_env("OPENCODE_API_KEY", api_key);
         }
         if let Some(api_key) = previous_zen_key {
-            std::env::set_var("OPENCODE_ZEN_API_KEY", api_key);
+            test_set_env("OPENCODE_ZEN_API_KEY", api_key);
         }
     }
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn opencode_go_module_all_models_support_structured_output() {
+    fn opencode_go_module_all_models_use_native_tools_without_structured_output() {
         let route = crate::config::ModelInfo {
             id: "opencode-go/deepseek-v4-flash".to_string(),
             provider: "llm-provider/opencode-go".to_string(),
@@ -405,7 +419,8 @@ mod tests {
         let capabilities =
             provider_capabilities_for_model(&route).expect("provider id should resolve");
 
-        assert!(capabilities.supports_structured_output);
+        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
     }
 
     #[cfg(feature = "llm-zai")]

@@ -1,8 +1,8 @@
 use crate::bot::{resolve_thread_spec, thread_peer_key, thread_peer_key_from_spec};
 use crate::config::{BotSettings, TelegramTopicSettings};
 use oxide_agent_core::storage::{
-    binding_is_active, resolve_active_topic_binding, OptionalMetadataPatch, StorageProvider,
-    TopicBindingRecord, UpsertTopicBindingOptions,
+    OptionalMetadataPatch, StorageProvider, TopicBindingRecord, UpsertTopicBindingOptions,
+    binding_is_active, resolve_active_topic_binding,
 };
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -72,7 +72,7 @@ pub async fn resolve_topic_route(
 
     let thread_id = resolve_thread_spec(message)
         .thread_id
-        .map(|thread| thread.0 .0);
+        .map(|thread| thread.0.0);
     let topic = settings
         .telegram
         .resolve_topic_config(message.chat.id.0, thread_id);
@@ -246,14 +246,14 @@ fn topic_binding_lookup_keys(message: &Message) -> Vec<String> {
     }
 
     if let Some(thread_id) = message.thread_id {
-        let thread_key = thread_id.0 .0.to_string();
+        let thread_key = thread_id.0.0.to_string();
         if !keys.contains(&thread_key) {
             keys.push(thread_key);
         }
     }
 
     if let Some(thread_id) = spec.thread_id {
-        let thread_key = thread_id.0 .0.to_string();
+        let thread_key = thread_id.0.0.to_string();
         if !keys.contains(&thread_key) {
             keys.push(thread_key);
         }
@@ -390,9 +390,10 @@ const fn is_mention_char(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_binding_activity_touch_options, dynamic_route_decision, resolve_active_topic_binding,
-        resolve_topic_route, resolve_topic_route_decision, select_profile_system_prompt,
-        touch_dynamic_binding_activity_if_needed, TopicRouteContext, TopicRouteDecision,
+        TopicRouteContext, TopicRouteDecision, build_binding_activity_touch_options,
+        dynamic_route_decision, resolve_active_topic_binding, resolve_topic_route,
+        resolve_topic_route_decision, select_profile_system_prompt,
+        touch_dynamic_binding_activity_if_needed,
     };
     use crate::config::{BotSettings, TelegramSettings, TelegramTopicSettings};
     use async_trait::async_trait;
@@ -414,11 +415,11 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use teloxide::{
+        Bot,
         types::{
             Chat, ChatId, ChatKind, ChatPublic, MediaKind, MediaText, Message, MessageCommon,
             MessageId, MessageKind, PublicChatKind, PublicChatSupergroup, ThreadId, User, UserId,
         },
-        Bot,
     };
 
     struct RecordingLifecycle {

@@ -38,18 +38,22 @@ async fn topic_agent_tools_get_hides_blocked_tools_from_effective_snapshot() {
     let active_tools = parsed["tools"]["active_tools"]
         .as_array()
         .expect("active_tools must be an array");
-    assert!(!active_tools
-        .iter()
-        .any(|tool| { TOPIC_AGENT_YTDLP_TOOLS.contains(&tool.as_str().unwrap_or_default()) }));
+    assert!(
+        !active_tools
+            .iter()
+            .any(|tool| { TOPIC_AGENT_YTDLP_TOOLS.contains(&tool.as_str().unwrap_or_default()) })
+    );
 
     let ytdlp_status = provider_status(&parsed, "ytdlp");
     assert_eq!(ytdlp_status["enabled"], false);
 
     let reminder_status = provider_status(&parsed, "reminder");
     assert_eq!(reminder_status["enabled"], true);
-    assert!(reminder_status["available_tools"]
-        .as_array()
-        .is_some_and(|tools| tools.iter().any(|tool| tool == "reminder_schedule")));
+    assert!(
+        reminder_status["available_tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool == "reminder_schedule"))
+    );
 }
 
 #[tokio::test]
@@ -90,14 +94,18 @@ async fn topic_agent_tools_get_keeps_reminders_enabled_for_allowlisted_profiles(
     let active_tools = parsed["tools"]["active_tools"]
         .as_array()
         .expect("active_tools must be an array");
-    assert!(active_tools
-        .iter()
-        .any(|tool| tool.as_str() == Some("reminder_schedule")));
+    assert!(
+        active_tools
+            .iter()
+            .any(|tool| tool.as_str() == Some("reminder_schedule"))
+    );
     let reminder_status = provider_status(&parsed, "reminder");
     assert_eq!(reminder_status["enabled"], true);
-    assert!(reminder_status["active_tools"]
-        .as_array()
-        .is_some_and(|tools| tools.iter().any(|tool| tool == "reminder_schedule")));
+    assert!(
+        reminder_status["active_tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool == "reminder_schedule"))
+    );
 }
 
 #[tokio::test]
@@ -316,13 +324,15 @@ async fn topic_agent_tools_disable_accepts_stack_logs_provider_alias() {
     let parsed = parse_json_response(&response);
     let stack_logs_status = provider_status(&parsed, "stack_logs");
     assert_eq!(stack_logs_status["enabled"], false);
-    assert!(stack_logs_status["blocked_tools"]
-        .as_array()
-        .is_some_and(|tools| {
-            TOPIC_AGENT_STACK_LOGS_TOOLS
-                .iter()
-                .all(|tool| tools.iter().any(|value| value.as_str() == Some(*tool)))
-        }));
+    assert!(
+        stack_logs_status["blocked_tools"]
+            .as_array()
+            .is_some_and(|tools| {
+                TOPIC_AGENT_STACK_LOGS_TOOLS
+                    .iter()
+                    .all(|tool| tools.iter().any(|value| value.as_str() == Some(*tool)))
+            })
+    );
 }
 
 #[cfg(feature = "integration-ssh-mcp")]
@@ -386,11 +396,13 @@ async fn topic_agent_tools_enable_accepts_ssh_send_file_to_user_when_topic_has_i
 
     let parsed = parse_json_response(&response);
     let ssh_status = provider_status(&parsed, "ssh");
-    assert!(ssh_status["available_tools"]
-        .as_array()
-        .expect("available_tools must be present")
-        .iter()
-        .any(|value| value.as_str() == Some("ssh_send_file_to_user")));
+    assert!(
+        ssh_status["available_tools"]
+            .as_array()
+            .expect("available_tools must be present")
+            .iter()
+            .any(|value| value.as_str() == Some("ssh_send_file_to_user"))
+    );
     assert_eq!(ssh_status["enabled"], true);
 }
 
@@ -548,11 +560,13 @@ async fn topic_agent_hooks_get_reports_manageable_and_protected_hooks() {
         Some(5)
     );
     assert_eq!(parsed["hooks"]["disabled_hooks"], json!(["search_budget"]));
-    assert!(parsed["hooks"]["hook_statuses"]
-        .as_array()
-        .expect("hook_statuses must be an array")
-        .iter()
-        .any(|entry| entry["hook"] == "completion_check" && entry["protected"] == true));
+    assert!(
+        parsed["hooks"]["hook_statuses"]
+            .as_array()
+            .expect("hook_statuses must be an array")
+            .iter()
+            .any(|entry| entry["hook"] == "completion_check" && entry["protected"] == true)
+    );
 }
 
 #[tokio::test]

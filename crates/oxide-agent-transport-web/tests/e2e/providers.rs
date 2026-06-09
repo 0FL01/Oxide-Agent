@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 use oxide_agent_core::llm::{ChatResponse, ChatWithToolsRequest, LlmError, LlmProvider, Message};
 use std::collections::{BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Notify};
 
 #[derive(Debug, Clone)]

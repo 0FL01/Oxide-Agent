@@ -208,28 +208,28 @@ pub(crate) fn validate_tool_history(
     while index < messages.len() {
         let message = &messages[index];
 
-        if message.role == "assistant" {
-            if let Some(tool_calls) = &message.tool_calls {
-                if tool_calls.is_empty() {
-                    return Err(LlmError::RepairableHistory(
-                        "assistant tool call batch is empty".to_string(),
-                    ));
-                }
-
-                let expected_ids = extract_expected_invocation_ids(message)?;
-                let (cursor, seen_results) =
-                    validate_tool_result_sequence(messages, index + 1, &expected_ids)?;
-                check_batch_completion(
-                    cursor,
-                    messages.len(),
-                    &expected_ids,
-                    &seen_results,
-                    capabilities,
-                )?;
-
-                index = cursor;
-                continue;
+        if message.role == "assistant"
+            && let Some(tool_calls) = &message.tool_calls
+        {
+            if tool_calls.is_empty() {
+                return Err(LlmError::RepairableHistory(
+                    "assistant tool call batch is empty".to_string(),
+                ));
             }
+
+            let expected_ids = extract_expected_invocation_ids(message)?;
+            let (cursor, seen_results) =
+                validate_tool_result_sequence(messages, index + 1, &expected_ids)?;
+            check_batch_completion(
+                cursor,
+                messages.len(),
+                &expected_ids,
+                &seen_results,
+                capabilities,
+            )?;
+
+            index = cursor;
+            continue;
         }
 
         if message.role == "tool" {
@@ -321,11 +321,21 @@ mod tests {
 
         // Stable messages (TopicAgentsMd, Summary) come BEFORE date.
         // Volatile messages (SYSTEM retry, TEMPORAL_CONTEXT) come AFTER date.
-        let stable_idx = result.find("[TOPIC_AGENTS_MD]").unwrap();
-        let summary_idx = result.find("[OXIDE_COMPACTED_SUMMARY_V1]").unwrap();
-        let date_idx = result.find("### CURRENT DATE AND TIME").unwrap();
-        let retry_idx = result.find("[SYSTEM: retry").unwrap();
-        let temporal_idx = result.find("[TEMPORAL_CONTEXT]").unwrap();
+        let stable_idx = result
+            .find("[TOPIC_AGENTS_MD]")
+            .expect("topic AGENTS.md marker should be present");
+        let summary_idx = result
+            .find("[OXIDE_COMPACTED_SUMMARY_V1]")
+            .expect("compacted summary marker should be present");
+        let date_idx = result
+            .find("### CURRENT DATE AND TIME")
+            .expect("date suffix should be present");
+        let retry_idx = result
+            .find("[SYSTEM: retry")
+            .expect("retry system note should be present");
+        let temporal_idx = result
+            .find("[TEMPORAL_CONTEXT]")
+            .expect("temporal context should be present");
 
         assert!(
             stable_idx < date_idx,
@@ -357,8 +367,10 @@ mod tests {
         let (result, _normalized) = fold_system_messages_into_prompt("Base.", "DATE", &messages);
 
         // All system messages are volatile (no stable prefix match) — all after date.
-        let date_idx = result.find("DATE").unwrap();
-        let retry_idx = result.find("[SYSTEM: retry").unwrap();
+        let date_idx = result.find("DATE").expect("date suffix should be present");
+        let retry_idx = result
+            .find("[SYSTEM: retry")
+            .expect("retry system note should be present");
         assert!(
             retry_idx > date_idx,
             "volatile retry should be after date when no stable messages present"
@@ -491,6 +503,7 @@ mod tests {
             Message {
                 role: "assistant".to_string(),
                 content: "calling tools".to_string(),
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_call_id: None,
                 tool_call_correlation: None,
@@ -501,6 +514,7 @@ mod tests {
             Message {
                 role: "tool".to_string(),
                 content: "result".to_string(),
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_call_id: Some("provider-b".to_string()),
                 tool_call_correlation: Some(correlation),
@@ -526,13 +540,14 @@ mod tests {
         let messages = vec![Message {
             role: "assistant".to_string(),
             content: "calling tools".to_string(),
+            content_parts: Vec::new(),
             reasoning_content: None,
             tool_call_id: None,
             tool_call_correlation: None,
             name: None,
             tool_calls: Some(vec![tool_call("call-1", "search")]),
             tool_call_correlations: Some(vec![
-                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id("")
+                ToolCallCorrelation::new("invoke-1").with_provider_tool_call_id(""),
             ]),
         }];
 
@@ -555,6 +570,7 @@ mod tests {
             Message {
                 role: "assistant".to_string(),
                 content: "calling tools".to_string(),
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_call_id: None,
                 tool_call_correlation: None,
@@ -565,6 +581,7 @@ mod tests {
             Message {
                 role: "tool".to_string(),
                 content: "result".to_string(),
+                content_parts: Vec::new(),
                 reasoning_content: None,
                 tool_call_id: Some("invoke-1".to_string()),
                 tool_call_correlation: Some(tool_result_correlation),

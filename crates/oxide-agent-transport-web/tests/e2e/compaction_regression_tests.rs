@@ -5,13 +5,13 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
-use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::agent::SessionId;
+use oxide_agent_core::agent::memory::AgentMessage;
 use oxide_agent_core::config::{AgentSettings, ModelInfo};
 use oxide_agent_core::llm::{ChatResponse, LlmClient, TokenUsage, ToolCall, ToolCallFunction};
 use oxide_agent_runtime::SessionRegistry;
-use oxide_agent_transport_web::session::WebSessionManager;
 use oxide_agent_transport_web::AppState;
+use oxide_agent_transport_web::session::WebSessionManager;
 
 use super::helpers::{
     create_session_http_with_user, create_task_http_with_body, fetch_task_events,
@@ -20,7 +20,7 @@ use super::helpers::{
 };
 use super::providers::SequencedZaiProvider;
 
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 fn derive_session_id(session_id: &str, user_id: i64) -> SessionId {
     let mut h = DefaultHasher::new();
@@ -78,20 +78,20 @@ fn strict_tool_history_messages(messages: Vec<AgentMessage>) -> Vec<AgentMessage
             pending_tool_call_ids.extend(tool_calls.iter().map(|tool_call| tool_call.id.clone()));
         }
 
-        if message.role == oxide_agent_core::agent::memory::MessageRole::Tool {
-            if let Some(tool_call_id) = message.tool_call_id.as_deref() {
-                if let Some(position) = pending_tool_call_ids
-                    .iter()
-                    .position(|pending_id| pending_id == tool_call_id)
-                {
-                    pending_tool_call_ids.remove(position);
-                } else {
-                    let tool_name = message.tool_name.as_deref().unwrap_or("unknown_tool");
-                    normalized.push(AgentMessage::assistant_with_tools(
-                        "",
-                        vec![tool_call(tool_call_id, tool_name, serde_json::json!({}))],
-                    ));
-                }
+        if message.role == oxide_agent_core::agent::memory::MessageRole::Tool
+            && let Some(tool_call_id) = message.tool_call_id.as_deref()
+        {
+            if let Some(position) = pending_tool_call_ids
+                .iter()
+                .position(|pending_id| pending_id == tool_call_id)
+            {
+                pending_tool_call_ids.remove(position);
+            } else {
+                let tool_name = message.tool_name.as_deref().unwrap_or("unknown_tool");
+                normalized.push(AgentMessage::assistant_with_tools(
+                    "",
+                    vec![tool_call(tool_call_id, tool_name, serde_json::json!({}))],
+                ));
             }
         }
 
@@ -445,9 +445,11 @@ async fn e2e_compaction_runtime_deduplicates_superseded_read_file_results() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -620,9 +622,11 @@ async fn e2e_compaction_runtime_deduplicates_only_matching_read_file_paths() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
 
     let sid = derive_session_id(&session_id, user_id);
     let executor_arc = session_manager
@@ -790,9 +794,11 @@ async fn e2e_compaction_runtime_blocks_dedup_when_write_file_intervenes() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
     assert!(!event_names.iter().any(|event| event.contains("dedup")));
 
     let sid = derive_session_id(&session_id, user_id);
@@ -938,7 +944,7 @@ async fn e2e_compaction_runtime_prunes_old_artifact_on_healthy_budget() {
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
-    assert_tool_payload_compacted_or_removed(&messages, "old-call", "OLD_ARTIFACT_MARKER");
+    assert_tool_payload_compacted_or_removed(messages, "old-call", "OLD_ARTIFACT_MARKER");
 
     server.abort();
 }
@@ -1062,7 +1068,7 @@ async fn e2e_compaction_runtime_preserves_sub_agent_wait_results_while_cleaning_
         assert!(!sub_agent_tool.is_externalized());
         assert!(!sub_agent_tool.is_pruned());
     }
-    assert_tool_payload_compacted_or_removed(&messages, "web-old", "WEB_MARKER");
+    assert_tool_payload_compacted_or_removed(messages, "web-old", "WEB_MARKER");
 
     server.abort();
 }
@@ -1259,7 +1265,7 @@ async fn e2e_compaction_runtime_prunes_old_data_without_summary() {
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
 
-    assert_tool_payload_compacted_or_removed(&messages, "old-call", "CRITICAL_DECISION_TOKEN");
+    assert_tool_payload_compacted_or_removed(messages, "old-call", "CRITICAL_DECISION_TOKEN");
 
     server.abort();
 }
@@ -1363,7 +1369,7 @@ async fn e2e_compaction_pressure_budget_applies_runtime_compaction_without_summa
         .expect("session should exist in registry");
     let executor = executor_arc.read().await;
     let messages = executor.session().memory.get_messages();
-    assert_tool_payload_compacted_or_removed(&messages, "old-large", "OLD_TOOL_MARKER");
+    assert_tool_payload_compacted_or_removed(messages, "old-large", "OLD_TOOL_MARKER");
 
     server.abort();
 }
@@ -1451,7 +1457,7 @@ async fn e2e_compaction_pressure_budget_prunes_only_before_summary_boundary() {
         .find(|message| message.tool_call_id.as_deref() == Some("after-summary-1"));
 
     assert_tool_payload_compacted_or_removed(
-        &messages,
+        messages,
         "old-before-summary",
         "BEFORE_SUMMARY_MARKER",
     );
@@ -1529,12 +1535,16 @@ async fn e2e_compress_tool_triggers_manual_compaction() {
         .filter_map(|event| event["event_name"].as_str())
         .map(str::to_string)
         .collect();
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_started"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_started")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
     assert!(
         !event_names.iter().any(|event| event == "pruning_applied"),
         "runtime manual compaction must not emit removed prune/archive cleanup events"
@@ -1621,24 +1631,36 @@ async fn e2e_compress_preserves_tool_heavy_batch_continuation() {
         .map(str::to_string)
         .collect();
 
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_started"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "compaction_completed"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "tool_call:compress"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "tool_result:compress"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "tool_call:write_todos"));
-    assert!(event_names
-        .iter()
-        .any(|event| event == "tool_result:write_todos"));
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_started")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "compaction_completed")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "tool_call:compress")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "tool_result:compress")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "tool_call:write_todos")
+    );
+    assert!(
+        event_names
+            .iter()
+            .any(|event| event == "tool_result:write_todos")
+    );
     assert!(
         !event_names.iter().any(|event| event == "pruning_applied"),
         "runtime compaction must not emit removed prune/archive cleanup events"

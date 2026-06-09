@@ -68,10 +68,10 @@ pub enum WikiPatchOperation {
     },
 }
 
-/// Runtime-validated patch operation with a deterministic object key.
+/// Runtime-validated patch operation with a deterministic storage key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedWikiPatchOperation {
-    /// Deterministic S3/R2 object key.
+    /// Deterministic storage key.
     pub key: String,
     /// Full Markdown page content.
     pub content: String,

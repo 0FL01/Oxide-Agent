@@ -1,11 +1,11 @@
 //! Narrow sandbox backend capability traits.
 
+use super::ExecResult;
 #[cfg(feature = "tool-stack-logs")]
 use super::broker::{
     StackLogsFetchRequest, StackLogsFetchResponse, StackLogsListSourcesRequest,
     StackLogsListSourcesResponse,
 };
-use super::ExecResult;
 use super::{SandboxContainerRecord, SandboxScope};
 use anyhow::Result;
 use async_trait::async_trait;

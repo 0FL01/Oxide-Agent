@@ -88,7 +88,7 @@ pub use opencode_go::OpenCodeGoProvider;
 #[cfg(feature = "llm-openrouter")]
 pub use openrouter::OpenRouterProvider;
 #[cfg(feature = "llm-zai")]
-pub use zai::{parse_zai_flush_time, ZaiProvider};
+pub use zai::{ZaiProvider, parse_zai_flush_time};
 
 pub(crate) use modules::{
     build_configured_providers, provider_capabilities, provider_capabilities_for_model,

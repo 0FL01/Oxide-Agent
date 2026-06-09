@@ -13,8 +13,8 @@
 use anyhow::Result;
 use lazy_regex::lazy_regex;
 use std::time::Duration;
-use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
+use tokio_retry::strategy::{ExponentialBackoff, jitter};
 use tracing::warn;
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
@@ -88,11 +88,11 @@ fn escape_angle_brackets(text: &str) -> String {
                 let mut peeked_chars = Vec::new();
 
                 // Check for closing tag: </
-                if let Some('/') = chars.peek() {
-                    if let Some(ch) = chars.next() {
-                        peeked_chars.push(ch);
-                        lookahead.push('/');
-                    }
+                if let Some('/') = chars.peek()
+                    && let Some(ch) = chars.next()
+                {
+                    peeked_chars.push(ch);
+                    lookahead.push('/');
                 }
 
                 // Extract tag name (alphanumeric only, stops at space or >)

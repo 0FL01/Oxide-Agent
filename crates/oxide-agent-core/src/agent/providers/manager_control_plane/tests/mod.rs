@@ -7,7 +7,7 @@ pub(super) use crate::storage::{
     TopicContextRecord, TopicInfraAuthMode, TopicInfraConfigRecord, TopicInfraToolMode, UserConfig,
     UserContextConfig,
 };
-pub(super) use mockall::{predicate::eq, Sequence};
+pub(super) use mockall::{Sequence, predicate::eq};
 pub(super) use serde_json::json;
 pub(super) use std::sync::Arc;
 

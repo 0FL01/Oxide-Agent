@@ -64,10 +64,10 @@ impl JiraMcpConfig {
     /// 3. Falls back to `jira-mcp` (expects it to be in PATH)
     fn resolve_binary_path() -> Option<String> {
         // Check explicit environment variable first
-        if let Ok(path) = std::env::var("JIRA_MCP_BINARY_PATH") {
-            if !path.is_empty() {
-                return Some(path);
-            }
+        if let Ok(path) = std::env::var("JIRA_MCP_BINARY_PATH")
+            && !path.is_empty()
+        {
+            return Some(path);
         }
 
         // Check default paths

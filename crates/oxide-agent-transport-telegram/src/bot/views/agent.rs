@@ -21,18 +21,10 @@ pub const LOOP_CALLBACK_RESET: &str = "reset_task";
 pub const LOOP_CALLBACK_CANCEL: &str = "cancel_task";
 /// Callback data for cancelling the current task from topic controls
 pub const AGENT_CALLBACK_CANCEL_TASK: &str = "agent:cancel";
-/// Callback data for clearing memory from topic controls
-pub const AGENT_CALLBACK_CLEAR_MEMORY: &str = "agent:clear";
-/// Callback data for manually compacting the current agent context.
-pub const AGENT_CALLBACK_COMPACT_CONTEXT: &str = "agent:compact";
-/// Callback data for recreating the container from topic controls
-pub const AGENT_CALLBACK_RECREATE_CONTAINER: &str = "agent:recreate";
 /// Callback prefix for attaching a specific topic-scoped agent flow.
 pub const AGENT_CALLBACK_ATTACH_PREFIX: &str = "agent:attach:";
 /// Callback data for detaching into a fresh topic-scoped agent flow.
 pub const AGENT_CALLBACK_DETACH: &str = "agent:detach";
-/// Callback data for exiting agent mode from topic controls
-pub const AGENT_CALLBACK_EXIT: &str = "agent:exit";
 /// Callback data for confirming memory clear from topic controls
 pub const AGENT_CALLBACK_CONFIRM_CLEAR_YES: &str = "agent:confirm:clear:yes";
 /// Callback data for cancelling memory clear from topic controls
@@ -49,11 +41,6 @@ pub const AGENT_CALLBACK_CONFIRM_CANCEL_NO: &str = "agent:confirm:cancel:no";
 pub const AGENT_CALLBACK_CONFIRM_RECREATE_YES: &str = "agent:confirm:recreate:yes";
 /// Callback data for cancelling container recreation from topic controls
 pub const AGENT_CALLBACK_CONFIRM_RECREATE_CANCEL: &str = "agent:confirm:recreate:cancel";
-/// Callback prefix for approving a pending SSH action.
-pub const AGENT_CALLBACK_SSH_APPROVE_PREFIX: &str = "agent:ssh:approve:";
-/// Callback prefix for rejecting a pending SSH action.
-pub const AGENT_CALLBACK_SSH_REJECT_PREFIX: &str = "agent:ssh:reject:";
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Trait definition
 // ─────────────────────────────────────────────────────────────────────────────
@@ -329,17 +316,7 @@ pub fn get_agent_keyboard() -> KeyboardMarkup {
 
 /// Get topic-friendly inline controls for agent mode.
 #[must_use]
-pub fn get_agent_inline_keyboard(agent_flow_id: Option<&str>) -> InlineKeyboardMarkup {
-    get_agent_inline_keyboard_with_exit(true, agent_flow_id, true)
-}
-
-/// Get topic-friendly inline controls for agent mode with optional exit action.
-#[must_use]
-pub fn get_agent_inline_keyboard_with_exit(
-    _include_exit: bool,
-    _agent_flow_id: Option<&str>,
-    _attach_detach_enabled: bool,
-) -> InlineKeyboardMarkup {
+pub fn get_agent_inline_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
         "❌ Cancel Task",
         AGENT_CALLBACK_CANCEL_TASK,
@@ -374,7 +351,7 @@ pub fn cancel_task_confirmation_inline_keyboard() -> InlineKeyboardMarkup {
 #[must_use]
 pub fn agent_control_markup(use_inline: bool) -> ReplyMarkup {
     if use_inline {
-        get_agent_inline_keyboard(None).into()
+        get_agent_inline_keyboard().into()
     } else {
         get_agent_keyboard().into()
     }
@@ -454,21 +431,6 @@ pub fn confirmation_inline_keyboard(action: ConfirmationType) -> InlineKeyboardM
     ]])
 }
 
-/// Get inline approval controls for a pending SSH action.
-#[must_use]
-pub fn ssh_approval_inline_keyboard(request_id: &str) -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![vec![
-        InlineKeyboardButton::callback(
-            "Approve",
-            format!("{AGENT_CALLBACK_SSH_APPROVE_PREFIX}{request_id}"),
-        ),
-        InlineKeyboardButton::callback(
-            "Reject",
-            format!("{AGENT_CALLBACK_SSH_REJECT_PREFIX}{request_id}"),
-        ),
-    ]])
-}
-
 /// Get confirmation markup for the current chat context.
 #[must_use]
 pub fn confirmation_markup(use_inline: bool, action: ConfirmationType) -> ReplyMarkup {
@@ -482,8 +444,8 @@ pub fn confirmation_markup(use_inline: bool, action: ConfirmationType) -> ReplyM
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_flow_inline_keyboard_with_toggle, get_agent_inline_keyboard,
-        get_agent_inline_keyboard_with_exit, get_agent_keyboard, AgentView, DefaultAgentView,
+        AgentView, DefaultAgentView, agent_flow_inline_keyboard_with_toggle,
+        get_agent_inline_keyboard, get_agent_keyboard,
     };
 
     #[test]
@@ -506,7 +468,7 @@ mod tests {
         assert_eq!(buttons.len(), 1);
         assert_eq!(buttons[0].text, "❌ Cancel Task");
 
-        let inline = get_agent_inline_keyboard(Some("flow-1"));
+        let inline = get_agent_inline_keyboard();
         let inline_buttons: Vec<_> = inline.inline_keyboard.iter().flatten().collect();
         assert_eq!(inline_buttons.len(), 1);
         assert_eq!(inline_buttons[0].text, "❌ Cancel Task");
@@ -514,13 +476,6 @@ mod tests {
 
     #[test]
     fn inline_keyboards_hide_attach_detach_when_disabled() {
-        let inline = get_agent_inline_keyboard_with_exit(true, Some("flow-1"), false);
-        assert!(!inline
-            .inline_keyboard
-            .iter()
-            .flatten()
-            .any(|button| button.text == "🔗 Attach" || button.text == "✂️ Detach"));
-
         let flow_controls = agent_flow_inline_keyboard_with_toggle("flow-1", false);
         assert!(flow_controls.inline_keyboard.is_empty());
     }

@@ -5,27 +5,26 @@ use gloo_net::eventsource::futures::{EventSource, EventSourceBuilder, EventSourc
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, ProgressSnapshot, SessionDetail, SessionSummary, SseConnectionState,
-    TaskDetail, TaskEventKind, TaskStatus, TaskSummary,
+    PersistedTaskEvent, ProgressSnapshot, SessionDetail, SessionSummary, TaskDetail, TaskEventKind,
+    TaskStatus, TaskSummary,
 };
 use serde::Deserialize;
+use std::cmp::Ordering;
 
 #[derive(Clone)]
 pub struct TaskStreamConfig {
     pub client: ApiClient,
     pub session_id: String,
     pub task_id: String,
-    pub set_session_title: WriteSignal<String>,
+    pub initial_last_seq: u64,
     pub set_sessions: WriteSignal<Vec<SessionSummary>>,
     pub set_events: WriteSignal<Vec<PersistedTaskEvent>>,
     pub set_progress: WriteSignal<Option<ProgressSnapshot>>,
     pub set_active_task: WriteSignal<Option<TaskDetail>>,
     pub set_tasks: WriteSignal<Vec<TaskSummary>>,
-    pub set_state: WriteSignal<SseConnectionState>,
     pub set_error: WriteSignal<Option<String>>,
     pub streaming_task_id: ReadSignal<Option<String>>,
     pub set_streaming_task_id: WriteSignal<Option<String>>,
-    pub set_last_terminal_status: WriteSignal<Option<TaskStatus>>,
 }
 
 pub fn spawn_task_stream(config: TaskStreamConfig) {
@@ -39,29 +38,26 @@ pub fn spawn_task_stream(config: TaskStreamConfig) {
 }
 
 async fn poll_task_detail_until_paused_or_terminal(config: TaskStreamConfig) {
+    let mut last_seq = config.initial_last_seq;
     for _ in 0..120 {
         TimeoutFuture::new(500).await;
         if !stream_is_current(&config) {
             return;
         }
-        if matches!(
-            refresh_task_detail(&config).await,
-            Some(TaskStatus::WaitingForUserInput)
-                | Some(TaskStatus::Completed)
-                | Some(TaskStatus::Failed)
-                | Some(TaskStatus::Cancelled)
-                | Some(TaskStatus::Interrupted)
-        ) {
-            set_state_if_current(&config, SseConnectionState::TerminalClosed);
-            clear_streaming_task_if_current(&config);
-            poll_session_summary_after_terminal(&config).await;
+        let Some((status, task_last_event_seq)) = refresh_task_detail(&config).await else {
+            continue;
+        };
+        if task_status_closes_stream(status) {
+            let target_last_seq = (task_last_event_seq > last_seq).then_some(task_last_event_seq);
+            let _ = backfill_missed_events_until(&config, &mut last_seq, target_last_seq).await;
+            finish_terminal_stream(&config).await;
             return;
         }
     }
 }
 
 async fn run_task_stream(config: TaskStreamConfig) {
-    let mut last_seq = 0;
+    let mut last_seq = config.initial_last_seq;
     let mut attempts = 0_u8;
 
     loop {
@@ -69,12 +65,10 @@ async fn run_task_stream(config: TaskStreamConfig) {
             return;
         }
         if backfill_missed_events(&config, &mut last_seq).await {
-            set_state_if_current(&config, SseConnectionState::TerminalClosed);
-            clear_streaming_task_if_current(&config);
+            finish_terminal_stream(&config).await;
             return;
         }
 
-        set_state_if_current(&config, SseConnectionState::Reconnecting);
         let url = format!(
             "/api/v1/sessions/{}/tasks/{}/stream?after_seq={last_seq}",
             config.session_id, config.task_id
@@ -85,7 +79,6 @@ async fn run_task_stream(config: TaskStreamConfig) {
                 attempts = attempts.saturating_add(1);
                 set_error_if_current(&config, error.to_string());
                 if attempts >= 3 {
-                    set_state_if_current(&config, SseConnectionState::Disconnected);
                     clear_streaming_task_if_current(&config);
                     return;
                 }
@@ -94,7 +87,6 @@ async fn run_task_stream(config: TaskStreamConfig) {
         };
         let Some(streams) = subscribe_task_streams(&mut source, &config, &mut attempts) else {
             if attempts >= 3 {
-                set_state_if_current(&config, SseConnectionState::Disconnected);
                 clear_streaming_task_if_current(&config);
                 return;
             }
@@ -102,15 +94,12 @@ async fn run_task_stream(config: TaskStreamConfig) {
         };
 
         if process_stream_messages(&config, streams, &mut last_seq).await {
-            set_state_if_current(&config, SseConnectionState::TerminalClosed);
-            clear_streaming_task_if_current(&config);
-            poll_session_summary_after_terminal(&config).await;
+            finish_terminal_stream(&config).await;
             return;
         }
 
         attempts = attempts.saturating_add(1);
         if attempts >= 3 {
-            set_state_if_current(&config, SseConnectionState::Disconnected);
             clear_streaming_task_if_current(&config);
             return;
         }
@@ -178,6 +167,8 @@ struct TaskSseProgressMessage {
 #[derive(Debug, Deserialize)]
 struct TaskStatusMessage {
     status: TaskStatus,
+    #[serde(default)]
+    last_seq: u64,
 }
 
 async fn process_stream_messages(
@@ -192,7 +183,6 @@ async fn process_stream_messages(
         mut status_events,
         mut keepalive_events,
     } = streams;
-    set_state_if_current(config, SseConnectionState::Connected);
     loop {
         if !stream_is_current(config) {
             return false;
@@ -200,7 +190,6 @@ async fn process_stream_messages(
         futures_util::select! {
             message = task_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
                 if handle_task_event_message(config, message, last_seq).await {
@@ -209,34 +198,30 @@ async fn process_stream_messages(
             }
             message = progress_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
                 handle_progress_message(config, message);
             }
             message = snapshot_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
                 handle_snapshot_message(config, message, last_seq);
             }
             message = status_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
-                if handle_status_message(config, message).await {
+                if handle_status_message(config, message, last_seq).await {
                     let _ = refresh_task_detail(config).await;
                     return true;
                 }
             }
             message = keepalive_events.next().fuse() => {
                 let Some(message) = message else {
-                    set_state_if_current(config, SseConnectionState::Disconnected);
                     return false;
                 };
-                if handle_keepalive_message(config, message).await {
+                if handle_keepalive_message(config, message, last_seq).await {
                     return true;
                 }
             }
@@ -250,7 +235,6 @@ async fn handle_task_event_message(
     last_seq: &mut u64,
 ) -> bool {
     let Ok((_event_type, event)) = message else {
-        set_state_if_current(config, SseConnectionState::Disconnected);
         return false;
     };
     let Some(payload) = event.data().as_string() else {
@@ -327,9 +311,9 @@ fn handle_snapshot_message(
 async fn handle_status_message(
     config: &TaskStreamConfig,
     message: Result<(String, web_sys::MessageEvent), gloo_net::eventsource::EventSourceError>,
+    last_seq: &mut u64,
 ) -> bool {
     let Ok((_event_type, event)) = message else {
-        set_state_if_current(config, SseConnectionState::Disconnected);
         return false;
     };
     let Some(payload) = event.data().as_string() else {
@@ -337,7 +321,12 @@ async fn handle_status_message(
     };
     match serde_json::from_str::<TaskStatusMessage>(&payload) {
         Ok(event) => {
-            matches!(event.status, TaskStatus::WaitingForUserInput) || event.status.is_terminal()
+            if task_status_closes_stream(event.status) {
+                let target_last_seq = (event.last_seq > *last_seq).then_some(event.last_seq);
+                let _ = backfill_missed_events_until(config, last_seq, target_last_seq).await;
+                return true;
+            }
+            false
         }
         Err(error) => {
             set_error_if_current(config, error.to_string());
@@ -349,37 +338,90 @@ async fn handle_status_message(
 async fn handle_keepalive_message(
     config: &TaskStreamConfig,
     message: Result<(String, web_sys::MessageEvent), gloo_net::eventsource::EventSourceError>,
+    last_seq: &mut u64,
 ) -> bool {
     if message.is_err() {
-        set_state_if_current(config, SseConnectionState::Disconnected);
         return false;
     }
-    // Periodic refresh on keepalive to pick up any missed state
-    refresh_task_detail_closes_stream(config).await
+    // Periodic refresh on keepalive to pick up any missed state.
+    // If the task closed while the SSE replay cursor was behind, drain persisted
+    // task events before closing the client stream.
+    if let Some((status, task_last_event_seq)) = refresh_task_detail(config).await
+        && task_status_closes_stream(status)
+    {
+        let target_last_seq = (task_last_event_seq > *last_seq).then_some(task_last_event_seq);
+        let _ = backfill_missed_events_until(config, last_seq, target_last_seq).await;
+        return true;
+    }
+    false
 }
 
 // ── Backfill and refresh ─────────────────────────────────────────────────
 
+const TASK_EVENT_BACKFILL_LIMIT: usize = 500;
+
 async fn backfill_missed_events(config: &TaskStreamConfig, last_seq: &mut u64) -> bool {
-    match config
-        .client
-        .task_events(&config.session_id, &config.task_id, *last_seq)
-        .await
-    {
-        Ok(response) => {
-            for event in response.events {
-                if event.seq > *last_seq {
-                    *last_seq = event.seq;
-                    if stream_is_current(config) && event.task_id == config.task_id {
-                        append_unique_event(config.set_events, event.clone());
+    backfill_missed_events_until(config, last_seq, None).await
+}
+
+async fn backfill_missed_events_until(
+    config: &TaskStreamConfig,
+    last_seq: &mut u64,
+    target_last_seq: Option<u64>,
+) -> bool {
+    let mut saw_finished = false;
+    let mut empty_polls = 0_u8;
+
+    loop {
+        let before_seq = *last_seq;
+        match config
+            .client
+            .task_events_page(
+                &config.session_id,
+                &config.task_id,
+                *last_seq,
+                TASK_EVENT_BACKFILL_LIMIT,
+            )
+            .await
+        {
+            Ok(response) => {
+                let has_more = response.has_more;
+                let response_last_seq = response.last_seq;
+                for event in response.events {
+                    if event.seq > *last_seq {
+                        *last_seq = event.seq;
+                        if stream_is_current(config) && event.task_id == config.task_id {
+                            append_unique_event(config.set_events, event.clone());
+                        }
+                    }
+                    if event.kind == TaskEventKind::Finished {
+                        saw_finished = true;
                     }
                 }
-                if event.kind == TaskEventKind::Finished {
+
+                let target_reached = target_last_seq.is_none_or(|target| *last_seq >= target);
+                if saw_finished && target_reached {
                     return refresh_task_detail_closes_stream(config).await;
                 }
+                if has_more {
+                    continue;
+                }
+                if target_reached {
+                    break;
+                }
+                if response_last_seq <= before_seq {
+                    if empty_polls >= 3 {
+                        break;
+                    }
+                    empty_polls = empty_polls.saturating_add(1);
+                    TimeoutFuture::new(100).await;
+                }
+            }
+            Err(error) => {
+                set_error_if_current(config, error.to_string());
+                break;
             }
         }
-        Err(error) => set_error_if_current(config, error.to_string()),
     }
 
     // Backfill also refreshes progress as a safety net
@@ -407,7 +449,7 @@ async fn refresh_progress(config: &TaskStreamConfig) -> bool {
     }
 }
 
-async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<TaskStatus> {
+async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<(TaskStatus, u64)> {
     match config
         .client
         .get_task(&config.session_id, &config.task_id)
@@ -417,10 +459,10 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<TaskStatus> {
             let detail = response.task;
             let summary = task_detail_to_summary(&detail);
             let status = summary.status;
+            let last_event_seq = detail.last_event_seq;
             if stream_is_current(config) {
                 config.set_progress.set(detail.last_progress.clone());
                 if detail.status.is_terminal() {
-                    config.set_last_terminal_status.set(Some(status));
                     config.set_active_task.set(None);
                 } else {
                     config.set_active_task.set(Some(detail));
@@ -442,7 +484,7 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<TaskStatus> {
                 });
             });
             refresh_session_summary(config).await;
-            Some(status)
+            Some((status, last_event_seq))
         }
         Err(error) => {
             set_error_if_current(config, error.to_string());
@@ -454,7 +496,7 @@ async fn refresh_task_detail(config: &TaskStreamConfig) -> Option<TaskStatus> {
 async fn refresh_task_detail_closes_stream(config: &TaskStreamConfig) -> bool {
     refresh_task_detail(config)
         .await
-        .is_some_and(task_status_closes_stream)
+        .is_some_and(|(status, _last_event_seq)| task_status_closes_stream(status))
 }
 
 const fn task_status_closes_stream(status: TaskStatus) -> bool {
@@ -471,7 +513,6 @@ async fn refresh_session_summary(config: &TaskStreamConfig) {
                 return;
             }
             let summary = session_detail_to_summary(response.session);
-            config.set_session_title.set(summary.title.clone());
             upsert_session_summary(config.set_sessions, summary);
         }
         Err(error) => set_error_if_current(config, error.to_string()),
@@ -484,10 +525,13 @@ async fn poll_session_summary_after_terminal(config: &TaskStreamConfig) {
         if !stream_is_current(config) {
             return;
         }
-        if refresh_task_detail(config).await.is_none() {
-            refresh_session_summary(config).await;
-        }
+        refresh_session_summary(config).await;
     }
+}
+
+async fn finish_terminal_stream(config: &TaskStreamConfig) {
+    poll_session_summary_after_terminal(config).await;
+    clear_streaming_task_if_current(config);
 }
 
 fn stream_is_current(config: &TaskStreamConfig) -> bool {
@@ -496,12 +540,6 @@ fn stream_is_current(config: &TaskStreamConfig) -> bool {
         .get_untracked()
         .as_deref()
         .is_some_and(|task_id| task_id == config.task_id.as_str())
-}
-
-fn set_state_if_current(config: &TaskStreamConfig, state: SseConnectionState) {
-    if stream_is_current(config) {
-        config.set_state.set(state);
-    }
 }
 
 fn set_error_if_current(config: &TaskStreamConfig, error: String) {
@@ -552,15 +590,22 @@ fn append_unique_event(events: WriteSignal<Vec<PersistedTaskEvent>>, event: Pers
             .iter()
             .any(|item| item.task_id == event.task_id && item.seq == event.seq)
         {
+            let needs_sort = items
+                .last()
+                .is_some_and(|last| compare_task_events(last, &event) == Ordering::Greater);
             items.push(event);
-            items.sort_by(|a, b| {
-                a.created_at
-                    .cmp(&b.created_at)
-                    .then_with(|| a.task_id.cmp(&b.task_id))
-                    .then_with(|| a.seq.cmp(&b.seq))
-            });
+            if needs_sort {
+                items.sort_by(compare_task_events);
+            }
         }
     });
+}
+
+fn compare_task_events(a: &PersistedTaskEvent, b: &PersistedTaskEvent) -> Ordering {
+    a.created_at
+        .cmp(&b.created_at)
+        .then_with(|| a.task_id.cmp(&b.task_id))
+        .then_with(|| a.seq.cmp(&b.seq))
 }
 
 fn task_detail_to_summary(task: &TaskDetail) -> TaskSummary {

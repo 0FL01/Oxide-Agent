@@ -278,12 +278,13 @@ mod tests {
         let capabilities = super::provider_capabilities("opencode-go");
 
         assert!(capabilities.supports_tool_calling);
-        assert!(capabilities.supports_structured_output);
+        assert!(!capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "strict");
 
         let alias = super::provider_capabilities("opencode_go");
         assert_eq!(alias.tool_history_label(), "strict");
         assert!(alias.supports_tool_calling);
+        assert!(!alias.supports_structured_output);
     }
 
     #[cfg(feature = "llm-zai")]
@@ -325,7 +326,7 @@ mod tests {
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn opencode_go_models_support_structured_output() {
+    fn opencode_go_models_use_native_tools_without_structured_output() {
         let route = crate::config::ModelInfo {
             id: "deepseek-v4-flash".to_string(),
             max_output_tokens: 4096,
@@ -337,13 +338,13 @@ mod tests {
         let capabilities = super::provider_capabilities_for_model(&route);
 
         assert!(capabilities.supports_tool_calling);
-        assert!(capabilities.supports_structured_output);
+        assert!(!capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "strict");
     }
 
     #[cfg(feature = "llm-opencode-go")]
     #[test]
-    fn opencode_go_any_model_supports_structured_output() {
+    fn opencode_go_any_model_uses_native_tools_without_structured_output() {
         let route = crate::config::ModelInfo {
             id: "kimi-k2.6".to_string(),
             max_output_tokens: 4096,
@@ -355,7 +356,7 @@ mod tests {
         let capabilities = super::provider_capabilities_for_model(&route);
 
         assert!(capabilities.supports_tool_calling);
-        assert!(capabilities.supports_structured_output);
+        assert!(!capabilities.supports_structured_output);
         assert_eq!(capabilities.tool_history_label(), "strict");
     }
 
@@ -372,7 +373,8 @@ mod tests {
 
         let capabilities = super::provider_capabilities_for_model(&route);
 
-        assert!(capabilities.supports_structured_output);
+        assert!(capabilities.supports_tool_calling);
+        assert!(!capabilities.supports_structured_output);
     }
 
     #[cfg(all(

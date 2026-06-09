@@ -157,12 +157,12 @@ pub(crate) fn extract_explicit_remember_payload(task: &str) -> Option<String> {
         return None;
     }
 
-    if let Some((prefix, suffix)) = trimmed.split_once(':') {
-        if has_explicit_remember_intent(prefix) {
-            let cleaned = cleanup_explicit_payload(suffix);
-            if !cleaned.is_empty() {
-                return Some(cleaned);
-            }
+    if let Some((prefix, suffix)) = trimmed.split_once(':')
+        && has_explicit_remember_intent(prefix)
+    {
+        let cleaned = cleanup_explicit_payload(suffix);
+        if !cleaned.is_empty() {
+            return Some(cleaned);
         }
     }
 
@@ -356,7 +356,9 @@ fn page_content(
         evidence,
         signal_kind_label(signal.kind),
         truncate_chars(reason, 240),
-        draft.map(|draft| draft.source.as_str()).unwrap_or("user_task"),
+        draft
+            .map(|draft| draft.source.as_str())
+            .unwrap_or("user_task"),
         truncate_chars(task, TASK_SIGNAL_MAX_CHARS),
     )
 }
@@ -406,7 +408,9 @@ fn inbox_content(
         signal_kind_label(signal.kind),
         signal.explicit,
         truncate_chars(reason, 240),
-        draft.map(|draft| draft.source.as_str()).unwrap_or("user_task"),
+        draft
+            .map(|draft| draft.source.as_str())
+            .unwrap_or("user_task"),
         truncate_chars(task, TASK_SIGNAL_MAX_CHARS),
     )
 }
@@ -519,9 +523,11 @@ mod tests {
     fn planner_skips_trivial_runs_without_signals() {
         let planner = WikiPatchPlanner::default();
 
-        assert!(planner
-            .plan_run_patch("ctx-12345678", "task-1", "what time is it?", &[], now())
-            .is_none());
+        assert!(
+            planner
+                .plan_run_patch("ctx-12345678", "task-1", "what time is it?", &[], now())
+                .is_none()
+        );
     }
 
     #[test]
@@ -630,9 +636,11 @@ mod tests {
             captured_at: now(),
         };
 
-        assert!(planner
-            .plan_run_patch("ctx-12345678", "task-abc123", "debug", &[draft], now())
-            .is_none());
+        assert!(
+            planner
+                .plan_run_patch("ctx-12345678", "task-abc123", "debug", &[draft], now())
+                .is_none()
+        );
     }
 
     #[test]

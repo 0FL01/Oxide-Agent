@@ -1,20 +1,23 @@
 //! Core types, constants, and environment helpers for the web transport server.
 
-use crate::persistence::{InMemoryWebUiStore, WebUiStore};
+use crate::persistence::{InMemoryWebUiStore, WebAuthSessionRecord, WebUiStore};
 use crate::session::WebSessionManager;
 use anyhow::Result as AnyResult;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use moka::future::Cache;
 #[cfg(not(feature = "socket_e2e"))]
 use oxide_agent_core::sandbox::{SandboxAdmin, SandboxAdminRuntime};
 use oxide_agent_core::sandbox::{SandboxContainerRecord, SandboxScope};
-#[cfg(feature = "storage-s3-r2")]
-use oxide_agent_core::{
-    config::AgentSettings,
-    llm::LlmClient,
-    storage::{R2Storage, R2StorageConfig, StorageProvider},
-};
-#[cfg(feature = "storage-s3-r2")]
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_core::storage::{SqlxStorage, SqlxStorageConfig};
+#[cfg(feature = "storage-sqlx")]
+use oxide_agent_core::{config::AgentSettings, llm::LlmClient, storage::StorageProvider};
+#[cfg(feature = "storage-sqlx")]
 use oxide_agent_runtime::SessionRegistry;
+use oxide_agent_web_contracts::{
+    CurrentUser, ListAgentProfilesResponse, ListSessionsResponse, UserSettingsResponse,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap as StdHashMap;
 use std::fmt;
@@ -39,9 +42,28 @@ pub(crate) const TASK_PREVIEW_CHARS: usize = 96;
 pub(crate) const DEFAULT_TASK_EVENTS_LIMIT: usize = 200;
 pub(crate) const MAX_TASK_EVENTS_LIMIT: usize = 500;
 pub(crate) const DEFAULT_WEB_CHAT_UPLOAD_MAX_MB: u64 = 200;
-pub(crate) const YOLO_APPROVAL_DIAGNOSTIC: &str = "The agent requested approval, but web console runs in YOLO (full permission) mode. Reconfigure the agent or retry without an approval-requiring setup.";
 pub(crate) const AUTH_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub(crate) const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
+pub(crate) const AUTH_CACHE_TTL: Duration = Duration::from_secs(60);
+pub(crate) const AUTH_CACHE_MAX_CAPACITY: u64 = 1024;
+pub(crate) const USER_SETTINGS_CACHE_TTL: Duration = Duration::from_secs(60);
+/// How long a closed `TaskEventLog` stays queryable in the global
+/// `EVENT_LOGS` registry for late subscribers before a background cleanup
+/// task removes it. 60s is long enough for a browser tab to reconnect
+/// after a network blip, short enough to keep the map bounded.
+pub(crate) const EVENT_LOG_RETENTION_AFTER_CLOSE: Duration = Duration::from_secs(60);
+pub(crate) const USER_SETTINGS_CACHE_MAX_CAPACITY: u64 = 1024;
+pub(crate) const AGENT_PROFILES_CACHE_TTL: Duration = Duration::from_secs(60);
+pub(crate) const AGENT_PROFILES_CACHE_MAX_CAPACITY: u64 = 1024;
+pub(crate) const SESSION_SUMMARIES_CACHE_TTL: Duration = Duration::from_secs(15);
+pub(crate) const SESSION_SUMMARIES_CACHE_MAX_CAPACITY: u64 = 1024;
+
+#[derive(Debug, Clone)]
+pub(crate) struct CachedAuthSession {
+    pub user: CurrentUser,
+    pub auth_session: WebAuthSessionRecord,
+    pub cached_at: DateTime<Utc>,
+}
 
 // ---------------------------------------------------------------------------
 // Store kind
@@ -50,7 +72,7 @@ pub(crate) const AUTH_RATE_LIMIT_MAX_FAILURES: u32 = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebStoreKind {
     InMemory,
-    R2,
+    Sqlx,
     Custom,
 }
 
@@ -63,8 +85,6 @@ pub(crate) trait WebSandboxControl: Send + Sync {
     async fn destroy_scope(&self, scope: SandboxScope) -> AnyResult<()>;
 
     async fn list_user_sandboxes(&self, user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>>;
-
-    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord>;
 
     async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool>;
 }
@@ -84,10 +104,6 @@ impl WebSandboxControl for RuntimeWebSandboxControl {
 
     async fn list_user_sandboxes(&self, user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>> {
         self.admin.list_user_sandboxes(user_id).await
-    }
-
-    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord> {
-        self.admin.ensure_scope_sandbox(scope).await
     }
 
     async fn delete_sandbox_by_name(&self, user_id: i64, container_name: &str) -> AnyResult<bool> {
@@ -110,23 +126,6 @@ impl WebSandboxControl for NoopWebSandboxControl {
 
     async fn list_user_sandboxes(&self, _user_id: i64) -> AnyResult<Vec<SandboxContainerRecord>> {
         Ok(Vec::new())
-    }
-
-    async fn ensure_scope_sandbox(&self, scope: SandboxScope) -> AnyResult<SandboxContainerRecord> {
-        Ok(SandboxContainerRecord {
-            container_id: scope.stable_name(),
-            container_name: scope.container_name(),
-            image: Some("socket-e2e-noop".to_string()),
-            created_at: None,
-            state: Some("running".to_string()),
-            status: Some("running".to_string()),
-            running: true,
-            user_id: Some(scope.owner_id()),
-            scope: Some(scope.namespace().to_string()),
-            chat_id: scope.chat_id(),
-            thread_id: scope.thread_id(),
-            labels: scope.docker_labels(),
-        })
     }
 
     async fn delete_sandbox_by_name(
@@ -164,13 +163,16 @@ impl fmt::Display for WebStartupError {
         match self {
             Self::InMemoryStoreNotAllowed => write!(
                 f,
-                "in-memory web UI store is not allowed for this startup mode; configure R2 storage or set OXIDE_WEB_ALLOW_IN_MEMORY_STORE=true for explicit dev/test use"
+                "in-memory web UI store is not allowed for this startup mode; configure SQLx/Postgres storage or set OXIDE_WEB_ALLOW_IN_MEMORY_STORE=true for explicit dev/test use"
             ),
             Self::StoreUnavailable(message) => {
                 write!(f, "web UI store is unavailable during startup: {message}")
             }
             Self::StaticAssetsUnavailable(message) => {
-                write!(f, "web UI static assets are unavailable during startup: {message}")
+                write!(
+                    f,
+                    "web UI static assets are unavailable during startup: {message}"
+                )
             }
         }
     }
@@ -190,6 +192,10 @@ pub struct AppState {
     pub web_store_kind: WebStoreKind,
     pub web_assets: WebAssetsConfig,
     pub(crate) auth_rate_limiter: Arc<AsyncMutex<AuthRateLimiter>>,
+    pub(crate) auth_cache: Cache<String, CachedAuthSession>,
+    pub(crate) user_settings_cache: Cache<i64, UserSettingsResponse>,
+    pub(crate) agent_profiles_cache: Cache<i64, ListAgentProfilesResponse>,
+    pub(crate) session_summaries_cache: Cache<i64, ListSessionsResponse>,
     pub task_progress: Arc<RwLock<StdHashMap<String, SerializableProgress>>>,
     pub task_timeline: Arc<RwLock<StdHashMap<String, TaskTimelineRecord>>>,
     /// Tracks the JoinHandle for each running task so it can be aborted on completion.
@@ -230,6 +236,22 @@ impl AppState {
             web_store_kind,
             web_assets: WebAssetsConfig::from_env(),
             auth_rate_limiter: Arc::new(AsyncMutex::new(AuthRateLimiter::new())),
+            auth_cache: Cache::builder()
+                .max_capacity(AUTH_CACHE_MAX_CAPACITY)
+                .time_to_live(AUTH_CACHE_TTL)
+                .build(),
+            user_settings_cache: Cache::builder()
+                .max_capacity(USER_SETTINGS_CACHE_MAX_CAPACITY)
+                .time_to_live(USER_SETTINGS_CACHE_TTL)
+                .build(),
+            agent_profiles_cache: Cache::builder()
+                .max_capacity(AGENT_PROFILES_CACHE_MAX_CAPACITY)
+                .time_to_live(AGENT_PROFILES_CACHE_TTL)
+                .build(),
+            session_summaries_cache: Cache::builder()
+                .max_capacity(SESSION_SUMMARIES_CACHE_MAX_CAPACITY)
+                .time_to_live(SESSION_SUMMARIES_CACHE_TTL)
+                .build(),
             task_progress: Arc::new(RwLock::new(StdHashMap::new())),
             task_timeline: Arc::new(RwLock::new(StdHashMap::new())),
             task_handles: Arc::new(RwLock::new(StdHashMap::new())),
@@ -237,15 +259,15 @@ impl AppState {
         }
     }
 
-    #[cfg(feature = "storage-s3-r2")]
-    pub fn new_with_r2_web_store(
+    #[cfg(feature = "storage-sqlx")]
+    pub fn new_with_sqlx_web_store(
         session_manager: Arc<WebSessionManager>,
-        r2_storage: Arc<R2Storage>,
+        sqlx_storage: Arc<SqlxStorage>,
     ) -> Self {
         Self::new_with_web_store_kind(
             session_manager,
-            Arc::new(crate::persistence::R2WebUiStore::new(r2_storage)),
-            WebStoreKind::R2,
+            Arc::new(crate::persistence::SqlxWebUiStore::new(sqlx_storage)),
+            WebStoreKind::Sqlx,
         )
     }
 
@@ -414,30 +436,30 @@ impl WebAssetsConfig {
 }
 
 // ---------------------------------------------------------------------------
-// R2-backed app state builder
+// SQLx-backed app state builder
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "storage-s3-r2")]
-pub async fn build_r2_backed_app_state(
+#[cfg(feature = "storage-sqlx")]
+pub async fn build_sqlx_backed_app_state(
     registry: SessionRegistry,
     llm: Arc<LlmClient>,
     agent_settings: Arc<AgentSettings>,
 ) -> Result<AppState, WebStartupError> {
-    let r2_config = R2StorageConfig::from_agent_settings(agent_settings.as_ref())
+    let sqlx_config = SqlxStorageConfig::from_agent_settings(agent_settings.as_ref())
         .map_err(|error| WebStartupError::StoreUnavailable(error.to_string()))?;
-    let r2_storage = Arc::new(
-        R2Storage::new(&r2_config)
+    let sqlx_storage = Arc::new(
+        SqlxStorage::connect(sqlx_config)
             .await
             .map_err(|error| WebStartupError::StoreUnavailable(error.to_string()))?,
     );
-    let provider_storage = Arc::clone(&r2_storage);
+    let provider_storage = Arc::clone(&sqlx_storage);
     let storage_provider: Arc<dyn StorageProvider> = provider_storage;
     let session_manager =
         WebSessionManager::new_with_storage(registry, llm, agent_settings, storage_provider);
-    let state = AppState::new_with_r2_web_store(Arc::new(session_manager), r2_storage);
-    state.validate_web_store_for_startup()?;
-    state.reconcile_unfinished_tasks_on_startup().await?;
-    Ok(state)
+    Ok(AppState::new_with_sqlx_web_store(
+        Arc::new(session_manager),
+        sqlx_storage,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +556,8 @@ pub struct TaskTimelineRecord {
 pub struct TaskEventsQuery {
     #[serde(default)]
     pub after_seq: Option<u64>,
+    #[serde(default)]
+    pub before_seq: Option<u64>,
     #[serde(default)]
     pub limit: Option<usize>,
 }

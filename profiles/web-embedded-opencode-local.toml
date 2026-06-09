@@ -3,7 +3,7 @@ cargo_features = ["profile-web-embedded-opencode-local", "tool-crawl4ai-markdown
 
 [modules]
 "transport/web" = { enabled = true }
-"storage/r2" = { enabled = true }
+"storage/sqlx" = { enabled = true }
 "llm-provider/opencode-go" = { enabled = true }
 "llm-provider/opencode-zen" = { enabled = true }
 "sandbox-backend/bwrap" = { enabled = true }
@@ -22,5 +22,6 @@ cargo_features = ["profile-web-embedded-opencode-local", "tool-crawl4ai-markdown
 "tool/tavily" = { enabled = true }
 "tool/wiki-memory" = { enabled = true }
 "tool/webfetch-md" = { enabled = true }
+"tool/brave-search" = { enabled = true }
 "tool/crawl4ai-markdown" = { enabled = true }
 "tool/searxng" = { enabled = true }

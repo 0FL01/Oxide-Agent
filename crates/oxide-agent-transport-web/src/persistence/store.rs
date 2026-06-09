@@ -2,7 +2,8 @@ use std::fmt;
 
 use async_trait::async_trait;
 use oxide_agent_web_contracts::{
-    PersistedTaskEvent, TaskEventsResponse, WebSessionRecord, WebTaskRecord,
+    PersistedTaskEvent, SessionSummary, TaskEventsResponse, TaskStatus, WebSessionRecord,
+    WebTaskRecord,
 };
 
 use super::{
@@ -10,6 +11,34 @@ use super::{
 };
 
 pub type WebUiStoreResult<T> = Result<T, WebUiStoreError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSessionContextKeys {
+    pub context_key: String,
+    pub context_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebTaskEventState {
+    pub status: TaskStatus,
+    pub last_event_seq: u64,
+}
+
+impl WebSessionContextKeys {
+    pub fn tracked_context_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        for key in self
+            .context_keys
+            .iter()
+            .chain(std::iter::once(&self.context_key))
+        {
+            if !key.is_empty() && !keys.contains(key) {
+                keys.push(key.clone());
+            }
+        }
+        keys
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebUiStoreError {
@@ -71,6 +100,19 @@ pub trait WebUiStore: Send + Sync {
 
     async fn list_sessions(&self, user_id: i64) -> WebUiStoreResult<Vec<WebSessionRecord>>;
 
+    async fn list_session_summaries(&self, user_id: i64) -> WebUiStoreResult<Vec<SessionSummary>>;
+
+    async fn list_session_context_keys(
+        &self,
+        user_id: i64,
+    ) -> WebUiStoreResult<Vec<WebSessionContextKeys>>;
+
+    async fn list_due_auto_title_sessions(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> WebUiStoreResult<Vec<WebSessionRecord>>;
+
     async fn delete_session(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool>;
 
     async fn save_task(&self, record: WebTaskRecord) -> WebUiStoreResult<()>;
@@ -82,10 +124,27 @@ pub trait WebUiStore: Send + Sync {
         task_id: &str,
     ) -> WebUiStoreResult<Option<WebTaskRecord>>;
 
+    async fn task_exists(&self, user_id: i64, session_id: &str) -> WebUiStoreResult<bool>;
+
+    async fn load_task_event_state(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+    ) -> WebUiStoreResult<Option<WebTaskEventState>>;
+
     async fn list_tasks(
         &self,
         user_id: i64,
         session_id: &str,
+    ) -> WebUiStoreResult<Vec<WebTaskRecord>>;
+
+    async fn list_recent_tasks_page(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        offset: usize,
+        limit: usize,
     ) -> WebUiStoreResult<Vec<WebTaskRecord>>;
 
     async fn append_task_events(
@@ -102,6 +161,15 @@ pub trait WebUiStore: Send + Sync {
         session_id: &str,
         task_id: &str,
         after_seq: u64,
+        limit: usize,
+    ) -> WebUiStoreResult<TaskEventsResponse>;
+
+    async fn list_task_events_before(
+        &self,
+        user_id: i64,
+        session_id: &str,
+        task_id: &str,
+        before_seq: u64,
         limit: usize,
     ) -> WebUiStoreResult<TaskEventsResponse>;
 

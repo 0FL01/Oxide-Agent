@@ -34,6 +34,39 @@ pub struct RawOpenCodeGoModel {
     pub created: Option<u64>,
     #[serde(default)]
     pub owned_by: Option<String>,
+    #[serde(default)]
+    pub modalities: Option<RawOpenCodeGoModelModalities>,
+    #[serde(
+        default,
+        alias = "inputModalities",
+        alias = "supported_input_modalities",
+        alias = "supportedInputModalities"
+    )]
+    pub input_modalities: Vec<String>,
+    #[serde(default)]
+    pub architecture: Option<RawOpenCodeGoModelArchitecture>,
+    #[serde(default)]
+    pub modality: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RawOpenCodeGoModelModalities {
+    #[serde(default, alias = "inputModalities", alias = "input_modalities")]
+    pub input: Vec<String>,
+    #[serde(default, alias = "outputModalities", alias = "output_modalities")]
+    pub output: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RawOpenCodeGoModelArchitecture {
+    #[serde(default, alias = "inputModalities")]
+    pub input_modalities: Vec<String>,
+    #[serde(default, alias = "outputModalities")]
+    pub output_modalities: Vec<String>,
+    #[serde(default)]
+    pub modality: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +119,7 @@ pub struct DiscoveredOpenCodeGoModel {
     pub qualified_id: String,
     pub display_name: String,
     pub protocol: ModelProtocol,
+    pub supports_image_input: bool,
     pub source: DiscoverySource,
     pub fetched_at: DateTime<Utc>,
 }
@@ -371,7 +405,7 @@ pub fn normalize_models_for_config(
         .filter_map(|model| {
             let model_id = raw_model_id_for_prefix(&model.id, &config.model_prefix);
             (!model_id.is_empty())
-                .then(|| discovered_model_for_config(model_id, source, fetched_at, config))
+                .then(|| discovered_model_for_config(&model, model_id, source, fetched_at, config))
         })
         .collect()
 }
@@ -439,6 +473,7 @@ pub fn qualified_model_id_for_prefix(model_id: &str, model_prefix: &str) -> Stri
 }
 
 fn discovered_model_for_config(
+    raw_model: &RawOpenCodeGoModel,
     model_id: String,
     source: DiscoverySource,
     fetched_at: DateTime<Utc>,
@@ -455,9 +490,105 @@ fn discovered_model_for_config(
             &config.model_prefix,
             &config.protocol_overrides,
         ),
+        supports_image_input: supports_image_input(raw_model, &model_id),
         source,
         fetched_at,
     }
+}
+
+fn supports_image_input(model: &RawOpenCodeGoModel, model_id: &str) -> bool {
+    explicit_image_input_support(model)
+        .unwrap_or_else(|| supports_image_input_for_model_id(model_id))
+}
+
+#[must_use]
+pub fn supports_image_input_for_model_id(model_id: &str) -> bool {
+    fallback_image_input_support(model_id)
+}
+
+fn explicit_image_input_support(model: &RawOpenCodeGoModel) -> Option<bool> {
+    let mut has_input_metadata = false;
+    let mut has_image_input = false;
+
+    if let Some(modalities) = &model.modalities {
+        record_modalities(
+            &modalities.input,
+            &mut has_input_metadata,
+            &mut has_image_input,
+        );
+    }
+    record_modalities(
+        &model.input_modalities,
+        &mut has_input_metadata,
+        &mut has_image_input,
+    );
+    if let Some(architecture) = &model.architecture {
+        record_modalities(
+            &architecture.input_modalities,
+            &mut has_input_metadata,
+            &mut has_image_input,
+        );
+        record_modality_string(
+            architecture.modality.as_deref(),
+            &mut has_input_metadata,
+            &mut has_image_input,
+        );
+    }
+    record_modality_string(
+        model.modality.as_deref(),
+        &mut has_input_metadata,
+        &mut has_image_input,
+    );
+
+    has_input_metadata.then_some(has_image_input)
+}
+
+fn record_modalities(
+    modalities: &[String],
+    has_input_metadata: &mut bool,
+    has_image_input: &mut bool,
+) {
+    if modalities.is_empty() {
+        return;
+    }
+    *has_input_metadata = true;
+    *has_image_input |= modalities
+        .iter()
+        .any(|value| modality_value_is_image(value));
+}
+
+fn record_modality_string(
+    value: Option<&str>,
+    has_input_metadata: &mut bool,
+    has_image_input: &mut bool,
+) {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    *has_input_metadata = true;
+    let input_side = value.split("->").next().unwrap_or(value);
+    *has_image_input |= modality_value_is_image(input_side);
+}
+
+fn modality_value_is_image(value: &str) -> bool {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .split(|ch: char| ch == '+' || ch == ',' || ch == '/' || ch.is_whitespace())
+        .any(|token| {
+            matches!(
+                token,
+                "image" | "images" | "vision" | "image_url" | "input_image"
+            )
+        })
+}
+
+fn fallback_image_input_support(model_id: &str) -> bool {
+    let lower = raw_model_id(model_id).to_ascii_lowercase();
+    if lower == "mimo-v2.5-pro" || lower.starts_with("mimo-v2.5-pro-") {
+        return false;
+    }
+    lower == "mimo-v2.5" || lower.starts_with("mimo-v2.5-")
 }
 
 fn model_matches_filter(model: &RawOpenCodeGoModel, filter: ModelDiscoveryFilter) -> bool {
@@ -500,6 +631,21 @@ mod tests {
         OpenCodeGoDiscoveryConfig::new(DEFAULT_MODELS_URL, Duration::from_secs(60), BTreeMap::new())
     }
 
+    fn raw_model(id: &str) -> RawOpenCodeGoModel {
+        RawOpenCodeGoModel {
+            id: id.to_string(),
+            object: "model".to_string(),
+            name: None,
+            display_name: None,
+            created: None,
+            owned_by: None,
+            modalities: None,
+            input_modalities: Vec::new(),
+            architecture: None,
+            modality: None,
+        }
+    }
+
     #[test]
     fn parses_openai_compatible_models_response() {
         let models = parse_models_json(
@@ -519,12 +665,9 @@ mod tests {
     fn normalizes_raw_models_to_qualified_ids() {
         let models = normalize_models(
             vec![RawOpenCodeGoModel {
-                id: "kimi-k2.6".to_string(),
-                object: "model".to_string(),
-                name: None,
-                display_name: None,
                 created: Some(1780207178),
                 owned_by: Some("opencode".to_string()),
+                ..raw_model("kimi-k2.6")
             }],
             DiscoverySource::Network,
             Utc::now(),
@@ -535,6 +678,38 @@ mod tests {
         assert_eq!(models[0].model_id, "kimi-k2.6");
         assert_eq!(models[0].qualified_id, "opencode-go/kimi-k2.6");
         assert_eq!(models[0].protocol, ModelProtocol::OpenAiChatCompletions);
+    }
+
+    #[test]
+    fn image_support_uses_modalities_before_mimo_fallback() {
+        let models = normalize_models(
+            vec![
+                raw_model("mimo-v2.5"),
+                raw_model("mimo-v2.5-pro"),
+                RawOpenCodeGoModel {
+                    modalities: Some(RawOpenCodeGoModelModalities {
+                        input: vec!["text".to_string()],
+                        output: Vec::new(),
+                    }),
+                    ..raw_model("mimo-v2.5-preview")
+                },
+                RawOpenCodeGoModel {
+                    modalities: Some(RawOpenCodeGoModelModalities {
+                        input: vec!["text".to_string(), "image".to_string()],
+                        output: Vec::new(),
+                    }),
+                    ..raw_model("mimo-v2.5-pro-preview")
+                },
+            ],
+            DiscoverySource::Network,
+            Utc::now(),
+            &BTreeMap::new(),
+        );
+
+        assert!(model_by_id(&models, "mimo-v2.5").supports_image_input);
+        assert!(!model_by_id(&models, "mimo-v2.5-pro").supports_image_input);
+        assert!(!model_by_id(&models, "mimo-v2.5-preview").supports_image_input);
+        assert!(model_by_id(&models, "mimo-v2.5-pro-preview").supports_image_input);
     }
 
     #[test]
@@ -588,28 +763,16 @@ mod tests {
         let models = normalize_models_for_config(
             vec![
                 RawOpenCodeGoModel {
-                    id: "deepseek-v4-flash-free".to_string(),
-                    object: "model".to_string(),
                     name: Some("DeepSeek V4 Flash FREE".to_string()),
-                    display_name: None,
-                    created: None,
-                    owned_by: None,
+                    ..raw_model("deepseek-v4-flash-free")
                 },
                 RawOpenCodeGoModel {
-                    id: "big-pickle".to_string(),
-                    object: "model".to_string(),
                     name: Some("Big Pickle".to_string()),
-                    display_name: None,
-                    created: None,
-                    owned_by: None,
+                    ..raw_model("big-pickle")
                 },
                 RawOpenCodeGoModel {
-                    id: "gpt-5.4".to_string(),
-                    object: "model".to_string(),
                     name: Some("GPT 5.4".to_string()),
-                    display_name: None,
-                    created: None,
-                    owned_by: None,
+                    ..raw_model("gpt-5.4")
                 },
             ],
             DiscoverySource::Network,
@@ -635,16 +798,7 @@ mod tests {
         );
 
         let network = catalog
-            .refresh_with_fetcher(|| async {
-                Ok(vec![RawOpenCodeGoModel {
-                    id: "kimi-k2.6".to_string(),
-                    object: "model".to_string(),
-                    name: None,
-                    display_name: None,
-                    created: None,
-                    owned_by: None,
-                }])
-            })
+            .refresh_with_fetcher(|| async { Ok(vec![raw_model("kimi-k2.6")]) })
             .await;
         assert_eq!(network[0].source, DiscoverySource::Network);
 
@@ -673,5 +827,41 @@ mod tests {
             .await;
 
         assert!(models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn smoke_opencode_go_models_report_mimo_image_support() {
+        if !matches!(
+            std::env::var("RUN_OPENCODE_GO_DISCOVERY_SMOKE").as_deref(),
+            Ok("1")
+        ) {
+            return;
+        }
+
+        let api_key = match std::env::var("OPENCODE_GO_API_KEY")
+            .or_else(|_| std::env::var("OPENCODE_API_KEY"))
+        {
+            Ok(value) if !value.trim().is_empty() && value.trim() != "dummy" => value,
+            _ => panic!("set OPENCODE_GO_API_KEY or OPENCODE_API_KEY for smoke test"),
+        };
+
+        let catalog = OpenCodeGoModelCatalog::new(HttpClient::new(), api_key, discovery_config());
+        let models = catalog.refresh().await;
+        assert!(
+            !models.is_empty(),
+            "OpenCode /models returned no usable models"
+        );
+        assert!(model_by_id(&models, "mimo-v2.5").supports_image_input);
+        assert!(!model_by_id(&models, "mimo-v2.5-pro").supports_image_input);
+    }
+
+    fn model_by_id<'a>(
+        models: &'a [DiscoveredOpenCodeGoModel],
+        model_id: &str,
+    ) -> &'a DiscoveredOpenCodeGoModel {
+        let Some(model) = models.iter().find(|model| model.model_id == model_id) else {
+            panic!("model {model_id} should be discovered");
+        };
+        model
     }
 }

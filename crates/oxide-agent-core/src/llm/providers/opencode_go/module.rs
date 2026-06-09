@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::config::{AgentSettings, ModelInfo};
-use crate::llm::capabilities::{ProviderCapabilities, ToolHistoryMode};
-use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
 use crate::llm::LlmProvider;
+use crate::llm::capabilities::{MediaCapabilities, ProviderCapabilities, ToolHistoryMode};
+use crate::llm::providers::modules::{LlmProviderBuildContext, LlmProviderModule};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
@@ -124,12 +124,21 @@ impl LlmProviderModule for OpenCodeGoProviderModule {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
+        ProviderCapabilities::new(ToolHistoryMode::Strict, true, false)
     }
 
     fn capabilities_for_model(&self, _model_info: &ModelInfo) -> ProviderCapabilities {
-        // All opencode-go models share a unified tool and structured-output protocol.
+        // OpenCode Go routes use native tool calling, but model-side structured JSON
+        // compliance is not reliable enough for mandatory agent envelopes.
         self.capabilities()
+    }
+
+    fn media_capabilities_for_model(&self, model_info: &ModelInfo) -> MediaCapabilities {
+        MediaCapabilities::new(
+            false,
+            super::discovery::supports_image_input_for_model_id(&model_info.id),
+            false,
+        )
     }
 }
 
@@ -182,7 +191,7 @@ impl LlmProviderModule for OpenCodeZenProviderModule {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::new(ToolHistoryMode::Strict, true, true)
+        ProviderCapabilities::new(ToolHistoryMode::Strict, true, false)
     }
 
     fn capabilities_for_model(&self, _model_info: &ModelInfo) -> ProviderCapabilities {
