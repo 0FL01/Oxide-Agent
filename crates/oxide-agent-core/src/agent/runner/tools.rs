@@ -1,7 +1,7 @@
 //! Tool execution helpers for the agent runner.
 
 use super::AgentRunner;
-use super::types::{AgentRunResult, AgentRunnerContext, FinalResponseInput, RunState};
+use super::types::{AgentRunResult, AgentRunnerContext, RunState};
 use crate::agent::compaction::{CompactionPolicy, CompactionTrigger};
 use crate::agent::identity::SessionId;
 use crate::agent::memory::AgentMessage;
@@ -202,7 +202,9 @@ impl AgentRunner {
         let batch = OpenCodeGoToolCallBatch::from_llm_tool_calls(turn_id, tool_calls);
         let runtime_config = ToolRuntimeConfig::default();
         let native_assistant_content = assistant_content.assistant_content();
-        let final_response_candidate = native_assistant_content.clone();
+        let native_assistant_content_len = native_assistant_content
+            .as_ref()
+            .map_or(0, |content| content.len());
         let history = Arc::new(BufferedRuntimeHistory::new(
             reasoning_content,
             native_assistant_content,
@@ -229,30 +231,15 @@ impl AgentRunner {
             .await;
         result.map_err(|error| anyhow::anyhow!("typed tool runtime failed: {error}"))?;
 
-        if finish_after_todo_update && let Some(final_answer) = final_response_candidate {
+        if finish_after_todo_update {
             let todos_arc = Arc::clone(ctx.todos_arc);
             let todos_complete = todos_arc.lock().await.is_complete();
             if todos_complete {
-                if self.content_loop_detected(final_answer.as_str()).await {
-                    return Err(self
-                        .loop_detected_error(
-                            ctx,
-                            state,
-                            crate::agent::loop_detection::LoopType::ContentLoop,
-                        )
-                        .await);
-                }
-
-                return self
-                    .handle_final_response(
-                        ctx,
-                        state,
-                        FinalResponseInput {
-                            final_answer,
-                            reasoning: None,
-                        },
-                    )
-                    .await;
+                tracing::debug!(
+                    task_id = ctx.task_id,
+                    assistant_content_len = native_assistant_content_len,
+                    "write_todos completed all todos; continuing for explicit final response"
+                );
             }
         }
 
@@ -728,7 +715,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_todo_completion_content_is_returned_as_final_response() {
+    async fn native_todo_completion_continues_for_explicit_final_response() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -804,19 +791,19 @@ mod tests {
             .await
             .expect("runtime execution succeeds");
 
-        assert!(matches!(
-            result,
-            Some(AgentRunResult::Final(answer)) if answer == final_report
-        ));
-        assert!(ctx.agent.memory().todos.is_complete());
+        assert!(result.is_none());
+        assert!(todos_arc.lock().await.is_complete());
 
         let memory = ctx.agent.memory().get_messages();
-        assert_eq!(memory.len(), 3);
+        assert_eq!(memory.len(), 2);
         assert_eq!(memory[0].kind, AgentMessageKind::AssistantToolCall);
         assert_eq!(memory[0].content, final_report);
         assert_eq!(memory[1].kind, AgentMessageKind::ToolResult);
-        assert_eq!(memory[2].kind, AgentMessageKind::AssistantResponse);
-        assert_eq!(memory[2].content, final_report);
+        assert!(
+            !memory
+                .iter()
+                .any(|message| message.kind == AgentMessageKind::AssistantResponse)
+        );
     }
 
     #[tokio::test]
