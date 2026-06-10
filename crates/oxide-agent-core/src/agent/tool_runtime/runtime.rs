@@ -125,9 +125,9 @@ impl ToolCallRuntime {
         self.history.record_assistant_tool_calls(&batch).await?;
 
         let mut handles = Vec::with_capacity(batch.calls.len());
-        for call in batch.calls.iter().cloned() {
-            let invocation = build_invocation(&batch, &context, &call);
-            match prepare_invocation(invocation, &call, &self.normalizer, &pre_tool_blocks) {
+        for call in &batch.calls {
+            let invocation = build_invocation(&batch, &context, call);
+            match prepare_invocation(invocation, call, &self.normalizer, &pre_tool_blocks) {
                 Ok(invocation) => handles.push(ToolTask::Running(ToolTaskHandle {
                     invocation: invocation.clone(),
                     handle: tokio::spawn(run_one_tool(
@@ -136,7 +136,7 @@ impl ToolCallRuntime {
                         invocation,
                     )),
                 })),
-                Err(output) => handles.push(ToolTask::Ready(output)),
+                Err(output) => handles.push(ToolTask::Ready(*output)),
             }
         }
 
@@ -181,9 +181,11 @@ fn prepare_invocation(
     call: &OpenCodeGoParsedToolCall,
     normalizer: &OutputNormalizer,
     pre_tool_blocks: &BTreeMap<ToolCallId, String>,
-) -> Result<ToolInvocation, ToolOutput> {
+) -> Result<ToolInvocation, Box<ToolOutput>> {
     if let Some(issue) = call.protocol_issue {
-        return Err(normalizer.provider_protocol_error(&invocation, issue.message()));
+        return Err(Box::new(
+            normalizer.provider_protocol_error(&invocation, issue.message()),
+        ));
     }
 
     match parse_normalized_arguments(&invocation.raw_arguments) {
@@ -191,12 +193,14 @@ fn prepare_invocation(
             invocation.normalized_arguments = arguments;
         }
         Err(message) => {
-            return Err(normalizer.invalid_arguments(&invocation, message));
+            return Err(Box::new(normalizer.invalid_arguments(&invocation, message)));
         }
     }
 
     if let Some(reason) = pre_tool_blocks.get(&invocation.tool_call_id) {
-        return Err(normalizer.policy_blocked(&invocation, reason.clone()));
+        return Err(Box::new(
+            normalizer.policy_blocked(&invocation, reason.clone()),
+        ));
     }
 
     Ok(invocation)

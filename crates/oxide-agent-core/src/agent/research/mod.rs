@@ -5,7 +5,7 @@
 //! execution context supplies a [`ResearchRuntime`].
 
 use crate::agent::tool_runtime::{ToolOutput, ToolOutputStatus};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::Mutex;
 
 /// Source priority derived from the tool that produced an observation.
@@ -103,6 +103,25 @@ pub struct ResearchFailure {
     pub anti_bot: bool,
 }
 
+/// Final-answer guard decision captured for research audit/debug output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResearchGuardDecision {
+    /// Final guard outcome, for example `allow`, `force_iteration`, or `skip_limit`.
+    pub decision: String,
+    /// Human-readable reason for the decision.
+    pub reason: String,
+    /// Whether the final answer contained a high-impact/current marker.
+    pub high_impact_detected: bool,
+    /// Whether adequate fetched evidence was available when the guard ran.
+    pub adequate_fetched_evidence: bool,
+    /// Unsupported claim category when the guard forced another iteration.
+    pub unsupported_claim: Option<String>,
+    /// Continuation count observed by the hook.
+    pub continuation_count: usize,
+    /// Continuation limit observed by the hook.
+    pub continuation_limit: usize,
+}
+
 /// Snapshot of passive research state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResearchSnapshot {
@@ -118,6 +137,8 @@ pub struct ResearchSnapshot {
     pub failures: Vec<ResearchFailure>,
     /// Hosts that produced anti-bot/access-blocking signals.
     pub anti_bot_hosts: Vec<String>,
+    /// Final-answer guard decisions captured for audit/debug output.
+    pub guard_decisions: Vec<ResearchGuardDecision>,
 }
 
 /// In-process passive research runtime.
@@ -147,9 +168,7 @@ impl ResearchRuntime {
         let provider = payload.and_then(|value| string_field(value, "provider"));
         let error_kind = payload.and_then(|value| string_field(value, "error_kind"));
         let anti_bot = payload.is_some_and(payload_indicates_anti_bot)
-            || error_kind
-                .as_deref()
-                .is_some_and(|kind| looks_like_anti_bot(kind));
+            || error_kind.as_deref().is_some_and(looks_like_anti_bot);
         let truncated = output.truncation.content_truncated
             || output.truncation.stdout_truncated
             || payload.is_some_and(payload_indicates_truncation);
@@ -199,10 +218,10 @@ impl ResearchRuntime {
         if !output.success {
             let host = payload.and_then(|value| string_field(value, "host"));
             if anti_bot
-                && let Some(host) = host.clone()
-                && !state.anti_bot_hosts.contains(&host)
+                && let Some(host) = host.as_deref()
+                && !state.anti_bot_hosts.iter().any(|existing| existing == host)
             {
-                state.anti_bot_hosts.push(host.clone());
+                state.anti_bot_hosts.push(host.to_string());
             }
             state.failures.push(ResearchFailure {
                 tool_name: tool_name.to_string(),
@@ -220,6 +239,15 @@ impl ResearchRuntime {
         }
     }
 
+    /// Record one final-answer guard decision for audit/debug output.
+    pub fn record_guard_decision(&self, decision: ResearchGuardDecision) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .guard_decisions
+            .push(decision);
+    }
+
     /// Return a cloneable point-in-time snapshot.
     #[must_use]
     pub fn snapshot(&self) -> ResearchSnapshot {
@@ -228,6 +256,53 @@ impl ResearchRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
+
+    /// Return a compact JSON audit/debug payload for the current research state.
+    #[must_use]
+    pub fn audit_payload(&self) -> Value {
+        audit_payload_from_snapshot(&self.snapshot())
+    }
+}
+
+/// Return a compact JSON audit/debug payload for a research snapshot.
+#[must_use]
+pub fn audit_payload_from_snapshot(snapshot: &ResearchSnapshot) -> Value {
+    json!({
+        "task_kind": "unclassified",
+        "mode": "evidence_guard",
+        "providers_used": providers_used(snapshot),
+        "queries": &snapshot.queries,
+        "fetched_urls": snapshot
+            .fetched_sources
+            .iter()
+            .map(|source| source.final_url.as_deref().unwrap_or(source.url.as_str()))
+            .collect::<Vec<_>>(),
+        "evidence_observations": snapshot
+            .observations
+            .iter()
+            .map(observation_payload)
+            .collect::<Vec<_>>(),
+        "failures": snapshot
+            .failures
+            .iter()
+            .map(failure_payload)
+            .collect::<Vec<_>>(),
+        "anti_bot_hosts": &snapshot.anti_bot_hosts,
+        "unsupported_claims": snapshot
+            .guard_decisions
+            .iter()
+            .filter_map(|decision| decision.unsupported_claim.as_deref())
+            .collect::<Vec<_>>(),
+        "final_guard_decision": snapshot
+            .guard_decisions
+            .last()
+            .map(guard_decision_payload),
+        "guard_decisions": snapshot
+            .guard_decisions
+            .iter()
+            .map(guard_decision_payload)
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn source_priority(tool_name: &str) -> Option<ResearchSourcePriority> {
@@ -236,6 +311,70 @@ fn source_priority(tool_name: &str) -> Option<ResearchSourcePriority> {
         "web_search" | "web_extract" | "web_markdown" | "brave_search" | "duckduckgo_search"
         | "duckduckgo_news" => Some(ResearchSourcePriority::Fallback),
         _ => None,
+    }
+}
+
+fn providers_used(snapshot: &ResearchSnapshot) -> Vec<String> {
+    let mut providers = Vec::new();
+    for observation in &snapshot.observations {
+        let provider = observation
+            .provider
+            .as_deref()
+            .unwrap_or(observation.tool_name.as_str());
+        if !providers.iter().any(|existing| existing == provider) {
+            providers.push(provider.to_string());
+        }
+    }
+    providers
+}
+
+fn observation_payload(observation: &ResearchObservation) -> Value {
+    json!({
+        "tool_name": &observation.tool_name,
+        "status": format!("{:?}", observation.status),
+        "success": observation.success,
+        "provider": &observation.provider,
+        "kind": &observation.kind,
+        "query": &observation.query,
+        "url": &observation.url,
+        "source_priority": source_priority_label(observation.source_priority),
+        "snippet_only": observation.snippet_only,
+        "truncated": observation.truncated,
+        "error_kind": &observation.error_kind,
+        "anti_bot": observation.anti_bot,
+    })
+}
+
+fn failure_payload(failure: &ResearchFailure) -> Value {
+    json!({
+        "tool_name": &failure.tool_name,
+        "status": format!("{:?}", failure.status),
+        "error_kind": &failure.error_kind,
+        "message": &failure.message,
+        "url": &failure.url,
+        "host": &failure.host,
+        "provider_unavailable": failure.provider_unavailable,
+        "retryable": failure.retryable,
+        "anti_bot": failure.anti_bot,
+    })
+}
+
+fn guard_decision_payload(decision: &ResearchGuardDecision) -> Value {
+    json!({
+        "decision": &decision.decision,
+        "reason": &decision.reason,
+        "high_impact_detected": decision.high_impact_detected,
+        "adequate_fetched_evidence": decision.adequate_fetched_evidence,
+        "unsupported_claim": &decision.unsupported_claim,
+        "continuation_count": decision.continuation_count,
+        "continuation_limit": decision.continuation_limit,
+    })
+}
+
+const fn source_priority_label(priority: ResearchSourcePriority) -> &'static str {
+    match priority {
+        ResearchSourcePriority::Primary => "primary",
+        ResearchSourcePriority::Fallback => "fallback",
     }
 }
 
@@ -452,5 +591,39 @@ mod tests {
         runtime.record_tool_output(&output);
 
         assert!(runtime.snapshot().observations.is_empty());
+    }
+
+    #[test]
+    fn audit_payload_summarizes_research_state_and_guard_decision() {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig::default());
+        let mut output = normalizer.success(&invocation("web_markdown"), "markdown", "");
+        output.structured_payload = Some(json!({
+            "provider": "web_markdown",
+            "kind": "fetch",
+            "url": "https://example.test/page",
+            "final_url": "https://example.test/page?ok=1",
+            "status_code": 200,
+            "truncated": false
+        }));
+        let runtime = ResearchRuntime::new();
+        runtime.record_tool_output(&output);
+        runtime.record_guard_decision(ResearchGuardDecision {
+            decision: "force_iteration".to_string(),
+            reason: "unsupported current/high-impact claim without fetched source evidence"
+                .to_string(),
+            high_impact_detected: true,
+            adequate_fetched_evidence: false,
+            unsupported_claim: Some("current/high-impact claim".to_string()),
+            continuation_count: 1,
+            continuation_limit: 4,
+        });
+
+        let audit = runtime.audit_payload();
+
+        assert_eq!(audit["mode"], "evidence_guard");
+        assert_eq!(audit["providers_used"][0], "web_markdown");
+        assert_eq!(audit["fetched_urls"][0], "https://example.test/page?ok=1");
+        assert_eq!(audit["unsupported_claims"][0], "current/high-impact claim");
+        assert_eq!(audit["final_guard_decision"]["decision"], "force_iteration");
     }
 }

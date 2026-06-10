@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Url;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT};
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -18,9 +20,15 @@ use super::{
 
 struct FetchResult {
     final_url: Url,
+    status_code: u16,
     content_type: String,
     bytes_read: usize,
     text: String,
+}
+
+pub(super) struct WebMarkdownSuccess {
+    pub markdown: String,
+    pub payload: Value,
 }
 
 impl WebFetchMdProvider {
@@ -28,7 +36,7 @@ impl WebFetchMdProvider {
         &self,
         args: WebMarkdownArgs,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<WebMarkdownSuccess> {
         let url = parse_web_url(&args.url)?;
         reject_media_url(&url)?;
         reject_unsafe_url(&url)?;
@@ -48,10 +56,25 @@ impl WebFetchMdProvider {
                 Ok(markdown) => {
                     let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
                     let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
-                    return Ok(format!(
+                    let markdown = format!(
                         "## Web Markdown\n\nURL: {}\nContent-Type: text/plain\nFetched-Bytes: 0\nTruncated: {}\n\n{}",
                         url, truncated_label, truncated.text
-                    ));
+                    );
+                    return Ok(WebMarkdownSuccess {
+                        markdown,
+                        payload: json!({
+                            "provider": "web_markdown",
+                            "kind": "fetch",
+                            "url": args.url,
+                            "final_url": url.as_str(),
+                            "status_code": 200,
+                            "content_type": "text/plain",
+                            "bytes_read": 0,
+                            "truncated": truncated.was_truncated,
+                            "snippet_only": false,
+                            "fetched_at": Utc::now().to_rfc3339(),
+                        }),
+                    });
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -80,14 +103,30 @@ impl WebFetchMdProvider {
         let truncated = truncate_chars(markdown.trim().to_string(), MAX_OUTPUT_CHARS);
         let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
 
-        Ok(format!(
+        let markdown = format!(
             "## Web Markdown\n\nURL: {}\nContent-Type: {}\nFetched-Bytes: {}\nTruncated: {}\n\n{}",
             fetched.final_url,
             display_content_type(&fetched.content_type),
             fetched.bytes_read,
             truncated_label,
             truncated.text
-        ))
+        );
+
+        Ok(WebMarkdownSuccess {
+            markdown,
+            payload: json!({
+                "provider": "web_markdown",
+                "kind": "fetch",
+                "url": args.url,
+                "final_url": fetched.final_url.as_str(),
+                "status_code": fetched.status_code,
+                "content_type": display_content_type(&fetched.content_type),
+                "bytes_read": fetched.bytes_read,
+                "truncated": truncated.was_truncated,
+                "snippet_only": false,
+                "fetched_at": Utc::now().to_rfc3339(),
+            }),
+        })
     }
 
     /// Fetch a Reddit thread via its Atom RSS feed and render as Markdown.
@@ -189,6 +228,7 @@ impl WebFetchMdProvider {
 
         Ok(FetchResult {
             final_url,
+            status_code: status.as_u16(),
             content_type,
             bytes_read,
             text,

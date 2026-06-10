@@ -1,5 +1,6 @@
 use super::error::BraveSearchError;
 use super::types::{BraveSearchResponse, BraveWebResult, NormalizedBraveSearchArgs, TOOL_NAME};
+use chrono::Utc;
 use serde_json::{Value, json};
 use std::fmt::Write;
 
@@ -42,6 +43,8 @@ pub fn format_search_results(
             "search_lang": args.search_lang.as_deref(),
             "freshness": args.freshness.as_deref(),
             "results": payload_results,
+            "snippet_only": true,
+            "fetched_at": Utc::now().to_rfc3339(),
         }),
     )
 }
@@ -65,6 +68,8 @@ pub fn format_search_failure(query: &str, error: &BraveSearchError) -> (String, 
             "retryable": error.is_retryable(),
             "fallback": FALLBACK_TOOL,
             "results": [],
+            "snippet_only": true,
+            "fetched_at": Utc::now().to_rfc3339(),
         }),
     )
 }
@@ -165,6 +170,8 @@ mod tests {
         assert_eq!(payload["results"][0]["url"], "https://www.rust-lang.org/");
         assert_eq!(payload["results"][0]["language"], "en");
         assert_eq!(payload["results"][0]["extra_snippets"][0], "Memory safety");
+        assert_eq!(payload["snippet_only"], true);
+        assert!(payload["fetched_at"].as_str().is_some());
     }
 
     #[test]
@@ -197,6 +204,8 @@ mod tests {
         assert_eq!(payload["retryable"], false);
         assert_eq!(payload["fallback"], FALLBACK_TOOL);
         assert!(payload["results"].as_array().expect("array").is_empty());
+        assert_eq!(payload["snippet_only"], true);
+        assert!(payload["fetched_at"].as_str().is_some());
     }
 
     #[test]

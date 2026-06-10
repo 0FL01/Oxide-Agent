@@ -1,6 +1,7 @@
 use super::types::{
     DuckDuckGoNewsResult, DuckDuckGoResultKind, DuckDuckGoSearchResult, DuckDuckGoStructuredPayload,
 };
+use chrono::Utc;
 use serde_json::{Value, json};
 use std::fmt::Write;
 
@@ -37,10 +38,14 @@ pub fn format_search_results(
         results,
     };
 
-    (
-        truncate_output(output),
-        serde_json::to_value(payload).unwrap_or_else(|_| json!({"provider": "duckduckgo"})),
-    )
+    let mut payload =
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"provider": "duckduckgo"}));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("snippet_only".to_string(), json!(true));
+        object.insert("fetched_at".to_string(), json!(Utc::now().to_rfc3339()));
+    }
+
+    (truncate_output(output), payload)
 }
 
 #[must_use]
@@ -74,10 +79,14 @@ pub fn format_news_results(
         results,
     };
 
-    (
-        truncate_output(output),
-        serde_json::to_value(payload).unwrap_or_else(|_| json!({"provider": "duckduckgo"})),
-    )
+    let mut payload =
+        serde_json::to_value(payload).unwrap_or_else(|_| json!({"provider": "duckduckgo"}));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("snippet_only".to_string(), json!(true));
+        object.insert("fetched_at".to_string(), json!(Utc::now().to_rfc3339()));
+    }
+
+    (truncate_output(output), payload)
 }
 
 fn append_search_result(output: &mut String, index: usize, result: &DuckDuckGoSearchResult) {
@@ -144,6 +153,8 @@ mod tests {
         assert_eq!(payload["provider"], "duckduckgo");
         assert_eq!(payload["kind"], "search");
         assert_eq!(payload["results"][0]["url"], "https://tokio.rs/");
+        assert_eq!(payload["snippet_only"], true);
+        assert!(payload["fetched_at"].as_str().is_some());
     }
 
     #[test]
@@ -165,5 +176,7 @@ mod tests {
         assert!(markdown.contains("DuckDuckGo news results"));
         assert_eq!(payload["kind"], "news");
         assert_eq!(payload["results"][0]["source"], "Example");
+        assert_eq!(payload["snippet_only"], true);
+        assert!(payload["fetched_at"].as_str().is_some());
     }
 }

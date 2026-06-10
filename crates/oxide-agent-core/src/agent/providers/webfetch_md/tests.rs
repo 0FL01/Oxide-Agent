@@ -123,6 +123,13 @@ async fn typed_runtime_executor_fetches_web_markdown() {
     assert!(stdout.contains("URL: http://example.test/article"));
     assert!(stdout.contains("# Hello"));
     assert!(stdout.contains("Readable page."));
+    let payload = output.structured_payload.expect("success payload");
+    assert_eq!(payload["provider"], "web_markdown");
+    assert_eq!(payload["kind"], "fetch");
+    assert_eq!(payload["url"], "http://example.test/article");
+    assert_eq!(payload["final_url"], "http://example.test/article");
+    assert_eq!(payload["status_code"], 200);
+    assert_eq!(payload["snippet_only"], false);
 }
 
 #[test]

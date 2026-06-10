@@ -157,7 +157,11 @@ impl ToolExecutor for WebFetchMdToolExecutor {
             .fetch_markdown(args.clone(), Some(&invocation.cancellation_token))
             .await
         {
-            Ok(output) => Ok(normalizer.success(&invocation, &output, "")),
+            Ok(result) => {
+                let mut output = normalizer.success(&invocation, &result.markdown, "");
+                output.structured_payload = Some(result.payload);
+                Ok(output)
+            }
             Err(error) => {
                 let mut output =
                     normalizer.failure(&invocation, webfetch_failure_message(Some(&args), &error));

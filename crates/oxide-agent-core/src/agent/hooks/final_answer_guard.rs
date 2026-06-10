@@ -2,7 +2,8 @@
 
 use super::types::{HookContext, HookEvent, HookResult};
 use crate::agent::hooks::Hook;
-use crate::agent::research::{ResearchSnapshot, ResearchSourcePriority};
+use crate::agent::research::{ResearchGuardDecision, ResearchSnapshot, ResearchSourcePriority};
+use crate::config::is_research_audit_enabled;
 
 const FRESHNESS_MARKERS: &[&str] = &[
     "currently",
@@ -81,23 +82,82 @@ impl Hook for FinalAnswerGuardHook {
             return HookResult::Continue;
         };
 
-        if !has_high_impact_marker(response) {
+        let high_impact_detected = has_high_impact_marker(response);
+        if !high_impact_detected {
+            record_guard_decision(
+                context,
+                "allow",
+                "no high-impact/current marker detected",
+                false,
+                false,
+                None,
+            );
             return HookResult::Continue;
         }
 
         if context.at_continuation_limit() {
+            record_guard_decision(
+                context,
+                "skip_limit",
+                "continuation limit reached",
+                true,
+                false,
+                Some("current/high-impact claim"),
+            );
             return HookResult::Continue;
         }
 
         let snapshot = context.research_runtime.map(|runtime| runtime.snapshot());
-        if snapshot.as_ref().is_some_and(has_adequate_fetched_evidence) {
+        let has_evidence = snapshot.as_ref().is_some_and(has_adequate_fetched_evidence);
+        if has_evidence {
+            record_guard_decision(
+                context,
+                "allow",
+                "adequate fetched primary evidence observed",
+                true,
+                true,
+                None,
+            );
             return HookResult::Continue;
         }
+
+        record_guard_decision(
+            context,
+            "force_iteration",
+            "unsupported current/high-impact claim without fetched source evidence",
+            true,
+            false,
+            Some("current/high-impact claim"),
+        );
 
         HookResult::ForceIteration {
             reason: "final answer contains unsupported current/high-impact claims".to_string(),
             context: Some(next_action_context(context, snapshot.as_ref())),
         }
+    }
+}
+
+fn record_guard_decision(
+    context: &HookContext<'_>,
+    decision: &str,
+    reason: &str,
+    high_impact_detected: bool,
+    adequate_fetched_evidence: bool,
+    unsupported_claim: Option<&str>,
+) {
+    if !is_research_audit_enabled() {
+        return;
+    }
+    if let Some(runtime) = context.research_runtime {
+        runtime.record_guard_decision(ResearchGuardDecision {
+            decision: decision.to_string(),
+            reason: reason.to_string(),
+            high_impact_detected,
+            adequate_fetched_evidence,
+            unsupported_claim: unsupported_claim.map(str::to_string),
+            continuation_count: context.continuation_count,
+            continuation_limit: context.max_continuations,
+        });
     }
 }
 
@@ -262,6 +322,10 @@ mod tests {
 
     #[test]
     fn unsupported_high_impact_claim_forces_iteration() {
+        let _guard = crate::config::test_env_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::testing::test_remove_env("RESEARCH_AUDIT_ENABLED");
         let hook = FinalAnswerGuardHook::new();
         let todos = TodoList::new();
         let memory = AgentMemory::new(1024);
@@ -275,6 +339,9 @@ mod tests {
         );
 
         assert!(matches!(result, HookResult::ForceIteration { .. }));
+        let audit = runtime.audit_payload();
+        assert_eq!(audit["final_guard_decision"]["decision"], "force_iteration");
+        assert_eq!(audit["unsupported_claims"][0], "current/high-impact claim");
     }
 
     #[test]

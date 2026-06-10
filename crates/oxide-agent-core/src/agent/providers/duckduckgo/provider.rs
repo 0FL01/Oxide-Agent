@@ -135,7 +135,11 @@ fn error_tool_result(
                 error,
                 DuckDuckGoError::Blocked(_) | DuckDuckGoError::RateLimited
             ),
+            "retryable": error.is_retryable(),
+            "fallback": "searxng_search",
             "results": [],
+            "snippet_only": true,
+            "fetched_at": chrono::Utc::now().to_rfc3339(),
         }),
         success: false,
     }
@@ -249,5 +253,28 @@ fn search_runtime_error(error: anyhow::Error) -> ToolRuntimeError {
         ToolRuntimeError::InvalidArguments(error.to_string())
     } else {
         ToolRuntimeError::Failure(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_payload_includes_retryable_and_fallback_hints() {
+        let result = error_tool_result(
+            "search",
+            "rust",
+            "wt-wt",
+            &DuckDuckGoError::Request("HTTP 429".to_string()),
+        );
+
+        assert!(!result.success);
+        assert_eq!(result.payload["provider"], "duckduckgo");
+        assert_eq!(result.payload["error_kind"], "request");
+        assert_eq!(result.payload["retryable"], true);
+        assert_eq!(result.payload["fallback"], "searxng_search");
+        assert_eq!(result.payload["snippet_only"], true);
+        assert!(result.payload["fetched_at"].as_str().is_some());
     }
 }
