@@ -78,6 +78,7 @@ pub(crate) enum InternalTextPurpose {
     LoopDetection,
     WikiMemoryWriter,
     InputIntentClassification,
+    AnswerVerification,
 }
 
 impl LlmClient {

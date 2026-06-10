@@ -153,6 +153,25 @@ pub struct AgentSettings {
     /// Dedicated Wiki Memory writer timeout override in seconds.
     pub wiki_memory_writer_timeout_secs: Option<u64>,
 
+    /// Enable strict zero-trust final-answer verifier.
+    pub research_verifier_enabled: Option<bool>,
+    /// Dedicated strict verifier model ID override.
+    pub research_verifier_model_id: Option<String>,
+    /// Dedicated strict verifier model provider override.
+    pub research_verifier_model_provider: Option<String>,
+    /// Dedicated strict verifier max output tokens override.
+    pub research_verifier_max_output_tokens: Option<u32>,
+    /// Dedicated strict verifier context window tokens override.
+    pub research_verifier_context_window_tokens: Option<u32>,
+    /// Strict verifier timeout override in seconds.
+    pub research_verifier_timeout_secs: Option<u64>,
+    /// Strict verifier maximum evidence-gathering rounds.
+    pub research_verifier_max_rounds: Option<usize>,
+    /// Strict verifier maximum evidence documents sent per check.
+    pub research_verifier_max_evidence_docs: Option<usize>,
+    /// Strict verifier maximum excerpt characters per evidence document.
+    pub research_verifier_max_excerpt_chars: Option<usize>,
+
     /// Media model ID override (for voice/images)
     pub media_model_id: Option<String>,
     /// Media model provider override
@@ -442,6 +461,10 @@ impl AgentSettings {
             "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
             self.wiki_memory_writer_model_provider.as_deref(),
         )?;
+        self.validate_optional_route_provider(
+            "RESEARCH_VERIFIER_MODEL_PROVIDER",
+            self.research_verifier_model_provider.as_deref(),
+        )?;
 
         if let Some(routes) = self.agent_model_routes.as_deref() {
             for (index, route) in routes.iter().enumerate() {
@@ -591,6 +614,10 @@ impl AgentSettings {
             "WIKI_MEMORY_WRITER_MODEL_PROVIDER",
             &mut self.wiki_memory_writer_model_provider,
         )?;
+        Self::canonicalize_optional_provider_field(
+            "RESEARCH_VERIFIER_MODEL_PROVIDER",
+            &mut self.research_verifier_model_provider,
+        )?;
 
         if let Some(routes) = self.agent_model_routes.as_mut() {
             for (index, route) in routes.iter_mut().enumerate() {
@@ -662,6 +689,7 @@ impl AgentSettings {
             self.sub_agent_model_provider.as_deref(),
             self.media_model_provider.as_deref(),
             self.wiki_memory_writer_model_provider.as_deref(),
+            self.research_verifier_model_provider.as_deref(),
         ];
         let agent_route_providers = self
             .agent_model_routes
@@ -976,6 +1004,22 @@ impl AgentSettings {
         ))
     }
 
+    fn research_verifier_model_spec(&self) -> Option<(String, ModelInfo)> {
+        let id = self.research_verifier_model_id.as_ref()?;
+        let provider = self.research_verifier_model_provider.as_ref()?;
+        let max_output_tokens = self
+            .research_verifier_max_output_tokens
+            .unwrap_or(RESEARCH_VERIFIER_MAX_OUTPUT_TOKENS);
+        let context_window_tokens = self
+            .research_verifier_context_window_tokens
+            .unwrap_or(DEFAULT_INTERNAL_TEXT_CONTEXT_WINDOW_TOKENS);
+
+        Some((
+            id.clone(),
+            Self::build_model_info(id, provider, max_output_tokens, context_window_tokens),
+        ))
+    }
+
     fn media_model_spec(&self) -> Option<(String, ModelInfo)> {
         let id = self.media_model_id.as_ref()?;
         let provider = self.media_model_provider.as_ref()?;
@@ -1005,6 +1049,10 @@ impl AgentSettings {
         }
 
         if let Some((name, info)) = self.wiki_memory_writer_model_spec() {
+            Self::upsert_model(&mut models, name, info);
+        }
+
+        if let Some((name, info)) = self.research_verifier_model_spec() {
             Self::upsert_model(&mut models, name, info);
         }
 
@@ -1111,6 +1159,53 @@ impl AgentSettings {
     pub fn get_wiki_memory_writer_timeout_secs(&self) -> u64 {
         self.wiki_memory_writer_timeout_secs
             .unwrap_or(WIKI_MEMORY_WRITER_TIMEOUT_SECS)
+            .max(1)
+    }
+
+    /// Determine whether strict final-answer verification is enabled.
+    #[must_use]
+    pub fn is_research_verifier_enabled(&self) -> bool {
+        self.research_verifier_enabled.unwrap_or_else(|| {
+            parse_optional_env_bool("RESEARCH_VERIFIER_ENABLED")
+                .unwrap_or(RESEARCH_VERIFIER_ENABLED)
+        })
+    }
+
+    /// Returns the configured model route for strict final-answer verification.
+    #[must_use]
+    pub fn get_configured_research_verifier_model(&self) -> Option<ModelInfo> {
+        self.research_verifier_model_spec().map(|(_, model)| model)
+    }
+
+    /// Returns the strict verifier timeout in seconds.
+    #[must_use]
+    pub fn get_research_verifier_timeout_secs(&self) -> u64 {
+        self.research_verifier_timeout_secs
+            .unwrap_or(RESEARCH_VERIFIER_TIMEOUT_SECS)
+            .max(1)
+    }
+
+    /// Returns the maximum verifier-guided evidence-gathering rounds.
+    #[must_use]
+    pub fn get_research_verifier_max_rounds(&self) -> usize {
+        self.research_verifier_max_rounds
+            .unwrap_or(RESEARCH_VERIFIER_MAX_ROUNDS)
+            .max(1)
+    }
+
+    /// Returns the maximum evidence documents sent to the verifier.
+    #[must_use]
+    pub fn get_research_verifier_max_evidence_docs(&self) -> usize {
+        self.research_verifier_max_evidence_docs
+            .unwrap_or(RESEARCH_VERIFIER_MAX_EVIDENCE_DOCS)
+            .max(1)
+    }
+
+    /// Returns the maximum excerpt characters per evidence document sent to the verifier.
+    #[must_use]
+    pub fn get_research_verifier_max_excerpt_chars(&self) -> usize {
+        self.research_verifier_max_excerpt_chars
+            .unwrap_or(RESEARCH_VERIFIER_MAX_EXCERPT_CHARS)
             .max(1)
     }
 
@@ -1470,6 +1565,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn research_verifier_route_is_explicit_and_does_not_fallback_to_agent_model() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_enabled: Some(true),
+            ..AgentSettings::default()
+        };
+
+        assert!(settings.is_research_verifier_enabled());
+        assert!(settings.get_configured_research_verifier_model().is_none());
+    }
+
+    #[test]
+    fn research_verifier_model_spec_uses_explicit_route_and_limits() {
+        let settings = AgentSettings {
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            research_verifier_max_output_tokens: Some(2048),
+            research_verifier_context_window_tokens: Some(65_536),
+            research_verifier_timeout_secs: Some(90),
+            research_verifier_max_rounds: Some(7),
+            research_verifier_max_evidence_docs: Some(12),
+            research_verifier_max_excerpt_chars: Some(4096),
+            ..AgentSettings::default()
+        };
+
+        let model = settings
+            .get_configured_research_verifier_model()
+            .expect("verifier route should be configured");
+
+        assert_eq!(model.id, "verifier-model");
+        assert_eq!(model.provider, "opencode-go");
+        assert_eq!(model.max_output_tokens, 2048);
+        assert_eq!(model.context_window_tokens, 65_536);
+        assert_eq!(settings.get_research_verifier_timeout_secs(), 90);
+        assert_eq!(settings.get_research_verifier_max_rounds(), 7);
+        assert_eq!(settings.get_research_verifier_max_evidence_docs(), 12);
+        assert_eq!(settings.get_research_verifier_max_excerpt_chars(), 4096);
+        assert!(
+            settings
+                .get_available_models()
+                .iter()
+                .any(|(name, info)| name == "verifier-model" && info.provider == "opencode-go")
+        );
+    }
+
+    #[test]
+    fn route_provider_validation_rejects_unknown_research_verifier_provider() {
+        let settings = AgentSettings {
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("removed-provider".to_string()),
+            ..AgentSettings::default()
+        };
+
+        let error = settings
+            .validate_route_providers()
+            .expect_err("unknown verifier provider should fail");
+
+        assert!(
+            error.to_string().contains(
+                "RESEARCH_VERIFIER_MODEL_PROVIDER references provider 'removed-provider'"
+            )
+        );
+    }
+
     #[cfg(feature = "llm-openrouter")]
     #[test]
     fn route_provider_validation_accepts_compiled_provider_alias_and_id() {
@@ -1516,6 +1677,8 @@ mod tests {
             agent_model_provider: Some(" OpenRouter ".to_string()),
             media_model_id: Some("google/gemini-3-flash-preview".to_string()),
             media_model_provider: Some("llm-provider/openrouter".to_string()),
+            research_verifier_model_id: Some("openai/gpt-4.1-mini".to_string()),
+            research_verifier_model_provider: Some("openrouter".to_string()),
             agent_model_routes: Some(vec![ModelInfo {
                 id: "deepseek/deepseek-v4-flash".to_string(),
                 provider: "openrouter".to_string(),
@@ -1546,6 +1709,10 @@ mod tests {
         );
         assert_eq!(
             settings.media_model_provider.as_deref(),
+            Some("llm-provider/openrouter")
+        );
+        assert_eq!(
+            settings.research_verifier_model_provider.as_deref(),
             Some("llm-provider/openrouter")
         );
         assert_eq!(
@@ -2264,6 +2431,18 @@ pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when
 pub const AGENT_SEARCH_LIMIT: usize = 10;
 /// Default state for structured research audit/debug output.
 pub const RESEARCH_AUDIT_ENABLED: bool = true;
+/// Default state for strict zero-trust final-answer verification.
+pub const RESEARCH_VERIFIER_ENABLED: bool = true;
+/// Maximum tokens for strict verifier responses.
+pub const RESEARCH_VERIFIER_MAX_OUTPUT_TOKENS: u32 = 8192;
+/// Default strict verifier maximum evidence-gathering rounds.
+pub const RESEARCH_VERIFIER_MAX_ROUNDS: usize = 10;
+/// Default strict verifier request timeout.
+pub const RESEARCH_VERIFIER_TIMEOUT_SECS: u64 = 120;
+/// Default maximum evidence documents included in one verifier request.
+pub const RESEARCH_VERIFIER_MAX_EVIDENCE_DOCS: usize = 30;
+/// Default maximum excerpt characters per evidence document included in one verifier request.
+pub const RESEARCH_VERIFIER_MAX_EXCERPT_CHARS: usize = 12_000;
 
 /// Maximum tokens for background Wiki Memory writer response.
 pub const WIKI_MEMORY_WRITER_MAX_TOKENS: u32 = 4096;

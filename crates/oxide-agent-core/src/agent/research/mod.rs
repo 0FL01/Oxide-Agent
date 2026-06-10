@@ -9,6 +9,14 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
+mod verifier;
+
+pub use verifier::{
+    AnswerVerificationDecision, AnswerVerificationError, AnswerVerificationRequest,
+    AnswerVerifierConfidence, AnswerVerifierVerdict, ResearchVerifierConfig, StrictAnswerVerifier,
+    VerifierAllowedClaim, VerifierContradiction, VerifierUnsupportedClaim, parse_verifier_decision,
+};
+
 const MAX_EVIDENCE_EXCERPT_CHARS: usize = 12_000;
 
 /// Source priority derived from the tool that produced an observation.
@@ -442,7 +450,7 @@ fn guard_decision_payload(decision: &ResearchGuardDecision) -> Value {
     })
 }
 
-const fn source_priority_label(priority: ResearchSourcePriority) -> &'static str {
+pub(super) const fn source_priority_label(priority: ResearchSourcePriority) -> &'static str {
     match priority {
         ResearchSourcePriority::Primary => "primary",
         ResearchSourcePriority::Fallback => "fallback",
