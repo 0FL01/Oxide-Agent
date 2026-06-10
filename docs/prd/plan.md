@@ -1384,7 +1384,7 @@ Sixth risk: `BeforeTool` fix can affect many hooks. Mitigation: add policy obser
 8. Strict `deep_research` / `paranoid` modes.
 9. Backward-compatible rollout in `.env.example` and `profiles/web-embedded-opencode-local.toml`.
 
-Bottom line: the right first patch is not “better prompt”. It is typed state + full `ToolOutput` observer + provider payload normalization + `AfterAgent` final guard. The primary research stack is SearXNG for discovery plus Crawl4AI for fetched evidence. After that, budget/search policy should move away from “count searches” and toward deterministic loop/dedup/freshness/source-quality controls.
+Bottom line: the completed first patch is typed state + full `ToolOutput` observer + provider payload normalization + lifecycle correctness. The next patch is not “better regex”. It is a strict zero-trust LLM verifier that checks final drafts against bounded fetched evidence documents and refuses delivery unless the verifier returns `allow` or a verified explicit “proofs not found” report.
 
 ## 17. Fixed RECON decisions / Q&A
 
@@ -1455,3 +1455,224 @@ These decisions are fixed after code RECON and should guide implementation unles
     5. SearXNG + Crawl4AI structured success/failure payloads as the primary path;
     6. WebMarkdown/Tavily/Brave/DuckDuckGo normalization as optional/fallback compatibility;
     7. soft `FinalAnswerGuardHook` behind config flag.
+
+## 18. Strict zero-trust LLM verifier update
+
+This section supersedes the soft regex/marker-based `FinalAnswerGuardHook` plan for high-risk research mode. The old hook is useful as historical context only; the desired architecture removes marker regex from the critical path.
+
+### Goal
+
+Replace “the agent fetched something, therefore the answer may pass” with:
+
+```text
+final draft + bounded evidence documents + research audit
+  -> separate zero-trust LLM verifier
+    -> allow | revise | need_more_evidence | proof_not_found | block
+```
+
+Delivery rule:
+
+* `allow` — deliver the final answer.
+* `revise` — do not deliver; force iteration with exact corrections.
+* `need_more_evidence` — do not deliver; force iteration with exact search/fetch tasks.
+* `proof_not_found` — deliver only a constrained answer that explicitly says which proof was not found and avoids unsupported recommendations/claims.
+* `block` / verifier error / invalid verifier JSON — fail closed; do not deliver the original draft.
+
+No fallback to the old regex guard. No fallback to “some primary fetch exists”. No fallback to snippets. No continuation-limit pass-through.
+
+### Old logic to remove
+
+Remove or retire from active registration:
+
+* `FinalAnswerGuardHook` keyword marker scan.
+* `has_high_impact_marker` and related marker arrays.
+* `has_adequate_fetched_evidence` rule where any successful primary fetch is enough.
+* continuation-limit behavior that returns `Continue`.
+* `RESEARCH_GUARD_ENABLED` as the main final-answer gate flag.
+
+Keep:
+
+* `ResearchRuntime` as the source of typed research state.
+* provider structured payload normalization.
+* `BeforeTool` policy boundary.
+* `AfterAgent` `ForceIteration` / `Finish` / `Block` support.
+* audit/debug payloads.
+
+### Evidence documents
+
+`ResearchRuntime` must store bounded proof documents, not only metadata:
+
+```rust
+pub struct EvidenceDocument {
+    pub id: String,
+    pub tool_name: String,
+    pub provider: Option<String>,
+    pub url: String,
+    pub final_url: Option<String>,
+    pub title: Option<String>,
+    pub kind: String,
+    pub source_priority: ResearchSourcePriority,
+    pub snippet_only: bool,
+    pub truncated: bool,
+    pub content_excerpt: String,
+    pub content_hash: String,
+    pub fetched_at: Option<String>,
+}
+```
+
+Strict proof rules:
+
+* `crawl4ai_markdown` fetched Markdown is proof material.
+* `searxng_search` results are discovery leads only; snippets are not proof.
+* sub-agent prose is a lead only; never proof.
+* model memory/reasoning is never proof.
+* a HuggingFace page existing is not proof of quality, license, Russian support, benchmark score, or suitability.
+
+For the initial strict implementation, proof can be limited to `crawl4ai_markdown` evidence documents. Additional fetched providers may be admitted later only if they produce equivalent bounded source text.
+
+### Config
+
+Replace final-answer guard config with verifier config:
+
+```text
+RESEARCH_VERIFIER_ENABLED=true
+RESEARCH_VERIFIER_MODEL_ID=...
+RESEARCH_VERIFIER_MODEL_PROVIDER=...
+RESEARCH_VERIFIER_MAX_ROUNDS=10
+RESEARCH_VERIFIER_TIMEOUT_SECS=120
+RESEARCH_VERIFIER_MAX_EVIDENCE_DOCS=30
+RESEARCH_VERIFIER_MAX_EXCERPT_CHARS=12000
+```
+
+Strict mode rules:
+
+* if verifier is enabled but model/provider is missing, block/fail the task instead of delivering a draft;
+* if verifier call fails, block/fail the task instead of delivering a draft;
+* if verifier returns invalid JSON after retry, block/fail the task instead of delivering a draft;
+* do not silently reuse the main agent model as verifier unless explicitly configured as the verifier route.
+
+### Verifier insertion point
+
+Do not make the hook trait async. Insert verifier into the async final response path:
+
+* `crates/oxide-agent-core/src/agent/runner/responses.rs::handle_final_response`
+* after final draft preparation and todo sync;
+* before saving/delivering final response.
+
+Add `InternalTextPurpose::AnswerVerification` and call `LlmClient::complete_internal_text` with the configured verifier model.
+
+### Verifier JSON contract
+
+Verifier output must be strict JSON:
+
+```json
+{
+  "verdict": "allow | revise | need_more_evidence | proof_not_found | block",
+  "confidence": "high | medium | low",
+  "summary": "short verifier summary",
+  "unsupported_claims": [
+    {
+      "claim": "exact final-answer claim",
+      "reason": "why unsupported by evidence documents",
+      "required_evidence": "what source text is needed",
+      "suggested_next_action": "specific search/fetch instruction"
+    }
+  ],
+  "contradictions": [
+    {
+      "claim": "exact final-answer claim",
+      "source_id": "doc-3",
+      "source_excerpt": "conflicting source text"
+    }
+  ],
+  "allowed_claims": [
+    {
+      "claim": "exact final-answer claim",
+      "source_ids": ["doc-1", "doc-4"]
+    }
+  ],
+  "required_next_actions": [
+    "fetch official HuggingFace model card for ...",
+    "search exact benchmark name ..."
+  ]
+}
+```
+
+Verifier prompt must state:
+
+* trust only `EvidenceDocument.content_excerpt`;
+* do not trust agent draft, sub-agent summaries, reasoning, memory, or snippets;
+* every factual claim must be directly supported by evidence text;
+* licenses, benchmark metrics, language support, model architecture, training data, Russian/152-ФЗ suitability and recommendations all require direct evidence;
+* if evidence is missing, return `need_more_evidence` or `revise`;
+* if enough attempts were made and proof still is absent, return `proof_not_found` only for a constrained no-proof report, not for the original unsupported recommendation.
+
+### Exhaustion behavior: proofs not found after N rounds
+
+`RESEARCH_VERIFIER_MAX_ROUNDS` defaults to `10`. Reaching the limit must not allow the unsupported original draft.
+
+At round limit:
+
+1. If verifier still returns `need_more_evidence`, the runner injects one final instruction asking the agent to produce a **proof-not-found report**.
+2. The report must remove unsupported factual recommendations and explicitly list what was not proven.
+3. The verifier checks this report too.
+4. Deliver only if verifier returns `proof_not_found` or `allow` for that constrained report.
+5. If the constrained report still contains unsupported claims, return `Block`/task failure with no final answer delivery.
+
+No-proof report shape shown to user:
+
+```markdown
+Проверка завершена: достаточные пруфы не найдены
+
+Что проверялось:
+- Найти модели на Hugging Face, пригодные для обезличивания русскоязычных данных.
+- Подтвердить license, Russian support, PII categories, benchmark/quality claims and suitability for РФ use.
+
+Что удалось подтвердить источниками:
+- `<model>`: `<confirmed fact>` — `<source URL>`
+
+Что НЕ удалось подтвердить:
+- `<claim>` — не найден source text, подтверждающий `<required evidence>`.
+- `<claim>` — найден model card, но в нём нет метрики/лицензии/русского языка.
+
+Что нельзя утверждать:
+- Нельзя утверждать, что `<model>` годная для production в РФ.
+- Нельзя утверждать F1/качество/категории PII без прямого source text.
+
+Безопасный вывод:
+- Достаточных пруфов для уверенной рекомендации не найдено.
+- Можно использовать только как кандидатов для ручного теста: `<candidate URLs>`.
+- Следующий ручной шаг: прогнать локальный benchmark на собственных русскоязычных данных / PII-Bench и отдельно проверить license.
+```
+
+For the HuggingFace PII use case, the verifier must reject wording such as “годная”, “лучшая”, “F1 97%”, “Apache 2.0”, “поддерживает русский”, “подходит для 152-ФЗ” unless the evidence documents contain direct source text for each claim. If proof is absent after 10 verifier-guided iterations, the only deliverable answer is the no-proof report above.
+
+### Runner behavior
+
+Final-answer path becomes:
+
+```text
+draft final answer
+  -> strict verifier
+    -> allow: save/deliver
+    -> revise: save undelivered draft, inject exact corrections, continue
+    -> need_more_evidence: save undelivered draft, inject exact search/fetch tasks, continue
+    -> proof_not_found: deliver constrained proof-not-found report only
+    -> block/error/invalid/max-round failed report: no final delivery
+```
+
+Continuation context must include exact unsupported claims and next actions, not generic “try again”.
+
+### Tests
+
+Add tests for:
+
+* final draft with unsupported benchmark metric -> `need_more_evidence` and no delivery;
+* final draft with unsupported license claim -> `need_more_evidence` and no delivery;
+* fetched HuggingFace page without Russian support text -> recommendation rejected;
+* valid proof documents for each claim -> `allow`;
+* verifier invalid JSON -> fail closed;
+* verifier unavailable -> fail closed;
+* 10 rounds exhausted -> force proof-not-found report, not original answer;
+* proof-not-found report with unsupported recommendation -> block;
+* proof-not-found report that only states confirmed facts and gaps -> deliver.
