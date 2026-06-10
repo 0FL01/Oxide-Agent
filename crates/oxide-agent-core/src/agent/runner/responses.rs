@@ -10,7 +10,7 @@ use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::providers::TodoList;
 use crate::agent::research::{
     AnswerVerificationDecision, AnswerVerificationError, AnswerVerificationRequest,
-    AnswerVerifierVerdict, StrictAnswerVerifier, VerifierUnsupportedClaim,
+    AnswerVerifierVerdict, ResearchVerifierTrace, StrictAnswerVerifier, VerifierUnsupportedClaim,
 };
 use crate::agent::session::PendingUserInput;
 use std::sync::Arc;
@@ -324,6 +324,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
         let verifier = StrictAnswerVerifier::new(self.llm_client(), verifier_config);
         let round = state.continuation_count.saturating_add(1);
         let proof_not_found_mode = state.proof_not_found_report_requested;
+        let evidence_document_count = research_snapshot.evidence_documents.len();
         let decision = verifier
             .verify(AnswerVerificationRequest {
                 final_answer: final_response,
@@ -335,14 +336,45 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
 
         match decision {
             Ok(decision) => {
-                let (outcome, proof_not_found_requested) =
-                    verifier_decision_outcome(decision, proof_not_found_mode, round, max_rounds)?;
+                let outcome_result =
+                    verifier_decision_outcome(&decision, proof_not_found_mode, round, max_rounds);
+                let trace_outcome = match &outcome_result {
+                    Ok((FinalVerificationOutcome::Deliver, _)) => "deliver",
+                    Ok((FinalVerificationOutcome::Continue { .. }, _)) => "continue",
+                    Err(_) => "fail_closed",
+                };
+                let trace = verifier_trace_from_decision(
+                    &decision,
+                    trace_outcome,
+                    round,
+                    max_rounds,
+                    proof_not_found_mode,
+                    evidence_document_count,
+                );
+                let payload = research_runtime.record_verifier_trace(trace);
+                emit_research_verification_trace(ctx.progress_tx, payload).await;
+                let (outcome, proof_not_found_requested) = outcome_result?;
                 if proof_not_found_requested {
                     state.proof_not_found_report_requested = true;
                 }
                 Ok(outcome)
             }
             Err(error) => {
+                let summary = verifier_error_summary(&error);
+                let payload = research_runtime.record_verifier_trace(ResearchVerifierTrace {
+                    verdict: None,
+                    outcome: "fail_closed".to_string(),
+                    summary: summary.clone(),
+                    error: Some(summary.clone()),
+                    round,
+                    max_rounds,
+                    proof_not_found_mode,
+                    evidence_document_count,
+                    unsupported_claims: Vec::new(),
+                    contradictions: Vec::new(),
+                    required_next_actions: Vec::new(),
+                });
+                emit_research_verification_trace(ctx.progress_tx, payload).await;
                 self.save_undelivered_final_response_draft(
                     ctx,
                     final_response,
@@ -350,7 +382,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
                 );
                 Err(anyhow::anyhow!(
                     "strict answer verifier failed closed: {}",
-                    verifier_error_summary(&error)
+                    summary
                 ))
             }
         }
@@ -385,7 +417,7 @@ enum FinalVerificationOutcome {
 }
 
 fn verifier_decision_outcome(
-    decision: AnswerVerificationDecision,
+    decision: &AnswerVerificationDecision,
     proof_not_found_mode: bool,
     round: usize,
     max_rounds: usize,
@@ -401,7 +433,7 @@ fn verifier_decision_outcome(
                 return Ok((
                     FinalVerificationOutcome::Continue {
                         reason: "Strict answer verifier exhausted proof search".to_string(),
-                        context: verifier_proof_not_found_context(&decision, max_rounds.max(1)),
+                        context: verifier_proof_not_found_context(decision, max_rounds.max(1)),
                     },
                     true,
                 ));
@@ -409,7 +441,7 @@ fn verifier_decision_outcome(
             Ok((
                 FinalVerificationOutcome::Continue {
                     reason: verifier_retry_reason(decision.verdict),
-                    context: verifier_retry_context(&decision),
+                    context: verifier_retry_context(decision),
                 },
                 false,
             ))
@@ -419,13 +451,13 @@ fn verifier_decision_outcome(
         )),
         AnswerVerifierVerdict::Block => Err(anyhow::anyhow!(
             "strict answer verifier blocked final response: {}",
-            verifier_decision_summary(&decision)
+            verifier_decision_summary(decision)
         )),
     }
 }
 
 fn verifier_proof_not_found_mode_outcome(
-    decision: AnswerVerificationDecision,
+    decision: &AnswerVerificationDecision,
 ) -> anyhow::Result<FinalVerificationOutcome> {
     match decision.verdict {
         AnswerVerifierVerdict::Allow | AnswerVerifierVerdict::ProofNotFound => {
@@ -435,8 +467,59 @@ fn verifier_proof_not_found_mode_outcome(
         | AnswerVerifierVerdict::NeedMoreEvidence
         | AnswerVerifierVerdict::Block => Err(anyhow::anyhow!(
             "strict answer verifier failed closed: constrained proof-not-found report was not verified: {}",
-            verifier_decision_summary(&decision)
+            verifier_decision_summary(decision)
         )),
+    }
+}
+
+async fn emit_research_verification_trace(
+    progress_tx: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
+    payload: serde_json::Value,
+) {
+    tracing::info!(payload = %payload, "Strict answer verifier trace");
+    if let Some(tx) = progress_tx {
+        let _ = tx.send(AgentEvent::ResearchVerification { payload }).await;
+    }
+}
+
+fn verifier_trace_from_decision(
+    decision: &AnswerVerificationDecision,
+    outcome: &str,
+    round: usize,
+    max_rounds: usize,
+    proof_not_found_mode: bool,
+    evidence_document_count: usize,
+) -> ResearchVerifierTrace {
+    ResearchVerifierTrace {
+        verdict: Some(verifier_verdict_label(decision.verdict).to_string()),
+        outcome: outcome.to_string(),
+        summary: decision.summary.clone(),
+        error: None,
+        round,
+        max_rounds,
+        proof_not_found_mode,
+        evidence_document_count,
+        unsupported_claims: decision
+            .unsupported_claims
+            .iter()
+            .map(|claim| claim.claim.clone())
+            .collect(),
+        contradictions: decision
+            .contradictions
+            .iter()
+            .map(|contradiction| contradiction.claim.clone())
+            .collect(),
+        required_next_actions: decision.required_next_actions.clone(),
+    }
+}
+
+const fn verifier_verdict_label(verdict: AnswerVerifierVerdict) -> &'static str {
+    match verdict {
+        AnswerVerifierVerdict::Allow => "allow",
+        AnswerVerifierVerdict::Revise => "revise",
+        AnswerVerifierVerdict::NeedMoreEvidence => "need_more_evidence",
+        AnswerVerifierVerdict::ProofNotFound => "proof_not_found",
+        AnswerVerifierVerdict::Block => "block",
     }
 }
 
@@ -627,7 +710,7 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, mpsc};
 
     struct StaticAfterAgentHook {
         result: HookResult,
@@ -877,6 +960,74 @@ mod tests {
                     .content
                     .contains("crawl4ai_markdown https://huggingface.co/example/model")
         }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_revise_records_visible_audit_trace() {
+        let llm_client = verifier_llm_client_expect_mode(verifier_decision_json("revise"), false);
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let research_runtime = runtime_with_evidence_document();
+        let (progress_tx, mut progress_rx) = mpsc::channel(8);
+        let mut ctx = AgentRunnerContext {
+            task: "produce verified report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: Some(&progress_tx),
+            todos_arc: &todos_arc,
+            task_id: "strict-verifier-trace",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: Some(research_runtime.clone()),
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
+                .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
+        };
+        let mut state = RunState::new();
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "Model X has 97% F1 on Russian PII.".to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("revise should continue");
+
+        assert!(result.is_none());
+        let audit = research_runtime.audit_payload();
+        assert_eq!(audit["final_verifier_trace"]["verdict"], "revise");
+        assert_eq!(audit["final_verifier_trace"]["outcome"], "continue");
+        assert_eq!(audit["final_verifier_trace"]["evidence_document_count"], 1);
+        assert_eq!(audit["final_verifier_trace"]["unsupported_claim_count"], 1);
+        assert_eq!(
+            audit["final_verifier_trace"]["required_next_actions"][0],
+            "crawl4ai_markdown https://huggingface.co/example/model"
+        );
+
+        let event = progress_rx
+            .recv()
+            .await
+            .expect("verifier trace event should be emitted");
+        match event {
+            AgentEvent::ResearchVerification { payload } => {
+                assert_eq!(payload["verdict"], "revise");
+                assert_eq!(payload["outcome"], "continue");
+                assert_eq!(payload["unsupported_claim_count"], 1);
+            }
+            other => panic!("expected research verification event, got {other:?}"),
+        }
     }
 
     #[tokio::test]

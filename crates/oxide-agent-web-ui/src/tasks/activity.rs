@@ -591,6 +591,7 @@ fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
             | TaskEventKind::RuntimeCompactionSkipped
             | TaskEventKind::RepeatedCompactionWarning
             | TaskEventKind::HistoryRepairApplied
+            | TaskEventKind::ResearchVerification
             | TaskEventKind::Finished
     )
 }
@@ -645,6 +646,7 @@ fn event_kind_label(kind: &TaskEventKind) -> &'static str {
         TaskEventKind::RateLimitRetrying => "rate limit retry",
         TaskEventKind::LlmRetrying => "llm retry",
         TaskEventKind::ProviderFailoverActivated => "provider failover",
+        TaskEventKind::ResearchVerification => "verifier",
         TaskEventKind::FileToSend => "file",
         TaskEventKind::Continuation => "continuation",
         _ => "event",

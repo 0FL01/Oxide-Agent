@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-10-strict-answer-verifier.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan.md` section `Strict zero-trust LLM verifier update`
 Goal doc owner: Codex
-Last updated: 2026-06-10 22:45 +03
+Last updated: 2026-06-10 23:08 +03
 
 ## Objective
 
@@ -126,15 +126,15 @@ Out of scope:
   - Requirement: expose verifier verdict, unsupported claims count/list, evidence document count, and next actions through audit payload and/or progress event.
   - Acceptance: tests or contract snapshots show structured verifier decisions are available to transports/logs without adding storage backends.
   - Evidence required: unit/contract test for audit/event payload; web contract update if an event is added.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 5 added `ResearchVerifierTrace` and `ResearchRuntime::record_verifier_trace` in `crates/oxide-agent-core/src/agent/research/mod.rs:171` and `crates/oxide-agent-core/src/agent/research/mod.rs:335`, records verifier decisions/errors from the final-response path at `crates/oxide-agent-core/src/agent/runner/responses.rs:354`, and emits `AgentEvent::ResearchVerification` at `crates/oxide-agent-core/src/agent/runner/responses.rs:481`. Web transport persists this as `TaskEventKind::ResearchVerification` via `crates/oxide-agent-transport-web/src/web_transport.rs:986`; web UI marks it visible and labels it `verifier` at `crates/oxide-agent-web-ui/src/tasks/activity.rs:594`. Tests `strict_verifier_revise_records_visible_audit_trace`, `audit_payload_summarizes_research_state_and_guard_decision`, and `collect_events_persists_research_verification_trace` passed.
 
 - Q1: Preserve architecture and simplicity
   - Source: `AGENTS.md` architecture/over-engineering rules and `docs/prd/plan.md:1493`.
   - Acceptance: no new crates/services/storage layers; no async hook migration; no direct Gemini provider; core remains transport-agnostic.
   - Evidence required: diff review plus workspace checks.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 removed the old regex/metadata hook without adding crates, services, storage, async hook migration, or transport coupling. Checkpoint 2 added one focused verifier module using existing `LlmClient::complete_internal_text`, existing config patterns, and no new crates/services/storage/transport coupling. Checkpoint 3 integrates the verifier in the existing async final-response path and adds no hook trait migration, transport coupling, storage, or planner. Checkpoint 4 adds only one `RunState` boolean and localized final-response flow helpers for proof exhaustion; no new planner, storage, transport coupling, or hook migration. Full final workspace validation remains for checkpoint 6.
+  - Evidence collected: Checkpoint 1 removed the old regex/metadata hook without adding crates, services, storage, async hook migration, or transport coupling. Checkpoint 2 added one focused verifier module using existing `LlmClient::complete_internal_text`, existing config patterns, and no new crates/services/storage/transport coupling. Checkpoint 3 integrates the verifier in the existing async final-response path and adds no hook trait migration, transport coupling, storage, or planner. Checkpoint 4 adds only one `RunState` boolean and localized final-response flow helpers for proof exhaustion; no new planner, storage, transport coupling, or hook migration. Checkpoint 5 reuses the existing `AgentEvent` / persisted web-event pipeline for visible verifier traces and adds no storage backend or service. Full final workspace validation remains for checkpoint 6.
 
 - Q2: Preserve tool-call and final-response invariants
   - Source: `AGENTS.md` runner/tool-call invariants.
@@ -148,33 +148,33 @@ Out of scope:
   - Acceptance: evidence excerpts are capped; no large volatile verifier blocks are added to the stable system prompt prefix.
   - Evidence required: tests for excerpt limits and diff review of prompt assembly.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 added bounded evidence capture in `ResearchRuntime`; tests prove the 12,000-character excerpt cap and no verifier blocks were added to prompt assembly or stable system prompt prefix.
+  - Evidence collected: Checkpoint 1 added bounded evidence capture in `ResearchRuntime`; tests prove the 12,000-character excerpt cap and no verifier blocks were added to prompt assembly or stable system prompt prefix. Checkpoint 5 emits a compact verifier trace event with verdict/counts/claims/actions, while proof excerpts remain in bounded audit/evidence structures and are not added to the stable system prompt prefix.
 
 - N1: No fallback trust path
   - Source: `docs/prd/plan.md:1481`.
   - Must preserve: no fallback to old regex, snippets, any-fetch, continuation-limit pass-through, or same-model verifier unless explicitly configured as verifier route.
   - Evidence required: tests for fail-closed/missing config and marker-free unsupported claims.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 deleted the old regex/metadata guard and removed `RESEARCH_GUARD_ENABLED`; tests prove search snippets plus fallback fetches do not become proof documents. Checkpoint 2 tests prove the verifier does not fallback to the agent route, missing verifier route fails closed without provider dispatch, provider errors fail closed, timeouts fail closed, and invalid JSON/unknown verdict fails closed. Checkpoint 3 tests prove final delivery only happens on `allow`; `revise`/`need_more_evidence` force another iteration, and `block`/invalid JSON/missing route do not deliver. Checkpoint 4 proves max-round exhaustion does not pass the unsupported original draft; it only requests a constrained no-proof report and delivers that report only on verifier `proof_not_found` or `allow`.
+  - Evidence collected: Checkpoint 1 deleted the old regex/metadata guard and removed `RESEARCH_GUARD_ENABLED`; tests prove search snippets plus fallback fetches do not become proof documents. Checkpoint 2 tests prove the verifier does not fallback to the agent route, missing verifier route fails closed without provider dispatch, provider errors fail closed, timeouts fail closed, and invalid JSON/unknown verdict fails closed. Checkpoint 3 tests prove final delivery only happens on `allow`; `revise`/`need_more_evidence` force another iteration, and `block`/invalid JSON/missing route do not deliver. Checkpoint 4 proves max-round exhaustion does not pass the unsupported original draft; it only requests a constrained no-proof report and delivers that report only on verifier `proof_not_found` or `allow`. Checkpoint 5 exposes verifier decisions for audit only and does not add any new trust bypass.
 
 - N2: No premature planner/evidence graph
   - Source: `docs/prd/plan.md:1529` and `docs/prd/plan.md:1664`.
   - Must preserve: verifier supplies next actions, but this goal does not build a query planner, fetch planner, embeddings, or full evidence graph.
   - Evidence required: diff review.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 added only passive evidence documents and legacy guard retirement; no planner, embeddings, or evidence graph were introduced. Checkpoint 3 uses verifier-provided unsupported claims and required next actions as retry context without introducing query/fetch planners. Checkpoint 4 adds a constrained proof-not-found report instruction after exhausted verifier rounds, not a planner or evidence graph.
+  - Evidence collected: Checkpoint 1 added only passive evidence documents and legacy guard retirement; no planner, embeddings, or evidence graph were introduced. Checkpoint 3 uses verifier-provided unsupported claims and required next actions as retry context without introducing query/fetch planners. Checkpoint 4 adds a constrained proof-not-found report instruction after exhausted verifier rounds, not a planner or evidence graph. Checkpoint 5 records and emits verifier trace data without building a planner or evidence graph.
 
 - V1: Formatting/lint validation
   - Source: `AGENTS.md` validation rules.
   - Evidence required: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings` before final completion.
   - Status: in_progress
-  - Evidence collected: `cargo fmt --all -- --check` passed for checkpoints 1, 2, 3, and 4. Checkpoint 4 focused clippy passed with `cargo clippy -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib -- -D warnings`. Full workspace clippy is reserved for final completion.
+  - Evidence collected: `cargo fmt --all -- --check` passed for checkpoints 1, 2, 3, 4, and 5. Checkpoint 5 focused clippy passed with `cargo clippy -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib -- -D warnings`. Full workspace clippy is reserved for final completion.
 
 - V2: Build and focused test validation
   - Source: `AGENTS.md` build/test rules.
   - Evidence required: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; focused `cargo test -p oxide-agent-core` filters for verifier/research/runtime/config modules.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research::`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib executor_does_not_register_legacy_final_answer_guard`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib prepare_execution_uses_executor_model_routes_override`. Checkpoint 2 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research_verifier`. Checkpoint 3 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib strict_verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib after_agent_`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib forced_final_response_is_saved_as_undelivered_draft`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib verifier`. Checkpoint 4 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib strict_verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib proof_not_found`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib verifier`. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed for checkpoints 1, 2, 3, and 4.
+  - Evidence collected: Checkpoint 1 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research::`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib executor_does_not_register_legacy_final_answer_guard`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib prepare_execution_uses_executor_model_routes_override`. Checkpoint 2 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research_verifier`. Checkpoint 3 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib strict_verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib after_agent_`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib forced_final_response_is_saved_as_undelivered_draft`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib verifier`. Checkpoint 4 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib strict_verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib proof_not_found`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib verifier`. Checkpoint 5 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib strict_verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib audit_payload_summarizes_research_state_and_guard_decision`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib collect_events_persists_research_verification_trace`. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed for checkpoints 1, 2, 3, 4, and 5.
 
 ## Implementation Plan
 
@@ -272,6 +272,7 @@ Out of scope:
 - 2026-06-10: Keep verifier route explicit and do not reuse the agent route unless configured as `RESEARCH_VERIFIER_MODEL_*`. Reason: same-model or implicit fallback would recreate a trust shortcut; missing route is a fail-closed verifier error.
 - 2026-06-10: Gate root final-response delivery in `handle_final_response` rather than as a hook. Reason: this keeps async LLM verification localized, preserves existing hook semantics, and avoids an async hook migration.
 - 2026-06-10: Use a one-shot constrained proof-not-found report after max verifier rounds. Reason: exhausted proof search must become transparent uncertainty, not an unsupported recommendation or an infinite loop.
+- 2026-06-10: Expose verifier trace through the existing `AgentEvent` / web persisted event pipeline. Reason: operators need verdict/claim/action visibility, but adding a new storage backend or transport-specific verifier subsystem would be over-engineering.
 
 ## Progress Log
 
@@ -309,6 +310,13 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib strict_verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib proof_not_found`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib verifier`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo clippy -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib -- -D warnings`.
   - Audit IDs updated: G6 verified, Q1/Q2/N1/N2/V1/V2 in progress.
   - Next: Checkpoint 5 — visible verifier audit trace.
+
+- 2026-06-10 23:08 +03: Checkpoint 5 — visible verifier audit trace
+  - Changed: added `ResearchVerifierTrace` to research audit state, records verifier decisions/errors from final-response gating, emits compact `AgentEvent::ResearchVerification`, persists it in web transport as `TaskEventKind::ResearchVerification`, and marks it visible in the web activity drawer.
+  - Evidence: `crates/oxide-agent-core/src/agent/research/mod.rs:171`, `crates/oxide-agent-core/src/agent/runner/responses.rs:354`, `crates/oxide-agent-core/src/agent/progress.rs:192`, `crates/oxide-agent-web-contracts/src/events.rs:49`, `crates/oxide-agent-transport-web/src/web_transport.rs:986`, `crates/oxide-agent-web-ui/src/tasks/activity.rs:594`.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib strict_verifier`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib audit_payload_summarizes_research_state_and_guard_decision`; `cargo test -p oxide-agent-transport-web --no-default-features --features profile-web-embedded-opencode-local --lib collect_events_persists_research_verification_trace`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; `cargo clippy -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib -- -D warnings`.
+  - Audit IDs updated: G7 verified, Q1/Q3/N1/N2/V1/V2 in progress.
+  - Next: Checkpoint 6 — completion audit and rollout readiness.
 
 ## Risks and Blockers
 

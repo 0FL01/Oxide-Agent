@@ -188,6 +188,11 @@ pub enum AgentEvent {
         /// Short summary of reasoning
         summary: String,
     },
+    /// Strict research verifier decision/audit trace.
+    ResearchVerification {
+        /// Compact structured verifier trace payload.
+        payload: serde_json::Value,
+    },
     /// Event relayed from a named delegated sub-agent.
     SubAgent {
         /// Stable sub-agent job id.
@@ -559,6 +564,9 @@ impl ProgressState {
             AgentEvent::Cancelled => self.handle_cancelled(),
             AgentEvent::Error(e) => self.handle_error(e),
             AgentEvent::Reasoning { summary, .. } => self.handle_reasoning(summary),
+            AgentEvent::ResearchVerification { payload } => {
+                tracing::info!(payload = %payload, "Research verification trace")
+            }
             AgentEvent::LoopDetected {
                 loop_type,
                 iteration,

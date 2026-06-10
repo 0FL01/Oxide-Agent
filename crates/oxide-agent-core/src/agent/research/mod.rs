@@ -166,6 +166,33 @@ pub struct ResearchGuardDecision {
     pub continuation_limit: usize,
 }
 
+/// Strict verifier decision captured for audit/debug output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResearchVerifierTrace {
+    /// Verifier verdict when a valid verifier decision was returned.
+    pub verdict: Option<String>,
+    /// Runner outcome derived from the verifier decision.
+    pub outcome: String,
+    /// Short verifier summary or fail-closed error summary.
+    pub summary: String,
+    /// Fail-closed verifier error, when no valid decision was available.
+    pub error: Option<String>,
+    /// Verifier round number sent to the sidecar.
+    pub round: usize,
+    /// Maximum verifier rounds configured for the run.
+    pub max_rounds: usize,
+    /// Whether the candidate final answer was a constrained no-proof report.
+    pub proof_not_found_mode: bool,
+    /// Number of bounded proof documents available to the verifier.
+    pub evidence_document_count: usize,
+    /// Exact unsupported claims reported by the verifier.
+    pub unsupported_claims: Vec<String>,
+    /// Contradicted claims reported by the verifier.
+    pub contradictions: Vec<String>,
+    /// Required next actions reported by the verifier.
+    pub required_next_actions: Vec<String>,
+}
+
 /// Snapshot of passive research state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResearchSnapshot {
@@ -185,6 +212,8 @@ pub struct ResearchSnapshot {
     pub anti_bot_hosts: Vec<String>,
     /// Final-answer guard decisions captured for audit/debug output.
     pub guard_decisions: Vec<ResearchGuardDecision>,
+    /// Strict verifier decisions captured for audit/debug output.
+    pub verifier_traces: Vec<ResearchVerifierTrace>,
 }
 
 /// In-process passive research runtime.
@@ -302,6 +331,17 @@ impl ResearchRuntime {
             .push(decision);
     }
 
+    /// Record one strict verifier decision and return its compact payload.
+    pub fn record_verifier_trace(&self, trace: ResearchVerifierTrace) -> Value {
+        let payload = verifier_trace_payload(&trace);
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .verifier_traces
+            .push(trace);
+        payload
+    }
+
     /// Return a cloneable point-in-time snapshot.
     #[must_use]
     pub fn snapshot(&self) -> ResearchSnapshot {
@@ -353,6 +393,11 @@ pub fn audit_payload_from_snapshot(snapshot: &ResearchSnapshot) -> Value {
             .iter()
             .filter_map(|decision| decision.unsupported_claim.as_deref())
             .collect::<Vec<_>>(),
+        "verifier_unsupported_claims": snapshot
+            .verifier_traces
+            .iter()
+            .flat_map(|trace| trace.unsupported_claims.iter().map(String::as_str))
+            .collect::<Vec<_>>(),
         "final_guard_decision": snapshot
             .guard_decisions
             .last()
@@ -362,6 +407,16 @@ pub fn audit_payload_from_snapshot(snapshot: &ResearchSnapshot) -> Value {
             .iter()
             .map(guard_decision_payload)
             .collect::<Vec<_>>(),
+        "final_verifier_trace": snapshot
+            .verifier_traces
+            .last()
+            .map(verifier_trace_payload),
+        "verifier_traces": snapshot
+            .verifier_traces
+            .iter()
+            .map(verifier_trace_payload)
+            .collect::<Vec<_>>(),
+        "verifier_trace_count": snapshot.verifier_traces.len(),
     })
 }
 
@@ -447,6 +502,24 @@ fn guard_decision_payload(decision: &ResearchGuardDecision) -> Value {
         "unsupported_claim": &decision.unsupported_claim,
         "continuation_count": decision.continuation_count,
         "continuation_limit": decision.continuation_limit,
+    })
+}
+
+fn verifier_trace_payload(trace: &ResearchVerifierTrace) -> Value {
+    json!({
+        "verdict": &trace.verdict,
+        "outcome": &trace.outcome,
+        "summary": &trace.summary,
+        "error": &trace.error,
+        "round": trace.round,
+        "max_rounds": trace.max_rounds,
+        "proof_not_found_mode": trace.proof_not_found_mode,
+        "evidence_document_count": trace.evidence_document_count,
+        "unsupported_claim_count": trace.unsupported_claims.len(),
+        "unsupported_claims": &trace.unsupported_claims,
+        "contradiction_count": trace.contradictions.len(),
+        "contradictions": &trace.contradictions,
+        "required_next_actions": &trace.required_next_actions,
     })
 }
 
@@ -830,6 +903,19 @@ mod tests {
             continuation_count: 1,
             continuation_limit: 4,
         });
+        runtime.record_verifier_trace(ResearchVerifierTrace {
+            verdict: Some("need_more_evidence".to_string()),
+            outcome: "continue".to_string(),
+            summary: "metric was not found in evidence".to_string(),
+            error: None,
+            round: 2,
+            max_rounds: 10,
+            proof_not_found_mode: false,
+            evidence_document_count: 0,
+            unsupported_claims: vec!["Model X has 97% F1".to_string()],
+            contradictions: vec![],
+            required_next_actions: vec!["fetch model card with crawl4ai_markdown".to_string()],
+        });
 
         let audit = runtime.audit_payload();
 
@@ -838,6 +924,20 @@ mod tests {
         assert_eq!(audit["fetched_urls"][0], "https://example.test/page?ok=1");
         assert_eq!(audit["evidence_document_count"], 0);
         assert_eq!(audit["unsupported_claims"][0], "current/high-impact claim");
+        assert_eq!(audit["verifier_trace_count"], 1);
+        assert_eq!(
+            audit["final_verifier_trace"]["verdict"],
+            "need_more_evidence"
+        );
+        assert_eq!(audit["final_verifier_trace"]["unsupported_claim_count"], 1);
+        assert_eq!(
+            audit["verifier_unsupported_claims"][0],
+            "Model X has 97% F1"
+        );
+        assert_eq!(
+            audit["final_verifier_trace"]["required_next_actions"][0],
+            "fetch model card with crawl4ai_markdown"
+        );
         assert_eq!(audit["final_guard_decision"]["decision"], "force_iteration");
     }
 }

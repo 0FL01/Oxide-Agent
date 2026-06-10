@@ -47,6 +47,7 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::RateLimitRetrying { .. } => "rate_limit_retrying".to_string(),
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
         AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),
+        AgentEvent::ResearchVerification { .. } => "research_verification".to_string(),
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
         AgentEvent::SubAgent { .. } => {
             unreachable!("effective_agent_event unwraps sub-agent events")
@@ -738,6 +739,7 @@ fn browser_event_parts(
         | AgentEvent::Cancelled
         | AgentEvent::Error(_)
         | AgentEvent::Reasoning { .. }
+        | AgentEvent::ResearchVerification { .. }
         | AgentEvent::LoopDetected { .. }
         | AgentEvent::Milestone { .. } => lifecycle_event_parts(event),
         AgentEvent::TodosUpdated { source, todos } => (
@@ -979,6 +981,23 @@ fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, b
                 json!({ "source": source.as_str(), "summary": summary_preview }),
                 false,
                 truncated,
+            )
+        }
+        AgentEvent::ResearchVerification { payload } => {
+            let verdict = payload
+                .get("verdict")
+                .and_then(Value::as_str)
+                .unwrap_or("error");
+            let outcome = payload
+                .get("outcome")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            (
+                TaskEventKind::ResearchVerification,
+                truncate_summary(&format!("Verifier {verdict}: {outcome}")),
+                payload.clone(),
+                false,
+                false,
             )
         }
         AgentEvent::LoopDetected {
@@ -1603,6 +1622,54 @@ mod tests {
         assert_eq!(tool_result.payload["success"], true);
         assert!(tool_result.truncated);
         assert_eq!(result.persisted_events[1].kind, TaskEventKind::Finished);
+    }
+
+    #[tokio::test]
+    async fn collect_events_persists_research_verification_trace() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::ResearchVerification {
+            payload: serde_json::json!({
+                "verdict": "need_more_evidence",
+                "outcome": "continue",
+                "round": 2,
+                "max_rounds": 10,
+                "proof_not_found_mode": false,
+                "evidence_document_count": 1,
+                "unsupported_claim_count": 1,
+                "unsupported_claims": ["Model X has 97% F1"],
+                "required_next_actions": ["fetch the benchmark page"]
+            }),
+        })
+        .await
+        .expect("send verifier trace");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 1);
+        let event = &result.persisted_events[0];
+        assert_eq!(event.kind, TaskEventKind::ResearchVerification);
+        assert_eq!(event.summary, "Verifier need_more_evidence: continue");
+        assert_eq!(event.payload["verdict"], "need_more_evidence");
+        assert_eq!(event.payload["unsupported_claim_count"], 1);
+        assert_eq!(
+            event.payload["required_next_actions"][0],
+            "fetch the benchmark page"
+        );
     }
 
     #[tokio::test]
