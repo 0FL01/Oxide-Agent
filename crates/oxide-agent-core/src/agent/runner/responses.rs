@@ -987,7 +987,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
-            research_runtime: Some(research_runtime.clone()),
+            research_runtime: Some(Arc::clone(&research_runtime)),
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
                 .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
         };
