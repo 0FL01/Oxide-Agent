@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-10-strict-answer-verifier.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan.md` section `Strict zero-trust LLM verifier update`
 Goal doc owner: Codex
-Last updated: 2026-06-10 18:10 +03
+Last updated: 2026-06-10 18:32 +03
 
 ## Objective
 
@@ -43,7 +43,7 @@ Out of scope:
 
 - Relevant entry points:
   - `crates/oxide-agent-core/src/agent/research/mod.rs`
-  - `crates/oxide-agent-core/src/agent/hooks/final_answer_guard.rs`
+  - `crates/oxide-agent-core/src/agent/hooks/` legacy guard registration surface
   - `crates/oxide-agent-core/src/agent/executor/config.rs`
   - `crates/oxide-agent-core/src/agent/executor/execution.rs`
   - `crates/oxide-agent-core/src/agent/runner/responses.rs`
@@ -78,16 +78,16 @@ Out of scope:
   - Requirement: final delivery must not depend on marker regex, “some primary fetch exists”, snippets, or continuation-limit pass-through.
   - Acceptance: `FinalAnswerGuardHook` is deleted or no longer registered as the active final-answer gate; tests prove unsupported factual drafts are not allowed by marker absence or any-fetch presence.
   - Evidence required: diff review plus focused tests for marker-free unsupported claims and irrelevant fetch evidence.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: Checkpoint 1 deleted `crates/oxide-agent-core/src/agent/hooks/final_answer_guard.rs`, removed its export from `crates/oxide-agent-core/src/agent/hooks/mod.rs`, removed registration from `crates/oxide-agent-core/src/agent/executor/config.rs`, and removed `RESEARCH_GUARD_ENABLED` config/env docs. Test `executor_does_not_register_legacy_final_answer_guard` passed, proving the old regex/any-fetch gate is not active.
 
 - G2: `ResearchRuntime` stores bounded proof `EvidenceDocument`s
   - Source: `docs/prd/plan.md:1501` and `docs/prd/plan.md:1523`.
   - Requirement: fetched source text must be captured as bounded evidence documents with URL/final URL/source metadata/excerpt/hash/truncation fields.
   - Acceptance: `crawl4ai_markdown` produces proof documents; `searxng_search` remains discovery-only; snippets, sub-agent prose, memory, and reasoning do not become proof.
   - Evidence required: unit tests for Crawl4AI evidence capture, snippet-only exclusion, bounds/hash/truncation handling.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-core/src/agent/research/mod.rs:88` adds `EvidenceDocument`; `crates/oxide-agent-core/src/agent/research/mod.rs:549` records only successful `crawl4ai_markdown` payload Markdown as bounded proof documents with URL/final URL/status/source metadata, excerpt/content SHA-256, char counts, and truncation state; `crates/oxide-agent-core/src/agent/research/mod.rs:12` caps excerpts at 12,000 chars. Tests `records_crawl4ai_evidence_document_with_hash_and_bounds` and `search_snippets_and_fallback_fetches_do_not_become_proof_documents` passed.
 
 - G3: Strict verifier config is explicit and fail-closed
   - Source: `docs/prd/plan.md:1533` and `docs/prd/plan.md:1547`.
@@ -133,8 +133,8 @@ Out of scope:
   - Source: `AGENTS.md` architecture/over-engineering rules and `docs/prd/plan.md:1493`.
   - Acceptance: no new crates/services/storage layers; no async hook migration; no direct Gemini provider; core remains transport-agnostic.
   - Evidence required: diff review plus workspace checks.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 removed the old regex/metadata hook without adding crates, services, storage, async hook migration, or transport coupling. Full final workspace validation remains for checkpoint 6.
 
 - Q2: Preserve tool-call and final-response invariants
   - Source: `AGENTS.md` runner/tool-call invariants.
@@ -147,34 +147,34 @@ Out of scope:
   - Source: `docs/prd/plan.md:1541` and `AGENTS.md` prompt-cache invariants.
   - Acceptance: evidence excerpts are capped; no large volatile verifier blocks are added to the stable system prompt prefix.
   - Evidence required: tests for excerpt limits and diff review of prompt assembly.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 added bounded evidence capture in `ResearchRuntime`; tests prove the 12,000-character excerpt cap and no verifier blocks were added to prompt assembly or stable system prompt prefix.
 
 - N1: No fallback trust path
   - Source: `docs/prd/plan.md:1481`.
   - Must preserve: no fallback to old regex, snippets, any-fetch, continuation-limit pass-through, or same-model verifier unless explicitly configured as verifier route.
   - Evidence required: tests for fail-closed/missing config and marker-free unsupported claims.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 deleted the old regex/metadata guard and removed `RESEARCH_GUARD_ENABLED`; tests prove search snippets plus fallback fetches do not become proof documents. Missing verifier-route fail-closed tests remain for checkpoint 2.
 
 - N2: No premature planner/evidence graph
   - Source: `docs/prd/plan.md:1529` and `docs/prd/plan.md:1664`.
   - Must preserve: verifier supplies next actions, but this goal does not build a query planner, fetch planner, embeddings, or full evidence graph.
   - Evidence required: diff review.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 added only passive evidence documents and legacy guard retirement; no planner, embeddings, or evidence graph were introduced.
 
 - V1: Formatting/lint validation
   - Source: `AGENTS.md` validation rules.
   - Evidence required: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings` before final completion.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: `cargo fmt --all -- --check` passed for checkpoint 1. Full workspace clippy is reserved for final completion.
 
 - V2: Build and focused test validation
   - Source: `AGENTS.md` build/test rules.
   - Evidence required: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; focused `cargo test -p oxide-agent-core` filters for verifier/research/runtime/config modules.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 focused tests passed: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research::`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib executor_does_not_register_legacy_final_answer_guard`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib prepare_execution_uses_executor_model_routes_override`. `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed.
 
 ## Implementation Plan
 
@@ -268,6 +268,7 @@ Out of scope:
 - 2026-06-10: No fallback trust path. Reason: user explicitly prefers spending more tokens over delivering unsupported claims.
 - 2026-06-10: Exhausted proof search must produce a verified `proof_not_found` report or no final answer. Reason: transparent uncertainty is acceptable; hallucinated certainty is not.
 - 2026-06-10: Do not make hooks async. Reason: `handle_final_response` is already async and has the required LLM/context access with a smaller change surface.
+- 2026-06-10: Delete the legacy `FinalAnswerGuardHook` instead of leaving it disabled behind env. Reason: the strict verifier goal must have no regex/any-fetch fallback trust path.
 
 ## Progress Log
 
@@ -277,6 +278,13 @@ Out of scope:
   - Commands: pending commit validation.
   - Audit IDs updated: all initialized as pending.
   - Next: Checkpoint 1 — evidence documents and old guard retirement.
+
+- 2026-06-10 18:32 +03: Checkpoint 1 — evidence documents and old guard retirement
+  - Changed: added bounded `EvidenceDocument` capture to `ResearchRuntime`, records successful `crawl4ai_markdown` Markdown payloads as proof documents, keeps search snippets/fallback fetches out of proof docs, removed legacy `FinalAnswerGuardHook` code/registration/config/env docs, and provisions `ResearchRuntime` for prepared executions.
+  - Evidence: `crates/oxide-agent-core/src/agent/research/mod.rs:88`, `crates/oxide-agent-core/src/agent/research/mod.rs:549`, `crates/oxide-agent-core/src/agent/executor/config.rs:42`, `crates/oxide-agent-core/src/agent/executor/execution.rs:569`, `crates/oxide-agent-core/src/agent/executor/tests/basics.rs:93`.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research::`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib executor_does_not_register_legacy_final_answer_guard`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib prepare_execution_uses_executor_model_routes_override`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
+  - Audit IDs updated: G1 verified, G2 verified, Q1/Q3/N1/V1/V2 in progress.
+  - Next: Checkpoint 2 — strict verifier sidecar and config.
 
 ## Risks and Blockers
 

@@ -2,15 +2,15 @@ use super::AgentExecutor;
 use super::types::{AgentsMdContext, ManagerControlPlaneContext, TopicInfraContext};
 use crate::agent::compaction::CompactionController;
 use crate::agent::hooks::{
-    CompletionCheckHook, EpisodicExtractHook, FinalAnswerGuardHook, HotContextHealthHook,
-    RetrievalAdvisorHook, SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
+    CompletionCheckHook, EpisodicExtractHook, HotContextHealthHook, RetrievalAdvisorHook,
+    SearchBudgetHook, TimeoutReportHook, ToolAccessPolicyHook,
 };
 use crate::agent::providers::{ManagerTopicLifecycle, ReminderContext};
 use crate::agent::runner::AgentRunner;
 use crate::agent::session::AgentSession;
 use crate::agent::wiki_memory::WikiStore;
 use crate::config::ModelInfo;
-use crate::config::{get_agent_search_limit, is_research_guard_enabled};
+use crate::config::get_agent_search_limit;
 use crate::llm::LlmClient;
 use crate::storage::{StorageProvider, TopicInfraConfigRecord};
 use std::sync::Arc;
@@ -51,9 +51,6 @@ impl AgentExecutor {
         runner.register_hook(Box::new(ToolAccessPolicyHook::new(Arc::clone(
             &tool_policy_state,
         ))));
-        if is_research_guard_enabled() {
-            runner.register_hook(Box::new(FinalAnswerGuardHook::new()));
-        }
         Self::register_policy_controlled_hook(
             &mut runner,
             TimeoutReportHook::new(),

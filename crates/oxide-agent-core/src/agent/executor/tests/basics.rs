@@ -90,28 +90,10 @@ fn executor_registers_episodic_extract_hook_for_wiki_drafts() {
 }
 
 #[test]
-fn executor_registers_final_answer_guard_by_default() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    crate::testing::test_remove_env("RESEARCH_GUARD_ENABLED");
-
-    let executor = build_executor();
-
-    assert!(executor.runner.has_registered_hook("final_answer_guard"));
-}
-
-#[test]
-fn executor_skips_final_answer_guard_when_env_disables_it() {
-    let _guard = crate::config::test_env_mutex()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    crate::testing::test_set_env("RESEARCH_GUARD_ENABLED", "false");
-
+fn executor_does_not_register_legacy_final_answer_guard() {
     let executor = build_executor();
 
     assert!(!executor.runner.has_registered_hook("final_answer_guard"));
-    crate::testing::test_remove_env("RESEARCH_GUARD_ENABLED");
 }
 
 #[tokio::test]
@@ -158,6 +140,7 @@ async fn prepare_execution_uses_executor_model_routes_override() {
     );
     assert_eq!(prepared.runner_config.model_max_output_tokens, 2_000);
     assert_eq!(prepared.runner_config.model_routes, override_routes);
+    assert!(prepared.research_runtime.is_some());
 }
 
 #[tokio::test]

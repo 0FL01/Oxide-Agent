@@ -1216,24 +1216,6 @@ mod tests {
     use std::env;
 
     #[test]
-    fn research_guard_is_enabled_by_default_and_env_disables_it() {
-        let _guard = test_env_mutex()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        test_remove_env("RESEARCH_GUARD_ENABLED");
-        assert!(is_research_guard_enabled());
-
-        test_set_env("RESEARCH_GUARD_ENABLED", "false");
-        assert!(!is_research_guard_enabled());
-
-        test_set_env("RESEARCH_GUARD_ENABLED", "true");
-        assert!(is_research_guard_enabled());
-
-        test_remove_env("RESEARCH_GUARD_ENABLED");
-    }
-
-    #[test]
     fn research_audit_is_enabled_by_default_and_env_disables_it() {
         let _guard = test_env_mutex()
             .lock()
@@ -2280,8 +2262,6 @@ pub const DEFAULT_SUB_AGENT_MODEL_MAX_OUTPUT_TOKENS: u32 = AGENT_RESPONSE_SOFT_M
 pub const AGENT_CONTINUATION_LIMIT: usize = 10; // Max forced continuations when todos incomplete
 /// Default limit for search tool calls per agent session
 pub const AGENT_SEARCH_LIMIT: usize = 10;
-/// Default state for the final-answer research guard.
-pub const RESEARCH_GUARD_ENABLED: bool = true;
 /// Default state for structured research audit/debug output.
 pub const RESEARCH_AUDIT_ENABLED: bool = true;
 
@@ -2297,14 +2277,6 @@ pub fn get_agent_search_limit() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(AGENT_SEARCH_LIMIT)
-}
-
-/// Determine whether the final-answer research guard should be registered.
-///
-/// Environment variable: `RESEARCH_GUARD_ENABLED`; defaults to enabled.
-#[must_use]
-pub fn is_research_guard_enabled() -> bool {
-    parse_optional_env_bool("RESEARCH_GUARD_ENABLED").unwrap_or(RESEARCH_GUARD_ENABLED)
 }
 
 /// Determine whether structured research audit/debug output should be recorded.

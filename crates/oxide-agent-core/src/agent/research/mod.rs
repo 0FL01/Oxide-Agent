@@ -1,12 +1,15 @@
 //! Passive research observation runtime.
 //!
 //! This module records typed tool-output observations without making policy
-//! decisions. It intentionally stays in-process and disabled unless an
+//! decisions. It intentionally stays in-process and records only when an
 //! execution context supplies a [`ResearchRuntime`].
 
 use crate::agent::tool_runtime::{ToolOutput, ToolOutputStatus};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
+
+const MAX_EVIDENCE_EXCERPT_CHARS: usize = 12_000;
 
 /// Source priority derived from the tool that produced an observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +83,39 @@ pub struct FetchedSource {
     pub truncated: bool,
 }
 
+/// Bounded proof-grade document captured from a fetched source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceDocument {
+    /// Tool that fetched the source text.
+    pub tool_name: String,
+    /// Provider field from structured payload, when present.
+    pub provider: Option<String>,
+    /// Requested URL.
+    pub url: String,
+    /// Final URL after redirects, when provided.
+    pub final_url: Option<String>,
+    /// HTTP status code, when provided.
+    pub status_code: Option<u16>,
+    /// Source priority derived from the tool name.
+    pub source_priority: ResearchSourcePriority,
+    /// Bounded source excerpt used by the strict verifier.
+    pub excerpt: String,
+    /// SHA-256 of the bounded excerpt.
+    pub excerpt_sha256: String,
+    /// SHA-256 of the full fetched Markdown before local evidence bounding.
+    pub content_sha256: String,
+    /// Full fetched Markdown character count before local evidence bounding.
+    pub content_chars: usize,
+    /// Bounded excerpt character count.
+    pub excerpt_chars: usize,
+    /// Whether provider/runtime/local evidence bounding truncated source text.
+    pub truncated: bool,
+    /// Provider/source kind metadata when present.
+    pub source_kind: Option<String>,
+    /// Provider fetch timestamp when present.
+    pub fetched_at: Option<String>,
+}
+
 /// Failed research-relevant typed tool output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResearchFailure {
@@ -133,6 +169,8 @@ pub struct ResearchSnapshot {
     pub search_leads: Vec<SearchLead>,
     /// Fetched/extracted sources discovered from structured payloads.
     pub fetched_sources: Vec<FetchedSource>,
+    /// Bounded proof documents captured from fetched source text.
+    pub evidence_documents: Vec<EvidenceDocument>,
     /// Failed research-relevant outputs.
     pub failures: Vec<ResearchFailure>,
     /// Hosts that produced anti-bot/access-blocking signals.
@@ -213,6 +251,14 @@ impl ResearchRuntime {
                 payload,
             );
             record_fetched_source(&mut state, tool_name, source_priority, truncated, payload);
+            record_evidence_document(
+                &mut state,
+                tool_name,
+                source_priority,
+                output.success,
+                truncated,
+                payload,
+            );
         }
 
         if !output.success {
@@ -277,6 +323,12 @@ pub fn audit_payload_from_snapshot(snapshot: &ResearchSnapshot) -> Value {
             .iter()
             .map(|source| source.final_url.as_deref().unwrap_or(source.url.as_str()))
             .collect::<Vec<_>>(),
+        "evidence_documents": snapshot
+            .evidence_documents
+            .iter()
+            .map(evidence_document_payload)
+            .collect::<Vec<_>>(),
+        "evidence_document_count": snapshot.evidence_documents.len(),
         "evidence_observations": snapshot
             .observations
             .iter()
@@ -302,6 +354,25 @@ pub fn audit_payload_from_snapshot(snapshot: &ResearchSnapshot) -> Value {
             .iter()
             .map(guard_decision_payload)
             .collect::<Vec<_>>(),
+    })
+}
+
+fn evidence_document_payload(document: &EvidenceDocument) -> Value {
+    json!({
+        "tool_name": &document.tool_name,
+        "provider": &document.provider,
+        "url": &document.url,
+        "final_url": &document.final_url,
+        "status_code": document.status_code,
+        "source_priority": source_priority_label(document.source_priority),
+        "excerpt": &document.excerpt,
+        "excerpt_sha256": &document.excerpt_sha256,
+        "content_sha256": &document.content_sha256,
+        "content_chars": document.content_chars,
+        "excerpt_chars": document.excerpt_chars,
+        "truncated": document.truncated,
+        "source_kind": &document.source_kind,
+        "fetched_at": &document.fetched_at,
     })
 }
 
@@ -475,6 +546,67 @@ fn record_fetched_source(
     });
 }
 
+fn record_evidence_document(
+    state: &mut ResearchSnapshot,
+    tool_name: &str,
+    source_priority: ResearchSourcePriority,
+    success: bool,
+    provider_truncated: bool,
+    payload: &Value,
+) {
+    if !success {
+        return;
+    }
+    if tool_name != "crawl4ai_markdown" {
+        return;
+    }
+    let Some(markdown) = string_field(payload, "markdown") else {
+        return;
+    };
+    let Some(url) = string_field(payload, "url") else {
+        return;
+    };
+    if markdown.trim().is_empty() {
+        return;
+    }
+
+    let content_chars = markdown.chars().count();
+    let (excerpt, locally_truncated) = bounded_excerpt(&markdown, MAX_EVIDENCE_EXCERPT_CHARS);
+    let excerpt_chars = excerpt.chars().count();
+    state.evidence_documents.push(EvidenceDocument {
+        tool_name: tool_name.to_string(),
+        provider: string_field(payload, "provider"),
+        final_url: string_field(payload, "final_url"),
+        status_code: u16_field(payload, "status_code"),
+        url,
+        source_priority,
+        excerpt_sha256: sha256_hex(excerpt.as_bytes()),
+        content_sha256: sha256_hex(markdown.as_bytes()),
+        excerpt,
+        content_chars,
+        excerpt_chars,
+        truncated: provider_truncated || locally_truncated,
+        source_kind: string_field(payload, "source_kind"),
+        fetched_at: string_field(payload, "fetched_at"),
+    });
+}
+
+fn bounded_excerpt(text: &str, max_chars: usize) -> (String, bool) {
+    let mut excerpt = String::new();
+    let mut chars = text.chars();
+    for _ in 0..max_chars {
+        let Some(ch) = chars.next() else {
+            return (excerpt, false);
+        };
+        excerpt.push(ch);
+    }
+    (excerpt, chars.next().is_some())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +715,79 @@ mod tests {
     }
 
     #[test]
+    fn records_crawl4ai_evidence_document_with_hash_and_bounds() {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig::default());
+        let markdown = "А".repeat(MAX_EVIDENCE_EXCERPT_CHARS + 8);
+        let mut output = normalizer.success(&invocation("crawl4ai_markdown"), &markdown, "");
+        output.structured_payload = Some(json!({
+            "provider": "crawl4ai_markdown",
+            "kind": "fetch",
+            "url": "https://huggingface.co/example/model",
+            "final_url": "https://huggingface.co/example/model",
+            "status_code": 200,
+            "source_kind": "model_card",
+            "markdown": markdown,
+            "truncated": false,
+            "fetched_at": "2026-06-10T15:00:00Z"
+        }));
+
+        let runtime = ResearchRuntime::new();
+        runtime.record_tool_output(&output);
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(snapshot.evidence_documents.len(), 1);
+        let document = &snapshot.evidence_documents[0];
+        assert_eq!(document.tool_name, "crawl4ai_markdown");
+        assert_eq!(document.url, "https://huggingface.co/example/model");
+        assert_eq!(document.status_code, Some(200));
+        assert_eq!(document.source_kind.as_deref(), Some("model_card"));
+        assert_eq!(document.content_chars, MAX_EVIDENCE_EXCERPT_CHARS + 8);
+        assert_eq!(document.excerpt_chars, MAX_EVIDENCE_EXCERPT_CHARS);
+        assert!(document.truncated);
+        assert_eq!(document.excerpt.chars().count(), MAX_EVIDENCE_EXCERPT_CHARS);
+        assert_eq!(
+            document.excerpt_sha256,
+            sha256_hex(document.excerpt.as_bytes())
+        );
+        assert_eq!(document.content_sha256, sha256_hex(markdown.as_bytes()));
+    }
+
+    #[test]
+    fn search_snippets_and_fallback_fetches_do_not_become_proof_documents() {
+        let normalizer = OutputNormalizer::new(ToolRuntimeConfig::default());
+        let mut search_output = normalizer.success(&invocation("searxng_search"), "markdown", "");
+        search_output.structured_payload = Some(json!({
+            "provider": "searxng_search",
+            "kind": "search",
+            "query": "russian pii model",
+            "snippet_only": true,
+            "results": [
+                { "title": "Model", "url": "https://huggingface.co/example/model", "snippet": "claims" }
+            ]
+        }));
+        let mut fallback_output =
+            normalizer.success(&invocation("web_markdown"), "fallback markdown", "");
+        fallback_output.structured_payload = Some(json!({
+            "provider": "web_markdown",
+            "kind": "fetch",
+            "url": "https://example.test/page",
+            "final_url": "https://example.test/page",
+            "status_code": 200,
+            "markdown": "fallback markdown",
+            "truncated": false
+        }));
+
+        let runtime = ResearchRuntime::new();
+        runtime.record_tool_output(&search_output);
+        runtime.record_tool_output(&fallback_output);
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(snapshot.search_leads.len(), 1);
+        assert_eq!(snapshot.fetched_sources.len(), 1);
+        assert!(snapshot.evidence_documents.is_empty());
+    }
+
+    #[test]
     fn ignores_non_research_tools() {
         let normalizer = OutputNormalizer::new(ToolRuntimeConfig::default());
         let output = normalizer.success(&invocation("write_todos"), "ok", "");
@@ -623,6 +828,7 @@ mod tests {
         assert_eq!(audit["mode"], "evidence_guard");
         assert_eq!(audit["providers_used"][0], "web_markdown");
         assert_eq!(audit["fetched_urls"][0], "https://example.test/page?ok=1");
+        assert_eq!(audit["evidence_document_count"], 0);
         assert_eq!(audit["unsupported_claims"][0], "current/high-impact claim");
         assert_eq!(audit["final_guard_decision"]["decision"], "force_iteration");
     }
