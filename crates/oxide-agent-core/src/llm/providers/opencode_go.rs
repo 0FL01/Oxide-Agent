@@ -1808,6 +1808,24 @@ mod tests {
     }
 
     #[test]
+    fn json_mode_without_tools_can_disable_reasoning() {
+        let body = build_tool_chat_body(
+            "system",
+            &[],
+            &[],
+            "deepseek-v4-flash",
+            32000,
+            None,
+            true,
+            Some("disabled"),
+        );
+
+        assert_eq!(body["response_format"]["type"], json!("json_object"));
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
     fn json_mode_with_tools_does_not_set_response_format() {
         let tools = vec![read_file_tool()];
         let body = build_tool_chat_body(

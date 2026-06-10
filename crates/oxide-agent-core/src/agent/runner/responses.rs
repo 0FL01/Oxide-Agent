@@ -706,7 +706,9 @@ mod tests {
         ToolOutputStatus,
     };
     use crate::config::{AgentSettings, ModelInfo};
-    use crate::llm::{InvocationId, LlmClient, MockLlmProvider};
+    use crate::llm::{
+        ChatResponse, ChatWithToolsRequest, InvocationId, LlmClient, MockLlmProvider,
+    };
     use chrono::Utc;
     use serde_json::json;
     use std::sync::Arc;
@@ -768,21 +770,33 @@ mod tests {
             ..AgentSettings::default()
         };
         let mut provider = MockLlmProvider::new();
-        provider
-            .expect_complete_internal_text()
-            .times(1..=3)
-            .returning(
-                move |system_prompt, _history, user_message, model_id, _max_tokens| {
-                    assert!(system_prompt.contains("strict zero-trust answer verifier"));
-                    assert!(user_message.contains("EvidenceDocument.content_excerpt"));
-                    assert!(user_message.contains("huggingface.co/example/model"));
-                    assert!(user_message.contains(&format!(
-                        "\"proof_not_found_mode\": {expected_proof_not_found_mode}"
-                    )));
-                    assert_eq!(model_id, "verifier-model");
-                    Ok(raw_response.clone())
-                },
-            );
+        provider.expect_chat_with_tools().times(1..=3).returning(
+            move |request: ChatWithToolsRequest<'_>| {
+                assert!(
+                    request
+                        .system_prompt
+                        .contains("strict zero-trust answer verifier")
+                );
+                assert!(request.json_mode);
+                assert_eq!(request.reasoning_effort, Some("disabled"));
+                assert!(request.tools.is_empty());
+                assert_eq!(request.model_id, "verifier-model");
+                assert_eq!(request.messages.len(), 1);
+                let user_message = &request.messages[0].content;
+                assert!(user_message.contains("EvidenceDocument.content_excerpt"));
+                assert!(user_message.contains("huggingface.co/example/model"));
+                assert!(user_message.contains(&format!(
+                    "\"proof_not_found_mode\": {expected_proof_not_found_mode}"
+                )));
+                Ok(ChatResponse {
+                    content: Some(raw_response.clone()),
+                    tool_calls: Vec::new(),
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                    usage: None,
+                })
+            },
+        );
         let mut llm = LlmClient::new(&settings);
         llm.register_provider("opencode-go".to_string(), Arc::new(provider));
         Arc::new(llm)

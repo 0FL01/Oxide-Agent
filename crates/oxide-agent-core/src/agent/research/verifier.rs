@@ -239,7 +239,7 @@ impl StrictAnswerVerifier {
         let mut last_invalid_json: Option<String> = None;
 
         for attempt in 1..=MAX_VERIFIER_JSON_ATTEMPTS {
-            let llm_call = self.llm_client.complete_internal_text(
+            let llm_call = self.llm_client.complete_internal_json_object_text(
                 InternalTextPurpose::AnswerVerification,
                 SYSTEM_PROMPT,
                 &user_message,
@@ -363,7 +363,9 @@ mod tests {
     use super::*;
     use crate::agent::research::ResearchSourcePriority;
     use crate::config::AgentSettings;
-    use crate::llm::{LlmClient, LlmError, Message, MockLlmProvider};
+    use crate::llm::{
+        ChatResponse, ChatWithToolsRequest, LlmClient, LlmError, Message, MockLlmProvider,
+    };
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -415,6 +417,40 @@ mod tests {
         format!(
             r#"{{"verdict":"{verdict}","confidence":"high","summary":"checked","unsupported_claims":[],"contradictions":[],"allowed_claims":[],"required_next_actions":[]}}"#
         )
+    }
+
+    fn chat_response(content: impl Into<String>) -> ChatResponse {
+        ChatResponse {
+            content: Some(content.into()),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: None,
+            usage: None,
+        }
+    }
+
+    fn assert_verifier_json_request(request: &ChatWithToolsRequest<'_>) {
+        assert!(
+            request
+                .system_prompt
+                .contains("strict zero-trust answer verifier")
+        );
+        assert_eq!(request.model_id, "verifier-model");
+        assert!(request.tools.is_empty());
+        assert!(request.json_mode);
+        assert_eq!(request.reasoning_effort, Some("disabled"));
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0].role, "user");
+        assert!(
+            request.messages[0]
+                .content
+                .contains("EvidenceDocument.content_excerpt")
+        );
+        assert!(
+            request.messages[0]
+                .content
+                .contains("huggingface.co/example/model")
+        );
     }
 
     #[test]
@@ -470,6 +506,7 @@ mod tests {
         };
         let mut provider = MockLlmProvider::new();
         provider.expect_complete_internal_text().times(0);
+        provider.expect_chat_with_tools().times(0);
         let mut llm = LlmClient::new(&settings);
         llm.register_provider("opencode-go".to_string(), Arc::new(provider));
         let verifier = StrictAnswerVerifier::new(Arc::new(llm), verifier_config(None));
@@ -497,15 +534,13 @@ mod tests {
             ..AgentSettings::default()
         };
         let mut provider = MockLlmProvider::new();
-        provider.expect_complete_internal_text().times(1).returning(
-            |system_prompt, _history, user_message, model_id, _max_tokens| {
-                assert!(system_prompt.contains("strict zero-trust answer verifier"));
-                assert!(user_message.contains("EvidenceDocument.content_excerpt"));
-                assert!(user_message.contains("huggingface.co/example/model"));
-                assert_eq!(model_id, "verifier-model");
-                Ok(decision_json("allow"))
-            },
-        );
+        provider
+            .expect_chat_with_tools()
+            .times(1)
+            .returning(|request| {
+                assert_verifier_json_request(&request);
+                Ok(chat_response(decision_json("allow")))
+            });
         let mut llm = LlmClient::new(&settings);
         llm.register_provider("opencode-go".to_string(), Arc::new(provider));
         let verifier = StrictAnswerVerifier::new(
@@ -538,18 +573,21 @@ mod tests {
         let attempts = Arc::new(AtomicUsize::new(0));
         let attempts_for_mock = Arc::clone(&attempts);
         let mut provider = MockLlmProvider::new();
-        provider.expect_complete_internal_text().times(2).returning(
-            move |_system_prompt, _history, user_message, _model_id, _max_tokens| {
+        provider
+            .expect_chat_with_tools()
+            .times(2)
+            .returning(move |request| {
+                assert_verifier_json_request(&request);
                 let attempt = attempts_for_mock.fetch_add(1, Ordering::SeqCst);
                 if attempt == 0 {
-                    Ok("Thought: the answer looks fine".to_string())
+                    Ok(chat_response("Thought: the answer looks fine"))
                 } else {
+                    let user_message = &request.messages[0].content;
                     assert!(user_message.contains("previous verifier response was rejected"));
                     assert!(user_message.contains("First non-whitespace character"));
-                    Ok(decision_json("allow"))
+                    Ok(chat_response(decision_json("allow")))
                 }
-            },
-        );
+            });
         let mut llm = LlmClient::new(&settings);
         llm.register_provider("opencode-go".to_string(), Arc::new(provider));
         let verifier = StrictAnswerVerifier::new(
@@ -582,9 +620,12 @@ mod tests {
         };
         let mut provider = MockLlmProvider::new();
         provider
-            .expect_complete_internal_text()
+            .expect_chat_with_tools()
             .times(MAX_VERIFIER_JSON_ATTEMPTS)
-            .returning(|_, _, _, _, _| Ok("not json".to_string()));
+            .returning(|request| {
+                assert_verifier_json_request(&request);
+                Ok(chat_response("not json"))
+            });
         let mut llm = LlmClient::new(&settings);
         llm.register_provider("opencode-go".to_string(), Arc::new(provider));
         let verifier = StrictAnswerVerifier::new(
@@ -621,9 +662,12 @@ mod tests {
         };
         let mut provider = MockLlmProvider::new();
         provider
-            .expect_complete_internal_text()
+            .expect_chat_with_tools()
             .times(1)
-            .returning(|_, _, _, _, _| Err(LlmError::ApiError("boom".to_string())));
+            .returning(|request| {
+                assert_verifier_json_request(&request);
+                Err(LlmError::ApiError("boom".to_string()))
+            });
         let mut llm = LlmClient::new(&settings);
         llm.register_provider("opencode-go".to_string(), Arc::new(provider));
         let verifier = StrictAnswerVerifier::new(
@@ -677,6 +721,16 @@ mod tests {
             _model_id: &str,
         ) -> Result<String, LlmError> {
             Err(LlmError::Unknown("not implemented".to_string()))
+        }
+
+        async fn chat_with_tools<'a>(
+            &self,
+            request: ChatWithToolsRequest<'a>,
+        ) -> Result<ChatResponse, LlmError> {
+            assert!(request.json_mode);
+            assert_eq!(request.reasoning_effort, Some("disabled"));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok(chat_response(decision_json("allow")))
         }
     }
 

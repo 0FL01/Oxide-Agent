@@ -447,6 +447,94 @@ impl LlmClient {
         result
     }
 
+    /// Perform an internal JSON-object completion request for strict sidecar tasks.
+    ///
+    /// This uses the provider chat request path with no tools, native JSON mode when the
+    /// provider supports it, and reasoning disabled. It is intentionally separate from
+    /// `complete_internal_text` so general internal prose tasks keep their existing behavior.
+    #[instrument(skip(self, system_prompt, user_message, model_info))]
+    pub(crate) async fn complete_internal_json_object_text(
+        &self,
+        purpose: InternalTextPurpose,
+        system_prompt: &str,
+        user_message: &str,
+        model_info: &crate::config::ModelInfo,
+    ) -> Result<String, LlmError> {
+        let provider = self.get_provider(&model_info.provider)?;
+        let capabilities = Self::provider_capabilities_for_model(model_info);
+        let history = [Message::user(user_message)];
+        let (system_prompt, messages) =
+            support::history::fold_system_messages_into_prompt(system_prompt, "", &history);
+
+        if !capabilities.can_run_chat_with_tools_request(false, true) {
+            return Err(LlmError::ApiError(format!(
+                "JSON-object internal requests are not supported for {} model `{}`",
+                model_info.provider, model_info.id
+            )));
+        }
+
+        debug!(
+            purpose = ?purpose,
+            model = model_info.id,
+            provider = model_info.provider,
+            "Sending internal JSON-object request to LLM"
+        );
+        trace!(
+            purpose = ?purpose,
+            system_prompt = system_prompt,
+            messages = ?messages,
+            "Full internal JSON-object LLM request"
+        );
+
+        let start = std::time::Instant::now();
+        let request = ChatWithToolsRequest {
+            system_prompt: &system_prompt,
+            messages: &messages,
+            tools: &[],
+            model_id: &model_info.id,
+            max_tokens: Self::soft_cap_output_tokens(model_info.max_output_tokens),
+            temperature: None,
+            json_mode: true,
+            reasoning_effort: Some("disabled"),
+        };
+        let result = provider
+            .chat_with_tools(request)
+            .await
+            .and_then(|response| {
+                response
+                    .content
+                    .filter(|content| !content.trim().is_empty())
+                    .ok_or_else(|| {
+                        LlmError::ApiError(format!(
+                            "{} returned no text content for internal JSON-object request",
+                            model_info.provider
+                        ))
+                    })
+            });
+        let duration = start.elapsed();
+
+        if let Ok(resp) = &result {
+            debug!(
+                purpose = ?purpose,
+                model = model_info.id,
+                duration_ms = duration.as_millis(),
+                response_len = resp.len(),
+                "Received success response from internal JSON-object LLM request"
+            );
+            trace!(response = ?resp, "Full internal JSON-object LLM response");
+        } else if let Err(e) = &result {
+            warn!(
+                purpose = ?purpose,
+                model = model_info.id,
+                duration_ms = duration.as_millis(),
+                error = %e,
+                "Received error response from internal JSON-object LLM request"
+            );
+        }
+
+        result
+    }
+
     /// Perform a single chat completion request with tool calling (no retry).
     ///
     /// This is the base method used by the agent runner, which owns retry handling and UI events.
