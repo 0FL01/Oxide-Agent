@@ -129,6 +129,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 1, 1, 30, 256),
         };
 

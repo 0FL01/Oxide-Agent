@@ -394,6 +394,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
         };
         let mut state = RunState::new();
@@ -455,6 +456,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
         };
         let mut state = RunState::new();
@@ -515,6 +517,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
         };
         let mut state = RunState::new();
@@ -566,6 +569,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
         };
         let long_draft = format!(
@@ -624,6 +628,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
         };
         let draft = format!("## Старый draft\n\n{}", "draft line\n".repeat(120));

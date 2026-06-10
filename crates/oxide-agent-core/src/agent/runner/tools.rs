@@ -375,6 +375,10 @@ impl AgentRunner {
                 .await;
         }
 
+        if let Some(research_runtime) = ctx.research_runtime.as_deref() {
+            research_runtime.record_tool_output(&output);
+        }
+
         self.apply_after_tool_hooks(ctx, state, &tool_name, &content);
         if output.success && tool_name == TOOL_COMPRESS {
             let memory = ctx.agent.memory();
@@ -447,6 +451,7 @@ mod tests {
     };
     use crate::agent::profile::ToolAccessPolicy;
     use crate::agent::providers::{CompressionProvider, TodoItem, TodoList, TodoStatus};
+    use crate::agent::research::ResearchRuntime;
     use crate::agent::runner::AgentRunnerConfig;
     use crate::agent::tool_runtime::{
         OutputNormalizer, ToolExecutor, ToolInvocation, ToolName,
@@ -473,6 +478,9 @@ mod tests {
     struct CountingRuntimeExecutor {
         name: ToolName,
         executions: Arc<AtomicUsize>,
+    }
+    struct ResearchAfterToolObserver {
+        observed: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -640,6 +648,32 @@ mod tests {
         }
     }
 
+    impl Hook for ResearchAfterToolObserver {
+        fn name(&self) -> &'static str {
+            "research_after_tool_observer"
+        }
+
+        fn handle(
+            &self,
+            event: &crate::agent::hooks::HookEvent,
+            context: &crate::agent::hooks::HookContext,
+        ) -> crate::agent::hooks::HookResult {
+            if matches!(event, crate::agent::hooks::HookEvent::AfterTool { .. }) {
+                let snapshot = context
+                    .research_runtime
+                    .expect("research runtime should be threaded to HookContext")
+                    .snapshot();
+                assert_eq!(snapshot.failures.len(), 1);
+                assert_eq!(
+                    snapshot.failures[0].host.as_deref(),
+                    Some("platform.kimi.ai")
+                );
+                self.observed.fetch_add(1, Ordering::SeqCst);
+            }
+            crate::agent::hooks::HookResult::Continue
+        }
+    }
+
     struct PolicyRunResult {
         executions: usize,
         tool_result_content: String,
@@ -702,6 +736,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config,
         };
         let mut state = RunState::new();
@@ -874,6 +909,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -966,6 +1002,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1049,6 +1086,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1142,6 +1180,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1234,6 +1273,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1292,6 +1332,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_runtime_records_research_output_before_after_tool_hooks() {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        let observed = Arc::new(AtomicUsize::new(0));
+        runner.register_hook(Box::new(ResearchAfterToolObserver {
+            observed: Arc::clone(&observed),
+        }));
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(DeadEndFailureRuntimeExecutor))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+        let research_runtime = Arc::new(ResearchRuntime::new());
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "fetch blocked page through runtime",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-research-observer-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: Some(Arc::clone(&research_runtime)),
+            config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-web-1",
+            ToolCallFunction {
+                name: "web_markdown".to_string(),
+                arguments: r#"{"url":"https://platform.kimi.ai/pricing/limits"}"#.to_string(),
+            },
+            false,
+        );
+
+        runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::StructuredControlEnvelope,
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
+        let snapshot = research_runtime.snapshot();
+        assert_eq!(snapshot.observations.len(), 1);
+        assert_eq!(snapshot.failures.len(), 1);
+        assert_eq!(snapshot.anti_bot_hosts, vec!["platform.kimi.ai"]);
+    }
+
+    #[tokio::test]
     async fn typed_runtime_compress_output_requests_manual_compaction() {
         let settings = AgentSettings {
             agent_model_id: Some("deepseek-v4-flash".to_string()),
@@ -1334,6 +1452,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1423,6 +1542,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1504,6 +1624,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("opencode-go")
                 .with_model_routes(vec![ModelInfo {
@@ -1603,6 +1724,7 @@ mod tests {
             session_id: Some("42".to_string()),
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
                 .with_model_provider("openrouter")
                 .with_model_routes(vec![ModelInfo {

@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-10-deterministic-research-runtime.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan.md`
 Goal doc owner: Codex
-Last updated: 2026-06-10 16:36 +03
+Last updated: 2026-06-10 16:56 +03
 
 ## Objective
 
@@ -90,8 +90,8 @@ Out of scope:
   - Requirement: add passive state for queries, search leads, fetched sources, source priority, snippet-only flag, failures, truncation, and anti-bot signals without requiring a full evidence ledger.
   - Acceptance: `PreparedExecution`, `AgentRunnerContext`, and `HookContext` can carry the runtime; `runner/tools.rs` records full `ToolOutput` before string-only `AfterTool` hooks; runtime is safe to disable.
   - Evidence required: unit tests for `ResearchRuntime::record_tool_output`, runner integration test or focused state test, and `cargo check` for the profile touched.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-core/src/agent/research/mod.rs:125` adds the passive `ResearchRuntime`; `crates/oxide-agent-core/src/agent/research/mod.rs:137` records structured search leads, fetched sources, failures, truncation, source priority, snippet-only, and anti-bot signals from full `ToolOutput`; `crates/oxide-agent-core/src/agent/executor/types.rs:50`, `crates/oxide-agent-core/src/agent/runner/types.rs:158`, and `crates/oxide-agent-core/src/agent/hooks/types.rs:114` thread optional runtime state through prepared execution, runner context, and hook context; `crates/oxide-agent-core/src/agent/runner/tools.rs:379` records the full `ToolOutput` before string-only `AfterTool` hooks. Tests `records_search_payload_leads_and_query`, `records_fetch_payload_truncation_and_failure_signals`, `ignores_non_research_tools`, and `typed_runtime_records_research_output_before_after_tool_hooks` passed.
 
 - G4: Primary provider payloads are structured and status-correct
   - Source: `docs/prd/plan.md` lines 128-140, 577-629, 1423-1427, 1455.
@@ -130,35 +130,35 @@ Out of scope:
   - Acceptance: no new crates/services/storage layers; core/runtime remain transport-agnostic; Gemini direct provider remains absent.
   - Evidence required: `git diff` review and `cargo check`.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 added no new crates/services/storage layers; lifecycle changes stayed in `oxide-agent-core`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed.
+  - Evidence collected: Checkpoint 1 added no new crates/services/storage layers; lifecycle changes stayed in `oxide-agent-core`; Checkpoint 2 added only in-process passive state in `oxide-agent-core`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed.
 
 - Q2: Preserve prompt-cache and tool-call invariants
   - Source: `AGENTS.md` lines 68-72 and 86-94.
   - Acceptance: tool calls still run in parallel; history repair and `tool_call_id` matching remain intact; no large volatile blocks are added to the stable prompt prefix.
   - Evidence required: focused tests for tool history plus diff review of prompt changes.
   - Status: in_progress
-  - Evidence collected: Tool calls still execute through the existing parallel typed runtime; blocked calls are emitted as ordered pairable `ToolOutput` values; focused tests verify tool-call IDs and provider tool-call IDs are preserved for blocked policy paths.
+  - Evidence collected: Tool calls still execute through the existing parallel typed runtime; blocked calls are emitted as ordered pairable `ToolOutput` values; focused tests verify tool-call IDs and provider tool-call IDs are preserved for blocked policy paths. Checkpoint 2 records `ToolOutput` passively before `AfterTool` without changing tool-call content or prompt assembly.
 
 - Q3: Rollout is backward-compatible
   - Source: `docs/prd/plan.md` lines 1290-1317 and 1405-1409.
   - Acceptance: passive runtime and guard can be disabled; guard is not strict-by-default; provider stdout remains model-readable after payload changes.
   - Evidence required: config-default tests and provider output tests.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: `PreparedExecution.research_runtime` is `None` by default in `crates/oxide-agent-core/src/agent/executor/execution.rs`, so passive research observation remains disabled unless explicitly supplied; no final-answer guard behavior changed in Checkpoint 2.
 
 - N1: No premature full research planner or full evidence graph
   - Source: `docs/prd/plan.md` lines 1399-1421.
   - Must preserve: first milestone stops at typed boundary, passive ledger, provider payloads, and soft guard; query/fetch planners and full claim/evidence linking are later work.
   - Evidence required: `git diff` review and updated Decisions if scope changes.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 2 added passive observation types and no query planner, fetch planner, claim/evidence graph, or final-answer guard.
 
 - N2: Fetch tools are not reduced to a flat hard search counter
   - Source: `docs/prd/plan.md` lines 676-735 and 1429-1433.
   - Must preserve: `crawl4ai_markdown` / `web_markdown` control should use dedupe, failed-host quarantine, anti-bot quarantine, truncation, and progress guards rather than a simple global search counter.
   - Evidence required: policy design diff and tests when fetch loop guards are implemented.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: `cargo fmt --all -- --check` passed for Checkpoint 2; full final clippy remains pending for rollout readiness.
 
 - V1: Formatting and lint validation
   - Source: `AGENTS.md` lines 145-153.
@@ -170,7 +170,7 @@ Out of scope:
   - Source: `AGENTS.md` lines 132-153.
   - Evidence required: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; focused `cargo test -p oxide-agent-core` filters for touched runtime/provider modules.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 focused tests and embedded profile check passed on 2026-06-10; full final validation remains pending for later checkpoints.
+  - Evidence collected: Checkpoint 1 focused tests and embedded profile check passed on 2026-06-10. Checkpoint 2 tests `research::` and `typed_runtime_records_research_output_before_after_tool_hooks` passed, and `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed; full final validation remains pending for later checkpoints.
 
 ## Implementation Plan
 
@@ -271,6 +271,7 @@ Out of scope:
 - 2026-06-10: The first implementation checkpoint is lifecycle correctness (`BeforeTool` runtime enforcement plus `AfterAgent` `Finish`/`Block`) before `ResearchRuntime`, matching the fixed RECON decisions.
 - 2026-06-10: Primary research architecture is `searxng_search` for discovery and `crawl4ai_markdown` for fetched evidence; other search/fetch providers are fallback compatibility.
 - 2026-06-10: Guard starts disabled or observe-only by default. Runtime policy, not prompt guidance, is the acceptance boundary.
+- 2026-06-10: Checkpoint 2 keeps passive research runtime disabled by default (`PreparedExecution.research_runtime = None`) and only records observations when a runtime is explicitly supplied.
 
 ## Progress Log
 
@@ -287,6 +288,13 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib pre_tool_block_returns_paired_failure_without_executor_dispatch`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib typed_runtime_before_tool_applies`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib after_agent_`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
   - Audit IDs updated: G1 verified, G2 verified, Q1/Q2/V2 in progress with checkpoint evidence.
   - Next: Checkpoint 2 -- passive research runtime and full `ToolOutput` observer.
+
+- 2026-06-10 16:56 +03: Checkpoint 2 passive research runtime and full `ToolOutput` observer implemented.
+  - Changed: added `agent/research` passive runtime, threaded optional runtime through prepared execution, runner context, and hook context, and recorded full typed `ToolOutput` before `AfterTool` string hooks.
+  - Evidence: `crates/oxide-agent-core/src/agent/research/mod.rs:125`, `crates/oxide-agent-core/src/agent/research/mod.rs:137`, `crates/oxide-agent-core/src/agent/runner/tools.rs:379`, `crates/oxide-agent-core/src/agent/hooks/types.rs:114`.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research::`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib typed_runtime_records_research_output_before_after_tool_hooks`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
+  - Audit IDs updated: G3 verified; Q1/Q2/Q3/N1/V1/V2 in progress with checkpoint evidence.
+  - Next: Checkpoint 3 -- primary provider payload contract for SearXNG + Crawl4AI.
 
 ## Risks and Blockers
 

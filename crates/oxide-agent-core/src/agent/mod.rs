@@ -33,6 +33,8 @@ pub mod prompt;
 pub mod providers;
 /// Recovery module for malformed LLM responses
 pub mod recovery;
+/// Passive deterministic research observations.
+pub mod research;
 /// Core agent runner (execution loop)
 pub mod runner;
 /// Agent session management
@@ -90,6 +92,7 @@ pub use profile::{
 pub use progress::{AgentEvent, ProgressState, RepeatedCompactionKind};
 pub use providers::{TodoItem, TodoList, TodoStatus, TodosProvider};
 pub use recovery::sanitize_xml_tags;
+pub use research::{ResearchRuntime, ResearchSnapshot};
 pub use runner::{AgentRunner, AgentRunnerConfig, AgentRunnerContext};
 pub use session::{
     AgentMemoryCheckpoint, AgentMemoryScope, AgentSession, AgentStatus, PendingUserInput,

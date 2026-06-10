@@ -1,6 +1,7 @@
 use crate::agent::compaction::CompactionController;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::{ManagerTopicLifecycle, TodoList};
+use crate::agent::research::ResearchRuntime;
 use crate::agent::runner::{
     AgentRunnerConfig, AgentRunnerContext, AgentRunnerContextBase, TimedRunResult,
 };
@@ -46,6 +47,7 @@ pub(super) struct PreparedExecution {
     pub(super) system_prompt: String,
     pub(super) date_suffix: String,
     pub(super) messages: Vec<Message>,
+    pub(super) research_runtime: Option<Arc<ResearchRuntime>>,
     pub(super) runner_config: AgentRunnerConfig,
 }
 
@@ -84,6 +86,7 @@ impl PreparedExecution {
         ctx.session_id = session_id;
         ctx.memory_scope = memory_scope;
         ctx.memory_behavior = memory_behavior;
+        ctx.research_runtime = self.research_runtime.clone();
         ctx.tool_runtime_registry = Some(Arc::clone(&self.tool_runtime_registry));
 
         ctx

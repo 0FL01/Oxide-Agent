@@ -573,6 +573,7 @@ impl AgentExecutor {
             system_prompt: system_prompt.base,
             date_suffix: system_prompt.date_suffix,
             messages,
+            research_runtime: None,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),
                 max_iterations,

@@ -5,6 +5,7 @@ use crate::agent::context::AgentContext;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
+use crate::agent::research::ResearchRuntime;
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
@@ -153,6 +154,8 @@ pub struct AgentRunnerContext<'a> {
     pub memory_scope: Option<AgentMemoryScope>,
     /// Task-local Stage-14 memory behavior runtime.
     pub memory_behavior: Option<Arc<MemoryBehaviorRuntime>>,
+    /// Optional passive research observation runtime.
+    pub research_runtime: Option<Arc<ResearchRuntime>>,
     /// Runner configuration.
     pub config: AgentRunnerConfig,
 }
@@ -191,6 +194,7 @@ impl<'a> AgentRunnerContext<'a> {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config,
         }
     }

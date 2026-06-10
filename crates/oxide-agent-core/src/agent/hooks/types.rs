@@ -4,6 +4,7 @@
 
 use super::super::providers::TodoList;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;
+use crate::agent::research::ResearchRuntime;
 use crate::agent::session::AgentMemoryScope;
 use crate::llm::ToolDefinition;
 
@@ -109,6 +110,8 @@ pub struct HookContext<'a> {
     pub memory_scope: Option<&'a AgentMemoryScope>,
     /// Task-local Stage-14 memory behavior runtime.
     pub memory_behavior: Option<&'a MemoryBehaviorRuntime>,
+    /// Optional passive research observation runtime.
+    pub research_runtime: Option<&'a ResearchRuntime>,
     /// Search tool call budget for the current execution.
     pub search_limit: Option<usize>,
 }
@@ -135,6 +138,7 @@ impl<'a> HookContext<'a> {
             available_tools: &[],
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             search_limit: None,
         }
     }
@@ -175,6 +179,16 @@ impl<'a> HookContext<'a> {
         memory_behavior: Option<&'a MemoryBehaviorRuntime>,
     ) -> Self {
         self.memory_behavior = memory_behavior;
+        self
+    }
+
+    /// Add the passive research observation runtime to the hook context.
+    #[must_use]
+    pub const fn with_research_runtime(
+        mut self,
+        research_runtime: Option<&'a ResearchRuntime>,
+    ) -> Self {
+        self.research_runtime = research_runtime;
         self
     }
 

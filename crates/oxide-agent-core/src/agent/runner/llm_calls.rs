@@ -1181,6 +1181,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("wide-model".to_string(), 1, 1, 30, 200_000),
         };
         let route = ModelInfo {
@@ -1260,6 +1261,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 2, 1, 30, 256),
         };
 
@@ -1343,6 +1345,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
                 .with_model_provider("llm-provider/opencode-go")
                 .with_model_routes(vec![
@@ -1446,6 +1449,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-v4-pro".to_string(), 1, 1, 30, 256)
                 .with_model_provider("llm-provider/opencode-go")
                 .with_model_routes(vec![
@@ -1528,6 +1532,7 @@ mod tests {
             session_id: None,
             memory_scope: None,
             memory_behavior: None,
+            research_runtime: None,
             config: AgentRunnerConfig::new("deepseek-ai/deepseek-r1".to_string(), 1, 1, 30, 256)
                 .with_model_provider("nvidia")
                 .with_model_routes(vec![
