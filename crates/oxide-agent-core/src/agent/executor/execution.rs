@@ -566,6 +566,12 @@ impl AgentExecutor {
             "Agent prepare execution latency"
         );
 
+        let research_runtime = if crate::config::is_research_guard_enabled() {
+            Some(Arc::new(crate::agent::ResearchRuntime::new()))
+        } else {
+            None
+        };
+
         PreparedExecution {
             todos_arc,
             tool_runtime_registry,
@@ -573,7 +579,7 @@ impl AgentExecutor {
             system_prompt: system_prompt.base,
             date_suffix: system_prompt.date_suffix,
             messages,
-            research_runtime: None,
+            research_runtime,
             runner_config: AgentRunnerConfig::new(
                 model.id.clone(),
                 max_iterations,

@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-10-deterministic-research-runtime.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan.md`
 Goal doc owner: Codex
-Last updated: 2026-06-10 17:15 +03
+Last updated: 2026-06-10 17:34 +03
 
 ## Objective
 
@@ -32,10 +32,10 @@ Out of scope:
 
 ## Missing Inputs
 
-- Exact final config flag names for rollout.
-  - Impact: implementation needs stable env/config names for passive runtime, guard, and audit behavior.
-  - Low-risk assumption or fallback: use the PRD names `RESEARCH_RUNTIME_ENABLED`, `RESEARCH_GUARD_ENABLED`, `RESEARCH_AUDIT_ENABLED`, `RESEARCH_DEBUG_TRACE` unless existing config conventions suggest a better `OXIDE_*` prefix.
-  - User/external action needed: none before checkpoint 1; decide before config checkpoint if naming matters.
+- Exact final config flag names for audit/debug rollout.
+  - Impact: later audit artifacts still need stable env/config names.
+  - Low-risk assumption or fallback: `RESEARCH_GUARD_ENABLED` is now used for the final-answer guard; keep `RESEARCH_AUDIT_ENABLED` and `RESEARCH_DEBUG_TRACE` as likely names unless existing config conventions suggest a better prefix.
+  - User/external action needed: none before audit-artifact checkpoint.
 
 ## Repository Context
 
@@ -111,11 +111,11 @@ Out of scope:
 
 - G6: Final answer guard is soft, evidence-aware, and config-gated
   - Source: `docs/prd/plan.md` lines 736-815, 1405-1409, 1447-1457.
-  - Requirement: implement `FinalAnswerGuardHook` behind config; it must use `AfterAgent -> ForceIteration` for unsupported high-impact claims and remain disabled or observe-only by default at first.
-  - Acceptance: conceptual stable answers pass; volatile/current/price/version/legal/high-impact claims without adequate evidence force continuation only when guard is enabled for research modes.
+  - Requirement: implement `FinalAnswerGuardHook` behind config; it must use `AfterAgent -> ForceIteration` for unsupported high-impact claims and be disableable through env.
+  - Acceptance: conceptual stable answers pass; volatile/current/price/version/legal/high-impact claims without adequate fetched evidence force continuation while the default-on guard is enabled; `RESEARCH_GUARD_ENABLED=false` disables registration.
   - Evidence required: focused hook tests for allow/block/caveat decisions, config-default test, and review of hook registration.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-core/src/agent/hooks/final_answer_guard.rs:52` adds `FinalAnswerGuardHook`; `crates/oxide-agent-core/src/agent/hooks/final_answer_guard.rs:104` detects deterministic current/pricing/version/legal/status markers; `crates/oxide-agent-core/src/agent/hooks/final_answer_guard.rs:119` requires successful primary fetched non-snippet evidence; `crates/oxide-agent-core/src/agent/executor/config.rs:54` registers the hook by default; `crates/oxide-agent-core/src/config.rs:2265` exposes default-on `RESEARCH_GUARD_ENABLED`; `crates/oxide-agent-core/src/agent/executor/execution.rs:569` supplies passive `ResearchRuntime` when guard is enabled. Tests `conceptual_final_answer_passes`, `conceptual_supported_wording_without_freshness_passes`, `unsupported_high_impact_claim_forces_iteration`, `fetched_primary_evidence_allows_high_impact_claim`, `snippet_only_search_evidence_is_not_sufficient`, `research_guard_is_enabled_by_default_and_env_disables_it`, `executor_registers_final_answer_guard_by_default`, and `executor_skips_final_answer_guard_when_env_disables_it` passed.
 
 - G7: Research audit artifacts are available without becoming policy
   - Source: `docs/prd/plan.md` lines 816-882.
@@ -141,17 +141,17 @@ Out of scope:
 
 - Q3: Rollout is backward-compatible
   - Source: `docs/prd/plan.md` lines 1290-1317 and 1405-1409.
-  - Acceptance: passive runtime and guard can be disabled; guard is not strict-by-default; provider stdout remains model-readable after payload changes.
+  - Acceptance: passive runtime and guard can be disabled; default-on guard stays soft for conceptual answers and respects continuation limits; provider stdout remains model-readable after payload changes.
   - Evidence required: config-default tests and provider output tests.
   - Status: in_progress
-  - Evidence collected: `PreparedExecution.research_runtime` is `None` by default in `crates/oxide-agent-core/src/agent/executor/execution.rs`, so passive research observation remains disabled unless explicitly supplied; no final-answer guard behavior changed in Checkpoint 2. Checkpoint 3 preserves model-readable provider stdout: SearXNG still returns Markdown summaries, and Crawl4AI now returns fetched Markdown as stdout while moving the typed JSON contract into `structured_payload`.
+  - Evidence collected: Checkpoint 2 kept passive research optional until supplied by execution context. Checkpoint 3 preserves model-readable provider stdout: SearXNG still returns Markdown summaries, and Crawl4AI returns fetched Markdown as stdout while moving the typed JSON contract into `structured_payload`. Checkpoint 4 makes the guard default-on per user direction, keeps conceptual answers as `Continue`, respects continuation limits, and supports env disable with `RESEARCH_GUARD_ENABLED=false`.
 
 - N1: No premature full research planner or full evidence graph
   - Source: `docs/prd/plan.md` lines 1399-1421.
   - Must preserve: first milestone stops at typed boundary, passive ledger, provider payloads, and soft guard; query/fetch planners and full claim/evidence linking are later work.
   - Evidence required: `git diff` review and updated Decisions if scope changes.
   - Status: in_progress
-  - Evidence collected: Checkpoint 2 added passive observation types and no query planner, fetch planner, claim/evidence graph, or final-answer guard.
+  - Evidence collected: Checkpoint 2 added passive observation types and no query planner, fetch planner, claim/evidence graph, or final-answer guard. Checkpoint 4 added only a deterministic marker heuristic and coarse fetched-evidence check; no query planner, fetch planner, or full claim/evidence linker was introduced.
 
 - N2: Fetch tools are not reduced to a flat hard search counter
   - Source: `docs/prd/plan.md` lines 676-735 and 1429-1433.
@@ -163,14 +163,14 @@ Out of scope:
 - V1: Formatting and lint validation
   - Source: `AGENTS.md` lines 145-153.
   - Evidence required: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings` before final completion, or documented narrower checkpoint validation when appropriate.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: `cargo fmt --all -- --check` passed for Checkpoint 4; full final clippy remains pending for rollout readiness.
 
 - V2: Build and focused test validation
   - Source: `AGENTS.md` lines 132-153.
   - Evidence required: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; focused `cargo test -p oxide-agent-core` filters for touched runtime/provider modules.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 focused tests and embedded profile check passed on 2026-06-10. Checkpoint 2 tests `research::` and `typed_runtime_records_research_output_before_after_tool_hooks` passed, and `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed. Checkpoint 3 tests `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local --lib -- searxng` and `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local --lib -- crawl4ai` passed, plus `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local` and embedded workspace check; full final validation remains pending for later checkpoints.
+  - Evidence collected: Checkpoint 1 focused tests and embedded profile check passed on 2026-06-10. Checkpoint 2 tests `research::` and `typed_runtime_records_research_output_before_after_tool_hooks` passed, and `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed. Checkpoint 3 tests `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local --lib -- searxng` and `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local --lib -- crawl4ai` passed, plus `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local` and embedded workspace check. Checkpoint 4 focused `final_answer_guard`, config default, and executor registration tests passed, plus embedded workspace check; full final validation remains pending for later checkpoints.
 
 ## Implementation Plan
 
@@ -215,10 +215,10 @@ Out of scope:
 - Expected changes:
   - Add deterministic high-impact claim heuristic for volatile/current/legal/pricing/version/current-status claims.
   - Add `FinalAnswerGuardHook` using `AfterAgent -> ForceIteration` and concrete next-action context.
-  - Register guard only behind config and only for research/deep/paranoid behavior at first.
+  - Register guard by default and allow env disable with `RESEARCH_GUARD_ENABLED=false`.
 - Validation:
   - Hook tests: conceptual pass, unsupported high-impact claim blocks, fetched non-snippet evidence allows, snippet-only evidence does not allow high-impact claim.
-  - Config-default test proving guard is not strict-by-default.
+  - Config-default test proving guard is default-on, env-disableable, and not strict for conceptual answers.
 - Exit condition: guard can safely run in soft/observe mode without surprising standard conceptual tasks.
 
 ### Checkpoint 5: Fallback normalization and audit artifact
@@ -270,8 +270,8 @@ Out of scope:
 - 2026-06-10: Existing repository convention is `docs/goals/<YYYY-MM-DD>-<short-slug>.md`; this goal uses `docs/goals/2026-06-10-deterministic-research-runtime.md`.
 - 2026-06-10: The first implementation checkpoint is lifecycle correctness (`BeforeTool` runtime enforcement plus `AfterAgent` `Finish`/`Block`) before `ResearchRuntime`, matching the fixed RECON decisions.
 - 2026-06-10: Primary research architecture is `searxng_search` for discovery and `crawl4ai_markdown` for fetched evidence; other search/fetch providers are fallback compatibility.
-- 2026-06-10: Guard starts disabled or observe-only by default. Runtime policy, not prompt guidance, is the acceptance boundary.
-- 2026-06-10: Checkpoint 2 keeps passive research runtime disabled by default (`PreparedExecution.research_runtime = None`) and only records observations when a runtime is explicitly supplied.
+- 2026-06-10: User changed rollout direction for Checkpoint 4: `FinalAnswerGuardHook` is registered by default and can be disabled with `RESEARCH_GUARD_ENABLED=false`; runtime policy, not prompt guidance, remains the acceptance boundary.
+- 2026-06-10: Checkpoint 2 initially kept passive research runtime disabled by default (`PreparedExecution.research_runtime = None`) and only recorded observations when a runtime was explicitly supplied; Checkpoint 4 now supplies it for default-on guard evaluation.
 - 2026-06-10: Checkpoint 3 keeps provider stdout model-readable while making typed payloads authoritative: SearXNG stdout remains Markdown discovery text, and Crawl4AI stdout becomes fetched Markdown instead of JSON.
 
 ## Progress Log
@@ -304,6 +304,13 @@ Out of scope:
   - Audit IDs updated: G4 verified; Q3/V2 in progress with checkpoint evidence.
   - Next: Checkpoint 4 -- soft final answer guard.
 
+- 2026-06-10 17:34 +03: Checkpoint 4 soft final answer guard implemented.
+  - Changed: added `FinalAnswerGuardHook`, deterministic high-impact/current claim marker detection, fetched primary evidence allowance, snippet-only rejection, default-on env config, executor registration, and passive runtime provisioning while the guard is enabled.
+  - Evidence: `crates/oxide-agent-core/src/agent/hooks/final_answer_guard.rs:52`, `crates/oxide-agent-core/src/agent/hooks/final_answer_guard.rs:104`, `crates/oxide-agent-core/src/agent/hooks/final_answer_guard.rs:119`, `crates/oxide-agent-core/src/agent/executor/config.rs:54`, `crates/oxide-agent-core/src/agent/executor/execution.rs:569`, `crates/oxide-agent-core/src/config.rs:2265`, `.env.example:147`.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib final_answer_guard`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research_guard_is_enabled_by_default_and_env_disables_it`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib executor_registers_final_answer_guard`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
+  - Audit IDs updated: G6 verified; Q3/N1/V1/V2 in progress with checkpoint evidence.
+  - Next: Checkpoint 5 -- fallback normalization and audit artifact.
+
 ## Risks and Blockers
 
 - Runtime policy dispatch can affect all tool calls.
@@ -321,7 +328,7 @@ Out of scope:
 - Final-answer guard can loop.
   - Impact: guard may force repeated iterations if the model refuses to fetch evidence or downgrade wording.
   - Evidence: PRD calls out continuation-limit and false-positive risks.
-  - Mitigation or requested decision: keep guard disabled/observe-only first; when enabled, produce concrete next actions and preserve continuation limit behavior.
+  - Mitigation or requested decision: guard is default-on per user direction but remains env-disableable, allows conceptual answers, emits concrete next actions, and preserves continuation-limit escape behavior.
   - Audit IDs affected: G6, Q3.
 
 - Payload bloat from fetched Markdown.

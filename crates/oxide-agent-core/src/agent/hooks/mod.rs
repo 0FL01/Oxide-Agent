@@ -4,6 +4,7 @@
 //! at various points in the agent lifecycle.
 
 pub mod completion;
+pub mod final_answer_guard;
 pub mod hot_context;
 pub mod memory;
 pub mod registry;
@@ -14,6 +15,7 @@ pub mod tool_access;
 pub mod types;
 
 pub use completion::CompletionCheckHook;
+pub use final_answer_guard::FinalAnswerGuardHook;
 pub use hot_context::HotContextHealthHook;
 pub use memory::{EpisodicExtractHook, RetrievalAdvisorHook};
 pub use registry::{Hook, HookRegistry};

@@ -89,6 +89,31 @@ fn executor_registers_episodic_extract_hook_for_wiki_drafts() {
     assert!(executor.runner.has_registered_hook("episodic_extract"));
 }
 
+#[test]
+fn executor_registers_final_answer_guard_by_default() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::testing::test_remove_env("RESEARCH_GUARD_ENABLED");
+
+    let executor = build_executor();
+
+    assert!(executor.runner.has_registered_hook("final_answer_guard"));
+}
+
+#[test]
+fn executor_skips_final_answer_guard_when_env_disables_it() {
+    let _guard = crate::config::test_env_mutex()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::testing::test_set_env("RESEARCH_GUARD_ENABLED", "false");
+
+    let executor = build_executor();
+
+    assert!(!executor.runner.has_registered_hook("final_answer_guard"));
+    crate::testing::test_remove_env("RESEARCH_GUARD_ENABLED");
+}
+
 #[tokio::test]
 async fn prepare_execution_uses_executor_model_routes_override() {
     let settings = Arc::new(crate::config::AgentSettings {
