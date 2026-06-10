@@ -13,6 +13,7 @@ use crate::agent::research::{
     AnswerVerifierVerdict, ResearchVerifierTrace, StrictAnswerVerifier, VerifierUnsupportedClaim,
 };
 use crate::agent::session::PendingUserInput;
+use crate::llm::LlmClient;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -325,6 +326,23 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
         let round = state.continuation_count.saturating_add(1);
         let proof_not_found_mode = state.proof_not_found_report_requested;
         let evidence_document_count = research_snapshot.evidence_documents.len();
+        if let Some(tx) = ctx.progress_tx {
+            let _ = tx
+                .send(AgentEvent::FinalDraftPendingVerification {
+                    source: AgentEventSource::Root,
+                    content_chars: final_response.chars().count(),
+                    round,
+                })
+                .await;
+            let _ = tx
+                .send(AgentEvent::ResearchVerificationStarted {
+                    round,
+                    max_rounds,
+                    proof_not_found_mode,
+                    evidence_document_count,
+                })
+                .await;
+        }
         let decision = verifier
             .verify(AnswerVerificationRequest {
                 final_answer: final_response,
@@ -361,9 +379,21 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
             }
             Err(error) => {
                 let summary = verifier_error_summary(&error);
+                let transient_outcome = verifier_transient_error_outcome(
+                    &error,
+                    &summary,
+                    round,
+                    max_rounds,
+                    proof_not_found_mode,
+                );
                 let payload = research_runtime.record_verifier_trace(ResearchVerifierTrace {
                     verdict: None,
-                    outcome: "fail_closed".to_string(),
+                    outcome: if transient_outcome.is_some() {
+                        "continue"
+                    } else {
+                        "fail_closed"
+                    }
+                    .to_string(),
                     summary: summary.clone(),
                     error: Some(summary.clone()),
                     round,
@@ -375,6 +405,11 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
                     required_next_actions: Vec::new(),
                 });
                 emit_research_verification_trace(ctx.progress_tx, payload).await;
+
+                if let Some(outcome) = transient_outcome {
+                    return Ok(outcome);
+                }
+
                 self.save_undelivered_final_response_draft(
                     ctx,
                     final_response,
@@ -657,6 +692,42 @@ fn verifier_error_summary(error: &AnswerVerificationError) -> String {
     error.to_string()
 }
 
+fn verifier_transient_error_outcome(
+    error: &AnswerVerificationError,
+    summary: &str,
+    round: usize,
+    max_rounds: usize,
+    proof_not_found_mode: bool,
+) -> Option<FinalVerificationOutcome> {
+    let is_transient = match error {
+        AnswerVerificationError::Timeout { .. } => true,
+        AnswerVerificationError::Provider(error) => LlmClient::is_retryable_error(error),
+        AnswerVerificationError::Disabled
+        | AnswerVerificationError::MissingRoute
+        | AnswerVerificationError::InvalidJson(_) => false,
+    };
+
+    if !is_transient || proof_not_found_mode || round >= max_rounds.max(1) {
+        return None;
+    }
+
+    Some(FinalVerificationOutcome::Continue {
+        reason: "Strict answer verifier had a transient provider failure; retrying with a shorter evidence-cited answer".to_string(),
+        context: verifier_transient_error_context(summary),
+    })
+}
+
+fn verifier_transient_error_context(summary: &str) -> String {
+    [
+        "The strict answer verifier could not complete because of a transient provider failure or timeout.".to_string(),
+        "Do not deliver the rejected draft. Produce a shorter final answer that is easier to verify.".to_string(),
+        "Keep only claims directly supported by fetched EvidenceDocument excerpts; remove unsupported rankings, recommendations, license claims, benchmark metrics, and suitability/compliance claims.".to_string(),
+        "Prefer concise bullets with explicit source references. If evidence is insufficient, say what was not confirmed instead of inventing support.".to_string(),
+        format!("Verifier failure: {summary}"),
+    ]
+    .join("\n")
+}
+
 fn should_salvage_structured_output_failure(raw: &str) -> bool {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -707,7 +778,7 @@ mod tests {
     };
     use crate::config::{AgentSettings, ModelInfo};
     use crate::llm::{
-        ChatResponse, ChatWithToolsRequest, InvocationId, LlmClient, MockLlmProvider,
+        ChatResponse, ChatWithToolsRequest, InvocationId, LlmClient, LlmError, MockLlmProvider,
     };
     use chrono::Utc;
     use serde_json::json;
@@ -795,6 +866,29 @@ mod tests {
                     reasoning_content: None,
                     usage: None,
                 })
+            },
+        );
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+        Arc::new(llm)
+    }
+
+    fn verifier_llm_client_retryable_empty_response() -> Arc<LlmClient> {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider.expect_chat_with_tools().times(3).returning(
+            |request: ChatWithToolsRequest<'_>| {
+                assert!(request.json_mode);
+                assert_eq!(request.reasoning_effort, Some("disabled"));
+                Err(LlmError::EmptyResponse(
+                    " verifier returned no text".to_string(),
+                ))
             },
         );
         let mut llm = LlmClient::new(&settings);
@@ -1033,6 +1127,44 @@ mod tests {
         let event = progress_rx
             .recv()
             .await
+            .expect("final draft event should be emitted");
+        match event {
+            AgentEvent::FinalDraftPendingVerification {
+                content_chars,
+                round,
+                ..
+            } => {
+                assert_eq!(
+                    content_chars,
+                    "Model X has 97% F1 on Russian PII.".chars().count()
+                );
+                assert_eq!(round, 1);
+            }
+            other => panic!("expected final draft event, got {other:?}"),
+        }
+
+        let event = progress_rx
+            .recv()
+            .await
+            .expect("verifier started event should be emitted");
+        match event {
+            AgentEvent::ResearchVerificationStarted {
+                round,
+                max_rounds,
+                proof_not_found_mode,
+                evidence_document_count,
+            } => {
+                assert_eq!(round, 1);
+                assert_eq!(max_rounds, 10);
+                assert!(!proof_not_found_mode);
+                assert_eq!(evidence_document_count, 1);
+            }
+            other => panic!("expected verifier started event, got {other:?}"),
+        }
+
+        let event = progress_rx
+            .recv()
+            .await
             .expect("verifier trace event should be emitted");
         match event {
             AgentEvent::ResearchVerification { payload } => {
@@ -1064,6 +1196,69 @@ mod tests {
                     .content
                     .contains("Strict answer verifier requires more proof evidence")
         }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_retryable_provider_error_forces_shorter_retry_iteration() {
+        let llm_client = verifier_llm_client_retryable_empty_response();
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let research_runtime = runtime_with_evidence_document();
+        let mut ctx = AgentRunnerContext {
+            task: "produce verified report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "strict-verifier-transient-error",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: Some(Arc::clone(&research_runtime)),
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
+                .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
+        };
+        let mut state = RunState::new();
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "Model X has 97% F1 on Russian PII.".to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .expect("retryable verifier provider error should continue");
+
+        assert!(result.is_none());
+        assert_eq!(state.continuation_count, 1);
+        assert!(ctx.agent.memory().get_messages().iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft
+                && message.content.contains("Model X has 97% F1")
+        }));
+        assert!(ctx.messages.iter().any(|message| {
+            message.role == "system"
+                && message.content.contains("shorter final answer")
+                && message.content.contains("remove unsupported rankings")
+        }));
+        let audit = research_runtime.audit_payload();
+        assert_eq!(audit["final_verifier_trace"]["outcome"], "continue");
+        assert!(
+            audit["final_verifier_trace"]["error"]
+                .as_str()
+                .expect("error string")
+                .contains("strict answer verifier provider failed")
+        );
     }
 
     #[tokio::test]

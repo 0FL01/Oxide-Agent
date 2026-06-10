@@ -662,7 +662,7 @@ async fn persist_task_events(
         return;
     }
 
-    if let Err(error) = web_task
+    let persisted = if let Err(error) = web_task
         .web_store
         .append_task_events(
             web_task.user_id,
@@ -675,15 +675,21 @@ async fn persist_task_events(
         warn!(
             task_id = %web_task.task_id,
             error = %error,
-            "Failed to persist web task events"
+            "Failed to persist web task events; broadcasting to live subscribers only"
         );
-        return;
-    }
+        false
+    } else {
+        true
+    };
 
     if let Some(event_log) = web_task.event_log.as_ref() {
         for event in &events {
             event_log.push_persisted(event.clone()).await;
         }
+    }
+
+    if !persisted {
+        return;
     }
 
     let now = chrono::Utc::now();

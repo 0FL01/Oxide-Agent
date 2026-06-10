@@ -1613,6 +1613,14 @@ mod tests {
     }
 
     #[test]
+    fn research_verifier_defaults_keep_payload_bounded() {
+        let settings = AgentSettings::default();
+
+        assert_eq!(settings.get_research_verifier_max_evidence_docs(), 12);
+        assert_eq!(settings.get_research_verifier_max_excerpt_chars(), 4096);
+    }
+
+    #[test]
     fn route_provider_validation_rejects_unknown_research_verifier_provider() {
         let settings = AgentSettings {
             research_verifier_model_id: Some("verifier-model".to_string()),
@@ -2440,9 +2448,9 @@ pub const RESEARCH_VERIFIER_MAX_ROUNDS: usize = 10;
 /// Default strict verifier request timeout.
 pub const RESEARCH_VERIFIER_TIMEOUT_SECS: u64 = 120;
 /// Default maximum evidence documents included in one verifier request.
-pub const RESEARCH_VERIFIER_MAX_EVIDENCE_DOCS: usize = 30;
+pub const RESEARCH_VERIFIER_MAX_EVIDENCE_DOCS: usize = 12;
 /// Default maximum excerpt characters per evidence document included in one verifier request.
-pub const RESEARCH_VERIFIER_MAX_EXCERPT_CHARS: usize = 12_000;
+pub const RESEARCH_VERIFIER_MAX_EXCERPT_CHARS: usize = 4_096;
 
 /// Maximum tokens for background Wiki Memory writer response.
 pub const WIKI_MEMORY_WRITER_MAX_TOKENS: u32 = 4096;

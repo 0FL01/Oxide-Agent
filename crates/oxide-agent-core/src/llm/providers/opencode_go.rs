@@ -658,6 +658,14 @@ impl LlmProvider for OpenCodeGoProvider {
                 ModelProtocol::AnthropicMessages => parse_anthropic_messages_response(response)?,
                 ModelProtocol::Unknown => unreachable!("unknown protocol returned before request"),
             };
+            let parsed = require_text_for_json_object_response(
+                parsed,
+                self.profile,
+                request_kind,
+                model_id,
+                json_mode,
+                !tools.is_empty(),
+            )?;
             log_response_summary(self.profile, request_kind, model_id, &parsed);
             Ok(parsed)
         }
@@ -1302,6 +1310,33 @@ fn should_use_native_json_mode(json_mode: bool, has_tools: bool) -> bool {
     json_mode && !has_tools
 }
 
+fn require_text_for_json_object_response(
+    response: ChatResponse,
+    profile: OpenCodeProviderProfile,
+    request_kind: &str,
+    model_id: &str,
+    json_mode: bool,
+    has_tools: bool,
+) -> Result<ChatResponse, LlmError> {
+    if should_use_native_json_mode(json_mode, has_tools)
+        && response
+            .content
+            .as_deref()
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+            .is_none()
+        && response.tool_calls.is_empty()
+    {
+        return Err(LlmError::EmptyResponse(format!(
+            "{} returned no text content for {request_kind} JSON-object request (model={})",
+            profile.display_name,
+            normalize_model_id(model_id)
+        )));
+    }
+
+    Ok(response)
+}
+
 fn parse_chat_response(response: Value) -> Result<ChatResponse, LlmError> {
     if let Some(error) = extract_opencode_error_response(&response) {
         return Err(LlmError::ApiError(error));
@@ -1618,11 +1653,12 @@ mod tests {
         derive_messages_api_base, is_reasoning_model, normalize_model_id,
         opencode_go_should_throttle, parse_anthropic_messages_response, parse_anthropic_usage,
         parse_chat_response, parse_tool_calls, parse_usage, prepare_anthropic_messages,
-        prepare_structured_messages, prepare_tools_json, unsupported_protocol_error,
+        prepare_structured_messages, prepare_tools_json, require_text_for_json_object_response,
+        unsupported_protocol_error,
     };
     use crate::llm::{
-        LlmError, Message, MessageContentPart, ToolCall, ToolCallCorrelation, ToolCallFunction,
-        ToolDefinition,
+        ChatResponse, LlmError, Message, MessageContentPart, ToolCall, ToolCallCorrelation,
+        ToolCallFunction, ToolDefinition,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -1823,6 +1859,32 @@ mod tests {
         assert_eq!(body["response_format"]["type"], json!("json_object"));
         assert!(body.get("reasoning_effort").is_none());
         assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn json_object_response_without_text_is_retryable_empty_response() {
+        let response = ChatResponse {
+            content: Some("  \n".to_string()),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            reasoning_content: Some("reasoning-only response".to_string()),
+            usage: None,
+        };
+
+        let error = require_text_for_json_object_response(
+            response,
+            OpenCodeProviderProfile::go(),
+            "chat_with_tools",
+            "opencode-go/deepseek-v4-flash",
+            true,
+            false,
+        )
+        .expect_err(
+            "JSON-object response without text should fail before throttle records success",
+        );
+
+        assert!(matches!(error, LlmError::EmptyResponse(_)));
+        assert!(opencode_go_should_throttle(&error));
     }
 
     #[test]

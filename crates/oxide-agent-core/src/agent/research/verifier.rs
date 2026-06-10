@@ -2,12 +2,13 @@
 
 use super::{EvidenceDocument, ResearchSnapshot, source_priority_label};
 use crate::config::{AgentSettings, ModelInfo};
-use crate::llm::{InternalTextPurpose, LlmClient};
+use crate::llm::{InternalTextPurpose, LlmClient, LlmError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tracing::info;
 
 const SYSTEM_PROMPT: &str = r#"You are a strict zero-trust answer verifier.
 
@@ -203,7 +204,7 @@ pub enum AnswerVerificationError {
     MissingRoute,
     /// Verifier provider call failed.
     #[error("strict answer verifier provider failed: {0}")]
-    Provider(String),
+    Provider(LlmError),
     /// Verifier provider did not respond before timeout.
     #[error("strict answer verifier timed out after {timeout_secs}s")]
     Timeout {
@@ -233,28 +234,44 @@ impl StrictAnswerVerifier {
         &self,
         request: AnswerVerificationRequest<'_>,
     ) -> Result<AnswerVerificationDecision, AnswerVerificationError> {
+        match tokio::time::timeout(self.config.timeout, self.verify_inner(request)).await {
+            Ok(result) => result,
+            Err(_) => Err(AnswerVerificationError::Timeout {
+                timeout_secs: self.config.timeout.as_secs().max(1),
+            }),
+        }
+    }
+
+    async fn verify_inner(
+        &self,
+        request: AnswerVerificationRequest<'_>,
+    ) -> Result<AnswerVerificationDecision, AnswerVerificationError> {
         let model = self.config.require_model()?;
         let base_user_message = build_verifier_user_message(&request, &self.config);
+        let stats = verifier_request_stats(&request, &self.config, &base_user_message);
+        info!(
+            final_answer_chars = stats.final_answer_chars,
+            evidence_docs_available = stats.evidence_docs_available,
+            evidence_docs_sent = stats.evidence_docs_sent,
+            evidence_excerpt_chars = stats.evidence_excerpt_chars,
+            verifier_request_chars = stats.verifier_request_chars,
+            max_excerpt_chars = self.config.max_excerpt_chars,
+            "Strict answer verifier request size"
+        );
         let mut user_message = base_user_message.clone();
         let mut last_invalid_json: Option<String> = None;
 
         for attempt in 1..=MAX_VERIFIER_JSON_ATTEMPTS {
-            let llm_call = self.llm_client.complete_internal_json_object_text(
-                InternalTextPurpose::AnswerVerification,
-                SYSTEM_PROMPT,
-                &user_message,
-                model,
-            );
-
-            let raw = match tokio::time::timeout(self.config.timeout, llm_call).await {
-                Ok(Ok(output)) => output,
-                Ok(Err(error)) => return Err(AnswerVerificationError::Provider(error.to_string())),
-                Err(_) => {
-                    return Err(AnswerVerificationError::Timeout {
-                        timeout_secs: self.config.timeout.as_secs().max(1),
-                    });
-                }
-            };
+            let raw = self
+                .llm_client
+                .complete_internal_json_object_text(
+                    InternalTextPurpose::AnswerVerification,
+                    SYSTEM_PROMPT,
+                    &user_message,
+                    model,
+                )
+                .await
+                .map_err(AnswerVerificationError::Provider)?;
 
             match parse_verifier_decision(&raw) {
                 Ok(decision) => return Ok(decision),
@@ -286,6 +303,47 @@ pub fn parse_verifier_decision(
 ) -> Result<AnswerVerificationDecision, AnswerVerificationError> {
     serde_json::from_str::<AnswerVerificationDecision>(raw.trim())
         .map_err(|error| AnswerVerificationError::InvalidJson(error.to_string()))
+}
+
+struct VerifierRequestStats {
+    final_answer_chars: usize,
+    evidence_docs_available: usize,
+    evidence_docs_sent: usize,
+    evidence_excerpt_chars: usize,
+    verifier_request_chars: usize,
+}
+
+fn verifier_request_stats(
+    request: &AnswerVerificationRequest<'_>,
+    config: &ResearchVerifierConfig,
+    user_message: &str,
+) -> VerifierRequestStats {
+    let evidence_docs_sent = request
+        .research
+        .evidence_documents
+        .len()
+        .min(config.max_evidence_docs);
+    let evidence_excerpt_chars = request
+        .research
+        .evidence_documents
+        .iter()
+        .take(config.max_evidence_docs)
+        .map(|document| {
+            document
+                .excerpt
+                .chars()
+                .take(config.max_excerpt_chars)
+                .count()
+        })
+        .sum();
+
+    VerifierRequestStats {
+        final_answer_chars: request.final_answer.chars().count(),
+        evidence_docs_available: request.research.evidence_documents.len(),
+        evidence_docs_sent,
+        evidence_excerpt_chars,
+        verifier_request_chars: user_message.chars().count(),
+    }
 }
 
 fn build_verifier_user_message(
@@ -686,6 +744,57 @@ mod tests {
             .expect_err("provider errors should fail closed");
 
         assert!(matches!(error, AnswerVerificationError::Provider(_)));
+    }
+
+    #[tokio::test]
+    async fn verifier_retries_retryable_empty_response_and_recovers() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_mock = Arc::clone(&attempts);
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_chat_with_tools()
+            .times(2)
+            .returning(move |request| {
+                assert_verifier_json_request(&request);
+                let attempt = attempts_for_mock.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Ok(ChatResponse {
+                        content: None,
+                        tool_calls: Vec::new(),
+                        finish_reason: "stop".to_string(),
+                        reasoning_content: Some("reasoning without final JSON".to_string()),
+                        usage: None,
+                    })
+                } else {
+                    Ok(chat_response(decision_json("allow")))
+                }
+            });
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+        let verifier = StrictAnswerVerifier::new(
+            Arc::new(llm),
+            ResearchVerifierConfig::from_settings(&settings),
+        );
+
+        let decision = verifier
+            .verify(AnswerVerificationRequest {
+                final_answer: "The model is Apache 2.0.",
+                research: &sample_snapshot(),
+                round: 1,
+                proof_not_found_mode: false,
+            })
+            .await
+            .expect("retryable empty response should recover");
+
+        assert_eq!(decision.verdict, AnswerVerifierVerdict::Allow);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     struct SlowProvider;

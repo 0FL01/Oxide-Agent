@@ -193,6 +193,27 @@ pub enum AgentEvent {
         /// Compact structured verifier trace payload.
         payload: serde_json::Value,
     },
+    /// Candidate final draft was generated and is about to be checked before delivery.
+    FinalDraftPendingVerification {
+        /// Root or delegated sub-agent source.
+        #[serde(default)]
+        source: AgentEventSource,
+        /// Character count of the withheld draft. The draft text itself is not exposed.
+        content_chars: usize,
+        /// Current verifier-guided round number.
+        round: usize,
+    },
+    /// Strict research verifier sidecar started checking a candidate final draft.
+    ResearchVerificationStarted {
+        /// Current verifier-guided round number.
+        round: usize,
+        /// Maximum verifier-guided rounds before proof-not-found mode.
+        max_rounds: usize,
+        /// Whether the verifier is checking a constrained proof-not-found report.
+        proof_not_found_mode: bool,
+        /// Number of evidence documents sent to the verifier.
+        evidence_document_count: usize,
+    },
     /// Event relayed from a named delegated sub-agent.
     SubAgent {
         /// Stable sub-agent job id.
@@ -399,6 +420,15 @@ impl AgentEvent {
                 source: AgentEventSource::SubAgent,
                 summary,
             },
+            Self::FinalDraftPendingVerification {
+                content_chars,
+                round,
+                ..
+            } => Self::FinalDraftPendingVerification {
+                source: AgentEventSource::SubAgent,
+                content_chars,
+                round,
+            },
             other => other,
         }
     }
@@ -567,6 +597,8 @@ impl ProgressState {
             AgentEvent::ResearchVerification { payload } => {
                 tracing::info!(payload = %payload, "Research verification trace")
             }
+            AgentEvent::FinalDraftPendingVerification { .. }
+            | AgentEvent::ResearchVerificationStarted { .. } => {}
             AgentEvent::LoopDetected {
                 loop_type,
                 iteration,

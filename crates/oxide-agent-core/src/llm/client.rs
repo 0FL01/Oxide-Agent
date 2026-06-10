@@ -10,6 +10,8 @@ use super::{
 };
 use crate::config::AGENT_RESPONSE_SOFT_MAX_OUTPUT_TOKENS;
 
+const INTERNAL_JSON_OBJECT_MAX_PROVIDER_ATTEMPTS: usize = 3;
+
 /// Unified client for interacting with multiple LLM providers
 pub struct LlmClient {
     providers: HashMap<String, Arc<dyn LlmProvider>>,
@@ -449,9 +451,9 @@ impl LlmClient {
 
     /// Perform an internal JSON-object completion request for strict sidecar tasks.
     ///
-    /// This uses the provider chat request path with no tools, native JSON mode when the
-    /// provider supports it, and reasoning disabled. It is intentionally separate from
-    /// `complete_internal_text` so general internal prose tasks keep their existing behavior.
+    /// This reuses the standard single-attempt chat request helper with no tools, native JSON
+    /// mode, and reasoning disabled. It is intentionally separate from `complete_internal_text`
+    /// so general internal prose tasks keep their existing behavior.
     #[instrument(skip(self, system_prompt, user_message, model_info))]
     pub(crate) async fn complete_internal_json_object_text(
         &self,
@@ -460,18 +462,7 @@ impl LlmClient {
         user_message: &str,
         model_info: &crate::config::ModelInfo,
     ) -> Result<String, LlmError> {
-        let provider = self.get_provider(&model_info.provider)?;
-        let capabilities = Self::provider_capabilities_for_model(model_info);
-        let history = [Message::user(user_message)];
-        let (system_prompt, messages) =
-            support::history::fold_system_messages_into_prompt(system_prompt, "", &history);
-
-        if !capabilities.can_run_chat_with_tools_request(false, true) {
-            return Err(LlmError::ApiError(format!(
-                "JSON-object internal requests are not supported for {} model `{}`",
-                model_info.provider, model_info.id
-            )));
-        }
+        let messages = [Message::user(user_message)];
 
         debug!(
             purpose = ?purpose,
@@ -486,53 +477,82 @@ impl LlmClient {
             "Full internal JSON-object LLM request"
         );
 
-        let start = std::time::Instant::now();
-        let request = ChatWithToolsRequest {
-            system_prompt: &system_prompt,
-            messages: &messages,
-            tools: &[],
-            model_id: &model_info.id,
-            max_tokens: Self::soft_cap_output_tokens(model_info.max_output_tokens),
-            temperature: None,
-            json_mode: true,
-            reasoning_effort: Some("disabled"),
-        };
-        let result = provider
-            .chat_with_tools(request)
-            .await
-            .and_then(|response| {
-                response
-                    .content
-                    .filter(|content| !content.trim().is_empty())
-                    .ok_or_else(|| {
-                        LlmError::ApiError(format!(
-                            "{} returned no text content for internal JSON-object request",
-                            model_info.provider
-                        ))
-                    })
-            });
-        let duration = start.elapsed();
+        for attempt in 1..=INTERNAL_JSON_OBJECT_MAX_PROVIDER_ATTEMPTS {
+            let start = std::time::Instant::now();
+            let result = self
+                .chat_with_tools_single_attempt_for_model_info(
+                    system_prompt,
+                    "",
+                    &messages,
+                    &[],
+                    model_info,
+                    None,
+                    true,
+                    Some("disabled"),
+                )
+                .await
+                .and_then(|response| {
+                    response
+                        .content
+                        .filter(|content| !content.trim().is_empty())
+                        .ok_or_else(|| {
+                            LlmError::EmptyResponse(format!(
+                                "{} returned no text content for internal JSON-object request \
+                                 (purpose={purpose:?}, model={}, provider={})",
+                                model_info.provider, model_info.id, model_info.provider
+                            ))
+                        })
+                });
+            let duration = start.elapsed();
 
-        if let Ok(resp) = &result {
-            debug!(
-                purpose = ?purpose,
-                model = model_info.id,
-                duration_ms = duration.as_millis(),
-                response_len = resp.len(),
-                "Received success response from internal JSON-object LLM request"
-            );
-            trace!(response = ?resp, "Full internal JSON-object LLM response");
-        } else if let Err(e) = &result {
-            warn!(
-                purpose = ?purpose,
-                model = model_info.id,
-                duration_ms = duration.as_millis(),
-                error = %e,
-                "Received error response from internal JSON-object LLM request"
-            );
+            match result {
+                Ok(resp) => {
+                    debug!(
+                        purpose = ?purpose,
+                        model = model_info.id,
+                        attempt,
+                        duration_ms = duration.as_millis(),
+                        response_len = resp.len(),
+                        "Received success response from internal JSON-object LLM request"
+                    );
+                    trace!(response = ?resp, "Full internal JSON-object LLM response");
+                    return Ok(resp);
+                }
+                Err(error) => {
+                    warn!(
+                        purpose = ?purpose,
+                        model = model_info.id,
+                        attempt,
+                        max_attempts = INTERNAL_JSON_OBJECT_MAX_PROVIDER_ATTEMPTS,
+                        duration_ms = duration.as_millis(),
+                        error = %error,
+                        "Received error response from internal JSON-object LLM request"
+                    );
+
+                    if attempt < INTERNAL_JSON_OBJECT_MAX_PROVIDER_ATTEMPTS
+                        && let Some(backoff) = Self::get_retry_delay(&error, attempt)
+                    {
+                        info!(
+                            purpose = ?purpose,
+                            model = model_info.id,
+                            attempt,
+                            max_attempts = INTERNAL_JSON_OBJECT_MAX_PROVIDER_ATTEMPTS,
+                            backoff_ms = backoff.as_millis(),
+                            error = %error,
+                            "Retrying internal JSON-object LLM request"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+
+                    return Err(error);
+                }
+            }
         }
 
-        result
+        Err(LlmError::ApiError(
+            "All internal JSON-object provider attempts exhausted".to_string(),
+        ))
     }
 
     /// Perform a single chat completion request with tool calling (no retry).

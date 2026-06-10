@@ -48,6 +48,12 @@ fn event_variant_name(event: &AgentEvent) -> String {
         AgentEvent::LlmRetrying { .. } => "llm_retrying".to_string(),
         AgentEvent::ProviderFailoverActivated { .. } => "provider_failover_activated".to_string(),
         AgentEvent::ResearchVerification { .. } => "research_verification".to_string(),
+        AgentEvent::ResearchVerificationStarted { .. } => {
+            "research_verification_started".to_string()
+        }
+        AgentEvent::FinalDraftPendingVerification { .. } => {
+            "final_draft_pending_verification".to_string()
+        }
         AgentEvent::Milestone { name, .. } => format!("milestone:{name}"),
         AgentEvent::SubAgent { .. } => {
             unreachable!("effective_agent_event unwraps sub-agent events")
@@ -734,12 +740,14 @@ fn browser_event_parts(
         }
         AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. } => tool_event_parts(event),
         AgentEvent::Continuation { .. }
+        | AgentEvent::FinalDraftPendingVerification { .. }
         | AgentEvent::Finished
         | AgentEvent::Cancelling { .. }
         | AgentEvent::Cancelled
         | AgentEvent::Error(_)
         | AgentEvent::Reasoning { .. }
         | AgentEvent::ResearchVerification { .. }
+        | AgentEvent::ResearchVerificationStarted { .. }
         | AgentEvent::LoopDetected { .. }
         | AgentEvent::Milestone { .. } => lifecycle_event_parts(event),
         AgentEvent::TodosUpdated { source, todos } => (
@@ -1000,6 +1008,39 @@ fn lifecycle_event_parts(event: &AgentEvent) -> (TaskEventKind, String, Value, b
                 false,
             )
         }
+        AgentEvent::ResearchVerificationStarted {
+            round,
+            max_rounds,
+            proof_not_found_mode,
+            evidence_document_count,
+        } => (
+            TaskEventKind::ResearchVerificationStarted,
+            "Checking final draft".to_string(),
+            json!({
+                "round": round,
+                "max_rounds": max_rounds,
+                "proof_not_found_mode": proof_not_found_mode,
+                "evidence_document_count": evidence_document_count,
+            }),
+            false,
+            false,
+        ),
+        AgentEvent::FinalDraftPendingVerification {
+            source,
+            content_chars,
+            round,
+        } => (
+            TaskEventKind::FinalDraft,
+            "Final draft generated".to_string(),
+            json!({
+                "source": source.as_str(),
+                "content_chars": content_chars,
+                "round": round,
+                "status": "pending_verification",
+            }),
+            false,
+            false,
+        ),
         AgentEvent::LoopDetected {
             loop_type,
             iteration,
@@ -1670,6 +1711,58 @@ mod tests {
             event.payload["required_next_actions"][0],
             "fetch the benchmark page"
         );
+    }
+
+    #[tokio::test]
+    async fn collect_events_persists_verifier_progress_events() {
+        let event_log = TaskEventLog::new();
+        let (tx, rx) = mpsc::channel(8);
+
+        tx.send(AgentEvent::FinalDraftPendingVerification {
+            source: AgentEventSource::Root,
+            content_chars: 14_137,
+            round: 2,
+        })
+        .await
+        .expect("send final draft event");
+        tx.send(AgentEvent::ResearchVerificationStarted {
+            round: 2,
+            max_rounds: 10,
+            proof_not_found_mode: false,
+            evidence_document_count: 15,
+        })
+        .await
+        .expect("send verifier started event");
+        drop(tx);
+
+        let result = collect_events(
+            event_log,
+            rx,
+            Some(BrowserEventScope::new(
+                7,
+                "session-1".to_string(),
+                "task-1".to_string(),
+            )),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(result.persisted_events.len(), 2);
+        let draft = &result.persisted_events[0];
+        assert_eq!(draft.kind, TaskEventKind::FinalDraft);
+        assert_eq!(draft.summary, "Final draft generated");
+        assert_eq!(draft.payload["content_chars"], 14_137);
+        assert_eq!(draft.payload["status"], "pending_verification");
+        assert!(draft.payload.get("final_answer").is_none());
+
+        let started = &result.persisted_events[1];
+        assert_eq!(started.kind, TaskEventKind::ResearchVerificationStarted);
+        assert_eq!(started.summary, "Checking final draft");
+        assert_eq!(started.payload["round"], 2);
+        assert_eq!(started.payload["max_rounds"], 10);
+        assert_eq!(started.payload["evidence_document_count"], 15);
     }
 
     #[tokio::test]

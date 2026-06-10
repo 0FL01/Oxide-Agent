@@ -47,6 +47,8 @@ pub enum TaskEventKind {
     LlmRetrying,
     ProviderFailoverActivated,
     ResearchVerification,
+    ResearchVerificationStarted,
+    FinalDraft,
     Milestone,
     Finished,
     TaskStatus,

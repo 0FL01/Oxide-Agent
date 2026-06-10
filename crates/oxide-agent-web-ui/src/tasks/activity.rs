@@ -575,7 +575,8 @@ fn TodosCard(todos: Value) -> impl IntoView {
 fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
     matches!(
         kind,
-        TaskEventKind::Reasoning
+        TaskEventKind::Thinking
+            | TaskEventKind::Reasoning
             | TaskEventKind::ToolCall
             | TaskEventKind::ToolResult
             | TaskEventKind::TodosUpdated
@@ -592,6 +593,8 @@ fn is_chat_visible_event(kind: &TaskEventKind) -> bool {
             | TaskEventKind::RepeatedCompactionWarning
             | TaskEventKind::HistoryRepairApplied
             | TaskEventKind::ResearchVerification
+            | TaskEventKind::ResearchVerificationStarted
+            | TaskEventKind::FinalDraft
             | TaskEventKind::Finished
     )
 }
@@ -632,6 +635,7 @@ fn event_kind_label(kind: &TaskEventKind) -> &'static str {
         TaskEventKind::ToolResult => "tool result",
         TaskEventKind::TodosUpdated => "todos",
         TaskEventKind::Reasoning => "reasoning",
+        TaskEventKind::Thinking => "thinking",
         TaskEventKind::Error => "error",
         TaskEventKind::Finished => "done",
         TaskEventKind::Cancelling => "cancelling",
@@ -647,6 +651,8 @@ fn event_kind_label(kind: &TaskEventKind) -> &'static str {
         TaskEventKind::LlmRetrying => "llm retry",
         TaskEventKind::ProviderFailoverActivated => "provider failover",
         TaskEventKind::ResearchVerification => "verifier",
+        TaskEventKind::ResearchVerificationStarted => "verifier",
+        TaskEventKind::FinalDraft => "draft",
         TaskEventKind::FileToSend => "file",
         TaskEventKind::Continuation => "continuation",
         _ => "event",
@@ -655,6 +661,7 @@ fn event_kind_label(kind: &TaskEventKind) -> &'static str {
 
 fn event_title(event: &PersistedTaskEvent) -> String {
     match event.kind {
+        TaskEventKind::Thinking => thinking_event_title(event),
         TaskEventKind::ToolCall => {
             payload_str_event(event, "name").unwrap_or_else(|| event.summary.clone())
         }
@@ -665,6 +672,9 @@ fn event_title(event: &PersistedTaskEvent) -> String {
                 .map(|summary| format!("{name} — {summary}"))
                 .unwrap_or(name)
         }
+        TaskEventKind::Continuation => continuation_event_title(event),
+        TaskEventKind::ResearchVerificationStarted => verifier_started_event_title(event),
+        TaskEventKind::FinalDraft => final_draft_event_title(event),
         _ => event.summary.clone(),
     }
 }
@@ -685,7 +695,64 @@ fn event_body(event: &PersistedTaskEvent) -> Option<String> {
             .or_else(|| payload_str_event(event, "input_preview")),
         TaskEventKind::ToolResult => payload_str_event(event, "output_preview"),
         TaskEventKind::TodosUpdated => None,
+        TaskEventKind::Thinking => None,
         TaskEventKind::Reasoning => payload_str_event(event, "summary"),
+        TaskEventKind::Continuation => payload_str_event(event, "reason"),
+        TaskEventKind::ResearchVerificationStarted => None,
+        TaskEventKind::FinalDraft => None,
         _ => serde_json::to_string_pretty(&event.payload).ok(),
     }
+}
+
+fn thinking_event_title(event: &PersistedTaskEvent) -> String {
+    let Some(snapshot) = event.payload.get("token_snapshot") else {
+        return event.summary.clone();
+    };
+    let input = snapshot
+        .get("total_input_tokens")
+        .and_then(Value::as_u64)
+        .map(compact_tokens)
+        .unwrap_or_else(|| "unknown".to_string());
+    let free = snapshot
+        .get("headroom_tokens")
+        .and_then(Value::as_u64)
+        .map(compact_tokens)
+        .unwrap_or_else(|| "unknown".to_string());
+    let budget = snapshot
+        .get("budget_state")
+        .and_then(Value::as_str)
+        .unwrap_or("context")
+        .to_lowercase();
+    format!("Iteration started · {input} input · {free} free · {budget}")
+}
+
+fn continuation_event_title(event: &PersistedTaskEvent) -> String {
+    let reason = payload_str_event(event, "reason").unwrap_or_else(|| event.summary.clone());
+    let count = payload_u64_event(event, "count");
+    count
+        .map(|value| format!("{reason} · #{value}"))
+        .unwrap_or(reason)
+}
+
+fn verifier_started_event_title(event: &PersistedTaskEvent) -> String {
+    let round = payload_u64_event(event, "round").unwrap_or(0);
+    let max_rounds = payload_u64_event(event, "max_rounds").unwrap_or(0);
+    let evidence_docs = payload_u64_event(event, "evidence_document_count").unwrap_or(0);
+    if round > 0 && max_rounds > 0 {
+        return format!(
+            "Checking final draft · round {round}/{max_rounds} · {evidence_docs} evidence docs"
+        );
+    }
+    event.summary.clone()
+}
+
+fn final_draft_event_title(event: &PersistedTaskEvent) -> String {
+    let chars = payload_u64_event(event, "content_chars")
+        .map(compact_tokens)
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("Final draft generated · {chars} chars · verifying before delivery")
+}
+
+fn payload_u64_event(event: &PersistedTaskEvent, key: &str) -> Option<u64> {
+    event.payload.get(key).and_then(Value::as_u64)
 }

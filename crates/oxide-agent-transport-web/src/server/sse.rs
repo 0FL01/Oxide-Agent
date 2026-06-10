@@ -167,8 +167,11 @@ fn task_sse_stream(
         };
 
         // Replay any events the client missed. Use the in-memory snapshot
-        // when it covers the requested gap; otherwise paginate from DB.
-        if stream_state.last_seq < stream_state.task.last_event_seq {
+        // when it covers the requested gap; otherwise paginate from DB. The
+        // in-memory log can be ahead of the task row when live DB persistence
+        // briefly failed, so include `log_latest_seq` in the replay bound.
+        let replay_until_seq = stream_state.task.last_event_seq.max(log_latest_seq);
+        if stream_state.last_seq < replay_until_seq {
             // Drain the in-memory snapshot first if it covers the gap.
             if let Some(log) = stream_state.event_log.as_ref()
                 && log_latest_seq >= stream_state.last_seq {
@@ -177,7 +180,7 @@ fn task_sse_stream(
                         if event.seq <= stream_state.last_seq {
                             continue;
                         }
-                        if event.seq > stream_state.task.last_event_seq {
+                        if event.seq > replay_until_seq {
                             break;
                         }
                         stream_state.last_seq = event.seq;
@@ -233,9 +236,7 @@ fn task_sse_stream(
                     if event.seq <= stream_state.last_seq {
                         continue;
                     }
-                    if event.seq > stream_state.task.last_event_seq {
-                        break;
-                    }
+                    stream_state.task.last_event_seq = stream_state.task.last_event_seq.max(event.seq);
                     stream_state.last_seq = event.seq;
                     yield Ok(sse_persisted_task_event(&event));
                 }
@@ -375,9 +376,6 @@ fn task_sse_stream(
                                 if event.seq <= stream_state.last_seq {
                                     continue;
                                 }
-                                if event.seq > stream_state.task.last_event_seq {
-                                    break;
-                                }
                                 stream_state.last_seq = event.seq;
                                 yield Ok(sse_persisted_task_event(&event));
                                 drained_from_memory = true;
@@ -430,9 +428,7 @@ fn task_sse_stream(
                                 if event.seq <= stream_state.last_seq {
                                     continue;
                                 }
-                                if event.seq > stream_state.task.last_event_seq {
-                                    break;
-                                }
+                                stream_state.task.last_event_seq = stream_state.task.last_event_seq.max(event.seq);
                                 stream_state.last_seq = event.seq;
                                 yield Ok(sse_persisted_task_event(&event));
                             }
