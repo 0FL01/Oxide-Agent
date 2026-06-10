@@ -8,6 +8,10 @@ use crate::agent::compaction::CompactionTrigger;
 use crate::agent::memory::AgentMemory;
 use crate::agent::progress::{AgentEvent, AgentEventSource};
 use crate::agent::providers::TodoList;
+use crate::agent::research::{
+    AnswerVerificationDecision, AnswerVerificationError, AnswerVerificationRequest,
+    AnswerVerifierVerdict, StrictAnswerVerifier, VerifierUnsupportedClaim,
+};
 use crate::agent::session::PendingUserInput;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -211,16 +215,8 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
                 return Err(anyhow::anyhow!(reason));
             }
             crate::agent::hooks::HookResult::Finish(report) => {
-                self.save_final_response(ctx, &report, None);
-                let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
-                Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
-
-                if let Some(tx) = ctx.progress_tx
-                    && !ctx.config.is_sub_agent
-                {
-                    let _ = tx.send(AgentEvent::Finished).await;
-                }
-                return Ok(Some(AgentRunResult::Final(report)));
+                final_response = report;
+                reasoning = None;
             }
             crate::agent::hooks::HookResult::Continue
             | crate::agent::hooks::HookResult::InjectContext(_)
@@ -250,6 +246,39 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
             return Ok(None);
         }
 
+        match self
+            .verify_final_response_before_delivery(ctx, state, &final_response)
+            .await?
+        {
+            FinalVerificationOutcome::Deliver => {}
+            FinalVerificationOutcome::Continue { reason, context } => {
+                state.continuation_count += 1;
+                if let Some(tx) = ctx.progress_tx {
+                    let _ = tx
+                        .send(AgentEvent::Continuation {
+                            source: AgentEventSource::Root,
+                            reason: reason.clone(),
+                            count: state.continuation_count,
+                        })
+                        .await;
+                }
+                let retry_message = format!("[SYSTEM: {reason}]\n\n{context}");
+                self.save_undelivered_final_response_draft(
+                    ctx,
+                    &final_response,
+                    "strict answer verifier required another iteration",
+                );
+                ctx.messages
+                    .push(crate::llm::Message::system(&retry_message));
+                ctx.agent.memory_mut().add_message(
+                    crate::agent::memory::AgentMessage::system_context(retry_message),
+                );
+                let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+                Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
+                return Ok(None);
+            }
+        }
+
         self.save_final_response(ctx, &final_response, reasoning);
         let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
         Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
@@ -260,6 +289,61 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
             let _ = tx.send(AgentEvent::Finished).await;
         }
         Ok(Some(AgentRunResult::Final(final_response)))
+    }
+
+    async fn verify_final_response_before_delivery(
+        &mut self,
+        ctx: &mut AgentRunnerContext<'_>,
+        state: &RunState,
+        final_response: &str,
+    ) -> anyhow::Result<FinalVerificationOutcome> {
+        if ctx.config.is_sub_agent {
+            return Ok(FinalVerificationOutcome::Deliver);
+        }
+
+        let Some(verifier_config) = ctx.config.research_verifier_config.clone() else {
+            return Ok(FinalVerificationOutcome::Deliver);
+        };
+        if !verifier_config.enabled {
+            return Ok(FinalVerificationOutcome::Deliver);
+        }
+
+        let Some(research_runtime) = ctx.research_runtime.as_deref() else {
+            self.save_undelivered_final_response_draft(
+                ctx,
+                final_response,
+                "strict answer verifier has no research runtime",
+            );
+            return Err(anyhow::anyhow!(
+                "strict answer verifier failed closed: research runtime is unavailable"
+            ));
+        };
+
+        let research_snapshot = research_runtime.snapshot();
+        let verifier = StrictAnswerVerifier::new(self.llm_client(), verifier_config);
+        let decision = verifier
+            .verify(AnswerVerificationRequest {
+                final_answer: final_response,
+                research: &research_snapshot,
+                round: state.continuation_count.saturating_add(1),
+                proof_not_found_mode: false,
+            })
+            .await;
+
+        match decision {
+            Ok(decision) => verifier_decision_outcome(decision),
+            Err(error) => {
+                self.save_undelivered_final_response_draft(
+                    ctx,
+                    final_response,
+                    "strict answer verifier failed closed",
+                );
+                Err(anyhow::anyhow!(
+                    "strict answer verifier failed closed: {}",
+                    verifier_error_summary(&error)
+                ))
+            }
+        }
     }
 
     /// Handle a blocked response that requires more user input.
@@ -283,6 +367,125 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
 
         Ok(Some(AgentRunResult::WaitingForUserInput(request)))
     }
+}
+
+enum FinalVerificationOutcome {
+    Deliver,
+    Continue { reason: String, context: String },
+}
+
+fn verifier_decision_outcome(
+    decision: AnswerVerificationDecision,
+) -> anyhow::Result<FinalVerificationOutcome> {
+    match decision.verdict {
+        AnswerVerifierVerdict::Allow => Ok(FinalVerificationOutcome::Deliver),
+        AnswerVerifierVerdict::Revise | AnswerVerifierVerdict::NeedMoreEvidence => {
+            Ok(FinalVerificationOutcome::Continue {
+                reason: verifier_retry_reason(decision.verdict),
+                context: verifier_retry_context(&decision),
+            })
+        }
+        AnswerVerifierVerdict::ProofNotFound => Err(anyhow::anyhow!(
+            "strict answer verifier failed closed: proof_not_found verdict is only deliverable in constrained proof-not-found mode"
+        )),
+        AnswerVerifierVerdict::Block => Err(anyhow::anyhow!(
+            "strict answer verifier blocked final response: {}",
+            verifier_decision_summary(&decision)
+        )),
+    }
+}
+
+fn verifier_retry_reason(verdict: AnswerVerifierVerdict) -> String {
+    match verdict {
+        AnswerVerifierVerdict::Revise => {
+            "Strict answer verifier requires a revised final answer".to_string()
+        }
+        AnswerVerifierVerdict::NeedMoreEvidence => {
+            "Strict answer verifier requires more proof evidence".to_string()
+        }
+        _ => "Strict answer verifier requires another iteration".to_string(),
+    }
+}
+
+fn verifier_retry_context(decision: &AnswerVerificationDecision) -> String {
+    let mut sections = vec![
+        "The strict answer verifier rejected the previous final draft.".to_string(),
+        format!("Verifier summary: {}", decision.summary),
+        "Do not deliver the rejected draft. Use only fetched proof documents, not memory, snippets, reasoning, or sub-agent prose.".to_string(),
+    ];
+
+    if !decision.unsupported_claims.is_empty() {
+        sections.push("Unsupported claims to fix or prove:".to_string());
+        sections.extend(
+            decision
+                .unsupported_claims
+                .iter()
+                .enumerate()
+                .map(|(index, claim)| unsupported_claim_context_line(index, claim)),
+        );
+    }
+
+    if !decision.contradictions.is_empty() {
+        sections.push("Contradictions found by verifier:".to_string());
+        sections.extend(decision.contradictions.iter().enumerate().map(
+            |(index, contradiction)| {
+                format!(
+                    "{}. Claim: {} | Contradicting source: {} | Excerpt: {}",
+                    index + 1,
+                    contradiction.claim,
+                    contradiction.source_id,
+                    contradiction.source_excerpt
+                )
+            },
+        ));
+    }
+
+    if !decision.required_next_actions.is_empty() {
+        sections.push("Required next actions:".to_string());
+        sections.extend(
+            decision
+                .required_next_actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| format!("{}. {action}", index + 1)),
+        );
+    }
+
+    sections.push(
+        "When evidence cannot be found, do not invent it; continue gathering proof until the proof-not-found flow is requested."
+            .to_string(),
+    );
+    sections.join("\n")
+}
+
+fn unsupported_claim_context_line(index: usize, claim: &VerifierUnsupportedClaim) -> String {
+    format!(
+        "{}. Claim: {} | Reason: {} | Required evidence: {} | Suggested action: {}",
+        index + 1,
+        claim.claim,
+        claim.reason,
+        claim.required_evidence,
+        claim.suggested_next_action
+    )
+}
+
+fn verifier_decision_summary(decision: &AnswerVerificationDecision) -> String {
+    let mut summary = decision.summary.clone();
+    if !decision.unsupported_claims.is_empty() {
+        let claims = decision
+            .unsupported_claims
+            .iter()
+            .map(|claim| claim.claim.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        summary.push_str("; unsupported claims: ");
+        summary.push_str(&claims);
+    }
+    summary
+}
+
+fn verifier_error_summary(error: &AnswerVerificationError) -> String {
+    error.to_string()
 }
 
 fn should_salvage_structured_output_failure(raw: &str) -> bool {
@@ -323,10 +526,20 @@ mod tests {
     use crate::agent::compaction::AgentMessageKind;
     use crate::agent::context::{AgentContext, EphemeralSession};
     use crate::agent::hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookResult};
+    use crate::agent::memory::AgentMessage;
     use crate::agent::providers::{TodoItem, TodoList};
+    use crate::agent::research::{ResearchRuntime, ResearchVerifierConfig};
     use crate::agent::runner::test_support::{build_llm_client, single_final_response_provider};
     use crate::agent::runner::types::{FinalResponseInput, PendingFinalDraft, RunState};
     use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
+    use crate::agent::tool_runtime::{
+        OutputTruncationMetadata, ToolCallId, ToolName, ToolOutput, ToolOutputIdentity,
+        ToolOutputStatus,
+    };
+    use crate::config::{AgentSettings, ModelInfo};
+    use crate::llm::{InvocationId, LlmClient, MockLlmProvider};
+    use chrono::Utc;
+    use serde_json::json;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -347,6 +560,140 @@ mod tests {
         }
     }
 
+    fn verifier_model() -> ModelInfo {
+        ModelInfo {
+            id: "verifier-model".to_string(),
+            provider: "opencode-go".to_string(),
+            max_output_tokens: 4096,
+            context_window_tokens: 128_000,
+            weight: 1,
+        }
+    }
+
+    fn verifier_config(model: Option<ModelInfo>) -> ResearchVerifierConfig {
+        ResearchVerifierConfig {
+            enabled: true,
+            model,
+            max_rounds: 10,
+            timeout: std::time::Duration::from_secs(5),
+            max_evidence_docs: 30,
+            max_excerpt_chars: 12_000,
+        }
+    }
+
+    fn verifier_decision_json(verdict: &str) -> String {
+        format!(
+            r#"{{"verdict":"{verdict}","confidence":"high","summary":"checked draft","unsupported_claims":[{{"claim":"Model X has 97% F1 on Russian PII","reason":"metric is absent from evidence","required_evidence":"model card or benchmark text with the metric","suggested_next_action":"fetch the model card and benchmark page with crawl4ai_markdown"}}],"contradictions":[],"allowed_claims":[],"required_next_actions":["crawl4ai_markdown https://huggingface.co/example/model"]}}"#
+        )
+    }
+
+    fn verifier_llm_client(raw_response: String) -> Arc<LlmClient> {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_complete_internal_text()
+            .times(1)
+            .return_once(
+                move |system_prompt, _history, user_message, model_id, _max_tokens| {
+                    assert!(system_prompt.contains("strict zero-trust answer verifier"));
+                    assert!(user_message.contains("EvidenceDocument.content_excerpt"));
+                    assert!(user_message.contains("huggingface.co/example/model"));
+                    assert_eq!(model_id, "verifier-model");
+                    Ok(raw_response)
+                },
+            );
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+        Arc::new(llm)
+    }
+
+    fn runtime_with_evidence_document() -> Arc<ResearchRuntime> {
+        let runtime = Arc::new(ResearchRuntime::new());
+        let now = Utc::now();
+        let identity = ToolOutputIdentity {
+            tool_call_id: ToolCallId::from("call-1"),
+            provider_tool_call_id: None,
+            invocation_id: InvocationId::new("invocation-1"),
+            tool_name: ToolName::from("crawl4ai_markdown"),
+            batch_index: 0,
+        };
+        let mut output = ToolOutput::terminal(
+            identity,
+            ToolOutputStatus::Success,
+            now,
+            now,
+            OutputTruncationMetadata::new(4096, 4096, 4096),
+        );
+        output.structured_payload = Some(json!({
+            "provider": "crawl4ai_markdown",
+            "kind": "fetch",
+            "url": "https://huggingface.co/example/model",
+            "final_url": "https://huggingface.co/example/model",
+            "status_code": 200,
+            "markdown": "# Example model\nLicense: Apache 2.0\nRussian PII support is documented.",
+            "source_kind": "model_card",
+            "fetched_at": "2026-06-10T18:00:00Z"
+        }));
+        runtime.record_tool_output(&output);
+        runtime
+    }
+
+    async fn run_final_with_verifier_response(
+        raw_response: String,
+    ) -> (
+        Result<Option<AgentRunResult>, String>,
+        RunState,
+        Vec<AgentMessage>,
+        Vec<crate::llm::Message>,
+    ) {
+        let llm_client = verifier_llm_client(raw_response);
+        let mut runner = AgentRunner::new(llm_client);
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce verified report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "strict-verifier-final",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: Some(runtime_with_evidence_document()),
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
+                .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
+        };
+        let mut state = RunState::new();
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "Model X has 97% F1 on Russian PII.".to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string());
+        let memory = ctx.agent.memory().get_messages().to_vec();
+        let messages = ctx.messages.clone();
+        (result, state, memory, messages)
+    }
+
     #[test]
     fn salvage_detector_accepts_plain_final_prose() {
         assert!(should_salvage_structured_output_failure(
@@ -364,6 +711,166 @@ mod tests {
         ));
         assert!(!should_salvage_structured_output_failure("tool_call:"));
         assert!(!should_salvage_structured_output_failure("short answer"));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_allow_delivers_final_response() {
+        let (result, _state, memory, _messages) =
+            run_final_with_verifier_response(verifier_decision_json("allow")).await;
+
+        match result.expect("allow should succeed") {
+            Some(AgentRunResult::Final(response)) => {
+                assert_eq!(response, "Model X has 97% F1 on Russian PII.");
+            }
+            _ => panic!("expected delivered final response"),
+        }
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content == "Model X has 97% F1 on Russian PII."
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_revise_forces_iteration_with_claim_context() {
+        let (result, state, memory, messages) =
+            run_final_with_verifier_response(verifier_decision_json("revise")).await;
+
+        assert!(result.expect("revise should continue").is_none());
+        assert_eq!(state.continuation_count, 1);
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft
+                && message.content.contains("Model X has 97% F1")
+        }));
+        assert!(!memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content.contains("Model X has 97% F1")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.role == "system"
+                && message.content.contains("metric is absent from evidence")
+                && message
+                    .content
+                    .contains("crawl4ai_markdown https://huggingface.co/example/model")
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_need_more_evidence_forces_iteration() {
+        let (result, state, memory, messages) =
+            run_final_with_verifier_response(verifier_decision_json("need_more_evidence")).await;
+
+        assert!(
+            result
+                .expect("need_more_evidence should continue")
+                .is_none()
+        );
+        assert_eq!(state.continuation_count, 1);
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft
+        }));
+        assert!(messages.iter().any(|message| {
+            message.role == "system"
+                && message
+                    .content
+                    .contains("Strict answer verifier requires more proof evidence")
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_block_does_not_deliver_final_response() {
+        let (result, _state, memory, _messages) =
+            run_final_with_verifier_response(verifier_decision_json("block")).await;
+
+        let error = match result {
+            Ok(_) => panic!("block should fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("blocked final response"));
+        assert!(!memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content.contains("Model X has 97% F1")
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_invalid_json_does_not_deliver_final_response() {
+        let (result, _state, memory, _messages) =
+            run_final_with_verifier_response("not json".to_string()).await;
+
+        let error = match result {
+            Ok(_) => panic!("invalid verifier JSON should fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("strict answer verifier failed closed"));
+        assert!(!memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content.contains("Model X has 97% F1")
+        }));
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_missing_route_fails_closed_without_delivery() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider.expect_complete_internal_text().times(0);
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+        let mut runner = AgentRunner::new(Arc::new(llm));
+        let mut session = EphemeralSession::new(4096);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce verified report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "strict-verifier-missing-route",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            research_runtime: Some(runtime_with_evidence_document()),
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
+                .with_research_verifier_config(Some(verifier_config(None))),
+        };
+        let mut state = RunState::new();
+
+        let error = match runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "Model X has 97% F1 on Russian PII.".to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+        {
+            Ok(_) => panic!("missing verifier route should fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("route is not configured"));
+        assert!(
+            !ctx.agent
+                .memory()
+                .get_messages()
+                .iter()
+                .any(|message| { message.resolved_kind() == AgentMessageKind::AssistantResponse })
+        );
     }
 
     #[tokio::test]

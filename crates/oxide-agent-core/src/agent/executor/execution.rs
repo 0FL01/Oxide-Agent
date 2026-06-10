@@ -11,6 +11,7 @@ use crate::agent::memory_behavior::{ToolDerivedMemoryDraft, ToolDerivedMemoryKin
 use crate::agent::progress::AgentEvent;
 use crate::agent::prompt::create_agent_system_prompt;
 use crate::agent::providers::TopicInfraPreflightReport;
+use crate::agent::research::ResearchVerifierConfig;
 use crate::agent::runner::{AgentRunner, AgentRunnerConfig, run_with_timeout};
 use crate::agent::session::{AgentSession, RuntimeContextInbox, RuntimeContextInjection};
 use crate::agent::wiki_memory::planner::{
@@ -567,6 +568,7 @@ impl AgentExecutor {
         );
 
         let research_runtime = Some(Arc::new(crate::agent::ResearchRuntime::new()));
+        let research_verifier_config = Some(ResearchVerifierConfig::from_settings(&self.settings));
 
         PreparedExecution {
             todos_arc,
@@ -587,7 +589,8 @@ impl AgentExecutor {
             .with_temperature(self.settings.get_configured_agent_temperature())
             .with_model_routes(model_routes)
             .with_search_limit(search_limit)
-            .with_reasoning_effort(options.reasoning_effort()),
+            .with_reasoning_effort(options.reasoning_effort())
+            .with_research_verifier_config(research_verifier_config),
         }
     }
 

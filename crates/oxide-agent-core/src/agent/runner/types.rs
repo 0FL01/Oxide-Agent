@@ -5,7 +5,7 @@ use crate::agent::context::AgentContext;
 use crate::agent::memory_behavior::MemoryBehaviorRuntime;
 use crate::agent::progress::AgentEvent;
 use crate::agent::providers::TodoList;
-use crate::agent::research::ResearchRuntime;
+use crate::agent::research::{ResearchRuntime, ResearchVerifierConfig};
 use crate::agent::session::{AgentMemoryScope, PendingUserInput};
 use crate::agent::tool_runtime::ToolRegistry as RuntimeToolRegistry;
 use crate::config::{
@@ -42,6 +42,8 @@ pub struct AgentRunnerConfig {
     pub search_limit: usize,
     /// Optional provider reasoning effort override.
     pub reasoning_effort: Option<String>,
+    /// Optional strict final-answer verifier configuration.
+    pub research_verifier_config: Option<ResearchVerifierConfig>,
 }
 
 impl AgentRunnerConfig {
@@ -66,6 +68,7 @@ impl AgentRunnerConfig {
             model_routes: Vec::new(),
             search_limit: get_agent_search_limit(),
             reasoning_effort: None,
+            research_verifier_config: None,
         }
     }
 
@@ -108,6 +111,16 @@ impl AgentRunnerConfig {
     #[must_use]
     pub fn with_reasoning_effort(mut self, reasoning_effort: Option<&str>) -> Self {
         self.reasoning_effort = reasoning_effort.map(str::to_string);
+        self
+    }
+
+    /// Set optional strict final-answer verifier configuration.
+    #[must_use]
+    pub fn with_research_verifier_config(
+        mut self,
+        research_verifier_config: Option<ResearchVerifierConfig>,
+    ) -> Self {
+        self.research_verifier_config = research_verifier_config;
         self
     }
 }
