@@ -1,6 +1,7 @@
 //! Crawl orchestration: retry loop, HTTP request assembly, response body reading.
 
 use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::Url;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
@@ -24,7 +25,7 @@ impl Crawl4AiMarkdownProvider {
         &self,
         args: Crawl4AiMarkdownArgs,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<(String, Value)> {
         let target_url = parse_public_http_url(&args.url)?;
         reject_media_url(&target_url)?;
         dns_preflight_public(&target_url).await?;
@@ -225,10 +226,11 @@ impl Crawl4AiMarkdownProvider {
         result: CrawlResult,
         max_chars: usize,
         started: Instant,
-    ) -> Result<String> {
+    ) -> Result<(String, Value)> {
         let markdown = truncate_chars(result.markdown.trim().to_string(), max_chars);
         let payload = json!({
             "provider": TOOL_CRAWL4AI_MARKDOWN,
+            "kind": "fetch",
             "url": target_url.as_str(),
             "final_url": result.final_url.as_ref().map(Url::as_str),
             "status_code": result.status_code,
@@ -244,10 +246,11 @@ impl Crawl4AiMarkdownProvider {
             "entries_count": result.entries_count,
             "noise_filtered": result.noise_filtered,
             "elapsed_ms": result.elapsed_ms.unwrap_or_else(|| millis_u64(started.elapsed())),
-            "fresh": args.fresh
+            "fresh": args.fresh,
+            "fetched_at": Utc::now().to_rfc3339(),
         });
 
-        serde_json::to_string_pretty(&payload).context("serialize crawl4ai markdown output")
+        Ok((markdown.text, payload))
     }
 
     fn endpoint(&self, path: &str) -> Result<Url> {

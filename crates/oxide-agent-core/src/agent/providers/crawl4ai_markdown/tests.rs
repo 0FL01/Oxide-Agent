@@ -241,8 +241,13 @@ async fn typed_runtime_executor_posts_expected_crawl_contract() {
 
     assert_eq!(output.status, ToolOutputStatus::Success);
     let stdout = output.stdout.text.as_deref().expect("stdout text");
-    let payload: Value = serde_json::from_str(stdout).expect("success payload json");
+    assert_eq!(stdout, "# Rendered\n\nArticle body");
+    let payload = output
+        .structured_payload
+        .as_ref()
+        .expect("structured crawl4ai success payload");
     assert_eq!(payload["provider"], json!(TOOL_CRAWL4AI_MARKDOWN));
+    assert_eq!(payload["kind"], json!("fetch"));
     assert_eq!(payload["url"], json!(PUBLIC_TEST_URL));
     assert_eq!(payload["final_url"], json!("http://93.184.216.34/final"));
     assert_eq!(payload["status_code"], json!(200));
@@ -254,6 +259,7 @@ async fn typed_runtime_executor_posts_expected_crawl_contract() {
     assert_eq!(payload["entries_count"], Value::Null);
     assert_eq!(payload["noise_filtered"], json!(false));
     assert_eq!(payload["fresh"], json!(true));
+    assert!(payload["fetched_at"].is_string());
 
     let observed = observed.lock().expect("observed request lock");
     assert_eq!(observed.len(), 2);
@@ -573,11 +579,11 @@ fn reddit_rss_fallback_output_respects_max_chars() {
         max_chars: Some(60),
     };
 
-    let output = provider
+    let (markdown, payload) = provider
         .success_payload(&args, &target_url, result, 60, Instant::now())
         .expect("success payload");
-    let payload: Value = serde_json::from_str(&output).expect("payload json");
 
+    assert!(markdown.contains("... (truncated)"));
     assert_eq!(payload["truncated"], json!(true));
     assert_eq!(payload["content_mode"], json!("reddit_rss_fallback"));
     assert!(

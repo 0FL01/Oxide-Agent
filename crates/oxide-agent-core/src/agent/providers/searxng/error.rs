@@ -1,3 +1,5 @@
+use chrono::Utc;
+use serde_json::{Value, json};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -14,6 +16,56 @@ pub enum SearxngError {
 }
 
 impl SearxngError {
+    /// Stable machine-readable error kind for structured tool payloads.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::EmptyQuery => "empty_query",
+            Self::HttpStatus { .. } => "searxng_http_status",
+            Self::Request(err) if err.is_timeout() => "searxng_timeout",
+            Self::Request(err) if err.is_connect() => "searxng_connect",
+            Self::Request(err) if err.is_decode() => "searxng_decode",
+            Self::Request(err) if err.is_body() => "searxng_body",
+            Self::Request(err) if err.is_request() => "searxng_request",
+            Self::Request(_) => "searxng_transport",
+        }
+    }
+
+    /// Whether this failure means the configured SearXNG provider is unavailable.
+    #[must_use]
+    pub fn provider_unavailable(&self) -> bool {
+        match self {
+            Self::EmptyQuery => false,
+            Self::HttpStatus { status, .. } => status.as_u16() == 429 || status.is_server_error(),
+            Self::Request(err) => err.is_timeout() || err.is_connect() || err.is_decode(),
+        }
+    }
+
+    /// Structured failure payload for typed runtime output.
+    #[must_use]
+    pub fn failure_payload(&self, query: &str) -> Value {
+        json!({
+            "provider": super::types::TOOL_NAME,
+            "kind": "search",
+            "query": query.trim(),
+            "error_kind": self.code(),
+            "status_code": self.status_code(),
+            "message": self.agent_message(),
+            "provider_unavailable": self.provider_unavailable(),
+            "retryable": self.is_retryable(),
+            "results": [],
+            "snippet_only": true,
+            "fetched_at": Utc::now().to_rfc3339(),
+        })
+    }
+
+    fn status_code(&self) -> Option<u16> {
+        match self {
+            Self::HttpStatus { status, .. } => Some(status.as_u16()),
+            Self::EmptyQuery | Self::Request(_) => None,
+        }
+    }
+
     /// Classifies whether the error is transient and worth retrying.
     ///
     /// Retryable: 429, 502, 503, 504, network timeouts, connection refused/reset,

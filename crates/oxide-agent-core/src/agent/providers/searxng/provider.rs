@@ -10,6 +10,7 @@ use crate::config::{get_searxng_bearer_token, get_searxng_rotation_engines, get_
 use crate::llm::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
+use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,14 +114,29 @@ impl SearxngProvider {
         }
     }
 
-    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<String> {
+    async fn execute_tool(&self, tool_name: &str, arguments: &str) -> Result<SearxngToolResult> {
         debug!(tool = tool_name, "Executing SearXNG tool");
 
         match tool_name {
             TOOL_NAME => {
                 let args: SearxngSearchArgs = match serde_json::from_str(arguments) {
                     Ok(args) => args,
-                    Err(_) => return Ok("Invalid search arguments".to_string()),
+                    Err(error) => {
+                        return Ok(SearxngToolResult::failure(
+                            "Invalid search arguments".to_string(),
+                            json!({
+                                "provider": TOOL_NAME,
+                                "kind": "search",
+                                "query": Value::Null,
+                                "error_kind": "invalid_arguments",
+                                "message": format!("invalid SearXNG search arguments: {error}"),
+                                "provider_unavailable": false,
+                                "retryable": false,
+                                "results": [],
+                                "snippet_only": true,
+                            }),
+                        ));
+                    }
                 };
 
                 debug!(
@@ -133,11 +149,14 @@ impl SearxngProvider {
                 );
 
                 match self.client.search(&args).await {
-                    Ok(response) => Ok(format_search_results(
-                        &args.query,
-                        &response,
-                        args.normalized_max_results(),
-                    )),
+                    Ok(response) => {
+                        let (markdown, payload) = format_search_results(
+                            &args.query,
+                            &response,
+                            args.normalized_max_results(),
+                        );
+                        Ok(SearxngToolResult::success(markdown, payload))
+                    }
                     Err(error) => {
                         error!(
                             query = %args.query,
@@ -145,11 +164,38 @@ impl SearxngProvider {
                             "SearXNG search failed after {} attempts",
                             MAX_RETRIES + 1,
                         );
-                        Ok(error.agent_message())
+                        Ok(SearxngToolResult::failure(
+                            error.agent_message(),
+                            error.failure_payload(&args.query),
+                        ))
                     }
                 }
             }
             _ => anyhow::bail!("Unknown SearXNG tool: {tool_name}"),
+        }
+    }
+}
+
+struct SearxngToolResult {
+    markdown: String,
+    payload: Value,
+    success: bool,
+}
+
+impl SearxngToolResult {
+    fn success(markdown: String, payload: Value) -> Self {
+        Self {
+            markdown,
+            payload,
+            success: true,
+        }
+    }
+
+    fn failure(markdown: String, payload: Value) -> Self {
+        Self {
+            markdown,
+            payload,
+            success: false,
         }
     }
 }
@@ -182,7 +228,102 @@ impl ToolExecutor for SearxngToolExecutor {
         self.provider
             .execute_tool(self.name.as_str(), &invocation.raw_arguments)
             .await
-            .map(|output| normalizer.success(&invocation, &output, ""))
+            .map(|result| {
+                let mut output = if result.success {
+                    normalizer.success(&invocation, &result.markdown, "")
+                } else {
+                    normalizer
+                        .failure(&invocation, &result.markdown)
+                        .with_streams(
+                            normalizer.stdout_preview(&result.markdown),
+                            normalizer.stderr_preview(""),
+                        )
+                };
+                output.structured_payload = Some(result.payload);
+                output
+            })
             .map_err(|error| ToolRuntimeError::Failure(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::identity::SessionId;
+    use crate::agent::tool_runtime::{
+        ModelMetadata, ProviderMetadata, ToolBatchId, ToolCallId, ToolExecutionContext,
+        ToolOutputStatus, ToolRuntimeConfig, TurnId,
+    };
+    use crate::llm::InvocationId;
+    use chrono::Utc;
+    use tokio_util::sync::CancellationToken;
+
+    fn runtime_invocation(raw_arguments: &str) -> ToolInvocation {
+        let config = ToolRuntimeConfig::default();
+        ToolInvocation {
+            session_id: SessionId::from(1),
+            turn_id: TurnId::from("turn-searxng"),
+            batch_id: ToolBatchId::from("batch-searxng"),
+            batch_index: 0,
+            invocation_id: InvocationId::new("invoke-searxng"),
+            tool_call_id: ToolCallId::from("call-searxng"),
+            provider_tool_call_id: None,
+            tool_name: ToolName::from(TOOL_NAME),
+            raw_provider_payload: json!({}),
+            raw_arguments: raw_arguments.to_string(),
+            normalized_arguments: serde_json::from_str(raw_arguments).unwrap_or_else(|_| json!({})),
+            cancellation_token: CancellationToken::new(),
+            timeout: config.timeout,
+            execution_context: ToolExecutionContext::new(config.artifact_dir.clone()),
+            provider_metadata: ProviderMetadata {
+                provider: "test".to_string(),
+                protocol: "chat_like".to_string(),
+            },
+            model_metadata: ModelMetadata {
+                model: "test-model".to_string(),
+            },
+            working_directory: None,
+            environment_metadata: None,
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_query_returns_structured_failure_status() {
+        let provider = Arc::new(
+            SearxngProvider::new_with_timeout("http://127.0.0.1:9", Duration::from_secs(1))
+                .expect("provider"),
+        );
+        let executor = provider
+            .tool_runtime_executors()
+            .into_iter()
+            .next()
+            .expect("executor");
+
+        let output = executor
+            .execute(runtime_invocation(r#"{"query":"   "}"#))
+            .await
+            .expect("typed searxng output");
+
+        assert_eq!(output.status, ToolOutputStatus::Failure);
+        assert!(!output.success);
+        assert!(
+            output
+                .stdout
+                .text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Search query cannot be empty")
+        );
+        let payload = output
+            .structured_payload
+            .expect("structured failure payload");
+        assert_eq!(payload["provider"], TOOL_NAME);
+        assert_eq!(payload["kind"], "search");
+        assert_eq!(payload["error_kind"], "empty_query");
+        assert_eq!(payload["retryable"], false);
+        assert_eq!(payload["results"], json!([]));
+        assert!(payload["fetched_at"].is_string());
     }
 }

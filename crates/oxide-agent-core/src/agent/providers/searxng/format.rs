@@ -1,4 +1,6 @@
-use super::types::{SearxngResult, SearxngSearchResponse};
+use super::types::{SearxngResult, SearxngSearchResponse, TOOL_NAME};
+use chrono::Utc;
+use serde_json::{Value, json};
 use std::fmt::Write;
 
 const MAX_OUTPUT_CHARS: usize = 20_000;
@@ -8,7 +10,7 @@ pub fn format_search_results(
     query: &str,
     response: &SearxngSearchResponse,
     max_results: usize,
-) -> String {
+) -> (String, Value) {
     let mut output = format!("## SearXNG results for: {}\n\n", query.trim());
 
     if let Some(total) = response.number_of_results {
@@ -57,7 +59,28 @@ pub fn format_search_results(
         );
     }
 
-    truncate_output(output)
+    let payload_results = results
+        .iter()
+        .enumerate()
+        .map(|(index, result)| result_payload(index + 1, result))
+        .collect::<Vec<_>>();
+
+    (
+        truncate_output(output),
+        json!({
+            "provider": TOOL_NAME,
+            "kind": "search",
+            "query": query.trim(),
+            "results": payload_results,
+            "answers": response.answers,
+            "suggestions": response.suggestions,
+            "corrections": response.corrections,
+            "number_of_results": response.number_of_results,
+            "unresponsive_engines": response.unresponsive_engines,
+            "fetched_at": Utc::now().to_rfc3339(),
+            "snippet_only": true,
+        }),
+    )
 }
 
 fn append_result(output: &mut String, index: usize, result: &SearxngResult) {
@@ -77,6 +100,20 @@ fn append_result(output: &mut String, index: usize, result: &SearxngResult) {
         let _ = writeln!(output, "{}", snippet);
     }
     output.push_str("\n---\n\n");
+}
+
+fn result_payload(rank: usize, result: &SearxngResult) -> Value {
+    let title = crate::utils::clean_html(&result.title);
+    let snippet = crate::utils::clean_html(&result.content);
+
+    json!({
+        "rank": rank,
+        "title": title,
+        "url": result.url,
+        "snippet": snippet,
+        "content": snippet,
+        "engine": result.engine.as_deref(),
+    })
 }
 
 fn truncate_output(mut output: String) -> String {
@@ -106,8 +143,13 @@ mod tests {
             unresponsive_engines: Vec::new(),
         };
 
-        let formatted = format_search_results("rust", &response, 5);
+        let (formatted, payload) = format_search_results("rust", &response, 5);
         assert!(formatted.contains("Search returned no results"));
+        assert_eq!(payload["provider"], TOOL_NAME);
+        assert_eq!(payload["kind"], "search");
+        assert_eq!(payload["query"], "rust");
+        assert_eq!(payload["results"], json!([]));
+        assert!(payload["fetched_at"].is_string());
     }
 
     #[test]
@@ -121,7 +163,37 @@ mod tests {
             unresponsive_engines: vec!["google".to_string(), "bing".to_string()],
         };
 
-        let formatted = format_search_results("rust", &response, 5);
+        let (formatted, payload) = format_search_results("rust", &response, 5);
         assert!(formatted.contains("Partial results: some engines were unavailable"));
+        assert_eq!(payload["unresponsive_engines"], json!(["google", "bing"]));
+    }
+
+    #[test]
+    fn formats_results_with_ranked_structured_payload() {
+        let response = SearxngSearchResponse {
+            results: vec![SearxngResult {
+                title: "Rust".to_string(),
+                url: "https://www.rust-lang.org/".to_string(),
+                content: "Systems language".to_string(),
+                engine: Some("duckduckgo".to_string()),
+            }],
+            answers: Vec::new(),
+            suggestions: Vec::new(),
+            corrections: Vec::new(),
+            number_of_results: Some(1.0),
+            unresponsive_engines: Vec::new(),
+        };
+
+        let (markdown, payload) = format_search_results(" rust ", &response, 5);
+
+        assert!(markdown.contains("SearXNG results"));
+        assert_eq!(payload["provider"], TOOL_NAME);
+        assert_eq!(payload["kind"], "search");
+        assert_eq!(payload["query"], "rust");
+        assert_eq!(payload["snippet_only"], true);
+        assert_eq!(payload["results"][0]["rank"], 1);
+        assert_eq!(payload["results"][0]["title"], "Rust");
+        assert_eq!(payload["results"][0]["url"], "https://www.rust-lang.org/");
+        assert_eq!(payload["results"][0]["snippet"], "Systems language");
     }
 }

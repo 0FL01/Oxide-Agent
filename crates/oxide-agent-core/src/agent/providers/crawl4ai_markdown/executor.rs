@@ -58,7 +58,11 @@ impl ToolExecutor for Crawl4AiMarkdownToolExecutor {
             .crawl_markdown(args.clone(), Some(&invocation.cancellation_token))
             .await
         {
-            Ok(output) => Ok(normalizer.success(&invocation, &output, "")),
+            Ok((markdown, payload)) => {
+                let mut output = normalizer.success(&invocation, &markdown, "");
+                output.structured_payload = Some(payload);
+                Ok(output)
+            }
             Err(error) => {
                 let mut output = normalizer.failure(
                     &invocation,

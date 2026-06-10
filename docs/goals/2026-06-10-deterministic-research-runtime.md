@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-10-deterministic-research-runtime.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan.md`
 Goal doc owner: Codex
-Last updated: 2026-06-10 16:56 +03
+Last updated: 2026-06-10 17:15 +03
 
 ## Objective
 
@@ -98,8 +98,8 @@ Out of scope:
   - Requirement: `searxng_search` and `crawl4ai_markdown` success/failure outputs must expose canonical `structured_payload` and provider failures must use `ToolOutputStatus::Failure`.
   - Acceptance: SearXNG payload has `provider`, `kind`, `query`, ranked `results`, and `fetched_at`; Crawl4AI payload has `provider`, `kind: "fetch"`, URL/final URL/status/markdown/truncation/freshness metadata; failures preserve human-readable stdout but are not marked success.
   - Evidence required: provider tests for success payload and failure status for both tools.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-core/src/agent/providers/searxng/format.rs:9` now returns Markdown plus structured search payload with provider/kind/query/ranked results/fetched_at; `crates/oxide-agent-core/src/agent/providers/searxng/error.rs:46` builds structured failure payloads; `crates/oxide-agent-core/src/agent/providers/searxng/provider.rs:153` and `crates/oxide-agent-core/src/agent/providers/searxng/provider.rs:169` attach success/failure payloads and mark provider failures as `ToolOutputStatus::Failure`. `crates/oxide-agent-core/src/agent/providers/crawl4ai_markdown/crawl.rs:222` returns model-readable Markdown stdout plus structured fetch payload with `kind: "fetch"`, URL/final URL/status/markdown/truncation/freshness metadata; `crates/oxide-agent-core/src/agent/providers/crawl4ai_markdown/executor.rs:63` attaches it to `ToolOutput.structured_payload`. Tests `formats_results_with_ranked_structured_payload`, `empty_query_returns_structured_failure_status`, `typed_runtime_executor_posts_expected_crawl_contract`, `health_unavailable_returns_structured_failure`, and `reddit_rss_fallback_output_respects_max_chars` passed.
 
 - G5: Fallback provider normalization does not drive the architecture
   - Source: `docs/prd/plan.md` lines 631-674 and 1456.
@@ -144,7 +144,7 @@ Out of scope:
   - Acceptance: passive runtime and guard can be disabled; guard is not strict-by-default; provider stdout remains model-readable after payload changes.
   - Evidence required: config-default tests and provider output tests.
   - Status: in_progress
-  - Evidence collected: `PreparedExecution.research_runtime` is `None` by default in `crates/oxide-agent-core/src/agent/executor/execution.rs`, so passive research observation remains disabled unless explicitly supplied; no final-answer guard behavior changed in Checkpoint 2.
+  - Evidence collected: `PreparedExecution.research_runtime` is `None` by default in `crates/oxide-agent-core/src/agent/executor/execution.rs`, so passive research observation remains disabled unless explicitly supplied; no final-answer guard behavior changed in Checkpoint 2. Checkpoint 3 preserves model-readable provider stdout: SearXNG still returns Markdown summaries, and Crawl4AI now returns fetched Markdown as stdout while moving the typed JSON contract into `structured_payload`.
 
 - N1: No premature full research planner or full evidence graph
   - Source: `docs/prd/plan.md` lines 1399-1421.
@@ -170,7 +170,7 @@ Out of scope:
   - Source: `AGENTS.md` lines 132-153.
   - Evidence required: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; focused `cargo test -p oxide-agent-core` filters for touched runtime/provider modules.
   - Status: in_progress
-  - Evidence collected: Checkpoint 1 focused tests and embedded profile check passed on 2026-06-10. Checkpoint 2 tests `research::` and `typed_runtime_records_research_output_before_after_tool_hooks` passed, and `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed; full final validation remains pending for later checkpoints.
+  - Evidence collected: Checkpoint 1 focused tests and embedded profile check passed on 2026-06-10. Checkpoint 2 tests `research::` and `typed_runtime_records_research_output_before_after_tool_hooks` passed, and `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed. Checkpoint 3 tests `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local --lib -- searxng` and `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local --lib -- crawl4ai` passed, plus `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local` and embedded workspace check; full final validation remains pending for later checkpoints.
 
 ## Implementation Plan
 
@@ -272,6 +272,7 @@ Out of scope:
 - 2026-06-10: Primary research architecture is `searxng_search` for discovery and `crawl4ai_markdown` for fetched evidence; other search/fetch providers are fallback compatibility.
 - 2026-06-10: Guard starts disabled or observe-only by default. Runtime policy, not prompt guidance, is the acceptance boundary.
 - 2026-06-10: Checkpoint 2 keeps passive research runtime disabled by default (`PreparedExecution.research_runtime = None`) and only records observations when a runtime is explicitly supplied.
+- 2026-06-10: Checkpoint 3 keeps provider stdout model-readable while making typed payloads authoritative: SearXNG stdout remains Markdown discovery text, and Crawl4AI stdout becomes fetched Markdown instead of JSON.
 
 ## Progress Log
 
@@ -295,6 +296,13 @@ Out of scope:
   - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib research::`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib typed_runtime_records_research_output_before_after_tool_hooks`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
   - Audit IDs updated: G3 verified; Q1/Q2/Q3/N1/V1/V2 in progress with checkpoint evidence.
   - Next: Checkpoint 3 -- primary provider payload contract for SearXNG + Crawl4AI.
+
+- 2026-06-10 17:15 +03: Checkpoint 3 primary provider payload contract implemented.
+  - Changed: added SearXNG success/failure `structured_payload` values with correct failure status, moved Crawl4AI success JSON into `structured_payload`, and kept model-facing stdout readable as Markdown.
+  - Evidence: `crates/oxide-agent-core/src/agent/providers/searxng/format.rs:9`, `crates/oxide-agent-core/src/agent/providers/searxng/error.rs:46`, `crates/oxide-agent-core/src/agent/providers/searxng/provider.rs:153`, `crates/oxide-agent-core/src/agent/providers/crawl4ai_markdown/crawl.rs:222`, `crates/oxide-agent-core/src/agent/providers/crawl4ai_markdown/executor.rs:63`.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local --lib -- searxng`; `cargo test -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local --lib -- crawl4ai`; `cargo fmt --all -- --check`; `cargo check -p oxide-agent-core --no-default-features --features profile-web-embedded-opencode-local`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
+  - Audit IDs updated: G4 verified; Q3/V2 in progress with checkpoint evidence.
+  - Next: Checkpoint 4 -- soft final answer guard.
 
 ## Risks and Blockers
 
