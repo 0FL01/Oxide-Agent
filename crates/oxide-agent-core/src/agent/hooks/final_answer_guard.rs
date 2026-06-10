@@ -248,7 +248,7 @@ mod tests {
             normalized_arguments: json!({}),
             cancellation_token: CancellationToken::new(),
             timeout: config.timeout,
-            execution_context: ToolExecutionContext::new(config.artifact_dir.clone()),
+            execution_context: ToolExecutionContext::new(config.artifact_dir),
             provider_metadata: ProviderMetadata {
                 provider: "test".to_string(),
                 protocol: "chat_like".to_string(),
