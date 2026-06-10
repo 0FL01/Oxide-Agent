@@ -251,6 +251,8 @@ pub(super) struct RunState {
     pub force_manual_compaction: bool,
     /// Substantive final-answer draft produced next to a terminal `write_todos` call.
     pub pending_final_draft: Option<PendingFinalDraft>,
+    /// Whether strict verifier already forced the constrained proof-not-found report pass.
+    pub proof_not_found_report_requested: bool,
 }
 
 pub(super) struct PendingFinalDraft {
@@ -299,6 +301,7 @@ impl RunState {
             compaction_count: 0,
             force_manual_compaction: false,
             pending_final_draft: None,
+            proof_not_found_report_requested: false,
         }
     }
 

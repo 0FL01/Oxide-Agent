@@ -294,7 +294,7 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
     async fn verify_final_response_before_delivery(
         &mut self,
         ctx: &mut AgentRunnerContext<'_>,
-        state: &RunState,
+        state: &mut RunState,
         final_response: &str,
     ) -> anyhow::Result<FinalVerificationOutcome> {
         if ctx.config.is_sub_agent {
@@ -320,18 +320,28 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
         };
 
         let research_snapshot = research_runtime.snapshot();
+        let max_rounds = verifier_config.max_rounds;
         let verifier = StrictAnswerVerifier::new(self.llm_client(), verifier_config);
+        let round = state.continuation_count.saturating_add(1);
+        let proof_not_found_mode = state.proof_not_found_report_requested;
         let decision = verifier
             .verify(AnswerVerificationRequest {
                 final_answer: final_response,
                 research: &research_snapshot,
-                round: state.continuation_count.saturating_add(1),
-                proof_not_found_mode: false,
+                round,
+                proof_not_found_mode,
             })
             .await;
 
         match decision {
-            Ok(decision) => verifier_decision_outcome(decision),
+            Ok(decision) => {
+                let (outcome, proof_not_found_requested) =
+                    verifier_decision_outcome(decision, proof_not_found_mode, round, max_rounds)?;
+                if proof_not_found_requested {
+                    state.proof_not_found_report_requested = true;
+                }
+                Ok(outcome)
+            }
             Err(error) => {
                 self.save_undelivered_final_response_draft(
                     ctx,
@@ -376,20 +386,55 @@ enum FinalVerificationOutcome {
 
 fn verifier_decision_outcome(
     decision: AnswerVerificationDecision,
-) -> anyhow::Result<FinalVerificationOutcome> {
+    proof_not_found_mode: bool,
+    round: usize,
+    max_rounds: usize,
+) -> anyhow::Result<(FinalVerificationOutcome, bool)> {
+    if proof_not_found_mode {
+        return verifier_proof_not_found_mode_outcome(decision).map(|outcome| (outcome, false));
+    }
+
     match decision.verdict {
-        AnswerVerifierVerdict::Allow => Ok(FinalVerificationOutcome::Deliver),
+        AnswerVerifierVerdict::Allow => Ok((FinalVerificationOutcome::Deliver, false)),
         AnswerVerifierVerdict::Revise | AnswerVerifierVerdict::NeedMoreEvidence => {
-            Ok(FinalVerificationOutcome::Continue {
-                reason: verifier_retry_reason(decision.verdict),
-                context: verifier_retry_context(&decision),
-            })
+            if round >= max_rounds.max(1) {
+                return Ok((
+                    FinalVerificationOutcome::Continue {
+                        reason: "Strict answer verifier exhausted proof search".to_string(),
+                        context: verifier_proof_not_found_context(&decision, max_rounds.max(1)),
+                    },
+                    true,
+                ));
+            }
+            Ok((
+                FinalVerificationOutcome::Continue {
+                    reason: verifier_retry_reason(decision.verdict),
+                    context: verifier_retry_context(&decision),
+                },
+                false,
+            ))
         }
         AnswerVerifierVerdict::ProofNotFound => Err(anyhow::anyhow!(
             "strict answer verifier failed closed: proof_not_found verdict is only deliverable in constrained proof-not-found mode"
         )),
         AnswerVerifierVerdict::Block => Err(anyhow::anyhow!(
             "strict answer verifier blocked final response: {}",
+            verifier_decision_summary(&decision)
+        )),
+    }
+}
+
+fn verifier_proof_not_found_mode_outcome(
+    decision: AnswerVerificationDecision,
+) -> anyhow::Result<FinalVerificationOutcome> {
+    match decision.verdict {
+        AnswerVerifierVerdict::Allow | AnswerVerifierVerdict::ProofNotFound => {
+            Ok(FinalVerificationOutcome::Deliver)
+        }
+        AnswerVerifierVerdict::Revise
+        | AnswerVerifierVerdict::NeedMoreEvidence
+        | AnswerVerifierVerdict::Block => Err(anyhow::anyhow!(
+            "strict answer verifier failed closed: constrained proof-not-found report was not verified: {}",
             verifier_decision_summary(&decision)
         )),
     }
@@ -455,6 +500,47 @@ fn verifier_retry_context(decision: &AnswerVerificationDecision) -> String {
         "When evidence cannot be found, do not invent it; continue gathering proof until the proof-not-found flow is requested."
             .to_string(),
     );
+    sections.join("\n")
+}
+
+fn verifier_proof_not_found_context(
+    decision: &AnswerVerificationDecision,
+    max_rounds: usize,
+) -> String {
+    let mut sections = vec![
+        format!(
+            "The strict answer verifier reached RESEARCH_VERIFIER_MAX_ROUNDS={max_rounds} without enough proof for the previous draft."
+        ),
+        format!("Verifier summary: {}", decision.summary),
+        "Do not try to deliver or prove the rejected draft anymore. Produce exactly one constrained proof-not-found final report.".to_string(),
+        "The report must start exactly with: Проверка завершена: достаточные пруфы не найдены".to_string(),
+        "The report must include: what was checked, what was confirmed by fetched proof documents, what was not confirmed, claims that cannot be asserted, and safe next steps.".to_string(),
+        "The report must not recommend a model as usable, best, suitable, compliant, licensed, Russian-capable, or benchmarked unless that exact claim is directly supported by EvidenceDocument excerpts.".to_string(),
+        "The next final answer will be verified in proof_not_found_mode and will be delivered only if the verifier returns proof_not_found or allow.".to_string(),
+    ];
+
+    if !decision.unsupported_claims.is_empty() {
+        sections.push("Claims that exhausted proof search:".to_string());
+        sections.extend(
+            decision
+                .unsupported_claims
+                .iter()
+                .enumerate()
+                .map(|(index, claim)| unsupported_claim_context_line(index, claim)),
+        );
+    }
+
+    if !decision.required_next_actions.is_empty() {
+        sections.push("Actions already requested by verifier before exhaustion:".to_string());
+        sections.extend(
+            decision
+                .required_next_actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| format!("{}. {action}", index + 1)),
+        );
+    }
+
     sections.join("\n")
 }
 
@@ -587,7 +673,10 @@ mod tests {
         )
     }
 
-    fn verifier_llm_client(raw_response: String) -> Arc<LlmClient> {
+    fn verifier_llm_client_expect_mode(
+        raw_response: String,
+        expected_proof_not_found_mode: bool,
+    ) -> Arc<LlmClient> {
         let settings = AgentSettings {
             agent_model_id: Some("agent-model".to_string()),
             agent_model_provider: Some("opencode-go".to_string()),
@@ -604,6 +693,9 @@ mod tests {
                     assert!(system_prompt.contains("strict zero-trust answer verifier"));
                     assert!(user_message.contains("EvidenceDocument.content_excerpt"));
                     assert!(user_message.contains("huggingface.co/example/model"));
+                    assert!(user_message.contains(&format!(
+                        "\"proof_not_found_mode\": {expected_proof_not_found_mode}"
+                    )));
                     assert_eq!(model_id, "verifier-model");
                     Ok(raw_response)
                 },
@@ -652,7 +744,41 @@ mod tests {
         Vec<AgentMessage>,
         Vec<crate::llm::Message>,
     ) {
-        let llm_client = verifier_llm_client(raw_response);
+        run_final_with_verifier_response_and_state(raw_response, RunState::new(), false).await
+    }
+
+    async fn run_final_with_verifier_response_and_state(
+        raw_response: String,
+        state: RunState,
+        expected_proof_not_found_mode: bool,
+    ) -> (
+        Result<Option<AgentRunResult>, String>,
+        RunState,
+        Vec<AgentMessage>,
+        Vec<crate::llm::Message>,
+    ) {
+        run_final_with_verifier_response_and_state_and_answer(
+            raw_response,
+            state,
+            expected_proof_not_found_mode,
+            "Model X has 97% F1 on Russian PII.",
+        )
+        .await
+    }
+
+    async fn run_final_with_verifier_response_and_state_and_answer(
+        raw_response: String,
+        mut state: RunState,
+        expected_proof_not_found_mode: bool,
+        final_answer: &str,
+    ) -> (
+        Result<Option<AgentRunResult>, String>,
+        RunState,
+        Vec<AgentMessage>,
+        Vec<crate::llm::Message>,
+    ) {
+        let llm_client =
+            verifier_llm_client_expect_mode(raw_response, expected_proof_not_found_mode);
         let mut runner = AgentRunner::new(llm_client);
         let mut session = EphemeralSession::new(4096);
         let todos_arc = Arc::new(Mutex::new(TodoList::new()));
@@ -677,13 +803,12 @@ mod tests {
             config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096)
                 .with_research_verifier_config(Some(verifier_config(Some(verifier_model())))),
         };
-        let mut state = RunState::new();
         let result = runner
             .handle_final_response(
                 &mut ctx,
                 &mut state,
                 FinalResponseInput {
-                    final_answer: "Model X has 97% F1 on Russian PII.".to_string(),
+                    final_answer: final_answer.to_string(),
                     reasoning: None,
                 },
             )
@@ -868,6 +993,107 @@ mod tests {
             !ctx.agent
                 .memory()
                 .get_messages()
+                .iter()
+                .any(|message| { message.resolved_kind() == AgentMessageKind::AssistantResponse })
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_exhaustion_forces_constrained_proof_not_found_report() {
+        let mut state = RunState::new();
+        state.continuation_count = 9;
+        let (result, state, memory, messages) = run_final_with_verifier_response_and_state(
+            verifier_decision_json("need_more_evidence"),
+            state,
+            false,
+        )
+        .await;
+
+        assert!(result.expect("exhaustion should continue").is_none());
+        assert_eq!(state.continuation_count, 10);
+        assert!(state.proof_not_found_report_requested);
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::UndeliveredAssistantDraft
+        }));
+        assert!(messages.iter().any(|message| {
+            message.role == "system"
+                && message
+                    .content
+                    .contains("Проверка завершена: достаточные пруфы не найдены")
+                && message.content.contains("proof_not_found_mode")
+                && message.content.contains("Model X has 97% F1")
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_proof_not_found_mode_delivers_verified_report() {
+        let mut state = RunState::new();
+        state.continuation_count = 10;
+        state.proof_not_found_report_requested = true;
+        let report = "Проверка завершена: достаточные пруфы не найдены\n\nЧто проверено: https://huggingface.co/example/model\nЧто подтверждено: лицензия Apache 2.0.\nЧто не подтверждено: 97% F1 на русском PII.";
+        let (result, _state, memory, _messages) =
+            run_final_with_verifier_response_and_state_and_answer(
+                verifier_decision_json("proof_not_found"),
+                state,
+                true,
+                report,
+            )
+            .await;
+
+        match result.expect("verified proof_not_found report should deliver") {
+            Some(AgentRunResult::Final(response)) => {
+                assert_eq!(response, report);
+            }
+            _ => panic!("expected proof-not-found final response"),
+        }
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content == report
+        }));
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_proof_not_found_mode_accepts_allow_report() {
+        let mut state = RunState::new();
+        state.continuation_count = 10;
+        state.proof_not_found_report_requested = true;
+        let (result, _state, memory, _messages) = run_final_with_verifier_response_and_state(
+            verifier_decision_json("allow"),
+            state,
+            true,
+        )
+        .await;
+
+        assert!(matches!(
+            result.expect("allow in proof_not_found mode should deliver"),
+            Some(AgentRunResult::Final(_))
+        ));
+        assert!(
+            memory
+                .iter()
+                .any(|message| { message.resolved_kind() == AgentMessageKind::AssistantResponse })
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_verifier_proof_not_found_mode_blocks_unsupported_report() {
+        let mut state = RunState::new();
+        state.continuation_count = 10;
+        state.proof_not_found_report_requested = true;
+        let (result, _state, memory, _messages) = run_final_with_verifier_response_and_state(
+            verifier_decision_json("revise"),
+            state,
+            true,
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("unsupported proof-not-found report should fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("constrained proof-not-found report was not verified"));
+        assert!(
+            !memory
                 .iter()
                 .any(|message| { message.resolved_kind() == AgentMessageKind::AssistantResponse })
         );
