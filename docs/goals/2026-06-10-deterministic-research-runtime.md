@@ -5,7 +5,7 @@ Status: active
 Codex goal: `/goal Implement docs/goals/2026-06-10-deterministic-research-runtime.md until every Completion Audit item is verified by its required evidence, while preserving listed constraints and non-goals. Work checkpoint by checkpoint, update this document after each meaningful verification, and stop only on verified completion or a repeated blocker with exact evidence and the smallest external action needed.`
 Source spec: `docs/prd/plan.md`
 Goal doc owner: Codex
-Last updated: 2026-06-10 16:13 +03
+Last updated: 2026-06-10 16:36 +03
 
 ## Objective
 
@@ -74,16 +74,16 @@ Out of scope:
   - Requirement: typed tool execution must dispatch or otherwise apply pre-tool policy after arguments are parsed and before provider execution.
   - Acceptance: `SearchBudgetHook`, `ToolAccessPolicyHook`, and sub-agent blocked-tool policy have runtime-path tests proving a blocked tool returns a pairable failure `ToolOutput` instead of silently executing or corrupting tool-call history.
   - Evidence required: focused runtime/hook tests plus `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib <test-filter>`.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-core/src/agent/runner/tools.rs:213` collects parsed pre-tool policy blocks; `crates/oxide-agent-core/src/agent/runner/hooks.rs:113` dispatches `HookEvent::BeforeTool`; `crates/oxide-agent-core/src/agent/tool_runtime/runtime.rs:119` applies blocks as pairable `ToolOutput` before executor dispatch; tests `typed_runtime_before_tool_applies_tool_access_policy_without_dispatch`, `typed_runtime_before_tool_applies_search_budget_without_dispatch`, `typed_runtime_before_tool_applies_sub_agent_safety_without_dispatch`, and `pre_tool_block_returns_paired_failure_without_executor_dispatch` passed.
 
 - G2: `AfterAgent` hook results are applied consistently
   - Source: `docs/prd/plan.md` lines 118-126 and 1447-1452.
   - Requirement: `AfterAgent -> ForceIteration` must keep existing behavior, and `AfterAgent -> Finish` / `Block` must no longer be silently ignored.
   - Acceptance: final-response runner tests cover `ForceIteration`, `Finish`, and `Block` outcomes.
   - Evidence required: focused runner tests and review of `crates/oxide-agent-core/src/agent/runner/responses.rs` diff.
-  - Status: pending
-  - Evidence collected:
+  - Status: verified
+  - Evidence collected: `crates/oxide-agent-core/src/agent/runner/responses.rs:210` returns errors for `AfterAgent -> Block`; `crates/oxide-agent-core/src/agent/runner/responses.rs:213` saves and returns `AfterAgent -> Finish` reports; existing ForceIteration test plus new tests `after_agent_finish_overrides_final_response` and `after_agent_block_returns_error_without_saving_final_response` passed.
 
 - G3: Passive `ResearchRuntime` records typed research observations
   - Source: `docs/prd/plan.md` lines 107-116, 142-152, 1399-1403, 1451-1454.
@@ -129,15 +129,15 @@ Out of scope:
   - Source: `AGENTS.md` lines 11-23 and 50-64.
   - Acceptance: no new crates/services/storage layers; core/runtime remain transport-agnostic; Gemini direct provider remains absent.
   - Evidence required: `git diff` review and `cargo check`.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 added no new crates/services/storage layers; lifecycle changes stayed in `oxide-agent-core`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local` passed.
 
 - Q2: Preserve prompt-cache and tool-call invariants
   - Source: `AGENTS.md` lines 68-72 and 86-94.
   - Acceptance: tool calls still run in parallel; history repair and `tool_call_id` matching remain intact; no large volatile blocks are added to the stable prompt prefix.
   - Evidence required: focused tests for tool history plus diff review of prompt changes.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Tool calls still execute through the existing parallel typed runtime; blocked calls are emitted as ordered pairable `ToolOutput` values; focused tests verify tool-call IDs and provider tool-call IDs are preserved for blocked policy paths.
 
 - Q3: Rollout is backward-compatible
   - Source: `docs/prd/plan.md` lines 1290-1317 and 1405-1409.
@@ -169,8 +169,8 @@ Out of scope:
 - V2: Build and focused test validation
   - Source: `AGENTS.md` lines 132-153.
   - Evidence required: `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`; focused `cargo test -p oxide-agent-core` filters for touched runtime/provider modules.
-  - Status: pending
-  - Evidence collected:
+  - Status: in_progress
+  - Evidence collected: Checkpoint 1 focused tests and embedded profile check passed on 2026-06-10; full final validation remains pending for later checkpoints.
 
 ## Implementation Plan
 
@@ -280,6 +280,13 @@ Out of scope:
   - Commands: `git status --short --branch`; file reads for `AGENTS.md`, `README.md`, existing goal doc, and `docs/prd/plan.md`.
   - Audit IDs updated: none verified; goal is active.
   - Next: Checkpoint 1 -- lifecycle correctness boundary.
+
+- 2026-06-10 16:36 +03: Checkpoint 1 lifecycle correctness boundary implemented.
+  - Changed: added runtime-path `BeforeTool` dispatch from parsed tool calls, precomputed policy blocks, pairable policy failure outputs, and consistent `AfterAgent` `Finish`/`Block` handling.
+  - Evidence: `crates/oxide-agent-core/src/agent/runner/tools.rs:213`, `crates/oxide-agent-core/src/agent/runner/hooks.rs:113`, `crates/oxide-agent-core/src/agent/tool_runtime/runtime.rs:119`, `crates/oxide-agent-core/src/agent/runner/responses.rs:210`.
+  - Commands: `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib pre_tool_block_returns_paired_failure_without_executor_dispatch`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib typed_runtime_before_tool_applies`; `cargo test -p oxide-agent-core --no-default-features --features profile-embedded-opencode-local --lib after_agent_`; `cargo fmt --all -- --check`; `cargo check --workspace --no-default-features --features profile-embedded-opencode-local`.
+  - Audit IDs updated: G1 verified, G2 verified, Q1/Q2/V2 in progress with checkpoint evidence.
+  - Next: Checkpoint 2 -- passive research runtime and full `ToolOutput` observer.
 
 ## Risks and Blockers
 

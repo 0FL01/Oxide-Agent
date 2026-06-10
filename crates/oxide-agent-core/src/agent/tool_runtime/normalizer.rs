@@ -60,6 +60,18 @@ impl OutputNormalizer {
             .with_cleanup_status(CleanupStatus::NotNeeded)
     }
 
+    /// Normalize a pre-execution policy block without calling an executor.
+    #[must_use]
+    pub fn policy_blocked(
+        &self,
+        invocation: &ToolInvocation,
+        reason: impl Into<String>,
+    ) -> ToolOutput {
+        self.base_output(invocation, ToolOutputStatus::Failure, Utc::now())
+            .with_error_message(reason)
+            .with_cleanup_status(CleanupStatus::NotStarted)
+    }
+
     /// Normalize unknown tool lookup.
     #[must_use]
     pub fn unknown_tool(

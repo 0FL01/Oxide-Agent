@@ -10,9 +10,9 @@ use crate::agent::providers::TOOL_COMPRESS;
 use crate::agent::recovery::sanitize_xml_tags;
 use crate::agent::tool_failure_summary::summarize_tool_failure_content;
 use crate::agent::tool_runtime::{
-    ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata, ToolBatchId, ToolCallRuntime,
-    ToolHistoryError, ToolHistoryWriter, ToolOutput, ToolRuntimeConfig, ToolTurnContext, TurnId,
-    v1_tool_runtime_enabled_for_model,
+    ModelMetadata, OpenCodeGoToolCallBatch, ProviderMetadata, ToolBatchId, ToolCallId,
+    ToolCallRuntime, ToolHistoryError, ToolHistoryWriter, ToolOutput, ToolRuntimeConfig,
+    ToolTurnContext, TurnId, v1_tool_runtime_enabled_for_model,
 };
 use crate::config::ModelInfo;
 
@@ -21,6 +21,7 @@ use crate::llm::{
     ToolTransport,
 };
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use uuid::Uuid;
 
@@ -209,6 +210,7 @@ impl AgentRunner {
             );
         }
         let batch = OpenCodeGoToolCallBatch::from_llm_tool_calls(turn_id, tool_calls);
+        let pre_tool_blocks = self.collect_pre_tool_blocks(ctx, state, &batch);
         let runtime_config = ToolRuntimeConfig::default();
         let native_assistant_content = assistant_content.assistant_content();
         let native_assistant_content_len = native_assistant_content
@@ -236,7 +238,9 @@ impl AgentRunner {
         );
         turn_context.cancellation_token = ctx.agent.cancellation_token().clone();
 
-        let result = runtime.execute_batch(batch, turn_context).await;
+        let result = runtime
+            .execute_batch_with_pre_tool_blocks(batch, turn_context, pre_tool_blocks)
+            .await;
         self.apply_buffered_runtime_history(ctx, state, history.drain_events())
             .await;
         result.map_err(|error| anyhow::anyhow!("typed tool runtime failed: {error}"))?;
@@ -272,6 +276,29 @@ impl AgentRunner {
         )
         .await;
         Ok(None)
+    }
+
+    fn collect_pre_tool_blocks(
+        &self,
+        ctx: &AgentRunnerContext<'_>,
+        state: &RunState,
+        batch: &OpenCodeGoToolCallBatch,
+    ) -> BTreeMap<ToolCallId, String> {
+        let mut blocks = BTreeMap::new();
+        for call in &batch.calls {
+            if call.protocol_issue.is_some() {
+                continue;
+            }
+            let Some(arguments) = normalized_object_arguments(&call.raw_arguments) else {
+                continue;
+            };
+            if let Some(reason) =
+                self.before_tool_block_reason(ctx, state, call.tool_name.as_str(), &arguments)
+            {
+                blocks.insert(call.tool_call_id.clone(), reason);
+            }
+        }
+        blocks
     }
 
     async fn emit_runtime_tool_call(&self, ctx: &mut AgentRunnerContext<'_>, tool_call: &ToolCall) {
@@ -405,11 +432,20 @@ impl AgentRunner {
     }
 }
 
+fn normalized_object_arguments(raw_arguments: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(raw_arguments).ok()?;
+    value.is_object().then(|| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::compaction::AgentMessageKind;
     use crate::agent::context::{AgentContext, EphemeralSession};
+    use crate::agent::hooks::{
+        Hook, SearchBudgetHook, SubAgentSafetyConfig, SubAgentSafetyHook, ToolAccessPolicyHook,
+    };
+    use crate::agent::profile::ToolAccessPolicy;
     use crate::agent::providers::{CompressionProvider, TodoItem, TodoList, TodoStatus};
     use crate::agent::runner::AgentRunnerConfig;
     use crate::agent::tool_runtime::{
@@ -420,6 +456,8 @@ mod tests {
     use crate::llm::{LlmClient, ToolDefinition};
     use async_trait::async_trait;
     use serde_json::json;
+    use std::collections::HashSet;
+    use std::sync::RwLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -431,6 +469,10 @@ mod tests {
     }
     struct CompleteTodosRuntimeExecutor {
         todos: Arc<tokio::sync::Mutex<TodoList>>,
+    }
+    struct CountingRuntimeExecutor {
+        name: ToolName,
+        executions: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -569,6 +611,233 @@ mod tests {
                 "",
             ))
         }
+    }
+
+    #[async_trait]
+    impl ToolExecutor for CountingRuntimeExecutor {
+        fn name(&self) -> ToolName {
+            self.name.clone()
+        }
+
+        fn spec(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name.as_str().to_string(),
+                description: "counting test tool".to_string(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<ToolOutput, ToolRuntimeError> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            Ok(OutputNormalizer::new(ToolRuntimeConfig::default()).success(
+                &invocation,
+                "counting-executed",
+                "",
+            ))
+        }
+    }
+
+    struct PolicyRunResult {
+        executions: usize,
+        tool_result_content: String,
+        tool_result_call_id: Option<String>,
+        provider_tool_call_id: Option<String>,
+    }
+
+    async fn run_single_tool_with_hook(
+        tool_name: &str,
+        arguments: &str,
+        hook: Box<dyn Hook>,
+        configure: impl FnOnce(AgentRunnerConfig) -> AgentRunnerConfig,
+    ) -> PolicyRunResult {
+        let settings = AgentSettings {
+            agent_model_id: Some("deepseek-v4-flash".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let llm_client = Arc::new(LlmClient::new(&settings));
+        let mut runner = AgentRunner::new(llm_client);
+        runner.register_hook(hook);
+
+        let executions = Arc::new(AtomicUsize::new(0));
+        let mut runtime_registry = RuntimeToolRegistry::new();
+        runtime_registry
+            .register(Arc::new(CountingRuntimeExecutor {
+                name: ToolName::from(tool_name),
+                executions: Arc::clone(&executions),
+            }))
+            .expect("runtime executor registers");
+        let tools = runtime_registry.specs();
+        let runtime_registry = Arc::new(runtime_registry);
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(tokio::sync::Mutex::new(session.memory().todos.clone()));
+        let mut messages = Vec::new();
+        let config = configure(
+            AgentRunnerConfig::new("deepseek-v4-flash".to_string(), 4, 1, 30, 1024)
+                .with_model_provider("opencode-go")
+                .with_model_routes(vec![ModelInfo {
+                    id: "deepseek-v4-flash".to_string(),
+                    provider: "opencode-go".to_string(),
+                    max_output_tokens: 1024,
+                    context_window_tokens: 8192,
+                    weight: 1,
+                }]),
+        );
+        let mut ctx = AgentRunnerContext {
+            task: "policy runtime test",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: Some(runtime_registry),
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "runtime-policy-test",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: Some("42".to_string()),
+            memory_scope: None,
+            memory_behavior: None,
+            config,
+        };
+        let mut state = RunState::new();
+        let tool_call = ToolCall::new(
+            "invoke-policy-1",
+            ToolCallFunction {
+                name: tool_name.to_string(),
+                arguments: arguments.to_string(),
+            },
+            false,
+        )
+        .with_correlation(
+            ToolCallCorrelation::new("invoke-policy-1")
+                .with_provider_tool_call_id("call-policy-1")
+                .with_protocol(ToolProtocol::ChatLike)
+                .with_transport(ToolTransport::ClientRoundTrip),
+        );
+
+        runner
+            .execute_tools_with_runtime(
+                &mut ctx,
+                &mut state,
+                ToolTurnAssistantContent::StructuredControlEnvelope,
+                None,
+                vec![tool_call],
+            )
+            .await
+            .expect("runtime execution succeeds");
+
+        let tool_result = ctx
+            .agent
+            .memory()
+            .get_messages()
+            .iter()
+            .find(|message| message.kind == AgentMessageKind::ToolResult)
+            .expect("tool result recorded");
+        PolicyRunResult {
+            executions: executions.load(Ordering::SeqCst),
+            tool_result_content: tool_result.content.clone(),
+            tool_result_call_id: tool_result.tool_call_id.clone(),
+            provider_tool_call_id: tool_result
+                .tool_call_correlation
+                .as_ref()
+                .map(ToolCallCorrelation::wire_tool_call_id)
+                .map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_before_tool_applies_tool_access_policy_without_dispatch() {
+        let policy = ToolAccessPolicy::new(None, HashSet::from(["read_file".to_string()]));
+        let result = run_single_tool_with_hook(
+            "read_file",
+            r#"{"path":"Cargo.toml"}"#,
+            Box::new(ToolAccessPolicyHook::new(Arc::new(RwLock::new(policy)))),
+            std::convert::identity,
+        )
+        .await;
+
+        assert_eq!(result.executions, 0);
+        assert_eq!(
+            result.tool_result_call_id.as_deref(),
+            Some("invoke-policy-1")
+        );
+        assert_eq!(
+            result.provider_tool_call_id.as_deref(),
+            Some("call-policy-1")
+        );
+        assert!(
+            result
+                .tool_result_content
+                .contains("\"status\":\"failure\"")
+        );
+        assert!(
+            result
+                .tool_result_content
+                .contains("Tool 'read_file' is blocked by the current agent profile")
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_before_tool_applies_search_budget_without_dispatch() {
+        let result = run_single_tool_with_hook(
+            "web_search",
+            r#"{"query":"oxide agent"}"#,
+            Box::new(SearchBudgetHook::new(0)),
+            |config| config.with_search_limit(0),
+        )
+        .await;
+
+        assert_eq!(result.executions, 0);
+        assert_eq!(
+            result.tool_result_call_id.as_deref(),
+            Some("invoke-policy-1")
+        );
+        assert!(
+            result
+                .tool_result_content
+                .contains("\"status\":\"failure\"")
+        );
+        assert!(
+            result
+                .tool_result_content
+                .contains("Search budget exceeded (1/0)")
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_runtime_before_tool_applies_sub_agent_safety_without_dispatch() {
+        let result = run_single_tool_with_hook(
+            "spawn_sub_agents",
+            r#"{"tasks":[]}"#,
+            Box::new(SubAgentSafetyHook::new(SubAgentSafetyConfig {
+                max_iterations: 10,
+                max_tokens: 4096,
+                blocked_tools: HashSet::from(["spawn_sub_agents".to_string()]),
+            })),
+            |config| config.with_sub_agent(true),
+        )
+        .await;
+
+        assert_eq!(result.executions, 0);
+        assert_eq!(
+            result.tool_result_call_id.as_deref(),
+            Some("invoke-policy-1")
+        );
+        assert!(
+            result
+                .tool_result_content
+                .contains("\"status\":\"failure\"")
+        );
+        assert!(
+            result
+                .tool_result_content
+                .contains("Tool 'spawn_sub_agents' is blocked for sub-agents")
+        );
     }
 
     #[tokio::test]

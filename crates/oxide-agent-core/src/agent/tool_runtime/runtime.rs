@@ -9,11 +9,11 @@ use super::normalizer::OutputNormalizer;
 use super::output::{CancellationReason, CleanupStatus, ToolOutput};
 use super::provider_opencode_go::{OpenCodeGoParsedToolCall, OpenCodeGoToolCallBatch};
 use super::registry::ToolRegistry;
-use super::types::ToolBatchId;
+use super::types::{ToolBatchId, ToolCallId};
 use crate::agent::identity::SessionId;
 use chrono::Utc;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -106,30 +106,51 @@ impl ToolCallRuntime {
         batch: OpenCodeGoToolCallBatch,
         context: ToolTurnContext,
     ) -> Result<Vec<ToolOutput>, ToolRuntimeFatal> {
+        self.execute_batch_with_pre_tool_blocks(batch, context, BTreeMap::new())
+            .await
+    }
+
+    /// Execute one assistant tool-call batch with precomputed pre-tool policy blocks.
+    ///
+    /// # Errors
+    ///
+    /// Returns a fatal error when history cannot be written or output pairing
+    /// invariants fail.
+    pub async fn execute_batch_with_pre_tool_blocks(
+        &self,
+        batch: OpenCodeGoToolCallBatch,
+        context: ToolTurnContext,
+        pre_tool_blocks: BTreeMap<ToolCallId, String>,
+    ) -> Result<Vec<ToolOutput>, ToolRuntimeFatal> {
         self.history.record_assistant_tool_calls(&batch).await?;
 
         let mut handles = Vec::with_capacity(batch.calls.len());
         for call in batch.calls.iter().cloned() {
             let invocation = build_invocation(&batch, &context, &call);
-            handles.push(ToolTaskHandle {
-                invocation: invocation.clone(),
-                handle: tokio::spawn(run_one_tool(
-                    Arc::clone(&self.registry),
-                    self.normalizer.clone(),
-                    invocation,
-                    call,
-                )),
-            });
+            match prepare_invocation(invocation, &call, &self.normalizer, &pre_tool_blocks) {
+                Ok(invocation) => handles.push(ToolTask::Running(ToolTaskHandle {
+                    invocation: invocation.clone(),
+                    handle: tokio::spawn(run_one_tool(
+                        Arc::clone(&self.registry),
+                        self.normalizer.clone(),
+                        invocation,
+                    )),
+                })),
+                Err(output) => handles.push(ToolTask::Ready(output)),
+            }
         }
 
         let mut outputs = Vec::with_capacity(handles.len());
         for task in handles {
-            let output = match task.handle.await {
-                Ok(output) => output,
-                Err(error) => self.normalizer.internal_runtime_error(
-                    &task.invocation,
-                    format!("tool task join failed: {error}"),
-                ),
+            let output = match task {
+                ToolTask::Ready(output) => output,
+                ToolTask::Running(task) => match task.handle.await {
+                    Ok(output) => output,
+                    Err(error) => self.normalizer.internal_runtime_error(
+                        &task.invocation,
+                        format!("tool task join failed: {error}"),
+                    ),
+                },
             };
             outputs.push(output);
         }
@@ -145,19 +166,24 @@ impl ToolCallRuntime {
     }
 }
 
+enum ToolTask {
+    Ready(ToolOutput),
+    Running(ToolTaskHandle),
+}
+
 struct ToolTaskHandle {
     invocation: ToolInvocation,
     handle: tokio::task::JoinHandle<ToolOutput>,
 }
 
-async fn run_one_tool(
-    registry: Arc<ToolRegistry>,
-    normalizer: OutputNormalizer,
+fn prepare_invocation(
     mut invocation: ToolInvocation,
-    call: OpenCodeGoParsedToolCall,
-) -> ToolOutput {
+    call: &OpenCodeGoParsedToolCall,
+    normalizer: &OutputNormalizer,
+    pre_tool_blocks: &BTreeMap<ToolCallId, String>,
+) -> Result<ToolInvocation, ToolOutput> {
     if let Some(issue) = call.protocol_issue {
-        return normalizer.provider_protocol_error(&invocation, issue.message());
+        return Err(normalizer.provider_protocol_error(&invocation, issue.message()));
     }
 
     match parse_normalized_arguments(&invocation.raw_arguments) {
@@ -165,10 +191,22 @@ async fn run_one_tool(
             invocation.normalized_arguments = arguments;
         }
         Err(message) => {
-            return normalizer.invalid_arguments(&invocation, message);
+            return Err(normalizer.invalid_arguments(&invocation, message));
         }
     }
 
+    if let Some(reason) = pre_tool_blocks.get(&invocation.tool_call_id) {
+        return Err(normalizer.policy_blocked(&invocation, reason.clone()));
+    }
+
+    Ok(invocation)
+}
+
+async fn run_one_tool(
+    registry: Arc<ToolRegistry>,
+    normalizer: OutputNormalizer,
+    invocation: ToolInvocation,
+) -> ToolOutput {
     let timeout = invocation.timeout.per_tool_hard_timeout;
     tokio::select! {
         () = invocation.cancellation_token.cancelled() => {
@@ -284,7 +322,9 @@ mod tests {
     use crate::llm::ToolDefinition;
     use async_trait::async_trait;
     use serde_json::json;
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     #[derive(Default)]
@@ -318,6 +358,7 @@ mod tests {
         name: ToolName,
         delay: Duration,
         panic: bool,
+        executions: Option<Arc<AtomicUsize>>,
     }
 
     #[async_trait]
@@ -338,6 +379,9 @@ mod tests {
             &self,
             invocation: ToolInvocation,
         ) -> Result<ToolOutput, ToolRuntimeError> {
+            if let Some(executions) = &self.executions {
+                executions.fetch_add(1, Ordering::SeqCst);
+            }
             assert!(invocation.normalized_arguments.is_object());
             tokio::time::sleep(self.delay).await;
             assert!(!self.panic, "executor panic requested");
@@ -489,6 +533,41 @@ mod tests {
         assert_eq!(events, vec!["assistant:2", "tool:call_a", "tool:call_b"]);
     }
 
+    #[tokio::test]
+    async fn pre_tool_block_returns_paired_failure_without_executor_dispatch() {
+        let history = Arc::new(RecordingHistory::default());
+        let executions = Arc::new(AtomicUsize::new(0));
+        let runtime = runtime_with_history_and_counter(
+            Arc::clone(&history),
+            Arc::clone(&executions),
+            "guarded",
+            Duration::from_millis(1),
+            false,
+        );
+        let batch = parse_batch(json!([call("call_guarded", "guarded")]));
+        let mut blocks = BTreeMap::new();
+        blocks.insert(
+            ToolCallId::from("call_guarded"),
+            "blocked by policy".to_string(),
+        );
+
+        let output = runtime
+            .execute_batch_with_pre_tool_blocks(batch, turn_context(Duration::from_secs(5)), blocks)
+            .await
+            .expect("batch completes")
+            .remove(0);
+
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert_eq!(output.status, ToolOutputStatus::Failure);
+        assert!(!output.success);
+        assert_eq!(output.tool_call_id.as_str(), "call_guarded");
+        assert_eq!(output.error_message.as_deref(), Some("blocked by policy"));
+        assert_eq!(output.cleanup_status, CleanupStatus::NotStarted);
+
+        let events = history.events.lock().expect("events lock").clone();
+        assert_eq!(events, vec!["assistant:1", "tool:call_guarded"]);
+    }
+
     fn runtime_with_executor(name: &str, delay: Duration, panic: bool) -> ToolCallRuntime {
         runtime_with_history(Arc::new(RecordingHistory::default()), name, delay, panic)
     }
@@ -499,12 +578,33 @@ mod tests {
         delay: Duration,
         panic: bool,
     ) -> ToolCallRuntime {
+        runtime_with_history_inner(history, None, name, delay, panic)
+    }
+
+    fn runtime_with_history_and_counter(
+        history: Arc<RecordingHistory>,
+        executions: Arc<AtomicUsize>,
+        name: &str,
+        delay: Duration,
+        panic: bool,
+    ) -> ToolCallRuntime {
+        runtime_with_history_inner(history, Some(executions), name, delay, panic)
+    }
+
+    fn runtime_with_history_inner(
+        history: Arc<RecordingHistory>,
+        executions: Option<Arc<AtomicUsize>>,
+        name: &str,
+        delay: Duration,
+        panic: bool,
+    ) -> ToolCallRuntime {
         let mut registry = ToolRegistry::new();
         registry
             .register(Arc::new(DelayedExecutor {
                 name: ToolName::from(name),
                 delay,
                 panic,
+                executions,
             }))
             .expect("executor registers");
         ToolCallRuntime::new(Arc::new(registry), history, ToolRuntimeConfig::default())

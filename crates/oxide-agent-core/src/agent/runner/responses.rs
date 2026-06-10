@@ -179,33 +179,53 @@ include it explicitly in a later final_answer.]\n\nUndelivered draft:\n{trimmed}
         sync_todos_from_arc(ctx.agent.memory_mut(), ctx.todos_arc).await;
         let hook_result = self.after_agent_hook_result(ctx, state, &final_response);
 
-        if let crate::agent::hooks::HookResult::ForceIteration { reason, context } = hook_result {
-            state.continuation_count += 1;
-            if let Some(tx) = ctx.progress_tx {
-                let _ = tx
-                    .send(AgentEvent::Continuation {
-                        source: AgentEventSource::Root,
-                        reason: reason.clone(),
-                        count: state.continuation_count,
-                    })
-                    .await;
+        match hook_result {
+            crate::agent::hooks::HookResult::ForceIteration { reason, context } => {
+                state.continuation_count += 1;
+                if let Some(tx) = ctx.progress_tx {
+                    let _ = tx
+                        .send(AgentEvent::Continuation {
+                            source: AgentEventSource::Root,
+                            reason: reason.clone(),
+                            count: state.continuation_count,
+                        })
+                        .await;
+                }
+                let retry_message =
+                    format!("[SYSTEM: {reason}]\n\n{}", context.unwrap_or_default());
+                self.save_undelivered_final_response_draft(
+                    ctx,
+                    &final_response,
+                    "completion hook forced another iteration",
+                );
+                ctx.messages
+                    .push(crate::llm::Message::system(&retry_message));
+                ctx.agent.memory_mut().add_message(
+                    crate::agent::memory::AgentMessage::system_context(retry_message),
+                );
+                let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+                Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
+                return Ok(None);
             }
-            let retry_message = format!("[SYSTEM: {reason}]\n\n{}", context.unwrap_or_default());
-            self.save_undelivered_final_response_draft(
-                ctx,
-                &final_response,
-                "completion hook forced another iteration",
-            );
-            ctx.messages
-                .push(crate::llm::Message::system(&retry_message));
-            ctx.agent
-                .memory_mut()
-                .add_message(crate::agent::memory::AgentMessage::system_context(
-                    retry_message,
-                ));
-            let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
-            Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
-            return Ok(None);
+            crate::agent::hooks::HookResult::Block { reason } => {
+                return Err(anyhow::anyhow!(reason));
+            }
+            crate::agent::hooks::HookResult::Finish(report) => {
+                self.save_final_response(ctx, &report, None);
+                let snapshot = Self::build_token_snapshot(ctx, CompactionTrigger::PreIteration);
+                Self::emit_token_snapshot_update(ctx.progress_tx, snapshot).await;
+
+                if let Some(tx) = ctx.progress_tx
+                    && !ctx.config.is_sub_agent
+                {
+                    let _ = tx.send(AgentEvent::Finished).await;
+                }
+                return Ok(Some(AgentRunResult::Final(report)));
+            }
+            crate::agent::hooks::HookResult::Continue
+            | crate::agent::hooks::HookResult::InjectContext(_)
+            | crate::agent::hooks::HookResult::InjectTransientContext(_)
+            | crate::agent::hooks::HookResult::RequestCompaction { .. } => {}
         }
 
         if ctx.agent.has_pending_runtime_context() {
@@ -302,13 +322,30 @@ mod tests {
     use super::*;
     use crate::agent::compaction::AgentMessageKind;
     use crate::agent::context::{AgentContext, EphemeralSession};
-    use crate::agent::hooks::CompletionCheckHook;
+    use crate::agent::hooks::{CompletionCheckHook, Hook, HookContext, HookEvent, HookResult};
     use crate::agent::providers::{TodoItem, TodoList};
     use crate::agent::runner::test_support::{build_llm_client, single_final_response_provider};
     use crate::agent::runner::types::{FinalResponseInput, PendingFinalDraft, RunState};
     use crate::agent::runner::{AgentRunnerConfig, AgentRunnerContext};
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    struct StaticAfterAgentHook {
+        result: HookResult,
+    }
+
+    impl Hook for StaticAfterAgentHook {
+        fn name(&self) -> &'static str {
+            "static_after_agent"
+        }
+
+        fn handle(&self, event: &HookEvent, _context: &HookContext) -> HookResult {
+            match event {
+                HookEvent::AfterAgent { .. } => self.result.clone(),
+                _ => HookResult::Continue,
+            }
+        }
+    }
 
     #[test]
     fn salvage_detector_accepts_plain_final_prose() {
@@ -389,6 +426,121 @@ mod tests {
             .expect("undelivered draft should be recorded");
         assert!(draft_message.content.contains("not delivered to the user"));
         assert!(draft_message.content.contains(draft));
+    }
+
+    #[tokio::test]
+    async fn after_agent_finish_overrides_final_response() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        runner.register_hook(Box::new(StaticAfterAgentHook {
+            result: HookResult::Finish("hook supplied report".to_string()),
+        }));
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "after-agent-finish",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
+        };
+        let mut state = RunState::new();
+
+        let result = runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "original final".to_string(),
+                    reasoning: Some("ignored reasoning".to_string()),
+                },
+            )
+            .await
+            .expect("finish hook should complete");
+
+        match result {
+            Some(AgentRunResult::Final(response)) => assert_eq!(response, "hook supplied report"),
+            _ => panic!("expected overridden final response"),
+        }
+        let memory = ctx.agent.memory().get_messages();
+        assert!(memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content == "hook supplied report"
+        }));
+        assert!(!memory.iter().any(|message| {
+            message.resolved_kind() == AgentMessageKind::AssistantResponse
+                && message.content == "original final"
+        }));
+    }
+
+    #[tokio::test]
+    async fn after_agent_block_returns_error_without_saving_final_response() {
+        let llm_client = build_llm_client(single_final_response_provider());
+        let mut runner = AgentRunner::new(llm_client);
+        runner.register_hook(Box::new(StaticAfterAgentHook {
+            result: HookResult::Block {
+                reason: "blocked final".to_string(),
+            },
+        }));
+
+        let mut session = EphemeralSession::new(2048);
+        let todos_arc = Arc::new(Mutex::new(TodoList::new()));
+        let tools = Vec::new();
+        let mut messages = Vec::new();
+        let mut ctx = AgentRunnerContext {
+            task: "produce report",
+            system_prompt: "system prompt",
+            date_suffix: "",
+            tools: &tools,
+            tool_runtime_registry: None,
+            progress_tx: None,
+            todos_arc: &todos_arc,
+            task_id: "after-agent-block",
+            messages: &mut messages,
+            agent: &mut session,
+            compaction_controller: None,
+            session_id: None,
+            memory_scope: None,
+            memory_behavior: None,
+            config: AgentRunnerConfig::new("test-model".to_string(), 8, 4, 60, 4096),
+        };
+        let mut state = RunState::new();
+
+        let error = match runner
+            .handle_final_response(
+                &mut ctx,
+                &mut state,
+                FinalResponseInput {
+                    final_answer: "original final".to_string(),
+                    reasoning: None,
+                },
+            )
+            .await
+        {
+            Ok(_) => panic!("block hook should fail final response"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("blocked final"));
+        let memory = ctx.agent.memory().get_messages();
+        assert!(
+            !memory
+                .iter()
+                .any(|message| message.resolved_kind() == AgentMessageKind::AssistantResponse)
+        );
     }
 
     #[tokio::test]
