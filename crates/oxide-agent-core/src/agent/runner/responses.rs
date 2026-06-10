@@ -770,8 +770,8 @@ mod tests {
         let mut provider = MockLlmProvider::new();
         provider
             .expect_complete_internal_text()
-            .times(1)
-            .return_once(
+            .times(1..=3)
+            .returning(
                 move |system_prompt, _history, user_message, model_id, _max_tokens| {
                     assert!(system_prompt.contains("strict zero-trust answer verifier"));
                     assert!(user_message.contains("EvidenceDocument.content_excerpt"));
@@ -780,7 +780,7 @@ mod tests {
                         "\"proof_not_found_mode\": {expected_proof_not_found_mode}"
                     )));
                     assert_eq!(model_id, "verifier-model");
-                    Ok(raw_response)
+                    Ok(raw_response.clone())
                 },
             );
         let mut llm = LlmClient::new(&settings);

@@ -20,7 +20,10 @@ Rules:
 - Return proof_not_found only for a constrained no-proof report that explicitly avoids unsupported recommendations.
 - Return block for unsafe, contradictory, malformed, or unverifiable answers that should not be delivered.
 
-Respond ONLY with strict JSON matching this schema:
+Respond ONLY with one strict JSON object matching this schema.
+The first non-whitespace character MUST be `{` and the last non-whitespace character MUST be `}`.
+Do not use Markdown fences, prose, comments, XML, YAML, tool calls, or chain-of-thought.
+If you cannot verify the answer, still return this JSON schema with verdict `need_more_evidence`, `revise`, `proof_not_found`, or `block`.
 {
   "verdict": "allow | revise | need_more_evidence | proof_not_found | block",
   "confidence": "high | medium | low",
@@ -48,6 +51,8 @@ Respond ONLY with strict JSON matching this schema:
   ],
   "required_next_actions": ["specific next action"]
 }"#;
+
+const MAX_VERIFIER_JSON_ATTEMPTS: usize = 3;
 
 /// Runtime configuration for the strict answer verifier.
 #[derive(Debug, Clone)]
@@ -229,25 +234,49 @@ impl StrictAnswerVerifier {
         request: AnswerVerificationRequest<'_>,
     ) -> Result<AnswerVerificationDecision, AnswerVerificationError> {
         let model = self.config.require_model()?;
-        let user_message = build_verifier_user_message(&request, &self.config);
-        let llm_call = self.llm_client.complete_internal_text(
-            InternalTextPurpose::AnswerVerification,
-            SYSTEM_PROMPT,
-            &user_message,
-            model,
-        );
+        let base_user_message = build_verifier_user_message(&request, &self.config);
+        let mut user_message = base_user_message.clone();
+        let mut last_invalid_json: Option<String> = None;
 
-        let raw = match tokio::time::timeout(self.config.timeout, llm_call).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) => return Err(AnswerVerificationError::Provider(error.to_string())),
-            Err(_) => {
-                return Err(AnswerVerificationError::Timeout {
-                    timeout_secs: self.config.timeout.as_secs().max(1),
-                });
+        for attempt in 1..=MAX_VERIFIER_JSON_ATTEMPTS {
+            let llm_call = self.llm_client.complete_internal_text(
+                InternalTextPurpose::AnswerVerification,
+                SYSTEM_PROMPT,
+                &user_message,
+                model,
+            );
+
+            let raw = match tokio::time::timeout(self.config.timeout, llm_call).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(error)) => return Err(AnswerVerificationError::Provider(error.to_string())),
+                Err(_) => {
+                    return Err(AnswerVerificationError::Timeout {
+                        timeout_secs: self.config.timeout.as_secs().max(1),
+                    });
+                }
+            };
+
+            match parse_verifier_decision(&raw) {
+                Ok(decision) => return Ok(decision),
+                Err(AnswerVerificationError::InvalidJson(error)) => {
+                    last_invalid_json = Some(error);
+                    if attempt == MAX_VERIFIER_JSON_ATTEMPTS {
+                        break;
+                    }
+                    user_message = build_verifier_json_retry_message(
+                        &base_user_message,
+                        last_invalid_json.as_deref().unwrap_or("invalid JSON"),
+                        attempt + 1,
+                    );
+                }
+                Err(error) => return Err(error),
             }
-        };
+        }
 
-        parse_verifier_decision(&raw)
+        Err(AnswerVerificationError::InvalidJson(format!(
+            "{} after {MAX_VERIFIER_JSON_ATTEMPTS} verifier JSON attempts",
+            last_invalid_json.unwrap_or_else(|| "invalid JSON".to_string())
+        )))
     }
 }
 
@@ -288,6 +317,19 @@ fn build_verifier_user_message(
     .expect("verifier request JSON should serialize")
 }
 
+fn build_verifier_json_retry_message(
+    base_user_message: &str,
+    parse_error: &str,
+    attempt: usize,
+) -> String {
+    format!(
+        "The previous verifier response was rejected before use because it was not strict JSON: {parse_error}\n\n\
+Attempt {attempt}/{MAX_VERIFIER_JSON_ATTEMPTS}. Return ONLY one JSON object that matches the schema from the system prompt.\n\
+No Markdown fences. No prose. No reasoning. First non-whitespace character must be '{{'. Last non-whitespace character must be '}}'.\n\
+Re-verify the same request below; do not trust or reuse the rejected verifier response.\n\n{base_user_message}"
+    )
+}
+
 fn evidence_document_request_payload(
     index: usize,
     document: &EvidenceDocument,
@@ -324,6 +366,7 @@ mod tests {
     use crate::llm::{LlmClient, LlmError, Message, MockLlmProvider};
     use async_trait::async_trait;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn verifier_model() -> ModelInfo {
         ModelInfo {
@@ -481,6 +524,90 @@ mod tests {
             .expect("verifier should parse decision");
 
         assert_eq!(decision.verdict, AnswerVerifierVerdict::Allow);
+    }
+
+    #[tokio::test]
+    async fn verifier_retries_invalid_json_and_recovers_without_trusting_rejected_output() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_mock = Arc::clone(&attempts);
+        let mut provider = MockLlmProvider::new();
+        provider.expect_complete_internal_text().times(2).returning(
+            move |_system_prompt, _history, user_message, _model_id, _max_tokens| {
+                let attempt = attempts_for_mock.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Ok("Thought: the answer looks fine".to_string())
+                } else {
+                    assert!(user_message.contains("previous verifier response was rejected"));
+                    assert!(user_message.contains("First non-whitespace character"));
+                    Ok(decision_json("allow"))
+                }
+            },
+        );
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+        let verifier = StrictAnswerVerifier::new(
+            Arc::new(llm),
+            ResearchVerifierConfig::from_settings(&settings),
+        );
+
+        let decision = verifier
+            .verify(AnswerVerificationRequest {
+                final_answer: "The model is Apache 2.0.",
+                research: &sample_snapshot(),
+                round: 1,
+                proof_not_found_mode: false,
+            })
+            .await
+            .expect("second verifier attempt should parse");
+
+        assert_eq!(decision.verdict, AnswerVerifierVerdict::Allow);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn verifier_exhausts_invalid_json_retries_and_still_fails_closed() {
+        let settings = AgentSettings {
+            agent_model_id: Some("agent-model".to_string()),
+            agent_model_provider: Some("opencode-go".to_string()),
+            research_verifier_model_id: Some("verifier-model".to_string()),
+            research_verifier_model_provider: Some("opencode-go".to_string()),
+            ..AgentSettings::default()
+        };
+        let mut provider = MockLlmProvider::new();
+        provider
+            .expect_complete_internal_text()
+            .times(MAX_VERIFIER_JSON_ATTEMPTS)
+            .returning(|_, _, _, _, _| Ok("not json".to_string()));
+        let mut llm = LlmClient::new(&settings);
+        llm.register_provider("opencode-go".to_string(), Arc::new(provider));
+        let verifier = StrictAnswerVerifier::new(
+            Arc::new(llm),
+            ResearchVerifierConfig::from_settings(&settings),
+        );
+
+        let error = verifier
+            .verify(AnswerVerificationRequest {
+                final_answer: "The model is Apache 2.0.",
+                research: &sample_snapshot(),
+                round: 1,
+                proof_not_found_mode: false,
+            })
+            .await
+            .expect_err("invalid JSON retries should still fail closed");
+
+        match error {
+            AnswerVerificationError::InvalidJson(message) => {
+                assert!(message.contains("after 3 verifier JSON attempts"));
+            }
+            other => panic!("expected InvalidJson, got {other:?}"),
+        }
     }
 
     #[tokio::test]
