@@ -1,5 +1,6 @@
 //! Known source fast paths for URLs whose Markdown can be fetched directly.
 
+pub(super) mod pypi;
 mod repo_hosts;
 pub(super) mod rust_packages;
 
@@ -16,6 +17,12 @@ pub(super) enum KnownMarkdownSource {
         metadata_url: Url,
         crate_name: String,
         version: Option<String>,
+        mode: &'static str,
+    },
+    PypiProject {
+        source_url: Url,
+        metadata_url: Url,
+        package_name: String,
         mode: &'static str,
     },
 }
@@ -45,10 +52,25 @@ impl KnownMarkdownSource {
         }
     }
 
+    pub(super) fn pypi_project(
+        source_url: Url,
+        metadata_url: Url,
+        package_name: String,
+        mode: &'static str,
+    ) -> Self {
+        Self::PypiProject {
+            source_url,
+            metadata_url,
+            package_name,
+            mode,
+        }
+    }
+
     pub(super) fn source_url(&self) -> &Url {
         match self {
             Self::DirectReadme { source_url, .. } => source_url,
             Self::CrateReadme { source_url, .. } => source_url,
+            Self::PypiProject { source_url, .. } => source_url,
         }
     }
 
@@ -56,6 +78,7 @@ impl KnownMarkdownSource {
         match self {
             Self::DirectReadme { fetch_url, .. } => fetch_url,
             Self::CrateReadme { metadata_url, .. } => metadata_url,
+            Self::PypiProject { metadata_url, .. } => metadata_url,
         }
     }
 
@@ -63,10 +86,13 @@ impl KnownMarkdownSource {
         match self {
             Self::DirectReadme { mode, .. } => mode,
             Self::CrateReadme { mode, .. } => mode,
+            Self::PypiProject { mode, .. } => mode,
         }
     }
 }
 
 pub(super) fn classify(url: &Url) -> Option<KnownMarkdownSource> {
-    repo_hosts::classify(url).or_else(|| rust_packages::classify(url))
+    repo_hosts::classify(url)
+        .or_else(|| rust_packages::classify(url))
+        .or_else(|| pypi::classify(url))
 }

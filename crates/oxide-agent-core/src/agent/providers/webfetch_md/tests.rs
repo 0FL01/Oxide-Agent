@@ -661,9 +661,23 @@ fn maps_docs_rs_urls_to_crates_io_readme_api_plan() {
             KnownMarkdownSource::CrateReadme { version, .. } => {
                 assert_eq!(version.as_deref(), expected_version);
             }
-            KnownMarkdownSource::DirectReadme { .. } => panic!("expected crate README source"),
+            _ => panic!("expected crate README source"),
         }
     }
+}
+
+#[test]
+fn maps_pypi_project_to_json_api_plan() {
+    let url = Url::parse("https://pypi.org/project/requests/").expect("url");
+    let source = classify_known_source(&url).expect("known markdown source");
+
+    assert_eq!(source.source_url(), &url);
+    assert_eq!(
+        source.fetch_url().as_str(),
+        "https://pypi.org/pypi/requests/json"
+    );
+    assert!(matches!(source, KnownMarkdownSource::PypiProject { .. }));
+    assert_eq!(source.mode(), "pypi_project_fast_path");
 }
 
 #[tokio::test]
@@ -705,6 +719,49 @@ async fn fetches_crates_io_readme_via_metadata_api() {
     assert!(output.contains("README from API."));
 }
 
+#[tokio::test]
+async fn fetches_pypi_project_description_via_json_api() {
+    let metadata_json = r##"{
+        "info": {
+            "name": "demo-pkg",
+            "version": "2.3.4",
+            "summary": "Demo package summary",
+            "description": "# Demo package\n\nLong description from PyPI.",
+            "description_content_type": "text/markdown",
+            "project_urls": {
+                "Source": "https://example.test/demo-pkg"
+            }
+        }
+    }"##;
+    let addr = serve_http_once(metadata_json, "application/json").await;
+    let client = reqwest::Client::builder()
+        .resolve("pypi.org", addr)
+        .build()
+        .expect("test client");
+    let provider = WebFetchMdProvider::with_client(client);
+
+    let output = provider
+        .fetch_markdown(
+            WebMarkdownArgs {
+                url: "http://pypi.org/project/demo-pkg/".to_string(),
+                timeout_secs: Some(5),
+            },
+            None,
+        )
+        .await
+        .expect("PyPI project fast path succeeds");
+
+    assert!(output.contains("URL: http://pypi.org/pypi/demo-pkg/json"));
+    assert!(output.contains("Source-URL: http://pypi.org/project/demo-pkg/"));
+    assert!(output.contains("Mode: pypi_project_fast_path"));
+    assert!(output.contains("Package: demo-pkg"));
+    assert!(output.contains("Version: 2.3.4"));
+    assert!(output.contains("Summary: Demo package summary"));
+    assert!(output.contains("Project-URL: https://example.test/demo-pkg"));
+    assert!(output.contains("# Demo package"));
+    assert!(output.contains("Long description from PyPI."));
+}
+
 #[test]
 fn maps_generic_gitea_src_branch_readme_to_raw_url() {
     let url =
@@ -731,6 +788,8 @@ fn ignores_non_readme_known_source_pages() {
         "https://git.example.test/owner/repo/src/branch/main/src/lib.rs",
         "https://huggingface.co/owner/model/discussions/1",
         "https://huggingface.co/owner/model/blob/main/config.json",
+        "https://pypi.org/project/requests/docs/",
+        "https://pypi.org/simple/requests/",
     ] {
         let url = Url::parse(raw).expect("url");
         assert!(

@@ -7,7 +7,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::convert::{html_to_markdown, truncate_chars};
 use super::error::{display_content_type, is_html_content_type, reject_anti_bot_challenge};
-use super::known_sources::{KnownMarkdownSource, classify as classify_known_source, rust_packages};
+use super::known_sources::{
+    KnownMarkdownSource, classify as classify_known_source, pypi, rust_packages,
+};
 use super::reddit::{
     parse_reddit_atom_entries, reddit_thread_rss_url, render_reddit_atom_markdown, xml_tag_text,
 };
@@ -118,10 +120,18 @@ impl WebFetchMdProvider {
     ) -> Result<String> {
         reject_unsafe_url(source.fetch_url())?;
 
-        if matches!(source, KnownMarkdownSource::CrateReadme { .. }) {
-            return self
-                .fetch_crate_readme(source, timeout_secs, cancellation_token)
-                .await;
+        match source {
+            KnownMarkdownSource::CrateReadme { .. } => {
+                return self
+                    .fetch_crate_readme(source, timeout_secs, cancellation_token)
+                    .await;
+            }
+            KnownMarkdownSource::PypiProject { .. } => {
+                return self
+                    .fetch_pypi_project(source, timeout_secs, cancellation_token)
+                    .await;
+            }
+            KnownMarkdownSource::DirectReadme { .. } => {}
         }
 
         let fetched = self
@@ -192,6 +202,37 @@ impl WebFetchMdProvider {
             mode,
             crate_name,
             &version,
+            display_content_type(&fetched.content_type),
+            fetched.bytes_read,
+            truncated_label,
+            &truncated.text,
+        ))
+    }
+
+    async fn fetch_pypi_project(
+        &self,
+        source: &KnownMarkdownSource,
+        timeout_secs: u64,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<String> {
+        let (source_url, metadata_url, package_name, mode) = pypi::pypi_project_parts(source)?;
+
+        reject_unsafe_url(metadata_url)?;
+        let fetched = self
+            .fetch_text(metadata_url.clone(), timeout_secs, cancellation_token)
+            .await
+            .context("PyPI metadata fetch failed")?;
+        reject_unsafe_url(&fetched.final_url)?;
+
+        let metadata = pypi::parse_project_metadata(&fetched.text, package_name)?;
+        let truncated = truncate_chars(metadata.description.trim().to_string(), MAX_OUTPUT_CHARS);
+        let truncated_label = if truncated.was_truncated { "yes" } else { "no" };
+
+        Ok(pypi::render_project(
+            source_url,
+            &fetched.final_url,
+            mode,
+            &metadata,
             display_content_type(&fetched.content_type),
             fetched.bytes_read,
             truncated_label,
